@@ -104,7 +104,8 @@ All via environment variables (put them in the hook's env or your shell profile)
 | `CONCH_LISTEN_WINDOW_SECS` | `30` | how long the mic waits for you to *start* talking |
 | `CONCH_MAX_UTTERANCE_SECS` | `120` | cap on a single utterance once you're talking |
 | `CONCH_END_SILENCE_SECS` | `2.5` | pause length that ends your utterance |
-| `CONCH_CONTINUE_SENTENCES` | `4` | sentences per "continue" chunk |
+| `CONCH_CONTINUE_SENTENCES` | `4` | sentences per read-aloud / "continue" chunk |
+| `CONCH_GAP_SECS` | `0.7` | interjection gap between read-aloud chunks |
 | `CONCH_MIC_CUES` | `1` | tink on mic-open, bottle on silent close |
 | `CONCH_AUTO_SUBMIT` | `1` | press Enter after injecting |
 | `CONCH_KEYSTROKE_FALLBACK` | `0` | allow typing into the frontmost window when no tmux pane is found |

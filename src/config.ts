@@ -38,6 +38,8 @@ export interface Config {
   awayAfterSecs: number;
   /** read the whole final message aloud by default; say "stop" between chunks to cut it short */
   readFull: boolean;
+  /** interjection gap between read-aloud chunks, seconds — a breath, not an ending; the tink means it's your turn */
+  gapSecs: number;
   /** sentences per read-aloud / "continue" chunk */
   continueSentences: number;
   /** audible tink/blip when the mic opens/closes */
@@ -81,6 +83,7 @@ export function loadConfig(): Config {
     endThresholdPct: num(env.CONCH_END_THRESHOLD_PCT, 2),
     awayAfterSecs: num(env.CONCH_AWAY_AFTER_SECS, 0) || 0,
     readFull: flag(env.CONCH_READ_FULL, true),
+    gapSecs: num(env.CONCH_GAP_SECS, 0.7),
     continueSentences: num(env.CONCH_CONTINUE_SENTENCES, 4),
     micCues: flag(env.CONCH_MIC_CUES, true),
     autoSubmit: flag(env.CONCH_AUTO_SUBMIT, true),

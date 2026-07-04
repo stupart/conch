@@ -137,7 +137,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       sentences = splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath)));
       reading: while (cursor < sentences.length) {
         setState("listening", event.label);
-        const { text: gapText } = await listenGap(cfg, 1.2);
+        const { text: gapText } = await listenGap(cfg, cfg.gapSecs);
         if (gapText) {
           const intent = classifyReadingGap(gapText);
           log(`heard mid-read: "${gapText}" -> ${intent}`);
