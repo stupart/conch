@@ -48,7 +48,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   async function handle(event: TurnEvent): Promise<void> {
     if (event.type === "wake") {
-      if (!lastTurn) return void (await speak(cfg, "Nothing to wake. No session has spoken yet."));
+      if (!lastTurn) {
+        log("wake with nothing to wake — no session has announced yet");
+        return void (await speak(cfg, "Nothing to wake. No session has spoken yet."));
+      }
       log(`wake -> "${lastTurn.label}"`);
       await speak(cfg, `Mic open for ${lastTurn.label}.`);
       await conversationLoop(lastTurn);
