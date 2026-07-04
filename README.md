@@ -66,7 +66,7 @@ Commands only match as the *entire* utterance — "continue working on the login
 
 **Came back after the window closed?** Press **space** in the daemon's terminal, or run `conch wake` (bind it to a global hotkey via Raycast/Shortcuts) — the mic reopens for the last announced session. `conch wake dayloop` targets any live session by name (`conch sessions` lists them), and the status line shows exactly who's listening.
 
-**Away from the keyboard?** conch checks macOS idle time before every announcement: untouched keyboard/mouse for 5+ minutes (`CONCH_AWAY_AFTER_SECS`) means no speech, no mic, no battery burn — events are logged, wake still cuts through, and it resumes the moment you're back. `conch mute` / `conch unmute` is the manual version. Each event only ever speaks once; there is no reminder loop.
+**Leaving?** `conch mute` silences announcements and the mic until `conch unmute`; each event only ever speaks once regardless — there is no reminder loop, and a closed window costs nothing (no sox, no whisper). `CONCH_AWAY_AFTER_SECS` adds opt-in auto-silence after N seconds of keyboard/mouse idle, but note it's off by default for a reason: idle time doesn't count *voice* activity, so it would mute a fully hands-free session mid-conversation.
 
 **Permission prompts** ("dayloop needs you: permission to run npm install") open the mic too, but only accept yes/no: "yes" presses Enter on the highlighted option, "no" presses Escape, anything else is ignored — free text near a permission dialog is deliberately refused. And idle "waiting for your input" nags are filtered: conch checks whether the session's last reply actually asked you something, and stays quiet when the session is just idle ("I'll ping you when it lands").
 
@@ -107,7 +107,7 @@ All via environment variables (put them in the hook's env or your shell profile)
 | `CONCH_KEYSTROKE_FALLBACK` | `0` | allow typing into the frontmost window when no tmux pane is found |
 | `CONCH_SEASHELL_ROOT` | `~/whisper-cli` | where the whisper.cpp build + models live |
 | `CONCH_WHISPER_PORT` | `8642` | warm whisper-server port; `0` = cold cli only |
-| `CONCH_AWAY_AFTER_SECS` | `300` | idle time before auto-away silences everything; `0` = never |
+| `CONCH_AWAY_AFTER_SECS` | `0` (off) | opt-in: silence everything after N seconds of keyboard idle |
 
 ## Roadmap
 
