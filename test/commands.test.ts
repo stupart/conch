@@ -18,6 +18,15 @@ test("real prompts that merely contain command words stay prompts", () => {
   expect(classify("Stop using the legacy API and switch to v2.")).toBe("prompt");
 });
 
+test("filler-wrapped commands still match", () => {
+  expect(classify("Oh, continue.")).toBe("continue");
+  expect(classify("Okay, keep going.")).toBe("continue");
+  expect(classify("Um, repeat that?")).toBe("repeat");
+  expect(classify("Continue, please.")).toBe("continue");
+  expect(classify("Yes, continue.")).toBe("continue");
+  expect(classify("Oh, use the other approach.")).toBe("prompt");
+});
+
 test("plausible yes/no replies are never swallowed as commands", () => {
   expect(classify("Yes.")).toBe("prompt");
   expect(classify("No.")).toBe("prompt");
