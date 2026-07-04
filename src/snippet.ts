@@ -27,8 +27,15 @@ export function firstSentences(text: string, count: number, maxChars: number): s
 }
 
 /**
- * Last assistant text block from a Claude Code transcript (JSONL).
- * Consecutive text blocks within one message are joined.
+ * The FINAL message of the last turn, not just any trailing text block.
+ *
+ * A turn's transcript looks like: interim text -> tool calls -> interim
+ * text -> tool calls -> final summary (possibly split across entries).
+ * Naively taking "the last text seen" can surface a stale interim note
+ * ("let me look into it") when the real ending says the work is done.
+ * So: walk backwards, skip meta lines, and collect the trailing run of
+ * assistant text — stopping at the first tool call or user entry, which
+ * by construction is where the final message begins.
  */
 export async function lastAssistantText(transcriptPath: string): Promise<string> {
   let raw: string;
@@ -37,21 +44,25 @@ export async function lastAssistantText(transcriptPath: string): Promise<string>
   } catch {
     return "";
   }
-  let last = "";
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
+  const lines = raw.split("\n");
+  const collected: string[] = [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    if (!line) continue;
+    let entry: any;
     try {
-      const entry = JSON.parse(line);
-      if (entry.type !== "assistant") continue;
-      const texts = (entry.message?.content ?? [])
-        .filter((c: { type: string }) => c.type === "text")
-        .map((c: { text: string }) => c.text);
-      if (texts.length) last = texts.join(" ");
+      entry = JSON.parse(line);
     } catch {
-      // partial line mid-write; skip
+      continue; // partial line mid-write
     }
+    if (entry.type === "user") break; // tool_result or the user's prompt — final message starts after this
+    if (entry.type !== "assistant") continue; // meta lines (snapshots, mode, ...) interleave freely
+    const content: Array<{ type: string; text?: string }> = entry.message?.content ?? [];
+    const texts = content.filter((c) => c.type === "text").map((c) => c.text ?? "");
+    if (texts.length) collected.unshift(texts.join(" "));
+    if (content.some((c) => c.type === "tool_use")) break; // interim text attached to tool work
   }
-  return last;
+  return collected.join(" ");
 }
 
 /**
@@ -70,7 +81,12 @@ export async function spokenSnippet(
   sentences: number,
   maxChars: number,
 ): Promise<string> {
-  const text = await lastAssistantText(transcriptPath);
-  if (!text) return "";
-  return firstSentences(stripMarkdown(text), sentences, maxChars);
+  // The Stop hook can fire before the final text is flushed to the
+  // transcript; a couple of short retries beat announcing a stale line.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const text = await lastAssistantText(transcriptPath);
+    if (text) return firstSentences(stripMarkdown(text), sentences, maxChars);
+    await Bun.sleep(400);
+  }
+  return "";
 }

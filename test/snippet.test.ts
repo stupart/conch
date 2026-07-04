@@ -37,3 +37,18 @@ test("lastAssistantText returns the newest assistant text block", async () => {
 test("lastAssistantText returns empty for a missing file", async () => {
   expect(await lastAssistantText("/tmp/does-not-exist.jsonl")).toBe("");
 });
+
+test("lastAssistantText returns the final message, not interim work notes", async () => {
+  const path = `/tmp/conch-test-final-${Date.now()}.jsonl`;
+  const lines = [
+    JSON.stringify({ type: "user", message: { content: [{ type: "text", text: "fix the bug" }] } }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Let me look into it." }] } }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash" }] } }),
+    JSON.stringify({ type: "user", message: { content: [{ type: "tool_result" }] } }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Found and fixed it." }] } }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "All tests pass." }] } }),
+    JSON.stringify({ type: "file-history-snapshot", messageId: "x" }),
+  ];
+  await Bun.write(path, lines.join("\n"));
+  expect(await lastAssistantText(path)).toBe("Found and fixed it. All tests pass.");
+});
