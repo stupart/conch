@@ -1,0 +1,20 @@
+{
+  "name": "conch",
+  "version": "0.1.0",
+  "description": "A voice loop for Claude Code: hear your sessions speak, talk your prompts back.",
+  "module": "src/cli.ts",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "conch": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}
