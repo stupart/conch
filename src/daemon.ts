@@ -197,4 +197,5 @@ async function micCue(cfg: Config, kind: "open" | "close"): Promise<void> {
   if (!cfg.micCues) return;
   const sound = kind === "open" ? "/System/Library/Sounds/Tink.aiff" : "/System/Library/Sounds/Bottle.aiff";
   await Bun.spawn(["afplay", sound], { stdout: "ignore", stderr: "ignore" }).exited;
+  if (kind === "open") await Bun.sleep(350); // let the cue's tail decay before sox arms
 }
