@@ -1,5 +1,18 @@
 import { test, expect } from "bun:test";
 import { stripMarkdown, firstSentences, lastAssistantText } from "../src/snippet.ts";
+import { wavFromRawPcm } from "../src/transcribe.ts";
+
+test("wavFromRawPcm writes a valid 16kHz mono header", () => {
+  const pcm = new Uint8Array(32000); // 1s of audio
+  const wav = wavFromRawPcm(pcm);
+  const v = new DataView(wav.buffer);
+  expect(wav.length).toBe(44 + 32000);
+  expect(String.fromCharCode(...wav.slice(0, 4))).toBe("RIFF");
+  expect(String.fromCharCode(...wav.slice(8, 12))).toBe("WAVE");
+  expect(v.getUint32(24, true)).toBe(16000); // sample rate
+  expect(v.getUint16(22, true)).toBe(1); // mono
+  expect(v.getUint32(40, true)).toBe(32000); // data size
+});
 
 test("stripMarkdown drops code fences and keeps prose", () => {
   const md = "Done — tests pass.\n\n```ts\nconst x = 1;\n```\n\nSee `foo.ts` for details.";

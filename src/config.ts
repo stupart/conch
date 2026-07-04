@@ -9,6 +9,9 @@ const SEASHELL_ROOT = process.env.CONCH_SEASHELL_ROOT ?? join(HOME, "whisper-cli
 
 export interface Config {
   whisperCli: string;
+  whisperServerBin: string;
+  /** port for the warm whisper-server the daemon manages; 0 disables it */
+  whisperPort: number;
   whisperModel: string;
   vadModel: string;
   /** TTS voice for `say`; empty string = system default */
@@ -53,6 +56,8 @@ export function loadConfig(): Config {
   const env = process.env;
   return {
     whisperCli: env.CONCH_WHISPER_CLI ?? join(SEASHELL_ROOT, "whisper.cpp/build/bin/whisper-cli"),
+    whisperServerBin: env.CONCH_WHISPER_SERVER ?? join(SEASHELL_ROOT, "whisper.cpp/build/bin/whisper-server"),
+    whisperPort: env.CONCH_WHISPER_PORT === "0" ? 0 : num(env.CONCH_WHISPER_PORT, 8642),
     whisperModel: env.CONCH_WHISPER_MODEL ?? join(SEASHELL_ROOT, "models/ggml-large-v3-turbo-q5_0.bin"),
     vadModel: env.CONCH_VAD_MODEL ?? join(SEASHELL_ROOT, "whisper.cpp/models/ggml-silero-v6.2.0.bin"),
     voice: env.CONCH_VOICE ?? "",

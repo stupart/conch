@@ -45,8 +45,13 @@ switch (command) {
     await runDoctor(cfg);
     break;
   case "listen": {
+    const { probeServer } = await import("./transcribe.ts");
+    await probeServer(cfg, 1500); // a running daemon's warm server enables live partials
     console.error("[conch] listening... (speak, then pause)");
-    const { text, error } = await listenOnce(cfg);
+    const { text, error } = await listenOnce(cfg, {
+      onPartial: (t) => process.stderr.write(`\r\x1b[K[conch] ▸ ${t}`),
+    });
+    process.stderr.write("\r\x1b[K");
     if (error) {
       console.error(`[conch] ${error}`);
       process.exit(1);

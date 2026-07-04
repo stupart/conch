@@ -3,10 +3,12 @@ import { existsSync, unlinkSync } from "node:fs";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
 import { speak } from "./speak.ts";
-import { listenOnce } from "./listen.ts";
+import { listenOnce, type ListenHooks } from "./listen.ts";
 import { injectText, injectKey } from "./inject.ts";
 import { classify, classifyApproval } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown } from "./snippet.ts";
+import { probeServer } from "./transcribe.ts";
+import { setState, logAbove } from "./status.ts";
 
 /**
  * The turn-based voice loop.
@@ -43,7 +45,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
     } finally {
       busy = false;
+      setState("idle");
     }
+  }
+
+  /** Wire listen-phase state + live partials into the status line. */
+  function listenHooks(label: string): ListenHooks {
+    return {
+      onState: (s) => {
+        if (s === "armed") setState("listening", label);
+        else if (s === "capturing") setState("recording", label);
+        else setState("transcribing", label);
+      },
+      onPartial: (text) => setState("recording", label, text),
+    };
   }
 
   async function handle(event: TurnEvent): Promise<void> {
@@ -59,6 +74,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
 
     log(`${event.type}${event.ntype ? `/${event.ntype}` : ""} from "${event.label}" (${event.sessionId.slice(0, 8)})`);
+    setState("speaking", event.label);
     await speak(cfg, event.announce); // mic stays closed until this finishes
 
     if (event.type === "needs-you" && event.ntype !== "idle_prompt") {
@@ -80,7 +96,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     while (true) {
       await micCue(cfg, "open"); // audible "mic is open" — cue finishes before sox starts
       log(`listening (start within ${cfg.listenWindowSecs}s)...`);
-      const { text, error } = await listenOnce(cfg);
+      const { text, error } = await listenOnce(cfg, listenHooks(event.label));
       if (error) return log(`listen error: ${error}`);
       if (!text) {
         await micCue(cfg, "close");
@@ -105,6 +121,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           await speak(cfg, "Okay.");
           return;
         case "repeat":
+          setState("speaking", event.label);
           await speak(cfg, lastSpoken);
           break;
         case "continue": {
@@ -120,6 +137,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           }
           cursor += cfg.continueSentences;
           lastSpoken = chunk;
+          setState("speaking", event.label);
           await speak(cfg, chunk);
           break;
         }
@@ -131,7 +149,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   async function permissionLoop(event: TurnEvent): Promise<void> {
     await micCue(cfg, "open");
     log("listening for yes or no...");
-    const { text, error } = await listenOnce(cfg);
+    const { text, error } = await listenOnce(cfg, listenHooks(event.label));
     if (error) return log(`listen error: ${error}`);
     if (!text) {
       await micCue(cfg, "close");
@@ -143,6 +161,30 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const { via } = await injectKey(cfg, event.pid, verdict === "approve" ? "Enter" : "Escape");
     if (via === "none") speak(cfg, "Could not reach the session to answer.");
     else log(`sent ${verdict === "approve" ? "Enter" : "Escape"} via ${via}`);
+  }
+
+  // Warm whisper-server: the daemon owns it so transcription (and live
+  // partials) skip the seconds-long model reload of the cold cli path.
+  let whisperServer: ReturnType<typeof Bun.spawn> | null = null;
+  if (cfg.whisperPort && existsSync(cfg.whisperServerBin)) {
+    whisperServer = Bun.spawn(
+      [
+        cfg.whisperServerBin,
+        "-m", cfg.whisperModel,
+        "-vm", cfg.vadModel,
+        "--vad",
+        "--host", "127.0.0.1",
+        "--port", String(cfg.whisperPort),
+        "-l", "en",
+        "-t", "6",
+      ],
+      { stdout: "ignore", stderr: "ignore" },
+    );
+    void probeServer(cfg, 20_000).then((up) => {
+      log(up ? `whisper-server warm on :${cfg.whisperPort} — fast transcription + live partials` : "whisper-server failed to come up — using the cold cli path");
+    });
+  } else if (cfg.whisperPort) {
+    log(`whisper-server binary not found at ${cfg.whisperServerBin} — using the cold cli path`);
   }
 
   if (existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath); // stale socket from a previous run
@@ -164,9 +206,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   server.listen(cfg.socketPath);
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);
+  setState("idle");
 
   const shutdown = () => {
     server.close();
+    whisperServer?.kill();
     try {
       unlinkSync(cfg.socketPath);
     } catch {}
@@ -190,7 +234,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
 function log(msg: string): void {
   const t = new Date().toTimeString().slice(0, 8);
-  console.log(`[conch ${t}] ${msg}`);
+  logAbove(`[conch ${t}] ${msg}`);
 }
 
 async function micCue(cfg: Config, kind: "open" | "close"): Promise<void> {

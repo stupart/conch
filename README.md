@@ -68,6 +68,23 @@ Commands only match as the *entire* utterance — "continue working on the login
 
 **Permission prompts** ("dayloop needs you: permission to run npm install") open the mic too, but only accept yes/no: "yes" presses Enter on the highlighted option, "no" presses Escape, anything else is ignored — free text near a permission dialog is deliberately refused. And idle "waiting for your input" nags are filtered: conch checks whether the session's last reply actually asked you something, and stays quiet when the session is just idle ("I'll ping you when it lands").
 
+## Live status & near-real-time transcription
+
+Run the daemon in a visible terminal and it renders a live status line:
+
+```
+◌ idle          — waiting for a session to finish
+▶ speaking      — announcement playing (mic closed)
+● mic open      — green: armed, waiting for you to start
+● recording     — red: capturing, with your words streaming in as you talk:
+● recording — dayloop  ▸ okay so let's try the other approach and
+… transcribing  — whisper finishing the final pass
+```
+
+The daemon also spawns a **warm whisper-server** (model stays loaded), which makes every transcription seconds faster and is what powers the live partials — the growing recording is re-transcribed about once a second while you speak. No server binary? Everything still works via the slower cold path, minus partials. `CONCH_WHISPER_PORT=0` disables the server.
+
+State is also written to `/tmp/conch-state.json` (`{state, label, partial, ts}`) for menu-bar apps or status bars to consume.
+
 ## Config
 
 All via environment variables (put them in the hook's env or your shell profile):
@@ -87,6 +104,7 @@ All via environment variables (put them in the hook's env or your shell profile)
 | `CONCH_AUTO_SUBMIT` | `1` | press Enter after injecting |
 | `CONCH_KEYSTROKE_FALLBACK` | `0` | allow typing into the frontmost window when no tmux pane is found |
 | `CONCH_SEASHELL_ROOT` | `~/whisper-cli` | where the whisper.cpp build + models live |
+| `CONCH_WHISPER_PORT` | `8642` | warm whisper-server port; `0` = cold cli only |
 
 ## Roadmap
 

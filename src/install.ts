@@ -60,6 +60,7 @@ export async function runDoctor(cfg: Config): Promise<void> {
     ["sox (mic capture)", () => binaryExists("sox")],
     ["tmux (pane injection)", () => binaryExists("tmux")],
     [`whisper-cli at ${cfg.whisperCli}`, () => existsSync(cfg.whisperCli)],
+    [`whisper-server at ${cfg.whisperServerBin} (warm transcription + live partials)`, () => existsSync(cfg.whisperServerBin)],
     [`whisper model at ${cfg.whisperModel}`, () => existsSync(cfg.whisperModel)],
     [`VAD model at ${cfg.vadModel}`, () => existsSync(cfg.vadModel)],
     [`claude dir at ${cfg.claudeDir}`, () => existsSync(cfg.claudeDir)],

@@ -1,12 +1,19 @@
-import { statSync, unlinkSync } from "node:fs";
+import { statSync, unlinkSync, readFileSync } from "node:fs";
 import type { Config } from "./config.ts";
-import { transcribeWav } from "./transcribe.ts";
+import { transcribePcm, serverUp } from "./transcribe.ts";
 
-// Anything smaller than this is silence / sox header only.
-const MIN_WAV_BYTES = 16_000; // ~0.5s of 16kHz 16-bit mono
+// Anything smaller than this is silence (raw 16kHz 16-bit mono = 32KB/s).
+const MIN_PCM_BYTES = 16_000; // ~0.5s
+
+export interface ListenHooks {
+  /** armed = mic open & waiting; capturing = speech detected; transcribing = whisper running */
+  onState?: (state: "armed" | "capturing" | "transcribing") => void;
+  /** near-real-time partial transcript while you're still talking (warm server only) */
+  onPartial?: (text: string) => void;
+}
 
 interface Recorder {
-  wav: string;
+  raw: string;
   proc: ReturnType<typeof Bun.spawn>;
   watchdog: ReturnType<typeof setInterval>;
 }
@@ -16,35 +23,39 @@ interface Recorder {
  *
  * sox's `silence` effect does the endpointing, but its trigger is jumpy —
  * the mic-cue tail or a keyboard clack "starts" a recording that closes on
- * the quiet that follows. Two defenses, both born from live testing:
+ * the quiet that follows. Defenses, all born from live testing:
  *
  * 1. Re-arm on false starts: a near-empty capture or empty transcript
  *    re-opens the mic until the start window is genuinely spent.
- * 2. No dead zones: transcription (whisper reloads its model every call —
- *    seconds) runs with the NEXT recorder already armed, so words spoken
- *    while a noise blip is being transcribed land in the next capture
- *    instead of vanishing.
+ * 2. No dead zones: transcription runs with the NEXT recorder already
+ *    armed, so words spoken during a noise-blip transcription land in the
+ *    next capture instead of vanishing.
+ * 3. Capture is headerless raw PCM, so the growing file can be read
+ *    mid-recording for live partials (a wav header's size fields would be
+ *    stale until sox closes the file).
  */
-export async function listenOnce(cfg: Config): Promise<{ text: string; error?: string }> {
+export async function listenOnce(cfg: Config, hooks: ListenHooks = {}): Promise<{ text: string; error?: string }> {
   const opened = Date.now();
   const windowSpent = () => (Date.now() - opened) / 1000 >= cfg.listenWindowSecs;
 
-  let rec = armRecorder(cfg, opened);
+  let rec = armRecorder(cfg, opened, hooks);
 
   while (true) {
     await rec.proc.exited;
     clearInterval(rec.watchdog);
 
-    if (fileSize(rec.wav) < MIN_WAV_BYTES) {
-      discard(rec.wav); // false start (or the window-timeout kill)
-      if (windowSpent()) return { text: "" };
-      rec = armRecorder(cfg, opened);
+    const pcm = readPcm(rec.raw);
+    discard(rec.raw);
+
+    if (pcm.length < MIN_PCM_BYTES) {
+      if (windowSpent()) return { text: "" }; // window over (or the timeout kill)
+      rec = armRecorder(cfg, opened, hooks); // false start — re-arm
       continue;
     }
 
-    const next = windowSpent() ? null : armRecorder(cfg, opened);
-    const result = await transcribeWav(cfg, rec.wav);
-    discard(rec.wav);
+    const next = windowSpent() ? null : armRecorder(cfg, opened, hooks);
+    hooks.onState?.("transcribing");
+    const result = await transcribePcm(cfg, pcm);
 
     if (result.error || result.text) {
       if (next) await disarm(next);
@@ -55,36 +66,63 @@ export async function listenOnce(cfg: Config): Promise<{ text: string; error?: s
   }
 }
 
-function armRecorder(cfg: Config, opened: number): Recorder {
-  const wav = `/tmp/conch-utterance-${process.pid}-${Date.now()}.wav`;
+function armRecorder(cfg: Config, opened: number, hooks: ListenHooks): Recorder {
+  const raw = `/tmp/conch-utt-${process.pid}-${Date.now()}.raw`;
   const proc = Bun.spawn(
     [
       "sox", "-d", "-q",
-      "-r", "16000", "-c", "1", "-b", "16",
-      wav,
+      "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
+      raw,
       "silence",
       "1", "0.15", `${cfg.startThresholdPct}%`,
       "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
     ],
     { stdout: "ignore", stderr: "ignore" },
   );
+  hooks.onState?.("armed");
 
   let speechStarted = false;
+  let partialBusy = false;
   const watchdog = setInterval(() => {
-    if (!speechStarted && fileSize(wav) >= MIN_WAV_BYTES) speechStarted = true;
+    const size = fileSize(raw);
+    if (!speechStarted && size >= MIN_PCM_BYTES) {
+      speechStarted = true;
+      hooks.onState?.("capturing");
+    }
     const t = (Date.now() - opened) / 1000;
     if (!speechStarted && t >= cfg.listenWindowSecs) proc.kill();
     if (speechStarted && t >= cfg.listenWindowSecs + cfg.maxUtteranceSecs) proc.kill();
-  }, 500);
 
-  return { wav, proc, watchdog };
+    // Live partial: transcribe the prefix captured so far. Warm server only
+    // (the cold path's model reload could never keep up); one in flight.
+    if (speechStarted && hooks.onPartial && serverUp() && !partialBusy) {
+      partialBusy = true;
+      transcribePcm(cfg, readPcm(raw))
+        .then((r) => {
+          if (r.text) hooks.onPartial!(r.text);
+        })
+        .finally(() => {
+          partialBusy = false;
+        });
+    }
+  }, 700);
+
+  return { raw, proc, watchdog };
 }
 
 async function disarm(rec: Recorder): Promise<void> {
   rec.proc.kill();
   clearInterval(rec.watchdog);
   await rec.proc.exited;
-  discard(rec.wav);
+  discard(rec.raw);
+}
+
+function readPcm(path: string): Uint8Array {
+  try {
+    return new Uint8Array(readFileSync(path));
+  } catch {
+    return new Uint8Array(0);
+  }
 }
 
 function fileSize(path: string): number {
