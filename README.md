@@ -57,10 +57,13 @@ While the mic is open (you'll hear a *tink*), a bare command word talks to conch
 
 | You say | What happens |
 |---|---|
-| "continue" / "keep going" / "read the rest" | reads the next few sentences of the reply, then listens again |
+| "stop" / "got it" / "enough" *(while it's reading)* | stops reading, opens the mic for your reply |
+| "no response" / "no response needed" / "cancel" | closes the mic, moves to the next queued session |
+| "continue" / "keep going" / "read the rest" | reads more, then listens again |
 | "repeat" / "say that again" | re-speaks the last thing conch said |
-| "cancel" / "never mind" / "scratch that" | closes the mic without sending anything |
 | anything else | goes to the session as your prompt |
+
+By default conch reads the **whole** final message aloud (`CONCH_READ_FULL=0` for headline-only), pausing briefly between chunks — those pauses are your window to interject: "stop" to cut it short, "no response" to close out, or just start dictating your reply and the rest is skipped.
 
 Commands only match as the *entire* utterance — "continue working on the login bug" is a prompt, not a command. Filler wrapping is fine ("Oh, continue." works). A soft *bottle* sound means the window closed on silence.
 

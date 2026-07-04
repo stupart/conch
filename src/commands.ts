@@ -11,7 +11,25 @@ const CONTINUE = new Set([
   "read the rest", "read me the rest", "read more", "more",
 ]);
 const REPEAT = new Set(["repeat", "repeat that", "say that again", "say it again", "what was that"]);
-const DISCARD = new Set(["cancel", "never mind", "nevermind", "scratch that", "disregard", "disregard that"]);
+const DISCARD = new Set([
+  "cancel", "never mind", "nevermind", "scratch that", "disregard", "disregard that",
+  "no response", "no response needed", "no reply", "no reply needed",
+  "stop listening", "stop recording", "close the mic", "all good",
+]);
+
+// Only matched in the brief gaps between read-aloud chunks — context makes
+// looser phrases safe here ("got it" mid-reading can only mean "stop").
+const STOP_READING = new Set([
+  "stop", "stop reading", "stop talking", "okay stop", "ok stop",
+  "enough", "that's enough", "got it", "thanks", "thank you", "skip",
+]);
+
+/** Classifier for the short listen-gaps between read-aloud chunks. */
+export function classifyReadingGap(text: string): "stop" | VoiceIntent {
+  const norm = normalize(text);
+  if (STOP_READING.has(norm)) return "stop";
+  return classify(text);
+}
 
 // Spoken commands arrive wrapped in fillers ("Oh, continue.") — strip the
 // wrapping, but never down to nothing, so a bare "Yes." stays a prompt.

@@ -66,6 +66,45 @@ export async function listenOnce(cfg: Config, hooks: ListenHooks = {}): Promise<
   }
 }
 
+/**
+ * Brief interjection window between read-aloud chunks: wait up to
+ * `maxWaitSecs` for speech to START; if nothing, return immediately-ish so
+ * reading continues. If the user does start talking, capture the full
+ * utterance (endpointed as usual) and transcribe it.
+ */
+export async function listenGap(cfg: Config, maxWaitSecs: number): Promise<{ text: string }> {
+  const raw = `/tmp/conch-gap-${process.pid}-${Date.now()}.raw`;
+  const proc = Bun.spawn(
+    [
+      "sox", "-d", "-q",
+      "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
+      raw,
+      "silence",
+      "1", "0.15", `${cfg.startThresholdPct}%`,
+      "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
+    ],
+    { stdout: "ignore", stderr: "ignore" },
+  );
+
+  const opened = Date.now();
+  let speechStarted = false;
+  const watchdog = setInterval(() => {
+    if (!speechStarted && fileSize(raw) >= MIN_PCM_BYTES) speechStarted = true;
+    const t = (Date.now() - opened) / 1000;
+    if (!speechStarted && t >= maxWaitSecs) proc.kill();
+    if (speechStarted && t >= cfg.maxUtteranceSecs) proc.kill();
+  }, 200);
+
+  await proc.exited;
+  clearInterval(watchdog);
+
+  const pcm = readPcm(raw);
+  discard(raw);
+  if (pcm.length < MIN_PCM_BYTES) return { text: "" };
+  const { text } = await transcribePcm(cfg, pcm);
+  return { text };
+}
+
 function armRecorder(cfg: Config, opened: number, hooks: ListenHooks): Recorder {
   const raw = `/tmp/conch-utt-${process.pid}-${Date.now()}.raw`;
   const proc = Bun.spawn(

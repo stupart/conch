@@ -3,9 +3,9 @@ import { existsSync, unlinkSync } from "node:fs";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
 import { speak } from "./speak.ts";
-import { listenOnce, type ListenHooks } from "./listen.ts";
+import { listenOnce, listenGap, type ListenHooks } from "./listen.ts";
 import { injectText, injectKey } from "./inject.ts";
-import { classify, classifyApproval } from "./commands.ts";
+import { classify, classifyApproval, classifyReadingGap } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown } from "./snippet.ts";
 import { probeServer } from "./transcribe.ts";
 import { setState, logAbove } from "./status.ts";
@@ -113,11 +113,55 @@ export async function runDaemon(cfg: Config): Promise<void> {
     await conversationLoop(event);
   }
 
+  /** Inject a prompt utterance and report how it went. */
+  async function deliver(event: TurnEvent, text: string): Promise<void> {
+    const { via } = await injectText(cfg, event.pid, text);
+    log(`injected via ${via}`);
+    if (via === "clipboard") {
+      speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.");
+    } else if (via === "none") {
+      speak(cfg, "Heard you, but I could not find the session's pane.");
+    }
+  }
+
   /** Commands (continue/repeat/cancel) keep the mic cycling; a real prompt injects; silence idles. */
   async function conversationLoop(event: TurnEvent): Promise<void> {
     let lastSpoken = event.announce;
     let sentences: string[] | null = null;
     let cursor = cfg.speakSentences; // the announcement already covered the first sentences
+
+    // Read-full phase: keep speaking chunks, with a short interjection gap
+    // between them — "stop" cuts to the listen window, "no response"/"cancel"
+    // closes out, and a real prompt injects immediately.
+    if (cfg.readFull && event.type !== "needs-you" && event.transcriptPath) {
+      sentences = splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath)));
+      reading: while (cursor < sentences.length) {
+        setState("listening", event.label);
+        const { text: gapText } = await listenGap(cfg, 1.2);
+        if (gapText) {
+          const intent = classifyReadingGap(gapText);
+          log(`heard mid-read: "${gapText}" -> ${intent}`);
+          switch (intent) {
+            case "stop":
+              break reading; // skip the rest, open the normal window
+            case "discard":
+              await speak(cfg, "Okay.");
+              return;
+            case "prompt":
+              await deliver(event, gapText);
+              return;
+            case "repeat":
+            case "continue":
+              break; // keep reading
+          }
+        }
+        const chunk = sentences.slice(cursor, cursor + cfg.continueSentences).join(" ");
+        cursor += cfg.continueSentences;
+        lastSpoken = chunk;
+        setState("speaking", event.label);
+        await speak(cfg, chunk);
+      }
+    }
 
     while (true) {
       await micCue(cfg, "open"); // audible "mic is open" — cue finishes before sox starts
@@ -134,13 +178,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
       switch (intent) {
         case "prompt": {
-          const { via } = await injectText(cfg, event.pid, text);
-          log(`injected via ${via}`);
-          if (via === "clipboard") {
-            speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.");
-          } else if (via === "none") {
-            speak(cfg, "Heard you, but I could not find the session's pane.");
-          }
+          await deliver(event, text);
           return;
         }
         case "discard":

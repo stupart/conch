@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { classify, classifyApproval } from "../src/commands.ts";
+import { classify, classifyApproval, classifyReadingGap } from "../src/commands.ts";
 import { looksLikeAwaitingReply } from "../src/snippet.ts";
 
 test("bare commands match despite whisper's punctuation and casing", () => {
@@ -32,6 +32,21 @@ test("plausible yes/no replies are never swallowed as commands", () => {
   expect(classify("Yes.")).toBe("prompt");
   expect(classify("No.")).toBe("prompt");
   expect(classify("Stop.")).toBe("prompt");
+});
+
+test("no-response phrases close the mic", () => {
+  expect(classify("No response needed.")).toBe("discard");
+  expect(classify("No response.")).toBe("discard");
+  expect(classify("Stop listening.")).toBe("discard");
+  expect(classify("Stop recording.")).toBe("discard");
+});
+
+test("reading-gap commands: stop cuts the reading short", () => {
+  expect(classifyReadingGap("Stop.")).toBe("stop");
+  expect(classifyReadingGap("Okay, stop.")).toBe("stop");
+  expect(classifyReadingGap("Got it.")).toBe("stop");
+  expect(classifyReadingGap("No response needed.")).toBe("discard");
+  expect(classifyReadingGap("Now fix the header too.")).toBe("prompt");
 });
 
 test("permission approval vocabulary", () => {

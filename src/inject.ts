@@ -38,14 +38,19 @@ export async function injectText(
       return { via: "clipboard" };
     }
     if (focused) await Bun.sleep(300); // let the window raise settle
-    const script = [
-      "on run argv",
-      'tell application "System Events" to keystroke (item 1 of argv)',
-      cfg.autoSubmit ? 'tell application "System Events" to keystroke return' : "",
-      "end run",
-    ].filter(Boolean);
-    const args = script.flatMap((line) => ["-e", line]);
-    await Bun.spawn(["osascript", ...args, "--", text], { stdout: "ignore", stderr: "ignore" }).exited;
+    await Bun.spawn(
+      ["osascript", "-e", "on run argv", "-e", 'tell application "System Events" to keystroke (item 1 of argv)', "-e", "end run", "--", text.trim()],
+      { stdout: "ignore", stderr: "ignore" },
+    ).exited;
+    if (cfg.autoSubmit) {
+      // separate, delayed Return: bundling it with the text occasionally
+      // arrived before the terminal finished ingesting the keystrokes
+      await Bun.sleep(250);
+      await Bun.spawn(
+        ["osascript", "-e", 'tell application "System Events" to key code 36'],
+        { stdout: "ignore", stderr: "ignore" },
+      ).exited;
+    }
     return { via: focused ? "osascript-focused" : "osascript-blind" };
   }
 
