@@ -1,19 +1,25 @@
 import { $ } from "bun";
 import type { Config } from "./config.ts";
 
+export type InjectRoute = "tmux" | "osascript-focused" | "osascript-blind" | "clipboard" | "none";
+
 /**
  * Deliver a transcript into the session's prompt.
  *
- * Preferred: tmux send-keys targeted at the pane hosting the session's pid —
- * exact routing, works even when the pane isn't focused. Fallback (opt-in,
- * CONCH_KEYSTROKE_FALLBACK=1): osascript keystrokes into the frontmost app,
- * which is blind — only safe if you keep the session window focused.
+ * Routes, best first:
+ *  - tmux send-keys at the pane hosting the session's pid — exact, works unfocused
+ *  - osascript keystrokes AFTER focusing the session's Terminal window
+ *    (matched by tty) — reliable for plain-terminal users
+ *  - osascript keystrokes blind into the frontmost window — last typing resort
+ *  - clipboard — when typing would go into the void, the words are at least
+ *    one Cmd-V away ("injected via osascript" that lands nowhere loses the
+ *    user's whole utterance; observed live)
  */
 export async function injectText(
   cfg: Config,
   sessionPid: number | undefined,
   text: string,
-): Promise<{ via: "tmux" | "osascript" | "none" }> {
+): Promise<{ via: InjectRoute }> {
   if (sessionPid) {
     const pane = await findTmuxPane(sessionPid);
     if (pane) {
@@ -24,6 +30,14 @@ export async function injectText(
   }
 
   if (cfg.keystrokeFallback) {
+    const focused = sessionPid ? await focusSessionWindow(sessionPid) : false;
+    if (!focused && sessionPid) {
+      // We know which session this is for but can't put its window in
+      // front — typing would land somewhere unknowable. Clipboard instead.
+      await toClipboard(text);
+      return { via: "clipboard" };
+    }
+    if (focused) await Bun.sleep(300); // let the window raise settle
     const script = [
       "on run argv",
       'tell application "System Events" to keystroke (item 1 of argv)',
@@ -32,10 +46,11 @@ export async function injectText(
     ].filter(Boolean);
     const args = script.flatMap((line) => ["-e", line]);
     await Bun.spawn(["osascript", ...args, "--", text], { stdout: "ignore", stderr: "ignore" }).exited;
-    return { via: "osascript" };
+    return { via: focused ? "osascript-focused" : "osascript-blind" };
   }
 
-  return { via: "none" };
+  await toClipboard(text);
+  return { via: "clipboard" };
 }
 
 /** Press a single key in the session — Enter accepts a permission dialog's highlighted option, Escape dismisses it. */
@@ -43,7 +58,7 @@ export async function injectKey(
   cfg: Config,
   sessionPid: number | undefined,
   key: "Enter" | "Escape",
-): Promise<{ via: "tmux" | "osascript" | "none" }> {
+): Promise<{ via: InjectRoute }> {
   if (sessionPid) {
     const pane = await findTmuxPane(sessionPid);
     if (pane) {
@@ -52,14 +67,56 @@ export async function injectKey(
     }
   }
   if (cfg.keystrokeFallback) {
+    const focused = sessionPid ? await focusSessionWindow(sessionPid) : false;
+    if (!focused && sessionPid) return { via: "none" }; // never press keys in an unknown window
+    if (focused) await Bun.sleep(300);
     const keyCode = key === "Enter" ? 36 : 53;
     await Bun.spawn(
       ["osascript", "-e", `tell application "System Events" to key code ${keyCode}`],
       { stdout: "ignore", stderr: "ignore" },
     ).exited;
-    return { via: "osascript" };
+    return { via: focused ? "osascript-focused" : "osascript-blind" };
   }
   return { via: "none" };
+}
+
+/**
+ * Bring the Terminal window/tab hosting the session's tty to the front.
+ * The session pid's controlling tty (ps) matches Terminal's per-tab `tty`
+ * property — that's an exact address for "the window this session lives in".
+ */
+async function focusSessionWindow(sessionPid: number): Promise<boolean> {
+  try {
+    const tty = (await $`ps -o tty= -p ${sessionPid}`.quiet().text()).trim();
+    if (!tty || tty === "??") return false;
+    const script = `
+tell application "Terminal"
+  activate
+  repeat with w in windows
+    repeat with t in tabs of w
+      if tty of t is "/dev/${tty}" then
+        set index of w to 1
+        set selected tab of w to t
+        return "ok"
+      end if
+    end repeat
+  end repeat
+end tell
+return "notfound"`;
+    const proc = Bun.spawn(["osascript", "-e", script], { stdout: "pipe", stderr: "ignore" });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    return out.trim() === "ok";
+  } catch {
+    return false;
+  }
+}
+
+async function toClipboard(text: string): Promise<void> {
+  const proc = Bun.spawn(["pbcopy"], { stdin: "pipe" });
+  proc.stdin.write(text);
+  await proc.stdin.end();
+  await proc.exited;
 }
 
 /** Find the tmux pane whose shell is an ancestor of the session's pid. */

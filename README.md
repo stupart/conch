@@ -18,7 +18,7 @@ You don't pick a session — **the mic follows the voice**. When a session finis
 
 Because the loop is turn-based — speak, *then* listen, never both — the mic never picks up the Mac's own voice, so no feedback loop and no headphones required.
 
-Prompts are injected via `tmux send-keys` targeted at the exact pane running that session, so it works even when the pane isn't focused. Not a tmux user? Enable `CONCH_KEYSTROKE_FALLBACK=1` to type into the frontmost window instead (keep the session focused), or run without injection and treat conch as announce-only.
+Prompts are injected via `tmux send-keys` targeted at the exact pane running that session, so it works even when the pane isn't focused. Not a tmux user? With `CONCH_KEYSTROKE_FALLBACK=1`, conch finds the Terminal window hosting the session (matched by tty), focuses it, and types there. If the window can't be found, your words go to the **clipboard** instead of being typed into the void — you'll hear "just paste."
 
 ## Install
 
@@ -64,7 +64,7 @@ While the mic is open (you'll hear a *tink*), a bare command word talks to conch
 
 Commands only match as the *entire* utterance — "continue working on the login bug" is a prompt, not a command. Filler wrapping is fine ("Oh, continue." works). A soft *bottle* sound means the window closed on silence.
 
-**Came back after the window closed?** Press **space** in the daemon's terminal, or run `conch wake` (bind it to a global hotkey via Raycast/Shortcuts) — the mic reopens for the last announced session.
+**Came back after the window closed?** Press **space** in the daemon's terminal, or run `conch wake` (bind it to a global hotkey via Raycast/Shortcuts) — the mic reopens for the last announced session. `conch wake dayloop` targets any live session by name (`conch sessions` lists them), and the status line shows exactly who's listening.
 
 **Permission prompts** ("dayloop needs you: permission to run npm install") open the mic too, but only accept yes/no: "yes" presses Enter on the highlighted option, "no" presses Escape, anything else is ignored — free text near a permission dialog is deliberately refused. And idle "waiting for your input" nags are filtered: conch checks whether the session's last reply actually asked you something, and stays quiet when the session is just idle ("I'll ping you when it lands").
 

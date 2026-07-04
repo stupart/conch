@@ -63,13 +63,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   async function handle(event: TurnEvent): Promise<void> {
     if (event.type === "wake") {
-      if (!lastTurn) {
+      const target = event.sessionId ? event : lastTurn; // named wake carries its own session
+      if (!target) {
         log("wake with nothing to wake — no session has announced yet");
         return void (await speak(cfg, "Nothing to wake. No session has spoken yet."));
       }
-      log(`wake -> "${lastTurn.label}"`);
-      await speak(cfg, `Mic open for ${lastTurn.label}.`);
-      await conversationLoop(lastTurn);
+      log(`wake -> "${target.label}"`);
+      setState("speaking", target.label);
+      await speak(cfg, `Mic open for ${target.label}.`);
+      await conversationLoop(target);
       return;
     }
 
@@ -109,11 +111,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
       switch (intent) {
         case "prompt": {
           const { via } = await injectText(cfg, event.pid, text);
-          if (via === "none") {
-            log("no tmux pane found and keystroke fallback is off — transcript dropped");
+          log(`injected via ${via}`);
+          if (via === "clipboard") {
+            speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.");
+          } else if (via === "none") {
             speak(cfg, "Heard you, but I could not find the session's pane.");
-          } else {
-            log(`injected via ${via}`);
           }
           return;
         }
@@ -159,7 +161,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     log(`heard: "${text}" -> ${verdict ?? "unclear"}`);
     if (!verdict) return void (await speak(cfg, "For permission prompts, say yes or no. Ignoring."));
     const { via } = await injectKey(cfg, event.pid, verdict === "approve" ? "Enter" : "Escape");
-    if (via === "none") speak(cfg, "Could not reach the session to answer.");
+    if (via === "none") speak(cfg, "Could not reach the session's window to answer — do it by hand.");
     else log(`sent ${verdict === "approve" ? "Enter" : "Escape"} via ${via}`);
   }
 

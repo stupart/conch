@@ -12,7 +12,8 @@ Usage:
   conch install         wire Stop/Notification hooks into ~/.claude/settings.json
   conch hook            hook entrypoint (reads payload JSON on stdin)
   conch daemon          run the voice loop: announce -> listen -> inject
-  conch wake            reopen the mic for the last announced session
+  conch wake [name]     reopen the mic — last announced session, or by name
+  conch sessions        list live Claude Code sessions
   conch listen          capture one utterance, print the transcript (mic test)
   conch speak <text>    say something (TTS test)
   conch doctor          check external dependencies
@@ -33,9 +34,35 @@ switch (command) {
     await runDaemon(cfg);
     break;
   case "wake": {
-    const ok = await sendToDaemon(cfg.socketPath, { type: "wake", sessionId: "", label: "", announce: "" });
-    console.log(ok ? "[conch] wake sent" : "[conch] daemon not running");
+    const { findSessionByName, findTranscript, listSessions, sessionLabel } = await import("./sessions.ts");
+    let event = { type: "wake" as const, sessionId: "", label: "", announce: "" };
+    const query = rest.join(" ").trim();
+    if (query) {
+      const s = await findSessionByName(cfg.claudeDir, query);
+      if (!s) {
+        const names = (await listSessions(cfg.claudeDir)).map((x) => x.name ?? x.cwd?.split("/").pop() ?? x.sessionId.slice(0, 8));
+        console.error(`[conch] no live session matching "${query}". Live: ${names.join(", ") || "none"}`);
+        process.exit(1);
+      }
+      event = {
+        ...event,
+        sessionId: s.sessionId,
+        label: sessionLabel(s, s.cwd),
+        pid: s.pid,
+        cwd: s.cwd,
+        transcriptPath: findTranscript(cfg.claudeDir, s.sessionId),
+      } as typeof event & { pid?: number; cwd?: string; transcriptPath?: string };
+    }
+    const ok = await sendToDaemon(cfg.socketPath, event);
+    console.log(ok ? `[conch] wake sent${event.label ? ` -> ${event.label}` : ""}` : "[conch] daemon not running");
     if (!ok) process.exit(1);
+    break;
+  }
+  case "sessions": {
+    const { listSessions } = await import("./sessions.ts");
+    for (const s of await listSessions(cfg.claudeDir)) {
+      console.log(`${(s.name ?? "(unnamed)").padEnd(30)} ${s.cwd ?? ""}  pid=${s.pid}`);
+    }
     break;
   }
   case "install":
