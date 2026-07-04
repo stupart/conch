@@ -6,9 +6,11 @@ import { speak } from "./speak.ts";
 import { listenOnce, listenGap, type ListenHooks } from "./listen.ts";
 import { injectText, injectKey } from "./inject.ts";
 import { classify, classifyApproval, classifyReadingGap } from "./commands.ts";
-import { lastAssistantText, splitSentences, stripMarkdown } from "./snippet.ts";
+import { lastAssistantText, lastSentences, splitSentences, stripMarkdown } from "./snippet.ts";
 import { probeServer } from "./transcribe.ts";
 import { setState, logAbove } from "./status.ts";
+import { routePrompt, resolveInvoke, type RouteDecision } from "./router.ts";
+import { findSessionByName, findTranscript, listSessions, normalizeLabel, sessionLabel, type SessionInfo } from "./sessions.ts";
 
 /**
  * The turn-based voice loop.
@@ -28,6 +30,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let busy = false;
   let lastTurn: TurnEvent | null = null;
   let muted = false;
+  let routerFailureNoticed = false;
+
+  // Intent router: resolved once. Per-mode default timeouts reflect measured
+  // reality — api round-trips in well under a second, the cli pays ~4s of
+  // startup before the model even sees the prompt.
+  const router = resolveInvoke(cfg);
+  if (router && !cfg.routerTimeoutMs) cfg.routerTimeoutMs = router.mode === "api" ? 3000 : 10_000;
 
   function enqueue(event: TurnEvent): void {
     const i = queue.findIndex((e) => e.sessionId === event.sessionId && e.type === event.type);
@@ -124,6 +133,83 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
   }
 
+  function eventFor(s: SessionInfo): TurnEvent {
+    const label = sessionLabel(s, s.cwd);
+    return {
+      type: "turn-end",
+      sessionId: s.sessionId,
+      label,
+      cwd: s.cwd,
+      pid: s.pid,
+      announce: label,
+      transcriptPath: findTranscript(cfg.claudeDir, s.sessionId),
+    };
+  }
+
+  type RouteOutcome = { status: "done" } | { status: "relisten" } | { status: "switch"; event: TurnEvent };
+
+  /**
+   * Route a would-be prompt (room-talk guard, name-addressing) and deliver.
+   * Fail-open: router trouble means the utterance injects verbatim — a
+   * dropped real prompt is invisible and corrodes trust; a bad injection is
+   * visible and correctable.
+   */
+  async function routeAndDeliver(event: TurnEvent, text: string): Promise<RouteOutcome> {
+    setState("routing", event.label);
+    const others = (await listSessions(cfg.claudeDir))
+      .map((s) => sessionLabel(s, s.cwd))
+      .filter((l) => normalizeLabel(l) !== normalizeLabel(event.label));
+    const replyTail =
+      router && event.transcriptPath
+        ? lastSentences(stripMarkdown(await lastAssistantText(event.transcriptPath)), 3, 350)
+        : "";
+    // Local fast paths (name-addressing, short-utterance bypass) apply even
+    // with no LLM available; router?.invoke gates only the room-talk guard.
+    const decision: RouteDecision = await routePrompt(
+      cfg,
+      { utterance: text, sessionLabel: event.label, replyTail, otherSessions: [...new Set(others)] },
+      router?.invoke ?? null,
+    );
+
+    if (decision.via === "fallback" && !routerFailureNoticed) {
+      routerFailureNoticed = true;
+      log("router failed — failing open (send as heard); further failures logged only");
+      speak(cfg, "Router is down — sending everything as heard.");
+    }
+
+    switch (decision.action) {
+      case "discard":
+        log(`router: discarded "${text}"`);
+        await micCue(cfg, "close"); // the subtle tell that nothing was sent
+        return { status: "done" };
+      case "redirect": {
+        const target = decision.target ?? "";
+        const s = await findSessionByName(cfg.claudeDir, target);
+        if (!s) {
+          const live = (await listSessions(cfg.claudeDir)).map((x) => sessionLabel(x, x.cwd)).join(", ");
+          log(`redirect target "${target}" not found (live: ${live})`);
+          await speak(cfg, `No session called ${target}. Live: ${live || "none"}.`);
+          return { status: "relisten" }; // never inject a misdirected prompt
+        }
+        const targetEvent = eventFor(s);
+        if (!decision.cleaned) {
+          // bare "hey dayloop" — voice wake: move the mic, don't inject
+          log(`voice wake -> "${targetEvent.label}"`);
+          await speak(cfg, `Mic open for ${targetEvent.label}.`);
+          lastTurn = targetEvent;
+          return { status: "switch", event: targetEvent };
+        }
+        await deliver(targetEvent, decision.cleaned);
+        await speak(cfg, `Sent to ${targetEvent.label}.`);
+        lastTurn = targetEvent; // spacebar / wake follows the conversation
+        return { status: "done" };
+      }
+      default:
+        await deliver(event, decision.cleaned ?? text);
+        return { status: "done" };
+    }
+  }
+
   /** Commands (continue/repeat/cancel) keep the mic cycling; a real prompt injects; silence idles. */
   async function conversationLoop(event: TurnEvent): Promise<void> {
     let lastSpoken = event.announce;
@@ -147,9 +233,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
             case "discard":
               await speak(cfg, "Okay.");
               return;
-            case "prompt":
-              await deliver(event, gapText);
-              return;
+            case "prompt": {
+              const outcome = await routeAndDeliver(event, gapText);
+              if (outcome.status === "done") return;
+              if (outcome.status === "switch") {
+                event = outcome.event;
+                sentences = null;
+                cursor = cfg.speakSentences;
+              }
+              break reading; // relisten/switch: fall through to the normal window
+            }
             case "repeat":
             case "continue":
               break; // keep reading
@@ -178,8 +271,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
       switch (intent) {
         case "prompt": {
-          await deliver(event, text);
-          return;
+          const outcome = await routeAndDeliver(event, text);
+          if (outcome.status === "done") return;
+          if (outcome.status === "switch") {
+            event = outcome.event;
+            sentences = null;
+            cursor = cfg.speakSentences;
+          }
+          break; // relisten/switch: reopen the window
         }
         case "discard":
           await speak(cfg, "Okay.");
@@ -270,6 +369,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   server.listen(cfg.socketPath);
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);
+  log(
+    router
+      ? `intent router: ${router.mode} mode (${cfg.routerTimeoutMs}ms timeout) — room-talk guard on`
+      : `intent router: LLM guard off (${cfg.routerMode === "off" ? "disabled" : "no API key — set ANTHROPIC_API_KEY, or CONCH_ROUTER=cli to use the slower claude CLI"}); name-addressing still works`,
+  );
   setState("idle");
 
   const shutdown = () => {

@@ -59,14 +59,20 @@ export async function listSessions(claudeDir: string): Promise<SessionInfo[]> {
   return sessions;
 }
 
-/** Match a spoken/typed query against session names, then project folder names. */
+/** Lowercase alphanumerics only — makes "day loop", "Dayloop!" and whisper artifacts comparable. */
+export function normalizeLabel(label: string): string {
+  return label.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** Match a spoken/typed query against session names, then project folder names. Space/punct-insensitive. */
 export async function findSessionByName(claudeDir: string, query: string): Promise<SessionInfo | null> {
-  const q = query.toLowerCase().trim();
+  const q = normalizeLabel(query);
+  if (!q) return null;
   const sessions = await listSessions(claudeDir);
   return (
-    sessions.find((s) => s.name?.toLowerCase() === q) ??
-    sessions.find((s) => s.name?.toLowerCase().includes(q)) ??
-    sessions.find((s) => (s.cwd ?? "").split("/").pop()?.toLowerCase() === q) ??
+    sessions.find((s) => normalizeLabel(s.name ?? "") === q) ??
+    sessions.find((s) => normalizeLabel(s.name ?? "").includes(q)) ??
+    sessions.find((s) => normalizeLabel((s.cwd ?? "").split("/").pop() ?? "") === q) ??
     null
   );
 }

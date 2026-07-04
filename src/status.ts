@@ -4,7 +4,7 @@
  *  - /tmp/conch-state.json for anything else (menu-bar apps, status bars)
  */
 
-export type ConchState = "idle" | "speaking" | "listening" | "recording" | "transcribing";
+export type ConchState = "idle" | "speaking" | "listening" | "recording" | "transcribing" | "routing";
 
 export const STATE_FILE = "/tmp/conch-state.json";
 
@@ -14,6 +14,7 @@ const GLYPHS: Record<ConchState, string> = {
   listening: "\x1b[32m● mic open\x1b[0m",
   recording: "\x1b[31m● recording\x1b[0m",
   transcribing: "\x1b[36m… transcribing\x1b[0m",
+  routing: "\x1b[35m⇄ routing\x1b[0m",
 };
 
 const tty = process.stdout.isTTY ?? false;

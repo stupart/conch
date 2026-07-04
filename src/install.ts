@@ -71,6 +71,13 @@ export async function runDoctor(cfg: Config): Promise<void> {
     ok &&= pass;
     console.log(`${pass ? "✅" : "❌"} ${label}`);
   }
+
+  const { resolveInvoke } = await import("./router.ts");
+  const router = resolveInvoke(cfg);
+  console.log(
+    `ℹ️  intent router: ${router ? `${router.mode} mode` : "LLM guard off"} — API key ${cfg.routerApiKey ? "present" : "absent"}, ${cfg.claudeBin} ${binaryExists(cfg.claudeBin) ? "found" : "missing"} (mode=${cfg.routerMode}); name-addressing is always on`,
+  );
+
   if (!ok) process.exit(1);
 }
 

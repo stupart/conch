@@ -26,6 +26,11 @@ export function firstSentences(text: string, count: number, maxChars: number): s
   return splitSentences(text).slice(0, count).join(" ").slice(0, maxChars).trim();
 }
 
+export function lastSentences(text: string, count: number, maxChars: number): string {
+  const joined = splitSentences(text).slice(-count).join(" ");
+  return joined.slice(Math.max(0, joined.length - maxChars)).trim();
+}
+
 /**
  * The FINAL message of the last turn, not just any trailing text block.
  *

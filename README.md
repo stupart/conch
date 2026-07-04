@@ -14,7 +14,11 @@ Speech-to-text runs entirely on your Mac via [whisper.cpp](https://github.com/gg
 
 ## How routing works
 
-You don't pick a session — **the mic follows the voice**. When a session finishes a turn, it announces itself by name ("dayloop: ..."), and whatever you say next goes back to *that* session. The announcement is the address. If several sessions finish while you're mid-conversation with one, the newest announcement wins the mic next; the rest you'll have heard by name and can reach by typing (or wait — addressing a session by name is on the roadmap).
+You don't pick a session — **the mic follows the voice**. When a session finishes a turn, it announces itself by name ("dayloop: ..."), and whatever you say next goes back to *that* session. The announcement is the address. If several sessions finish while you're mid-conversation with one, the newest announcement wins the mic next.
+
+**Name-addressing** reaches any other live session at any time: "hey dayloop, try the other approach" redirects there ("Sent to dayloop"), and a bare "hey dayloop" moves the mic to it. Matching is local and instant, tolerant of whisper hearing "day loop".
+
+**The room-talk guard** (optional): with an `ANTHROPIC_API_KEY` set, every would-be prompt longer than a few words is sanity-checked by Claude Haiku against what the session just said — speech clearly addressed to another person in the room, a phone call, or the TV gets *discarded* (you hear the soft close-cue, and the words are kept in the daemon log) instead of injected into your session. Verdicts are conservative: topic changes are never treated as room talk, and any router failure **fails open** — the utterance injects as heard, because a silently dropped prompt is worse than a visible mistake. It also strips disfluencies ("um okay so yes update the docs" → "yes update the docs"). No API key? `CONCH_ROUTER=cli` uses your `claude` CLI instead (adds seconds per prompt — measured 7-20s, opt-in for a reason), or leave it off and everything injects as heard, exactly like before.
 
 Because the loop is turn-based — speak, *then* listen, never both — the mic never picks up the Mac's own voice, so no feedback loop and no headphones required.
 
@@ -112,6 +116,9 @@ All via environment variables (put them in the hook's env or your shell profile)
 | `CONCH_SEASHELL_ROOT` | `~/whisper-cli` | where the whisper.cpp build + models live |
 | `CONCH_WHISPER_PORT` | `8642` | warm whisper-server port; `0` = cold cli only |
 | `CONCH_AWAY_AFTER_SECS` | `0` (off) | opt-in: silence everything after N seconds of keyboard idle |
+| `CONCH_ROUTER` | `auto` | room-talk guard: `auto` (api if key, else off) / `api` / `cli` / `off` |
+| `CONCH_ROUTER_MODEL` | `claude-haiku-4-5` | api-mode model |
+| `CONCH_ROUTER_TIMEOUT_MS` | api `3000` / cli `10000` | routing verdict deadline; timeout fails open |
 
 ## Roadmap
 

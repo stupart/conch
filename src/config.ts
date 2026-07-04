@@ -50,6 +50,13 @@ export interface Config {
   keystrokeFallback: boolean;
   socketPath: string;
   claudeDir: string;
+  /** intent router: auto (api if key, else cli, else off) | api | cli | off */
+  routerMode: "auto" | "api" | "cli" | "off";
+  routerModel: string;
+  routerApiKey: string;
+  /** 0 = per-mode default (api 3s, cli 10s) */
+  routerTimeoutMs: number;
+  claudeBin: string;
 }
 
 function num(v: string | undefined, fallback: number): number {
@@ -90,5 +97,14 @@ export function loadConfig(): Config {
     keystrokeFallback: flag(env.CONCH_KEYSTROKE_FALLBACK, false),
     socketPath: env.CONCH_SOCKET ?? "/tmp/conch.sock",
     claudeDir: env.CLAUDE_CONFIG_DIR ?? join(HOME, ".claude"),
+    routerMode: parseRouterMode(env.CONCH_ROUTER),
+    routerModel: env.CONCH_ROUTER_MODEL ?? "claude-haiku-4-5",
+    routerApiKey: env.CONCH_ROUTER_API_KEY ?? env.ANTHROPIC_API_KEY ?? "",
+    routerTimeoutMs: num(env.CONCH_ROUTER_TIMEOUT_MS, 0) || 0,
+    claudeBin: env.CONCH_CLAUDE_BIN ?? "claude",
   };
+}
+
+function parseRouterMode(v: string | undefined): "auto" | "api" | "cli" | "off" {
+  return v === "api" || v === "cli" || v === "off" ? v : "auto";
 }
