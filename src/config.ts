@@ -30,6 +30,8 @@ export interface Config {
   /** sox amplitude thresholds (percent) for speech start/end detection */
   startThresholdPct: number;
   endThresholdPct: number;
+  /** keyboard/mouse idle time after which conch stays silent (auto-away), seconds; 0 disables */
+  awayAfterSecs: number;
   /** sentences per "continue" chunk when reading the rest of a reply */
   continueSentences: number;
   /** audible tink/blip when the mic opens/closes */
@@ -71,6 +73,7 @@ export function loadConfig(): Config {
     endSilenceSecs: num(env.CONCH_END_SILENCE_SECS, 2.5),
     startThresholdPct: num(env.CONCH_START_THRESHOLD_PCT, 2),
     endThresholdPct: num(env.CONCH_END_THRESHOLD_PCT, 2),
+    awayAfterSecs: env.CONCH_AWAY_AFTER_SECS === "0" ? 0 : num(env.CONCH_AWAY_AFTER_SECS, 300),
     continueSentences: num(env.CONCH_CONTINUE_SENTENCES, 4),
     micCues: flag(env.CONCH_MIC_CUES, true),
     autoSubmit: flag(env.CONCH_AUTO_SUBMIT, true),

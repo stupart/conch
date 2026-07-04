@@ -27,6 +27,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const queue: TurnEvent[] = [];
   let busy = false;
   let lastTurn: TurnEvent | null = null;
+  let muted = false;
 
   function enqueue(event: TurnEvent): void {
     const i = queue.findIndex((e) => e.sessionId === event.sessionId && e.type === event.type);
@@ -62,6 +63,29 @@ export async function runDaemon(cfg: Config): Promise<void> {
   }
 
   async function handle(event: TurnEvent): Promise<void> {
+    if (event.type === "mute") {
+      muted = true;
+      log("muted — announcements and mic off until `conch unmute`");
+      return void (await speak(cfg, "Muted."));
+    }
+    if (event.type === "unmute") {
+      muted = false;
+      log("unmuted");
+      return void (await speak(cfg, "Back on."));
+    }
+
+    // Nobody's there: don't announce to an empty room, don't open the mic,
+    // don't burn battery on sox/whisper. Telegram (the other hook) still
+    // pings the phone. `conch wake` always cuts through.
+    if (event.type !== "wake") {
+      const idle = await idleSeconds();
+      if (muted || (cfg.awayAfterSecs && idle >= cfg.awayAfterSecs)) {
+        log(`${muted ? "muted" : `away (idle ${Math.round(idle / 60)}m)`} — staying quiet for "${event.label}"`);
+        if (event.type === "turn-end" || event.ntype === "idle_prompt") lastTurn = event; // wake still finds it
+        return;
+      }
+    }
+
     if (event.type === "wake") {
       const target = event.sessionId ? event : lastTurn; // named wake carries its own session
       if (!target) {
@@ -237,6 +261,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
 function log(msg: string): void {
   const t = new Date().toTimeString().slice(0, 8);
   logAbove(`[conch ${t}] ${msg}`);
+}
+
+/** Seconds since the user last touched keyboard or mouse (macOS HID idle time). */
+async function idleSeconds(): Promise<number> {
+  try {
+    const proc = Bun.spawn(["ioreg", "-c", "IOHIDSystem"], { stdout: "pipe", stderr: "ignore" });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    const m = out.match(/HIDIdleTime"?\s*=\s*(\d+)/);
+    return m ? Number(m[1]) / 1e9 : 0;
+  } catch {
+    return 0;
+  }
 }
 
 async function micCue(cfg: Config, kind: "open" | "close"): Promise<void> {

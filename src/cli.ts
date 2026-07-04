@@ -14,6 +14,7 @@ Usage:
   conch daemon          run the voice loop: announce -> listen -> inject
   conch wake [name]     reopen the mic — last announced session, or by name
   conch sessions        list live Claude Code sessions
+  conch mute | unmute   silence announcements + mic (auto-away covers this too)
   conch listen          capture one utterance, print the transcript (mic test)
   conch speak <text>    say something (TTS test)
   conch doctor          check external dependencies
@@ -55,6 +56,13 @@ switch (command) {
     }
     const ok = await sendToDaemon(cfg.socketPath, event);
     console.log(ok ? `[conch] wake sent${event.label ? ` -> ${event.label}` : ""}` : "[conch] daemon not running");
+    if (!ok) process.exit(1);
+    break;
+  }
+  case "mute":
+  case "unmute": {
+    const ok = await sendToDaemon(cfg.socketPath, { type: command, sessionId: "", label: "", announce: "" });
+    console.log(ok ? `[conch] ${command}d` : "[conch] daemon not running");
     if (!ok) process.exit(1);
     break;
   }
