@@ -25,6 +25,10 @@ export interface Config {
   /** sox amplitude thresholds (percent) for speech start/end detection */
   startThresholdPct: number;
   endThresholdPct: number;
+  /** sentences per "continue" chunk when reading the rest of a reply */
+  continueSentences: number;
+  /** audible tink/blip when the mic opens/closes */
+  micCues: boolean;
   /** press Enter after injecting the transcript */
   autoSubmit: boolean;
   /** allow blind osascript keystroke injection when no tmux pane is found */
@@ -59,6 +63,8 @@ export function loadConfig(): Config {
     endSilenceSecs: num(env.CONCH_END_SILENCE_SECS, 2.5),
     startThresholdPct: num(env.CONCH_START_THRESHOLD_PCT, 2),
     endThresholdPct: num(env.CONCH_END_THRESHOLD_PCT, 2),
+    continueSentences: num(env.CONCH_CONTINUE_SENTENCES, 4),
+    micCues: flag(env.CONCH_MIC_CUES, true),
     autoSubmit: flag(env.CONCH_AUTO_SUBMIT, true),
     keystrokeFallback: flag(env.CONCH_KEYSTROKE_FALLBACK, false),
     socketPath: env.CONCH_SOCKET ?? "/tmp/conch.sock",

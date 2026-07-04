@@ -50,6 +50,19 @@ No daemon running? The hooks still work standalone: bell + spoken announcements,
 | `conch speak <text>` | TTS check |
 | `conch doctor` | Verify external dependencies |
 
+## Voice commands
+
+While the mic is open (you'll hear a *tink*), a bare command word talks to conch instead of the session:
+
+| You say | What happens |
+|---|---|
+| "continue" / "keep going" / "read the rest" | reads the next few sentences of the reply, then listens again |
+| "repeat" / "say that again" | re-speaks the last thing conch said |
+| "cancel" / "never mind" / "scratch that" | closes the mic without sending anything |
+| anything else | goes to the session as your prompt |
+
+Commands only match as the *entire* utterance — "continue working on the login bug" is a prompt, not a command. A soft *bottle* sound means the window closed on silence.
+
 ## Config
 
 All via environment variables (put them in the hook's env or your shell profile):
@@ -63,6 +76,8 @@ All via environment variables (put them in the hook's env or your shell profile)
 | `CONCH_BELL_SOUND` | Glass.aiff | any afplay-able file |
 | `CONCH_LISTEN_WINDOW_SECS` | `30` | max time the mic stays open |
 | `CONCH_END_SILENCE_SECS` | `2.5` | pause length that ends your utterance |
+| `CONCH_CONTINUE_SENTENCES` | `4` | sentences per "continue" chunk |
+| `CONCH_MIC_CUES` | `1` | tink on mic-open, bottle on silent close |
 | `CONCH_AUTO_SUBMIT` | `1` | press Enter after injecting |
 | `CONCH_KEYSTROKE_FALLBACK` | `0` | allow typing into the frontmost window when no tmux pane is found |
 | `CONCH_SEASHELL_ROOT` | `~/whisper-cli` | where the whisper.cpp build + models live |

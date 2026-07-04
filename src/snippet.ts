@@ -18,9 +18,12 @@ export function stripMarkdown(md: string): string {
     .trim();
 }
 
+export function splitSentences(text: string): string[] {
+  return text.split(/(?<=[.!?])\s+/).filter(Boolean);
+}
+
 export function firstSentences(text: string, count: number, maxChars: number): string {
-  const parts = text.split(/(?<=[.!?])\s+/);
-  return parts.slice(0, count).join(" ").slice(0, maxChars).trim();
+  return splitSentences(text).slice(0, count).join(" ").slice(0, maxChars).trim();
 }
 
 /**

@@ -5,6 +5,8 @@ import type { TurnEvent } from "./hook.ts";
 import { speak } from "./speak.ts";
 import { listenOnce } from "./listen.ts";
 import { injectText } from "./inject.ts";
+import { classify } from "./commands.ts";
+import { lastAssistantText, splitSentences, stripMarkdown } from "./snippet.ts";
 
 /**
  * The turn-based voice loop.
@@ -42,18 +44,59 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
     if (event.type === "needs-you") return; // permission prompts need eyes, not dictation
 
-    log(`listening (up to ${cfg.listenWindowSecs}s)...`);
-    const { text, error } = await listenOnce(cfg);
-    if (error) return log(`listen error: ${error}`);
-    if (!text) return log("no speech — back to idle");
+    // Conversation loop: commands (continue/repeat/cancel) keep the mic
+    // cycling; a real prompt injects and ends the exchange; silence idles.
+    let lastSpoken = event.announce;
+    let sentences: string[] | null = null;
+    let cursor = cfg.speakSentences; // the announcement already covered the first sentences
 
-    log(`heard: "${text}"`);
-    const { via } = await injectText(cfg, event.pid, text);
-    if (via === "none") {
-      log("no tmux pane found and keystroke fallback is off — transcript dropped");
-      speak(cfg, "Heard you, but I could not find the session's pane.");
-    } else {
-      log(`injected via ${via}`);
+    while (true) {
+      await micCue(cfg, "open"); // audible "mic is open" — cue finishes before sox starts
+      log(`listening (up to ${cfg.listenWindowSecs}s)...`);
+      const { text, error } = await listenOnce(cfg);
+      if (error) return log(`listen error: ${error}`);
+      if (!text) {
+        await micCue(cfg, "close");
+        return log("no speech — back to idle");
+      }
+
+      const intent = classify(text);
+      log(`heard: "${text}" -> ${intent}`);
+
+      switch (intent) {
+        case "prompt": {
+          const { via } = await injectText(cfg, event.pid, text);
+          if (via === "none") {
+            log("no tmux pane found and keystroke fallback is off — transcript dropped");
+            speak(cfg, "Heard you, but I could not find the session's pane.");
+          } else {
+            log(`injected via ${via}`);
+          }
+          return;
+        }
+        case "discard":
+          await speak(cfg, "Okay.");
+          return;
+        case "repeat":
+          await speak(cfg, lastSpoken);
+          break;
+        case "continue": {
+          if (!event.transcriptPath) {
+            await speak(cfg, "I don't have the full message for this one.");
+            break;
+          }
+          sentences ??= splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath)));
+          const chunk = sentences.slice(cursor, cursor + cfg.continueSentences).join(" ");
+          if (!chunk) {
+            await speak(cfg, "That's the whole message.");
+            break;
+          }
+          cursor += cfg.continueSentences;
+          lastSpoken = chunk;
+          await speak(cfg, chunk);
+          break;
+        }
+      }
     }
   }
 
@@ -94,4 +137,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
 function log(msg: string): void {
   console.log(`[conch] ${msg}`);
+}
+
+async function micCue(cfg: Config, kind: "open" | "close"): Promise<void> {
+  if (!cfg.micCues) return;
+  const sound = kind === "open" ? "/System/Library/Sounds/Tink.aiff" : "/System/Library/Sounds/Bottle.aiff";
+  await Bun.spawn(["afplay", sound], { stdout: "ignore", stderr: "ignore" }).exited;
 }

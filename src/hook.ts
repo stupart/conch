@@ -20,6 +20,8 @@ export interface TurnEvent {
   cwd?: string;
   pid?: number;
   announce: string;
+  /** full reply lives here — the daemon reads it for the "continue" command */
+  transcriptPath?: string;
 }
 
 // Notification types that actually need a human; everything else stays silent.
@@ -55,6 +57,7 @@ export async function runHook(cfg: Config): Promise<void> {
       cwd: payload.cwd,
       pid: session?.pid,
       announce: `${label}: ${snippet || "finished, ready for your next prompt"}`,
+      transcriptPath: payload.transcript_path,
     };
   } else {
     if (!ACTIONABLE.has(payload.notification_type ?? "")) return;
