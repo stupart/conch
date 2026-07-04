@@ -62,7 +62,7 @@ All via environment variables (put them in the hook's env or your shell profile)
 | `CONCH_BELL` / `CONCH_SPEAK` | `1` | disable the ding / the voice |
 | `CONCH_BELL_SOUND` | Glass.aiff | any afplay-able file |
 | `CONCH_LISTEN_WINDOW_SECS` | `30` | max time the mic stays open |
-| `CONCH_END_SILENCE_SECS` | `1.5` | pause length that ends your utterance |
+| `CONCH_END_SILENCE_SECS` | `2.5` | pause length that ends your utterance |
 | `CONCH_AUTO_SUBMIT` | `1` | press Enter after injecting |
 | `CONCH_KEYSTROKE_FALLBACK` | `0` | allow typing into the frontmost window when no tmux pane is found |
 | `CONCH_SEASHELL_ROOT` | `~/whisper-cli` | where the whisper.cpp build + models live |

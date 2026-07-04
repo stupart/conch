@@ -56,7 +56,7 @@ export function loadConfig(): Config {
     bellSound: env.CONCH_BELL_SOUND ?? "/System/Library/Sounds/Glass.aiff",
     speak: flag(env.CONCH_SPEAK, true),
     listenWindowSecs: num(env.CONCH_LISTEN_WINDOW_SECS, 30),
-    endSilenceSecs: num(env.CONCH_END_SILENCE_SECS, 1.5),
+    endSilenceSecs: num(env.CONCH_END_SILENCE_SECS, 2.5),
     startThresholdPct: num(env.CONCH_START_THRESHOLD_PCT, 2),
     endThresholdPct: num(env.CONCH_END_THRESHOLD_PCT, 2),
     autoSubmit: flag(env.CONCH_AUTO_SUBMIT, true),
