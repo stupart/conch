@@ -1,68 +1,102 @@
-import { existsSync, statSync, unlinkSync } from "node:fs";
+import { statSync, unlinkSync } from "node:fs";
 import type { Config } from "./config.ts";
 import { transcribeWav } from "./transcribe.ts";
 
 // Anything smaller than this is silence / sox header only.
 const MIN_WAV_BYTES = 16_000; // ~0.5s of 16kHz 16-bit mono
 
+interface Recorder {
+  wav: string;
+  proc: ReturnType<typeof Bun.spawn>;
+  watchdog: ReturnType<typeof setInterval>;
+}
+
 /**
  * Capture one utterance and transcribe it.
  *
- * sox's `silence` effect does the endpointing: recording starts when the mic
- * crosses the start threshold and stops after `endSilenceSecs` of quiet.
- * But that trigger is jumpy — the tail of the mic-open cue, a keyboard
- * clack, a chair creak can "start" a recording that then closes on silence
- * long before the user speaks (observed live: a 30s window dead after 8s).
- * So sox runs in a re-arm loop: a near-empty capture or an empty transcript
- * is a false start, and the mic re-opens until the start window is truly
- * spent. Once real speech is flowing, the utterance gets its own budget.
+ * sox's `silence` effect does the endpointing, but its trigger is jumpy —
+ * the mic-cue tail or a keyboard clack "starts" a recording that closes on
+ * the quiet that follows. Two defenses, both born from live testing:
+ *
+ * 1. Re-arm on false starts: a near-empty capture or empty transcript
+ *    re-opens the mic until the start window is genuinely spent.
+ * 2. No dead zones: transcription (whisper reloads its model every call —
+ *    seconds) runs with the NEXT recorder already armed, so words spoken
+ *    while a noise blip is being transcribed land in the next capture
+ *    instead of vanishing.
  */
 export async function listenOnce(cfg: Config): Promise<{ text: string; error?: string }> {
   const opened = Date.now();
-  const secondsOpen = () => (Date.now() - opened) / 1000;
+  const windowSpent = () => (Date.now() - opened) / 1000 >= cfg.listenWindowSecs;
 
-  while (secondsOpen() < cfg.listenWindowSecs) {
-    const wav = `/tmp/conch-utterance-${process.pid}-${Date.now()}.wav`;
+  let rec = armRecorder(cfg, opened);
 
-    const rec = Bun.spawn(
-      [
-        "sox", "-d", "-q",
-        "-r", "16000", "-c", "1", "-b", "16",
-        wav,
-        "silence",
-        "1", "0.15", `${cfg.startThresholdPct}%`,
-        "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
-      ],
-      { stdout: "ignore", stderr: "ignore" },
-    );
+  while (true) {
+    await rec.proc.exited;
+    clearInterval(rec.watchdog);
 
-    let speechStarted = false;
-    const watchdog = setInterval(() => {
-      let size = 0;
-      try {
-        size = statSync(wav).size;
-      } catch {}
-      if (!speechStarted && size >= MIN_WAV_BYTES) speechStarted = true;
-      if (!speechStarted && secondsOpen() >= cfg.listenWindowSecs) rec.kill();
-      if (speechStarted && secondsOpen() >= cfg.listenWindowSecs + cfg.maxUtteranceSecs) rec.kill();
-    }, 500);
-
-    await rec.exited;
-    clearInterval(watchdog);
-
-    try {
-      if (existsSync(wav) && statSync(wav).size >= MIN_WAV_BYTES) {
-        const result = await transcribeWav(cfg, wav);
-        if (result.error) return result;
-        if (result.text) return result;
-        // transcribed to nothing — a noise blip, not speech; re-arm
-      }
-    } finally {
-      try {
-        unlinkSync(wav);
-      } catch {}
+    if (fileSize(rec.wav) < MIN_WAV_BYTES) {
+      discard(rec.wav); // false start (or the window-timeout kill)
+      if (windowSpent()) return { text: "" };
+      rec = armRecorder(cfg, opened);
+      continue;
     }
-  }
 
-  return { text: "" }; // window spent with no real speech
+    const next = windowSpent() ? null : armRecorder(cfg, opened);
+    const result = await transcribeWav(cfg, rec.wav);
+    discard(rec.wav);
+
+    if (result.error || result.text) {
+      if (next) await disarm(next);
+      return result;
+    }
+    if (!next) return { text: "" }; // noise transcribed to nothing, window over
+    rec = next; // keep whatever the hot mic caught in the meantime
+  }
+}
+
+function armRecorder(cfg: Config, opened: number): Recorder {
+  const wav = `/tmp/conch-utterance-${process.pid}-${Date.now()}.wav`;
+  const proc = Bun.spawn(
+    [
+      "sox", "-d", "-q",
+      "-r", "16000", "-c", "1", "-b", "16",
+      wav,
+      "silence",
+      "1", "0.15", `${cfg.startThresholdPct}%`,
+      "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
+    ],
+    { stdout: "ignore", stderr: "ignore" },
+  );
+
+  let speechStarted = false;
+  const watchdog = setInterval(() => {
+    if (!speechStarted && fileSize(wav) >= MIN_WAV_BYTES) speechStarted = true;
+    const t = (Date.now() - opened) / 1000;
+    if (!speechStarted && t >= cfg.listenWindowSecs) proc.kill();
+    if (speechStarted && t >= cfg.listenWindowSecs + cfg.maxUtteranceSecs) proc.kill();
+  }, 500);
+
+  return { wav, proc, watchdog };
+}
+
+async function disarm(rec: Recorder): Promise<void> {
+  rec.proc.kill();
+  clearInterval(rec.watchdog);
+  await rec.proc.exited;
+  discard(rec.wav);
+}
+
+function fileSize(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+function discard(path: string): void {
+  try {
+    unlinkSync(path);
+  } catch {}
 }
