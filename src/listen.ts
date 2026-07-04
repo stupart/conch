@@ -28,9 +28,24 @@ export async function listenOnce(cfg: Config): Promise<{ text: string; error?: s
     { stdout: "ignore", stderr: "ignore" },
   );
 
-  const timeout = setTimeout(() => rec.kill(), cfg.listenWindowSecs * 1000);
+  // Two clocks: listenWindowSecs to START talking, maxUtteranceSecs once
+  // you have. Speech-start is detected by the wav growing past header size
+  // (sox's silence effect writes nothing until the threshold trips).
+  const startedAt = Date.now();
+  let speechStarted = false;
+  const watchdog = setInterval(() => {
+    const elapsed = (Date.now() - startedAt) / 1000;
+    let size = 0;
+    try {
+      size = statSync(wav).size;
+    } catch {}
+    if (!speechStarted && size >= MIN_WAV_BYTES) speechStarted = true;
+    if (!speechStarted && elapsed >= cfg.listenWindowSecs) rec.kill();
+    if (speechStarted && elapsed >= cfg.maxUtteranceSecs) rec.kill();
+  }, 500);
+
   await rec.exited;
-  clearTimeout(timeout);
+  clearInterval(watchdog);
 
   try {
     if (!existsSync(wav) || statSync(wav).size < MIN_WAV_BYTES) {

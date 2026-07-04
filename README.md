@@ -74,7 +74,8 @@ All via environment variables (put them in the hook's env or your shell profile)
 | `CONCH_SPEAK_MAX_CHARS` | `350` | hard cap on spoken length |
 | `CONCH_BELL` / `CONCH_SPEAK` | `1` | disable the ding / the voice |
 | `CONCH_BELL_SOUND` | Glass.aiff | any afplay-able file |
-| `CONCH_LISTEN_WINDOW_SECS` | `30` | max time the mic stays open |
+| `CONCH_LISTEN_WINDOW_SECS` | `30` | how long the mic waits for you to *start* talking |
+| `CONCH_MAX_UTTERANCE_SECS` | `120` | cap on a single utterance once you're talking |
 | `CONCH_END_SILENCE_SECS` | `2.5` | pause length that ends your utterance |
 | `CONCH_CONTINUE_SENTENCES` | `4` | sentences per "continue" chunk |
 | `CONCH_MIC_CUES` | `1` | tink on mic-open, bottle on silent close |

@@ -136,7 +136,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
 }
 
 function log(msg: string): void {
-  console.log(`[conch] ${msg}`);
+  const t = new Date().toTimeString().slice(0, 8);
+  console.log(`[conch ${t}] ${msg}`);
 }
 
 async function micCue(cfg: Config, kind: "open" | "close"): Promise<void> {

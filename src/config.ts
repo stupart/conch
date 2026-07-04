@@ -18,8 +18,10 @@ export interface Config {
   bell: boolean;
   bellSound: string;
   speak: boolean;
-  /** hard cap on how long a listening window stays open, seconds */
+  /** how long the mic waits for you to START talking, seconds */
   listenWindowSecs: number;
+  /** hard cap on a single utterance once you're talking, seconds */
+  maxUtteranceSecs: number;
   /** seconds of trailing silence that end an utterance */
   endSilenceSecs: number;
   /** sox amplitude thresholds (percent) for speech start/end detection */
@@ -60,6 +62,7 @@ export function loadConfig(): Config {
     bellSound: env.CONCH_BELL_SOUND ?? "/System/Library/Sounds/Glass.aiff",
     speak: flag(env.CONCH_SPEAK, true),
     listenWindowSecs: num(env.CONCH_LISTEN_WINDOW_SECS, 30),
+    maxUtteranceSecs: num(env.CONCH_MAX_UTTERANCE_SECS, 120),
     endSilenceSecs: num(env.CONCH_END_SILENCE_SECS, 2.5),
     startThresholdPct: num(env.CONCH_START_THRESHOLD_PCT, 2),
     endThresholdPct: num(env.CONCH_END_THRESHOLD_PCT, 2),
