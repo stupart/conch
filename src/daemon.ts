@@ -9,6 +9,7 @@ import { classify, classifyApproval, classifyReadingGap } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown } from "./snippet.ts";
 import { probeServer } from "./transcribe.ts";
 import { setState, logAbove } from "./status.ts";
+import { listSessions, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
 
 /**
  * The turn-based voice loop.
@@ -282,13 +283,46 @@ export async function runDaemon(cfg: Config): Promise<void> {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  // Interactive extras when running in a terminal: space reopens the mic.
+  /** Live sessions in a stable order so number keys mean the same thing between glances. */
+  async function numberedSessions(): Promise<Array<{ n: number; s: SessionInfo; label: string }>> {
+    const sessions = await listSessions(cfg.claudeDir);
+    return sessions
+      .map((s) => ({ s, label: sessionLabel(s, s.cwd) }))
+      .sort((a, b) => a.label.localeCompare(b.label))
+      .slice(0, 9)
+      .map((x, i) => ({ n: i + 1, ...x }));
+  }
+
+  async function printSessions(): Promise<void> {
+    const rows = await numberedSessions();
+    if (!rows.length) return log("no live sessions");
+    logAbove(rows.map((r) => `  \x1b[36m${r.n}\x1b[0m ${r.label}${lastTurn?.sessionId === r.s.sessionId ? " \x1b[2m(space wakes this one)\x1b[0m" : ""}`).join("\n"));
+  }
+
+  async function wakeByNumber(n: number): Promise<void> {
+    const rows = await numberedSessions();
+    const row = rows.find((r) => r.n === n);
+    if (!row) return log(`no session #${n} — press s to list`);
+    enqueue({
+      type: "wake",
+      sessionId: row.s.sessionId,
+      label: row.label,
+      cwd: row.s.cwd,
+      pid: row.s.pid,
+      announce: "",
+      transcriptPath: findTranscript(cfg.claudeDir, row.s.sessionId),
+    });
+  }
+
+  // Interactive keys when running in a terminal.
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
     process.stdin.resume();
     process.stdin.on("data", (d) => {
       const c = d.toString();
       if (c === " ") enqueue({ type: "wake", sessionId: "", label: "", announce: "" });
+      else if (c >= "1" && c <= "9") void wakeByNumber(Number(c));
+      else if (c === "s" || c === "l") void printSessions();
       else if (c === "m") enqueue({ type: muted ? "unmute" : "mute", sessionId: "", label: "", announce: "" });
       else if (c === "?" || c === "h") printHelp();
       else if (c === "q" || c === "\u0003") shutdown();
@@ -301,7 +335,7 @@ function printHelp(): void {
   logAbove(
     [
       "",
-      "  \x1b[1mkeys\x1b[0m   \x1b[36mspace\x1b[0m reopen mic for last session   \x1b[36mm\x1b[0m mute/unmute   \x1b[36m?\x1b[0m help   \x1b[36mq\x1b[0m quit",
+      "  \x1b[1mkeys\x1b[0m   \x1b[36mspace\x1b[0m mic to last session   \x1b[36ms\x1b[0m list sessions   \x1b[36m1-9\x1b[0m mic to session #   \x1b[36mm\x1b[0m mute   \x1b[36m?\x1b[0m help   \x1b[36mq\x1b[0m quit",
       '  \x1b[1mvoice\x1b[0m  \x1b[36m"continue"\x1b[0m read more   \x1b[36m"repeat"\x1b[0m again   \x1b[36m"stop"\x1b[0m end reading   \x1b[36m"no response needed"\x1b[0m close mic',
       "  \x1b[1mcli\x1b[0m    conch wake [name] · sessions · mute · doctor",
       "",
