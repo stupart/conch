@@ -2,7 +2,7 @@ import { createServer } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
-import { speak } from "./speak.ts";
+import { speak, probeTtsServer } from "./speak.ts";
 import { listenOnce, listenGap, type ListenHooks } from "./listen.ts";
 import { injectText, injectKey } from "./inject.ts";
 import { classify, classifyApproval, classifyReadingGap } from "./commands.ts";
@@ -94,14 +94,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
       log(`wake -> "${target.label}"`);
       setState("speaking", target.label);
-      await speak(cfg, `Mic open for ${target.label}.`);
+      await speak(cfg, `Mic open for ${target.label}.`, target.label);
       await conversationLoop(target);
       return;
     }
 
     log(`${event.type}${event.ntype ? `/${event.ntype}` : ""} from "${event.label}" (${event.sessionId.slice(0, 8)})`);
     setState("speaking", event.label);
-    await speak(cfg, event.announce); // mic stays closed until this finishes
+    await speak(cfg, event.announce, event.label); // mic stays closed until this finishes
 
     if (event.type === "needs-you" && event.ntype !== "idle_prompt") {
       await permissionLoop(event); // dialogs take Enter/Escape, not free text
@@ -145,7 +145,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
             case "stop":
               break reading; // skip the rest, open the normal window
             case "discard":
-              await speak(cfg, "Okay.");
+              await speak(cfg, "Okay.", event.label);
               return;
             case "prompt":
               await deliver(event, gapText);
@@ -159,7 +159,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         cursor += cfg.continueSentences;
         lastSpoken = chunk;
         setState("speaking", event.label);
-        await speak(cfg, chunk);
+        await speak(cfg, chunk, event.label);
       }
     }
 
@@ -182,27 +182,27 @@ export async function runDaemon(cfg: Config): Promise<void> {
           return;
         }
         case "discard":
-          await speak(cfg, "Okay.");
+          await speak(cfg, "Okay.", event.label);
           return;
         case "repeat":
           setState("speaking", event.label);
-          await speak(cfg, lastSpoken);
+          await speak(cfg, lastSpoken, event.label);
           break;
         case "continue": {
           if (!event.transcriptPath) {
-            await speak(cfg, "I don't have the full message for this one.");
+            await speak(cfg, "I don't have the full message for this one.", event.label);
             break;
           }
           sentences ??= splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath)));
           const chunk = sentences.slice(cursor, cursor + cfg.continueSentences).join(" ");
           if (!chunk) {
-            await speak(cfg, "That's the whole message.");
+            await speak(cfg, "That's the whole message.", event.label);
             break;
           }
           cursor += cfg.continueSentences;
           lastSpoken = chunk;
           setState("speaking", event.label);
-          await speak(cfg, chunk);
+          await speak(cfg, chunk, event.label);
           break;
         }
       }
@@ -251,6 +251,38 @@ export async function runDaemon(cfg: Config): Promise<void> {
     log(`whisper-server binary not found at ${cfg.whisperServerBin} — using the cold cli path`);
   }
 
+  // Warm Kokoro TTS server (mlx-audio) — natural per-session voices.
+  // Same ownership pattern as whisper-server; `say` remains the fallback.
+  let ttsServer: ReturnType<typeof Bun.spawn> | null = null;
+  if (cfg.ttsEngine !== "say" && cfg.ttsPort && Bun.which(cfg.ttsServerBin)) {
+    ttsServer = Bun.spawn([cfg.ttsServerBin, "--port", String(cfg.ttsPort)], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    void probeTtsServer(cfg, 30_000).then(async (up) => {
+      if (!up) return log("tts server didn't come up — voices via say");
+      log(`kokoro warm on :${cfg.ttsPort} — per-session voices on`);
+      // Preload the model off the hot path so the first real announcement
+      // doesn't pay the multi-second first-synthesis cost.
+      await fetch(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/speech`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: cfg.ttsModel,
+          input: "ready",
+          voice: cfg.ttsVoices[0] ?? "af_heart",
+          response_format: "wav",
+        }),
+        signal: AbortSignal.timeout(180_000),
+      }).then(
+        () => log("kokoro model preloaded"),
+        () => log("kokoro preload failed — first synthesis will be slow"),
+      );
+    });
+  } else if (cfg.ttsEngine === "server") {
+    log(`CONCH_TTS=server but ${cfg.ttsServerBin} not found (uv tool install "mlx-audio[server]") — voices via say`);
+  }
+
   if (existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath); // stale socket from a previous run
 
   const server = createServer((sock) => {
@@ -275,6 +307,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const shutdown = () => {
     server.close();
     whisperServer?.kill();
+    ttsServer?.kill();
     try {
       unlinkSync(cfg.socketPath);
     } catch {}

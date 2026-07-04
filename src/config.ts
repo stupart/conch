@@ -50,6 +50,16 @@ export interface Config {
   keystrokeFallback: boolean;
   socketPath: string;
   claudeDir: string;
+  /** TTS engine: auto (server if available, say otherwise) | server | say */
+  ttsEngine: "auto" | "server" | "say";
+  /** warm Kokoro server port (mlx-audio); 0 disables the server engine */
+  ttsPort: number;
+  ttsModel: string;
+  /** binary the daemon spawns for the warm TTS server */
+  ttsServerBin: string;
+  /** voice ring — sessions are hashed onto it so each speaks consistently */
+  ttsVoices: string[];
+  ttsSpeed: number;
 }
 
 function num(v: string | undefined, fallback: number): number {
@@ -90,5 +100,18 @@ export function loadConfig(): Config {
     keystrokeFallback: flag(env.CONCH_KEYSTROKE_FALLBACK, false),
     socketPath: env.CONCH_SOCKET ?? "/tmp/conch.sock",
     claudeDir: env.CLAUDE_CONFIG_DIR ?? join(HOME, ".claude"),
+    ttsEngine: parseTtsEngine(env.CONCH_TTS),
+    ttsPort: env.CONCH_TTS_PORT === "0" ? 0 : num(env.CONCH_TTS_PORT, 8880),
+    ttsModel: env.CONCH_TTS_MODEL ?? "mlx-community/Kokoro-82M-bf16",
+    ttsServerBin: env.CONCH_TTS_SERVER ?? "mlx_audio.server",
+    ttsVoices: (env.CONCH_TTS_VOICES ?? "af_heart,am_michael,bf_emma,am_adam,af_nova,bm_george,af_bella,af_sky")
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean),
+    ttsSpeed: num(env.CONCH_TTS_SPEED, 1.0),
   };
+}
+
+function parseTtsEngine(v: string | undefined): "auto" | "server" | "say" {
+  return v === "server" || v === "say" ? v : "auto";
 }
