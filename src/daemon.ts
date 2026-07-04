@@ -46,7 +46,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
     } finally {
       busy = false;
-      setState("idle");
+      setState(muted ? "muted" : "idle");
     }
   }
 
@@ -62,17 +62,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
     };
   }
 
+  async function setMuted(next: boolean): Promise<void> {
+    muted = next;
+    log(muted ? "muted — announcements and mic off (m or `conch unmute` to resume)" : "unmuted");
+    setState(muted ? "muted" : "idle");
+    await speak(cfg, muted ? "Muted." : "Back on.");
+  }
+
   async function handle(event: TurnEvent): Promise<void> {
-    if (event.type === "mute") {
-      muted = true;
-      log("muted — announcements and mic off until `conch unmute`");
-      return void (await speak(cfg, "Muted."));
-    }
-    if (event.type === "unmute") {
-      muted = false;
-      log("unmuted");
-      return void (await speak(cfg, "Back on."));
-    }
+    if (event.type === "mute") return setMuted(true);
+    if (event.type === "unmute") return setMuted(false);
 
     // Nobody's there: don't announce to an empty room, don't open the mic,
     // don't burn battery on sox/whisper. Telegram (the other hook) still
@@ -290,10 +289,24 @@ export async function runDaemon(cfg: Config): Promise<void> {
     process.stdin.on("data", (d) => {
       const c = d.toString();
       if (c === " ") enqueue({ type: "wake", sessionId: "", label: "", announce: "" });
+      else if (c === "m") enqueue({ type: muted ? "unmute" : "mute", sessionId: "", label: "", announce: "" });
+      else if (c === "?" || c === "h") printHelp();
       else if (c === "q" || c === "\u0003") shutdown();
     });
-    log("space = reopen mic for the last session · q = quit");
+    printHelp();
   }
+}
+
+function printHelp(): void {
+  logAbove(
+    [
+      "",
+      "  \x1b[1mkeys\x1b[0m   \x1b[36mspace\x1b[0m reopen mic for last session   \x1b[36mm\x1b[0m mute/unmute   \x1b[36m?\x1b[0m help   \x1b[36mq\x1b[0m quit",
+      '  \x1b[1mvoice\x1b[0m  \x1b[36m"continue"\x1b[0m read more   \x1b[36m"repeat"\x1b[0m again   \x1b[36m"stop"\x1b[0m end reading   \x1b[36m"no response needed"\x1b[0m close mic',
+      "  \x1b[1mcli\x1b[0m    conch wake [name] · sessions · mute · doctor",
+      "",
+    ].join("\n"),
+  );
 }
 
 function log(msg: string): void {
