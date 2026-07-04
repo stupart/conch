@@ -18,7 +18,7 @@ const DISCARD = new Set(["cancel", "never mind", "nevermind", "scratch that", "d
 const LEADING_FILLERS = new Set(["oh", "okay", "ok", "um", "uh", "ah", "hey", "so", "yeah", "yes", "and", "please", "now", "alright"]);
 const TRAILING_FILLERS = new Set(["please", "now", "thanks"]);
 
-export function classify(text: string): VoiceIntent {
+function normalize(text: string): string {
   const words = text
     .toLowerCase()
     .replace(/[^a-z\s]/g, "")
@@ -27,9 +27,32 @@ export function classify(text: string): VoiceIntent {
     .split(" ");
   while (words.length > 1 && LEADING_FILLERS.has(words[0]!)) words.shift();
   while (words.length > 1 && TRAILING_FILLERS.has(words[words.length - 1]!)) words.pop();
-  const norm = words.join(" ");
+  return words.join(" ");
+}
+
+export function classify(text: string): VoiceIntent {
+  const norm = normalize(text);
   if (CONTINUE.has(norm)) return "continue";
   if (REPEAT.has(norm)) return "repeat";
   if (DISCARD.has(norm)) return "discard";
   return "prompt";
+}
+
+// Permission prompts get a narrow yes/no vocabulary: "yes" presses Enter
+// (accepts the highlighted option), "no" presses Escape. Anything else is
+// deliberately unrecognized — free text near a permission dialog is risky.
+const APPROVE = new Set([
+  "yes", "yeah", "yep", "yup", "sure", "okay", "ok", "confirm", "approve", "approved",
+  "allow", "allow it", "accept", "go ahead", "do it", "proceed", "sounds good",
+]);
+const DENY = new Set([
+  "no", "nope", "deny", "denied", "reject", "decline", "cancel", "stop",
+  "dont", "do not", "dont do it", "escape",
+]);
+
+export function classifyApproval(text: string): "approve" | "deny" | null {
+  const norm = normalize(text);
+  if (APPROVE.has(norm)) return "approve";
+  if (DENY.has(norm)) return "deny";
+  return null;
 }

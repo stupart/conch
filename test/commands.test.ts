@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
-import { classify } from "../src/commands.ts";
+import { classify, classifyApproval } from "../src/commands.ts";
+import { looksLikeAwaitingReply } from "../src/snippet.ts";
 
 test("bare commands match despite whisper's punctuation and casing", () => {
   expect(classify("Continue.")).toBe("continue");
@@ -31,4 +32,24 @@ test("plausible yes/no replies are never swallowed as commands", () => {
   expect(classify("Yes.")).toBe("prompt");
   expect(classify("No.")).toBe("prompt");
   expect(classify("Stop.")).toBe("prompt");
+});
+
+test("permission approval vocabulary", () => {
+  expect(classifyApproval("Yes.")).toBe("approve");
+  expect(classifyApproval("Yeah, go ahead.")).toBe("approve");
+  expect(classifyApproval("Sure.")).toBe("approve");
+  expect(classifyApproval("No.")).toBe("deny");
+  expect(classifyApproval("Nope.")).toBe("deny");
+  expect(classifyApproval("Use the other branch instead.")).toBeNull();
+});
+
+test("idle nag filter: only announce when the reply solicits the user", () => {
+  expect(looksLikeAwaitingReply("Want me to also fix the header?")).toBe(true);
+  expect(looksLikeAwaitingReply("Two options here. Let me know which you prefer.")).toBe(true);
+  expect(
+    looksLikeAwaitingReply(
+      "Implementation's grinding away — I'll ping you when it lands with the gate results and a fresh build for your phone. Enjoy the 4th in the meantime.",
+    ),
+  ).toBe(false);
+  expect(looksLikeAwaitingReply("Done. All tests pass and the branch is merged.")).toBe(false);
 });

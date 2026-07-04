@@ -54,6 +54,17 @@ export async function lastAssistantText(transcriptPath: string): Promise<string>
   return last;
 }
 
+/**
+ * Does the tail of a reply actually solicit the user? Used to suppress
+ * idle_prompt announcements for sessions that are just... idle ("I'll ping
+ * you when it lands, enjoy the 4th") rather than blocked on an answer.
+ */
+export function looksLikeAwaitingReply(text: string): boolean {
+  const tail = splitSentences(text).slice(-3).join(" ");
+  if (tail.includes("?")) return true;
+  return /\b(let me know|tell me|your call|which (one|way|option)|should i|do you want|want me to|say the word|waiting on you|give me the go)\b/i.test(tail);
+}
+
 export async function spokenSnippet(
   transcriptPath: string,
   sentences: number,

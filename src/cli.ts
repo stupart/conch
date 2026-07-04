@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { loadConfig } from "./config.ts";
-import { runHook } from "./hook.ts";
+import { runHook, sendToDaemon } from "./hook.ts";
 import { runDaemon } from "./daemon.ts";
 import { runInstall, runDoctor } from "./install.ts";
 import { listenOnce } from "./listen.ts";
@@ -12,6 +12,7 @@ Usage:
   conch install         wire Stop/Notification hooks into ~/.claude/settings.json
   conch hook            hook entrypoint (reads payload JSON on stdin)
   conch daemon          run the voice loop: announce -> listen -> inject
+  conch wake            reopen the mic for the last announced session
   conch listen          capture one utterance, print the transcript (mic test)
   conch speak <text>    say something (TTS test)
   conch doctor          check external dependencies
@@ -31,6 +32,12 @@ switch (command) {
   case "daemon":
     await runDaemon(cfg);
     break;
+  case "wake": {
+    const ok = await sendToDaemon(cfg.socketPath, { type: "wake", sessionId: "", label: "", announce: "" });
+    console.log(ok ? "[conch] wake sent" : "[conch] daemon not running");
+    if (!ok) process.exit(1);
+    break;
+  }
   case "install":
     await runInstall(cfg);
     break;

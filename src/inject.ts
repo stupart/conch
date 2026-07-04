@@ -38,6 +38,30 @@ export async function injectText(
   return { via: "none" };
 }
 
+/** Press a single key in the session — Enter accepts a permission dialog's highlighted option, Escape dismisses it. */
+export async function injectKey(
+  cfg: Config,
+  sessionPid: number | undefined,
+  key: "Enter" | "Escape",
+): Promise<{ via: "tmux" | "osascript" | "none" }> {
+  if (sessionPid) {
+    const pane = await findTmuxPane(sessionPid);
+    if (pane) {
+      await $`tmux send-keys -t ${pane} ${key}`.quiet();
+      return { via: "tmux" };
+    }
+  }
+  if (cfg.keystrokeFallback) {
+    const keyCode = key === "Enter" ? 36 : 53;
+    await Bun.spawn(
+      ["osascript", "-e", `tell application "System Events" to key code ${keyCode}`],
+      { stdout: "ignore", stderr: "ignore" },
+    ).exited;
+    return { via: "osascript" };
+  }
+  return { via: "none" };
+}
+
 /** Find the tmux pane whose shell is an ancestor of the session's pid. */
 async function findTmuxPane(sessionPid: number): Promise<string | null> {
   let panes: Array<{ pid: number; id: string }>;

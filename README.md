@@ -45,6 +45,7 @@ No daemon running? The hooks still work standalone: bell + spoken announcements,
 |---|---|
 | `conch install` | Merge hooks into `~/.claude/settings.json` (backs up first) |
 | `conch daemon` | Run the voice loop: announce → listen → inject |
+| `conch wake` | Reopen the mic for the last announced session (bind it to a hotkey) |
 | `conch hook` | Hook entrypoint (Claude Code calls this, not you) |
 | `conch listen` | Mic check: capture one utterance, print the transcript |
 | `conch speak <text>` | TTS check |
@@ -61,7 +62,11 @@ While the mic is open (you'll hear a *tink*), a bare command word talks to conch
 | "cancel" / "never mind" / "scratch that" | closes the mic without sending anything |
 | anything else | goes to the session as your prompt |
 
-Commands only match as the *entire* utterance — "continue working on the login bug" is a prompt, not a command. A soft *bottle* sound means the window closed on silence.
+Commands only match as the *entire* utterance — "continue working on the login bug" is a prompt, not a command. Filler wrapping is fine ("Oh, continue." works). A soft *bottle* sound means the window closed on silence.
+
+**Came back after the window closed?** Press **space** in the daemon's terminal, or run `conch wake` (bind it to a global hotkey via Raycast/Shortcuts) — the mic reopens for the last announced session.
+
+**Permission prompts** ("dayloop needs you: permission to run npm install") open the mic too, but only accept yes/no: "yes" presses Enter on the highlighted option, "no" presses Escape, anything else is ignored — free text near a permission dialog is deliberately refused. And idle "waiting for your input" nags are filtered: conch checks whether the session's last reply actually asked you something, and stays quiet when the session is just idle ("I'll ping you when it lands").
 
 ## Config
 
