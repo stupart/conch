@@ -230,13 +230,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // truncated mid-sentence, that sentence gets re-read in full
       cursor = countCoveredSentences(event.announce, sentences, cfg.speakSentences);
       reading: while (cursor < sentences.length) {
-        setState("listening", event.label);
-        const { text: gapText } = await listenGap(cfg, cfg.gapSecs);
-        if (consumeStopKey()) break reading; // spacebar during the gap
-        if (gapText) {
-          const action = await onReadingUtterance(event, gapText, "");
-          if (action === "stop") break reading;
-          if (action === "handled") return;
+        // gap between chunks: with barging available it's just a beat; with
+        // barging off (echo/noise) it's the only voice interrupt, so keep it real
+        const gapSecs = bargeOff ? Math.max(cfg.gapSecs, 0.6) : cfg.gapSecs;
+        if (gapSecs > 0) {
+          setState("listening", event.label);
+          const { text: gapText } = await listenGap(cfg, gapSecs);
+          if (consumeStopKey()) break reading; // spacebar during the gap
+          if (gapText) {
+            const action = await onReadingUtterance(event, gapText, "");
+            if (action === "stop") break reading;
+            if (action === "handled") return;
+          }
         }
         const chunk = sentences.slice(cursor, cursor + cfg.continueSentences).join(" ");
         cursor += cfg.continueSentences;

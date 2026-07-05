@@ -10,7 +10,7 @@ export function bell(cfg: Config): void {
 /** Speak text aloud. Await it when the mic opens next (daemon); fire-and-forget otherwise (hook). */
 export function speak(cfg: Config, text: string): Promise<number> {
   if (!cfg.speak || !text) return Promise.resolve(0);
-  const args = ["say", ...(cfg.voice ? ["-v", cfg.voice] : []), "--", text];
+  const args = ["say", ...sayFlags(cfg), "--", text];
   const proc = Bun.spawn(args, { stdout: "ignore", stderr: "ignore" });
   proc.unref();
   current = proc; // spacebar-stop must reach plain speech too
@@ -20,10 +20,14 @@ export function speak(cfg: Config, text: string): Promise<number> {
 /** Speak with a kill switch — barge-in cancels playback mid-sentence. */
 export function speakCancellable(cfg: Config, text: string): { done: Promise<void>; cancel: () => void } {
   if (!cfg.speak || !text) return { done: Promise.resolve(), cancel() {} };
-  const args = ["say", ...(cfg.voice ? ["-v", cfg.voice] : []), "--", text];
+  const args = ["say", ...sayFlags(cfg), "--", text];
   const proc = Bun.spawn(args, { stdout: "ignore", stderr: "ignore" });
   current = proc;
   return { done: proc.exited.then(() => {}), cancel: () => proc.kill() };
+}
+
+function sayFlags(cfg: Config): string[] {
+  return [...(cfg.voice ? ["-v", cfg.voice] : []), ...(cfg.sayRate > 0 ? ["-r", String(cfg.sayRate)] : [])];
 }
 
 let current: ReturnType<typeof Bun.spawn> | null = null;

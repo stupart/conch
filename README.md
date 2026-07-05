@@ -97,6 +97,7 @@ All via environment variables (put them in the hook's env or your shell profile)
 | Variable | Default | |
 |---|---|---|
 | `CONCH_VOICE` | system default | `say` voice — try `Ava (Premium)` |
+| `CONCH_SAY_RATE` | `210` | speech rate, words per minute (`0` = say default ~175) |
 | `CONCH_SPEAK_SENTENCES` | `2` | how much of the reply to read aloud |
 | `CONCH_SPEAK_MAX_CHARS` | `350` | hard cap on spoken length |
 | `CONCH_BELL` / `CONCH_SPEAK` | `1` | disable the ding / the voice |
@@ -104,8 +105,8 @@ All via environment variables (put them in the hook's env or your shell profile)
 | `CONCH_LISTEN_WINDOW_SECS` | `30` | how long the mic waits for you to *start* talking |
 | `CONCH_MAX_UTTERANCE_SECS` | `120` | cap on a single utterance once you're talking |
 | `CONCH_END_SILENCE_SECS` | `2.5` | pause length that ends your utterance |
-| `CONCH_CONTINUE_SENTENCES` | `4` | sentences per read-aloud / "continue" chunk |
-| `CONCH_GAP_SECS` | `0.7` | interjection gap between read-aloud chunks |
+| `CONCH_CONTINUE_SENTENCES` | `6` | sentences per read-aloud / "continue" chunk |
+| `CONCH_GAP_SECS` | `0.2` | interjection gap between read-aloud chunks |
 | `CONCH_BARGE_THRESHOLD_PCT` | `12` | mic level that interrupts reading mid-chunk; `0` = gaps only |
 | `CONCH_MIC_CUES` | `1` | tink on mic-open, bottle on silent close |
 | `CONCH_AUTO_SUBMIT` | `1` | press Enter after injecting |
