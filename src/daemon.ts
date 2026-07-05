@@ -6,7 +6,7 @@ import { speak, speakCancellable, stopSpeaking } from "./speak.ts";
 import { listenOnce, listenGap, armBargeRecorder, type ListenHooks } from "./listen.ts";
 import { injectText, injectKey } from "./inject.ts";
 import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio } from "./commands.ts";
-import { lastAssistantText, splitSentences, stripMarkdown } from "./snippet.ts";
+import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences } from "./snippet.ts";
 import { probeServer } from "./transcribe.ts";
 import { setState, logAbove } from "./status.ts";
 import { listSessions, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
@@ -216,6 +216,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // the moment your voice (louder than speaker bleed) starts.
     if (!skipReading && cfg.readFull && event.type !== "needs-you" && event.transcriptPath) {
       sentences = splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath)));
+      // resume after what the announcement ACTUALLY covered — if it was
+      // truncated mid-sentence, that sentence gets re-read in full
+      cursor = countCoveredSentences(event.announce, sentences, cfg.speakSentences);
       reading: while (cursor < sentences.length) {
         setState("listening", event.label);
         const { text: gapText } = await listenGap(cfg, cfg.gapSecs);
@@ -280,7 +283,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
             await speak(cfg, "I don't have the full message for this one.");
             break;
           }
-          sentences ??= splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath)));
+          if (!sentences) {
+            sentences = splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath)));
+            cursor = countCoveredSentences(event.announce, sentences, cfg.speakSentences);
+          }
           const chunk = sentences.slice(cursor, cursor + cfg.continueSentences).join(" ");
           if (!chunk) {
             await speak(cfg, "That's the whole message.");

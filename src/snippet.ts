@@ -22,8 +22,36 @@ export function splitSentences(text: string): string[] {
   return text.split(/(?<=[.!?])\s+/).filter(Boolean);
 }
 
+/**
+ * First N sentences, kept WHOLE under the char cap — a mid-sentence chop
+ * here silently swallowed words between announcement and read-aloud
+ * (observed live). Only a single over-cap monster sentence still gets cut.
+ */
 export function firstSentences(text: string, count: number, maxChars: number): string {
-  return splitSentences(text).slice(0, count).join(" ").slice(0, maxChars).trim();
+  const parts = splitSentences(text).slice(0, count);
+  const out: string[] = [];
+  let len = 0;
+  for (const s of parts) {
+    if (out.length && len + s.length + 1 > maxChars) break;
+    out.push(s);
+    len += s.length + 1;
+  }
+  let joined = out.join(" ");
+  if (joined.length > maxChars) joined = joined.slice(0, maxChars);
+  return joined.trim();
+}
+
+/**
+ * How many leading sentences are fully contained in the announcement?
+ * The reader resumes AFTER what was actually spoken — never assume.
+ */
+export function countCoveredSentences(announce: string, sentences: string[], max: number): number {
+  let covered = 0;
+  for (const s of sentences.slice(0, max)) {
+    if (!announce.includes(s.trim())) break;
+    covered++;
+  }
+  return covered;
 }
 
 /**
