@@ -347,6 +347,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         "-m", cfg.whisperModel,
         "-vm", cfg.vadModel,
         "--vad",
+        "--vad-speech-pad-ms", "300", // default 30ms amputates quiet word tails
         "--host", "127.0.0.1",
         "--port", String(cfg.whisperPort),
         "-l", "en",

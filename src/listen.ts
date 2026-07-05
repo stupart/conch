@@ -87,7 +87,10 @@ export function armBargeRecorder(cfg: Config): {
       "sox", "-d", "-q",
       "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
       raw,
-      "silence",
+      // -l keeps the trailing below-threshold audio: voices trail off at the
+      // end of sentences, and without it sox trimmed the last words as
+      // "silence" (observed live: final couple words missing everywhere)
+      "silence", "-l",
       "1", "0.15", `${cfg.bargeThresholdPct}%`,
       "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
     ],
@@ -126,7 +129,10 @@ export async function listenGap(cfg: Config, maxWaitSecs: number): Promise<{ tex
       "sox", "-d", "-q",
       "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
       raw,
-      "silence",
+      // -l keeps the trailing below-threshold audio: voices trail off at the
+      // end of sentences, and without it sox trimmed the last words as
+      // "silence" (observed live: final couple words missing everywhere)
+      "silence", "-l",
       "1", "0.15", `${cfg.startThresholdPct}%`,
       "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
     ],
@@ -159,7 +165,10 @@ function armRecorder(cfg: Config, opened: number, hooks: ListenHooks): Recorder 
       "sox", "-d", "-q",
       "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
       raw,
-      "silence",
+      // -l keeps the trailing below-threshold audio: voices trail off at the
+      // end of sentences, and without it sox trimmed the last words as
+      // "silence" (observed live: final couple words missing everywhere)
+      "silence", "-l",
       "1", "0.15", `${cfg.startThresholdPct}%`,
       "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
     ],
