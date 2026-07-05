@@ -111,35 +111,49 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // turn-end and idle_prompt are both "the session wants a prompt from
     // you" — and the announcement itself is barge-able: interrupting from
     // the very first sentence must work, not just mid-reading.
-    const heard = await speakInterruptible(event, event.announce, false);
+    const announce = await speakInterruptible(event, event.announce, false);
+    if (announce.cut && !announce.heard) {
+      log("announce cut by a noise blip — re-speaking");
+      await speak(cfg, event.announce);
+    }
     lastTurn = event;
-    await conversationLoop(event, heard);
+    await conversationLoop(event, announce.heard);
   }
 
   /**
    * Speak with the barge-in recorder armed: your voice (above speaker
-   * bleed) kills playback mid-word. Returns whatever you said, or "".
+   * bleed) kills playback mid-word. `cut` distinguishes "finished cleanly"
+   * from "cancelled" — a cancellation with an empty transcript is a false
+   * trigger (noise blip) and the caller should re-speak, not skip content.
    */
-  async function speakInterruptible(event: TurnEvent, text: string, disabled: boolean): Promise<string> {
+  async function speakInterruptible(
+    event: TurnEvent,
+    text: string,
+    disabled: boolean,
+  ): Promise<{ heard: string; cut: boolean }> {
     setState("speaking", event.label);
     if (!cfg.bargeThresholdPct || disabled) {
       await speak(cfg, text);
-      return "";
+      return { heard: "", cut: false };
     }
     const barge = armBargeRecorder(cfg);
     const speech = speakCancellable(cfg, text);
+    let cut = false;
     const watch = setInterval(() => {
-      if (barge.triggered()) speech.cancel(); // your voice wins mid-sentence
+      if (barge.triggered()) {
+        cut = true;
+        speech.cancel(); // your voice wins mid-sentence
+      }
     }, 120);
     await speech.done;
     clearInterval(watch);
     if (!barge.triggered()) {
       await barge.abort();
-      return "";
+      return { heard: "", cut: false };
     }
     setState("recording", event.label);
     const { text: heard } = await barge.finish();
-    return heard;
+    return { heard, cut };
   }
 
   /** Inject a prompt utterance and report how it went. */
@@ -185,6 +199,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     let sentences: string[] | null = null;
     let cursor = cfg.speakSentences; // the announcement already covered the first sentences
     let bargeOff = false; // set when the echo guard proves the threshold is too low for this room
+    let falseTriggers = 0; // noise blips that cancelled speech but transcribed to nothing
     let skipReading = false;
 
     // Something said while the announcement was playing (announce barge-in)
@@ -212,9 +227,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
         const chunk = sentences.slice(cursor, cursor + cfg.continueSentences).join(" ");
         cursor += cfg.continueSentences;
         lastSpoken = chunk;
-        const bargeText = await speakInterruptible(event, chunk, bargeOff);
-        if (!bargeText) continue;
-        const action = await onReadingUtterance(event, bargeText, chunk);
+        const result = await speakInterruptible(event, chunk, bargeOff);
+        if (result.cut && !result.heard) {
+          // false trigger: don't skip the interrupted content — re-speak it;
+          // a second blip in one read means the room is noisy, gaps only
+          falseTriggers++;
+          if (falseTriggers >= 2) {
+            bargeOff = true;
+            log("two noise blips cancelled speech — barge-in off for this read");
+          }
+          cursor -= cfg.continueSentences;
+          continue;
+        }
+        if (!result.heard) continue;
+        const action = await onReadingUtterance(event, result.heard, chunk);
         if (action === "stop") break reading;
         if (action === "handled") return;
         // interrupted for nothing (echo / keep-reading): re-speak the chunk,
