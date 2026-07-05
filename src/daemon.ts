@@ -2,7 +2,7 @@ import { createServer } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
-import { speak, speakCancellable } from "./speak.ts";
+import { speak, speakCancellable, stopSpeaking } from "./speak.ts";
 import { listenOnce, listenGap, armBargeRecorder, type ListenHooks } from "./listen.ts";
 import { injectText, injectKey } from "./inject.ts";
 import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio } from "./commands.ts";
@@ -334,6 +334,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   setState("idle");
 
   const shutdown = () => {
+    stopSpeaking(); // never orphan a talking `say` — voices overlapped live
     server.close();
     whisperServer?.kill();
     try {

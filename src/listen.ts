@@ -4,6 +4,9 @@ import { transcribePcm, serverUp } from "./transcribe.ts";
 
 // Anything smaller than this is silence (raw 16kHz 16-bit mono = 32KB/s).
 const MIN_PCM_BYTES = 16_000; // ~0.5s
+// Barge-in trigger: a bare "stop!" is ~0.3s of audio — the normal 0.5s bar
+// silently discarded interruptions (took the user 10 tries, live).
+const BARGE_MIN_PCM_BYTES = 5_000; // ~0.16s
 
 export interface ListenHooks {
   /** armed = mic open & waiting; capturing = speech detected; transcribing = whisper running */
@@ -92,13 +95,13 @@ export function armBargeRecorder(cfg: Config): {
   );
   const hardStop = setTimeout(() => proc.kill(), cfg.maxUtteranceSecs * 1000);
   return {
-    triggered: () => fileSize(raw) >= MIN_PCM_BYTES,
+    triggered: () => fileSize(raw) >= BARGE_MIN_PCM_BYTES,
     async finish() {
       await proc.exited;
       clearTimeout(hardStop);
       const pcm = readPcm(raw);
       discard(raw);
-      if (pcm.length < MIN_PCM_BYTES) return { text: "" };
+      if (pcm.length < BARGE_MIN_PCM_BYTES) return { text: "" };
       return transcribePcm(cfg, pcm);
     },
     async abort() {
