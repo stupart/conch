@@ -29,6 +29,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let busy = false;
   let lastTurn: TurnEvent | null = null;
   let muted = false;
+  let stopKey = false; // spacebar pressed while reciting — the guaranteed interrupt
+
+  const consumeStopKey = () => {
+    const s = stopKey;
+    stopKey = false;
+    return s;
+  };
 
   function enqueue(event: TurnEvent): void {
     const i = queue.findIndex((e) => e.sessionId === event.sessionId && e.type === event.type);
@@ -71,6 +78,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   }
 
   async function handle(event: TurnEvent): Promise<void> {
+    stopKey = false; // a stale press from a past exchange must not skip this one
     if (event.type === "mute") return setMuted(true);
     if (event.type === "unmute") return setMuted(false);
 
@@ -112,7 +120,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // you" — and the announcement itself is barge-able: interrupting from
     // the very first sentence must work, not just mid-reading.
     const announce = await speakInterruptible(event, event.announce, false);
-    if (announce.cut && !announce.heard) {
+    if (announce.cut && !announce.heard && !stopKey) {
       log("announce cut by a noise blip — re-speaking");
       await speak(cfg, event.announce);
     }
@@ -214,6 +222,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // in the short gap between chunks, or by BARGING IN while it speaks —
     // a high-threshold recorder runs during playback and kills the speech
     // the moment your voice (louder than speaker bleed) starts.
+    if (consumeStopKey()) skipReading = true; // spacebar during the announcement
+
     if (!skipReading && cfg.readFull && event.type !== "needs-you" && event.transcriptPath) {
       sentences = splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath)));
       // resume after what the announcement ACTUALLY covered — if it was
@@ -222,6 +232,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       reading: while (cursor < sentences.length) {
         setState("listening", event.label);
         const { text: gapText } = await listenGap(cfg, cfg.gapSecs);
+        if (consumeStopKey()) break reading; // spacebar during the gap
         if (gapText) {
           const action = await onReadingUtterance(event, gapText, "");
           if (action === "stop") break reading;
@@ -231,6 +242,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         cursor += cfg.continueSentences;
         lastSpoken = chunk;
         const result = await speakInterruptible(event, chunk, bargeOff);
+        if (consumeStopKey()) break reading; // spacebar: guaranteed stop
         if (result.cut && !result.heard) {
           // false trigger: don't skip the interrupted content — re-speak it;
           // a second blip in one read means the room is noisy, gaps only
@@ -414,7 +426,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
     process.stdin.resume();
     process.stdin.on("data", (d) => {
       const c = d.toString();
-      if (c === " ") enqueue({ type: "wake", sessionId: "", label: "", announce: "" });
+      if (c === " ") {
+        if (busy) {
+          // reciting (or mid-exchange): space is the guaranteed stop
+          stopKey = true;
+          stopSpeaking();
+          log("⏹ spacebar — stopped");
+        } else {
+          enqueue({ type: "wake", sessionId: "", label: "", announce: "" });
+        }
+      }
       else if (c >= "1" && c <= "9") void wakeByNumber(Number(c));
       else if (c === "s" || c === "l") void printSessions();
       else if (c === "m") enqueue({ type: muted ? "unmute" : "mute", sessionId: "", label: "", announce: "" });
@@ -429,7 +450,7 @@ function printHelp(): void {
   logAbove(
     [
       "",
-      "  \x1b[1mkeys\x1b[0m   \x1b[36mspace\x1b[0m mic to last session   \x1b[36ms\x1b[0m list sessions   \x1b[36m1-9\x1b[0m mic to session #   \x1b[36mm\x1b[0m mute   \x1b[36m?\x1b[0m help   \x1b[36mq\x1b[0m quit",
+      "  \x1b[1mkeys\x1b[0m   \x1b[36mspace\x1b[0m stop reciting / open mic   \x1b[36ms\x1b[0m list sessions   \x1b[36m1-9\x1b[0m mic to session #   \x1b[36mm\x1b[0m mute   \x1b[36m?\x1b[0m help   \x1b[36mq\x1b[0m quit",
       '  \x1b[1mvoice\x1b[0m  \x1b[36m"continue"\x1b[0m read more   \x1b[36m"repeat"\x1b[0m again   \x1b[36m"stop"\x1b[0m end reading   \x1b[36m"no response needed"\x1b[0m close mic',
       "  \x1b[1mcli\x1b[0m    conch wake [name] · sessions · mute · doctor",
       "",

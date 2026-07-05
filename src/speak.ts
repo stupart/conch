@@ -13,6 +13,7 @@ export function speak(cfg: Config, text: string): Promise<number> {
   const args = ["say", ...(cfg.voice ? ["-v", cfg.voice] : []), "--", text];
   const proc = Bun.spawn(args, { stdout: "ignore", stderr: "ignore" });
   proc.unref();
+  current = proc; // spacebar-stop must reach plain speech too
   return proc.exited;
 }
 
