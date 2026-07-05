@@ -92,7 +92,9 @@ export function loadConfig(): Config {
     endThresholdPct: num(env.CONCH_END_THRESHOLD_PCT, 2),
     awayAfterSecs: num(env.CONCH_AWAY_AFTER_SECS, 0) || 0,
     readFull: flag(env.CONCH_READ_FULL, true),
-    gapSecs: num(env.CONCH_GAP_SECS, 0.2) || 0, // barge-in + spacebar cover interrupts; the gap is just a beat
+    // 0 = no gap at all: barge-in + spacebar cover interrupts, chunks flow
+    // back-to-back (when barging is off, a 0.6s floor re-appears in the loop)
+    gapSecs: env.CONCH_GAP_SECS === "0" ? 0 : num(env.CONCH_GAP_SECS, 0),
     bargeThresholdPct: num(env.CONCH_BARGE_THRESHOLD_PCT, 8) || 0, // measured: speaker bleed peaks ~4.7%, ambient ~1%
     continueSentences: num(env.CONCH_CONTINUE_SENTENCES, 6), // bigger chunks = fewer inter-chunk pauses
     micCues: flag(env.CONCH_MIC_CUES, true),
