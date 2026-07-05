@@ -40,6 +40,12 @@ export interface Config {
   readFull: boolean;
   /** interjection gap between read-aloud chunks, seconds — a breath, not an ending; the tink means it's your turn */
   gapSecs: number;
+  /**
+   * barge-in: mic level (sox %) that interrupts read-aloud mid-chunk.
+   * Must sit above speaker-bleed (the mic hearing the Mac's own voice) and
+   * below voice-at-desk. 0 disables barge-in (gaps only).
+   */
+  bargeThresholdPct: number;
   /** sentences per read-aloud / "continue" chunk */
   continueSentences: number;
   /** audible tink/blip when the mic opens/closes */
@@ -84,6 +90,7 @@ export function loadConfig(): Config {
     awayAfterSecs: num(env.CONCH_AWAY_AFTER_SECS, 0) || 0,
     readFull: flag(env.CONCH_READ_FULL, true),
     gapSecs: num(env.CONCH_GAP_SECS, 0.7),
+    bargeThresholdPct: num(env.CONCH_BARGE_THRESHOLD_PCT, 12) || 0,
     continueSentences: num(env.CONCH_CONTINUE_SENTENCES, 4),
     micCues: flag(env.CONCH_MIC_CUES, true),
     autoSubmit: flag(env.CONCH_AUTO_SUBMIT, true),

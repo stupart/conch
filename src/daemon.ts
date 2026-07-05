@@ -2,10 +2,10 @@ import { createServer } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
-import { speak } from "./speak.ts";
-import { listenOnce, listenGap, type ListenHooks } from "./listen.ts";
+import { speak, speakCancellable } from "./speak.ts";
+import { listenOnce, listenGap, armBargeRecorder, type ListenHooks } from "./listen.ts";
 import { injectText, injectKey } from "./inject.ts";
-import { classify, classifyApproval, classifyReadingGap } from "./commands.ts";
+import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown } from "./snippet.ts";
 import { probeServer } from "./transcribe.ts";
 import { setState, logAbove } from "./status.ts";
@@ -124,42 +124,83 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
   }
 
+  /** Shared handling for anything heard while reading aloud (gap or barge-in). */
+  async function onReadingUtterance(
+    event: TurnEvent,
+    text: string,
+    spokenChunk: string,
+  ): Promise<"stop" | "handled" | "keep-reading" | "echo"> {
+    if (spokenChunk && wordOverlapRatio(text, spokenChunk) > 0.6) {
+      log(`barge echo guard: mic heard the reading itself ("${text.slice(0, 60)}")`);
+      return "echo";
+    }
+    const intent = classifyReadingGap(text);
+    log(`heard mid-read: "${text}" -> ${intent}`);
+    switch (intent) {
+      case "stop":
+        return "stop";
+      case "discard":
+        await speak(cfg, "Okay.");
+        return "handled";
+      case "prompt":
+        await deliver(event, text);
+        return "handled";
+      default:
+        return "keep-reading"; // repeat/continue: just keep going
+    }
+  }
+
   /** Commands (continue/repeat/cancel) keep the mic cycling; a real prompt injects; silence idles. */
   async function conversationLoop(event: TurnEvent): Promise<void> {
     let lastSpoken = event.announce;
     let sentences: string[] | null = null;
     let cursor = cfg.speakSentences; // the announcement already covered the first sentences
+    let bargeOff = false; // set when the echo guard proves the threshold is too low for this room
 
-    // Read-full phase: keep speaking chunks, with a short interjection gap
-    // between them — "stop" cuts to the listen window, "no response"/"cancel"
-    // closes out, and a real prompt injects immediately.
+    // Read-full phase: keep speaking chunks. You can interject two ways:
+    // in the short gap between chunks, or by BARGING IN while it speaks —
+    // a high-threshold recorder runs during playback and kills the speech
+    // the moment your voice (louder than speaker bleed) starts.
     if (cfg.readFull && event.type !== "needs-you" && event.transcriptPath) {
       sentences = splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath)));
       reading: while (cursor < sentences.length) {
         setState("listening", event.label);
         const { text: gapText } = await listenGap(cfg, cfg.gapSecs);
         if (gapText) {
-          const intent = classifyReadingGap(gapText);
-          log(`heard mid-read: "${gapText}" -> ${intent}`);
-          switch (intent) {
-            case "stop":
-              break reading; // skip the rest, open the normal window
-            case "discard":
-              await speak(cfg, "Okay.");
-              return;
-            case "prompt":
-              await deliver(event, gapText);
-              return;
-            case "repeat":
-            case "continue":
-              break; // keep reading
-          }
+          const action = await onReadingUtterance(event, gapText, "");
+          if (action === "stop") break reading;
+          if (action === "handled") return;
         }
         const chunk = sentences.slice(cursor, cursor + cfg.continueSentences).join(" ");
         cursor += cfg.continueSentences;
         lastSpoken = chunk;
         setState("speaking", event.label);
-        await speak(cfg, chunk);
+
+        if (!cfg.bargeThresholdPct || bargeOff) {
+          await speak(cfg, chunk);
+          continue;
+        }
+        const barge = armBargeRecorder(cfg);
+        const speech = speakCancellable(cfg, chunk);
+        const watch = setInterval(() => {
+          if (barge.triggered()) speech.cancel(); // your voice wins mid-sentence
+        }, 120);
+        await speech.done;
+        clearInterval(watch);
+        if (!barge.triggered()) {
+          await barge.abort();
+          continue;
+        }
+        setState("recording", event.label);
+        const { text: bargeText } = await barge.finish();
+        if (!bargeText) continue;
+        const action = await onReadingUtterance(event, bargeText, chunk);
+        if (action === "stop") break reading;
+        if (action === "handled") return;
+        // interrupted for nothing (echo / keep-reading): re-speak the chunk,
+        // with barging off for the rest of this read if it was echo
+        if (action === "echo") bargeOff = true;
+        cursor -= cfg.continueSentences;
       }
     }
 

@@ -15,3 +15,11 @@ export function speak(cfg: Config, text: string): Promise<number> {
   proc.unref();
   return proc.exited;
 }
+
+/** Speak with a kill switch — barge-in cancels playback mid-sentence. */
+export function speakCancellable(cfg: Config, text: string): { done: Promise<void>; cancel: () => void } {
+  if (!cfg.speak || !text) return { done: Promise.resolve(), cancel() {} };
+  const args = ["say", ...(cfg.voice ? ["-v", cfg.voice] : []), "--", text];
+  const proc = Bun.spawn(args, { stdout: "ignore", stderr: "ignore" });
+  return { done: proc.exited.then(() => {}), cancel: () => proc.kill() };
+}

@@ -15,6 +15,9 @@ const DISCARD = new Set([
   "cancel", "never mind", "nevermind", "scratch that", "disregard", "disregard that",
   "no response", "no response needed", "no reply", "no reply needed",
   "stop listening", "stop recording", "close the mic", "all good",
+  // bare "stop" said to an already-finished session is the user talking to
+  // conch, not a prompt — injecting it was observed live and helped nobody
+  "stop", "stop reading", "stop talking",
 ]);
 
 // Only matched in the brief gaps between read-aloud chunks — context makes
@@ -73,4 +76,19 @@ export function classifyApproval(text: string): "approve" | "deny" | null {
   if (APPROVE.has(norm)) return "approve";
   if (DENY.has(norm)) return "deny";
   return null;
+}
+
+/**
+ * How much of `heard` is words from `spoken`? Used as the barge-in echo
+ * guard: if the mic captured the Mac's own reading (speaker bleed), nearly
+ * every word of the transcript appears in the chunk being read.
+ */
+export function wordOverlapRatio(heard: string, spoken: string): number {
+  const words = (s: string) =>
+    s.toLowerCase().replace(/[^a-z0-9\s]/g, "").split(/\s+/).filter(Boolean);
+  const heardWords = words(heard);
+  if (!heardWords.length) return 0;
+  const spokenSet = new Set(words(spoken));
+  const hits = heardWords.filter((w) => spokenSet.has(w)).length;
+  return hits / heardWords.length;
 }
