@@ -90,7 +90,7 @@ export function loadConfig(): Config {
     awayAfterSecs: num(env.CONCH_AWAY_AFTER_SECS, 0) || 0,
     readFull: flag(env.CONCH_READ_FULL, true),
     gapSecs: num(env.CONCH_GAP_SECS, 0.7),
-    bargeThresholdPct: num(env.CONCH_BARGE_THRESHOLD_PCT, 12) || 0,
+    bargeThresholdPct: num(env.CONCH_BARGE_THRESHOLD_PCT, 8) || 0, // measured: speaker bleed peaks ~4.7%, ambient ~1%
     continueSentences: num(env.CONCH_CONTINUE_SENTENCES, 4),
     micCues: flag(env.CONCH_MIC_CUES, true),
     autoSubmit: flag(env.CONCH_AUTO_SUBMIT, true),

@@ -100,17 +100,46 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
 
     log(`${event.type}${event.ntype ? `/${event.ntype}` : ""} from "${event.label}" (${event.sessionId.slice(0, 8)})`);
-    setState("speaking", event.label);
-    await speak(cfg, event.announce); // mic stays closed until this finishes
 
     if (event.type === "needs-you" && event.ntype !== "idle_prompt") {
+      setState("speaking", event.label);
+      await speak(cfg, event.announce);
       await permissionLoop(event); // dialogs take Enter/Escape, not free text
       return;
     }
 
-    // turn-end and idle_prompt are both "the session wants a prompt from you"
+    // turn-end and idle_prompt are both "the session wants a prompt from
+    // you" — and the announcement itself is barge-able: interrupting from
+    // the very first sentence must work, not just mid-reading.
+    const heard = await speakInterruptible(event, event.announce, false);
     lastTurn = event;
-    await conversationLoop(event);
+    await conversationLoop(event, heard);
+  }
+
+  /**
+   * Speak with the barge-in recorder armed: your voice (above speaker
+   * bleed) kills playback mid-word. Returns whatever you said, or "".
+   */
+  async function speakInterruptible(event: TurnEvent, text: string, disabled: boolean): Promise<string> {
+    setState("speaking", event.label);
+    if (!cfg.bargeThresholdPct || disabled) {
+      await speak(cfg, text);
+      return "";
+    }
+    const barge = armBargeRecorder(cfg);
+    const speech = speakCancellable(cfg, text);
+    const watch = setInterval(() => {
+      if (barge.triggered()) speech.cancel(); // your voice wins mid-sentence
+    }, 120);
+    await speech.done;
+    clearInterval(watch);
+    if (!barge.triggered()) {
+      await barge.abort();
+      return "";
+    }
+    setState("recording", event.label);
+    const { text: heard } = await barge.finish();
+    return heard;
   }
 
   /** Inject a prompt utterance and report how it went. */
@@ -151,17 +180,26 @@ export async function runDaemon(cfg: Config): Promise<void> {
   }
 
   /** Commands (continue/repeat/cancel) keep the mic cycling; a real prompt injects; silence idles. */
-  async function conversationLoop(event: TurnEvent): Promise<void> {
+  async function conversationLoop(event: TurnEvent, pendingHeard = ""): Promise<void> {
     let lastSpoken = event.announce;
     let sentences: string[] | null = null;
     let cursor = cfg.speakSentences; // the announcement already covered the first sentences
     let bargeOff = false; // set when the echo guard proves the threshold is too low for this room
+    let skipReading = false;
+
+    // Something said while the announcement was playing (announce barge-in)
+    if (pendingHeard) {
+      const action = await onReadingUtterance(event, pendingHeard, event.announce);
+      if (action === "handled") return;
+      if (action === "stop") skipReading = true;
+      if (action === "echo") bargeOff = true;
+    }
 
     // Read-full phase: keep speaking chunks. You can interject two ways:
     // in the short gap between chunks, or by BARGING IN while it speaks —
     // a high-threshold recorder runs during playback and kills the speech
     // the moment your voice (louder than speaker bleed) starts.
-    if (cfg.readFull && event.type !== "needs-you" && event.transcriptPath) {
+    if (!skipReading && cfg.readFull && event.type !== "needs-you" && event.transcriptPath) {
       sentences = splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath)));
       reading: while (cursor < sentences.length) {
         setState("listening", event.label);
@@ -174,25 +212,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         const chunk = sentences.slice(cursor, cursor + cfg.continueSentences).join(" ");
         cursor += cfg.continueSentences;
         lastSpoken = chunk;
-        setState("speaking", event.label);
-
-        if (!cfg.bargeThresholdPct || bargeOff) {
-          await speak(cfg, chunk);
-          continue;
-        }
-        const barge = armBargeRecorder(cfg);
-        const speech = speakCancellable(cfg, chunk);
-        const watch = setInterval(() => {
-          if (barge.triggered()) speech.cancel(); // your voice wins mid-sentence
-        }, 120);
-        await speech.done;
-        clearInterval(watch);
-        if (!barge.triggered()) {
-          await barge.abort();
-          continue;
-        }
-        setState("recording", event.label);
-        const { text: bargeText } = await barge.finish();
+        const bargeText = await speakInterruptible(event, chunk, bargeOff);
         if (!bargeText) continue;
         const action = await onReadingUtterance(event, bargeText, chunk);
         if (action === "stop") break reading;
