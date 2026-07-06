@@ -187,6 +187,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
     const intent = classifyReadingGap(text);
     log(`heard mid-read: "${text}" -> ${intent}`);
+    if (intent === "prompt" && text.split(/\s+/).filter((w) => /[a-z0-9]/i.test(w)).length <= 3) {
+      // a 1-3 word fragment mid-read ("I thought...") is someone starting
+      // to talk, not a prompt — stop reading and hand them the mic instead
+      // of injecting the fragment (observed live: killed the read AND sent junk)
+      log("short mid-read fragment — pausing the reading to listen properly");
+      return "stop";
+    }
     switch (intent) {
       case "stop":
         return "stop";
