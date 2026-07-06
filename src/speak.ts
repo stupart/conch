@@ -4,23 +4,22 @@ import { homedir } from "node:os";
 import type { Config } from "./config.ts";
 import { splitSentences } from "./snippet.ts";
 
-// mlx-audio's Kokoro vocoder throws a broadcast-shape ValueError on long
-// inputs (~20s+ of audio). Synthesizing one sentence at a time keeps every
-// request well under that ceiling; a stray over-long sentence is split too.
-const MAX_SYNTH_CHARS = 300;
+// mlx-audio's Kokoro vocoder throws a broadcast-shape ValueError at specific
+// (deterministic, length-dependent) input sizes — not just long ones; an
+// 11s sentence tripped it live. So we synthesize sentence-by-sentence AND,
+// when a piece still fails, bisect it and retry: a different length almost
+// always clears the bug. Below this length a failure is genuinely stuck.
+const MIN_BISECT_CHARS = 24;
 
-function synthPieces(text: string): string[] {
-  const pieces: string[] = [];
-  for (const sentence of splitSentences(text)) {
-    if (sentence.length <= MAX_SYNTH_CHARS) {
-      pieces.push(sentence);
-      continue;
-    }
-    for (let i = 0; i < sentence.length; i += MAX_SYNTH_CHARS) {
-      pieces.push(sentence.slice(i, i + MAX_SYNTH_CHARS));
-    }
-  }
-  return pieces.length ? pieces : [text];
+/** Split near the middle on a word boundary, so bisected retries don't cut mid-word. */
+function bisect(text: string): [string, string] | null {
+  const trimmed = text.trim();
+  if (trimmed.length < MIN_BISECT_CHARS) return null;
+  const mid = Math.floor(trimmed.length / 2);
+  let split = trimmed.lastIndexOf(" ", mid);
+  if (split <= 0) split = trimmed.indexOf(" ", mid);
+  if (split <= 0) return null;
+  return [trimmed.slice(0, split).trim(), trimmed.slice(split).trim()];
 }
 
 /**
@@ -176,45 +175,76 @@ async function speakViaServer(
   ctl: CancelControl | null,
 ): Promise<"ok" | "synth-failed" | "unreachable"> {
   const voice = voiceFor(cfg, label);
-  const pieces = synthPieces(text);
-  let playedAny = false;
+  const state = { playedAny: false, unreachable: false };
 
-  for (const piece of pieces) {
+  for (const sentence of splitSentences(text)) {
     if (ctl?.cancelled) return "ok";
-    let audio: Uint8Array;
-    try {
-      const signal = ctl
-        ? AbortSignal.any([ctl.abort.signal, AbortSignal.timeout(30_000)])
-        : AbortSignal.timeout(30_000);
-      const res = await fetch(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/speech`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ model: cfg.ttsModel, input: piece, voice, speed: cfg.ttsSpeed }),
-        signal,
-      });
-      if (!res.ok) return playedAny ? "ok" : "synth-failed"; // salvage a partial read; say-repeat would double-speak
-      audio = new Uint8Array(await res.arrayBuffer());
-    } catch {
-      if (ctl?.cancelled) return "ok"; // cancelled mid-synth = nothing left to do
-      return playedAny ? "ok" : "unreachable";
-    }
+    await speakPiece(cfg, sentence, voice, ctl, state);
+    if (state.unreachable) return state.playedAny ? "ok" : "unreachable";
     if (ctl?.cancelled) return "ok";
-    if (audio.length < 100) return playedAny ? "ok" : "synth-failed";
-
-    // mlx-audio returns mp3 regardless of response_format; afplay sniffs content
-    const tmp = `/tmp/conch-tts-${process.pid}-${Date.now()}.audio`;
-    await Bun.write(tmp, audio);
-    const proc = Bun.spawn(["afplay", tmp], { stdout: "ignore", stderr: "ignore" });
-    current = proc;
-    if (ctl) ctl.kill = () => proc.kill();
-    try {
-      await proc.exited;
-    } finally {
-      try {
-        unlinkSync(tmp);
-      } catch {}
-    }
-    playedAny = true;
   }
-  return "ok";
+  if (splitSentences(text).length === 0) await speakPiece(cfg, text, voice, ctl, state);
+  return state.playedAny ? "ok" : "synth-failed";
+}
+
+/** Synthesize + play one piece; on the mlx shape bug, bisect and retry each half. */
+async function speakPiece(
+  cfg: Config,
+  piece: string,
+  voice: string,
+  ctl: CancelControl | null,
+  state: { playedAny: boolean; unreachable: boolean },
+): Promise<void> {
+  if (!piece.trim() || ctl?.cancelled || state.unreachable) return;
+
+  let audio: Uint8Array | null = null;
+  try {
+    const signal = ctl
+      ? AbortSignal.any([ctl.abort.signal, AbortSignal.timeout(30_000)])
+      : AbortSignal.timeout(30_000);
+    const res = await fetch(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/speech`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: cfg.ttsModel, input: piece, voice, speed: cfg.ttsSpeed }),
+      signal,
+    });
+    if (res.ok) {
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (bytes.length >= 100) audio = bytes;
+    }
+  } catch {
+    if (ctl?.cancelled) return;
+    state.unreachable = true; // network/connection error = server gone
+    return;
+  }
+  if (ctl?.cancelled) return;
+
+  if (!audio) {
+    // the shape bug — retry each half at a different length; if too short to
+    // split, speak just this fragment via say (never drop content silently)
+    const halves = bisect(piece);
+    if (halves) {
+      await speakPiece(cfg, halves[0], voice, ctl, state);
+      await speakPiece(cfg, halves[1], voice, ctl, state);
+    } else if (!ctl?.cancelled) {
+      await spawnSay(cfg, piece).exited;
+      state.playedAny = true;
+    }
+    return;
+  }
+
+  // mlx-audio returns mp3 regardless of response_format; afplay sniffs content
+  const tmp = `/tmp/conch-tts-${process.pid}-${Date.now()}.audio`;
+  await Bun.write(tmp, audio);
+  const proc = Bun.spawn(["afplay", tmp], { stdout: "ignore", stderr: "ignore" });
+  current = proc;
+  if (ctl) ctl.kill = () => proc.kill();
+  try {
+    await proc.exited;
+  } finally {
+    try {
+      unlinkSync(tmp);
+    } catch {}
+  }
+  state.playedAny = true;
 }
