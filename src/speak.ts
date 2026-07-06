@@ -191,18 +191,17 @@ export function speakCancellable(cfg: Config, text: string, label = ""): { done:
 // A ready-to-play tmp file (written during prefetch) or a say-fragment.
 type Playable = { file: string } | { say: string };
 
-/**
- * Pipeline the read: synthesize sentence N+1 WHILE sentence N plays, so
- * there's no dead air between sentences (per-sentence synth otherwise leaves
- * a gap while the next request round-trips — audible, live). One synth is in
- * flight at a time (the server is single-threaded); it overlaps playback,
- * which is a separate afplay process.
- */
 // Synthesize this many sentences AHEAD of playback. Trimming made clips
 // shorter than their synth time (esp. with perturbation retries), so a
-// 1-ahead prefetch underran and the read stuttered. A deeper buffer lets the
-// warm server run continuously and absorb slow sentences.
+// 1-ahead buffer underran and the read stuttered. A deeper buffer lets the
+// warm server run continuously and absorb slow sentences. SEQUENTIAL though:
+// the server serializes concurrent requests anyway (measured: 3 at once =
+// 3.3s each vs 1s alone) and concurrency + retries made a mess.
 const PREFETCH_DEPTH = 3;
+
+interface SynthState {
+  unreachable: boolean;
+}
 
 async function speakViaServer(
   cfg: Config,
@@ -213,35 +212,47 @@ async function speakViaServer(
   const voice = voiceFor(cfg, label);
   const sentences = splitSentences(text);
   if (sentences.length === 0) sentences.push(text);
+  const state: SynthState = { unreachable: false };
 
-  // Launch up to PREFETCH_DEPTH synths ahead; the single-threaded server
-  // processes them FIFO, building a buffer of ready audio before playback.
-  const pending: (Promise<Playable[] | "unreachable"> | null)[] = new Array(sentences.length).fill(null);
-  const launch = (i: number) => {
-    if (i < sentences.length && !pending[i]) pending[i] = synthSentence(cfg, sentences[i]!, voice, ctl);
-  };
-  for (let i = 0; i < PREFETCH_DEPTH; i++) launch(i);
+  // Producer: synthesize sentences ONE AT A TIME (no concurrency), staying at
+  // most PREFETCH_DEPTH ahead of playback. Consumer plays as each is ready.
+  const out: (Playable[] | undefined)[] = new Array(sentences.length);
+  let playIndex = 0;
+  let producerDone = false;
+  const producer = (async () => {
+    for (let i = 0; i < sentences.length; i++) {
+      while (i - playIndex >= PREFETCH_DEPTH && !ctl?.cancelled) await Bun.sleep(15);
+      if (ctl?.cancelled) break;
+      out[i] = await synthSentence(cfg, sentences[i]!, voice, ctl, state);
+    }
+    producerDone = true;
+  })();
 
   let playedAny = false;
-  for (let i = 0; i < sentences.length; i++) {
-    const result = await pending[i]!;
-    if (ctl?.cancelled) return "ok";
-    launch(i + PREFETCH_DEPTH); // keep the look-ahead window full
-
-    if (result === "unreachable") return playedAny ? "ok" : "unreachable";
+  for (; playIndex < sentences.length; playIndex++) {
+    while (out[playIndex] === undefined && !producerDone && !ctl?.cancelled) await Bun.sleep(15);
+    if (ctl?.cancelled) break;
+    const result = out[playIndex];
+    if (!result) break; // producer stopped (cancelled)
     for (const p of result) {
-      if (ctl?.cancelled) return "ok";
+      if (ctl?.cancelled) break;
       if ("say" in p) {
         const proc = spawnSay(cfg, p.say);
         if (ctl) ctl.kill = () => proc.kill();
         await proc.exited;
       } else {
-        await playFile(p.file, ctl); // file was written during prefetch — spawn only
+        await playFile(p.file, ctl); // file written during synth — spawn only
       }
       playedAny = true;
     }
   }
-  return playedAny ? "ok" : "synth-failed";
+  await producer;
+
+  // A server blip flips ttsUp so the NEXT message re-probes; this read already
+  // spoke failed sentences via say (per-sentence), so it never stopped early.
+  if (state.unreachable) ttsUp = false;
+  if (ctl?.cancelled) return "ok";
+  return playedAny ? "ok" : state.unreachable ? "unreachable" : "synth-failed";
 }
 
 // mlx's SineGen bug is deterministic per exact input, so re-synthesizing the
@@ -275,20 +286,29 @@ async function trySynth(
   }
 }
 
-/** Synthesize one sentence into playable pieces: perturb-retry first, then bisect, then say. No playback. */
+/**
+ * Synthesize one sentence into playable pieces: perturb-retry the shape bug,
+ * then bisect, then say. A server blip degrades THIS sentence to say and sets
+ * state.unreachable — the read continues rather than stopping/flipping voices
+ * mid-message (both were "just a mess", live).
+ */
 async function synthSentence(
   cfg: Config,
   piece: string,
   voice: string,
   ctl: CancelControl | null,
-): Promise<Playable[] | "unreachable"> {
+  state: SynthState,
+): Promise<Playable[]> {
   if (!piece.trim() || ctl?.cancelled) return [];
 
   let audio: Uint8Array | null = null;
   for (const suffix of SYNTH_PERTURBATIONS) {
     if (ctl?.cancelled) return [];
     const r = await trySynth(cfg, piece + suffix, voice, ctl);
-    if (r === "unreachable") return "unreachable";
+    if (r === "unreachable") {
+      state.unreachable = true;
+      return [{ say: piece }]; // this sentence via say; keep reading the rest
+    }
     if (r) {
       audio = r;
       break;
@@ -308,14 +328,12 @@ async function synthSentence(
     return [{ file: raw }];
   }
 
-  // the shape bug — retry each half at a different length; if too short to
-  // split, hand back a say-fragment (never drop content silently)
+  // the shape bug survived every perturbation — bisect and retry each half at
+  // a different length; if too short to split, hand back a say-fragment
   const halves = bisect(piece);
   if (!halves) return [{ say: piece }];
-  const left = await synthSentence(cfg, halves[0]!, voice, ctl);
-  if (left === "unreachable") return "unreachable";
-  const right = await synthSentence(cfg, halves[1]!, voice, ctl);
-  if (right === "unreachable") return "unreachable";
+  const left = await synthSentence(cfg, halves[0]!, voice, ctl, state);
+  const right = await synthSentence(cfg, halves[1]!, voice, ctl, state);
   return [...left, ...right];
 }
 
