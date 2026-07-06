@@ -214,6 +214,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       case "stop":
         return "stop";
       case "discard":
+        injectedAt.set(event.sessionId, Date.now()); // "no response" also suppresses the follow-up needs-you nag
         await speak(cfg, "Okay.", event.label);
         return "handled";
       case "prompt":
@@ -341,6 +342,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         }
         case "discard":
           if (buffer.length) log(`discarded ${buffer.length} held segment(s)`);
+          injectedAt.set(event.sessionId, Date.now()); // suppress the follow-up needs-you nag
           await speak(cfg, "Okay.", event.label);
           return;
         case "repeat":
