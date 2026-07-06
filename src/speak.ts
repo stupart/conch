@@ -41,6 +41,18 @@ export function ttsServerUp(): boolean {
   return ttsUp;
 }
 
+/**
+ * True if we should synthesize via the server. Crucially, if ttsUp latched
+ * false on a transient blip, this RE-PROBES and recovers — one hiccup used
+ * to downgrade the whole session (both sessions dropped to system voice mid
+ * use, live). A fast probe only runs when we're currently down.
+ */
+async function serverReady(cfg: Config): Promise<boolean> {
+  if (cfg.ttsEngine === "say" || !cfg.ttsPort) return false;
+  if (ttsUp) return true;
+  return probeTtsServer(cfg, 1200);
+}
+
 /** Kill any in-flight speech — daemon shutdown/spacebar must not leave audio playing. */
 export function stopSpeaking(): void {
   current?.kill();
@@ -122,12 +134,12 @@ function spawnSay(cfg: Config, text: string): ReturnType<typeof Bun.spawn> {
  */
 export async function speak(cfg: Config, text: string, label = ""): Promise<void> {
   if (!cfg.speak || !text) return;
-  if (ttsUp && cfg.ttsEngine !== "say") {
+  if (await serverReady(cfg)) {
     const result = await speakViaServer(cfg, text, label, null);
-    if (result === "ok") return;
-    // "synth-failed" = server alive but this sentence tripped it (mlx-audio
-    // has a known shape bug on certain lengths) — fall back for THIS
-    // utterance only. "unreachable" = server gone; degrade for the session.
+    if (result === "ok") return; // Kokoro handled it (incl. any say-leaf for a stuck fragment)
+    // "unreachable" = server blip; latch down, but serverReady re-probes the
+    // next call so we don't stay downgraded. "synth-failed" = nothing played
+    // at all — fall through to say the whole thing.
     if (result === "unreachable") ttsUp = false;
   }
   await spawnSay(cfg, text).exited;
@@ -143,13 +155,21 @@ interface CancelControl {
 export function speakCancellable(cfg: Config, text: string, label = ""): { done: Promise<void>; cancel: () => void } {
   if (!cfg.speak || !text) return { done: Promise.resolve(), cancel() {} };
 
-  if (ttsUp && cfg.ttsEngine !== "say") {
+  if (cfg.ttsEngine !== "say" && cfg.ttsPort) {
     const ctl: CancelControl = { cancelled: false, abort: new AbortController(), kill() {} };
     const done = (async () => {
+      if (!(await serverReady(cfg))) {
+        if (ctl.cancelled) return;
+        const proc = spawnSay(cfg, text);
+        ctl.kill = () => proc.kill();
+        await proc.exited;
+        return;
+      }
       const result = await speakViaServer(cfg, text, label, ctl);
       if (result === "unreachable") ttsUp = false;
+      // both non-ok results mean nothing played (a partial read returns "ok")
       if (result !== "ok" && !ctl.cancelled) {
-        const proc = spawnSay(cfg, text); // per-utterance fallback stays cancellable
+        const proc = spawnSay(cfg, text); // say the whole thing, cancellable
         ctl.kill = () => proc.kill();
         await proc.exited;
       }

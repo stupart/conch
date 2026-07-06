@@ -97,7 +97,7 @@ export function loadConfig(): Config {
     speak: flag(env.CONCH_SPEAK, true),
     listenWindowSecs: num(env.CONCH_LISTEN_WINDOW_SECS, 30),
     maxUtteranceSecs: num(env.CONCH_MAX_UTTERANCE_SECS, 120),
-    endSilenceSecs: num(env.CONCH_END_SILENCE_SECS, 2.5),
+    endSilenceSecs: num(env.CONCH_END_SILENCE_SECS, 3.5), // 2.5 clipped natural mid-thought pauses (live)
     startThresholdPct: num(env.CONCH_START_THRESHOLD_PCT, 2),
     endThresholdPct: num(env.CONCH_END_THRESHOLD_PCT, 2),
     awayAfterSecs: num(env.CONCH_AWAY_AFTER_SECS, 0) || 0,
