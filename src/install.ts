@@ -1,6 +1,92 @@
-import { join } from "node:path";
-import { existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { existsSync, mkdirSync, chmodSync, unlinkSync } from "node:fs";
+import { homedir } from "node:os";
 import type { Config } from "./config.ts";
+
+const SERVICE_LABEL = "com.conch.daemon";
+
+/**
+ * Install (or remove) a launchd agent that supervises the daemon: it keeps
+ * a detached tmux session alive, starting it at login and resurrecting it
+ * within ~15s of any crash. tmux hosting matters on macOS: Terminal.app has
+ * a recursive process-tree walk that can segfault on a churning tab tree
+ * (observed live, three crashes) — the daemon must never live in a Terminal
+ * window. View the dashboard anytime with `tmux attach -t conch`.
+ */
+export async function runService(cfg: Config, action: "install" | "off"): Promise<void> {
+  const uid = process.getuid?.() ?? 501;
+  const plistPath = join(homedir(), "Library/LaunchAgents", `${SERVICE_LABEL}.plist`);
+
+  if (action === "off") {
+    Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${SERVICE_LABEL}`]);
+    try {
+      unlinkSync(plistPath);
+    } catch {}
+    console.log("[conch] service removed (daemon left running if it was up — `tmux kill-session -t conch` to stop it)");
+    return;
+  }
+
+  const conchRoot = dirname(import.meta.dir); // src/..
+  const bun = process.execPath;
+  const tmux = Bun.which("tmux");
+  if (!tmux) {
+    console.error("[conch] tmux is required for the service (brew install tmux)");
+    process.exit(1);
+  }
+
+  const supervisorPath = join(conchRoot, "bin", "conch-supervisor.sh");
+  mkdirSync(join(conchRoot, "bin"), { recursive: true });
+  await Bun.write(
+    supervisorPath,
+    `#!/bin/zsh
+# conch supervisor — keeps the daemon's tmux session alive (installed by \`conch service\`)
+while true; do
+  "${tmux}" has-session -t conch 2>/dev/null || \\
+    "${tmux}" new-session -d -s conch 'cd "${conchRoot}" && CONCH_KEYSTROKE_FALLBACK=1 "${bun}" run src/cli.ts daemon'
+  sleep 15
+done
+`,
+  );
+  chmodSync(supervisorPath, 0o755);
+
+  const path = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    join(homedir(), ".local/bin"), // mlx_audio.server
+    join(homedir(), ".bun/bin"),
+    "/usr/bin",
+    "/bin",
+  ].join(":");
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${SERVICE_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/zsh</string><string>${supervisorPath}</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>${path}</string></dict>
+  <key>StandardOutPath</key><string>/tmp/conch-supervisor.log</string>
+  <key>StandardErrorPath</key><string>/tmp/conch-supervisor.log</string>
+</dict>
+</plist>
+`;
+  mkdirSync(dirname(plistPath), { recursive: true });
+  await Bun.write(plistPath, plist);
+
+  Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${SERVICE_LABEL}`]); // replace any old copy
+  const boot = Bun.spawnSync(["launchctl", "bootstrap", `gui/${uid}`, plistPath]);
+  if (boot.exitCode !== 0) {
+    console.error(`[conch] launchctl bootstrap failed: ${boot.stderr.toString().trim()}`);
+    process.exit(1);
+  }
+  console.log(`[conch] service installed — daemon starts at login and self-heals within ~15s.
+  view:      tmux attach -t conch   (or open ${conchRoot}/dashboard.command)
+  logs:      /tmp/conch-supervisor.log
+  remove:    conch service off`);
+}
 
 interface HookCommand {
   type: "command";
