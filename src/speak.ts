@@ -304,7 +304,13 @@ async function synthSentence(
   let audio: Uint8Array | null = null;
   for (const suffix of SYNTH_PERTURBATIONS) {
     if (ctl?.cancelled) return [];
-    const r = await trySynth(cfg, piece + suffix, voice, ctl);
+    let r = await trySynth(cfg, piece + suffix, voice, ctl);
+    if (r === "unreachable") {
+      // A transient blip (common on the FIRST synth after idle — the cause of
+      // "starts in system voice, then switches"). Re-probe and retry once
+      // before conceding this sentence to say.
+      if (!ctl?.cancelled && (await probeTtsServer(cfg, 1500))) r = await trySynth(cfg, piece + suffix, voice, ctl);
+    }
     if (r === "unreachable") {
       state.unreachable = true;
       return [{ say: piece }]; // this sentence via say; keep reading the rest

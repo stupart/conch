@@ -434,22 +434,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
     void probeTtsServer(cfg, 30_000).then(async (up) => {
       if (!up) return log("tts server didn't come up — voices via say");
       log(`kokoro ${already ? "adopted" : "warm"} on :${cfg.ttsPort} — per-session voices on`);
-      // Preload the model off the hot path so the first real announcement
-      // doesn't pay the multi-second first-synthesis cost.
-      await fetch(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/speech`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          model: cfg.ttsModel,
-          input: "ready",
-          voice: cfg.ttsVoices[0] ?? "af_heart",
-          response_format: "wav",
-        }),
-        signal: AbortSignal.timeout(180_000),
-      }).then(
-        () => log("kokoro model preloaded"),
-        () => log("kokoro preload failed — first synthesis will be slow"),
-      );
+      // Preload EVERY ring voice off the hot path — a cold first-use of a
+      // voice was a candidate for "first sentence in system voice". Sequential
+      // (single-threaded server); each warms that voice's embedding.
+      for (const v of cfg.ttsVoices) {
+        await fetch(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/speech`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: cfg.ttsModel, input: "ready", voice: v }),
+          signal: AbortSignal.timeout(60_000),
+        }).catch(() => {});
+      }
+      log(`kokoro warmed ${cfg.ttsVoices.length} voices`);
     });
   } else if (cfg.ttsEngine === "server") {
     log(`CONCH_TTS=server but ${cfg.ttsServerBin} not found (uv tool install "mlx-audio[server]") — voices via say`);
