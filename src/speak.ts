@@ -238,7 +238,38 @@ async function speakViaServer(
   return playedAny ? "ok" : "synth-failed";
 }
 
-/** Synthesize one sentence into playable pieces; on the mlx shape bug, bisect and retry. No playback. */
+// mlx's SineGen bug is deterministic per exact input, so re-synthesizing the
+// SAME sentence with a tiny length change (trailing spaces/period — inaudible)
+// usually dodges it while keeping the sentence whole and in the Kokoro voice.
+const SYNTH_PERTURBATIONS = ["", " ", "  ", ".", " .", "   "];
+
+/** One synth request. Returns audio bytes, null (shape bug), or "unreachable". */
+async function trySynth(
+  cfg: Config,
+  input: string,
+  voice: string,
+  ctl: CancelControl | null,
+): Promise<Uint8Array | null | "unreachable"> {
+  try {
+    const signal = ctl
+      ? AbortSignal.any([ctl.abort.signal, AbortSignal.timeout(30_000)])
+      : AbortSignal.timeout(30_000);
+    const res = await fetch(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/speech`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: cfg.ttsModel, input, voice, speed: cfg.ttsSpeed }),
+      signal,
+    });
+    if (!res.ok) return null; // the shape bug (500)
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    return bytes.length >= 100 ? bytes : null;
+  } catch {
+    if (ctl?.cancelled) return null;
+    return "unreachable";
+  }
+}
+
+/** Synthesize one sentence into playable pieces: perturb-retry first, then bisect, then say. No playback. */
 async function synthSentence(
   cfg: Config,
   piece: string,
@@ -248,23 +279,14 @@ async function synthSentence(
   if (!piece.trim() || ctl?.cancelled) return [];
 
   let audio: Uint8Array | null = null;
-  try {
-    const signal = ctl
-      ? AbortSignal.any([ctl.abort.signal, AbortSignal.timeout(30_000)])
-      : AbortSignal.timeout(30_000);
-    const res = await fetch(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/speech`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: cfg.ttsModel, input: piece, voice, speed: cfg.ttsSpeed }),
-      signal,
-    });
-    if (res.ok) {
-      const bytes = new Uint8Array(await res.arrayBuffer());
-      if (bytes.length >= 100) audio = bytes;
-    }
-  } catch {
+  for (const suffix of SYNTH_PERTURBATIONS) {
     if (ctl?.cancelled) return [];
-    return "unreachable";
+    const r = await trySynth(cfg, piece + suffix, voice, ctl);
+    if (r === "unreachable") return "unreachable";
+    if (r) {
+      audio = r;
+      break;
+    }
   }
   if (ctl?.cancelled) return [];
   if (audio) {
