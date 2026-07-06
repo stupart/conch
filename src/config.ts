@@ -120,7 +120,7 @@ export function loadConfig(): Config {
       .split(",")
       .map((v) => v.trim())
       .filter(Boolean),
-    ttsSpeed: num(env.CONCH_TTS_SPEED, 1.0),
+    ttsSpeed: num(env.CONCH_TTS_SPEED, 1.2), // brisker Kokoro; CONCH_TTS_SPEED to taste
   };
 }
 

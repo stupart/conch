@@ -188,6 +188,15 @@ export function speakCancellable(cfg: Config, text: string, label = ""): { done:
   return { done: proc.exited.then(() => {}), cancel: () => proc.kill() };
 }
 
+type Playable = { audio: Uint8Array } | { say: string };
+
+/**
+ * Pipeline the read: synthesize sentence N+1 WHILE sentence N plays, so
+ * there's no dead air between sentences (per-sentence synth otherwise leaves
+ * a gap while the next request round-trips — audible, live). One synth is in
+ * flight at a time (the server is single-threaded); it overlaps playback,
+ * which is a separate afplay process.
+ */
 async function speakViaServer(
   cfg: Config,
   text: string,
@@ -195,27 +204,47 @@ async function speakViaServer(
   ctl: CancelControl | null,
 ): Promise<"ok" | "synth-failed" | "unreachable"> {
   const voice = voiceFor(cfg, label);
-  const state = { playedAny: false, unreachable: false };
+  const sentences = splitSentences(text);
+  if (sentences.length === 0) sentences.push(text);
 
-  for (const sentence of splitSentences(text)) {
+  let playedAny = false;
+  let unreachable = false;
+  let next: Promise<Playable[] | "unreachable"> | null = synthSentence(cfg, sentences[0]!, voice, ctl);
+
+  for (let i = 0; i < sentences.length; i++) {
+    const result = await next!;
     if (ctl?.cancelled) return "ok";
-    await speakPiece(cfg, sentence, voice, ctl, state);
-    if (state.unreachable) return state.playedAny ? "ok" : "unreachable";
-    if (ctl?.cancelled) return "ok";
+    // kick off the next synth before playing this one — this is the overlap
+    next = i + 1 < sentences.length ? synthSentence(cfg, sentences[i + 1]!, voice, ctl) : null;
+
+    if (result === "unreachable") {
+      unreachable = true;
+      break;
+    }
+    for (const p of result) {
+      if (ctl?.cancelled) return "ok";
+      if ("say" in p) {
+        const proc = spawnSay(cfg, p.say);
+        if (ctl) ctl.kill = () => proc.kill();
+        await proc.exited;
+      } else {
+        await playAudio(p.audio, ctl);
+      }
+      playedAny = true;
+    }
   }
-  if (splitSentences(text).length === 0) await speakPiece(cfg, text, voice, ctl, state);
-  return state.playedAny ? "ok" : "synth-failed";
+  if (unreachable) return playedAny ? "ok" : "unreachable";
+  return playedAny ? "ok" : "synth-failed";
 }
 
-/** Synthesize + play one piece; on the mlx shape bug, bisect and retry each half. */
-async function speakPiece(
+/** Synthesize one sentence into playable pieces; on the mlx shape bug, bisect and retry. No playback. */
+async function synthSentence(
   cfg: Config,
   piece: string,
   voice: string,
   ctl: CancelControl | null,
-  state: { playedAny: boolean; unreachable: boolean },
-): Promise<void> {
-  if (!piece.trim() || ctl?.cancelled || state.unreachable) return;
+): Promise<Playable[] | "unreachable"> {
+  if (!piece.trim() || ctl?.cancelled) return [];
 
   let audio: Uint8Array | null = null;
   try {
@@ -233,28 +262,27 @@ async function speakPiece(
       if (bytes.length >= 100) audio = bytes;
     }
   } catch {
-    if (ctl?.cancelled) return;
-    state.unreachable = true; // network/connection error = server gone
-    return;
+    if (ctl?.cancelled) return [];
+    return "unreachable";
   }
-  if (ctl?.cancelled) return;
+  if (ctl?.cancelled) return [];
+  if (audio) return [{ audio }];
 
-  if (!audio) {
-    // the shape bug — retry each half at a different length; if too short to
-    // split, speak just this fragment via say (never drop content silently)
-    const halves = bisect(piece);
-    if (halves) {
-      await speakPiece(cfg, halves[0], voice, ctl, state);
-      await speakPiece(cfg, halves[1], voice, ctl, state);
-    } else if (!ctl?.cancelled) {
-      await spawnSay(cfg, piece).exited;
-      state.playedAny = true;
-    }
-    return;
-  }
+  // the shape bug — retry each half at a different length; if too short to
+  // split, hand back a say-fragment (never drop content silently)
+  const halves = bisect(piece);
+  if (!halves) return [{ say: piece }];
+  const left = await synthSentence(cfg, halves[0]!, voice, ctl);
+  if (left === "unreachable") return "unreachable";
+  const right = await synthSentence(cfg, halves[1]!, voice, ctl);
+  if (right === "unreachable") return "unreachable";
+  return [...left, ...right];
+}
 
+let tmpCounter = 0;
+async function playAudio(audio: Uint8Array, ctl: CancelControl | null): Promise<void> {
   // mlx-audio returns mp3 regardless of response_format; afplay sniffs content
-  const tmp = `/tmp/conch-tts-${process.pid}-${Date.now()}.audio`;
+  const tmp = `/tmp/conch-tts-${process.pid}-${tmpCounter++}.audio`;
   await Bun.write(tmp, audio);
   const proc = Bun.spawn(["afplay", tmp], { stdout: "ignore", stderr: "ignore" });
   current = proc;
@@ -266,5 +294,4 @@ async function speakPiece(
       unlinkSync(tmp);
     } catch {}
   }
-  state.playedAny = true;
 }
