@@ -84,9 +84,11 @@ export async function runHook(cfg: Config): Promise<void> {
 
   bell(cfg);
 
-  // Daemon owns the voice loop when it's up; otherwise speak standalone.
+  // Daemon owns the voice loop when it's up; otherwise speak standalone
+  // (awaited: the server TTS path dies with the process, and `say` is
+  // spawned either way before we return).
   const handedOff = await sendToDaemon(cfg.socketPath, turn);
-  if (!handedOff) speak(cfg, turn.announce);
+  if (!handedOff) await speak(cfg, turn.announce, turn.label);
 }
 
 export function sendToDaemon(socketPath: string, event: TurnEvent): Promise<boolean> {

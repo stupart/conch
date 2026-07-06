@@ -71,6 +71,12 @@ export async function runDoctor(cfg: Config): Promise<void> {
     ok &&= pass;
     console.log(`${pass ? "✅" : "❌"} ${label}`);
   }
+
+  const ttsAvailable = binaryExists(cfg.ttsServerBin);
+  console.log(
+    `ℹ️  tts: ${cfg.ttsEngine === "say" ? "say (forced)" : ttsAvailable ? `kokoro via ${cfg.ttsServerBin} on :${cfg.ttsPort}, ${cfg.ttsVoices.length} voices` : `say — ${cfg.ttsServerBin} not found (uv tool install "mlx-audio[server]" for natural per-session voices)`}`,
+  );
+
   if (!ok) process.exit(1);
 }
 

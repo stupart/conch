@@ -4,7 +4,7 @@ import { runHook, sendToDaemon } from "./hook.ts";
 import { runDaemon } from "./daemon.ts";
 import { runInstall, runDoctor } from "./install.ts";
 import { listenOnce } from "./listen.ts";
-import { speak } from "./speak.ts";
+import { speak, probeTtsServer, voiceFor, setVoiceOverride } from "./speak.ts";
 
 const HELP = `conch — a voice loop for Claude Code
 
@@ -16,7 +16,9 @@ Usage:
   conch sessions        list live Claude Code sessions
   conch mute | unmute   silence announcements + mic (auto-away covers this too)
   conch listen          capture one utterance, print the transcript (mic test)
-  conch speak <text>    say something (TTS test)
+  conch speak <text>    say something (TTS test; uses the warm Kokoro server when up)
+  conch voices          audition the voice ring — each voice introduces itself
+  conch voice <s> [v]   show or pin a session's voice (persisted)
   conch doctor          check external dependencies
 
 Config via env: CONCH_VOICE, CONCH_SPEAK_SENTENCES, CONCH_SPEAK_MAX_CHARS,
@@ -95,8 +97,36 @@ switch (command) {
     break;
   }
   case "speak":
+    await probeTtsServer(cfg, 1500); // a running daemon's warm Kokoro serves this too
     await speak(cfg, rest.join(" "));
     break;
+  case "voice": {
+    const [session, voice] = rest;
+    if (!session) {
+      console.error("usage: conch voice <session> [kokoro-voice]   (no voice = show current)");
+      process.exit(1);
+    }
+    if (!voice) {
+      console.log(`${session} -> ${voiceFor(cfg, session)}`);
+      break;
+    }
+    setVoiceOverride(session, voice);
+    console.log(`[conch] ${session} -> ${voice} (persisted to ~/.config/conch/voices.json)`);
+    if (await probeTtsServer(cfg, 1500)) await speak(cfg, `${session} now sounds like this.`, session);
+    break;
+  }
+  case "voices": {
+    const up = await probeTtsServer(cfg, 1500);
+    if (!up) {
+      console.error("[conch] TTS server not up (start the daemon, or check CONCH_TTS_PORT) — nothing to audition");
+      process.exit(1);
+    }
+    for (const v of cfg.ttsVoices) {
+      console.log(v);
+      await speak({ ...cfg, ttsVoices: [v] }, `Hi, I'm ${v.replace(/^[a-z]+_/, "")}. A session could sound like this.`);
+    }
+    break;
+  }
   default:
     console.log(HELP);
     process.exit(command ? 1 : 0);

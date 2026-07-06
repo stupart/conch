@@ -39,6 +39,17 @@ bun run src/cli.ts daemon
 
 No daemon running? The hooks still work standalone: bell + spoken announcements, no voice-back. That's a perfectly good way to use conch.
 
+### Natural voices (optional, recommended)
+
+By default conch speaks through macOS `say`. Install [mlx-audio](https://github.com/Blaizzy/mlx-audio) and the daemon upgrades itself to [Kokoro-82M](https://huggingface.co/mlx-community/Kokoro-82M-bf16) — dramatically more natural, running warm and local on Apple GPU (~340MB model, auto-downloaded on first use):
+
+```bash
+brew install uv
+uv tool install --with "misaki[en]" "mlx-audio[server]"
+```
+
+That's it — the daemon finds `mlx_audio.server`, spawns it, and **every session gets its own voice**: labels are hashed onto a ring of 8 Kokoro voices, so dayloop always sounds like dayloop and you can tell sessions apart by ear. Audition the ring with `conch voices` (or press `v` in the dashboard to hear each LIVE session in its assigned voice), pin any session with `conch voice dayloop bm_george` (persisted), customize the ring with `CONCH_TTS_VOICES` (any of Kokoro's 50+ voices), or force `CONCH_TTS=say` to opt out. If the server is down, everything degrades to `say` automatically.
+
 ## Commands
 
 | Command | What it does |
@@ -114,6 +125,10 @@ All via environment variables (put them in the hook's env or your shell profile)
 | `CONCH_SEASHELL_ROOT` | `~/whisper-cli` | where the whisper.cpp build + models live |
 | `CONCH_WHISPER_PORT` | `8642` | warm whisper-server port; `0` = cold cli only |
 | `CONCH_AWAY_AFTER_SECS` | `0` (off) | opt-in: silence everything after N seconds of keyboard idle |
+| `CONCH_TTS` | `auto` | voices: `auto` (Kokoro server if installed, else say) / `server` / `say` |
+| `CONCH_TTS_PORT` | `8880` | warm Kokoro server port; `0` disables |
+| `CONCH_TTS_VOICES` | 8-voice ring | comma-separated Kokoro voices; sessions hash onto the ring |
+| `CONCH_TTS_SPEED` | `1.0` | speech rate for the Kokoro engine |
 
 ## Roadmap
 

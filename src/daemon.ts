@@ -2,7 +2,7 @@ import { createServer } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
-import { speak, speakCancellable, stopSpeaking } from "./speak.ts";
+import { speak, speakCancellable, stopSpeaking, probeTtsServer, voiceFor } from "./speak.ts";
 import { listenOnce, listenGap, armBargeRecorder, type ListenHooks } from "./listen.ts";
 import { injectText, injectKey } from "./inject.ts";
 import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio } from "./commands.ts";
@@ -102,7 +102,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
       log(`wake -> "${target.label}"`);
       setState("speaking", target.label);
-      await speak(cfg, `Mic open for ${target.label}.`);
+      await speak(cfg, `Mic open for ${target.label}.`, target.label);
       await conversationLoop(target);
       return;
     }
@@ -111,7 +111,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
     if (event.type === "needs-you" && event.ntype !== "idle_prompt") {
       setState("speaking", event.label);
-      await speak(cfg, event.announce);
+      await speak(cfg, event.announce, event.label);
       await permissionLoop(event); // dialogs take Enter/Escape, not free text
       return;
     }
@@ -122,7 +122,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const announce = await speakInterruptible(event, event.announce, false);
     if (announce.cut && !announce.heard && !stopKey) {
       log("announce cut by a noise blip — re-speaking");
-      await speak(cfg, event.announce);
+      await speak(cfg, event.announce, event.label);
     }
     lastTurn = event;
     await conversationLoop(event, announce.heard);
@@ -141,11 +141,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
   ): Promise<{ heard: string; cut: boolean }> {
     setState("speaking", event.label);
     if (!cfg.bargeThresholdPct || disabled) {
-      await speak(cfg, text);
+      await speak(cfg, text, event.label);
       return { heard: "", cut: false };
     }
     const barge = armBargeRecorder(cfg);
-    const speech = speakCancellable(cfg, text);
+    const speech = speakCancellable(cfg, text, event.label);
     let cut = false;
     const watch = setInterval(() => {
       if (barge.triggered()) {
@@ -169,9 +169,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const { via } = await injectText(cfg, event.pid, text);
     log(`injected via ${via}`);
     if (via === "clipboard") {
-      speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.");
+      speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.", event.label);
     } else if (via === "none") {
-      speak(cfg, "Heard you, but I could not find the session's pane.");
+      speak(cfg, "Heard you, but I could not find the session's pane.", event.label);
     }
   }
 
@@ -191,7 +191,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       case "stop":
         return "stop";
       case "discard":
-        await speak(cfg, "Okay.");
+        await speak(cfg, "Okay.", event.label);
         return "handled";
       case "prompt":
         await deliver(event, text);
@@ -289,15 +289,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
           return;
         }
         case "discard":
-          await speak(cfg, "Okay.");
+          await speak(cfg, "Okay.", event.label);
           return;
         case "repeat":
           setState("speaking", event.label);
-          await speak(cfg, lastSpoken);
+          await speak(cfg, lastSpoken, event.label);
           break;
         case "continue": {
           if (!event.transcriptPath) {
-            await speak(cfg, "I don't have the full message for this one.");
+            await speak(cfg, "I don't have the full message for this one.", event.label);
             break;
           }
           if (!sentences) {
@@ -306,13 +306,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
           }
           const chunk = sentences.slice(cursor, cursor + cfg.continueSentences).join(" ");
           if (!chunk) {
-            await speak(cfg, "That's the whole message.");
+            await speak(cfg, "That's the whole message.", event.label);
             break;
           }
           cursor += cfg.continueSentences;
           lastSpoken = chunk;
           setState("speaking", event.label);
-          await speak(cfg, chunk);
+          await speak(cfg, chunk, event.label);
           break;
         }
       }
@@ -331,9 +331,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
     const verdict = classifyApproval(text);
     log(`heard: "${text}" -> ${verdict ?? "unclear"}`);
-    if (!verdict) return void (await speak(cfg, "For permission prompts, say yes or no. Ignoring."));
+    if (!verdict) return void (await speak(cfg, "For permission prompts, say yes or no. Ignoring.", event.label));
     const { via } = await injectKey(cfg, event.pid, verdict === "approve" ? "Enter" : "Escape");
-    if (via === "none") speak(cfg, "Could not reach the session's window to answer — do it by hand.");
+    if (via === "none") speak(cfg, "Could not reach the session's window to answer — do it by hand.", event.label);
     else log(`sent ${verdict === "approve" ? "Enter" : "Escape"} via ${via}`);
   }
 
@@ -362,6 +362,38 @@ export async function runDaemon(cfg: Config): Promise<void> {
     log(`whisper-server binary not found at ${cfg.whisperServerBin} — using the cold cli path`);
   }
 
+  // Warm Kokoro TTS server (mlx-audio) — natural per-session voices.
+  // Same ownership pattern as whisper-server; `say` remains the fallback.
+  let ttsServer: ReturnType<typeof Bun.spawn> | null = null;
+  if (cfg.ttsEngine !== "say" && cfg.ttsPort && Bun.which(cfg.ttsServerBin)) {
+    ttsServer = Bun.spawn([cfg.ttsServerBin, "--port", String(cfg.ttsPort)], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    void probeTtsServer(cfg, 30_000).then(async (up) => {
+      if (!up) return log("tts server didn't come up — voices via say");
+      log(`kokoro warm on :${cfg.ttsPort} — per-session voices on`);
+      // Preload the model off the hot path so the first real announcement
+      // doesn't pay the multi-second first-synthesis cost.
+      await fetch(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/speech`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: cfg.ttsModel,
+          input: "ready",
+          voice: cfg.ttsVoices[0] ?? "af_heart",
+          response_format: "wav",
+        }),
+        signal: AbortSignal.timeout(180_000),
+      }).then(
+        () => log("kokoro model preloaded"),
+        () => log("kokoro preload failed — first synthesis will be slow"),
+      );
+    });
+  } else if (cfg.ttsEngine === "server") {
+    log(`CONCH_TTS=server but ${cfg.ttsServerBin} not found (uv tool install "mlx-audio[server]") — voices via say`);
+  }
+
   if (existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath); // stale socket from a previous run
 
   const server = createServer((sock) => {
@@ -387,6 +419,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     stopSpeaking(); // never orphan a talking `say` — voices overlapped live
     server.close();
     whisperServer?.kill();
+    ttsServer?.kill();
     try {
       unlinkSync(cfg.socketPath);
     } catch {}
@@ -409,6 +442,25 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const rows = await numberedSessions();
     if (!rows.length) return log("no live sessions");
     logAbove(rows.map((r) => `  \x1b[36m${r.n}\x1b[0m ${r.label}${lastTurn?.sessionId === r.s.sessionId ? " \x1b[2m(space wakes this one)\x1b[0m" : ""}`).join("\n"));
+  }
+
+  /** Audition every live session in its assigned voice — `conch voice <session> <voice>` reassigns. */
+  async function auditionVoices(): Promise<void> {
+    if (busy) return log("busy — audition after the current exchange");
+    busy = true;
+    try {
+      const rows = await numberedSessions();
+      if (!rows.length) return log("no live sessions");
+      for (const r of rows) {
+        logAbove(`  \x1b[36m${r.n}\x1b[0m ${r.label} — \x1b[35m${voiceFor(cfg, r.label)}\x1b[0m`);
+        await speak(cfg, `${r.label} sounds like this.`, r.label);
+      }
+      logAbove('  \x1b[2mreassign: conch voice <session> <kokoro-voice>\x1b[0m');
+    } finally {
+      busy = false;
+      setState(muted ? "muted" : "idle");
+      void drain();
+    }
   }
 
   async function wakeByNumber(n: number): Promise<void> {
@@ -444,6 +496,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
       else if (c >= "1" && c <= "9") void wakeByNumber(Number(c));
       else if (c === "s" || c === "l") void printSessions();
+      else if (c === "v") void auditionVoices();
       else if (c === "m") enqueue({ type: muted ? "unmute" : "mute", sessionId: "", label: "", announce: "" });
       else if (c === "?" || c === "h") printHelp();
       else if (c === "q" || c === "\u0003") shutdown();
@@ -456,9 +509,9 @@ function printHelp(): void {
   logAbove(
     [
       "",
-      "  \x1b[1mkeys\x1b[0m   \x1b[36mspace\x1b[0m stop reciting / open mic   \x1b[36ms\x1b[0m list sessions   \x1b[36m1-9\x1b[0m mic to session #   \x1b[36mm\x1b[0m mute   \x1b[36m?\x1b[0m help   \x1b[36mq\x1b[0m quit",
+      "  \x1b[1mkeys\x1b[0m   \x1b[36mspace\x1b[0m stop reciting / open mic   \x1b[36ms\x1b[0m sessions   \x1b[36m1-9\x1b[0m mic to #   \x1b[36mv\x1b[0m voices   \x1b[36mm\x1b[0m mute   \x1b[36m?\x1b[0m help   \x1b[36mq\x1b[0m quit",
       '  \x1b[1mvoice\x1b[0m  \x1b[36m"continue"\x1b[0m read more   \x1b[36m"repeat"\x1b[0m again   \x1b[36m"stop"\x1b[0m end reading   \x1b[36m"no response needed"\x1b[0m close mic',
-      "  \x1b[1mcli\x1b[0m    conch wake [name] · sessions · mute · doctor",
+      "  \x1b[1mcli\x1b[0m    conch wake [name] · sessions · voice <session> <voice> · mute · doctor",
       "",
     ].join("\n"),
   );
