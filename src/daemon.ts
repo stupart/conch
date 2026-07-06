@@ -4,7 +4,7 @@ import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
 import { speak, speakCancellable, stopSpeaking, probeTtsServer, voiceFor } from "./speak.ts";
 import { listenOnce, listenGap, armBargeRecorder, type ListenHooks } from "./listen.ts";
-import { injectText, injectKey, clearPrompt } from "./inject.ts";
+import { injectText, injectKey } from "./inject.ts";
 import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio, isSendCommand } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences } from "./snippet.ts";
 import { probeServer } from "./transcribe.ts";
@@ -175,14 +175,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
     return { heard, cut };
   }
 
-  /** Submit held dictation: press Enter in the session (text is already typed). */
-  async function submitPending(event: TurnEvent): Promise<void> {
-    injectedAt.set(event.sessionId, Date.now());
-    const { via } = await injectKey(cfg, event.pid, "Enter");
-    log(`submitted held dictation via ${via}`);
-    if (via === "none") speak(cfg, "Couldn't reach the window to send — press enter yourself.");
-  }
-
   /** Inject a prompt utterance and report how it went. */
   async function deliver(event: TurnEvent, text: string): Promise<void> {
     injectedAt.set(event.sessionId, Date.now());
@@ -301,34 +293,36 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
     }
 
-    // pending = text has been typed into the box but not yet submitted
-    // (hold-submit mode: natural pauses segment dictation, they don't send)
-    let pending = false;
+    // Hold-submit: accumulate dictated segments IN MEMORY (not typed into the
+    // box one-by-one). A natural pause just ends a segment; nothing is
+    // injected until you submit, so segments join cleanly with no per-segment
+    // osascript delay (that delay was a mic-dead gap where words vanished).
+    const buffer: string[] = [];
 
     while (true) {
       await micCue(cfg, "open"); // audible "mic is open" — cue finishes before sox starts
-      const window = pending ? cfg.holdSubmitSecs : cfg.listenWindowSecs;
-      log(`listening (start within ${window}s)${pending ? " · holding, say 'send' or pause to submit" : ""}...`);
+      const window = buffer.length ? cfg.holdSubmitSecs : cfg.listenWindowSecs;
+      log(`listening (start within ${window}s)${buffer.length ? " · holding, say 'send' or pause to submit" : ""}...`);
       const { text, error } = await listenOnce({ ...cfg, listenWindowSecs: window }, listenHooks(event.label));
       if (error) return log(`listen error: ${error}`);
       if (!text) {
         await micCue(cfg, "close");
-        if (pending) {
-          log("held dictation timed out — submitting");
-          await submitPending(event);
+        if (buffer.length) {
+          log(`held dictation timed out — submitting ${buffer.length} segment(s)`);
+          await deliver(event, buffer.join(" "));
         }
         return log("no speech — back to idle");
       }
 
       // In hold-submit mode, "send"/"go" submits what's been dictated.
-      if (pending && isSendCommand(text)) {
-        log(`heard: "${text}" -> send`);
-        await submitPending(event);
+      if (buffer.length && isSendCommand(text)) {
+        log(`heard: "${text}" -> send (${buffer.length} segment(s))`);
+        await deliver(event, buffer.join(" "));
         return;
       }
 
       const intent = classify(text);
-      log(`heard: "${text}" -> ${intent}${pending ? " (holding)" : ""}`);
+      log(`heard: "${text}" -> ${intent}${buffer.length ? " (holding)" : ""}`);
 
       switch (intent) {
         case "prompt": {
@@ -336,16 +330,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
             await deliver(event, text);
             return;
           }
-          // accumulate: type this segment (leading space after the first) without Enter
-          await injectText(cfg, event.pid, pending ? ` ${text}` : text, { submit: false });
-          pending = true;
+          buffer.push(text); // accumulate in memory; injected all at once on submit
           break;
         }
         case "discard":
-          if (pending) {
-            await clearPrompt(cfg, event.pid);
-            log("cleared held dictation");
-          }
+          if (buffer.length) log(`discarded ${buffer.length} held segment(s)`);
           await speak(cfg, "Okay.", event.label);
           return;
         case "repeat":
