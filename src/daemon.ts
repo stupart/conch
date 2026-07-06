@@ -181,12 +181,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
     text: string,
     spokenChunk: string,
   ): Promise<"stop" | "handled" | "keep-reading" | "echo"> {
-    if (spokenChunk && wordOverlapRatio(text, spokenChunk) > 0.6) {
+    const intent = classifyReadingGap(text);
+    log(`heard mid-read: "${text}" -> ${intent}`);
+    // Echo guard runs AFTER classification and ONLY for would-be prompts: a
+    // command like "stop reading" naturally overlaps a message about reading,
+    // and dismissing it as echo was exactly what broke stop (live). Commands
+    // are always honored; only long injectable prose can be a real echo.
+    if (intent === "prompt" && spokenChunk && wordOverlapRatio(text, spokenChunk) > 0.6) {
       log(`barge echo guard: mic heard the reading itself ("${text.slice(0, 60)}")`);
       return "echo";
     }
-    const intent = classifyReadingGap(text);
-    log(`heard mid-read: "${text}" -> ${intent}`);
     if (intent === "prompt" && text.split(/\s+/).filter((w) => /[a-z0-9]/i.test(w)).length <= 3) {
       // a 1-3 word fragment mid-read ("I thought...") is someone starting
       // to talk, not a prompt — stop reading and hand them the mic instead

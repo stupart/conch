@@ -2,6 +2,26 @@ import { unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
+import { splitSentences } from "./snippet.ts";
+
+// mlx-audio's Kokoro vocoder throws a broadcast-shape ValueError on long
+// inputs (~20s+ of audio). Synthesizing one sentence at a time keeps every
+// request well under that ceiling; a stray over-long sentence is split too.
+const MAX_SYNTH_CHARS = 300;
+
+function synthPieces(text: string): string[] {
+  const pieces: string[] = [];
+  for (const sentence of splitSentences(text)) {
+    if (sentence.length <= MAX_SYNTH_CHARS) {
+      pieces.push(sentence);
+      continue;
+    }
+    for (let i = 0; i < sentence.length; i += MAX_SYNTH_CHARS) {
+      pieces.push(sentence.slice(i, i + MAX_SYNTH_CHARS));
+    }
+  }
+  return pieces.length ? pieces : [text];
+}
 
 /**
  * Two TTS engines:
@@ -155,42 +175,46 @@ async function speakViaServer(
   label: string,
   ctl: CancelControl | null,
 ): Promise<"ok" | "synth-failed" | "unreachable"> {
-  let audio: Uint8Array;
-  try {
-    const signal = ctl
-      ? AbortSignal.any([ctl.abort.signal, AbortSignal.timeout(30_000)])
-      : AbortSignal.timeout(30_000);
-    const res = await fetch(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/speech`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model: cfg.ttsModel,
-        input: text,
-        voice: voiceFor(cfg, label),
-        speed: cfg.ttsSpeed,
-      }),
-      signal,
-    });
-    if (!res.ok) return "synth-failed";
-    audio = new Uint8Array(await res.arrayBuffer());
-  } catch {
-    return ctl?.cancelled ? "ok" : "unreachable"; // cancelled mid-synth = nothing left to do
-  }
-  if (ctl?.cancelled) return "ok";
-  if (audio.length < 100) return "synth-failed";
+  const voice = voiceFor(cfg, label);
+  const pieces = synthPieces(text);
+  let playedAny = false;
 
-  // mlx-audio returns mp3 regardless of response_format; afplay sniffs content
-  const tmp = `/tmp/conch-tts-${process.pid}-${Date.now()}.audio`;
-  await Bun.write(tmp, audio);
-  const proc = Bun.spawn(["afplay", tmp], { stdout: "ignore", stderr: "ignore" });
-  current = proc;
-  if (ctl) ctl.kill = () => proc.kill();
-  try {
-    await proc.exited;
-  } finally {
+  for (const piece of pieces) {
+    if (ctl?.cancelled) return "ok";
+    let audio: Uint8Array;
     try {
-      unlinkSync(tmp);
-    } catch {}
+      const signal = ctl
+        ? AbortSignal.any([ctl.abort.signal, AbortSignal.timeout(30_000)])
+        : AbortSignal.timeout(30_000);
+      const res = await fetch(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/speech`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: cfg.ttsModel, input: piece, voice, speed: cfg.ttsSpeed }),
+        signal,
+      });
+      if (!res.ok) return playedAny ? "ok" : "synth-failed"; // salvage a partial read; say-repeat would double-speak
+      audio = new Uint8Array(await res.arrayBuffer());
+    } catch {
+      if (ctl?.cancelled) return "ok"; // cancelled mid-synth = nothing left to do
+      return playedAny ? "ok" : "unreachable";
+    }
+    if (ctl?.cancelled) return "ok";
+    if (audio.length < 100) return playedAny ? "ok" : "synth-failed";
+
+    // mlx-audio returns mp3 regardless of response_format; afplay sniffs content
+    const tmp = `/tmp/conch-tts-${process.pid}-${Date.now()}.audio`;
+    await Bun.write(tmp, audio);
+    const proc = Bun.spawn(["afplay", tmp], { stdout: "ignore", stderr: "ignore" });
+    current = proc;
+    if (ctl) ctl.kill = () => proc.kill();
+    try {
+      await proc.exited;
+    } finally {
+      try {
+        unlinkSync(tmp);
+      } catch {}
+    }
+    playedAny = true;
   }
   return "ok";
 }
