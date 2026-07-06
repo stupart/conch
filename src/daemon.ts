@@ -355,7 +355,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
       ],
       { stdout: "ignore", stderr: "ignore" },
     );
-    void probeServer(cfg, 20_000).then((up) => {
+    // 60s patience: whisper and kokoro load models simultaneously at startup
+    // and contend for GPU/disk — observed pushing whisper past a 20s probe
+    void probeServer(cfg, 60_000).then((up) => {
       log(up ? `whisper-server warm on :${cfg.whisperPort} — fast transcription + live partials` : "whisper-server failed to come up — using the cold cli path");
     });
   } else if (cfg.whisperPort) {
