@@ -188,7 +188,8 @@ export function speakCancellable(cfg: Config, text: string, label = ""): { done:
   return { done: proc.exited.then(() => {}), cancel: () => proc.kill() };
 }
 
-type Playable = { audio: Uint8Array } | { say: string };
+// A ready-to-play tmp file (written during prefetch) or a say-fragment.
+type Playable = { file: string } | { say: string };
 
 /**
  * Pipeline the read: synthesize sentence N+1 WHILE sentence N plays, so
@@ -228,7 +229,7 @@ async function speakViaServer(
         if (ctl) ctl.kill = () => proc.kill();
         await proc.exited;
       } else {
-        await playAudio(p.audio, ctl);
+        await playFile(p.file, ctl); // file was written during prefetch — spawn only
       }
       playedAny = true;
     }
@@ -266,7 +267,13 @@ async function synthSentence(
     return "unreachable";
   }
   if (ctl?.cancelled) return [];
-  if (audio) return [{ audio }];
+  if (audio) {
+    // write now (during this synth, which overlaps the previous clip's
+    // playback) so playback is a bare afplay spawn — no disk write in the gap
+    const file = `/tmp/conch-tts-${process.pid}-${tmpCounter++}.audio`;
+    await Bun.write(file, audio);
+    return [{ file }];
+  }
 
   // the shape bug — retry each half at a different length; if too short to
   // split, hand back a say-fragment (never drop content silently)
@@ -280,18 +287,15 @@ async function synthSentence(
 }
 
 let tmpCounter = 0;
-async function playAudio(audio: Uint8Array, ctl: CancelControl | null): Promise<void> {
-  // mlx-audio returns mp3 regardless of response_format; afplay sniffs content
-  const tmp = `/tmp/conch-tts-${process.pid}-${tmpCounter++}.audio`;
-  await Bun.write(tmp, audio);
-  const proc = Bun.spawn(["afplay", tmp], { stdout: "ignore", stderr: "ignore" });
+async function playFile(file: string, ctl: CancelControl | null): Promise<void> {
+  const proc = Bun.spawn(["afplay", file], { stdout: "ignore", stderr: "ignore" });
   current = proc;
   if (ctl) ctl.kill = () => proc.kill();
   try {
     await proc.exited;
   } finally {
     try {
-      unlinkSync(tmp);
+      unlinkSync(file);
     } catch {}
   }
 }
