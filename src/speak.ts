@@ -268,11 +268,16 @@ async function synthSentence(
   }
   if (ctl?.cancelled) return [];
   if (audio) {
-    // write now (during this synth, which overlaps the previous clip's
-    // playback) so playback is a bare afplay spawn — no disk write in the gap
-    const file = `/tmp/conch-tts-${process.pid}-${tmpCounter++}.audio`;
-    await Bun.write(file, audio);
-    return [{ file }];
+    // mlx-audio pads every clip with ~0.85s of trailing silence — THE
+    // between-sentence gap (measured live: 2.59s clip vs 1.70s speech). Trim
+    // both ends here (during the overlapped synth), leaving a wav that plays
+    // tight against the next. Falls back to the raw mp3 if the trim misfires.
+    const file = `/tmp/conch-tts-${process.pid}-${tmpCounter++}.wav`;
+    const trimmed = await writeTrimmed(audio, file);
+    if (trimmed) return [{ file }];
+    const raw = `/tmp/conch-tts-${process.pid}-${tmpCounter++}.audio`;
+    await Bun.write(raw, audio);
+    return [{ file: raw }];
   }
 
   // the shape bug — retry each half at a different length; if too short to
@@ -287,6 +292,30 @@ async function synthSentence(
 }
 
 let tmpCounter = 0;
+
+/**
+ * Trim leading/trailing silence from an mlx mp3 into a wav. A tiny 0.06s tail
+ * is kept so sentences don't run together. Returns false if sox is missing or
+ * the result is empty (all-silence clip), so the caller keeps the raw audio.
+ */
+async function writeTrimmed(mp3: Uint8Array, file: string): Promise<boolean> {
+  try {
+    const proc = Bun.spawn(
+      ["sox", "-t", "mp3", "-", "-t", "wav", file,
+       "silence", "1", "0.02", "0.3%", "reverse",
+       "silence", "1", "0.06", "0.3%", "reverse"],
+      { stdin: "pipe", stdout: "ignore", stderr: "ignore" },
+    );
+    proc.stdin.write(mp3);
+    await proc.stdin.end();
+    const code = await proc.exited;
+    if (code !== 0) return false;
+    return Bun.file(file).size > 1000; // header-only = trimmed to nothing
+  } catch {
+    return false;
+  }
+}
+
 async function playFile(file: string, ctl: CancelControl | null): Promise<void> {
   const proc = Bun.spawn(["afplay", file], { stdout: "ignore", stderr: "ignore" });
   current = proc;
