@@ -4,6 +4,9 @@ import { transcribePcm, serverUp } from "./transcribe.ts";
 
 // Anything smaller than this is silence (raw 16kHz 16-bit mono = 32KB/s).
 const MIN_PCM_BYTES = 16_000; // ~0.5s
+// Barge-in trigger: a bare "stop!" is ~0.3s of audio — the normal 0.5s bar
+// silently discarded interruptions (took the user 10 tries, live).
+const BARGE_MIN_PCM_BYTES = 5_000; // ~0.16s
 
 export interface ListenHooks {
   /** armed = mic open & waiting; capturing = speech detected; transcribing = whisper running */
@@ -67,6 +70,53 @@ export async function listenOnce(cfg: Config, hooks: ListenHooks = {}): Promise<
 }
 
 /**
+ * Barge-in recorder: armed WHILE the daemon is speaking a chunk, with a
+ * higher start threshold than normal listening so speaker-bleed (the mic
+ * hearing the Mac's own voice) doesn't trip it but voice-at-desk does.
+ * The caller polls `triggered()` to kill playback the moment you start
+ * talking, then `finish()` endpoints and transcribes your utterance.
+ */
+export function armBargeRecorder(cfg: Config): {
+  triggered: () => boolean;
+  finish: () => Promise<{ text: string }>;
+  abort: () => Promise<void>;
+} {
+  const raw = `/tmp/conch-barge-${process.pid}-${Date.now()}.raw`;
+  const proc = Bun.spawn(
+    [
+      "sox", "-d", "-q",
+      "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
+      raw,
+      // -l keeps the trailing below-threshold audio: voices trail off at the
+      // end of sentences, and without it sox trimmed the last words as
+      // "silence" (observed live: final couple words missing everywhere)
+      "silence", "-l",
+      "1", "0.15", `${cfg.bargeThresholdPct}%`,
+      "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
+    ],
+    { stdout: "ignore", stderr: "ignore" },
+  );
+  const hardStop = setTimeout(() => proc.kill(), cfg.maxUtteranceSecs * 1000);
+  return {
+    triggered: () => fileSize(raw) >= BARGE_MIN_PCM_BYTES,
+    async finish() {
+      await proc.exited;
+      clearTimeout(hardStop);
+      const pcm = readPcm(raw);
+      discard(raw);
+      if (pcm.length < BARGE_MIN_PCM_BYTES) return { text: "" };
+      return transcribePcm(cfg, pcm);
+    },
+    async abort() {
+      proc.kill();
+      clearTimeout(hardStop);
+      await proc.exited;
+      discard(raw);
+    },
+  };
+}
+
+/**
  * Brief interjection window between read-aloud chunks: wait up to
  * `maxWaitSecs` for speech to START; if nothing, return immediately-ish so
  * reading continues. If the user does start talking, capture the full
@@ -79,7 +129,10 @@ export async function listenGap(cfg: Config, maxWaitSecs: number): Promise<{ tex
       "sox", "-d", "-q",
       "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
       raw,
-      "silence",
+      // -l keeps the trailing below-threshold audio: voices trail off at the
+      // end of sentences, and without it sox trimmed the last words as
+      // "silence" (observed live: final couple words missing everywhere)
+      "silence", "-l",
       "1", "0.15", `${cfg.startThresholdPct}%`,
       "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
     ],
@@ -112,7 +165,10 @@ function armRecorder(cfg: Config, opened: number, hooks: ListenHooks): Recorder 
       "sox", "-d", "-q",
       "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
       raw,
-      "silence",
+      // -l keeps the trailing below-threshold audio: voices trail off at the
+      // end of sentences, and without it sox trimmed the last words as
+      // "silence" (observed live: final couple words missing everywhere)
+      "silence", "-l",
       "1", "0.15", `${cfg.startThresholdPct}%`,
       "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
     ],

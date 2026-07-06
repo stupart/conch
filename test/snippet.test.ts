@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { stripMarkdown, firstSentences, lastAssistantText } from "../src/snippet.ts";
+import { stripMarkdown, firstSentences, lastAssistantText, countCoveredSentences } from "../src/snippet.ts";
 import { wavFromRawPcm } from "../src/transcribe.ts";
 
 test("wavFromRawPcm writes a valid 16kHz mono header", () => {
@@ -24,10 +24,18 @@ test("stripMarkdown flattens links, bold, and headers", () => {
   expect(stripMarkdown(md)).toBe("Result All good — see the docs for more.");
 });
 
-test("firstSentences takes N sentences and respects the char cap", () => {
+test("firstSentences takes N whole sentences under the cap — no mid-sentence chops", () => {
   const text = "First one. Second one! Third one? Fourth one.";
   expect(firstSentences(text, 2, 350)).toBe("First one. Second one!");
-  expect(firstSentences(text, 4, 20)).toBe("First one. Second on");
+  expect(firstSentences(text, 4, 20)).toBe("First one."); // second wouldn't fit whole
+  expect(firstSentences("One giant unbroken sentence with no end", 2, 12)).toBe("One giant un"); // monster still capped
+});
+
+test("countCoveredSentences finds where the announcement stopped", () => {
+  const sentences = ["First one.", "Second one!", "Third one?"];
+  expect(countCoveredSentences("conch: First one. Second one!", sentences, 2)).toBe(2);
+  expect(countCoveredSentences("conch: First one. Second on", sentences, 2)).toBe(1); // truncated -> re-read it
+  expect(countCoveredSentences("conch: finished, ready for your next prompt", sentences, 2)).toBe(0);
 });
 
 test("firstSentences handles a single unterminated sentence", () => {

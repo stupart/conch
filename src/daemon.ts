@@ -2,13 +2,14 @@ import { createServer } from "node:net";
 import { existsSync, unlinkSync } from "node:fs";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
-import { speak, probeTtsServer } from "./speak.ts";
-import { listenOnce, listenGap, type ListenHooks } from "./listen.ts";
+import { speak, speakCancellable, stopSpeaking, probeTtsServer, voiceFor } from "./speak.ts";
+import { listenOnce, listenGap, armBargeRecorder, type ListenHooks } from "./listen.ts";
 import { injectText, injectKey } from "./inject.ts";
-import { classify, classifyApproval, classifyReadingGap } from "./commands.ts";
-import { lastAssistantText, splitSentences, stripMarkdown } from "./snippet.ts";
+import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio } from "./commands.ts";
+import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences } from "./snippet.ts";
 import { probeServer } from "./transcribe.ts";
 import { setState, logAbove } from "./status.ts";
+import { listSessions, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
 
 /**
  * The turn-based voice loop.
@@ -28,6 +29,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let busy = false;
   let lastTurn: TurnEvent | null = null;
   let muted = false;
+  let stopKey = false; // spacebar pressed while reciting — the guaranteed interrupt
+
+  const consumeStopKey = () => {
+    const s = stopKey;
+    stopKey = false;
+    return s;
+  };
 
   function enqueue(event: TurnEvent): void {
     const i = queue.findIndex((e) => e.sessionId === event.sessionId && e.type === event.type);
@@ -46,7 +54,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
     } finally {
       busy = false;
-      setState("idle");
+      setState(muted ? "muted" : "idle");
     }
   }
 
@@ -62,17 +70,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
     };
   }
 
+  async function setMuted(next: boolean): Promise<void> {
+    muted = next;
+    log(muted ? "muted — announcements and mic off (m or `conch unmute` to resume)" : "unmuted");
+    setState(muted ? "muted" : "idle");
+    await speak(cfg, muted ? "Muted." : "Back on.");
+  }
+
   async function handle(event: TurnEvent): Promise<void> {
-    if (event.type === "mute") {
-      muted = true;
-      log("muted — announcements and mic off until `conch unmute`");
-      return void (await speak(cfg, "Muted."));
-    }
-    if (event.type === "unmute") {
-      muted = false;
-      log("unmuted");
-      return void (await speak(cfg, "Back on."));
-    }
+    stopKey = false; // a stale press from a past exchange must not skip this one
+    if (event.type === "mute") return setMuted(true);
+    if (event.type === "unmute") return setMuted(false);
 
     // Nobody's there: don't announce to an empty room, don't open the mic,
     // don't burn battery on sox/whisper. Telegram (the other hook) still
@@ -100,17 +108,60 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
 
     log(`${event.type}${event.ntype ? `/${event.ntype}` : ""} from "${event.label}" (${event.sessionId.slice(0, 8)})`);
-    setState("speaking", event.label);
-    await speak(cfg, event.announce, event.label); // mic stays closed until this finishes
 
     if (event.type === "needs-you" && event.ntype !== "idle_prompt") {
+      setState("speaking", event.label);
+      await speak(cfg, event.announce, event.label);
       await permissionLoop(event); // dialogs take Enter/Escape, not free text
       return;
     }
 
-    // turn-end and idle_prompt are both "the session wants a prompt from you"
+    // turn-end and idle_prompt are both "the session wants a prompt from
+    // you" — and the announcement itself is barge-able: interrupting from
+    // the very first sentence must work, not just mid-reading.
+    const announce = await speakInterruptible(event, event.announce, false);
+    if (announce.cut && !announce.heard && !stopKey) {
+      log("announce cut by a noise blip — re-speaking");
+      await speak(cfg, event.announce, event.label);
+    }
     lastTurn = event;
-    await conversationLoop(event);
+    await conversationLoop(event, announce.heard);
+  }
+
+  /**
+   * Speak with the barge-in recorder armed: your voice (above speaker
+   * bleed) kills playback mid-word. `cut` distinguishes "finished cleanly"
+   * from "cancelled" — a cancellation with an empty transcript is a false
+   * trigger (noise blip) and the caller should re-speak, not skip content.
+   */
+  async function speakInterruptible(
+    event: TurnEvent,
+    text: string,
+    disabled: boolean,
+  ): Promise<{ heard: string; cut: boolean }> {
+    setState("speaking", event.label);
+    if (!cfg.bargeThresholdPct || disabled) {
+      await speak(cfg, text, event.label);
+      return { heard: "", cut: false };
+    }
+    const barge = armBargeRecorder(cfg);
+    const speech = speakCancellable(cfg, text, event.label);
+    let cut = false;
+    const watch = setInterval(() => {
+      if (barge.triggered()) {
+        cut = true;
+        speech.cancel(); // your voice wins mid-sentence
+      }
+    }, 120);
+    await speech.done;
+    clearInterval(watch);
+    if (!barge.triggered()) {
+      await barge.abort();
+      return { heard: "", cut: false };
+    }
+    setState("recording", event.label);
+    const { text: heard } = await barge.finish();
+    return { heard, cut };
   }
 
   /** Inject a prompt utterance and report how it went. */
@@ -118,48 +169,104 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const { via } = await injectText(cfg, event.pid, text);
     log(`injected via ${via}`);
     if (via === "clipboard") {
-      speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.");
+      speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.", event.label);
     } else if (via === "none") {
-      speak(cfg, "Heard you, but I could not find the session's pane.");
+      speak(cfg, "Heard you, but I could not find the session's pane.", event.label);
+    }
+  }
+
+  /** Shared handling for anything heard while reading aloud (gap or barge-in). */
+  async function onReadingUtterance(
+    event: TurnEvent,
+    text: string,
+    spokenChunk: string,
+  ): Promise<"stop" | "handled" | "keep-reading" | "echo"> {
+    if (spokenChunk && wordOverlapRatio(text, spokenChunk) > 0.6) {
+      log(`barge echo guard: mic heard the reading itself ("${text.slice(0, 60)}")`);
+      return "echo";
+    }
+    const intent = classifyReadingGap(text);
+    log(`heard mid-read: "${text}" -> ${intent}`);
+    switch (intent) {
+      case "stop":
+        return "stop";
+      case "discard":
+        await speak(cfg, "Okay.", event.label);
+        return "handled";
+      case "prompt":
+        await deliver(event, text);
+        return "handled";
+      default:
+        return "keep-reading"; // repeat/continue: just keep going
     }
   }
 
   /** Commands (continue/repeat/cancel) keep the mic cycling; a real prompt injects; silence idles. */
-  async function conversationLoop(event: TurnEvent): Promise<void> {
+  async function conversationLoop(event: TurnEvent, pendingHeard = ""): Promise<void> {
     let lastSpoken = event.announce;
     let sentences: string[] | null = null;
     let cursor = cfg.speakSentences; // the announcement already covered the first sentences
+    let bargeOff = false; // set when the echo guard proves the threshold is too low for this room
+    let falseTriggers = 0; // noise blips that cancelled speech but transcribed to nothing
+    let skipReading = false;
 
-    // Read-full phase: keep speaking chunks, with a short interjection gap
-    // between them — "stop" cuts to the listen window, "no response"/"cancel"
-    // closes out, and a real prompt injects immediately.
-    if (cfg.readFull && event.type !== "needs-you" && event.transcriptPath) {
+    // Something said while the announcement was playing (announce barge-in)
+    if (pendingHeard) {
+      const action = await onReadingUtterance(event, pendingHeard, event.announce);
+      if (action === "handled") return;
+      if (action === "stop") skipReading = true;
+      if (action === "echo") bargeOff = true;
+    }
+
+    // Read-full phase: keep speaking chunks. You can interject two ways:
+    // in the short gap between chunks, or by BARGING IN while it speaks —
+    // a high-threshold recorder runs during playback and kills the speech
+    // the moment your voice (louder than speaker bleed) starts.
+    if (consumeStopKey()) skipReading = true; // spacebar during the announcement
+
+    if (!skipReading && cfg.readFull && event.type !== "needs-you" && event.transcriptPath) {
       sentences = splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath)));
+      // resume after what the announcement ACTUALLY covered — if it was
+      // truncated mid-sentence, that sentence gets re-read in full
+      cursor = countCoveredSentences(event.announce, sentences, cfg.speakSentences);
       reading: while (cursor < sentences.length) {
-        setState("listening", event.label);
-        const { text: gapText } = await listenGap(cfg, cfg.gapSecs);
-        if (gapText) {
-          const intent = classifyReadingGap(gapText);
-          log(`heard mid-read: "${gapText}" -> ${intent}`);
-          switch (intent) {
-            case "stop":
-              break reading; // skip the rest, open the normal window
-            case "discard":
-              await speak(cfg, "Okay.", event.label);
-              return;
-            case "prompt":
-              await deliver(event, gapText);
-              return;
-            case "repeat":
-            case "continue":
-              break; // keep reading
+        // gap between chunks: with barging available it's just a beat; with
+        // barging off (echo/noise) it's the only voice interrupt, so keep it real
+        const gapSecs = bargeOff ? Math.max(cfg.gapSecs, 0.6) : cfg.gapSecs;
+        if (gapSecs > 0) {
+          setState("listening", event.label);
+          const { text: gapText } = await listenGap(cfg, gapSecs);
+          if (consumeStopKey()) break reading; // spacebar during the gap
+          if (gapText) {
+            const action = await onReadingUtterance(event, gapText, "");
+            if (action === "stop") break reading;
+            if (action === "handled") return;
           }
         }
         const chunk = sentences.slice(cursor, cursor + cfg.continueSentences).join(" ");
         cursor += cfg.continueSentences;
         lastSpoken = chunk;
-        setState("speaking", event.label);
-        await speak(cfg, chunk, event.label);
+        const result = await speakInterruptible(event, chunk, bargeOff);
+        if (consumeStopKey()) break reading; // spacebar: guaranteed stop
+        if (result.cut && !result.heard) {
+          // false trigger: don't skip the interrupted content — re-speak it;
+          // a second blip in one read means the room is noisy, gaps only
+          falseTriggers++;
+          if (falseTriggers >= 2) {
+            bargeOff = true;
+            log("two noise blips cancelled speech — barge-in off for this read");
+          }
+          cursor -= cfg.continueSentences;
+          continue;
+        }
+        if (!result.heard) continue;
+        const action = await onReadingUtterance(event, result.heard, chunk);
+        if (action === "stop") break reading;
+        if (action === "handled") return;
+        // interrupted for nothing (echo / keep-reading): re-speak the chunk,
+        // with barging off for the rest of this read if it was echo
+        if (action === "echo") bargeOff = true;
+        cursor -= cfg.continueSentences;
       }
     }
 
@@ -193,7 +300,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
             await speak(cfg, "I don't have the full message for this one.", event.label);
             break;
           }
-          sentences ??= splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath)));
+          if (!sentences) {
+            sentences = splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath)));
+            cursor = countCoveredSentences(event.announce, sentences, cfg.speakSentences);
+          }
           const chunk = sentences.slice(cursor, cursor + cfg.continueSentences).join(" ");
           if (!chunk) {
             await speak(cfg, "That's the whole message.", event.label);
@@ -221,9 +331,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
     const verdict = classifyApproval(text);
     log(`heard: "${text}" -> ${verdict ?? "unclear"}`);
-    if (!verdict) return void (await speak(cfg, "For permission prompts, say yes or no. Ignoring."));
+    if (!verdict) return void (await speak(cfg, "For permission prompts, say yes or no. Ignoring.", event.label));
     const { via } = await injectKey(cfg, event.pid, verdict === "approve" ? "Enter" : "Escape");
-    if (via === "none") speak(cfg, "Could not reach the session's window to answer — do it by hand.");
+    if (via === "none") speak(cfg, "Could not reach the session's window to answer — do it by hand.", event.label);
     else log(`sent ${verdict === "approve" ? "Enter" : "Escape"} via ${via}`);
   }
 
@@ -237,6 +347,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         "-m", cfg.whisperModel,
         "-vm", cfg.vadModel,
         "--vad",
+        "--vad-speech-pad-ms", "300", // default 30ms amputates quiet word tails
         "--host", "127.0.0.1",
         "--port", String(cfg.whisperPort),
         "-l", "en",
@@ -305,6 +416,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   setState("idle");
 
   const shutdown = () => {
+    stopSpeaking(); // never orphan a talking `say` — voices overlapped live
     server.close();
     whisperServer?.kill();
     ttsServer?.kill();
@@ -316,17 +428,93 @@ export async function runDaemon(cfg: Config): Promise<void> {
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
 
-  // Interactive extras when running in a terminal: space reopens the mic.
+  /** Live sessions in a stable order so number keys mean the same thing between glances. */
+  async function numberedSessions(): Promise<Array<{ n: number; s: SessionInfo; label: string }>> {
+    const sessions = await listSessions(cfg.claudeDir);
+    return sessions
+      .map((s) => ({ s, label: sessionLabel(s, s.cwd) }))
+      .sort((a, b) => a.label.localeCompare(b.label))
+      .slice(0, 9)
+      .map((x, i) => ({ n: i + 1, ...x }));
+  }
+
+  async function printSessions(): Promise<void> {
+    const rows = await numberedSessions();
+    if (!rows.length) return log("no live sessions");
+    logAbove(rows.map((r) => `  \x1b[36m${r.n}\x1b[0m ${r.label}${lastTurn?.sessionId === r.s.sessionId ? " \x1b[2m(space wakes this one)\x1b[0m" : ""}`).join("\n"));
+  }
+
+  /** Audition every live session in its assigned voice — `conch voice <session> <voice>` reassigns. */
+  async function auditionVoices(): Promise<void> {
+    if (busy) return log("busy — audition after the current exchange");
+    busy = true;
+    try {
+      const rows = await numberedSessions();
+      if (!rows.length) return log("no live sessions");
+      for (const r of rows) {
+        logAbove(`  \x1b[36m${r.n}\x1b[0m ${r.label} — \x1b[35m${voiceFor(cfg, r.label)}\x1b[0m`);
+        await speak(cfg, `${r.label} sounds like this.`, r.label);
+      }
+      logAbove('  \x1b[2mreassign: conch voice <session> <kokoro-voice>\x1b[0m');
+    } finally {
+      busy = false;
+      setState(muted ? "muted" : "idle");
+      void drain();
+    }
+  }
+
+  async function wakeByNumber(n: number): Promise<void> {
+    const rows = await numberedSessions();
+    const row = rows.find((r) => r.n === n);
+    if (!row) return log(`no session #${n} — press s to list`);
+    enqueue({
+      type: "wake",
+      sessionId: row.s.sessionId,
+      label: row.label,
+      cwd: row.s.cwd,
+      pid: row.s.pid,
+      announce: "",
+      transcriptPath: findTranscript(cfg.claudeDir, row.s.sessionId),
+    });
+  }
+
+  // Interactive keys when running in a terminal.
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
     process.stdin.resume();
     process.stdin.on("data", (d) => {
       const c = d.toString();
-      if (c === " ") enqueue({ type: "wake", sessionId: "", label: "", announce: "" });
+      if (c === " ") {
+        if (busy) {
+          // reciting (or mid-exchange): space is the guaranteed stop
+          stopKey = true;
+          stopSpeaking();
+          log("⏹ spacebar — stopped");
+        } else {
+          enqueue({ type: "wake", sessionId: "", label: "", announce: "" });
+        }
+      }
+      else if (c >= "1" && c <= "9") void wakeByNumber(Number(c));
+      else if (c === "s" || c === "l") void printSessions();
+      else if (c === "v") void auditionVoices();
+      else if (c === "m") enqueue({ type: muted ? "unmute" : "mute", sessionId: "", label: "", announce: "" });
+      else if (c === "?" || c === "h") printHelp();
       else if (c === "q" || c === "\u0003") shutdown();
     });
-    log("space = reopen mic for the last session · q = quit");
+    printHelp();
   }
+}
+
+function printHelp(): void {
+  logAbove(
+    [
+      "",
+      "  \x1b[1mkeys\x1b[0m   \x1b[36mspace\x1b[0m stop reciting / open mic   \x1b[36ms\x1b[0m sessions   \x1b[36m1-9\x1b[0m mic to #   \x1b[36mv\x1b[0m voices   \x1b[36mm\x1b[0m mute   \x1b[36m?\x1b[0m help   \x1b[36mq\x1b[0m quit",
+      '  \x1b[1mvoice\x1b[0m  \x1b[36m"continue"\x1b[0m read more   \x1b[36m"repeat"\x1b[0m again   \x1b[36m"stop"\x1b[0m end reading   \x1b[36m"no response needed"\x1b[0m close mic',
+      "  \x1b[1mcli\x1b[0m    conch wake [name] · sessions · voice <session> <voice> · mute · doctor",
+      "",
+    ].join("\n"),
+  );
 }
 
 function log(msg: string): void {

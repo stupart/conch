@@ -100,6 +100,7 @@ export async function transcribeWavCli(cfg: Config, wavPath: string): Promise<{ 
       "-m", cfg.whisperModel,
       "-vm", cfg.vadModel,
       "--vad",
+      "--vad-speech-pad-ms", "300",
       "-f", wavPath,
       "-l", "en",
       "-t", "6",

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { classify, classifyApproval, classifyReadingGap } from "../src/commands.ts";
+import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio } from "../src/commands.ts";
 import { looksLikeAwaitingReply } from "../src/snippet.ts";
 
 test("bare commands match despite whisper's punctuation and casing", () => {
@@ -19,6 +19,18 @@ test("real prompts that merely contain command words stay prompts", () => {
   expect(classify("Stop using the legacy API and switch to v2.")).toBe("prompt");
 });
 
+test("bare stop closes the mic — a finished session can't be told to stop", () => {
+  expect(classify("Stop.")).toBe("discard");
+  expect(classify("Stop talking.")).toBe("discard");
+});
+
+test("echo guard: transcripts of the Mac's own reading score high overlap", () => {
+  const chunk = "The daemon spawns and owns the whisper server, and transcription drops from four seconds to under two.";
+  expect(wordOverlapRatio("the daemon spawns and owns the whisper server", chunk)).toBeGreaterThan(0.9);
+  expect(wordOverlapRatio("okay stop reading now please", chunk)).toBeLessThan(0.4);
+  expect(wordOverlapRatio("", chunk)).toBe(0);
+});
+
 test("filler-wrapped commands still match", () => {
   expect(classify("Oh, continue.")).toBe("continue");
   expect(classify("Okay, keep going.")).toBe("continue");
@@ -31,7 +43,6 @@ test("filler-wrapped commands still match", () => {
 test("plausible yes/no replies are never swallowed as commands", () => {
   expect(classify("Yes.")).toBe("prompt");
   expect(classify("No.")).toBe("prompt");
-  expect(classify("Stop.")).toBe("prompt");
 });
 
 test("no-response phrases close the mic", () => {
