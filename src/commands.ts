@@ -31,6 +31,10 @@ const STOP_READING = new Set([
 export function classifyReadingGap(text: string): "stop" | VoiceIntent {
   const norm = normalize(text);
   if (STOP_READING.has(norm)) return "stop";
+  // During reading, an utterance that BEGINS with a stop word is you cutting
+  // in ("stop, for some reason it..."), not a prompt — the trailing words are
+  // just you continuing to talk. Injecting them was observed live.
+  if (/^(stop|okay stop|ok stop|enough|hold on|wait)\b/.test(norm)) return "stop";
   return classify(text);
 }
 

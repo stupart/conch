@@ -60,6 +60,14 @@ test("reading-gap commands: stop cuts the reading short", () => {
   expect(classifyReadingGap("Now fix the header too.")).toBe("prompt");
 });
 
+test("reading-gap: an utterance that STARTS with stop cuts short (trailing words are you continuing to talk)", () => {
+  expect(classifyReadingGap("Stop, for some reason it did the wrong thing.")).toBe("stop");
+  expect(classifyReadingGap("Wait, go back.")).toBe("stop");
+  expect(classifyReadingGap("Hold on.")).toBe("stop");
+  // but a real prompt that merely mentions stopping stays a prompt
+  expect(classifyReadingGap("Also make it stop retrying on 500s.")).toBe("prompt");
+});
+
 test("permission approval vocabulary", () => {
   expect(classifyApproval("Yes.")).toBe("approve");
   expect(classifyApproval("Yeah, go ahead.")).toBe("approve");

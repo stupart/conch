@@ -375,13 +375,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // Same ownership pattern as whisper-server; `say` remains the fallback.
   let ttsServer: ReturnType<typeof Bun.spawn> | null = null;
   if (cfg.ttsEngine !== "say" && cfg.ttsPort && Bun.which(cfg.ttsServerBin)) {
-    ttsServer = Bun.spawn([cfg.ttsServerBin, "--port", String(cfg.ttsPort)], {
-      stdout: "ignore",
-      stderr: "ignore",
-    });
+    // Adopt an already-running server (e.g. a prior daemon's, after a
+    // launchd restart) instead of spawning a duplicate that can't bind the
+    // port, dies silently, and leaves us talking to a stale instance.
+    const already = await probeTtsServer(cfg, 1500);
+    if (!already) {
+      // logged (not discarded) so synthesis failures are diagnosable
+      ttsServer = Bun.spawn([cfg.ttsServerBin, "--port", String(cfg.ttsPort)], {
+        stdout: Bun.file("/tmp/conch-kokoro.log"),
+        stderr: Bun.file("/tmp/conch-kokoro.log"),
+      });
+    }
     void probeTtsServer(cfg, 30_000).then(async (up) => {
       if (!up) return log("tts server didn't come up — voices via say");
-      log(`kokoro warm on :${cfg.ttsPort} — per-session voices on`);
+      log(`kokoro ${already ? "adopted" : "warm"} on :${cfg.ttsPort} — per-session voices on`);
       // Preload the model off the hot path so the first real announcement
       // doesn't pay the multi-second first-synthesis cost.
       await fetch(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/speech`, {
