@@ -54,6 +54,16 @@ export interface Config {
   micCues: boolean;
   /** press Enter after injecting the transcript */
   autoSubmit: boolean;
+  /**
+   * Hold submit: inject each dictated segment WITHOUT pressing Enter and keep
+   * the mic open, so a natural pause segments your dictation instead of
+   * sending it. Submit on "send"/"go" or after holdSubmitSecs of silence.
+   */
+  holdSubmit: boolean;
+  /** silence (seconds) after which held dictation auto-submits */
+  holdSubmitSecs: number;
+  /** suppress a "needs you" for a session conch drove within this window (ms) */
+  recentInjectSuppressMs: number;
   /** allow blind osascript keystroke injection when no tmux pane is found */
   keystrokeFallback: boolean;
   socketPath: string;
@@ -109,6 +119,9 @@ export function loadConfig(): Config {
     continueSentences: num(env.CONCH_CONTINUE_SENTENCES, 6), // bigger chunks = fewer inter-chunk pauses
     micCues: flag(env.CONCH_MIC_CUES, true),
     autoSubmit: flag(env.CONCH_AUTO_SUBMIT, true),
+    holdSubmit: flag(env.CONCH_HOLD_SUBMIT, true),
+    holdSubmitSecs: num(env.CONCH_HOLD_SUBMIT_SECS, 8),
+    recentInjectSuppressMs: num(env.CONCH_INJECT_SUPPRESS_MS, 30_000),
     keystrokeFallback: flag(env.CONCH_KEYSTROKE_FALLBACK, false),
     socketPath: env.CONCH_SOCKET ?? "/tmp/conch.sock",
     claudeDir: env.CLAUDE_CONFIG_DIR ?? join(HOME, ".claude"),

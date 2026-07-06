@@ -19,12 +19,14 @@ export async function injectText(
   cfg: Config,
   sessionPid: number | undefined,
   text: string,
+  opts: { submit?: boolean } = {},
 ): Promise<{ via: InjectRoute }> {
+  const submit = opts.submit ?? cfg.autoSubmit;
   if (sessionPid) {
     const pane = await findTmuxPane(sessionPid);
     if (pane) {
       await $`tmux send-keys -t ${pane} -l ${text}`.quiet();
-      if (cfg.autoSubmit) await $`tmux send-keys -t ${pane} Enter`.quiet();
+      if (submit) await $`tmux send-keys -t ${pane} Enter`.quiet();
       return { via: "tmux" };
     }
   }
@@ -39,10 +41,10 @@ export async function injectText(
     }
     if (focused) await Bun.sleep(300); // let the window raise settle
     await Bun.spawn(
-      ["osascript", "-e", "on run argv", "-e", 'tell application "System Events" to keystroke (item 1 of argv)', "-e", "end run", "--", text.trim()],
+      ["osascript", "-e", "on run argv", "-e", 'tell application "System Events" to keystroke (item 1 of argv)', "-e", "end run", "--", text],
       { stdout: "ignore", stderr: "ignore" },
     ).exited;
-    if (cfg.autoSubmit) {
+    if (submit) {
       // separate, delayed Return: bundling it with the text occasionally
       // arrived before the terminal finished ingesting the keystrokes
       await Bun.sleep(250);
@@ -56,6 +58,24 @@ export async function injectText(
 
   await toClipboard(text);
   return { via: "clipboard" };
+}
+
+/** Clear the prompt box (select-all + delete) — for "cancel" after some text was already typed. */
+export async function clearPrompt(cfg: Config, sessionPid: number | undefined): Promise<void> {
+  if (sessionPid) {
+    const pane = await findTmuxPane(sessionPid);
+    if (pane) {
+      await $`tmux send-keys -t ${pane} C-u`.quiet();
+      return;
+    }
+  }
+  if (cfg.keystrokeFallback && sessionPid && (await focusSessionWindow(sessionPid))) {
+    await Bun.sleep(200);
+    await Bun.spawn(
+      ["osascript", "-e", 'tell application "System Events" to keystroke "a" using command down', "-e", 'tell application "System Events" to key code 51'],
+      { stdout: "ignore", stderr: "ignore" },
+    ).exited;
+  }
 }
 
 /** Press a single key in the session — Enter accepts a permission dialog's highlighted option, Escape dismisses it. */

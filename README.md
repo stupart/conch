@@ -121,6 +121,8 @@ All via environment variables (put them in the hook's env or your shell profile)
 | `CONCH_BARGE_THRESHOLD_PCT` | `12` | mic level that interrupts reading mid-chunk; `0` = gaps only |
 | `CONCH_MIC_CUES` | `1` | tink on mic-open, bottle on silent close |
 | `CONCH_AUTO_SUBMIT` | `1` | press Enter after injecting |
+| `CONCH_HOLD_SUBMIT` | `1` | hold Enter; pauses segment dictation, "send"/"go" or a long pause submits |
+| `CONCH_HOLD_SUBMIT_SECS` | `8` | silence before held dictation auto-submits |
 | `CONCH_KEYSTROKE_FALLBACK` | `0` | allow typing into the frontmost window when no tmux pane is found |
 | `CONCH_SEASHELL_ROOT` | `~/whisper-cli` | where the whisper.cpp build + models live |
 | `CONCH_WHISPER_PORT` | `8642` | warm whisper-server port; `0` = cold cli only |

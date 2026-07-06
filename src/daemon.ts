@@ -4,8 +4,8 @@ import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
 import { speak, speakCancellable, stopSpeaking, probeTtsServer, voiceFor } from "./speak.ts";
 import { listenOnce, listenGap, armBargeRecorder, type ListenHooks } from "./listen.ts";
-import { injectText, injectKey } from "./inject.ts";
-import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio } from "./commands.ts";
+import { injectText, injectKey, clearPrompt } from "./inject.ts";
+import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio, isSendCommand } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences } from "./snippet.ts";
 import { probeServer } from "./transcribe.ts";
 import { setState, logAbove } from "./status.ts";
@@ -30,6 +30,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let lastTurn: TurnEvent | null = null;
   let muted = false;
   let stopKey = false; // spacebar pressed while reciting — the guaranteed interrupt
+  const injectedAt = new Map<string, number>(); // session -> last time conch drove it
 
   const consumeStopKey = () => {
     const s = stopKey;
@@ -109,6 +110,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
     log(`${event.type}${event.ntype ? `/${event.ntype}` : ""} from "${event.label}" (${event.sessionId.slice(0, 8)})`);
 
+    // Suppress a "needs you" for a session conch just drove — Claude Code can
+    // fire an idle/needs-you the moment injected input lands, before the turn
+    // starts, and nagging you for input you just gave is pure noise.
+    if (event.type === "needs-you") {
+      const since = Date.now() - (injectedAt.get(event.sessionId) ?? 0);
+      if (since < cfg.recentInjectSuppressMs) {
+        return log(`suppressed needs-you for "${event.label}" (drove it ${Math.round(since / 1000)}s ago)`);
+      }
+    }
+
     if (event.type === "needs-you" && event.ntype !== "idle_prompt") {
       setState("speaking", event.label);
       await speak(cfg, event.announce, event.label);
@@ -164,8 +175,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
     return { heard, cut };
   }
 
+  /** Submit held dictation: press Enter in the session (text is already typed). */
+  async function submitPending(event: TurnEvent): Promise<void> {
+    injectedAt.set(event.sessionId, Date.now());
+    const { via } = await injectKey(cfg, event.pid, "Enter");
+    log(`submitted held dictation via ${via}`);
+    if (via === "none") speak(cfg, "Couldn't reach the window to send — press enter yourself.");
+  }
+
   /** Inject a prompt utterance and report how it went. */
   async function deliver(event: TurnEvent, text: string): Promise<void> {
+    injectedAt.set(event.sessionId, Date.now());
     const { via } = await injectText(cfg, event.pid, text);
     log(`injected via ${via}`);
     if (via === "clipboard") {
@@ -281,25 +301,51 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
     }
 
+    // pending = text has been typed into the box but not yet submitted
+    // (hold-submit mode: natural pauses segment dictation, they don't send)
+    let pending = false;
+
     while (true) {
       await micCue(cfg, "open"); // audible "mic is open" — cue finishes before sox starts
-      log(`listening (start within ${cfg.listenWindowSecs}s)...`);
-      const { text, error } = await listenOnce(cfg, listenHooks(event.label));
+      const window = pending ? cfg.holdSubmitSecs : cfg.listenWindowSecs;
+      log(`listening (start within ${window}s)${pending ? " · holding, say 'send' or pause to submit" : ""}...`);
+      const { text, error } = await listenOnce({ ...cfg, listenWindowSecs: window }, listenHooks(event.label));
       if (error) return log(`listen error: ${error}`);
       if (!text) {
         await micCue(cfg, "close");
+        if (pending) {
+          log("held dictation timed out — submitting");
+          await submitPending(event);
+        }
         return log("no speech — back to idle");
       }
 
+      // In hold-submit mode, "send"/"go" submits what's been dictated.
+      if (pending && isSendCommand(text)) {
+        log(`heard: "${text}" -> send`);
+        await submitPending(event);
+        return;
+      }
+
       const intent = classify(text);
-      log(`heard: "${text}" -> ${intent}`);
+      log(`heard: "${text}" -> ${intent}${pending ? " (holding)" : ""}`);
 
       switch (intent) {
         case "prompt": {
-          await deliver(event, text);
-          return;
+          if (!cfg.holdSubmit) {
+            await deliver(event, text);
+            return;
+          }
+          // accumulate: type this segment (leading space after the first) without Enter
+          await injectText(cfg, event.pid, pending ? ` ${text}` : text, { submit: false });
+          pending = true;
+          break;
         }
         case "discard":
+          if (pending) {
+            await clearPrompt(cfg, event.pid);
+            log("cleared held dictation");
+          }
           await speak(cfg, "Okay.", event.label);
           return;
         case "repeat":

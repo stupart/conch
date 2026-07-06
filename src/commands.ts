@@ -27,9 +27,26 @@ const STOP_READING = new Set([
   "enough", "that's enough", "got it", "thanks", "thank you", "skip",
 ]);
 
+// In dictation-accumulate mode these submit the held prompt. Deliberately
+// short/decisive phrases you wouldn't dictate as content mid-thought.
+const SEND = new Set([
+  "send", "send it", "sent it", "send that", "go", "go ahead", "submit", "submit it",
+  "that's it", "thats it", "okay send", "ok send", "okay send it", "send message",
+  "go for it", "fire away", "run it",
+]);
+
+export function isSendCommand(text: string): boolean {
+  return SEND.has(normalize(text));
+}
+
 /** Classifier for the short listen-gaps between read-aloud chunks. */
 export function classifyReadingGap(text: string): "stop" | VoiceIntent {
   const norm = normalize(text);
+  // "stop, no response needed" in one breath: stop reading AND close the mic
+  // with no reply — saves saying "stop" then "no response needed" separately.
+  if (/\b(no response|no reply|nothing|don'?t respond|no answer)\b/.test(norm) && /\b(stop|nope?|no)\b/.test(norm)) {
+    return "discard";
+  }
   if (STOP_READING.has(norm)) return "stop";
   // During reading, an utterance that BEGINS with a stop word is you cutting
   // in ("stop, for some reason it..."), not a prompt — the trailing words are

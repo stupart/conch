@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio } from "../src/commands.ts";
+import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio, isSendCommand } from "../src/commands.ts";
 import { looksLikeAwaitingReply } from "../src/snippet.ts";
 
 test("bare commands match despite whisper's punctuation and casing", () => {
@@ -66,6 +66,23 @@ test("reading-gap: an utterance that STARTS with stop cuts short (trailing words
   expect(classifyReadingGap("Hold on.")).toBe("stop");
   // but a real prompt that merely mentions stopping stays a prompt
   expect(classifyReadingGap("Also make it stop retrying on 500s.")).toBe("prompt");
+});
+
+test("reading-gap: 'stop, no response needed' in one breath closes the mic (discard)", () => {
+  expect(classifyReadingGap("Stop, no response needed.")).toBe("discard");
+  expect(classifyReadingGap("Stop. No reply needed.")).toBe("discard");
+  expect(classifyReadingGap("No, stop, nothing.")).toBe("discard");
+  // plain stop still just stops
+  expect(classifyReadingGap("Stop.")).toBe("stop");
+});
+
+test("send commands submit held dictation; real content does not", () => {
+  expect(isSendCommand("send it")).toBe(true);
+  expect(isSendCommand("Go ahead.")).toBe(true);
+  expect(isSendCommand("okay send")).toBe(true);
+  expect(isSendCommand("that's it")).toBe(true);
+  expect(isSendCommand("send the migration to staging")).toBe(false);
+  expect(isSendCommand("go look at the config file")).toBe(false);
 });
 
 test("permission approval vocabulary", () => {
