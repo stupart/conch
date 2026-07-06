@@ -198,6 +198,12 @@ type Playable = { file: string } | { say: string };
  * flight at a time (the server is single-threaded); it overlaps playback,
  * which is a separate afplay process.
  */
+// Synthesize this many sentences AHEAD of playback. Trimming made clips
+// shorter than their synth time (esp. with perturbation retries), so a
+// 1-ahead prefetch underran and the read stuttered. A deeper buffer lets the
+// warm server run continuously and absorb slow sentences.
+const PREFETCH_DEPTH = 3;
+
 async function speakViaServer(
   cfg: Config,
   text: string,
@@ -208,20 +214,21 @@ async function speakViaServer(
   const sentences = splitSentences(text);
   if (sentences.length === 0) sentences.push(text);
 
+  // Launch up to PREFETCH_DEPTH synths ahead; the single-threaded server
+  // processes them FIFO, building a buffer of ready audio before playback.
+  const pending: (Promise<Playable[] | "unreachable"> | null)[] = new Array(sentences.length).fill(null);
+  const launch = (i: number) => {
+    if (i < sentences.length && !pending[i]) pending[i] = synthSentence(cfg, sentences[i]!, voice, ctl);
+  };
+  for (let i = 0; i < PREFETCH_DEPTH; i++) launch(i);
+
   let playedAny = false;
-  let unreachable = false;
-  let next: Promise<Playable[] | "unreachable"> | null = synthSentence(cfg, sentences[0]!, voice, ctl);
-
   for (let i = 0; i < sentences.length; i++) {
-    const result = await next!;
+    const result = await pending[i]!;
     if (ctl?.cancelled) return "ok";
-    // kick off the next synth before playing this one — this is the overlap
-    next = i + 1 < sentences.length ? synthSentence(cfg, sentences[i + 1]!, voice, ctl) : null;
+    launch(i + PREFETCH_DEPTH); // keep the look-ahead window full
 
-    if (result === "unreachable") {
-      unreachable = true;
-      break;
-    }
+    if (result === "unreachable") return playedAny ? "ok" : "unreachable";
     for (const p of result) {
       if (ctl?.cancelled) return "ok";
       if ("say" in p) {
@@ -234,7 +241,6 @@ async function speakViaServer(
       playedAny = true;
     }
   }
-  if (unreachable) return playedAny ? "ok" : "unreachable";
   return playedAny ? "ok" : "synth-failed";
 }
 

@@ -300,22 +300,28 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const buffer: string[] = [];
 
     while (true) {
-      await micCue(cfg, "open"); // audible "mic is open" — cue finishes before sox starts
+      // Cue "open" only when the mic FIRST opens — not before every held
+      // segment (tink-per-segment was disconcerting). Holding segments re-arm
+      // silently; a "sent"/"close" cue marks the end.
+      if (!buffer.length) await micCue(cfg, "open");
       const window = buffer.length ? cfg.holdSubmitSecs : cfg.listenWindowSecs;
       log(`listening (start within ${window}s)${buffer.length ? " · holding, say 'send' or pause to submit" : ""}...`);
       const { text, error } = await listenOnce({ ...cfg, listenWindowSecs: window }, listenHooks(event.label));
       if (error) return log(`listen error: ${error}`);
       if (!text) {
-        await micCue(cfg, "close");
         if (buffer.length) {
+          await micCue(cfg, "sent");
           log(`held dictation timed out — submitting ${buffer.length} segment(s)`);
           await deliver(event, buffer.join(" "));
+        } else {
+          await micCue(cfg, "close");
         }
         return log("no speech — back to idle");
       }
 
       // In hold-submit mode, "send"/"go" submits what's been dictated.
       if (buffer.length && isSendCommand(text)) {
+        await micCue(cfg, "sent");
         log(`heard: "${text}" -> send (${buffer.length} segment(s))`);
         await deliver(event, buffer.join(" "));
         return;
@@ -590,9 +596,14 @@ async function idleSeconds(): Promise<number> {
   }
 }
 
-async function micCue(cfg: Config, kind: "open" | "close"): Promise<void> {
+const CUE_SOUND = {
+  open: "/System/Library/Sounds/Tink.aiff", // mic opened, start talking
+  close: "/System/Library/Sounds/Bottle.aiff", // window closed on silence
+  sent: "/System/Library/Sounds/Pop.aiff", // dictation submitted
+};
+
+async function micCue(cfg: Config, kind: keyof typeof CUE_SOUND): Promise<void> {
   if (!cfg.micCues) return;
-  const sound = kind === "open" ? "/System/Library/Sounds/Tink.aiff" : "/System/Library/Sounds/Bottle.aiff";
-  await Bun.spawn(["afplay", sound], { stdout: "ignore", stderr: "ignore" }).exited;
+  await Bun.spawn(["afplay", CUE_SOUND[kind]], { stdout: "ignore", stderr: "ignore" }).exited;
   if (kind === "open") await Bun.sleep(350); // let the cue's tail decay before sox arms
 }
