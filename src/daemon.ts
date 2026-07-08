@@ -1,5 +1,7 @@
 import { createServer } from "node:net";
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
 import { speak, speakCancellable, stopSpeaking, probeTtsServer, voiceFor } from "./speak.ts";
@@ -24,13 +26,45 @@ import { listSessions, sessionLabel, findTranscript, type SessionInfo } from "./
  * session, newest first. A "wake" event (conch wake, or spacebar when the
  * daemon runs in a terminal) reopens the mic for the last announced session.
  */
+// Mute is persisted so a daemon restart (launchd/supervisor respawn) doesn't
+// silently turn conch back ON — muting "for the night" must survive.
+const STATE_FILE = join(homedir(), ".config/conch/state.json");
+
+function readMuted(): boolean {
+  try {
+    return JSON.parse(readFileSync(STATE_FILE, "utf8")).muted === true;
+  } catch {
+    return false;
+  }
+}
+
+function writeMuted(muted: boolean): void {
+  try {
+    mkdirSync(join(homedir(), ".config/conch"), { recursive: true });
+    writeFileSync(STATE_FILE, JSON.stringify({ muted }) + "\n");
+  } catch {}
+}
+
 export async function runDaemon(cfg: Config): Promise<void> {
   const queue: TurnEvent[] = [];
   let busy = false;
   let lastTurn: TurnEvent | null = null;
-  let muted = false;
+  let muted = readMuted(); // survives restarts — see STATE_FILE
   let stopKey = false; // spacebar pressed while reciting — the guaranteed interrupt
   const injectedAt = new Map<string, number>(); // session -> last time conch drove it
+
+  // Record that conch just drove a session, and prune stale entries so this
+  // map can't grow without bound over a long-lived daemon. Anything older than
+  // the suppress window is irrelevant (the needs-you guard won't consult it).
+  function markInjected(sessionId: string): void {
+    const now = Date.now();
+    injectedAt.set(sessionId, now);
+    if (injectedAt.size > 64) {
+      for (const [id, t] of injectedAt) {
+        if (now - t > cfg.recentInjectSuppressMs) injectedAt.delete(id);
+      }
+    }
+  }
 
   const consumeStopKey = () => {
     const s = stopKey;
@@ -73,6 +107,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   async function setMuted(next: boolean): Promise<void> {
     muted = next;
+    writeMuted(muted); // persist so a restart doesn't un-mute
     log(muted ? "muted — announcements and mic off (m or `conch unmute` to resume)" : "unmuted");
     setState(muted ? "muted" : "idle");
     await speak(cfg, muted ? "Muted." : "Back on.");
@@ -177,7 +212,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   /** Inject a prompt utterance and report how it went. */
   async function deliver(event: TurnEvent, text: string): Promise<void> {
-    injectedAt.set(event.sessionId, Date.now());
+    markInjected(event.sessionId);
     const { via } = await injectText(cfg, event.pid, text);
     log(`injected via ${via}`);
     if (via === "clipboard") {
@@ -214,7 +249,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       case "stop":
         return "stop";
       case "discard":
-        injectedAt.set(event.sessionId, Date.now()); // "no response" also suppresses the follow-up needs-you nag
+        markInjected(event.sessionId); // "no response" also suppresses the follow-up needs-you nag
         await speak(cfg, "Okay.", event.label);
         return "handled";
       case "prompt":
@@ -342,7 +377,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         }
         case "discard":
           if (buffer.length) log(`discarded ${buffer.length} held segment(s)`);
-          injectedAt.set(event.sessionId, Date.now()); // suppress the follow-up needs-you nag
+          markInjected(event.sessionId); // suppress the follow-up needs-you nag
           await speak(cfg, "Okay.", event.label);
           return;
         case "repeat":
