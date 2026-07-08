@@ -507,7 +507,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   server.listen(cfg.socketPath);
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);
-  setState("idle");
+  if (muted) log("resuming muted (persisted) — m or `conch unmute` to turn on");
+  setState(muted ? "muted" : "idle");
 
   const shutdown = () => {
     stopSpeaking(); // never orphan a talking `say` — voices overlapped live
