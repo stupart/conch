@@ -52,6 +52,17 @@ export function killActiveRecorders(): void {
   activeRecorders.clear();
 }
 
+// Set when the user closes the mic (spacebar) mid-listen: kills the live
+// recorder AND tells listenOnce to bail cleanly instead of re-arming or
+// transcribing the truncated clip. Reset at the top of each listenOnce.
+let listenAborted = false;
+
+/** Close an in-flight listenOnce immediately — spacebar while the mic is open. */
+export function abortListening(): void {
+  listenAborted = true;
+  killActiveRecorders();
+}
+
 /**
  * Capture one utterance and transcribe it.
  *
@@ -68,7 +79,8 @@ export function killActiveRecorders(): void {
  *    mid-recording for live partials (a wav header's size fields would be
  *    stale until sox closes the file).
  */
-export async function listenOnce(cfg: Config, hooks: ListenHooks = {}): Promise<{ text: string; error?: string }> {
+export async function listenOnce(cfg: Config, hooks: ListenHooks = {}): Promise<{ text: string; error?: string; aborted?: boolean }> {
+  listenAborted = false; // a stale abort from a past listen must not close this one
   const opened = Date.now();
   const windowSpent = () => (Date.now() - opened) / 1000 >= cfg.listenWindowSecs;
 
@@ -77,6 +89,11 @@ export async function listenOnce(cfg: Config, hooks: ListenHooks = {}): Promise<
   while (true) {
     await rec.proc.exited;
     clearInterval(rec.watchdog);
+
+    if (listenAborted) {
+      discard(rec.raw);
+      return { text: "", aborted: true }; // spacebar closed the mic mid-listen
+    }
 
     const pcm = readPcm(rec.raw);
     discard(rec.raw);
@@ -91,6 +108,10 @@ export async function listenOnce(cfg: Config, hooks: ListenHooks = {}): Promise<
     hooks.onState?.("transcribing");
     const result = await transcribePcm(cfg, pcm);
 
+    if (listenAborted) {
+      if (next) await disarm(next);
+      return { text: "", aborted: true };
+    }
     if (result.error || result.text) {
       if (next) await disarm(next);
       return result;
