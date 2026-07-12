@@ -5,6 +5,7 @@ import { runDaemon } from "./daemon.ts";
 import { runInstall, runDoctor, runService } from "./install.ts";
 import { listenOnce } from "./listen.ts";
 import { speak, probeTtsServer, voiceFor, setVoiceOverride } from "./speak.ts";
+import { emitRecorderTrace } from "./diagnostics.ts";
 
 const HELP = `conch — a voice loop for Claude Code
 
@@ -89,14 +90,16 @@ switch (command) {
     const { probeServer } = await import("./transcribe.ts");
     await probeServer(cfg, 1500); // a running daemon's warm server enables live partials
     console.error("[conch] listening... (speak, then pause)");
-    const { text, error } = await listenOnce(cfg, {
+    const { text, error, diagnosticId } = await listenOnce(cfg, {
       onPartial: (t) => process.stderr.write(`\r\x1b[K[conch] ▸ ${t}`),
     });
     process.stderr.write("\r\x1b[K");
     if (error) {
+      emitRecorderTrace(diagnosticId, { intent: "cli-error", bufferCountAfterReduction: 0 });
       console.error(`[conch] ${error}`);
       process.exit(1);
     }
+    emitRecorderTrace(diagnosticId, { intent: "cli-output", bufferCountAfterReduction: 0 });
     console.log(text);
     break;
   }

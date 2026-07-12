@@ -1,5 +1,6 @@
 import { existsSync, unlinkSync } from "node:fs";
 import type { Config } from "./config.ts";
+import type { TranscriptionEngine } from "./diagnostics.ts";
 
 /**
  * Two transcription paths:
@@ -57,7 +58,11 @@ export function wavFromRawPcm(pcm: Uint8Array, sampleRate = 16000): Uint8Array {
   return out;
 }
 
-export async function transcribePcm(cfg: Config, pcm: Uint8Array): Promise<{ text: string; error?: string }> {
+export async function transcribePcm(
+  cfg: Config,
+  pcm: Uint8Array,
+  onEngine?: (engine: TranscriptionEngine) => void,
+): Promise<{ text: string; error?: string }> {
   const wav = wavFromRawPcm(pcm);
 
   if (cfg.whisperPort && serverHealthy) {
@@ -72,6 +77,7 @@ export async function transcribePcm(cfg: Config, pcm: Uint8Array): Promise<{ tex
       });
       if (res.ok) {
         const body = (await res.json()) as { text?: string };
+        onEngine?.("warm");
         return { text: cleanTranscript(body.text ?? "") };
       }
     } catch {
@@ -83,6 +89,7 @@ export async function transcribePcm(cfg: Config, pcm: Uint8Array): Promise<{ tex
   }
 
   const tmp = `/tmp/conch-cli-${process.pid}-${Date.now()}.wav`;
+  onEngine?.("cold");
   await Bun.write(tmp, wav as unknown as Uint8Array<ArrayBuffer>);
   try {
     return await transcribeWavCli(cfg, tmp);

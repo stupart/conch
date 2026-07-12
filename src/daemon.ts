@@ -12,6 +12,13 @@ import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences
 import { probeServer } from "./transcribe.ts";
 import { setState, logAbove } from "./status.ts";
 import { listSessions, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
+import {
+  emitRecorderTrace,
+  emitRecorderTraces,
+  flushPendingRecorderTraces,
+  recorderDiagnosticsEnabled,
+  updateRecorderTrace,
+} from "./diagnostics.ts";
 
 /**
  * The turn-based voice loop.
@@ -46,6 +53,7 @@ function writeMuted(muted: boolean): void {
 }
 
 export async function runDaemon(cfg: Config): Promise<void> {
+  const diagnosticsEnabled = recorderDiagnosticsEnabled();
   const queue: TurnEvent[] = [];
   let busy = false;
   let lastTurn: TurnEvent | null = null;
@@ -180,7 +188,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       await speak(cfg, event.announce, event.label);
     }
     lastTurn = event;
-    await conversationLoop(event, announce.heard);
+    await conversationLoop(event, announce.heard, announce.diagnosticId);
   }
 
   /**
@@ -193,7 +201,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     event: TurnEvent,
     text: string,
     disabled: boolean,
-  ): Promise<{ heard: string; cut: boolean }> {
+  ): Promise<{ heard: string; cut: boolean; diagnosticId?: string }> {
     setState("speaking", event.label);
     if (!cfg.bargeThresholdPct || disabled) {
       await speak(cfg, text, event.label);
@@ -208,19 +216,43 @@ export async function runDaemon(cfg: Config): Promise<void> {
         speech.cancel(); // your voice wins mid-sentence
       }
     }, 120);
-    await speech.done;
+    if (diagnosticsEnabled) {
+      try {
+        await speech.done;
+      } catch (e) {
+        clearInterval(watch);
+        await barge.abort();
+        throw e;
+      }
+    } else {
+      await speech.done;
+    }
     clearInterval(watch);
     if (!barge.triggered()) {
       await barge.abort();
       return { heard: "", cut: false };
     }
     setState("recording", event.label);
-    const { text: heard } = await barge.finish();
-    return { heard, cut };
+    const { text: heard, error, diagnosticId } = await barge.finish();
+    if (error) {
+      emitRecorderTrace(diagnosticId, { intent: "transcription-error", bufferCountAfterReduction: 0 });
+    } else if (!heard) {
+      emitRecorderTrace(diagnosticId, { intent: "barge-empty", bufferCountAfterReduction: 0 });
+    }
+    return diagnosticId ? { heard, cut, diagnosticId } : { heard, cut };
   }
 
   /** Inject a prompt utterance and report how it went. */
-  async function deliver(event: TurnEvent, text: string): Promise<void> {
+  async function deliver(
+    event: TurnEvent,
+    text: string,
+    diagnosticIds?: string | Iterable<string | undefined>,
+  ): Promise<void> {
+    if (typeof diagnosticIds === "string") {
+      emitRecorderTrace(diagnosticIds, { finalSubmittedPayload: text });
+    } else if (diagnosticIds) {
+      emitRecorderTraces(diagnosticIds, { finalSubmittedPayload: text });
+    }
     markInjected(event.sessionId);
     const { via } = await injectText(cfg, event.pid, text);
     log(`injected via ${via}`);
@@ -236,6 +268,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     event: TurnEvent,
     text: string,
     spokenChunk: string,
+    diagnosticId?: string,
   ): Promise<"stop" | "handled" | "keep-reading" | "echo"> {
     const intent = classifyReadingGap(text);
     log(`heard mid-read: "${text}" -> ${intent}`);
@@ -245,6 +278,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // are always honored; only long injectable prose can be a real echo.
     if (intent === "prompt" && spokenChunk && wordOverlapRatio(text, spokenChunk) > 0.6) {
       log(`barge echo guard: mic heard the reading itself ("${text.slice(0, 60)}")`);
+      emitRecorderTrace(diagnosticId, { intent: "echo", bufferCountAfterReduction: 0 });
       return "echo";
     }
     if (intent === "prompt" && text.split(/\s+/).filter((w) => /[a-z0-9]/i.test(w)).length <= 3) {
@@ -252,25 +286,30 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // to talk, not a prompt — stop reading and hand them the mic instead
       // of injecting the fragment (observed live: killed the read AND sent junk)
       log("short mid-read fragment — pausing the reading to listen properly");
+      emitRecorderTrace(diagnosticId, { intent: "short-fragment-stop", bufferCountAfterReduction: 0 });
       return "stop";
     }
     switch (intent) {
       case "stop":
+        emitRecorderTrace(diagnosticId, { intent: "stop", bufferCountAfterReduction: 0 });
         return "stop";
       case "discard":
+        emitRecorderTrace(diagnosticId, { intent: "discard", bufferCountAfterReduction: 0 });
         markInjected(event.sessionId); // "no response" also suppresses the follow-up needs-you nag
         await speak(cfg, "Okay.", event.label);
         return "handled";
       case "prompt":
-        await deliver(event, text);
+        updateRecorderTrace(diagnosticId, { intent: "prompt", bufferCountAfterReduction: 0 });
+        await deliver(event, text, diagnosticId);
         return "handled";
       default:
+        emitRecorderTrace(diagnosticId, { intent, bufferCountAfterReduction: 0 });
         return "keep-reading"; // repeat/continue: just keep going
     }
   }
 
   /** Commands (continue/repeat/cancel) keep the mic cycling; a real prompt injects; silence idles. */
-  async function conversationLoop(event: TurnEvent, pendingHeard = ""): Promise<void> {
+  async function conversationLoop(event: TurnEvent, pendingHeard = "", pendingDiagnosticId?: string): Promise<void> {
     let lastSpoken = event.announce;
     let sentences: string[] | null = null;
     let cursor = cfg.speakSentences; // the announcement already covered the first sentences
@@ -292,7 +331,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
     // Something said while the announcement was playing (announce barge-in)
     if (pendingHeard) {
-      const action = await onReadingUtterance(event, pendingHeard, event.announce);
+      const action = await onReadingUtterance(event, pendingHeard, event.announce, pendingDiagnosticId);
       if (action === "handled") return;
       if (action === "stop") skipReading = true;
       if (action === "echo") bargeOff = true;
@@ -312,12 +351,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
         const gapSecs = bargeOff ? Math.max(cfg.gapSecs, 0.6) : cfg.gapSecs;
         if (gapSecs > 0) {
           setState("listening", event.label);
-          const { text: gapText } = await listenGap(cfg, gapSecs);
-          if (consumeStopKey()) break reading; // spacebar during the gap
-          if (gapText) {
-            const action = await onReadingUtterance(event, gapText, "");
+          const { text: gapText, error: gapError, diagnosticId: gapDiagnosticId } = await listenGap(cfg, gapSecs);
+          if (consumeStopKey()) {
+            emitRecorderTrace(gapDiagnosticId, { intent: "gap-spacebar", bufferCountAfterReduction: 0 });
+            break reading; // spacebar during the gap
+          }
+          if (gapError) {
+            emitRecorderTrace(gapDiagnosticId, { intent: "transcription-error", bufferCountAfterReduction: 0 });
+          } else if (gapText) {
+            const action = await onReadingUtterance(event, gapText, "", gapDiagnosticId);
             if (action === "stop") break reading;
             if (action === "handled") return;
+          } else {
+            emitRecorderTrace(gapDiagnosticId, { intent: "gap-empty", bufferCountAfterReduction: 0 });
           }
         }
         const chunk = sentences.slice(cursor, cursor + cfg.continueSentences).join(" ");
@@ -326,7 +372,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
         // The cursor advances ONLY when a chunk is spoken in full (below). Every
         // early exit here leaves it at this chunk's start, so a "stop" followed
         // by "continue" re-reads this chunk rather than skipping ahead.
-        if (consumeStopKey()) break reading; // spacebar: guaranteed stop
+        if (consumeStopKey()) {
+          emitRecorderTrace(result.diagnosticId, { intent: "spacebar", bufferCountAfterReduction: 0 });
+          break reading; // spacebar: guaranteed stop
+        }
         if (result.cut && !result.heard) {
           // false trigger: re-speak the same chunk (cursor unmoved);
           // a second blip in one read means the room is noisy, gaps only
@@ -341,7 +390,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           cursor += cfg.continueSentences; // spoken in full — advance to the next chunk
           continue;
         }
-        const action = await onReadingUtterance(event, result.heard, chunk);
+        const action = await onReadingUtterance(event, result.heard, chunk, result.diagnosticId);
         if (action === "stop") break reading;
         if (action === "handled") return;
         // interrupted for nothing (echo / keep-reading): re-speak the chunk,
@@ -355,86 +404,133 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // injected until you submit, so segments join cleanly with no per-segment
     // osascript delay (that delay was a mic-dead gap where words vanished).
     const buffer: string[] = [];
+    const bufferDiagnosticIds: string[] | undefined = diagnosticsEnabled ? [] : undefined;
+    let activeDiagnosticId: string | undefined;
 
-    while (true) {
-      // Spacebar during the mic phase ends the exchange (rather than leaving a
-      // stale stopKey that the next event's handle() silently wipes). Submit
-      // anything already held so dictation isn't lost; otherwise just close.
-      if (consumeStopKey()) {
-        if (buffer.length) {
-          await micCue(cfg, "sent");
-          await deliver(event, buffer.join(" "));
-        } else {
-          await micCue(cfg, "close");
-        }
-        return log("⏹ spacebar — closed the mic");
-      }
-      // Cue "open" only when the mic FIRST opens — not before every held
-      // segment (tink-per-segment was disconcerting). Holding segments re-arm
-      // silently; a "sent"/"close" cue marks the end.
-      if (!buffer.length) await micCue(cfg, "open");
-      const window = buffer.length ? cfg.holdSubmitSecs : cfg.listenWindowSecs;
-      log(`listening (start within ${window}s)${buffer.length ? " · holding, say 'send' or pause to submit" : ""}...`);
-      const { text, error } = await listenOnce({ ...cfg, listenWindowSecs: window }, listenHooks(event.label));
-      if (error) return log(`listen error: ${error}`);
-      if (!text) {
-        if (buffer.length) {
-          await micCue(cfg, "sent");
-          log(`held dictation timed out — submitting ${buffer.length} segment(s)`);
-          await deliver(event, buffer.join(" "));
-        } else {
-          await micCue(cfg, "close");
-        }
-        return log("no speech — back to idle");
-      }
-
-      // In hold-submit mode, "send"/"go" submits what's been dictated.
-      if (buffer.length && isSendCommand(text)) {
-        await micCue(cfg, "sent");
-        log(`heard: "${text}" -> send (${buffer.length} segment(s))`);
-        await deliver(event, buffer.join(" "));
-        return;
-      }
-
-      const intent = classify(text);
-      log(`heard: "${text}" -> ${intent}${buffer.length ? " (holding)" : ""}`);
-
-      switch (intent) {
-        case "prompt": {
-          if (!cfg.holdSubmit) {
-            await deliver(event, text);
-            return;
+    try {
+      while (true) {
+        // Spacebar during the mic phase ends the exchange (rather than leaving a
+        // stale stopKey that the next event's handle() silently wipes). Submit
+        // anything already held so dictation isn't lost; otherwise just close.
+        if (consumeStopKey()) {
+          if (buffer.length) {
+            await micCue(cfg, "sent");
+            await deliver(event, buffer.join(" "), bufferDiagnosticIds);
+          } else {
+            await micCue(cfg, "close");
           }
-          buffer.push(text); // accumulate in memory; injected all at once on submit
-          break;
+          return log("⏹ spacebar — closed the mic");
         }
-        case "discard":
-          if (buffer.length) log(`discarded ${buffer.length} held segment(s)`);
-          markInjected(event.sessionId); // suppress the follow-up needs-you nag
-          await speak(cfg, "Okay.", event.label);
+        // Cue "open" only when the mic FIRST opens — not before every held
+        // segment (tink-per-segment was disconcerting). Holding segments re-arm
+        // silently; a "sent"/"close" cue marks the end.
+        if (!buffer.length) await micCue(cfg, "open");
+        const window = buffer.length ? cfg.holdSubmitSecs : cfg.listenWindowSecs;
+        log(`listening (start within ${window}s)${buffer.length ? " · holding, say 'send' or pause to submit" : ""}...`);
+        const { text, error, diagnosticId } = await listenOnce({ ...cfg, listenWindowSecs: window }, listenHooks(event.label));
+        activeDiagnosticId = diagnosticId;
+        if (error) {
+          emitRecorderTrace(diagnosticId, { intent: "listen-error", bufferCountAfterReduction: buffer.length });
+          if (bufferDiagnosticIds) emitRecorderTraces(bufferDiagnosticIds);
+          return log(`listen error: ${error}`);
+        }
+        if (!text) {
+          if (buffer.length) {
+            await micCue(cfg, "sent");
+            log(`held dictation timed out — submitting ${buffer.length} segment(s)`);
+            updateRecorderTrace(diagnosticId, { intent: "timeout-submit", bufferCountAfterReduction: 0 });
+            await deliver(
+              event,
+              buffer.join(" "),
+              bufferDiagnosticIds
+                ? diagnosticId
+                  ? [...bufferDiagnosticIds, diagnosticId]
+                  : bufferDiagnosticIds
+                : undefined,
+            );
+          } else {
+            emitRecorderTrace(diagnosticId, { intent: "timeout-close", bufferCountAfterReduction: 0 });
+            await micCue(cfg, "close");
+          }
+          return log("no speech — back to idle");
+        }
+
+        // In hold-submit mode, "send"/"go" submits what's been dictated.
+        if (buffer.length && isSendCommand(text)) {
+          await micCue(cfg, "sent");
+          log(`heard: "${text}" -> send (${buffer.length} segment(s))`);
+          updateRecorderTrace(diagnosticId, { intent: "send", bufferCountAfterReduction: 0 });
+          await deliver(
+            event,
+            buffer.join(" "),
+            bufferDiagnosticIds
+              ? diagnosticId
+                ? [...bufferDiagnosticIds, diagnosticId]
+                : bufferDiagnosticIds
+              : undefined,
+          );
           return;
-        case "repeat":
-          setState("speaking", event.label);
-          await speak(cfg, lastSpoken, event.label);
-          break;
-        case "continue": {
-          if (!event.transcriptPath) {
-            await speak(cfg, "I don't have the full message for this one.", event.label);
+        }
+
+        const intent = classify(text);
+        log(`heard: "${text}" -> ${intent}${buffer.length ? " (holding)" : ""}`);
+
+        switch (intent) {
+          case "prompt": {
+            if (!cfg.holdSubmit) {
+              updateRecorderTrace(diagnosticId, { intent: "prompt", bufferCountAfterReduction: 0 });
+              await deliver(event, text, diagnosticId);
+              return;
+            }
+            buffer.push(text); // accumulate in memory; injected all at once on submit
+            if (diagnosticId) bufferDiagnosticIds?.push(diagnosticId);
+            updateRecorderTrace(diagnosticId, { intent: "prompt", bufferCountAfterReduction: buffer.length });
             break;
           }
-          const full = await ensureSentences();
-          const chunk = full.slice(cursor, cursor + cfg.continueSentences).join(" ");
-          if (!chunk) {
-            await speak(cfg, "That's the whole message.", event.label);
+          case "discard":
+            if (buffer.length) log(`discarded ${buffer.length} held segment(s)`);
+            emitRecorderTrace(diagnosticId, { intent: "discard", bufferCountAfterReduction: 0 });
+            if (bufferDiagnosticIds) emitRecorderTraces(bufferDiagnosticIds);
+            markInjected(event.sessionId); // suppress the follow-up needs-you nag
+            await speak(cfg, "Okay.", event.label);
+            return;
+          case "repeat":
+            emitRecorderTrace(diagnosticId, { intent: "repeat", bufferCountAfterReduction: buffer.length });
+            setState("speaking", event.label);
+            await speak(cfg, lastSpoken, event.label);
+            break;
+          case "continue": {
+            emitRecorderTrace(diagnosticId, { intent: "continue", bufferCountAfterReduction: buffer.length });
+            if (!event.transcriptPath) {
+              await speak(cfg, "I don't have the full message for this one.", event.label);
+              break;
+            }
+            const full = await ensureSentences();
+            const chunk = full.slice(cursor, cursor + cfg.continueSentences).join(" ");
+            if (!chunk) {
+              await speak(cfg, "That's the whole message.", event.label);
+              break;
+            }
+            lastSpoken = chunk;
+            setState("speaking", event.label);
+            await speak(cfg, chunk, event.label);
+            cursor += cfg.continueSentences;
             break;
           }
-          lastSpoken = chunk;
-          setState("speaking", event.label);
-          await speak(cfg, chunk, event.label);
-          cursor += cfg.continueSentences;
-          break;
         }
       }
+    } finally {
+      // A downstream cue/TTS/transcript/injection failure must not strand an
+      // otherwise finalized recorder row in memory. Normal terminal paths
+      // have already emitted these IDs, so the store's emit-once guard makes
+      // this a no-op there.
+      if (!activeDiagnosticId || !bufferDiagnosticIds?.includes(activeDiagnosticId)) {
+        emitRecorderTrace(activeDiagnosticId, {
+          intent: "conversation-exit",
+          bufferCountAfterReduction: buffer.length,
+        });
+      }
+      if (bufferDiagnosticIds) emitRecorderTraces(bufferDiagnosticIds);
     }
   }
 
@@ -442,14 +538,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
   async function permissionLoop(event: TurnEvent): Promise<void> {
     await micCue(cfg, "open");
     log("listening for yes or no...");
-    const { text, error } = await listenOnce(cfg, listenHooks(event.label));
-    if (error) return log(`listen error: ${error}`);
+    const { text, error, diagnosticId } = await listenOnce(cfg, listenHooks(event.label));
+    if (error) {
+      emitRecorderTrace(diagnosticId, { intent: "permission-error", bufferCountAfterReduction: 0 });
+      return log(`listen error: ${error}`);
+    }
     if (!text) {
+      emitRecorderTrace(diagnosticId, { intent: "permission-timeout", bufferCountAfterReduction: 0 });
       await micCue(cfg, "close");
       return log("no speech — back to idle");
     }
     const verdict = classifyApproval(text);
     log(`heard: "${text}" -> ${verdict ?? "unclear"}`);
+    emitRecorderTrace(diagnosticId, { intent: verdict ?? "permission-unclear", bufferCountAfterReduction: 0 });
     if (!verdict) return void (await speak(cfg, "For permission prompts, say yes or no. Ignoring.", event.label));
     const { via } = await injectKey(cfg, event.pid, verdict === "approve" ? "Enter" : "Escape");
     if (via === "none") speak(cfg, "Could not reach the session's window to answer — do it by hand.", event.label);
@@ -552,16 +653,23 @@ export async function runDaemon(cfg: Config): Promise<void> {
   if (muted) log("resuming muted (persisted) — m or `conch unmute` to turn on");
   setState(muted ? "muted" : "idle");
 
+  let diagnosticShutdownStarted = false;
   const shutdown = () => {
+    if (diagnosticsEnabled && diagnosticShutdownStarted) return;
+    diagnosticShutdownStarted = true;
     stopSpeaking(); // never orphan a talking `say` — voices overlapped live
-    killActiveRecorders(); // a live sox capture would keep the mic hot after we die
+    const recorderDrain = killActiveRecorders(); // a live sox capture would keep the mic hot after we die
     server.close();
     whisperServer?.kill();
     ttsServer?.kill();
     try {
       unlinkSync(cfg.socketPath);
     } catch {}
-    process.exit(0);
+    if (!diagnosticsEnabled) process.exit(0);
+    void Promise.resolve(recorderDrain).finally(() => {
+      flushPendingRecorderTraces();
+      process.exit(0);
+    });
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
