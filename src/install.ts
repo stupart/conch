@@ -106,14 +106,13 @@ interface HookEntry {
 export async function runInstall(cfg: Config): Promise<void> {
   const settingsPath = join(cfg.claudeDir, "settings.json");
   const cliPath = join(import.meta.dir, "cli.ts");
-  const command = `${process.execPath} ${cliPath} hook`;
+  // Quote both paths so a bun/conch install dir containing spaces still yields a
+  // runnable hook command.
+  const command = `"${process.execPath}" "${cliPath}" hook`;
 
   let settings: Record<string, any> = {};
   if (existsSync(settingsPath)) {
     settings = await Bun.file(settingsPath).json(); // let a parse error throw — never clobber a file we can't read
-    const backup = `${settingsPath}.conch-backup-${Date.now()}`;
-    await Bun.write(backup, await Bun.file(settingsPath).text());
-    console.log(`backed up settings to ${backup}`);
   }
 
   settings.hooks ??= {};
@@ -131,6 +130,13 @@ export async function runInstall(cfg: Config): Promise<void> {
   }
 
   if (changed) {
+    // Back up only when we're actually about to modify — the old code wrote a
+    // fresh timestamped backup on every run, even "Nothing to do", piling up.
+    if (existsSync(settingsPath)) {
+      const backup = `${settingsPath}.conch-backup-${Date.now()}`;
+      await Bun.write(backup, await Bun.file(settingsPath).text());
+      console.log(`backed up settings to ${backup}`);
+    }
     await Bun.write(settingsPath, JSON.stringify(settings, null, 2) + "\n");
     console.log("\nDone. Open /hooks in Claude Code (or restart sessions) to reload config.");
   } else {

@@ -6,6 +6,7 @@
 
 export type ConchState = "idle" | "muted" | "speaking" | "listening" | "recording" | "transcribing";
 
+// Exported as a stable path for external consumers (menu-bar apps, status bars).
 export const STATE_FILE = "/tmp/conch-state.json";
 
 const GLYPHS: Record<ConchState, string> = {

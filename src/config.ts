@@ -85,6 +85,13 @@ function num(v: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+// For knobs whose off-switch is literally "0" (a disabled port, no gap, no
+// barge-in). num() alone maps "0" to the fallback, so 0 could never disable
+// them — CONCH_BARGE_THRESHOLD_PCT=0 silently kept barge-in on before this.
+function zeroable(v: string | undefined, fallback: number): number {
+  return v === "0" ? 0 : num(v, fallback);
+}
+
 function flag(v: string | undefined, fallback: boolean): boolean {
   if (v === undefined) return fallback;
   return v !== "0" && v.toLowerCase() !== "false";
@@ -95,7 +102,7 @@ export function loadConfig(): Config {
   return {
     whisperCli: env.CONCH_WHISPER_CLI ?? join(SEASHELL_ROOT, "whisper.cpp/build/bin/whisper-cli"),
     whisperServerBin: env.CONCH_WHISPER_SERVER ?? join(SEASHELL_ROOT, "whisper.cpp/build/bin/whisper-server"),
-    whisperPort: env.CONCH_WHISPER_PORT === "0" ? 0 : num(env.CONCH_WHISPER_PORT, 8642),
+    whisperPort: zeroable(env.CONCH_WHISPER_PORT, 8642),
     whisperModel: env.CONCH_WHISPER_MODEL ?? join(SEASHELL_ROOT, "models/ggml-large-v3-turbo-q5_0.bin"),
     vadModel: env.CONCH_VAD_MODEL ?? join(SEASHELL_ROOT, "whisper.cpp/models/ggml-silero-v6.2.0.bin"),
     voice: env.CONCH_VOICE ?? "",
@@ -110,12 +117,13 @@ export function loadConfig(): Config {
     endSilenceSecs: num(env.CONCH_END_SILENCE_SECS, 3.5), // 2.5 clipped natural mid-thought pauses (live)
     startThresholdPct: num(env.CONCH_START_THRESHOLD_PCT, 2),
     endThresholdPct: num(env.CONCH_END_THRESHOLD_PCT, 2),
-    awayAfterSecs: num(env.CONCH_AWAY_AFTER_SECS, 0) || 0,
+    awayAfterSecs: num(env.CONCH_AWAY_AFTER_SECS, 0),
     readFull: flag(env.CONCH_READ_FULL, true),
     // 0 = no gap at all: barge-in + spacebar cover interrupts, chunks flow
     // back-to-back (when barging is off, a 0.6s floor re-appears in the loop)
-    gapSecs: env.CONCH_GAP_SECS === "0" ? 0 : num(env.CONCH_GAP_SECS, 0),
-    bargeThresholdPct: num(env.CONCH_BARGE_THRESHOLD_PCT, 8) || 0, // measured: speaker bleed peaks ~4.7%, ambient ~1%
+    gapSecs: zeroable(env.CONCH_GAP_SECS, 0),
+    bargeThresholdPct: zeroable(env.CONCH_BARGE_THRESHOLD_PCT, 8), // measured: speaker bleed peaks ~4.7%, ambient ~1%; 0 disables
+
     continueSentences: num(env.CONCH_CONTINUE_SENTENCES, 6), // bigger chunks = fewer inter-chunk pauses
     micCues: flag(env.CONCH_MIC_CUES, true),
     autoSubmit: flag(env.CONCH_AUTO_SUBMIT, true),
@@ -126,7 +134,7 @@ export function loadConfig(): Config {
     socketPath: env.CONCH_SOCKET ?? "/tmp/conch.sock",
     claudeDir: env.CLAUDE_CONFIG_DIR ?? join(HOME, ".claude"),
     ttsEngine: parseTtsEngine(env.CONCH_TTS),
-    ttsPort: env.CONCH_TTS_PORT === "0" ? 0 : num(env.CONCH_TTS_PORT, 8880),
+    ttsPort: zeroable(env.CONCH_TTS_PORT, 8880),
     ttsModel: env.CONCH_TTS_MODEL ?? "mlx-community/Kokoro-82M-bf16",
     ttsServerBin: env.CONCH_TTS_SERVER ?? "mlx_audio.server",
     ttsVoices: (env.CONCH_TTS_VOICES ?? "af_heart,am_michael,bf_emma,am_adam,af_nova,bm_george,af_bella,af_sky")
