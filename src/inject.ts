@@ -19,15 +19,20 @@ export async function injectText(
   cfg: Config,
   sessionPid: number | undefined,
   text: string,
-  opts: { submit?: boolean } = {},
 ): Promise<{ via: InjectRoute }> {
-  const submit = opts.submit ?? cfg.autoSubmit;
+  const submit = cfg.autoSubmit;
   if (sessionPid) {
     const pane = await findTmuxPane(sessionPid);
     if (pane) {
-      await $`tmux send-keys -t ${pane} -l ${text}`.quiet();
-      if (submit) await $`tmux send-keys -t ${pane} Enter`.quiet();
-      return { via: "tmux" };
+      // `-l --`: -l sends the text as literal keys, -- stops flag parsing so a
+      // transcript starting with "-" isn't read as an option (which both fails
+      // AND used to throw, killing the daemon). nothrow + exit check so any
+      // send-keys refusal falls through to clipboard instead of crashing.
+      const r = await $`tmux send-keys -t ${pane} -l -- ${text}`.quiet().nothrow();
+      if (r.exitCode === 0) {
+        if (submit) await $`tmux send-keys -t ${pane} Enter`.quiet().nothrow();
+        return { via: "tmux" };
+      }
     }
   }
 
@@ -48,10 +53,7 @@ export async function injectText(
       // separate, delayed Return: bundling it with the text occasionally
       // arrived before the terminal finished ingesting the keystrokes
       await Bun.sleep(250);
-      await Bun.spawn(
-        ["osascript", "-e", 'tell application "System Events" to key code 36'],
-        { stdout: "ignore", stderr: "ignore" },
-      ).exited;
+      await osa('tell application "System Events" to key code 36');
     }
     return { via: focused ? "osascript-focused" : "osascript-blind" };
   }
@@ -60,22 +62,9 @@ export async function injectText(
   return { via: "clipboard" };
 }
 
-/** Clear the prompt box (select-all + delete) — for "cancel" after some text was already typed. */
-export async function clearPrompt(cfg: Config, sessionPid: number | undefined): Promise<void> {
-  if (sessionPid) {
-    const pane = await findTmuxPane(sessionPid);
-    if (pane) {
-      await $`tmux send-keys -t ${pane} C-u`.quiet();
-      return;
-    }
-  }
-  if (cfg.keystrokeFallback && sessionPid && (await focusSessionWindow(sessionPid))) {
-    await Bun.sleep(200);
-    await Bun.spawn(
-      ["osascript", "-e", 'tell application "System Events" to keystroke "a" using command down', "-e", 'tell application "System Events" to key code 51'],
-      { stdout: "ignore", stderr: "ignore" },
-    ).exited;
-  }
+/** Run osascript with one or more `-e` statements, output discarded. */
+function osa(...lines: string[]): Promise<number> {
+  return Bun.spawn(["osascript", ...lines.flatMap((l) => ["-e", l])], { stdout: "ignore", stderr: "ignore" }).exited;
 }
 
 /** Press a single key in the session — Enter accepts a permission dialog's highlighted option, Escape dismisses it. */
@@ -87,8 +76,8 @@ export async function injectKey(
   if (sessionPid) {
     const pane = await findTmuxPane(sessionPid);
     if (pane) {
-      await $`tmux send-keys -t ${pane} ${key}`.quiet();
-      return { via: "tmux" };
+      const r = await $`tmux send-keys -t ${pane} ${key}`.quiet().nothrow();
+      if (r.exitCode === 0) return { via: "tmux" };
     }
   }
   if (cfg.keystrokeFallback) {
@@ -96,10 +85,7 @@ export async function injectKey(
     if (!focused && sessionPid) return { via: "none" }; // never press keys in an unknown window
     if (focused) await Bun.sleep(300);
     const keyCode = key === "Enter" ? 36 : 53;
-    await Bun.spawn(
-      ["osascript", "-e", `tell application "System Events" to key code ${keyCode}`],
-      { stdout: "ignore", stderr: "ignore" },
-    ).exited;
+    await osa(`tell application "System Events" to key code ${keyCode}`);
     return { via: focused ? "osascript-focused" : "osascript-blind" };
   }
   return { via: "none" };

@@ -86,11 +86,17 @@ export async function lastAssistantText(transcriptPath: string): Promise<string>
     if (entry.type === "user") break; // tool_result or the user's prompt — final message starts after this
     if (entry.type !== "assistant") continue; // meta lines (snapshots, mode, ...) interleave freely
     const content: Array<{ type: string; text?: string }> = entry.message?.content ?? [];
+    // Stop BEFORE collecting an entry that also holds a tool_use: its text is
+    // interim ("I'll check the tests..."), and the final message starts after
+    // it. Collecting it prepended stale narration to the announcement.
+    if (content.some((c) => c.type === "tool_use")) break;
     const texts = content.filter((c) => c.type === "text").map((c) => c.text ?? "");
-    if (texts.length) collected.unshift(texts.join(" "));
-    if (content.some((c) => c.type === "tool_use")) break; // interim text attached to tool work
+    if (texts.length) collected.unshift(texts.join("\n"));
   }
-  return collected.join(" ");
+  // Join entries with a newline, not a space: stripMarkdown detects code fences
+  // by a line-start ``` — a space glued entry 2's opening fence mid-line, so the
+  // fence went undetected, code was read aloud, and the real tail was dropped.
+  return collected.join("\n");
 }
 
 /**

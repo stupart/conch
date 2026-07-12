@@ -71,5 +71,24 @@ test("lastAssistantText returns the final message, not interim work notes", asyn
     JSON.stringify({ type: "file-history-snapshot", messageId: "x" }),
   ];
   await Bun.write(path, lines.join("\n"));
-  expect(await lastAssistantText(path)).toBe("Found and fixed it. All tests pass.");
+  // entries join with a newline (not a space) so a code fence at an entry
+  // boundary stays line-anchored for stripMarkdown; sentence-splitting is
+  // identical either way.
+  expect(await lastAssistantText(path)).toBe("Found and fixed it.\nAll tests pass.");
+});
+
+test("lastAssistantText keeps a code fence line-anchored across entry boundaries", async () => {
+  const path = `/tmp/conch-test-fence-${Date.now()}.jsonl`;
+  const lines = [
+    JSON.stringify({ type: "user", message: { content: [{ type: "text", text: "how do I clean up?" }] } }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Here's the command:" }] } }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "```bash\nrm -rf node_modules\n```\nThat fixed the build. Ship it." }] } }),
+  ];
+  await Bun.write(path, lines.join("\n"));
+  // The fence opens at a line start (newline join), so stripMarkdown can drop
+  // the code block and the trailing prose survives — a space join glued the
+  // fence mid-line, read the code aloud, and dropped "That fixed the build...".
+  const text = stripMarkdown(await lastAssistantText(path));
+  expect(text).toContain("That fixed the build. Ship it.");
+  expect(text).not.toContain("rm -rf");
 });

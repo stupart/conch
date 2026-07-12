@@ -75,7 +75,10 @@ export async function transcribePcm(cfg: Config, pcm: Uint8Array): Promise<{ tex
         return { text: cleanTranscript(body.text ?? "") };
       }
     } catch {
-      // server hiccup — fall through to the cold path
+      // server hiccup or wedge — latch down so we don't pay the (up to 60s)
+      // timeout on every subsequent utterance; the cold cli path takes over.
+      // (Recovers warm on the next daemon restart, which re-probes.)
+      serverHealthy = false;
     }
   }
 
@@ -91,7 +94,7 @@ export async function transcribePcm(cfg: Config, pcm: Uint8Array): Promise<{ tex
 }
 
 /** Cold path: whisper-cli on a wav file. Same invocation seashell uses. */
-export async function transcribeWavCli(cfg: Config, wavPath: string): Promise<{ text: string; error?: string }> {
+async function transcribeWavCli(cfg: Config, wavPath: string): Promise<{ text: string; error?: string }> {
   if (!existsSync(wavPath)) return { text: "", error: `File not found: ${wavPath}` };
 
   const proc = Bun.spawn(

@@ -21,6 +21,37 @@ interface Recorder {
   watchdog: ReturnType<typeof setInterval>;
 }
 
+// Every capture path runs the identical sox recipe — headerless 16kHz mono PCM,
+// endpointed by sox's `silence` effect. Only the START threshold differs
+// (barge-in sits above speaker bleed). `-l` keeps the trailing below-threshold
+// audio: voices trail off at the end of sentences, and without it sox trimmed
+// the last words as "silence" (observed live: final couple words missing).
+const activeRecorders = new Set<ReturnType<typeof Bun.spawn>>();
+
+function spawnCapture(cfg: Config, tag: string, startPct: number): { raw: string; proc: ReturnType<typeof Bun.spawn> } {
+  const raw = `/tmp/conch-${tag}-${process.pid}-${Date.now()}.raw`;
+  const proc = Bun.spawn(
+    [
+      "sox", "-d", "-q",
+      "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
+      raw,
+      "silence", "-l",
+      "1", "0.15", `${startPct}%`,
+      "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
+    ],
+    { stdout: "ignore", stderr: "ignore" },
+  );
+  activeRecorders.add(proc);
+  void proc.exited.then(() => activeRecorders.delete(proc));
+  return { raw, proc };
+}
+
+/** Kill any in-flight sox capture — daemon shutdown must not leave the mic hot. */
+export function killActiveRecorders(): void {
+  for (const proc of activeRecorders) proc.kill();
+  activeRecorders.clear();
+}
+
 /**
  * Capture one utterance and transcribe it.
  *
@@ -81,21 +112,7 @@ export function armBargeRecorder(cfg: Config): {
   finish: () => Promise<{ text: string }>;
   abort: () => Promise<void>;
 } {
-  const raw = `/tmp/conch-barge-${process.pid}-${Date.now()}.raw`;
-  const proc = Bun.spawn(
-    [
-      "sox", "-d", "-q",
-      "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
-      raw,
-      // -l keeps the trailing below-threshold audio: voices trail off at the
-      // end of sentences, and without it sox trimmed the last words as
-      // "silence" (observed live: final couple words missing everywhere)
-      "silence", "-l",
-      "1", "0.15", `${cfg.bargeThresholdPct}%`,
-      "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
-    ],
-    { stdout: "ignore", stderr: "ignore" },
-  );
+  const { raw, proc } = spawnCapture(cfg, "barge", cfg.bargeThresholdPct);
   const hardStop = setTimeout(() => proc.kill(), cfg.maxUtteranceSecs * 1000);
   return {
     triggered: () => fileSize(raw) >= BARGE_MIN_PCM_BYTES,
@@ -123,21 +140,7 @@ export function armBargeRecorder(cfg: Config): {
  * utterance (endpointed as usual) and transcribe it.
  */
 export async function listenGap(cfg: Config, maxWaitSecs: number): Promise<{ text: string }> {
-  const raw = `/tmp/conch-gap-${process.pid}-${Date.now()}.raw`;
-  const proc = Bun.spawn(
-    [
-      "sox", "-d", "-q",
-      "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
-      raw,
-      // -l keeps the trailing below-threshold audio: voices trail off at the
-      // end of sentences, and without it sox trimmed the last words as
-      // "silence" (observed live: final couple words missing everywhere)
-      "silence", "-l",
-      "1", "0.15", `${cfg.startThresholdPct}%`,
-      "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
-    ],
-    { stdout: "ignore", stderr: "ignore" },
-  );
+  const { raw, proc } = spawnCapture(cfg, "gap", cfg.startThresholdPct);
 
   const opened = Date.now();
   let speechStarted = false;
@@ -159,21 +162,7 @@ export async function listenGap(cfg: Config, maxWaitSecs: number): Promise<{ tex
 }
 
 function armRecorder(cfg: Config, opened: number, hooks: ListenHooks): Recorder {
-  const raw = `/tmp/conch-utt-${process.pid}-${Date.now()}.raw`;
-  const proc = Bun.spawn(
-    [
-      "sox", "-d", "-q",
-      "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
-      raw,
-      // -l keeps the trailing below-threshold audio: voices trail off at the
-      // end of sentences, and without it sox trimmed the last words as
-      // "silence" (observed live: final couple words missing everywhere)
-      "silence", "-l",
-      "1", "0.15", `${cfg.startThresholdPct}%`,
-      "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
-    ],
-    { stdout: "ignore", stderr: "ignore" },
-  );
+  const { raw, proc } = spawnCapture(cfg, "utt", cfg.startThresholdPct);
   hooks.onState?.("armed");
 
   let speechStarted = false;
@@ -196,6 +185,7 @@ function armRecorder(cfg: Config, opened: number, hooks: ListenHooks): Recorder 
         .then((r) => {
           if (r.text) hooks.onPartial!(r.text);
         })
+        .catch(() => {}) // a failed partial must not become an unhandled rejection
         .finally(() => {
           partialBusy = false;
         });

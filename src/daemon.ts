@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
 import { speak, speakCancellable, stopSpeaking, probeTtsServer, voiceFor } from "./speak.ts";
-import { listenOnce, listenGap, armBargeRecorder, type ListenHooks } from "./listen.ts";
+import { listenOnce, listenGap, armBargeRecorder, killActiveRecorders, type ListenHooks } from "./listen.ts";
 import { injectText, injectKey } from "./inject.ts";
 import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio, isSendCommand } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences } from "./snippet.ts";
@@ -85,7 +85,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
     try {
       while (queue.length) {
         const event = queue.pop()!; // newest first
-        await handle(event);
+        try {
+          await handle(event);
+        } catch (e) {
+          // one bad event (closed pane, missing binary, socket reset, a throw
+          // from any spawn) must not take the whole daemon down mid-exchange.
+          log(`error handling ${event.type} "${event.label}": ${e}`);
+          stopSpeaking();
+        }
       }
     } finally {
       busy = false;
@@ -121,9 +128,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // Nobody's there: don't announce to an empty room, don't open the mic,
     // don't burn battery on sox/whisper. Telegram (the other hook) still
     // pings the phone. `conch wake` always cuts through.
-    if (event.type !== "wake") {
-      const idle = await idleSeconds();
-      if (muted || (cfg.awayAfterSecs && idle >= cfg.awayAfterSecs)) {
+    // Only reach for ioreg when the away-timer is actually armed (default off) —
+    // muted short-circuits without spawning anything.
+    if (event.type !== "wake" && (muted || cfg.awayAfterSecs)) {
+      const idle = muted ? 0 : await idleSeconds();
+      if (muted || idle >= cfg.awayAfterSecs) {
         log(`${muted ? "muted" : `away (idle ${Math.round(idle / 60)}m)`} — staying quiet for "${event.label}"`);
         if (event.type === "turn-end" || event.ntype === "idle_prompt") lastTurn = event; // wake still finds it
         return;
@@ -267,7 +276,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
     let cursor = cfg.speakSentences; // the announcement already covered the first sentences
     let bargeOff = false; // set when the echo guard proves the threshold is too low for this room
     let falseTriggers = 0; // noise blips that cancelled speech but transcribed to nothing
-    let skipReading = false;
+    // A wake just reopens the mic (per the README); it must NOT recite the last
+    // message from the top — the user says "continue" if they want to hear it.
+    let skipReading = event.type === "wake";
+
+    // Load + split the full message once, resuming after what the announcement
+    // actually covered. Shared by the read-full phase and "continue".
+    const ensureSentences = async (): Promise<string[]> => {
+      if (!sentences) {
+        sentences = splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath!)));
+        cursor = countCoveredSentences(event.announce, sentences, cfg.speakSentences);
+      }
+      return sentences;
+    };
 
     // Something said while the announcement was playing (announce barge-in)
     if (pendingHeard) {
@@ -284,10 +305,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (consumeStopKey()) skipReading = true; // spacebar during the announcement
 
     if (!skipReading && cfg.readFull && event.type !== "needs-you" && event.transcriptPath) {
-      sentences = splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath)));
-      // resume after what the announcement ACTUALLY covered — if it was
-      // truncated mid-sentence, that sentence gets re-read in full
-      cursor = countCoveredSentences(event.announce, sentences, cfg.speakSentences);
+      sentences = await ensureSentences();
       reading: while (cursor < sentences.length) {
         // gap between chunks: with barging available it's just a beat; with
         // barging off (echo/noise) it's the only voice interrupt, so keep it real
@@ -303,29 +321,32 @@ export async function runDaemon(cfg: Config): Promise<void> {
           }
         }
         const chunk = sentences.slice(cursor, cursor + cfg.continueSentences).join(" ");
-        cursor += cfg.continueSentences;
         lastSpoken = chunk;
         const result = await speakInterruptible(event, chunk, bargeOff);
+        // The cursor advances ONLY when a chunk is spoken in full (below). Every
+        // early exit here leaves it at this chunk's start, so a "stop" followed
+        // by "continue" re-reads this chunk rather than skipping ahead.
         if (consumeStopKey()) break reading; // spacebar: guaranteed stop
         if (result.cut && !result.heard) {
-          // false trigger: don't skip the interrupted content — re-speak it;
+          // false trigger: re-speak the same chunk (cursor unmoved);
           // a second blip in one read means the room is noisy, gaps only
           falseTriggers++;
           if (falseTriggers >= 2) {
             bargeOff = true;
             log("two noise blips cancelled speech — barge-in off for this read");
           }
-          cursor -= cfg.continueSentences;
           continue;
         }
-        if (!result.heard) continue;
+        if (!result.heard) {
+          cursor += cfg.continueSentences; // spoken in full — advance to the next chunk
+          continue;
+        }
         const action = await onReadingUtterance(event, result.heard, chunk);
         if (action === "stop") break reading;
         if (action === "handled") return;
         // interrupted for nothing (echo / keep-reading): re-speak the chunk,
         // with barging off for the rest of this read if it was echo
         if (action === "echo") bargeOff = true;
-        cursor -= cfg.continueSentences;
       }
     }
 
@@ -336,6 +357,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const buffer: string[] = [];
 
     while (true) {
+      // Spacebar during the mic phase ends the exchange (rather than leaving a
+      // stale stopKey that the next event's handle() silently wipes). Submit
+      // anything already held so dictation isn't lost; otherwise just close.
+      if (consumeStopKey()) {
+        if (buffer.length) {
+          await micCue(cfg, "sent");
+          await deliver(event, buffer.join(" "));
+        } else {
+          await micCue(cfg, "close");
+        }
+        return log("⏹ spacebar — closed the mic");
+      }
       // Cue "open" only when the mic FIRST opens — not before every held
       // segment (tink-per-segment was disconcerting). Holding segments re-arm
       // silently; a "sent"/"close" cue marks the end.
@@ -389,19 +422,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
             await speak(cfg, "I don't have the full message for this one.", event.label);
             break;
           }
-          if (!sentences) {
-            sentences = splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath)));
-            cursor = countCoveredSentences(event.announce, sentences, cfg.speakSentences);
-          }
-          const chunk = sentences.slice(cursor, cursor + cfg.continueSentences).join(" ");
+          const full = await ensureSentences();
+          const chunk = full.slice(cursor, cursor + cfg.continueSentences).join(" ");
           if (!chunk) {
             await speak(cfg, "That's the whole message.", event.label);
             break;
           }
-          cursor += cfg.continueSentences;
           lastSpoken = chunk;
           setState("speaking", event.label);
           await speak(cfg, chunk, event.label);
+          cursor += cfg.continueSentences;
           break;
         }
       }
@@ -463,9 +493,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const already = await probeTtsServer(cfg, 1500);
     if (!already) {
       // logged (not discarded) so synthesis failures are diagnosable
+      // stdout and stderr need SEPARATE files — the same Bun.file opened twice
+      // has independent write offsets and the streams clobber each other.
       ttsServer = Bun.spawn([cfg.ttsServerBin, "--port", String(cfg.ttsPort)], {
         stdout: Bun.file("/tmp/conch-kokoro.log"),
-        stderr: Bun.file("/tmp/conch-kokoro.log"),
+        stderr: Bun.file("/tmp/conch-kokoro.err.log"),
       });
     }
     void probeTtsServer(cfg, 30_000).then(async (up) => {
@@ -492,6 +524,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   const server = createServer((sock) => {
     let buf = "";
+    sock.on("error", () => {}); // a hook killed mid-write (ECONNRESET) must not throw
     sock.on("data", (d) => (buf += d.toString()));
     sock.on("end", () => {
       for (const line of buf.split("\n")) {
@@ -505,6 +538,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     });
   });
 
+  server.on("error", (e) => log(`socket server error: ${e}`));
   server.listen(cfg.socketPath);
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);
   if (muted) log("resuming muted (persisted) — m or `conch unmute` to turn on");
@@ -512,6 +546,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   const shutdown = () => {
     stopSpeaking(); // never orphan a talking `say` — voices overlapped live
+    killActiveRecorders(); // a live sox capture would keep the mic hot after we die
     server.close();
     whisperServer?.kill();
     ttsServer?.kill();

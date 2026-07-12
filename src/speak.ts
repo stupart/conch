@@ -36,10 +36,10 @@ function bisect(text: string): [string, string] | null {
 
 let ttsUp = false;
 let current: ReturnType<typeof Bun.spawn> | null = null;
-
-export function ttsServerUp(): boolean {
-  return ttsUp;
-}
+// The utterance in flight. stopSpeaking() cancels THIS (the whole multi-sentence
+// read on the server engine), not just the one process currently playing —
+// killing `current` alone only ended a single sentence and the loop played on.
+let activeCtl: CancelControl | null = null;
 
 /**
  * True if we should synthesize via the server. Crucially, if ttsUp latched
@@ -55,6 +55,15 @@ async function serverReady(cfg: Config): Promise<boolean> {
 
 /** Kill any in-flight speech — daemon shutdown/spacebar must not leave audio playing. */
 export function stopSpeaking(): void {
+  if (activeCtl) {
+    // Cancel the whole utterance: stop the producer, abort the in-flight synth
+    // fetch, and kill the process currently playing. Without this, a Kokoro read
+    // (one afplay per sentence) just advanced to the next sentence after a kill.
+    activeCtl.cancelled = true;
+    activeCtl.abort.abort();
+    activeCtl.kill();
+    activeCtl = null;
+  }
   current?.kill();
   current = null;
 }
@@ -130,19 +139,12 @@ function spawnSay(cfg: Config, text: string): ReturnType<typeof Bun.spawn> {
 /**
  * Speak text aloud, in the session's voice when the server is up.
  * Resolves when playback FINISHES — the daemon's mic-stays-closed-while-
- * speaking invariant depends on that.
+ * speaking invariant depends on that. Now just the un-cancelled case of
+ * speakCancellable, so a plain `speak()` (announcements, "Okay.", "continue"
+ * chunks) is stoppable by spacebar/shutdown too.
  */
 export async function speak(cfg: Config, text: string, label = ""): Promise<void> {
-  if (!cfg.speak || !text) return;
-  if (await serverReady(cfg)) {
-    const result = await speakViaServer(cfg, text, label, null);
-    if (result === "ok") return; // Kokoro handled it (incl. any say-leaf for a stuck fragment)
-    // "unreachable" = server blip; latch down, but serverReady re-probes the
-    // next call so we don't stay downgraded. "synth-failed" = nothing played
-    // at all — fall through to say the whole thing.
-    if (result === "unreachable") ttsUp = false;
-  }
-  await spawnSay(cfg, text).exited;
+  await speakCancellable(cfg, text, label).done;
 }
 
 interface CancelControl {
@@ -155,37 +157,36 @@ interface CancelControl {
 export function speakCancellable(cfg: Config, text: string, label = ""): { done: Promise<void>; cancel: () => void } {
   if (!cfg.speak || !text) return { done: Promise.resolve(), cancel() {} };
 
-  if (cfg.ttsEngine !== "say" && cfg.ttsPort) {
-    const ctl: CancelControl = { cancelled: false, abort: new AbortController(), kill() {} };
-    const done = (async () => {
-      if (!(await serverReady(cfg))) {
-        if (ctl.cancelled) return;
+  const ctl: CancelControl = { cancelled: false, abort: new AbortController(), kill() {} };
+  const cancel = () => {
+    ctl.cancelled = true;
+    ctl.abort.abort();
+    ctl.kill();
+  };
+  activeCtl = ctl; // stopSpeaking() cancels the active utterance through this
+
+  const done = (async () => {
+    try {
+      if (cfg.ttsEngine !== "say" && cfg.ttsPort && (await serverReady(cfg))) {
+        const result = await speakViaServer(cfg, text, label, ctl);
+        if (result === "unreachable") ttsUp = false;
+        // both non-ok results mean nothing played (a partial read returns "ok")
+        if (result !== "ok" && !ctl.cancelled) {
+          const proc = spawnSay(cfg, text); // say the whole thing, cancellable
+          ctl.kill = () => proc.kill();
+          await proc.exited;
+        }
+      } else if (!ctl.cancelled) {
         const proc = spawnSay(cfg, text);
         ctl.kill = () => proc.kill();
         await proc.exited;
-        return;
       }
-      const result = await speakViaServer(cfg, text, label, ctl);
-      if (result === "unreachable") ttsUp = false;
-      // both non-ok results mean nothing played (a partial read returns "ok")
-      if (result !== "ok" && !ctl.cancelled) {
-        const proc = spawnSay(cfg, text); // say the whole thing, cancellable
-        ctl.kill = () => proc.kill();
-        await proc.exited;
-      }
-    })();
-    return {
-      done,
-      cancel: () => {
-        ctl.cancelled = true;
-        ctl.abort.abort();
-        ctl.kill();
-      },
-    };
-  }
+    } finally {
+      if (activeCtl === ctl) activeCtl = null;
+    }
+  })();
 
-  const proc = spawnSay(cfg, text);
-  return { done: proc.exited.then(() => {}), cancel: () => proc.kill() };
+  return { done, cancel };
 }
 
 // A ready-to-play tmp file (written during prefetch) or a say-fragment.
@@ -247,6 +248,14 @@ async function speakViaServer(
     }
   }
   await producer;
+
+  // On cancel (barge-in / spacebar), prefetched-but-unplayed clips would never
+  // reach playFile's unlink — sweep them so /tmp doesn't accumulate wavs.
+  if (ctl?.cancelled) {
+    for (let i = playIndex; i < out.length; i++) {
+      for (const p of out[i] ?? []) if ("file" in p) { try { unlinkSync(p.file); } catch {} }
+    }
+  }
 
   // A server blip flips ttsUp so the NEXT message re-probes; this read already
   // spoke failed sentences via say (per-sentence), so it never stopped early.
