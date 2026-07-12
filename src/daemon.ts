@@ -460,25 +460,33 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // partials) skip the seconds-long model reload of the cold cli path.
   let whisperServer: ReturnType<typeof Bun.spawn> | null = null;
   if (cfg.whisperPort && existsSync(cfg.whisperServerBin)) {
-    whisperServer = Bun.spawn(
-      [
-        cfg.whisperServerBin,
-        "-m", cfg.whisperModel,
-        "-vm", cfg.vadModel,
-        "--vad",
-        "--vad-speech-pad-ms", "300", // default 30ms amputates quiet word tails
-        "--host", "127.0.0.1",
-        "--port", String(cfg.whisperPort),
-        "-l", "en",
-        "-t", "6",
-      ],
-      { stdout: "ignore", stderr: "ignore" },
-    );
-    // 60s patience: whisper and kokoro load models simultaneously at startup
-    // and contend for GPU/disk — observed pushing whisper past a 20s probe
-    void probeServer(cfg, 60_000).then((up) => {
-      log(up ? `whisper-server warm on :${cfg.whisperPort} — fast transcription + live partials` : "whisper-server failed to come up — using the cold cli path");
-    });
+    // Adopt an already-running whisper-server (e.g. a prior daemon's, orphaned
+    // by a hard restart) instead of spawning a duplicate that can't bind the
+    // port and just leaks — same pattern as kokoro below. A 3-day-old orphan
+    // holding the port was found in the wild before this.
+    if (await probeServer(cfg, 1500)) {
+      log(`whisper-server adopted on :${cfg.whisperPort} — fast transcription + live partials`);
+    } else {
+      whisperServer = Bun.spawn(
+        [
+          cfg.whisperServerBin,
+          "-m", cfg.whisperModel,
+          "-vm", cfg.vadModel,
+          "--vad",
+          "--vad-speech-pad-ms", "300", // default 30ms amputates quiet word tails
+          "--host", "127.0.0.1",
+          "--port", String(cfg.whisperPort),
+          "-l", "en",
+          "-t", "6",
+        ],
+        { stdout: "ignore", stderr: "ignore" },
+      );
+      // 60s patience: whisper and kokoro load models simultaneously at startup
+      // and contend for GPU/disk — observed pushing whisper past a 20s probe
+      void probeServer(cfg, 60_000).then((up) => {
+        log(up ? `whisper-server warm on :${cfg.whisperPort} — fast transcription + live partials` : "whisper-server failed to come up — using the cold cli path");
+      });
+    }
   } else if (cfg.whisperPort) {
     log(`whisper-server binary not found at ${cfg.whisperServerBin} — using the cold cli path`);
   }
