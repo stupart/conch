@@ -27,7 +27,8 @@ import { classify, classifyReadingGap, wordOverlapRatio } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince } from "./snippet.ts";
 import { probeServer } from "./transcribe.ts";
 import { setState, logAbove, setPanel, type ConchState } from "./status.ts";
-import { listSessions, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
+import { listSessions, registrySnapshot, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
+import { reconcileStatus, STATUS_RANK, type SessionStatus } from "./panel.ts";
 import {
   emitRecorderTrace,
   emitRecorderTraces,
@@ -108,7 +109,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // Live session status for the dashboard panel — replaces the spoken "needs you"
   // nag with a glanceable visual: working (you submitted a prompt) / waiting (turn
   // ended, ready for you) / needs (a permission/idle notification fired).
-  type SessionStatus = "working" | "waiting" | "needs";
   const sessionStates = new Map<string, { label: string; status: SessionStatus; detail?: string; at: number }>();
 
   const normalMicOpen = (): boolean => Boolean(
@@ -246,23 +246,31 @@ export async function runDaemon(cfg: Config): Promise<void> {
     waiting: "\x1b[32m○ waiting for you\x1b[0m",
     working: "\x1b[36m● working…\x1b[0m",
   };
-  const STATUS_RANK: Record<SessionStatus, number> = { needs: 0, waiting: 1, working: 2 };
   async function renderSessionPanel(): Promise<void> {
-    let live: SessionInfo[] = [];
+    let snap: Awaited<ReturnType<typeof registrySnapshot>> = null;
     try {
-      live = await listSessions(cfg.claudeDir);
+      snap = await registrySnapshot(cfg.claudeDir);
     } catch {}
-    const liveIds = new Set(live.map((s) => s.sessionId));
-    for (const id of sessionStates.keys()) if (!liveIds.has(id)) sessionStates.delete(id); // prune dead
+    const live = snap?.infos ?? [];
+    // Prune a latch only on a COMPLETE snapshot — a torn/unreadable file must not
+    // delete a live session's latch (e.g. a pending "needs"), which never re-fires.
+    if (snap?.complete) {
+      const liveIds = new Set(live.map((s) => s.sessionId));
+      for (const id of sessionStates.keys()) if (!liveIds.has(id)) sessionStates.delete(id);
+    }
     const rows = live
-      .map((s) => ({ s, label: sessionLabel(s, s.cwd), st: sessionStates.get(s.sessionId) }))
-      .sort((a, b) => (STATUS_RANK[a.st?.status ?? "working"] - STATUS_RANK[b.st?.status ?? "working"]) || a.label.localeCompare(b.label));
+      .map((s) => {
+        const st = sessionStates.get(s.sessionId);
+        const status = reconcileStatus(s, st);
+        return { label: sessionLabel(s, s.cwd), status, detail: status === "needs" ? st?.detail : undefined };
+      })
+      .sort((a, b) => (STATUS_RANK[a.status ?? "working"] - STATUS_RANK[b.status ?? "working"]) || a.label.localeCompare(b.label));
     if (!rows.length) return setPanel([]);
     setPanel([
       "",
       "  \x1b[1msessions\x1b[0m",
       ...rows.map((r) =>
-        `  ${r.label.slice(0, 26).padEnd(27)}${r.st ? STATUS_GLYPH[r.st.status] : "\x1b[2m· idle\x1b[0m"}${r.st?.detail ? ` \x1b[2m(${r.st.detail})\x1b[0m` : ""}`,
+        `  ${r.label.slice(0, 26).padEnd(27)}${r.status ? STATUS_GLYPH[r.status] : "\x1b[2m· idle\x1b[0m"}${r.detail ? ` \x1b[2m(${r.detail})\x1b[0m` : ""}`,
       ),
     ]);
   }
@@ -292,15 +300,29 @@ export async function runDaemon(cfg: Config): Promise<void> {
       return;
     }
     const held = [...pending.values()];
-    pending.clear();
-    log(`resumed — ${held.length} session(s) waited while you were away`);
-    setState(restState());
-    if (held.length) {
-      await speak(cfg, `Back. ${held.length} session${held.length === 1 ? "" : "s"} finished while you were away.`);
-      for (const ev of held) enqueue(ev); // replay: each announces in turn (barge/spacebar to skip)
-    } else {
-      await speak(cfg, "Back on.");
+    pending.clear(); // snapshot + clear synchronously, before any await
+    // Drop entries that went stale while you were away: the session has since
+    // closed, or you already replied in text so the conversation moved on. Tri-
+    // state liveness — a registry READ FAILURE (null liveIds) must NOT be read as
+    // "all closed" (that would nuke the whole queue); on that uncertainty we keep.
+    const liveIds = (await registrySnapshot(cfg.claudeDir))?.liveIds ?? null;
+    const fresh: TurnEvent[] = [];
+    for (const ev of held) {
+      if (liveIds && !liveIds.has(ev.sessionId)) continue; // session closed
+      if (await userRespondedSince(ev.transcriptPath, ev.mark)) continue; // you moved on
+      fresh.push(ev);
     }
+    const dropped = held.length - fresh.length;
+    log(`resumed — ${fresh.length} session(s) waited while you were away${dropped ? ` (${dropped} stale, dropped)` : ""}`);
+    setState(restState());
+    // Enqueue the replay BEFORE the (fallible) summary speak: (1) loss-safe — a
+    // TTS throw can't discard the snapshot; (2) a newer same-session turn-end that
+    // arrives during the summary correctly SUPERSEDES its replay (enqueue dedups to
+    // the latest), instead of the old replay clobbering the newer event.
+    for (const ev of fresh) enqueue(ev); // each announces in turn (barge/spacebar to skip)
+    await speak(cfg, fresh.length
+      ? `Back. ${fresh.length} session${fresh.length === 1 ? "" : "s"} finished while you were away.`
+      : "Back on.");
   }
 
   async function handle(event: TurnEvent): Promise<void> {

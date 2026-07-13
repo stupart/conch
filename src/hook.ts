@@ -2,7 +2,7 @@ import { connect } from "node:net";
 import type { Config } from "./config.ts";
 import { bell, speak } from "./speak.ts";
 import { spokenSnippet, lastAssistantText, stripMarkdown, looksLikeAwaitingReply, transcriptMark } from "./snippet.ts";
-import { findSession, sessionLabel } from "./sessions.ts";
+import { findSession, sessionLabel, isEngageable } from "./sessions.ts";
 
 interface HookPayload {
   hook_event_name?: string;
@@ -47,9 +47,26 @@ export async function runHook(cfg: Config): Promise<void> {
     return;
   }
 
+  // Registry-independent backstop: a hook runs as a child of the Claude process,
+  // inheriting CLAUDE_CODE_ENTRYPOINT ("cli" for an interactive terminal, "sdk-cli"
+  // etc. for headless routines). This closes the leak even when the session's
+  // registry file is mid-write/unreadable at hook time (the isEngageable check
+  // below then can't see kind/entrypoint). Absent env → assume cli (conservative).
+  if ((process.env.CLAUDE_CODE_ENTRYPOINT ?? "cli") !== "cli") return;
+
   const event = payload.hook_event_name ?? "";
   const session = await findSession(cfg.claudeDir, payload.session_id ?? "");
   const label = sessionLabel(session, payload.cwd);
+
+  // Belt-and-braces: also drop by the registry entry when we can read it.
+  // Headless/sdk-cli routines (e.g. boatker's cron runs) otherwise get announced
+  // and steal the mic. An absent/unknown session falls through (don't over-drop).
+  if (session && !isEngageable(session)) return;
+
+  // SubagentStop isn't wired today, but if it ever is: a finishing background
+  // subagent is NOT the main turn ending. Drop it explicitly — never let it
+  // reach the Stop path (→ false "waiting") or the else branch (→ false needs-you).
+  if (event === "SubagentStop") return;
 
   // UserPromptSubmit: the session just STARTED working — a visual-only status
   // signal for the dashboard panel. No bell, no speech; if the daemon is down
@@ -67,7 +84,7 @@ export async function runHook(cfg: Config): Promise<void> {
   }
 
   let turn: TurnEvent;
-  if (event === "Stop" || event === "SubagentStop") {
+  if (event === "Stop") {
     const snippet = payload.transcript_path
       ? await spokenSnippet(payload.transcript_path, cfg.speakSentences, cfg.speakMaxChars)
       : "";
@@ -81,7 +98,7 @@ export async function runHook(cfg: Config): Promise<void> {
       transcriptPath: payload.transcript_path,
       mark: payload.transcript_path ? await transcriptMark(payload.transcript_path) : undefined,
     };
-  } else {
+  } else if (event === "Notification") {
     const ntype = payload.notification_type ?? "";
     if (!ACTIONABLE.has(ntype)) return;
     // idle_prompt fires on ANY idle session; only nag when the last reply
@@ -101,6 +118,8 @@ export async function runHook(cfg: Config): Promise<void> {
       ntype,
       mark: payload.transcript_path ? await transcriptMark(payload.transcript_path) : undefined,
     };
+  } else {
+    return; // unknown/unhandled hook event — never treat it as a needs-you nag
   }
 
   // Daemon owns the voice loop when it's up; otherwise speak standalone

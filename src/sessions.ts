@@ -6,6 +6,27 @@ export interface SessionInfo {
   name?: string;
   cwd?: string;
   pid?: number;
+  /** Claude Code's own live state: "busy" | "idle" | "shell" (authoritative for working-vs-waiting). */
+  status?: string;
+  /** epoch-ms the status was last set — compared against a latched panel state to pick the newer truth. */
+  statusUpdatedAt?: number;
+  /** "interactive" for a human-driven TUI; other kinds (headless/sdk) can't be talked to. */
+  kind?: string;
+  /** "cli" for a real terminal session; "sdk-cli" etc. are headless routines. */
+  entrypoint?: string;
+}
+
+/**
+ * A session a voice loop can actually engage — a top-level interactive CLI session.
+ * Excludes headless/sdk-cli routines (e.g. boatker's cron runs) that would otherwise
+ * get announced + open the mic. Conservative: a session is only dropped when we can
+ * positively identify it as non-interactive, so older registries (missing the fields)
+ * still pass.
+ */
+export function isEngageable(info: Pick<SessionInfo, "kind" | "entrypoint">): boolean {
+  if (info.kind && info.kind !== "interactive") return false;
+  if (info.entrypoint && info.entrypoint !== "cli") return false;
+  return true;
 }
 
 /**
@@ -24,13 +45,27 @@ export async function findSession(claudeDir: string, sessionId: string): Promise
     try {
       const entry = await Bun.file(join(dir, f)).json();
       if (entry.sessionId === sessionId) {
-        return { sessionId, name: entry.name, cwd: entry.cwd, pid: entry.pid };
+        return toInfo(entry);
       }
     } catch {
       // stale or mid-write registry file; skip
     }
   }
   return null;
+}
+
+/** Project a raw registry JSON entry onto SessionInfo (keeps the fields conch actually uses). */
+function toInfo(entry: any): SessionInfo {
+  return {
+    sessionId: entry.sessionId,
+    name: entry.name,
+    cwd: entry.cwd,
+    pid: entry.pid,
+    status: entry.status,
+    statusUpdatedAt: typeof entry.statusUpdatedAt === "number" ? entry.statusUpdatedAt : undefined,
+    kind: entry.kind,
+    entrypoint: entry.entrypoint,
+  };
 }
 
 /** Session name if set, else the project folder name. */
@@ -40,23 +75,65 @@ export function sessionLabel(info: SessionInfo | null, cwd: string | undefined):
   return dir.split("/").filter(Boolean).pop() ?? "claude";
 }
 
-/** All live sessions from the registry. */
-export async function listSessions(claudeDir: string): Promise<SessionInfo[]> {
+/**
+ * A single read of the session registry.
+ *  - `infos`: engageable (top-level interactive CLI) sessions, for the panel + wake.
+ *  - `liveIds`: EVERY live sessionId (engageable or not, plus ids salvaged from a
+ *    torn mid-write file), for liveness/"has this closed?" checks.
+ *  - `complete`: false if any file was unreadable/unparseable — callers deciding
+ *    "closed" or pruning latches must NOT treat an absence as authoritative.
+ */
+export interface RegistrySnapshot {
+  infos: SessionInfo[];
+  liveIds: Set<string>;
+  complete: boolean;
+}
+
+/**
+ * Read the whole registry once. Returns `null` only when the registry directory
+ * itself is unreadable (total uncertainty). A torn/unparseable individual file
+ * sets `complete = false` but the snapshot is still returned, with that session's
+ * id salvaged into `liveIds` so it is never mistaken for a closed session.
+ */
+export async function registrySnapshot(claudeDir: string): Promise<RegistrySnapshot | null> {
   const dir = join(claudeDir, "sessions");
   let files: string[];
   try {
     files = readdirSync(dir).filter((f) => f.endsWith(".json"));
   } catch {
-    return [];
+    return null; // registry dir unreadable → uncertain; callers keep everything
   }
-  const sessions: SessionInfo[] = [];
+  const infos: SessionInfo[] = [];
+  const liveIds = new Set<string>();
+  let complete = true;
   for (const f of files) {
+    const raw = await Bun.file(join(dir, f)).text().catch(() => null);
+    if (raw == null) {
+      complete = false;
+      continue;
+    }
+    let entry: any;
     try {
-      const entry = await Bun.file(join(dir, f)).json();
-      if (entry.sessionId) sessions.push({ sessionId: entry.sessionId, name: entry.name, cwd: entry.cwd, pid: entry.pid });
-    } catch {}
+      entry = JSON.parse(raw);
+    } catch {
+      // torn mid-write file — Claude rewrites <pid>.json on every status change,
+      // and the Stop hook fires at that same moment, so this race is real. Salvage
+      // the id so a live session is never dropped as "closed".
+      complete = false;
+      const m = raw.match(/"sessionId"\s*:\s*"([^"]+)"/);
+      if (m) liveIds.add(m[1]);
+      continue;
+    }
+    if (!entry.sessionId) continue;
+    liveIds.add(entry.sessionId);
+    if (isEngageable(entry)) infos.push(toInfo(entry));
   }
-  return sessions;
+  return { infos, liveIds, complete };
+}
+
+/** All engageable (top-level interactive CLI) live sessions from the registry. */
+export async function listSessions(claudeDir: string): Promise<SessionInfo[]> {
+  return (await registrySnapshot(claudeDir))?.infos ?? [];
 }
 
 /** Match a spoken/typed query against session names, then project folder names. */
