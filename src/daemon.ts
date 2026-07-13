@@ -608,6 +608,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         const ready = await probeTtsServer(cfg, 30_000, signal);
         return { ready };
       });
+      if (shuttingDown) return;
       if (adopted) {
         log(`kokoro replacement adopted on :${cfg.ttsPort} — owned supervision ended${adopted.ready ? "" : "; readiness recovering"}`);
         return;
@@ -646,6 +647,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // server may not finish a synthesis in 1.5s; spawning then would race it
       // for the port. The full-body canary still gates synthesis readiness.
       const adopted = await probeTtsServerPresence(cfg, 1500, signal);
+      // Shutdown aborts the presence request. Never interpret that cancellation
+      // as an absent server and spawn a child after shutdown already killed its
+      // last owned-process snapshot.
+      if (signal.aborted || shuttingDown) return;
       if (adopted) {
         const ready = await probeTtsServer(cfg, 30_000, signal);
         log(ready ? `kokoro adopted on :${cfg.ttsPort} — per-session voices on` : `kokoro adopted on :${cfg.ttsPort} — readiness canary failed; voices via say while it recovers`);
