@@ -10,7 +10,7 @@ import { injectText, injectKey } from "./inject.ts";
 import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio, isSendCommand } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences } from "./snippet.ts";
 import { probeServer } from "./transcribe.ts";
-import { setState, logAbove } from "./status.ts";
+import { setState, logAbove, type ConchState } from "./status.ts";
 import { listSessions, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
 import {
   emitRecorderTrace,
@@ -33,22 +33,29 @@ import {
  * session, newest first. A "wake" event (conch wake, or spacebar when the
  * daemon runs in a terminal) reopens the mic for the last announced session.
  */
-// Mute is persisted so a daemon restart (launchd/supervisor respawn) doesn't
-// silently turn conch back ON — muting "for the night" must survive.
+// Mute + pause are persisted so a daemon restart (launchd/supervisor respawn)
+// doesn't silently turn conch back ON — "muted for the night" / "paused while
+// away" must survive.
 const STATE_FILE = join(homedir(), ".config/conch/state.json");
 
-function readMuted(): boolean {
+interface DaemonState {
+  muted: boolean;
+  paused: boolean;
+}
+
+function readState(): DaemonState {
   try {
-    return JSON.parse(readFileSync(STATE_FILE, "utf8")).muted === true;
+    const s = JSON.parse(readFileSync(STATE_FILE, "utf8"));
+    return { muted: s.muted === true, paused: s.paused === true };
   } catch {
-    return false;
+    return { muted: false, paused: false };
   }
 }
 
-function writeMuted(muted: boolean): void {
+function writeState(state: DaemonState): void {
   try {
     mkdirSync(join(homedir(), ".config/conch"), { recursive: true });
-    writeFileSync(STATE_FILE, JSON.stringify({ muted }) + "\n");
+    writeFileSync(STATE_FILE, JSON.stringify(state) + "\n");
   } catch {}
 }
 
@@ -57,10 +64,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const queue: TurnEvent[] = [];
   let busy = false;
   let lastTurn: TurnEvent | null = null;
-  let muted = readMuted(); // survives restarts — see STATE_FILE
+  const persisted = readState(); // survives restarts — see STATE_FILE
+  let muted = persisted.muted;
+  let paused = persisted.paused; // "away" mode: quiet, but HOLD finished sessions to replay on resume
   let stopKey = false; // spacebar pressed while reciting — the guaranteed interrupt
   let micOpen = false; // true while a dictation/permission listen is in flight — spacebar closes it
   const injectedAt = new Map<string, number>(); // session -> last time conch drove it
+  const pending = new Map<string, TurnEvent>(); // sessions that finished while paused — latest per session
 
   // Record that conch just drove a session, and prune stale entries so this
   // map can't grow without bound over a long-lived daemon. Anything older than
@@ -105,7 +115,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
     } finally {
       busy = false;
-      setState(muted ? "muted" : "idle");
+      setState(restState());
     }
   }
 
@@ -121,12 +131,38 @@ export async function runDaemon(cfg: Config): Promise<void> {
     };
   }
 
+  // The at-rest status when nothing's in flight: muted wins over paused for display.
+  const restState = (): ConchState => (muted ? "muted" : paused ? "paused" : "idle");
+
   async function setMuted(next: boolean): Promise<void> {
     muted = next;
-    writeMuted(muted); // persist so a restart doesn't un-mute
+    writeState({ muted, paused }); // persist so a restart doesn't un-mute
     log(muted ? "muted — announcements and mic off (m or `conch unmute` to resume)" : "unmuted");
-    setState(muted ? "muted" : "idle");
+    setState(restState());
     await speak(cfg, muted ? "Muted." : "Back on.");
+  }
+
+  // "Away" mode: quiet like mute, but HOLD every session that finishes so they
+  // replay on resume instead of being dropped. Persisted across restarts.
+  async function setPaused(next: boolean): Promise<void> {
+    paused = next;
+    writeState({ muted, paused });
+    if (paused) {
+      log("paused — holding finished sessions until you resume (p or `conch resume`)");
+      setState("paused");
+      await speak(cfg, "Paused. I'll hold your queue.");
+      return;
+    }
+    const held = [...pending.values()];
+    pending.clear();
+    log(`resumed — ${held.length} session(s) waited while you were away`);
+    setState(restState());
+    if (held.length) {
+      await speak(cfg, `Back. ${held.length} session${held.length === 1 ? "" : "s"} finished while you were away.`);
+      for (const ev of held) enqueue(ev); // replay: each announces in turn (barge/spacebar to skip)
+    } else {
+      await speak(cfg, "Back on.");
+    }
   }
 
   async function handle(event: TurnEvent): Promise<void> {
@@ -134,6 +170,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
     micOpen = false; // no listen in flight yet for this event
     if (event.type === "mute") return setMuted(true);
     if (event.type === "unmute") return setMuted(false);
+    if (event.type === "pause") return setPaused(true);
+    if (event.type === "resume") return setPaused(false);
+
+    // Paused ("away"): hold whatever finishes so it replays on resume — the key
+    // difference from mute, which drops it. `wake` always cuts through.
+    if (paused && event.type !== "wake") {
+      pending.set(event.sessionId, event); // latest per session
+      lastTurn = event; // wake still finds the newest
+      return log(`paused — holding "${event.label}" (${pending.size} waiting)`);
+    }
 
     // Nobody's there: don't announce to an empty room, don't open the mic,
     // don't burn battery on sox/whisper. Telegram (the other hook) still
@@ -673,7 +719,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
   server.listen(cfg.socketPath);
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);
   if (muted) log("resuming muted (persisted) — m or `conch unmute` to turn on");
-  setState(muted ? "muted" : "idle");
+  if (paused) log("resuming paused (persisted) — p or `conch resume` to turn on");
+  setState(restState());
 
   let diagnosticShutdownStarted = false;
   const shutdown = () => {
@@ -726,7 +773,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       logAbove('  \x1b[2mreassign: conch voice <session> <kokoro-voice>\x1b[0m');
     } finally {
       busy = false;
-      setState(muted ? "muted" : "idle");
+      setState(restState());
       void drain();
     }
   }
@@ -767,6 +814,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       else if (c === "s" || c === "l") void printSessions();
       else if (c === "v") void auditionVoices();
       else if (c === "m") enqueue({ type: muted ? "unmute" : "mute", sessionId: "", label: "", announce: "" });
+      else if (c === "p") enqueue({ type: paused ? "resume" : "pause", sessionId: "", label: "", announce: "" });
       else if (c === "?" || c === "h") printHelp();
       else if (c === "q" || c === "\u0003") shutdown();
     });
@@ -778,7 +826,7 @@ function printHelp(): void {
   logAbove(
     [
       "",
-      "  \x1b[1mkeys\x1b[0m   \x1b[36mspace\x1b[0m stop reciting / open mic   \x1b[36ms\x1b[0m sessions   \x1b[36m1-9\x1b[0m mic to #   \x1b[36mv\x1b[0m voices   \x1b[36mm\x1b[0m mute   \x1b[36m?\x1b[0m help   \x1b[36mq\x1b[0m quit",
+      "  \x1b[1mkeys\x1b[0m   \x1b[36mspace\x1b[0m stop reciting / open mic   \x1b[36ms\x1b[0m sessions   \x1b[36m1-9\x1b[0m mic to #   \x1b[36mv\x1b[0m voices   \x1b[36mm\x1b[0m mute   \x1b[36mp\x1b[0m pause (away)   \x1b[36m?\x1b[0m help   \x1b[36mq\x1b[0m quit",
       '  \x1b[1mvoice\x1b[0m  \x1b[36m"continue"\x1b[0m read more   \x1b[36m"repeat"\x1b[0m again   \x1b[36m"stop"\x1b[0m end reading   \x1b[36m"no response needed"\x1b[0m close mic',
       "  \x1b[1mcli\x1b[0m    conch wake [name] · sessions · voice <session> <voice> · mute · doctor",
       "",

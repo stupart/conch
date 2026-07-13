@@ -17,6 +17,7 @@ Usage:
   conch wake [name]     reopen the mic — last announced session, or by name
   conch sessions        list live Claude Code sessions
   conch mute | unmute   silence announcements + mic (auto-away covers this too)
+  conch pause | resume  step away: stay quiet but HOLD finished sessions, replay on resume
   conch listen          capture one utterance, print the transcript (mic test)
   conch speak <text>    say something (TTS test; uses the warm Kokoro server when up)
   conch voices          audition the voice ring — each voice introduces itself
@@ -64,7 +65,9 @@ switch (command) {
     break;
   }
   case "mute":
-  case "unmute": {
+  case "unmute":
+  case "pause":
+  case "resume": {
     const ok = await sendToDaemon(cfg.socketPath, { type: command, sessionId: "", label: "", announce: "" });
     console.log(ok ? `[conch] ${command}d` : "[conch] daemon not running");
     if (!ok) process.exit(1);

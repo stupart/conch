@@ -4,7 +4,7 @@
  *  - /tmp/conch-state.json for anything else (menu-bar apps, status bars)
  */
 
-export type ConchState = "idle" | "muted" | "speaking" | "listening" | "recording" | "transcribing";
+export type ConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
 
 // Exported as a stable path for external consumers (menu-bar apps, status bars).
 export const STATE_FILE = "/tmp/conch-state.json";
@@ -12,6 +12,7 @@ export const STATE_FILE = "/tmp/conch-state.json";
 const GLYPHS: Record<ConchState, string> = {
   idle: "\x1b[2m◌ idle · space=wake m=mute ?=help\x1b[0m",
   muted: "\x1b[33m◌ muted\x1b[0m\x1b[2m · m to unmute\x1b[0m",
+  paused: "\x1b[35m⏸ paused (away)\x1b[0m\x1b[2m · p or `conch resume` — holding your queue\x1b[0m",
   speaking: "\x1b[33m▶ speaking\x1b[0m",
   listening: "\x1b[32m● mic open\x1b[0m",
   recording: "\x1b[31m● recording\x1b[0m",
