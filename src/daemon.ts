@@ -225,7 +225,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // background canary can slip between the check and this utterance.
     await speech.quiescent();
     if (stopKey) return { heard: "", cut: true };
-    return speech.runInterruptible(cfg, text, event.label, async (startSpeech) => {
+    const result = await speech.runInterruptible(cfg, text, event.label, async (startSpeech) => {
       // The manager holds its lane across recorder cleanup/transcription, so a
       // recovery canary cannot start after playback ends while barge is live.
       const barge = armBargeRecorder(cfg);
@@ -256,6 +256,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         if (!bargeCleaned) await barge.abort().catch(() => {});
       }
     });
+    return result ?? { heard: "", cut: true };
   }
 
   /** Inject a prompt utterance and report how it went. */

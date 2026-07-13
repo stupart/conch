@@ -175,3 +175,25 @@ test("interruptible speech holds exclusion through barge recorder cleanup", asyn
   await Promise.all([interaction, recovery]);
   expect(order).toEqual(["barge-armed", "playback", "playback-done", "barge-clean", "recovery-probe"]);
 });
+
+test("a queued interruptible interaction reports cancellation without starting", async () => {
+  const cfg = loadConfig();
+  const gate = deferred<void>();
+  let interactionStarted = false;
+  const manager = new SpeechManager({
+    speakCancellable: () => ({ done: Promise.resolve(), cancel() {} }),
+    stopSpeaking() {},
+  });
+
+  const probe = manager.runProbe(async () => gate.promise);
+  const interaction = manager.runInterruptible(cfg, "queued", "session", async () => {
+    interactionStarted = true;
+    return "finished";
+  });
+  manager.cancelPendingAudio();
+  gate.resolve();
+
+  expect(await interaction).toBeUndefined();
+  expect(interactionStarted).toBeFalse();
+  await probe;
+});

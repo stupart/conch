@@ -76,7 +76,7 @@ export class SpeechManager {
     text: string,
     label: string,
     interaction: (startSpeech: () => CancellableSpeech) => Promise<T>,
-  ): Promise<T> {
+  ): Promise<T | undefined> {
     let active: CancellableSpeech | null = null;
     return this.enqueue<T>(
       () =>
