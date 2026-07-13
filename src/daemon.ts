@@ -1008,7 +1008,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
         if (!action) continue;
         micOpen = false;
         if (!action.shouldResume) activeDictation = null;
-        const result = await executeAction(action);
+        let result: "resume" | "done";
+        try {
+          result = await executeAction(action);
+        } catch (error) {
+          // A cue/playback/injection failure must not strand rows after the
+          // reducer has cleared its buffer. deliver() remains the only path
+          // that annotates finalSubmittedPayload; this is disposition only.
+          emitRecorderTraces(expandDiagnosticIds([
+            ...action.payloadDiagnosticIds,
+            ...action.actionDiagnosticIds,
+            ...action.discardedDiagnosticIds,
+          ]));
+          throw error;
+        }
         if (result === "done") {
           terminal = true;
         } else {
