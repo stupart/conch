@@ -99,6 +99,52 @@ export async function lastAssistantText(transcriptPath: string): Promise<string>
   return collected.join("\n");
 }
 
+/** Count real user PROMPT entries (typed messages, not tool_result) in a transcript. */
+async function countUserPrompts(transcriptPath: string): Promise<number> {
+  let text: string;
+  try {
+    text = await Bun.file(transcriptPath).text();
+  } catch {
+    return 0;
+  }
+  let n = 0;
+  for (const line of text.split("\n")) {
+    const l = line.trim();
+    if (!l) continue;
+    let e: any;
+    try {
+      e = JSON.parse(l);
+    } catch {
+      continue;
+    }
+    if (e.type !== "user") continue;
+    const c = e.message?.content;
+    const isRealPrompt =
+      typeof c === "string" ? c.trim().length > 0 : Array.isArray(c) && c.some((b: any) => b?.type === "text" && b.text?.trim());
+    if (isRealPrompt) n++;
+  }
+  return n;
+}
+
+/** How many times you'd prompted this session when a turn fired — the "where we were" mark. */
+export async function transcriptMark(transcriptPath: string): Promise<number> {
+  return countUserPrompts(transcriptPath);
+}
+
+/**
+ * True if you typed another prompt to this session since `mark` — i.e. you already
+ * responded directly and the conversation moved on, so conch shouldn't still read
+ * that turn aloud or nag you for input on it. Counting prompt ENTRIES (not lines)
+ * is robust to trailing newlines and interleaved tool_result/meta entries.
+ */
+export async function userRespondedSince(
+  transcriptPath: string | undefined,
+  mark: number | undefined,
+): Promise<boolean> {
+  if (!transcriptPath || mark == null) return false;
+  return (await countUserPrompts(transcriptPath)) > mark;
+}
+
 /**
  * Does the tail of a reply actually solicit the user? Used to suppress
  * idle_prompt announcements for sessions that are just... idle ("I'll ping

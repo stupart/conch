@@ -8,7 +8,7 @@ import { speak, speakCancellable, stopSpeaking, probeTtsServer, voiceFor } from 
 import { listenOnce, listenGap, armBargeRecorder, killActiveRecorders, abortListening, type ListenHooks } from "./listen.ts";
 import { injectText, injectKey } from "./inject.ts";
 import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio, isSendCommand } from "./commands.ts";
-import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences } from "./snippet.ts";
+import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince } from "./snippet.ts";
 import { probeServer } from "./transcribe.ts";
 import { setState, logAbove, type ConchState } from "./status.ts";
 import { listSessions, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
@@ -209,6 +209,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
 
     log(`${event.type}${event.ntype ? `/${event.ntype}` : ""} from "${event.label}" (${event.sessionId.slice(0, 8)})`);
+
+    // Already handled it yourself: if you typed a reply to this session (so the
+    // conversation moved on) since this fired, don't read it aloud or nag for
+    // input. Covers the live path AND pause-replay (both flow through here).
+    if ((event.type === "turn-end" || event.type === "needs-you") && (await userRespondedSince(event.transcriptPath, event.mark))) {
+      return log(`skipping "${event.label}" — you already responded, conversation moved on`);
+    }
 
     // Suppress a "needs you" for a session conch just drove — Claude Code can
     // fire an idle/needs-you the moment injected input lands, before the turn

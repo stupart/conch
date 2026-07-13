@@ -1,7 +1,7 @@
 import { connect } from "node:net";
 import type { Config } from "./config.ts";
 import { bell, speak } from "./speak.ts";
-import { spokenSnippet, lastAssistantText, stripMarkdown, looksLikeAwaitingReply } from "./snippet.ts";
+import { spokenSnippet, lastAssistantText, stripMarkdown, looksLikeAwaitingReply, transcriptMark } from "./snippet.ts";
 import { findSession, sessionLabel } from "./sessions.ts";
 
 interface HookPayload {
@@ -24,6 +24,8 @@ export interface TurnEvent {
   transcriptPath?: string;
   /** notification_type for needs-you events (permission_prompt, idle_prompt, ...) */
   ntype?: string;
+  /** transcript line count when this fired — used to detect you already responded since */
+  mark?: number;
 }
 
 // Notification types that actually need a human; everything else stays silent.
@@ -60,6 +62,7 @@ export async function runHook(cfg: Config): Promise<void> {
       pid: session?.pid,
       announce: `${label}: ${snippet || "finished, ready for your next prompt"}`,
       transcriptPath: payload.transcript_path,
+      mark: payload.transcript_path ? await transcriptMark(payload.transcript_path) : undefined,
     };
   } else {
     const ntype = payload.notification_type ?? "";
@@ -79,6 +82,7 @@ export async function runHook(cfg: Config): Promise<void> {
       announce: `${label} needs you: ${payload.message ?? "waiting for your input"}`,
       transcriptPath: payload.transcript_path,
       ntype,
+      mark: payload.transcript_path ? await transcriptMark(payload.transcript_path) : undefined,
     };
   }
 
