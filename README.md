@@ -27,7 +27,8 @@ macOS + [Bun](https://bun.sh). One command handles everything else:
 ```bash
 git clone https://github.com/stupart/conch.git && cd conch
 bun install
-bun run src/cli.ts setup     # deps + models + hooks, then doctor
+bun link           # puts `conch` on your PATH
+conch setup        # deps + models + hooks, then doctor
 ```
 
 `conch setup` installs the binaries conch shells out to (`sox`, `tmux`, `whisper-cpp`) via [Homebrew](https://brew.sh), downloads the two speech models into `~/.cache/conch/models` (whisper large-v3-turbo ~1.6 GB, silero VAD ~900 KB), wires the Claude Code hooks, and runs `doctor` to verify the chain. It's idempotent — re-run it any time; it skips whatever's already there. Already have a whisper.cpp build and models (e.g. a [seashell](https://github.com/stupart/seashell) checkout)? Point `CONCH_WHISPER_CLI` / `CONCH_WHISPER_MODEL` / `CONCH_VAD_MODEL` (or `CONCH_SEASHELL_ROOT`) at them and setup leaves them untouched.
@@ -35,13 +36,13 @@ bun run src/cli.ts setup     # deps + models + hooks, then doctor
 Then start it as a background service that launches at login and self-heals within ~15s of a crash:
 
 ```bash
-bun run src/cli.ts service install     # view anytime: tmux attach -t conch
+conch service install     # view anytime: tmux attach -t conch
 ```
 
 Prefer to watch it live? Run the loop in the foreground in any pane instead — you get the full dashboard (session panel + status line):
 
 ```bash
-bun run src/cli.ts daemon
+conch daemon
 ```
 
 No daemon running at all? The hooks still work standalone: bell + spoken announcements, no voice-back. That's a perfectly good way to use conch.
