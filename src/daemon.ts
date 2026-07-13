@@ -5,13 +5,14 @@ import { homedir } from "node:os";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
 import {
-  speak as playSpeech,
-  speakCancellable as playSpeechCancellable,
-  stopSpeaking,
+  speakCancellable as backendSpeakCancellable,
+  stopSpeaking as backendStopSpeaking,
   probeTtsServer,
+  probeTtsServerPresence,
+  resetTtsReadiness,
   voiceFor,
-  bell as playBell,
 } from "./speak.ts";
+import { SpeechManager } from "./speech-manager.ts";
 import {
   listenGap,
   armBargeRecorder,
@@ -99,22 +100,47 @@ export async function runDaemon(cfg: Config): Promise<void> {
     done: Promise<void>;
   } | null = null;
   let shuttingDown = false;
+  let normalMicReserved = false;
+  let bargeHandoffOpen = false;
+  let pendingMicControl: "pause" | "mute" | null = null;
   const injectedAt = new Map<string, number>(); // session -> last time conch drove it
   const pending = new Map<string, TurnEvent>(); // sessions that finished while paused — latest per session
 
-  const normalMicOpen = (): boolean => Boolean(activeDictation?.session.micOpen || micOpen);
+  const normalMicOpen = (): boolean => Boolean(
+    activeDictation?.session.micOpen || micOpen || normalMicReserved || bargeHandoffOpen
+  );
   const assertNormalMicClosed = (operation: string): void => assertAudioGate(normalMicOpen, operation);
+  const speech = new SpeechManager(
+    { speakCancellable: backendSpeakCancellable, stopSpeaking: backendStopSpeaking },
+    (operation, output) => withNormalMicClosed(normalMicOpen, operation, output),
+  );
+  // Hooks may connect while model startup is in flight; drain() holds their
+  // events behind this fully-consumed readiness probe.
+  let ttsStartup: Promise<void> = Promise.resolve();
+
+  const reserveNormalMic = async (): Promise<boolean> => {
+    // Close the gate before yielding. Already-admitted audio may finish; every
+    // queued/new task now fails its actual-start check until the controller is
+    // synchronously started or resumed.
+    normalMicReserved = true;
+    await speech.quiescent();
+    if (!shuttingDown) return true;
+    normalMicReserved = false;
+    return false;
+  };
 
   const speak = async (speechCfg: Config, text: string, label = ""): Promise<void> => {
-    await withNormalMicClosed(normalMicOpen, "TTS", () => playSpeech(speechCfg, text, label));
+    await speech.speak(speechCfg, text, label);
   };
 
   const micCue = async (cueCfg: Config, kind: "open" | "close" | "sent"): Promise<void> => {
-    await withNormalMicClosed(normalMicOpen, `${kind} mic cue`, () => playMicCue(cueCfg, kind));
+    if (!cueCfg.micCues) return;
+    await speech.playCue(CUE_SOUND[kind], `${kind} mic cue`);
+    if (kind === "open") await Bun.sleep(350); // let the cue's tail decay before sox arms
   };
 
   const ringBell = async (): Promise<void> => {
-    await withNormalMicClosed(normalMicOpen, "attention bell", () => playBell(cfg));
+    if (cfg.bell) await speech.playCue(cfg.bellSound, "attention bell");
   };
 
   // Record that conch just drove a session, and prune stale entries so this
@@ -137,11 +163,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
   };
 
   function enqueue(event: TurnEvent): void {
+    if (shuttingDown) return;
     if ((event.type === "pause" || event.type === "mute") && activeDictation) {
       // Close the producer gate synchronously while this event waits behind
       // the busy conversation. The active loop drains/submits before the mode
       // event is allowed to speak its acknowledgement.
       activeDictation.requestExternal(event.type);
+    } else if (
+      (event.type === "pause" || event.type === "mute")
+      && (normalMicReserved || bargeHandoffOpen)
+    ) {
+      // A control event can land in the atomic audio-to-mic handoff before a
+      // concrete controller exists. Remember the first action so that boundary
+      // closes without opening a normal producer.
+      pendingMicControl ??= event.type;
     }
     const i = event.type === "speak"
       ? -1
@@ -161,6 +196,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (busy) return;
     busy = true;
     try {
+      await ttsStartup;
+      if (shuttingDown) return;
+      if (stopKey && queue.length) {
+        const skipped = queue.pop()!;
+        stopKey = false;
+        log(`⏹ spacebar — skipped queued ${skipped.type} for "${skipped.label}" during TTS startup`);
+      }
       while (queue.length) {
         const event = queue.pop()!; // newest first
         try {
@@ -169,7 +211,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           // one bad event (closed pane, missing binary, socket reset, a throw
           // from any spawn) must not take the whole daemon down mid-exchange.
           log(`error handling ${event.type} "${event.label}": ${e}`);
-          stopSpeaking();
+          speech.cancelCurrent();
         }
       }
     } finally {
@@ -358,38 +400,48 @@ export async function runDaemon(cfg: Config): Promise<void> {
       await speak(cfg, text, event.label);
       return { heard: "", cut: false };
     }
-    // The barge recorder is the sole intentional during-TTS mic. The normal
-    // producer must already be barrier-closed before this swap.
+    // Finish any canary already admitted while the mic was closed, then enter
+    // the manager's audio FIFO. Its actual-start gate checks this precondition
+    // again before the intentional high-threshold barge recorder is armed.
+    await speech.quiescent();
+    if (stopKey) return { heard: "", cut: true };
     assertNormalMicClosed("barge-in TTS");
-    const barge = armBargeRecorder(cfg, traceParent, nextTraceSequence?.() ?? 1);
-    const speech = playSpeechCancellable(cfg, text, event.label);
-    let cut = false;
-    const watch = setInterval(() => {
-      if (barge.triggered()) {
-        cut = true;
-        speech.cancel(); // your voice wins mid-sentence
+    const result = await speech.runInterruptible(cfg, text, event.label, async (startSpeech) => {
+      const barge = armBargeRecorder(cfg, traceParent, nextTraceSequence?.() ?? 1);
+      const speechRun = startSpeech();
+      let cut = false;
+      let disposed = false;
+      const watch = setInterval(() => {
+        if (barge.triggered()) {
+          cut = true;
+          speechRun.cancel(); // your voice wins mid-sentence
+        }
+      }, 120);
+      try {
+        await speechRun.done;
+        if (!barge.triggered()) {
+          await barge.abort();
+          disposed = true;
+          return { heard: "", cut: false };
+        }
+        setState("recording", event.label);
+        const initialCapture = barge.adopt();
+        disposed = Boolean(initialCapture);
+        // Keep the authoritative gate conservatively closed between adoption
+        // and the controller's synchronous attached() handshake.
+        bargeHandoffOpen = Boolean(initialCapture);
+        return {
+          heard: "",
+          cut,
+          ...(initialCapture ? { initialCapture } : {}),
+          captureParent: barge.parent,
+        };
+      } finally {
+        clearInterval(watch);
+        if (!disposed) await barge.abort().catch(() => {});
       }
-    }, 120);
-    try {
-      await speech.done;
-    } catch (error) {
-      clearInterval(watch);
-      await barge.abort();
-      throw error;
-    }
-    clearInterval(watch);
-    if (!barge.triggered()) {
-      await barge.abort();
-      return { heard: "", cut: false };
-    }
-    setState("recording", event.label);
-    const initialCapture = barge.adopt();
-    return {
-      heard: "",
-      cut,
-      ...(initialCapture ? { initialCapture } : {}),
-      captureParent: barge.parent,
-    };
+    });
+    return result ?? { heard: "", cut: true };
   }
 
   /** Inject a prompt utterance and report how it went. */
@@ -551,6 +603,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
           let gapActive: typeof activeDictation = null;
           let gapResult!: Awaited<ReturnType<typeof listenGap>>;
           try {
+            if (!(await reserveNormalMic())) break reading;
+            if (stopKey || pendingMicControl) {
+              deferredInitialExternal = pendingMicControl ?? "spacebar";
+              pendingMicControl = null;
+              normalMicReserved = false;
+              break reading;
+            }
+            // Conservative before listenGap synchronously starts its controller;
+            // onSessionStarted replaces this flag with the concrete session.
+            micOpen = true;
+            normalMicReserved = false;
             gapResult = await listenGap(cfg, gapSecs, {
               parent: traceParent,
               traceSequence: nextTraceSequence,
@@ -571,6 +634,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
               },
             });
           } finally {
+            normalMicReserved = false;
             if (activeDictation === gapActive) activeDictation = null;
             micOpen = false;
             resolveGapDone();
@@ -855,9 +919,31 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const initialWindow = seededSegments.length ? cfg.holdSubmitSecs : cfg.listenWindowSecs;
     log(`listening (start within ${initialWindow}s)${seededSegments.length ? " · holding" : ""}...`);
     if (shuttingDown) return;
-    const needsCapture = Boolean(initialDictationCapture) || !deferredInitialExternal;
-    if (needsCapture) session.start(initialDictationCapture);
-    micOpen = needsCapture;
+    let needsCapture = Boolean(initialDictationCapture) || !deferredInitialExternal;
+    if (needsCapture) {
+      if (!(await reserveNormalMic())) return;
+      if (stopKey || pendingMicControl) {
+        deferredInitialExternal ??= pendingMicControl ?? "spacebar";
+        pendingMicControl = null;
+        needsCapture = Boolean(initialDictationCapture); // an adopted barge must still attach, then drain
+      }
+      if (needsCapture) {
+        micOpen = true;
+        try {
+          session.start(initialDictationCapture);
+          bargeHandoffOpen = false;
+        } catch (error) {
+          micOpen = false;
+          await Promise.resolve(killActiveRecorders()).catch(() => {});
+          bargeHandoffOpen = false;
+          throw error;
+        } finally {
+          normalMicReserved = false;
+        }
+      } else {
+        normalMicReserved = false;
+      }
+    }
     activeDictation = { session, requestExternal, done: dictationDone };
 
     // Establish controller ownership before reducing a seed. Non-hold mode can
@@ -991,8 +1077,28 @@ export async function runDaemon(cfg: Config): Promise<void> {
             deferredExternalBarrierReason = undefined;
             beginExternalAction(external, barrierReason);
           } else {
-            session.resume();
+            if (!(await reserveNormalMic())) {
+              terminal = true;
+              continue;
+            }
+            if (deferredExternal) {
+              const external = deferredExternal;
+              const barrierReason = deferredExternalBarrierReason;
+              deferredExternal = undefined;
+              deferredExternalBarrierReason = undefined;
+              normalMicReserved = false;
+              beginExternalAction(external, barrierReason);
+              continue;
+            }
             micOpen = true;
+            try {
+              session.resume();
+            } catch (error) {
+              micOpen = false;
+              throw error;
+            } finally {
+              normalMicReserved = false;
+            }
             setState("listening", event.label);
           }
           continue;
@@ -1034,17 +1140,36 @@ export async function runDaemon(cfg: Config): Promise<void> {
             continue;
           }
           session.setIdleWindowSecs(cfg.holdSubmitSecs);
-          session.resume();
+          if (!(await reserveNormalMic())) {
+            terminal = true;
+            continue;
+          }
+          if (deferredExternal) {
+            const external = deferredExternal;
+            const barrierReason = deferredExternalBarrierReason;
+            deferredExternal = undefined;
+            deferredExternalBarrierReason = undefined;
+            normalMicReserved = false;
+            beginExternalAction(external, barrierReason);
+            continue;
+          }
           micOpen = true;
+          try {
+            session.resume();
+          } catch (error) {
+            micOpen = false;
+            throw error;
+          } finally {
+            normalMicReserved = false;
+          }
           activeDictation = { session, requestExternal, done: dictationDone };
           setState("listening", event.label);
         }
       }
     } finally {
-      activeDictation = null;
-      micOpen = false;
       if (session.state === "running" || session.state === "draining") {
         const ticket = session.requestBarrier("conversation-exit");
+        let exitBarrierReached = false;
         while (true) {
           const pendingEvent = await session.nextEvent();
           if (pendingEvent.kind === "transcript") {
@@ -1064,11 +1189,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
             });
           } else if (pendingEvent.kind === "barrier") {
             session.acknowledge(pendingEvent);
-            if (pendingEvent.id === ticket.id) break;
+            if (pendingEvent.id === ticket.id) exitBarrierReached = true;
+            if (exitBarrierReached && session.state !== "draining") break;
           }
         }
         await ticket.done;
       }
+      activeDictation = null;
+      micOpen = false;
+      bargeHandoffOpen = false;
       const pendingIds = expandDiagnosticIds(
         reducer.snapshot.buffer.flatMap((segment) => segment.diagnosticId ? [segment.diagnosticId] : []),
       );
@@ -1102,8 +1231,24 @@ export async function runDaemon(cfg: Config): Promise<void> {
     };
 
     if (shuttingDown) return;
-    session.start();
+    if (!(await reserveNormalMic())) return;
+    if (stopKey || pendingMicControl) {
+      const control = pendingMicControl;
+      pendingMicControl = null;
+      normalMicReserved = false;
+      if (!control) consumeStopKey();
+      await micCue(cfg, "close");
+      return log(control ? `${control} — permission mic stayed closed` : "⏹ spacebar — closed the permission mic");
+    }
     micOpen = true;
+    try {
+      session.start();
+    } catch (error) {
+      micOpen = false;
+      throw error;
+    } finally {
+      normalMicReserved = false;
+    }
     activeDictation = { session, requestExternal, done: permissionDone };
     try {
       while (true) {
@@ -1141,10 +1286,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
         break;
       }
     } finally {
-      activeDictation = null;
-      micOpen = false;
       if (session.state === "running" || session.state === "draining") {
         const ticket = session.requestBarrier("permission-exit");
+        let exitBarrierReached = false;
         while (true) {
           const pendingEvent = await session.nextEvent();
           if (pendingEvent.kind === "transcript" && pendingEvent.diagnosticId) {
@@ -1156,11 +1300,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
             emitRecorderTrace(pendingEvent.diagnosticId, { intent: "permission-error", bufferCountAfterReduction: 0 });
           } else if (pendingEvent.kind === "barrier") {
             session.acknowledge(pendingEvent);
-            if (pendingEvent.id === ticket.id) break;
+            if (pendingEvent.id === ticket.id) exitBarrierReached = true;
+            if (exitBarrierReached && session.state !== "draining") break;
           }
         }
         await ticket.done;
       }
+      activeDictation = null;
+      micOpen = false;
       resolvePermissionDone();
     }
 
@@ -1190,80 +1337,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
     else log(`sent ${verdict === "approve" ? "Enter" : "Escape"} via ${via}`);
   }
 
-  // Warm whisper-server: the daemon owns it so transcription (and live
-  // partials) skip the seconds-long model reload of the cold cli path.
   let whisperServer: ReturnType<typeof Bun.spawn> | null = null;
-  if (cfg.whisperPort && existsSync(cfg.whisperServerBin)) {
-    // Adopt an already-running whisper-server (e.g. a prior daemon's, orphaned
-    // by a hard restart) instead of spawning a duplicate that can't bind the
-    // port and just leaks — same pattern as kokoro below. A 3-day-old orphan
-    // holding the port was found in the wild before this.
-    if (await probeServer(cfg, 1500)) {
-      log(`whisper-server adopted on :${cfg.whisperPort} — fast transcription + live partials`);
-    } else {
-      whisperServer = Bun.spawn(
-        [
-          cfg.whisperServerBin,
-          "-m", cfg.whisperModel,
-          "-vm", cfg.vadModel,
-          "--vad",
-          "--vad-speech-pad-ms", "300", // default 30ms amputates quiet word tails
-          "--host", "127.0.0.1",
-          "--port", String(cfg.whisperPort),
-          "-l", "en",
-          "-t", "6",
-        ],
-        { stdout: "ignore", stderr: "ignore" },
-      );
-      // 60s patience: whisper and kokoro load models simultaneously at startup
-      // and contend for GPU/disk — observed pushing whisper past a 20s probe
-      void probeServer(cfg, 60_000).then((up) => {
-        log(up ? `whisper-server warm on :${cfg.whisperPort} — fast transcription + live partials` : "whisper-server failed to come up — using the cold cli path");
-      });
-    }
-  } else if (cfg.whisperPort) {
-    log(`whisper-server binary not found at ${cfg.whisperServerBin} — using the cold cli path`);
-  }
-
-  // Warm Kokoro TTS server (mlx-audio) — natural per-session voices.
-  // Same ownership pattern as whisper-server; `say` remains the fallback.
+  // Non-null means OWNED. Adopted Kokoro processes are never stored, watched,
+  // killed, or respawned by this daemon.
   let ttsServer: ReturnType<typeof Bun.spawn> | null = null;
-  if (cfg.ttsEngine !== "say" && cfg.ttsPort && Bun.which(cfg.ttsServerBin)) {
-    // Adopt an already-running server (e.g. a prior daemon's, after a
-    // launchd restart) instead of spawning a duplicate that can't bind the
-    // port, dies silently, and leaves us talking to a stale instance.
-    const already = await probeTtsServer(cfg, 1500);
-    if (!already) {
-      // logged (not discarded) so synthesis failures are diagnosable
-      // stdout and stderr need SEPARATE files — the same Bun.file opened twice
-      // has independent write offsets and the streams clobber each other.
-      ttsServer = Bun.spawn([cfg.ttsServerBin, "--port", String(cfg.ttsPort)], {
-        stdout: Bun.file("/tmp/conch-kokoro.log"),
-        stderr: Bun.file("/tmp/conch-kokoro.err.log"),
-      });
-    }
-    void probeTtsServer(cfg, 30_000).then(async (up) => {
-      if (!up) return log("tts server didn't come up — voices via say");
-      log(`kokoro ${already ? "adopted" : "warm"} on :${cfg.ttsPort} — per-session voices on`);
-      // Preload EVERY ring voice off the hot path — a cold first-use of a
-      // voice was a candidate for "first sentence in system voice". Sequential
-      // (single-threaded server); each warms that voice's embedding.
-      for (const v of cfg.ttsVoices) {
-        await fetch(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/speech`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ model: cfg.ttsModel, input: "ready", voice: v }),
-          signal: AbortSignal.timeout(60_000),
-        }).catch(() => {});
-      }
-      log(`kokoro warmed ${cfg.ttsVoices.length} voices`);
-    });
-  } else if (cfg.ttsEngine === "server") {
-    log(`CONCH_TTS=server but ${cfg.ttsServerBin} not found (uv tool install "mlx-audio[server]") — voices via say`);
-  }
-
-  if (existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath); // stale socket from a previous run
-
   const server = createServer((sock) => {
     let buf = "";
     sock.on("error", () => {}); // a hook killed mid-write (ECONNRESET) must not throw
@@ -1281,40 +1358,219 @@ export async function runDaemon(cfg: Config): Promise<void> {
   });
 
   server.on("error", (e) => log(`socket server error: ${e}`));
+
+  let shutdownStarted = false;
+  const shutdown = async (): Promise<void> => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    shuttingDown = true;
+    queue.length = 0;
+    speech.close(); // cancel and seal speech, cues, and in-flight/future canaries
+    // Close the controller's rearm gate synchronously before taking the
+    // recorder snapshot. No await is allowed before this request.
+    const dictationAtShutdown = activeDictation;
+    dictationAtShutdown?.requestExternal("spacebar", "shutdown");
+    const recorderDrain = killActiveRecorders(); // a live sox capture would keep the mic hot after we die
+    if (server.listening) server.close();
+    whisperServer?.kill();
+    ttsServer?.kill();
+    try {
+      unlinkSync(cfg.socketPath);
+    } catch {}
+    // KEEP_RAW diagnostics are exact opt-in. The default path stays lean and
+    // exits after synchronous cancellation instead of waiting on transcription.
+    if (!diagnosticsEnabled) process.exit(0);
+    await speech.quiescent().catch(() => {});
+    await Promise.allSettled([
+      Promise.resolve(recorderDrain),
+      dictationAtShutdown?.done ?? Promise.resolve(),
+    ]);
+    flushPendingRecorderTraces();
+    process.exit(0);
+  };
+  // G8: the daemon owns its signal path before exposing the socket.
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
+
+  const spawnOwnedTts = (): ReturnType<typeof Bun.spawn> => {
+    const proc = Bun.spawn([cfg.ttsServerBin, "--port", String(cfg.ttsPort)], {
+      // Separate handles avoid independent offsets clobbering one log file.
+      stdout: Bun.file("/tmp/conch-kokoro.log"),
+      stderr: Bun.file("/tmp/conch-kokoro.err.log"),
+    });
+    ttsServer = proc;
+    return proc;
+  };
+
+  const retryOwnedTtsReadiness = async (child: ReturnType<typeof Bun.spawn>): Promise<void> => {
+    let deferrals = 0;
+    while (!shuttingDown && ttsServer === child) {
+      await Bun.sleep(Math.min(5_000, 500 * 2 ** Math.min(deferrals, 3)));
+      if (shuttingDown || ttsServer !== child) return;
+      try {
+        const up = await speech.runProbe((signal) => probeTtsServer(cfg, 30_000, signal));
+        if (shuttingDown || ttsServer !== child) return;
+        if (up) {
+          log(`kokoro restarted on :${cfg.ttsPort} — per-session voices on`);
+        } else {
+          log("kokoro restart did not become synthesis-ready");
+          child.kill();
+        }
+        return;
+      } catch (error) {
+        if (shuttingDown || ttsServer !== child) return;
+        deferrals++;
+        log(`kokoro readiness still deferred until the mic closes: ${error}`);
+      }
+    }
+  };
+
+  const superviseOwnedTts = async (initial: ReturnType<typeof Bun.spawn>): Promise<void> => {
+    let child: ReturnType<typeof Bun.spawn> | null = initial;
+    let failures = 0;
+    while (!shuttingDown) {
+      if (child) {
+        const exitedChild = child;
+        const code = await exitedChild.exited;
+        if (ttsServer !== exitedChild) return; // stale watcher
+        ttsServer = null;
+        child = null;
+        if (shuttingDown) return;
+        resetTtsReadiness();
+        failures++;
+        log(`owned kokoro exited (${code})`);
+      }
+
+      const delayMs = Math.min(30_000, 500 * 2 ** Math.min(failures - 1, 6));
+      log(`kokoro recovery attempt in ${Math.round(delayMs / 100) / 10}s`);
+      await Bun.sleep(delayMs);
+      if (shuttingDown) return;
+
+      let adopted: { ready: boolean } | null;
+      try {
+        adopted = await speech.runProbe(async (signal) => {
+          if (!(await probeTtsServerPresence(cfg, 1500, signal))) return null;
+          const ready = await probeTtsServer(cfg, 30_000, signal);
+          return { ready };
+        });
+      } catch (error) {
+        if (shuttingDown) return;
+        failures++;
+        log(`kokoro recovery deferred until the mic closes: ${error}`);
+        continue;
+      }
+      if (shuttingDown) return;
+      if (adopted) {
+        log(`kokoro replacement adopted on :${cfg.ttsPort} — owned supervision ended${adopted.ready ? "" : "; readiness recovering"}`);
+        return;
+      }
+
+      try {
+        if (shuttingDown) return;
+        child = spawnOwnedTts();
+      } catch (error) {
+        failures++;
+        log(`kokoro restart spawn failed: ${error}`);
+        continue;
+      }
+
+      try {
+        const up = await speech.runProbe((signal) => probeTtsServer(cfg, 30_000, signal));
+        if (up) {
+          failures = 0;
+          log(`kokoro restarted on :${cfg.ttsPort} — per-session voices on`);
+        } else {
+          log("kokoro restart did not become synthesis-ready");
+          child.kill(); // its exit drives the next bounded-backoff attempt
+        }
+      } catch (error) {
+        if (shuttingDown) return;
+        // The child may be healthy; a normal mic opening only defers its
+        // readiness proof. Keep watching it and retry once the gate reopens.
+        failures = 0;
+        log(`kokoro readiness deferred until the mic closes: ${error}`);
+        if (child) void retryOwnedTtsReadiness(child);
+      }
+    }
+  };
+
+  // Assign synchronously before listen: early hook events queue behind this
+  // one full-body capability canary instead of falling through to `say`.
+  ttsStartup = speech.runProbe(async (signal) => {
+    if (cfg.ttsEngine === "say" || !cfg.ttsPort) return;
+    if (!Bun.which(cfg.ttsServerBin)) {
+      if (cfg.ttsEngine === "server") {
+        log(`CONCH_TTS=server but ${cfg.ttsServerBin} not found (uv tool install "mlx-audio[server]") — voices via say`);
+      }
+      return;
+    }
+    try {
+      const adopted = await probeTtsServerPresence(cfg, 1500, signal);
+      if (signal.aborted || shuttingDown) return;
+      if (adopted) {
+        const ready = await probeTtsServer(cfg, 30_000, signal);
+        if (signal.aborted || shuttingDown) return;
+        log(ready
+          ? `kokoro adopted on :${cfg.ttsPort} — per-session voices on`
+          : `kokoro adopted on :${cfg.ttsPort} — readiness canary failed; voices via say while it recovers`);
+        return;
+      }
+      if (shuttingDown) return;
+      const child = spawnOwnedTts();
+      void superviseOwnedTts(child);
+      const up = await probeTtsServer(cfg, 30_000, signal);
+      if (signal.aborted || shuttingDown) return;
+      log(up
+        ? `kokoro warm on :${cfg.ttsPort} — per-session voices on`
+        : "tts server didn't become synthesis-ready — voices via say while it recovers");
+      if (!up && !shuttingDown) child.kill();
+    } catch (error) {
+      if (!shuttingDown) log(`tts startup failed — voices via say: ${error}`);
+    }
+  }).catch((error) => {
+    if (!shuttingDown) log(`tts startup gate failed — voices via say: ${error}`);
+  });
+
+  if (existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath); // stale socket from a previous run
   server.listen(cfg.socketPath);
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);
   if (muted) log("resuming muted (persisted) — m or `conch unmute` to turn on");
   if (paused) log("resuming paused (persisted) — p or `conch resume` to turn on");
   setState(restState());
 
-  let diagnosticShutdownStarted = false;
-  const shutdown = () => {
-    if (diagnosticsEnabled && diagnosticShutdownStarted) return;
-    diagnosticShutdownStarted = true;
-    shuttingDown = true;
-    stopSpeaking(); // never orphan a talking `say` — voices overlapped live
-    // Close the controller's rearm gate synchronously before taking the
-    // activeRecorders snapshot. Default-off still exits immediately below.
-    const dictationAtShutdown = activeDictation;
-    dictationAtShutdown?.requestExternal("spacebar", "shutdown");
-    const recorderDrain = killActiveRecorders(); // a live sox capture would keep the mic hot after we die
-    server.close();
-    whisperServer?.kill();
-    ttsServer?.kill();
-    try {
-      unlinkSync(cfg.socketPath);
-    } catch {}
-    if (!diagnosticsEnabled) process.exit(0);
-    void Promise.all([
-      Promise.resolve(recorderDrain),
-      dictationAtShutdown?.done ?? Promise.resolve(),
-    ]).finally(() => {
-      flushPendingRecorderTraces();
-      process.exit(0);
-    });
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  // Warm whisper independently after the socket and signal path are live.
+  if (cfg.whisperPort && existsSync(cfg.whisperServerBin)) {
+    const adopted = await probeServer(cfg, 1500);
+    if (shuttingDown) return;
+    if (adopted) {
+      log(`whisper-server adopted on :${cfg.whisperPort} — fast transcription + live partials`);
+    } else {
+      if (shuttingDown) return;
+      whisperServer = Bun.spawn(
+        [
+          cfg.whisperServerBin,
+          "-m", cfg.whisperModel,
+          "-vm", cfg.vadModel,
+          "--vad",
+          "--vad-speech-pad-ms", "300",
+          "--host", "127.0.0.1",
+          "--port", String(cfg.whisperPort),
+          "-l", "en",
+          "-t", "6",
+        ],
+        { stdout: "ignore", stderr: "ignore" },
+      );
+      void probeServer(cfg, 60_000).then((up) => {
+        if (!shuttingDown) {
+          log(up
+            ? `whisper-server warm on :${cfg.whisperPort} — fast transcription + live partials`
+            : "whisper-server failed to come up — using the cold cli path");
+        }
+      });
+    }
+  } else if (cfg.whisperPort) {
+    log(`whisper-server binary not found at ${cfg.whisperServerBin} — using the cold cli path`);
+  }
 
   /** Live sessions in a stable order so number keys mean the same thing between glances. */
   async function numberedSessions(): Promise<Array<{ n: number; s: SessionInfo; label: string }>> {
@@ -1376,7 +1632,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
         if (busy) {
           // reciting (or mid-exchange): space is the guaranteed stop
           stopKey = true;
-          stopSpeaking();
+          speech.cancelCurrent();
+          speech.cancelPendingAudio();
+          // Synchronously close the controller's producer gate; its FIFO
+          // barrier still drains and submits every already-captured tail.
           activeDictation?.requestExternal("spacebar");
           log(activeDictation?.session.micOpen || micOpen ? "⏹ spacebar — closing mic" : "⏹ spacebar — stopped");
         } else {
@@ -1389,7 +1648,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       else if (c === "m") enqueue({ type: muted ? "unmute" : "mute", sessionId: "", label: "", announce: "" });
       else if (c === "p") enqueue({ type: paused ? "resume" : "pause", sessionId: "", label: "", announce: "" });
       else if (c === "?" || c === "h") printHelp();
-      else if (c === "q" || c === "\u0003") shutdown();
+      else if (c === "q" || c === "\u0003") void shutdown();
     });
     printHelp();
   }
@@ -1430,9 +1689,3 @@ const CUE_SOUND = {
   close: "/System/Library/Sounds/Bottle.aiff", // window closed on silence
   sent: "/System/Library/Sounds/Pop.aiff", // dictation submitted
 };
-
-async function playMicCue(cfg: Config, kind: keyof typeof CUE_SOUND): Promise<void> {
-  if (!cfg.micCues) return;
-  await Bun.spawn(["afplay", CUE_SOUND[kind]], { stdout: "ignore", stderr: "ignore" }).exited;
-  if (kind === "open") await Bun.sleep(350); // let the cue's tail decay before sox arms
-}

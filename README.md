@@ -130,7 +130,8 @@ All via environment variables (put them in the hook's env or your shell profile)
 | `CONCH_TTS` | `auto` | voices: `auto` (Kokoro server if installed, else say) / `server` / `say` |
 | `CONCH_TTS_PORT` | `8880` | warm Kokoro server port; `0` disables |
 | `CONCH_TTS_VOICES` | 8-voice ring | comma-separated Kokoro voices; sessions hash onto the ring |
-| `CONCH_TTS_SPEED` | `1.0` | speech rate for the Kokoro engine |
+| `CONCH_TTS_SPEED` | `1.35` | speech rate for the Kokoro engine |
+| `CONCH_TTS_BATCH_CHARS` | `240` | coalesce later short sentences up to this size; `0` disables (sentence one always stays separate) |
 
 ## Roadmap
 
