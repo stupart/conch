@@ -24,6 +24,18 @@ const MODELS = [
   },
 ] as const;
 
+// conch runs two ways: via bun (dev / `bun link`, where process.execPath is bun
+// and the entry is src/cli.ts) or as a `bun build --compile` standalone binary
+// (where process.execPath IS the conch binary and there is no src/cli.ts). The
+// hook + service commands must name whichever actually re-invokes conch here.
+const CLI_ENTRY = join(import.meta.dir, "cli.ts");
+const IS_COMPILED = !existsSync(CLI_ENTRY);
+
+/** Shell-quoted argv that re-invokes conch: `"conch"` (compiled) or `"bun" "…/cli.ts"`. */
+function conchInvocation(): string {
+  return IS_COMPILED ? `"${process.execPath}"` : `"${process.execPath}" "${CLI_ENTRY}"`;
+}
+
 /**
  * One-command bootstrap for a fresh machine: installs the binaries conch shells
  * out to (via Homebrew), downloads the whisper + VAD models, wires the Claude
@@ -39,7 +51,10 @@ export async function runSetup(cfg: Config): Promise<void> {
   const missing: Array<{ formula: string; why: string }> = [];
   if (!Bun.which("sox")) missing.push({ formula: "sox", why: "microphone capture" });
   if (!Bun.which("tmux")) missing.push({ formula: "tmux", why: "daemon hosting + pane injection" });
-  if (!existsSync(cfg.whisperCli) || !existsSync(cfg.whisperServerBin)) {
+  // Gate on whisper-cli only — the brew whisper-cpp formula ships it but builds
+  // with WHISPER_BUILD_SERVER=OFF, so whisper-server is never present on a brew
+  // box. It's an optional speed/partials upgrade, not a requirement.
+  if (!existsSync(cfg.whisperCli)) {
     missing.push({ formula: "whisper-cpp", why: "speech-to-text" });
   }
   if (missing.length) {
@@ -142,23 +157,28 @@ export async function runService(cfg: Config, action: "install" | "off"): Promis
     return;
   }
 
-  const conchRoot = dirname(import.meta.dir); // src/..
-  const bun = process.execPath;
+  const conchRoot = dirname(import.meta.dir); // src/.. (real only when run via bun)
   const tmux = Bun.which("tmux");
   if (!tmux) {
     console.error("[conch] tmux is required for the service (brew install tmux)");
     process.exit(1);
   }
 
-  const supervisorPath = join(conchRoot, "bin", "conch-supervisor.sh");
-  mkdirSync(join(conchRoot, "bin"), { recursive: true });
+  // The daemon launch line + where the supervisor script lives both depend on
+  // whether we're a compiled binary (no repo on disk) or a bun checkout.
+  const daemonCmd = IS_COMPILED
+    ? `CONCH_KEYSTROKE_FALLBACK=1 ${conchInvocation()} daemon`
+    : `cd "${conchRoot}" && CONCH_KEYSTROKE_FALLBACK=1 ${conchInvocation()} daemon`;
+  const supervisorDir = IS_COMPILED ? join(homedir(), ".config", "conch") : join(conchRoot, "bin");
+  const supervisorPath = join(supervisorDir, "conch-supervisor.sh");
+  mkdirSync(supervisorDir, { recursive: true });
   await Bun.write(
     supervisorPath,
     `#!/bin/zsh
 # conch supervisor — keeps the daemon's tmux session alive (installed by \`conch service\`)
 while true; do
   "${tmux}" has-session -t conch 2>/dev/null || \\
-    "${tmux}" new-session -d -s conch 'cd "${conchRoot}" && CONCH_KEYSTROKE_FALLBACK=1 "${bun}" run src/cli.ts daemon'
+    "${tmux}" new-session -d -s conch '${daemonCmd}'
   sleep 15
 done
 `,
@@ -198,8 +218,9 @@ done
     console.error(`[conch] launchctl bootstrap failed: ${boot.stderr.toString().trim()}`);
     process.exit(1);
   }
+  const viewHint = IS_COMPILED ? "tmux attach -t conch" : `tmux attach -t conch   (or open ${conchRoot}/dashboard.command)`;
   console.log(`[conch] service installed — daemon starts at login and self-heals within ~15s.
-  view:      tmux attach -t conch   (or open ${conchRoot}/dashboard.command)
+  view:      ${viewHint}
   logs:      /tmp/conch-supervisor.log
   remove:    conch service off`);
 }
@@ -221,10 +242,9 @@ interface HookEntry {
  */
 export async function runInstall(cfg: Config): Promise<void> {
   const settingsPath = join(cfg.claudeDir, "settings.json");
-  const cliPath = join(import.meta.dir, "cli.ts");
-  // Quote both paths so a bun/conch install dir containing spaces still yields a
-  // runnable hook command.
-  const command = `"${process.execPath}" "${cliPath}" hook`;
+  // Paths are quoted so an install dir containing spaces still yields a runnable
+  // hook command. Resolves to `"conch" hook` (compiled) or `"bun" "…/cli.ts" hook`.
+  const command = `${conchInvocation()} hook`;
 
   let settings: Record<string, any> = {};
   if (existsSync(settingsPath)) {
@@ -268,7 +288,6 @@ export async function runDoctor(cfg: Config): Promise<void> {
     ["sox (mic capture)", () => binaryExists("sox")],
     ["tmux (pane injection)", () => binaryExists("tmux")],
     [`whisper-cli at ${cfg.whisperCli}`, () => existsSync(cfg.whisperCli)],
-    [`whisper-server at ${cfg.whisperServerBin} (warm transcription + live partials)`, () => existsSync(cfg.whisperServerBin)],
     [`whisper model at ${cfg.whisperModel}`, () => existsSync(cfg.whisperModel)],
     [`VAD model at ${cfg.vadModel}`, () => existsSync(cfg.vadModel)],
     [`claude dir at ${cfg.claudeDir}`, () => existsSync(cfg.claudeDir)],
@@ -279,6 +298,15 @@ export async function runDoctor(cfg: Config): Promise<void> {
     ok &&= pass;
     console.log(`${pass ? "✅" : "❌"} ${label}`);
   }
+
+  // whisper-server is an OPTIONAL upgrade (faster transcription + live partials).
+  // Homebrew's whisper-cpp doesn't build it, so treat its absence as info, not a
+  // failure — conch works fine on the cold whisper-cli path without it.
+  console.log(
+    existsSync(cfg.whisperServerBin)
+      ? `ℹ️  whisper-server at ${cfg.whisperServerBin} — fast transcription + live partials`
+      : `ℹ️  whisper-server not found — using the cold whisper-cli path (works; no live partials). Build it with WHISPER_BUILD_SERVER=ON for the upgrade.`,
+  );
 
   const ttsAvailable = binaryExists(cfg.ttsServerBin);
   console.log(
