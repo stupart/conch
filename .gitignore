@@ -1,3 +1,6 @@
 node_modules
 *.wav
 .DS_Store
+
+# release build artifacts
+dist/
