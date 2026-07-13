@@ -22,16 +22,27 @@ Prompts are injected via `tmux send-keys` targeted at the exact pane running tha
 
 ## Install
 
-macOS + [Bun](https://bun.sh). One command handles everything else:
+macOS. Two commands:
+
+```bash
+brew install stupart/tap/conch     # binary + sox/tmux/whisper-cpp
+conch setup                        # download models + wire hooks
+```
+
+`brew install` pulls the system dependencies (`sox`, `tmux`, `whisper-cpp`) automatically. `conch setup` then downloads the two speech models into `~/.cache/conch/models` (whisper large-v3-turbo ~1.6 GB, silero VAD ~900 KB), wires the Claude Code hooks, and runs `doctor` to verify the chain. It's idempotent — re-run it any time; it skips whatever's already there. Already have a whisper.cpp build and models (e.g. a [seashell](https://github.com/stupart/seashell) checkout)? Point `CONCH_WHISPER_CLI` / `CONCH_WHISPER_MODEL` / `CONCH_VAD_MODEL` (or `CONCH_SEASHELL_ROOT`) at them and setup leaves them untouched.
+
+<details>
+<summary><b>From source</b> (for hacking on conch)</summary>
 
 ```bash
 git clone https://github.com/stupart/conch.git && cd conch
 bun install
-bun link           # puts `conch` on your PATH
-conch setup        # deps + models + hooks, then doctor
+bun link           # puts `conch` on your PATH, running from source
+conch setup        # brew-installs deps, downloads models, wires hooks
 ```
 
-`conch setup` installs the binaries conch shells out to (`sox`, `tmux`, `whisper-cpp`) via [Homebrew](https://brew.sh), downloads the two speech models into `~/.cache/conch/models` (whisper large-v3-turbo ~1.6 GB, silero VAD ~900 KB), wires the Claude Code hooks, and runs `doctor` to verify the chain. It's idempotent — re-run it any time; it skips whatever's already there. Already have a whisper.cpp build and models (e.g. a [seashell](https://github.com/stupart/seashell) checkout)? Point `CONCH_WHISPER_CLI` / `CONCH_WHISPER_MODEL` / `CONCH_VAD_MODEL` (or `CONCH_SEASHELL_ROOT`) at them and setup leaves them untouched.
+Requires [Bun](https://bun.sh). Running from source means edits take effect immediately; the brew binary is a frozen `bun build --compile` build.
+</details>
 
 Then start it as a background service that launches at login and self-heals within ~15s of a crash:
 
