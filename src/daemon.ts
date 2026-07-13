@@ -4,7 +4,14 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
-import { speak, speakCancellable, stopSpeaking, probeTtsServer, voiceFor } from "./speak.ts";
+import {
+  speakCancellable as backendSpeakCancellable,
+  stopSpeaking as backendStopSpeaking,
+  probeTtsServer,
+  resetTtsReadiness,
+  voiceFor,
+} from "./speak.ts";
+import { SpeechManager } from "./speech-manager.ts";
 import { listenOnce, listenGap, armBargeRecorder, killActiveRecorders, abortListening, type ListenHooks } from "./listen.ts";
 import { injectText, injectKey } from "./inject.ts";
 import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio, isSendCommand } from "./commands.ts";
@@ -53,6 +60,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let stopKey = false; // spacebar pressed while reciting — the guaranteed interrupt
   let micOpen = false; // true while a dictation/permission listen is in flight — spacebar closes it
   const injectedAt = new Map<string, number>(); // session -> last time conch drove it
+  const speech = new SpeechManager({ speakCancellable: backendSpeakCancellable, stopSpeaking: backendStopSpeaking });
+  // Assigned immediately after the socket starts listening. `drain` gates all
+  // early events on it, so hooks can connect during model startup without
+  // racing a short absent-server probe and falling through to `say`.
+  let ttsStartup: Promise<void> = Promise.resolve();
 
   // Record that conch just drove a session, and prune stale entries so this
   // map can't grow without bound over a long-lived daemon. Anything older than
@@ -84,6 +96,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (busy) return;
     busy = true;
     try {
+      await ttsStartup;
+      if (stopKey && queue.length) {
+        const skipped = queue.pop()!;
+        stopKey = false;
+        log(`⏹ spacebar — skipped queued ${skipped.type} for "${skipped.label}" during TTS startup`);
+      }
       while (queue.length) {
         const event = queue.pop()!; // newest first
         try {
@@ -92,7 +110,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           // one bad event (closed pane, missing binary, socket reset, a throw
           // from any spawn) must not take the whole daemon down mid-exchange.
           log(`error handling ${event.type} "${event.label}": ${e}`);
-          stopSpeaking();
+          speech.cancelCurrent();
         }
       }
     } finally {
@@ -118,7 +136,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     writeMuted(muted); // persist so a restart doesn't un-mute
     log(muted ? "muted — announcements and mic off (m or `conch unmute` to resume)" : "unmuted");
     setState(muted ? "muted" : "idle");
-    await speak(cfg, muted ? "Muted." : "Back on.");
+    await speech.speak(cfg, muted ? "Muted." : "Back on.");
   }
 
   async function handle(event: TurnEvent): Promise<void> {
@@ -145,11 +163,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const target = event.sessionId ? event : lastTurn; // named wake carries its own session
       if (!target) {
         log("wake with nothing to wake — no session has announced yet");
-        return void (await speak(cfg, "Nothing to wake. No session has spoken yet."));
+        return void (await speech.speak(cfg, "Nothing to wake. No session has spoken yet."));
       }
       log(`wake -> "${target.label}"`);
       setState("speaking", target.label);
-      await speak(cfg, `Mic open for ${target.label}.`, target.label);
+      await speech.speak(cfg, `Mic open for ${target.label}.`, target.label);
       await conversationLoop(target);
       return;
     }
@@ -168,7 +186,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
     if (event.type === "needs-you" && event.ntype !== "idle_prompt") {
       setState("speaking", event.label);
-      await speak(cfg, event.announce, event.label);
+      await speech.speak(cfg, event.announce, event.label);
       await permissionLoop(event); // dialogs take Enter/Escape, not free text
       return;
     }
@@ -179,7 +197,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const announce = await speakInterruptible(event, event.announce, false);
     if (announce.cut && !announce.heard && !stopKey) {
       log("announce cut by a noise blip — re-speaking");
-      await speak(cfg, event.announce, event.label);
+      await speech.speak(cfg, event.announce, event.label);
     }
     lastTurn = event;
     await conversationLoop(event, announce.heard);
@@ -198,27 +216,45 @@ export async function runDaemon(cfg: Config): Promise<void> {
   ): Promise<{ heard: string; cut: boolean }> {
     setState("speaking", event.label);
     if (!cfg.bargeThresholdPct || disabled) {
-      await speak(cfg, text, event.label);
+      await speech.speak(cfg, text, event.label);
       return { heard: "", cut: false };
     }
-    const barge = armBargeRecorder(cfg);
-    const speech = speakCancellable(cfg, text, event.label);
-    let cut = false;
-    const watch = setInterval(() => {
-      if (barge.triggered()) {
-        cut = true;
-        speech.cancel(); // your voice wins mid-sentence
+    // Reserve a quiet boundary before arming the intentional high-threshold
+    // barge recorder. The following spawn + enqueue are synchronous, so no
+    // background canary can slip between the check and this utterance.
+    await speech.quiescent();
+    if (stopKey) return { heard: "", cut: true };
+    return speech.runInterruptible(cfg, text, event.label, async (startSpeech) => {
+      // The manager holds its lane across recorder cleanup/transcription, so a
+      // recovery canary cannot start after playback ends while barge is live.
+      const barge = armBargeRecorder(cfg);
+      const speechRun = startSpeech();
+      let cut = false;
+      const watch = setInterval(() => {
+        if (barge.triggered()) {
+          cut = true;
+          speechRun.cancel(); // your voice wins mid-sentence
+        }
+      }, 120);
+      let bargeCleaned = false;
+      try {
+        await speechRun.done;
+        if (!barge.triggered()) {
+          await barge.abort();
+          bargeCleaned = true;
+          return { heard: "", cut: false };
+        }
+        setState("recording", event.label);
+        const { text: heard } = await barge.finish();
+        bargeCleaned = true;
+        return { heard, cut };
+      } finally {
+        clearInterval(watch);
+        // A rejected synth/playback used to leak both this recorder and the
+        // polling interval. Always close it unless finish/abort already did.
+        if (!bargeCleaned) await barge.abort().catch(() => {});
       }
-    }, 120);
-    await speech.done;
-    clearInterval(watch);
-    if (!barge.triggered()) {
-      await barge.abort();
-      return { heard: "", cut: false };
-    }
-    setState("recording", event.label);
-    const { text: heard } = await barge.finish();
-    return { heard, cut };
+    });
   }
 
   /** Inject a prompt utterance and report how it went. */
@@ -227,9 +263,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const { via } = await injectText(cfg, event.pid, text);
     log(`injected via ${via}`);
     if (via === "clipboard") {
-      speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.", event.label);
+      await speech.speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.", event.label);
     } else if (via === "none") {
-      speak(cfg, "Heard you, but I could not find the session's pane.", event.label);
+      await speech.speak(cfg, "Heard you, but I could not find the session's pane.", event.label);
     }
   }
 
@@ -261,7 +297,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         return "stop";
       case "discard":
         markInjected(event.sessionId); // "no response" also suppresses the follow-up needs-you nag
-        await speak(cfg, "Okay.", event.label);
+        await speech.speak(cfg, "Okay.", event.label);
         return "handled";
       case "prompt":
         await deliver(event, text);
@@ -314,7 +350,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
         const gapSecs = bargeOff ? Math.max(cfg.gapSecs, 0.6) : cfg.gapSecs;
         if (gapSecs > 0) {
           setState("listening", event.label);
-          const { text: gapText } = await listenGap(cfg, gapSecs);
+          const { text: gapText } = await speech.withMicrophone(async () => {
+            if (stopKey) return { text: "" };
+            micOpen = true;
+            try {
+              return await listenGap(cfg, gapSecs);
+            } finally {
+              micOpen = false;
+            }
+          }, abortListening);
           if (consumeStopKey()) break reading; // spacebar during the gap
           if (gapText) {
             const action = await onReadingUtterance(event, gapText, "");
@@ -362,10 +406,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // dictation) or just close if nothing's buffered.
     const closeMic = async (): Promise<void> => {
       if (buffer.length) {
-        await micCue(cfg, "sent");
+        await micCue(cfg, speech, "sent");
         await deliver(event, buffer.join(" "));
       } else {
-        await micCue(cfg, "close");
+        await micCue(cfg, speech, "close");
       }
     };
 
@@ -380,12 +424,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // Cue "open" only when the mic FIRST opens — not before every held
       // segment (tink-per-segment was disconcerting). Holding segments re-arm
       // silently; a "sent"/"close" cue marks the end.
-      if (!buffer.length) await micCue(cfg, "open");
+      if (!buffer.length) await micCue(cfg, speech, "open");
       const window = buffer.length ? cfg.holdSubmitSecs : cfg.listenWindowSecs;
       log(`listening (start within ${window}s)${buffer.length ? " · holding, say 'send' or pause to submit" : ""}...`);
-      micOpen = true;
-      const { text, error, aborted } = await listenOnce({ ...cfg, listenWindowSecs: window }, listenHooks(event.label));
-      micOpen = false;
+      const { text, error, aborted } = await speech.withMicrophone(async () => {
+        if (stopKey) return { text: "", aborted: true };
+        micOpen = true;
+        try {
+          return await listenOnce({ ...cfg, listenWindowSecs: window }, listenHooks(event.label));
+        } finally {
+          micOpen = false;
+        }
+      }, abortListening);
       if (aborted) {
         consumeStopKey(); // the spacebar press is handled right here
         await closeMic();
@@ -394,18 +444,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (error) return log(`listen error: ${error}`);
       if (!text) {
         if (buffer.length) {
-          await micCue(cfg, "sent");
+          await micCue(cfg, speech, "sent");
           log(`held dictation timed out — submitting ${buffer.length} segment(s)`);
           await deliver(event, buffer.join(" "));
         } else {
-          await micCue(cfg, "close");
+          await micCue(cfg, speech, "close");
         }
         return log("no speech — back to idle");
       }
 
       // In hold-submit mode, "send"/"go" submits what's been dictated.
       if (buffer.length && isSendCommand(text)) {
-        await micCue(cfg, "sent");
+        await micCue(cfg, speech, "sent");
         log(`heard: "${text}" -> send (${buffer.length} segment(s))`);
         await deliver(event, buffer.join(" "));
         return;
@@ -426,26 +476,26 @@ export async function runDaemon(cfg: Config): Promise<void> {
         case "discard":
           if (buffer.length) log(`discarded ${buffer.length} held segment(s)`);
           markInjected(event.sessionId); // suppress the follow-up needs-you nag
-          await speak(cfg, "Okay.", event.label);
+          await speech.speak(cfg, "Okay.", event.label);
           return;
         case "repeat":
           setState("speaking", event.label);
-          await speak(cfg, lastSpoken, event.label);
+          await speech.speak(cfg, lastSpoken, event.label);
           break;
         case "continue": {
           if (!event.transcriptPath) {
-            await speak(cfg, "I don't have the full message for this one.", event.label);
+            await speech.speak(cfg, "I don't have the full message for this one.", event.label);
             break;
           }
           const full = await ensureSentences();
           const chunk = full.slice(cursor, cursor + cfg.continueSentences).join(" ");
           if (!chunk) {
-            await speak(cfg, "That's the whole message.", event.label);
+            await speech.speak(cfg, "That's the whole message.", event.label);
             break;
           }
           lastSpoken = chunk;
           setState("speaking", event.label);
-          await speak(cfg, chunk, event.label);
+          await speech.speak(cfg, chunk, event.label);
           cursor += cfg.continueSentences;
           break;
         }
@@ -455,103 +505,43 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   /** Permission/elicitation dialogs: "yes" -> Enter (highlighted option), "no" -> Escape. Free text is refused on purpose. */
   async function permissionLoop(event: TurnEvent): Promise<void> {
-    await micCue(cfg, "open");
+    await micCue(cfg, speech, "open");
     log("listening for yes or no...");
-    micOpen = true;
-    const { text, error, aborted } = await listenOnce(cfg, listenHooks(event.label));
-    micOpen = false;
+    const { text, error, aborted } = await speech.withMicrophone(async () => {
+      if (stopKey) return { text: "", aborted: true };
+      micOpen = true;
+      try {
+        return await listenOnce(cfg, listenHooks(event.label));
+      } finally {
+        micOpen = false;
+      }
+    }, abortListening);
     if (aborted) {
       consumeStopKey();
-      await micCue(cfg, "close");
+      await micCue(cfg, speech, "close");
       return log("⏹ spacebar — closed the mic");
     }
     if (error) return log(`listen error: ${error}`);
     if (!text) {
-      await micCue(cfg, "close");
+      await micCue(cfg, speech, "close");
       return log("no speech — back to idle");
     }
     const verdict = classifyApproval(text);
     log(`heard: "${text}" -> ${verdict ?? "unclear"}`);
-    if (!verdict) return void (await speak(cfg, "For permission prompts, say yes or no. Ignoring.", event.label));
+    if (!verdict) return void (await speech.speak(cfg, "For permission prompts, say yes or no. Ignoring.", event.label));
     const { via } = await injectKey(cfg, event.pid, verdict === "approve" ? "Enter" : "Escape");
-    if (via === "none") speak(cfg, "Could not reach the session's window to answer — do it by hand.", event.label);
+    if (via === "none") await speech.speak(cfg, "Could not reach the session's window to answer — do it by hand.", event.label);
     else log(`sent ${verdict === "approve" ? "Enter" : "Escape"} via ${via}`);
   }
 
-  // Warm whisper-server: the daemon owns it so transcription (and live
-  // partials) skip the seconds-long model reload of the cold cli path.
   let whisperServer: ReturnType<typeof Bun.spawn> | null = null;
-  if (cfg.whisperPort && existsSync(cfg.whisperServerBin)) {
-    // Adopt an already-running whisper-server (e.g. a prior daemon's, orphaned
-    // by a hard restart) instead of spawning a duplicate that can't bind the
-    // port and just leaks — same pattern as kokoro below. A 3-day-old orphan
-    // holding the port was found in the wild before this.
-    if (await probeServer(cfg, 1500)) {
-      log(`whisper-server adopted on :${cfg.whisperPort} — fast transcription + live partials`);
-    } else {
-      whisperServer = Bun.spawn(
-        [
-          cfg.whisperServerBin,
-          "-m", cfg.whisperModel,
-          "-vm", cfg.vadModel,
-          "--vad",
-          "--vad-speech-pad-ms", "300", // default 30ms amputates quiet word tails
-          "--host", "127.0.0.1",
-          "--port", String(cfg.whisperPort),
-          "-l", "en",
-          "-t", "6",
-        ],
-        { stdout: "ignore", stderr: "ignore" },
-      );
-      // 60s patience: whisper and kokoro load models simultaneously at startup
-      // and contend for GPU/disk — observed pushing whisper past a 20s probe
-      void probeServer(cfg, 60_000).then((up) => {
-        log(up ? `whisper-server warm on :${cfg.whisperPort} — fast transcription + live partials` : "whisper-server failed to come up — using the cold cli path");
-      });
-    }
-  } else if (cfg.whisperPort) {
-    log(`whisper-server binary not found at ${cfg.whisperServerBin} — using the cold cli path`);
-  }
-
-  // Warm Kokoro TTS server (mlx-audio) — natural per-session voices.
-  // Same ownership pattern as whisper-server; `say` remains the fallback.
   let ttsServer: ReturnType<typeof Bun.spawn> | null = null;
-  if (cfg.ttsEngine !== "say" && cfg.ttsPort && Bun.which(cfg.ttsServerBin)) {
-    // Adopt an already-running server (e.g. a prior daemon's, after a
-    // launchd restart) instead of spawning a duplicate that can't bind the
-    // port, dies silently, and leaves us talking to a stale instance.
-    const already = await probeTtsServer(cfg, 1500);
-    if (!already) {
-      // logged (not discarded) so synthesis failures are diagnosable
-      // stdout and stderr need SEPARATE files — the same Bun.file opened twice
-      // has independent write offsets and the streams clobber each other.
-      ttsServer = Bun.spawn([cfg.ttsServerBin, "--port", String(cfg.ttsPort)], {
-        stdout: Bun.file("/tmp/conch-kokoro.log"),
-        stderr: Bun.file("/tmp/conch-kokoro.err.log"),
-      });
-    }
-    void probeTtsServer(cfg, 30_000).then(async (up) => {
-      if (!up) return log("tts server didn't come up — voices via say");
-      log(`kokoro ${already ? "adopted" : "warm"} on :${cfg.ttsPort} — per-session voices on`);
-      // Preload EVERY ring voice off the hot path — a cold first-use of a
-      // voice was a candidate for "first sentence in system voice". Sequential
-      // (single-threaded server); each warms that voice's embedding.
-      for (const v of cfg.ttsVoices) {
-        await fetch(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/speech`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ model: cfg.ttsModel, input: "ready", voice: v }),
-          signal: AbortSignal.timeout(60_000),
-        }).catch(() => {});
-      }
-      log(`kokoro warmed ${cfg.ttsVoices.length} voices`);
-    });
-  } else if (cfg.ttsEngine === "server") {
-    log(`CONCH_TTS=server but ${cfg.ttsServerBin} not found (uv tool install "mlx-audio[server]") — voices via say`);
-  }
+  let shuttingDown = false;
 
+  // Listen before either model startup check. Hooks have a 500ms connection
+  // budget, so putting this after the warm probes made the first announcement
+  // run standalone through the system voice on every cold daemon start.
   if (existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath); // stale socket from a previous run
-
   const server = createServer((sock) => {
     let buf = "";
     sock.on("error", () => {}); // a hook killed mid-write (ECONNRESET) must not throw
@@ -574,19 +564,149 @@ export async function runDaemon(cfg: Config): Promise<void> {
   if (muted) log("resuming muted (persisted) — m or `conch unmute` to turn on");
   setState(muted ? "muted" : "idle");
 
-  const shutdown = () => {
-    stopSpeaking(); // never orphan a talking `say` — voices overlapped live
+  const spawnOwnedTts = (): ReturnType<typeof Bun.spawn> => {
+    // stdout and stderr need separate file handles: two handles for one file
+    // have independent offsets and clobber each other.
+    const proc = Bun.spawn([cfg.ttsServerBin, "--port", String(cfg.ttsPort)], {
+      stdout: Bun.file("/tmp/conch-kokoro.log"),
+      stderr: Bun.file("/tmp/conch-kokoro.err.log"),
+    });
+    ttsServer = proc;
+    return proc;
+  };
+
+  // Only processes returned by spawnOwnedTts enter this loop. An adopted
+  // Kokoro is deliberately never watched, killed, or respawned by this daemon.
+  const superviseOwnedTts = async (initial: ReturnType<typeof Bun.spawn>): Promise<void> => {
+    let child: ReturnType<typeof Bun.spawn> | null = initial;
+    let failures = 0;
+    while (!shuttingDown) {
+      if (child) {
+        const exitedChild = child;
+        const code = await exitedChild.exited;
+        // A stale watcher must never replace a newer owned/adopted process.
+        if (ttsServer !== exitedChild) return;
+        ttsServer = null;
+        child = null;
+        if (shuttingDown) return;
+        resetTtsReadiness();
+        failures++;
+        log(`owned kokoro exited (${code})`);
+      }
+      const delayMs = Math.min(30_000, 500 * 2 ** Math.min(failures - 1, 6));
+      log(`kokoro recovery attempt in ${Math.round(delayMs / 100) / 10}s`);
+      await Bun.sleep(delayMs);
+      if (shuttingDown) return;
+
+      // Another supervisor/user may have installed a healthy replacement
+      // during backoff. Adopt it and end OWNED supervision instead of racing it
+      // for the port or ever killing it.
+      const adopted = await speech.runProbe(async (signal) => {
+        if (!(await ttsServerReachable(cfg, 1500, signal))) return null;
+        const ready = await probeTtsServer(cfg, 30_000, signal);
+        return { ready };
+      });
+      if (adopted) {
+        log(`kokoro replacement adopted on :${cfg.ttsPort} — owned supervision ended${adopted.ready ? "" : "; readiness recovering"}`);
+        return;
+      }
+      try {
+        child = spawnOwnedTts();
+      } catch (error) {
+        failures++;
+        log(`kokoro restart spawn failed: ${error}`);
+        continue;
+      }
+      const up = await speech.runProbe((signal) => probeTtsServer(cfg, 30_000, signal));
+      if (up) {
+        failures = 0;
+        log(`kokoro restarted on :${cfg.ttsPort} — per-session voices on`);
+      } else {
+        log("kokoro restart did not become synthesis-ready");
+        child.kill(); // its exit drives the next bounded-backoff attempt
+      }
+    }
+  };
+
+  // This is enqueued synchronously after socket setup, before the event loop can
+  // accept a connection. `drain` also awaits the same promise: early events are
+  // accepted and queued behind one fully-consumed capability canary.
+  ttsStartup = speech.runProbe(async (signal) => {
+    if (cfg.ttsEngine === "say" || !cfg.ttsPort) return;
+    if (!Bun.which(cfg.ttsServerBin)) {
+      if (cfg.ttsEngine === "server") {
+        log(`CONCH_TTS=server but ${cfg.ttsServerBin} not found (uv tool install "mlx-audio[server]") — voices via say`);
+      }
+      return;
+    }
+    try {
+      // Use transport reachability for ownership. A healthy-but-busy adopted
+      // server may not finish a synthesis in 1.5s; spawning then would race it
+      // for the port. The full-body canary still gates synthesis readiness.
+      const adopted = await ttsServerReachable(cfg, 1500, signal);
+      if (adopted) {
+        const ready = await probeTtsServer(cfg, 30_000, signal);
+        log(ready ? `kokoro adopted on :${cfg.ttsPort} — per-session voices on` : `kokoro adopted on :${cfg.ttsPort} — readiness canary failed; voices via say while it recovers`);
+        return;
+      }
+      const child = spawnOwnedTts();
+      void superviseOwnedTts(child);
+      const up = await probeTtsServer(cfg, 30_000, signal);
+      log(up ? `kokoro warm on :${cfg.ttsPort} — per-session voices on` : "tts server didn't become synthesis-ready — voices via say while it recovers");
+      if (!up && !shuttingDown) child.kill(); // let the owned watcher restart a hung/unready child
+    } catch (error) {
+      log(`tts startup failed — voices via say: ${error}`);
+    }
+  });
+
+  // Warm whisper-server independently. It must not delay socket availability
+  // or the TTS startup/canary lane.
+  if (cfg.whisperPort && existsSync(cfg.whisperServerBin)) {
+    // Adopt an already-running whisper-server (e.g. a prior daemon's, orphaned
+    // by a hard restart) instead of spawning a duplicate that cannot bind.
+    if (await probeServer(cfg, 1500)) {
+      log(`whisper-server adopted on :${cfg.whisperPort} — fast transcription + live partials`);
+    } else {
+      whisperServer = Bun.spawn(
+        [
+          cfg.whisperServerBin,
+          "-m", cfg.whisperModel,
+          "-vm", cfg.vadModel,
+          "--vad",
+          "--vad-speech-pad-ms", "300",
+          "--host", "127.0.0.1",
+          "--port", String(cfg.whisperPort),
+          "-l", "en",
+          "-t", "6",
+        ],
+        { stdout: "ignore", stderr: "ignore" },
+      );
+      void probeServer(cfg, 60_000).then((up) => {
+        log(up ? `whisper-server warm on :${cfg.whisperPort} — fast transcription + live partials` : "whisper-server failed to come up — using the cold cli path");
+      });
+    }
+  } else if (cfg.whisperPort) {
+    log(`whisper-server binary not found at ${cfg.whisperServerBin} — using the cold cli path`);
+  }
+
+  let shutdownStarted = false;
+  const shutdown = async (): Promise<void> => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    shuttingDown = true;
+    speech.cancelAll(); // never orphan a talking `say` or afplay cue
     killActiveRecorders(); // a live sox capture would keep the mic hot after we die
     server.close();
     whisperServer?.kill();
     ttsServer?.kill();
+    await speech.quiescent();
     try {
       unlinkSync(cfg.socketPath);
     } catch {}
     process.exit(0);
   };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
 
   /** Live sessions in a stable order so number keys mean the same thing between glances. */
   async function numberedSessions(): Promise<Array<{ n: number; s: SessionInfo; label: string }>> {
@@ -613,7 +733,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (!rows.length) return log("no live sessions");
       for (const r of rows) {
         logAbove(`  \x1b[36m${r.n}\x1b[0m ${r.label} — \x1b[35m${voiceFor(cfg, r.label)}\x1b[0m`);
-        await speak(cfg, `${r.label} sounds like this.`, r.label);
+        await speech.speak(cfg, `${r.label} sounds like this.`, r.label);
       }
       logAbove('  \x1b[2mreassign: conch voice <session> <kokoro-voice>\x1b[0m');
     } finally {
@@ -648,7 +768,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
         if (busy) {
           // reciting (or mid-exchange): space is the guaranteed stop
           stopKey = true;
-          stopSpeaking();
+          speech.cancelCurrent();
+          speech.cancelPendingAudio();
           if (micOpen) abortListening(); // close a live dictation capture right now
           log(micOpen ? "⏹ spacebar — closing mic" : "⏹ spacebar — stopped");
         } else {
@@ -660,7 +781,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       else if (c === "v") void auditionVoices();
       else if (c === "m") enqueue({ type: muted ? "unmute" : "mute", sessionId: "", label: "", announce: "" });
       else if (c === "?" || c === "h") printHelp();
-      else if (c === "q" || c === "\u0003") shutdown();
+      else if (c === "q" || c === "\u0003") void shutdown();
     });
     printHelp();
   }
@@ -683,6 +804,26 @@ function log(msg: string): void {
   logAbove(`[conch ${t}] ${msg}`);
 }
 
+/** Quick ownership/adoption check; readiness itself is always a full synthesis canary. */
+async function ttsServerReachable(cfg: Config, timeoutMs: number, outerSignal: AbortSignal): Promise<boolean> {
+  const abort = new AbortController();
+  const relayAbort = () => abort.abort();
+  outerSignal.addEventListener("abort", relayAbort, { once: true });
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+  try {
+    const res = await fetch(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/voices`, { signal: abort.signal });
+    await res.body?.cancel().catch(() => {});
+    // Any HTTP response (including overload/auth/config failures) proves that
+    // another process owns the configured port.
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+    outerSignal.removeEventListener("abort", relayAbort);
+  }
+}
+
 /** Seconds since the user last touched keyboard or mouse (macOS HID idle time). */
 async function idleSeconds(): Promise<number> {
   try {
@@ -702,8 +843,8 @@ const CUE_SOUND = {
   sent: "/System/Library/Sounds/Pop.aiff", // dictation submitted
 };
 
-async function micCue(cfg: Config, kind: keyof typeof CUE_SOUND): Promise<void> {
+async function micCue(cfg: Config, speech: SpeechManager, kind: keyof typeof CUE_SOUND): Promise<void> {
   if (!cfg.micCues) return;
-  await Bun.spawn(["afplay", CUE_SOUND[kind]], { stdout: "ignore", stderr: "ignore" }).exited;
+  await speech.playCue(CUE_SOUND[kind]);
   if (kind === "open") await Bun.sleep(350); // let the cue's tail decay before sox arms
 }
