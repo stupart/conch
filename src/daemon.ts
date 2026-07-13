@@ -8,6 +8,7 @@ import {
   speakCancellable as backendSpeakCancellable,
   stopSpeaking as backendStopSpeaking,
   probeTtsServer,
+  probeTtsServerPresence,
   resetTtsReadiness,
   voiceFor,
 } from "./speak.ts";
@@ -602,7 +603,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // during backoff. Adopt it and end OWNED supervision instead of racing it
       // for the port or ever killing it.
       const adopted = await speech.runProbe(async (signal) => {
-        if (!(await ttsServerReachable(cfg, 1500, signal))) return null;
+        if (!(await probeTtsServerPresence(cfg, 1500, signal))) return null;
         const ready = await probeTtsServer(cfg, 30_000, signal);
         return { ready };
       });
@@ -643,7 +644,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // Use transport reachability for ownership. A healthy-but-busy adopted
       // server may not finish a synthesis in 1.5s; spawning then would race it
       // for the port. The full-body canary still gates synthesis readiness.
-      const adopted = await ttsServerReachable(cfg, 1500, signal);
+      const adopted = await probeTtsServerPresence(cfg, 1500, signal);
       if (adopted) {
         const ready = await probeTtsServer(cfg, 30_000, signal);
         log(ready ? `kokoro adopted on :${cfg.ttsPort} — per-session voices on` : `kokoro adopted on :${cfg.ttsPort} — readiness canary failed; voices via say while it recovers`);
@@ -802,26 +803,6 @@ function printHelp(): void {
 function log(msg: string): void {
   const t = new Date().toTimeString().slice(0, 8);
   logAbove(`[conch ${t}] ${msg}`);
-}
-
-/** Quick ownership/adoption check; readiness itself is always a full synthesis canary. */
-async function ttsServerReachable(cfg: Config, timeoutMs: number, outerSignal: AbortSignal): Promise<boolean> {
-  const abort = new AbortController();
-  const relayAbort = () => abort.abort();
-  outerSignal.addEventListener("abort", relayAbort, { once: true });
-  const timer = setTimeout(() => abort.abort(), timeoutMs);
-  try {
-    const res = await fetch(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/voices`, { signal: abort.signal });
-    await res.body?.cancel().catch(() => {});
-    // Any HTTP response (including overload/auth/config failures) proves that
-    // another process owns the configured port.
-    return true;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-    outerSignal.removeEventListener("abort", relayAbort);
-  }
 }
 
 /** Seconds since the user last touched keyboard or mouse (macOS HID idle time). */
