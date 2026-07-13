@@ -160,6 +160,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
     }
 
+    // Hook attention bells belong to this same FIFO lane. Playing them in the
+    // hook process could overlap a prior event's open microphone.
+    if (event.type !== "wake" && cfg.bell) await speech.playCue(cfg.bellSound);
+
     if (event.type === "wake") {
       const target = event.sessionId ? event : lastTurn; // named wake carries its own session
       if (!target) {
