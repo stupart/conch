@@ -171,4 +171,6 @@ All via environment variables (put them in the hook's env or your shell profile)
 
 ## Credits
 
-Built on [seashell](https://github.com/stupart/seashell)'s local-first STT engine. MIT.
+Built on [seashell](https://github.com/stupart/seashell)'s local-first STT engine.
+
+conch is a small open experiment from [Blueprint Studio](https://blueprintstudio.ai) — we build AI products that feel good to use. MIT.
