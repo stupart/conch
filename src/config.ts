@@ -80,6 +80,8 @@ export interface Config {
   /** voice ring — sessions are hashed onto it so each speaks consistently */
   ttsVoices: string[];
   ttsSpeed: number;
+  /** coalesce later short sentences up to this many chars; 0 disables */
+  ttsBatchChars: number;
 }
 
 function num(v: string | undefined, fallback: number): number {
@@ -145,6 +147,7 @@ export function loadConfig(): Config {
       .map((v) => v.trim())
       .filter(Boolean),
     ttsSpeed: num(env.CONCH_TTS_SPEED, 1.35), // brisker Kokoro; CONCH_TTS_SPEED to taste
+    ttsBatchChars: zeroable(env.CONCH_TTS_BATCH_CHARS, 240),
   };
 }
 
