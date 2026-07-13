@@ -21,21 +21,56 @@ const GLYPHS: Record<ConchState, string> = {
 
 const tty = process.stdout.isTTY ?? false;
 let statusLine = "";
+let panelLines: string[] = []; // the pinned session-status panel, above the status line
+let drawnHeight = 0; // footer lines currently on screen, so a shrink can't leave orphans
+
+function footerLines(): string[] {
+  return statusLine ? [...panelLines, statusLine] : panelLines;
+}
+
+// Move to the top-left of the footer and wipe everything below it. `\x1b[0J`
+// clears to end of screen, so grow/shrink of the panel never leaves orphan rows.
+function clearFooter(): void {
+  if (!tty || drawnHeight === 0) return;
+  for (let i = 1; i < drawnHeight; i++) process.stdout.write("\x1b[1A");
+  process.stdout.write("\r\x1b[0J");
+  drawnHeight = 0;
+}
+
+function drawFooter(): void {
+  if (!tty) return;
+  const lines = footerLines();
+  if (lines.length) process.stdout.write(lines.join("\n"));
+  drawnHeight = lines.length;
+}
 
 export function setState(state: ConchState, label = "", partial = ""): void {
   void Bun.write(STATE_FILE, JSON.stringify({ state, label, partial, ts: Date.now() }) + "\n");
   if (!tty) return;
   let text = GLYPHS[state] + (label ? ` — ${label}` : "");
   if (partial) text += `  \x1b[2m▸\x1b[0m ${partial}`;
+  clearFooter();
   statusLine = fitToWidth(text, (process.stdout.columns ?? 100) - 1);
-  process.stdout.write("\r\x1b[K" + statusLine);
+  drawFooter();
 }
 
-/** Print a log line without clobbering (or being clobbered by) the status line. */
+/** Set the pinned session-status panel (list of pre-formatted lines; [] to hide). */
+export function setPanel(lines: string[]): void {
+  const width = (process.stdout.columns ?? 100) - 1;
+  if (!tty) {
+    panelLines = lines;
+    return;
+  }
+  clearFooter();
+  panelLines = lines.map((l) => fitToWidth(l, width));
+  drawFooter();
+}
+
+/** Print a log line without clobbering (or being clobbered by) the pinned footer. */
 export function logAbove(msg: string): void {
-  if (tty && statusLine) process.stdout.write("\r\x1b[K");
+  if (tty) clearFooter();
   console.log(msg);
-  if (tty && statusLine) process.stdout.write(statusLine);
+  if (tty) drawFooter();
 }
 
 function fitToWidth(text: string, width: number): string {

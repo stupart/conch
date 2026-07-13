@@ -117,7 +117,7 @@ export async function runInstall(cfg: Config): Promise<void> {
 
   settings.hooks ??= {};
   let changed = false;
-  for (const event of ["Stop", "Notification"]) {
+  for (const event of ["Stop", "Notification", "UserPromptSubmit"]) {
     const entries: HookEntry[] = (settings.hooks[event] ??= []);
     const already = entries.some((e) => e.hooks?.some((h) => h.command?.includes("conch") && h.command?.includes("hook")));
     if (already) {

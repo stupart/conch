@@ -26,7 +26,7 @@ import { injectText, injectKey } from "./inject.ts";
 import { classify, classifyReadingGap, wordOverlapRatio } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince } from "./snippet.ts";
 import { probeServer } from "./transcribe.ts";
-import { setState, logAbove, type ConchState } from "./status.ts";
+import { setState, logAbove, setPanel, type ConchState } from "./status.ts";
 import { listSessions, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
 import {
   emitRecorderTrace,
@@ -105,6 +105,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let pendingMicControl: "pause" | "mute" | null = null;
   const injectedAt = new Map<string, number>(); // session -> last time conch drove it
   const pending = new Map<string, TurnEvent>(); // sessions that finished while paused — latest per session
+  // Live session status for the dashboard panel — replaces the spoken "needs you"
+  // nag with a glanceable visual: working (you submitted a prompt) / waiting (turn
+  // ended, ready for you) / needs (a permission/idle notification fired).
+  type SessionStatus = "working" | "waiting" | "needs";
+  const sessionStates = new Map<string, { label: string; status: SessionStatus; detail?: string; at: number }>();
 
   const normalMicOpen = (): boolean => Boolean(
     activeDictation?.session.micOpen || micOpen || normalMicReserved || bargeHandoffOpen
@@ -235,6 +240,38 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // The at-rest status when nothing's in flight: muted wins over paused for display.
   const restState = (): ConchState => (muted ? "muted" : paused ? "paused" : "idle");
 
+  // Record a session's status and repaint the pinned dashboard panel.
+  const STATUS_GLYPH: Record<SessionStatus, string> = {
+    needs: "\x1b[33m❗ needs a response\x1b[0m",
+    waiting: "\x1b[32m○ waiting for you\x1b[0m",
+    working: "\x1b[36m● working…\x1b[0m",
+  };
+  const STATUS_RANK: Record<SessionStatus, number> = { needs: 0, waiting: 1, working: 2 };
+  async function renderSessionPanel(): Promise<void> {
+    let live: SessionInfo[] = [];
+    try {
+      live = await listSessions(cfg.claudeDir);
+    } catch {}
+    const liveIds = new Set(live.map((s) => s.sessionId));
+    for (const id of sessionStates.keys()) if (!liveIds.has(id)) sessionStates.delete(id); // prune dead
+    const rows = live
+      .map((s) => ({ s, label: sessionLabel(s, s.cwd), st: sessionStates.get(s.sessionId) }))
+      .sort((a, b) => (STATUS_RANK[a.st?.status ?? "working"] - STATUS_RANK[b.st?.status ?? "working"]) || a.label.localeCompare(b.label));
+    if (!rows.length) return setPanel([]);
+    setPanel([
+      "",
+      "  \x1b[1msessions\x1b[0m",
+      ...rows.map((r) =>
+        `  ${r.label.slice(0, 26).padEnd(27)}${r.st ? STATUS_GLYPH[r.st.status] : "\x1b[2m· idle\x1b[0m"}${r.st?.detail ? ` \x1b[2m(${r.st.detail})\x1b[0m` : ""}`,
+      ),
+    ]);
+  }
+  function setSessionState(sessionId: string, label: string, status: SessionStatus, detail?: string): void {
+    if (!sessionId) return;
+    sessionStates.set(sessionId, { label, status, detail, at: Date.now() });
+    void renderSessionPanel();
+  }
+
   async function setMuted(next: boolean): Promise<void> {
     muted = next;
     writeState({ muted, paused }); // persist so a restart doesn't un-mute
@@ -277,6 +314,21 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const speechCfg = event.voice ? { ...cfg, ttsVoices: [event.voice] } : cfg;
       return speak(speechCfg, event.announce, event.label);
     }
+
+    // Dashboard status — visual, and updated even while muted/paused. `working`
+    // and `needs-you` are now VISUAL-ONLY: the spoken "needs you" nag (which
+    // interrupted you and stole the mic to another window) is gone — glance at
+    // the pinned panel instead. turn-end still reads aloud (that part you like).
+    if (event.type === "working") {
+      setSessionState(event.sessionId, event.label, "working");
+      return;
+    }
+    if (event.type === "needs-you") {
+      const kind = event.ntype && event.ntype !== "idle_prompt" ? event.ntype.replace(/_/g, " ") : undefined;
+      setSessionState(event.sessionId, event.label, "needs", kind);
+      return; // stripped: no bell, no announcement, no permission mic
+    }
+    if (event.type === "turn-end") setSessionState(event.sessionId, event.label, "waiting");
 
     // Paused ("away"): hold whatever finishes so it replays on resume — the key
     // difference from mute, which drops it. `wake` always cuts through.
@@ -322,31 +374,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
       return log(`skipping "${event.label}" — you already responded, conversation moved on`);
     }
 
-    // Hooks hand the bell to the daemon so it cannot ring over a live normal
-    // producer. drain() serializes events, and any external-stop barrier has
-    // completed before this event reaches handle().
-    if (event.type === "turn-end" || event.type === "needs-you") await ringBell();
+    // The finished-turn attention bell (turn-end only now — the needs-you nag is
+    // visual). The hook hands the bell to the daemon so it can't ring over a live mic.
+    if (event.type === "turn-end") await ringBell();
 
-    // Suppress a "needs you" for a session conch just drove — Claude Code can
-    // fire an idle/needs-you the moment injected input lands, before the turn
-    // starts, and nagging you for input you just gave is pure noise.
-    if (event.type === "needs-you") {
-      const since = Date.now() - (injectedAt.get(event.sessionId) ?? 0);
-      if (since < cfg.recentInjectSuppressMs) {
-        return log(`suppressed needs-you for "${event.label}" (drove it ${Math.round(since / 1000)}s ago)`);
-      }
-    }
-
-    if (event.type === "needs-you" && event.ntype !== "idle_prompt") {
-      setState("speaking", event.label);
-      await speak(cfg, event.announce, event.label);
-      await permissionLoop(event); // dialogs take Enter/Escape, not free text
-      return;
-    }
-
-    // turn-end and idle_prompt are both "the session wants a prompt from
-    // you" — and the announcement itself is barge-able: interrupting from
-    // the very first sentence must work, not just mid-reading.
+    // turn-end: read the finished reply aloud, then open the mic — barge-able from
+    // the very first sentence.
     const conversationParent = createRecorderParent("conversation");
     let conversationSequence = 0;
     const nextConversationSequence = () => ++conversationSequence;
@@ -1537,6 +1570,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
   if (muted) log("resuming muted (persisted) — m or `conch unmute` to turn on");
   if (paused) log("resuming paused (persisted) — p or `conch resume` to turn on");
   setState(restState());
+  void renderSessionPanel(); // show the dashboard immediately
+  // Refresh periodically so killed sessions drop off even with no new events.
+  const panelTimer = setInterval(() => void renderSessionPanel(), 20_000);
+  panelTimer.unref?.();
 
   // Warm whisper independently after the socket and signal path are live.
   if (cfg.whisperPort && existsSync(cfg.whisperServerBin)) {

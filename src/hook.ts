@@ -14,7 +14,7 @@ interface HookPayload {
 }
 
 export interface TurnEvent {
-  type: "turn-end" | "needs-you" | "wake" | "mute" | "unmute" | "pause" | "resume" | "speak";
+  type: "turn-end" | "needs-you" | "wake" | "mute" | "unmute" | "pause" | "resume" | "speak" | "working";
   sessionId: string;
   label: string;
   cwd?: string;
@@ -50,6 +50,21 @@ export async function runHook(cfg: Config): Promise<void> {
   const event = payload.hook_event_name ?? "";
   const session = await findSession(cfg.claudeDir, payload.session_id ?? "");
   const label = sessionLabel(session, payload.cwd);
+
+  // UserPromptSubmit: the session just STARTED working — a visual-only status
+  // signal for the dashboard panel. No bell, no speech; if the daemon is down
+  // there's nothing to show, so just return.
+  if (event === "UserPromptSubmit") {
+    await sendToDaemon(cfg.socketPath, {
+      type: "working",
+      sessionId: payload.session_id ?? "",
+      label,
+      cwd: payload.cwd,
+      pid: session?.pid,
+      announce: "",
+    });
+    return;
+  }
 
   let turn: TurnEvent;
   if (event === "Stop" || event === "SubagentStop") {
