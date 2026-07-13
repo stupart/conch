@@ -10,7 +10,7 @@ export type ConchState = "idle" | "muted" | "paused" | "speaking" | "listening" 
 export const STATE_FILE = "/tmp/conch-state.json";
 
 const GLYPHS: Record<ConchState, string> = {
-  idle: "\x1b[2m◌ idle · space=wake m=mute ?=help\x1b[0m",
+  idle: "\x1b[2m◌ idle · space=wake m=mute p=pause ?=help\x1b[0m",
   muted: "\x1b[33m◌ muted\x1b[0m\x1b[2m · m to unmute\x1b[0m",
   paused: "\x1b[35m⏸ paused (away)\x1b[0m\x1b[2m · p or `conch resume` — holding your queue\x1b[0m",
   speaking: "\x1b[33m▶ speaking\x1b[0m",
