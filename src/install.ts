@@ -1,9 +1,125 @@
 import { join, dirname } from "node:path";
-import { existsSync, mkdirSync, chmodSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, chmodSync, unlinkSync, statSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
+import { CONCH_DATA } from "./config.ts";
 
 const SERVICE_LABEL = "com.conch.daemon";
+
+// The two models conch downloads on a fresh machine. Both live under
+// ~/.cache/conch/models (where config.ts probes as its second candidate), so an
+// install with no seashell checkout resolves them automatically.
+const MODELS = [
+  {
+    file: "ggml-large-v3-turbo-q5_0.bin",
+    url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+    label: "whisper large-v3-turbo (~1.6 GB)",
+    minBytes: 500_000_000, // guards against a 404-page masquerading as the model
+  },
+  {
+    file: "ggml-silero-v6.2.0.bin",
+    url: "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin",
+    label: "silero VAD (~900 KB)",
+    minBytes: 100_000,
+  },
+] as const;
+
+/**
+ * One-command bootstrap for a fresh machine: installs the binaries conch shells
+ * out to (via Homebrew), downloads the whisper + VAD models, wires the Claude
+ * Code hooks, and runs doctor. Idempotent — re-running skips anything already
+ * present, so it's safe on a box that already has a seashell checkout.
+ */
+export async function runSetup(cfg: Config): Promise<void> {
+  console.log("🐚 conch setup — getting your machine ready for voice\n");
+
+  // 1. Binaries. sox + tmux come from Homebrew; whisper-cli/-server ship in the
+  //    whisper-cpp formula. `say`/`afplay` are macOS built-ins (checked by doctor).
+  const brew = Bun.which("brew");
+  const missing: Array<{ formula: string; why: string }> = [];
+  if (!Bun.which("sox")) missing.push({ formula: "sox", why: "microphone capture" });
+  if (!Bun.which("tmux")) missing.push({ formula: "tmux", why: "daemon hosting + pane injection" });
+  if (!existsSync(cfg.whisperCli) || !existsSync(cfg.whisperServerBin)) {
+    missing.push({ formula: "whisper-cpp", why: "speech-to-text" });
+  }
+  if (missing.length) {
+    if (!brew) {
+      console.log("⚠️  Missing dependencies and Homebrew isn't installed. Install brew from https://brew.sh, then:");
+      console.log(`      brew install ${missing.map((m) => m.formula).join(" ")}\n`);
+    } else {
+      console.log(`Installing via Homebrew: ${missing.map((m) => `${m.formula} (${m.why})`).join(", ")}`);
+      const proc = Bun.spawn(["brew", "install", ...missing.map((m) => m.formula)], { stdout: "inherit", stderr: "inherit" });
+      const code = await proc.exited;
+      if (code !== 0) {
+        console.error("\n❌ brew install failed — resolve the error above and re-run `conch setup`.");
+        process.exit(1);
+      }
+      console.log("");
+    }
+  } else {
+    console.log("✅ binaries present (sox, tmux, whisper-cpp)");
+  }
+
+  // 2. Models. Skip any that config already resolves (a seashell box has them).
+  const wanted = [
+    { ...MODELS[0], resolved: cfg.whisperModel },
+    { ...MODELS[1], resolved: cfg.vadModel },
+  ];
+  const modelsDir = join(CONCH_DATA, "models");
+  for (const m of wanted) {
+    if (existsSync(m.resolved)) {
+      console.log(`✅ ${m.label} already at ${m.resolved}`);
+      continue;
+    }
+    mkdirSync(modelsDir, { recursive: true });
+    const dest = join(modelsDir, m.file);
+    console.log(`⬇️  ${m.label}`);
+    await downloadModel(m.url, dest, m.minBytes);
+    console.log(`   → ${dest}`);
+  }
+
+  // 3. Kokoro voices (optional). Without mlx-audio, conch falls back to `say`.
+  if (!Bun.which(cfg.ttsServerBin)) {
+    console.log('\nℹ️  Natural per-session voices are optional. For them, install mlx-audio:');
+    console.log('      uv tool install --with "misaki[en]" "mlx-audio[server]"');
+    console.log("   Without it, conch uses the macOS `say` voice.");
+  } else {
+    console.log(`✅ kokoro voices available via ${cfg.ttsServerBin}`);
+  }
+
+  // 4. Wire the Claude Code hooks, then verify the whole chain.
+  console.log("\nWiring Claude Code hooks…");
+  await runInstall(cfg);
+  console.log("\nRunning doctor…\n");
+  await runDoctor(cfg);
+  console.log("\n🐚 Setup complete. Start the background service with:  conch service install");
+}
+
+/** curl a model to a temp path, size-check it, then atomically move into place. */
+async function downloadModel(url: string, dest: string, minBytes: number): Promise<void> {
+  const tmp = `${dest}.part`;
+  try {
+    unlinkSync(tmp);
+  } catch {}
+  const proc = Bun.spawn(["curl", "-L", "--fail", "--progress-bar", "-o", tmp, url], {
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const code = await proc.exited;
+  if (code !== 0) {
+    console.error(`❌ download failed (curl exit ${code}). Check your connection and re-run \`conch setup\`.`);
+    process.exit(1);
+  }
+  const size = existsSync(tmp) ? statSync(tmp).size : 0;
+  if (size < minBytes) {
+    try {
+      unlinkSync(tmp);
+    } catch {}
+    console.error(`❌ downloaded file is too small (${size} bytes) — the URL may have returned an error page.`);
+    process.exit(1);
+  }
+  renameSync(tmp, dest); // same dir → atomic, no 1.6 GB re-copy
+}
 
 /**
  * Install (or remove) a launchd agent that supervises the daemon: it keeps

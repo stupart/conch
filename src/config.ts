@@ -1,11 +1,25 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { existsSync } from "node:fs";
 
 const HOME = homedir();
 
-// Whisper engine defaults point at a seashell checkout — conch reuses its
-// whisper.cpp build and models rather than shipping its own.
+// The whisper engine can come from three places, probed in this order so that
+// each existing setup keeps working AND a fresh `brew install whisper-cpp`
+// + `conch setup` works with zero env vars:
+//   1. a seashell checkout (the original: ~/whisper-cli)
+//   2. a Homebrew whisper-cpp install (/opt/homebrew or /usr/local)
+//   3. models downloaded by `conch setup` into ~/.cache/conch
 const SEASHELL_ROOT = process.env.CONCH_SEASHELL_ROOT ?? join(HOME, "whisper-cli");
+export const CONCH_DATA = join(HOME, ".cache", "conch"); // `conch setup` writes models here
+const BREW = existsSync("/opt/homebrew/bin") ? "/opt/homebrew/bin" : "/usr/local/bin";
+const WHISPER_MODEL_FILE = "ggml-large-v3-turbo-q5_0.bin";
+const VAD_MODEL_FILE = "ggml-silero-v6.2.0.bin";
+
+/** First path that exists, else the last candidate (so doctor reports a sensible expected path). */
+function firstExisting(...candidates: string[]): string {
+  return candidates.find((p) => existsSync(p)) ?? candidates[candidates.length - 1]!;
+}
 
 export interface Config {
   whisperCli: string;
@@ -104,11 +118,11 @@ function flag(v: string | undefined, fallback: boolean): boolean {
 export function loadConfig(): Config {
   const env = process.env;
   return {
-    whisperCli: env.CONCH_WHISPER_CLI ?? join(SEASHELL_ROOT, "whisper.cpp/build/bin/whisper-cli"),
-    whisperServerBin: env.CONCH_WHISPER_SERVER ?? join(SEASHELL_ROOT, "whisper.cpp/build/bin/whisper-server"),
+    whisperCli: env.CONCH_WHISPER_CLI ?? firstExisting(join(SEASHELL_ROOT, "whisper.cpp/build/bin/whisper-cli"), join(BREW, "whisper-cli")),
+    whisperServerBin: env.CONCH_WHISPER_SERVER ?? firstExisting(join(SEASHELL_ROOT, "whisper.cpp/build/bin/whisper-server"), join(BREW, "whisper-server")),
     whisperPort: zeroable(env.CONCH_WHISPER_PORT, 8642),
-    whisperModel: env.CONCH_WHISPER_MODEL ?? join(SEASHELL_ROOT, "models/ggml-large-v3-turbo-q5_0.bin"),
-    vadModel: env.CONCH_VAD_MODEL ?? join(SEASHELL_ROOT, "whisper.cpp/models/ggml-silero-v6.2.0.bin"),
+    whisperModel: env.CONCH_WHISPER_MODEL ?? firstExisting(join(SEASHELL_ROOT, "models", WHISPER_MODEL_FILE), join(CONCH_DATA, "models", WHISPER_MODEL_FILE)),
+    vadModel: env.CONCH_VAD_MODEL ?? firstExisting(join(SEASHELL_ROOT, "whisper.cpp/models", VAD_MODEL_FILE), join(CONCH_DATA, "models", VAD_MODEL_FILE)),
     voice: env.CONCH_VOICE ?? "",
     sayRate: num(env.CONCH_SAY_RATE, 210),
     sayVolume: num(env.CONCH_SAY_VOLUME, 0.4), // measured: [[volm 0.4]] ≈ Kokoro loudness (say raw is ~3.4x louder)

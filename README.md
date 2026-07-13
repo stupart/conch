@@ -10,7 +10,7 @@ Claude finishes a turn
                     └─> transcript lands in that session's prompt and submits
 ```
 
-Speech-to-text runs entirely on your Mac via [whisper.cpp](https://github.com/ggerganov/whisper.cpp) with Metal, using [seashell](https://github.com/stupart/seashell)'s engine. No cloud, no API keys.
+Speech-to-text runs entirely on your Mac via [whisper.cpp](https://github.com/ggerganov/whisper.cpp) with Metal. No cloud, no API keys — `conch setup` installs the engine and downloads the models for you.
 
 ## How routing works
 
@@ -22,22 +22,29 @@ Prompts are injected via `tmux send-keys` targeted at the exact pane running tha
 
 ## Install
 
-Requirements: macOS, [Bun](https://bun.sh), sox (`brew install sox`), and a [seashell](https://github.com/stupart/seashell) install for the whisper.cpp build + models (or point `CONCH_WHISPER_CLI` / `CONCH_WHISPER_MODEL` / `CONCH_VAD_MODEL` at your own).
+macOS + [Bun](https://bun.sh). One command handles everything else:
 
 ```bash
 git clone https://github.com/stupart/conch.git && cd conch
 bun install
-bun run src/cli.ts doctor     # verify say / sox / whisper are reachable
-bun run src/cli.ts install    # wire Stop + Notification hooks into ~/.claude/settings.json
+bun run src/cli.ts setup     # deps + models + hooks, then doctor
 ```
 
-Then run the loop in any pane:
+`conch setup` installs the binaries conch shells out to (`sox`, `tmux`, `whisper-cpp`) via [Homebrew](https://brew.sh), downloads the two speech models into `~/.cache/conch/models` (whisper large-v3-turbo ~1.6 GB, silero VAD ~900 KB), wires the Claude Code hooks, and runs `doctor` to verify the chain. It's idempotent — re-run it any time; it skips whatever's already there. Already have a whisper.cpp build and models (e.g. a [seashell](https://github.com/stupart/seashell) checkout)? Point `CONCH_WHISPER_CLI` / `CONCH_WHISPER_MODEL` / `CONCH_VAD_MODEL` (or `CONCH_SEASHELL_ROOT`) at them and setup leaves them untouched.
+
+Then start it as a background service that launches at login and self-heals within ~15s of a crash:
+
+```bash
+bun run src/cli.ts service install     # view anytime: tmux attach -t conch
+```
+
+Prefer to watch it live? Run the loop in the foreground in any pane instead — you get the full dashboard (session panel + status line):
 
 ```bash
 bun run src/cli.ts daemon
 ```
 
-No daemon running? The hooks still work standalone: bell + spoken announcements, no voice-back. That's a perfectly good way to use conch.
+No daemon running at all? The hooks still work standalone: bell + spoken announcements, no voice-back. That's a perfectly good way to use conch.
 
 ### Natural voices (optional, recommended)
 
@@ -54,12 +61,19 @@ That's it — the daemon finds `mlx_audio.server`, spawns it, and **every sessio
 
 | Command | What it does |
 |---|---|
+| `conch setup` | One-command install: brew deps, model downloads, hooks, doctor (run this first) |
+| `conch service [off]` | launchd supervision: start at login, self-heal on crash |
 | `conch install` | Merge hooks into `~/.claude/settings.json` (backs up first) |
 | `conch daemon` | Run the voice loop: announce → listen → inject |
-| `conch wake` | Reopen the mic for the last announced session (bind it to a hotkey) |
+| `conch wake [name]` | Reopen the mic — last announced session, or by name (bind it to a hotkey) |
+| `conch sessions` | List live Claude Code sessions |
+| `conch mute` / `unmute` | Silence announcements + mic |
+| `conch pause` / `resume` | Step away: stay quiet but HOLD finished sessions, replay on resume |
 | `conch hook` | Hook entrypoint (Claude Code calls this, not you) |
 | `conch listen` | Mic check: capture one utterance, print the transcript |
 | `conch speak <text>` | TTS check |
+| `conch voices` | Audition the voice ring — each voice introduces itself |
+| `conch voice <s> [v]` | Show or pin a session's voice (persisted) |
 | `conch doctor` | Verify external dependencies |
 
 ## Voice commands
@@ -82,6 +96,8 @@ Commands only match as the *entire* utterance — "continue working on the login
 
 **Leaving?** `conch mute` silences announcements and the mic until `conch unmute`; each event only ever speaks once regardless — there is no reminder loop, and a closed window costs nothing (no sox, no whisper). `CONCH_AWAY_AFTER_SECS` adds opt-in auto-silence after N seconds of keyboard/mouse idle, but note it's off by default for a reason: idle time doesn't count *voice* activity, so it would mute a fully hands-free session mid-conversation.
 
+**Stepping away for a bit?** `conch pause` (or **p** in the dashboard) is mute's patient sibling: it stays quiet *and* **holds** every session that finishes while you're gone, then replays them in order on `conch resume`. Mute forgets; pause remembers. **Joining a meeting, use `conch pause` first** — otherwise an open mic window could pick up meeting audio and inject it into a session.
+
 **Permission prompts** ("dayloop needs you: permission to run npm install") open the mic too, but only accept yes/no: "yes" presses Enter on the highlighted option, "no" presses Escape, anything else is ignored — free text near a permission dialog is deliberately refused. And idle "waiting for your input" nags are filtered: conch checks whether the session's last reply actually asked you something, and stays quiet when the session is just idle ("I'll ping you when it lands").
 
 ## Live status & near-real-time transcription
@@ -96,6 +112,16 @@ Run the daemon in a visible terminal and it renders a live status line:
 ● recording — dayloop  ▸ okay so let's try the other approach and
 … transcribing  — whisper finishing the final pass
 ```
+
+Above the status line sits a **session panel** — one line per live Claude Code session, so you can see at a glance who needs you without conch having to interrupt you out loud:
+
+```
+  ❗ dayloop — needs a response
+  ○ blueprint — waiting for you
+  ● poaster — working…
+```
+
+Sessions that need input sort to the top. This is deliberately *visual only*: conch announces a finished turn once (with the mic follow), but it never nags you aloud about a session sitting idle — that's what the panel is for.
 
 The daemon also spawns a **warm whisper-server** (model stays loaded), which makes every transcription seconds faster and is what powers the live partials — the growing recording is re-transcribed about once a second while you speak. No server binary? Everything still works via the slower cold path, minus partials. `CONCH_WHISPER_PORT=0` disables the server.
 
@@ -124,7 +150,8 @@ All via environment variables (put them in the hook's env or your shell profile)
 | `CONCH_HOLD_SUBMIT` | `1` | hold Enter; pauses segment dictation, "send"/"go" or a long pause submits |
 | `CONCH_HOLD_SUBMIT_SECS` | `8` | silence before held dictation auto-submits |
 | `CONCH_KEYSTROKE_FALLBACK` | `0` | allow typing into the frontmost window when no tmux pane is found |
-| `CONCH_SEASHELL_ROOT` | `~/whisper-cli` | where the whisper.cpp build + models live |
+| `CONCH_SAY_VOLUME` | `0.4` | `say` fallback loudness — tuned to match Kokoro (raw `say` is ~3× louder) |
+| `CONCH_SEASHELL_ROOT` | `~/whisper-cli` | first place probed for the whisper.cpp build + models; falls back to a brew `whisper-cpp` install and `~/.cache/conch/models` |
 | `CONCH_WHISPER_PORT` | `8642` | warm whisper-server port; `0` = cold cli only |
 | `CONCH_AWAY_AFTER_SECS` | `0` (off) | opt-in: silence everything after N seconds of keyboard idle |
 | `CONCH_TTS` | `auto` | voices: `auto` (Kokoro server if installed, else say) / `server` / `say` |

@@ -2,7 +2,7 @@
 import { loadConfig } from "./config.ts";
 import { runHook, sendToDaemon } from "./hook.ts";
 import { runDaemon } from "./daemon.ts";
-import { runInstall, runDoctor, runService } from "./install.ts";
+import { runInstall, runDoctor, runService, runSetup } from "./install.ts";
 import { listenOnce } from "./listen.ts";
 import { speak, probeTtsServer, voiceFor, setVoiceOverride } from "./speak.ts";
 import { emitRecorderTraces } from "./diagnostics.ts";
@@ -10,6 +10,7 @@ import { emitRecorderTraces } from "./diagnostics.ts";
 const HELP = `conch — a voice loop for Claude Code
 
 Usage:
+  conch setup           one-command install: deps, models, hooks (run this first)
   conch install         wire Stop/Notification hooks into ~/.claude/settings.json
   conch service [off]   launchd supervision: start at login, self-heal on crash
   conch hook            hook entrypoint (reads payload JSON on stdin)
@@ -80,6 +81,9 @@ switch (command) {
     }
     break;
   }
+  case "setup":
+    await runSetup(cfg);
+    break;
   case "install":
     await runInstall(cfg);
     break;
