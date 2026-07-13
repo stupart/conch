@@ -14,7 +14,7 @@ interface HookPayload {
 }
 
 export interface TurnEvent {
-  type: "turn-end" | "needs-you" | "wake" | "mute" | "unmute" | "pause" | "resume";
+  type: "turn-end" | "needs-you" | "wake" | "mute" | "unmute" | "pause" | "resume" | "speak";
   sessionId: string;
   label: string;
   cwd?: string;
@@ -26,6 +26,8 @@ export interface TurnEvent {
   ntype?: string;
   /** transcript line count when this fired — used to detect you already responded since */
   mark?: number;
+  /** Optional explicit voice for daemon-routed CLI auditions. */
+  voice?: string;
 }
 
 // Notification types that actually need a human; everything else stays silent.
@@ -86,13 +88,17 @@ export async function runHook(cfg: Config): Promise<void> {
     };
   }
 
-  bell(cfg);
-
   // Daemon owns the voice loop when it's up; otherwise speak standalone
   // (awaited: the server TTS path dies with the process, and `say` is
   // spawned either way before we return).
   const handedOff = await sendToDaemon(cfg.socketPath, turn);
-  if (!handedOff) await speak(cfg, turn.announce, turn.label);
+  if (!handedOff) {
+    // A live daemon owns playback ordering around its microphone. Ring here
+    // only when no daemon accepted the event; otherwise the daemon rings once
+    // the preceding dictation controller is fully drained.
+    await bell(cfg);
+    await speak(cfg, turn.announce, turn.label);
+  }
 }
 
 export function sendToDaemon(socketPath: string, event: TurnEvent): Promise<boolean> {

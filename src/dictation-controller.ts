@@ -29,6 +29,8 @@ export interface RecorderHandle {
   finished: Promise<CapturedAudio>;
   /** Must synchronously initiate stop; completion is reported by `finished`. */
   stop(reason: string): void;
+  /** Optional synchronous ownership handshake for an adopted live capture. */
+  attached?(): void;
 }
 
 export interface DictationCaptureBackend {
@@ -193,6 +195,11 @@ export class DictationController {
     return this.active !== null;
   }
 
+  /** Live previews must not contend with the authoritative serial worker. */
+  get finalWorkerIdle(): boolean {
+    return !this.workerRunning && this.work.length === 0;
+  }
+
   /** Start a new generation, optionally adopting an already-open barge capture. */
   start(initialCapture?: RecorderHandle): void {
     if (this.permanentlyClosed) throw new Error("dictation controller is shut down");
@@ -341,6 +348,7 @@ export class DictationController {
     const context = supplied ?? this.allocateContext();
     const slot: RecorderSlot = { ...context, handle, stopRequested: false };
     this.active = slot;
+    handle.attached?.();
     // Register the single finalization owner immediately. Barrier/natural paths
     // both retrieve this same promise and therefore cannot enqueue twice.
     void this.finalize(slot);

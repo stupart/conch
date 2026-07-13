@@ -118,11 +118,11 @@ export function voiceFor(cfg: Config, label: string): string {
 
 // --- speaking -----------------------------------------------------------
 
-/** Play the attention bell without blocking. */
-export function bell(cfg: Config): void {
+/** Play the attention bell to completion so the daemon can gate its mic around it. */
+export async function bell(cfg: Config): Promise<void> {
   if (!cfg.bell) return;
   const proc = Bun.spawn(["afplay", cfg.bellSound], { stdout: "ignore", stderr: "ignore" });
-  proc.unref();
+  await proc.exited;
 }
 
 function sayFlags(cfg: Config): string[] {

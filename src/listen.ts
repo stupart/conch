@@ -2,6 +2,13 @@ import { chmodSync, statSync, unlinkSync, readFileSync } from "node:fs";
 import type { Config } from "./config.ts";
 import { transcribePcm, serverUp } from "./transcribe.ts";
 import {
+  DictationController,
+  type BarrierTicket,
+  type CapturedAudio,
+  type DictationEvent,
+  type RecorderHandle,
+} from "./dictation-controller.ts";
+import {
   classifyRecorderExit,
   createRecorderParent,
   emitRecorderTrace,
@@ -12,12 +19,13 @@ import {
   type RecorderTrace,
   type TranscriptionEngine,
 } from "./diagnostics.ts";
+import { TranscriptionGate } from "./transcription-gate.ts";
 
 // Anything smaller than this is silence (raw 16kHz 16-bit mono = 32KB/s).
-const MIN_PCM_BYTES = 16_000; // ~0.5s
+export const MIN_PCM_BYTES = 16_000; // ~0.5s
 // Barge-in trigger: a bare "stop!" is ~0.3s of audio — the normal 0.5s bar
 // silently discarded interruptions (took the user 10 tries, live).
-const BARGE_MIN_PCM_BYTES = 5_000; // ~0.16s
+export const BARGE_MIN_PCM_BYTES = 5_000; // ~0.16s
 
 export interface ListenHooks {
   /** armed = mic open & waiting; capturing = speech detected; transcribing = whisper running */
@@ -29,10 +37,23 @@ export interface ListenHooks {
 export interface ListenResult {
   text: string;
   error?: string;
-  /** true when the mic was closed mid-listen by spacebar (abortListening) */
-  aborted?: boolean;
   /** Present only when CONCH_KEEP_RAW=1; used to enrich the single recorder row. */
   diagnosticId?: string;
+  /** All ordered recorder rows contributing to this result. */
+  diagnosticIds?: string[];
+}
+
+export interface RuntimeDictationSession {
+  readonly controller: DictationController;
+  readonly micOpen: boolean;
+  readonly state: DictationController["state"];
+  start(initialCapture?: RecorderHandle): void;
+  resume(initialCapture?: RecorderHandle): void;
+  nextEvent(): Promise<DictationEvent>;
+  acknowledge(event: DictationEvent): void;
+  requestBarrier(reason: string): BarrierTicket;
+  requestTimeout(): BarrierTicket;
+  setIdleWindowSecs(seconds: number): void;
 }
 
 interface Capture {
@@ -42,10 +63,7 @@ interface Capture {
   minimumBytes: number;
   killCause: RecorderKillCause;
   sizeAtKill: number | null;
-}
-
-interface Recorder extends Capture {
-  watchdog: ReturnType<typeof setInterval>;
+  controllerOwned?: boolean;
 }
 
 // Every capture path runs the identical sox recipe — headerless 16kHz mono PCM,
@@ -55,6 +73,8 @@ interface Recorder extends Capture {
 // the last words as "silence" (observed live: final couple words missing).
 const activeRecorders = new Set<ReturnType<typeof Bun.spawn>>();
 const tracedRecorders = new Map<ReturnType<typeof Bun.spawn>, Capture>();
+const activeControllers = new Set<DictationController>();
+const activeBargeShutdowns = new Map<ReturnType<typeof Bun.spawn>, () => Promise<void>>();
 
 function spawnCapture(
   cfg: Config,
@@ -106,11 +126,19 @@ function spawnCapture(
 /** Kill any in-flight sox capture — daemon shutdown must not leave the mic hot. */
 export function killActiveRecorders(): Promise<void> | undefined {
   const diagnosticExits: Promise<void>[] = [];
+  // Claim an intentional during-TTS recorder before the generic process sweep.
+  // It has no controller yet, so its own single owner must drain/transcribe it.
+  for (const shutdown of activeBargeShutdowns.values()) diagnosticExits.push(shutdown());
+  for (const controller of activeControllers) {
+    if (controller.state === "running" || controller.state === "draining") {
+      diagnosticExits.push(controller.requestBarrier("shutdown").done);
+    }
+  }
   for (const proc of activeRecorders) {
     const capture = tracedRecorders.get(proc);
     if (capture) {
       markKill(capture, "shutdown");
-      diagnosticExits.push(
+      if (!capture.controllerOwned) diagnosticExits.push(
         proc.exited.then((code) => {
           finalizeCaptureTrace(capture, code);
           emitRecorderTrace(capture.trace, { intent: "shutdown", bufferCountAfterReduction: null });
@@ -123,15 +151,132 @@ export function killActiveRecorders(): Promise<void> | undefined {
   return diagnosticExits.length ? Promise.all(diagnosticExits).then(() => {}) : undefined;
 }
 
-// Set when the user closes the mic (spacebar) mid-listen: kills the live
-// recorder AND tells listenOnce to bail cleanly instead of re-arming or
-// transcribing the truncated clip. Reset at the top of each listenOnce.
-let listenAborted = false;
+/**
+ * Conversation-scoped continuous capture. The backend owns SoX processes;
+ * DictationController owns rearming, FIFO work, barriers, and final ordering.
+ */
+export function createDictationSession(
+  cfg: Config,
+  hooks: ListenHooks = {},
+  options: {
+    tag?: string;
+    startPct?: number;
+    minimumBytes?: number;
+    idleWindowSecs?: number;
+    parent?: string;
+    traceSequence?: () => number;
+  } = {},
+): RuntimeDictationSession {
+  const tag = options.tag ?? "utt";
+  const startPct = options.startPct ?? cfg.startThresholdPct;
+  const minimumBytes = options.minimumBytes ?? MIN_PCM_BYTES;
+  const parent = options.parent ?? createRecorderParent(tag === "utt" ? "listen" : tag);
+  let idleWindowSecs = options.idleWindowSecs ?? cfg.listenWindowSecs;
+  let idleDeadline = Date.now() + idleWindowSecs * 1000;
+  let nextOpenBeginsNewWindow = false;
+  let controller!: DictationController;
+  const transcriptionGate = new TranscriptionGate(() => controller.finalWorkerIdle);
 
-/** Close an in-flight listenOnce immediately — spacebar while the mic is open. */
-export function abortListening(): void {
-  listenAborted = true;
-  killActiveRecorders();
+  const backend = {
+    open(context: { sequence: number; generation: number }): RecorderHandle {
+      const handle = armContinuousRecorder(
+        cfg,
+        tag,
+        startPct,
+        minimumBytes,
+        parent,
+        options.traceSequence?.() ?? context.sequence,
+        context,
+        hooks,
+        (pcm) => transcriptionGate.tryRunPartial(() => transcribePcm(cfg, pcm)),
+        () => {
+          nextOpenBeginsNewWindow = true;
+          controller.cancelTimeout();
+        },
+        (text) => controller.publishPartial({ ...context, text }),
+      );
+      queueMicrotask(() => {
+        if (controller.state === "running" && controller.activeSequence === context.sequence) {
+          if (nextOpenBeginsNewWindow) {
+            idleDeadline = Date.now() + idleWindowSecs * 1000;
+            nextOpenBeginsNewWindow = false;
+          }
+          controller.scheduleTimeout(Math.max(0, idleDeadline - Date.now()));
+        }
+      });
+      return handle;
+    },
+    read(capture: CapturedAudio): Uint8Array {
+      return new Uint8Array(readFileSync(capture.rawPath));
+    },
+  };
+
+  controller = new DictationController({
+    backend,
+    minimumBytes,
+    transcriber: {
+      async transcribe(pcm, context) {
+        hooks.onState?.("transcribing");
+        const trace = context.diagnosticId
+          ? { id: context.diagnosticId, rawPath: context.rawPath }
+          : undefined;
+        try {
+          const result = await transcriptionGate.runFinal(
+            () => transcribePcm(
+              cfg,
+              pcm,
+              context.diagnosticId
+                ? (engine) => updateRecorderTrace(context.diagnosticId, { engine })
+                : undefined,
+            ),
+          );
+          updateTranscriptionTrace(trace, result);
+          return result;
+        } catch (error) {
+          updateRecorderTrace(trace, { exitReason: "error", error: formatDiagnosticError(error) });
+          throw error;
+        }
+      },
+    },
+    deleteRaw(capture) {
+      if (!capture.diagnosticId) discard(capture.rawPath);
+    },
+    onPartial: hooks.onPartial ? (text) => hooks.onPartial!(text) : undefined,
+  });
+
+  return {
+    controller,
+    get micOpen() {
+      return controller.micOpen;
+    },
+    get state() {
+      return controller.state;
+    },
+    start(initialCapture) {
+      idleDeadline = Date.now() + idleWindowSecs * 1000;
+      nextOpenBeginsNewWindow = false;
+      controller.start(initialCapture);
+      activeControllers.add(controller);
+    },
+    resume(initialCapture) {
+      idleDeadline = Date.now() + idleWindowSecs * 1000;
+      nextOpenBeginsNewWindow = false;
+      controller.resume(initialCapture);
+      activeControllers.add(controller);
+    },
+    nextEvent: () => controller.nextEvent(),
+    acknowledge(event) {
+      controller.acknowledge(event);
+      if (controller.state === "idle" || controller.state === "closed") activeControllers.delete(controller);
+    },
+    requestBarrier: (reason) => controller.requestBarrier(reason),
+    requestTimeout: () => controller.requestTimeout(),
+    setIdleWindowSecs(seconds) {
+      idleWindowSecs = seconds;
+      idleDeadline = Date.now() + seconds * 1000;
+      if (controller.micOpen) controller.scheduleTimeout(seconds * 1000);
+    },
+  };
 }
 
 /**
@@ -151,88 +296,80 @@ export function abortListening(): void {
  *    stale until sox closes the file).
  */
 export async function listenOnce(cfg: Config, hooks: ListenHooks = {}): Promise<ListenResult> {
-  listenAborted = false; // a stale abort from a past listen must not close this one
-  const opened = Date.now();
-  const windowSpent = () => (Date.now() - opened) / 1000 >= cfg.listenWindowSecs;
-  const parent = createRecorderParent("listen");
-  let sequence = 0;
+  return collectContinuousResult(cfg, hooks);
+}
 
-  let rec = armRecorder(cfg, opened, hooks, parent, ++sequence);
+/** Adopt a live barge capture, rearm behind it, and drain all ordered speech. */
+export async function listenFromCapture(
+  cfg: Config,
+  initialCapture: RecorderHandle,
+  hooks: ListenHooks = {},
+  options: { parent?: string } = {},
+): Promise<ListenResult> {
+  return collectContinuousResult(cfg, hooks, initialCapture, options);
+}
 
+async function collectContinuousResult(
+  cfg: Config,
+  hooks: ListenHooks,
+  initialCapture?: RecorderHandle,
+  options: {
+    parent?: string;
+    traceSequence?: () => number;
+    tag?: string;
+    onSessionStarted?: (session: RuntimeDictationSession) => void;
+  } = {},
+): Promise<ListenResult> {
+  const session = createDictationSession(cfg, hooks, options);
+  const texts: string[] = [];
+  const diagnosticIds: string[] = [];
+  let error: string | undefined;
+  let closing = false;
+  session.start(initialCapture);
+  options.onSessionStarted?.(session);
   while (true) {
-    const exitCode = await rec.proc.exited;
-    clearInterval(rec.watchdog);
-
-    if (listenAborted) {
-      discard(rec.raw);
-      return withDiagnostic({ text: "", aborted: true }, rec.trace); // spacebar closed the mic mid-listen
-    }
-
-    const pcm = completedPcm(rec, exitCode);
-    // Diagnostics-only shutdown waits for SoX to flush before process exit.
-    // Do not let that extra wait turn the killed recorder into a false-start
-    // re-arm or a hot-next recorder; the ordinary (diagnostics-off) path exits
-    // synchronously before this continuation can run, exactly as before.
-    if (rec.killCause === "shutdown") {
-      emitRecorderTrace(rec.trace, { intent: "shutdown", bufferCountAfterReduction: null });
-      return withDiagnostic({ text: "" }, rec.trace);
-    }
-
-    if (pcm.length < MIN_PCM_BYTES) {
-      if (windowSpent()) return withDiagnostic({ text: "" }, rec.trace); // window over (or the timeout kill)
-      emitRecorderTrace(rec.trace, { intent: "false-start", bufferCountAfterReduction: 0 });
-      rec = armRecorder(cfg, opened, hooks, parent, ++sequence); // false start — re-arm
+    const event = await session.nextEvent();
+    if (event.kind === "transcript") {
+      if (event.diagnosticId) diagnosticIds.push(event.diagnosticId);
+      if (event.text) {
+        texts.push(event.text);
+        if (!closing) {
+          closing = true;
+          session.requestBarrier("listen-result");
+        }
+      } else {
+        emitRecorderTrace(event.diagnosticId, { intent: "empty-transcript", bufferCountAfterReduction: 0 });
+      }
       continue;
     }
-
-    let next: Recorder | null;
-    try {
-      next = windowSpent() ? null : armRecorder(cfg, opened, hooks, parent, ++sequence);
-    } catch (e) {
-      updateRecorderTrace(rec.trace, {
-        exitReason: "error",
-        error: `hot-next recorder: ${formatDiagnosticError(e)}`,
+    if (event.kind === "short") {
+      emitRecorderTrace(event.diagnosticId, {
+        intent: event.cause === "timeout" ? "timeout-close" : "false-start",
+        bufferCountAfterReduction: 0,
       });
-      emitRecorderTrace(rec.trace, { intent: "hot-next-error", bufferCountAfterReduction: 0 });
-      throw e;
+      continue;
     }
-    hooks.onState?.("transcribing");
-    let result: { text: string; error?: string };
-    try {
-      result = await transcribePcm(cfg, pcm, engineReporter(rec.trace));
-    } catch (e) {
-      // The ordinary path historically leaves the hot-next recorder alone on
-      // a thrown transcription. Diagnostics must still close and account for
-      // it, without changing the default-off lifecycle.
-      if (next?.trace) {
-        try {
-          await disarm(next);
-        } catch (disarmError) {
-          emitRecorderTrace(next.trace, {
-            exitReason: "error",
-            error: `failed to disarm after transcription error: ${formatDiagnosticError(disarmError)}`,
-            intent: "disarm-error",
-            bufferCountAfterReduction: 0,
-          });
-        }
+    if (event.kind === "error") {
+      error ??= event.error;
+      emitRecorderTrace(event.diagnosticId, { intent: `${event.stage}-error`, bufferCountAfterReduction: 0 });
+      if (!closing) {
+        closing = true;
+        session.requestBarrier("listen-error");
       }
-      updateRecorderTrace(rec.trace, { exitReason: "error", error: formatDiagnosticError(e) });
-      emitRecorderTrace(rec.trace, { intent: "transcription-error", bufferCountAfterReduction: 0 });
-      throw e;
+      continue;
     }
-    updateTranscriptionTrace(rec.trace, result);
-
-    if (listenAborted) {
-      if (next) await disarm(next);
-      return withDiagnostic({ text: "", aborted: true }, rec.trace);
+    if (event.kind === "timeout") {
+      closing = true;
+      continue;
     }
-    if (result.error || result.text) {
-      if (next) await disarm(next);
-      return withDiagnostic(result, rec.trace);
-    }
-    if (!next) return withDiagnostic({ text: "" }, rec.trace); // noise transcribed to nothing, window over
-    emitRecorderTrace(rec.trace, { intent: "empty-transcript", bufferCountAfterReduction: 0 });
-    rec = next; // keep whatever the hot mic caught in the meantime
+    session.acknowledge(event);
+    if (session.state === "draining") continue; // another FIFO barrier is still pending
+    const result: ListenResult = {
+      text: texts.join(" "),
+      ...(error ? { error } : {}),
+      ...(diagnosticIds[0] ? { diagnosticId: diagnosticIds[0], diagnosticIds } : {}),
+    };
+    return result;
   }
 }
 
@@ -243,44 +380,144 @@ export async function listenOnce(cfg: Config, hooks: ListenHooks = {}): Promise<
  * The caller polls `triggered()` to kill playback the moment you start
  * talking, then `finish()` endpoints and transcribes your utterance.
  */
-export function armBargeRecorder(cfg: Config): {
+export function armBargeRecorder(cfg: Config, traceParent?: string, traceSequence = 1): {
   triggered: () => boolean;
   finish: () => Promise<ListenResult>;
   abort: () => Promise<void>;
+  /** Transfer the still-live capture to a continuous controller. */
+  adopt: () => RecorderHandle | undefined;
+  parent?: string;
 } {
-  const parent = createRecorderParent("barge");
-  const capture = spawnCapture(cfg, "barge", cfg.bargeThresholdPct, BARGE_MIN_PCM_BYTES, parent, 1);
+  const parent = traceParent ?? createRecorderParent("barge");
+  const capture = spawnCapture(cfg, "barge", cfg.bargeThresholdPct, BARGE_MIN_PCM_BYTES, parent, traceSequence);
+  // Until adoption, the barge registry is its finalization owner. This prevents
+  // shutdown from treating a >=MIN intentional capture as an untranscribed
+  // legacy recorder.
+  capture.controllerOwned = true;
   const { raw, proc } = capture;
-  const hardStop = setTimeout(() => {
-    markKill(capture, "max");
+  let stopReason: string | undefined;
+  let owner: "barge" | "adopted" | "attached" | "standalone" | "abort" | "shutdown" = "barge";
+  let shutdownDrain: Promise<void> | undefined;
+  let standaloneDrain: Promise<ListenResult> | undefined;
+  let abortDrain: Promise<void> | undefined;
+  const stopCapture = (reason: string): void => {
+    if (stopReason) return;
+    stopReason = reason;
+    const cause: Exclude<RecorderKillCause, null> = reason === "max"
+      ? "max"
+      : reason === "shutdown"
+        ? "shutdown"
+        : "abort";
+    markKill(capture, cause);
     proc.kill();
-  }, cfg.maxUtteranceSecs * 1000);
+  };
+  const hardStop = setTimeout(() => stopCapture("max"), cfg.maxUtteranceSecs * 1000);
+  const finished = proc.exited.then((exitCode): CapturedAudio => {
+    clearTimeout(hardStop);
+    const final = finalFileSize(raw);
+    const error = final.error ?? (!capture.killCause && exitCode !== 0 ? `sox exited with code ${exitCode}` : null);
+    finalizeCaptureTrace(capture, exitCode, final.size, error);
+    return {
+      rawPath: raw,
+      finalBytes: final.size,
+      minimumBytes: BARGE_MIN_PCM_BYTES,
+      ...(capture.trace ? { diagnosticId: capture.trace.id } : {}),
+      ...(stopReason ? { cause: stopReason } : {}),
+      ...(error ? { error } : {}),
+    };
+  });
+  const handle: RecorderHandle = {
+    finished,
+    stop: stopCapture,
+    attached() {
+      if (owner !== "adopted") return;
+      owner = "attached";
+      activeBargeShutdowns.delete(proc);
+    },
+  };
+  const shutdown = (): Promise<void> => {
+    if (shutdownDrain) return shutdownDrain;
+    if (owner === "abort") return abortDrain ?? Promise.resolve();
+    if (owner === "standalone") return standaloneDrain?.then(() => {}) ?? Promise.resolve();
+    if (owner !== "barge" && owner !== "adopted") return Promise.resolve();
+    owner = "shutdown";
+    activeBargeShutdowns.delete(proc);
+    stopCapture("shutdown");
+    shutdownDrain = (async () => {
+      const captured = await finished;
+      if (captured.error) {
+        updateRecorderTrace(capture.trace, { error: captured.error });
+      } else if (captured.finalBytes >= BARGE_MIN_PCM_BYTES) {
+        try {
+          const pcm = readPcm(raw);
+          const result = await transcribePcm(cfg, pcm, engineReporter(capture.trace));
+          updateRecorderTrace(capture.trace, result.error
+            ? { transcript: result.text, error: result.error }
+            : { transcript: result.text });
+        } catch (error) {
+          updateRecorderTrace(capture.trace, { error: formatDiagnosticError(error) });
+        }
+      }
+      if (!capture.trace) discard(raw);
+      emitRecorderTrace(capture.trace, { intent: "shutdown", bufferCountAfterReduction: null });
+    })();
+    return shutdownDrain;
+  };
+  activeBargeShutdowns.set(proc, shutdown);
   return {
     triggered: () => fileSize(raw) >= BARGE_MIN_PCM_BYTES,
-    async finish() {
-      const exitCode = await proc.exited;
-      clearTimeout(hardStop);
-      const pcm = completedPcm(capture, exitCode);
-      if (pcm.length < BARGE_MIN_PCM_BYTES) return withDiagnostic({ text: "" }, capture.trace);
-      try {
-        const result = await transcribePcm(cfg, pcm, engineReporter(capture.trace));
-        updateTranscriptionTrace(capture.trace, result);
-        return withDiagnostic(result, capture.trace);
-      } catch (e) {
-        updateRecorderTrace(capture.trace, { exitReason: "error", error: formatDiagnosticError(e) });
-        emitRecorderTrace(capture.trace, { intent: "transcription-error", bufferCountAfterReduction: 0 });
-        throw e;
+    finish() {
+      if (owner === "shutdown") {
+        return shutdown().then(() => withDiagnostic({ text: "" }, capture.trace));
       }
+      if (owner !== "barge") return Promise.reject(new Error("barge capture already disposed"));
+      owner = "standalone";
+      standaloneDrain = (async () => {
+        try {
+          const captured = await finished;
+          if (captured.error) return withDiagnostic({ text: "", error: captured.error }, capture.trace);
+          const pcm = readPcm(raw);
+          if (!capture.trace) discard(raw);
+          if (pcm.length < BARGE_MIN_PCM_BYTES) return withDiagnostic({ text: "" }, capture.trace);
+          try {
+            const result = await transcribePcm(cfg, pcm, engineReporter(capture.trace));
+            updateTranscriptionTrace(capture.trace, result);
+            return withDiagnostic(result, capture.trace);
+          } catch (e) {
+            updateRecorderTrace(capture.trace, { exitReason: "error", error: formatDiagnosticError(e) });
+            emitRecorderTrace(capture.trace, { intent: "transcription-error", bufferCountAfterReduction: 0 });
+            throw e;
+          }
+        } finally {
+          activeBargeShutdowns.delete(proc);
+        }
+      })();
+      return standaloneDrain;
     },
-    async abort() {
-      markKill(capture, "abort");
-      proc.kill();
-      clearTimeout(hardStop);
-      const exitCode = await proc.exited;
-      if (capture.trace) completedPcm(capture, exitCode);
-      else discard(raw);
-      emitRecorderTrace(capture.trace, { intent: "barge-abort", bufferCountAfterReduction: 0 });
+    abort() {
+      if (owner === "shutdown") return shutdown();
+      if (owner === "abort") return abortDrain ?? Promise.resolve();
+      if (owner !== "barge") return Promise.resolve();
+      owner = "abort";
+      stopCapture("abort");
+      abortDrain = (async () => {
+        try {
+          await finished;
+          if (!capture.trace) discard(raw);
+          emitRecorderTrace(capture.trace, { intent: "barge-abort", bufferCountAfterReduction: 0 });
+        } finally {
+          activeBargeShutdowns.delete(proc);
+        }
+      })();
+      return abortDrain;
     },
+    adopt() {
+      if (owner === "shutdown") return undefined;
+      if (owner !== "barge") throw new Error("barge capture already disposed");
+      owner = "adopted";
+      return handle;
+    },
+    parent,
   };
 }
 
@@ -290,126 +527,118 @@ export function armBargeRecorder(cfg: Config): {
  * reading continues. If the user does start talking, capture the full
  * utterance (endpointed as usual) and transcribe it.
  */
-export async function listenGap(cfg: Config, maxWaitSecs: number): Promise<ListenResult> {
-  const parent = createRecorderParent("gap");
-  const capture = spawnCapture(cfg, "gap", cfg.startThresholdPct, MIN_PCM_BYTES, parent, 1);
-  const { raw, proc } = capture;
-
-  const opened = Date.now();
-  let speechStarted = false;
-  const watchdog = setInterval(() => {
-    if (!speechStarted && fileSize(raw) >= MIN_PCM_BYTES) speechStarted = true;
-    const t = (Date.now() - opened) / 1000;
-    if (!speechStarted && t >= maxWaitSecs) {
-      markKill(capture, "window");
-      proc.kill();
-    }
-    if (speechStarted && t >= cfg.maxUtteranceSecs) {
-      markKill(capture, "max");
-      proc.kill();
-    }
-  }, 200);
-
-  const exitCode = await proc.exited;
-  clearInterval(watchdog);
-
-  const pcm = completedPcm(capture, exitCode);
-  if (pcm.length < MIN_PCM_BYTES) return withDiagnostic({ text: "" }, capture.trace);
-  try {
-    const result = await transcribePcm(cfg, pcm, engineReporter(capture.trace));
-    updateTranscriptionTrace(capture.trace, result);
-    return withDiagnostic(result, capture.trace);
-  } catch (e) {
-    updateRecorderTrace(capture.trace, { exitReason: "error", error: formatDiagnosticError(e) });
-    emitRecorderTrace(capture.trace, { intent: "transcription-error", bufferCountAfterReduction: 0 });
-    throw e;
-  }
+export async function listenGap(
+  cfg: Config,
+  maxWaitSecs: number,
+  options: {
+    parent?: string;
+    traceSequence?: () => number;
+    onSessionStarted?: (session: RuntimeDictationSession) => void;
+  } = {},
+): Promise<ListenResult> {
+  return collectContinuousResult(
+    { ...cfg, listenWindowSecs: maxWaitSecs },
+    {},
+    undefined,
+    { ...options, tag: "gap" },
+  );
 }
 
-function armRecorder(
+function armContinuousRecorder(
   cfg: Config,
-  opened: number,
+  tag: string,
+  startPct: number,
+  minimumBytes: number,
+  parent: string | undefined,
+  diagnosticSequence: number,
+  context: { sequence: number; generation: number },
   hooks: ListenHooks,
-  parent?: string,
-  sequence = 1,
-): Recorder {
-  const capture = spawnCapture(cfg, "utt", cfg.startThresholdPct, MIN_PCM_BYTES, parent, sequence);
+  transcribePartial: (pcm: Uint8Array) => Promise<{ text: string }> | undefined,
+  onSpeechStarted: () => void,
+  onPartial: (text: string) => void,
+): RecorderHandle {
+  const capture = spawnCapture(cfg, tag, startPct, minimumBytes, parent, diagnosticSequence);
+  capture.controllerOwned = true;
   const { raw, proc } = capture;
+  const opened = Date.now();
+  let speechStartedAt: number | null = null;
+  let partialBusy = false;
+  let stopReason: string | undefined;
   hooks.onState?.("armed");
 
-  let speechStarted = false;
-  let partialBusy = false;
   const watchdog = setInterval(() => {
     const size = fileSize(raw);
-    if (!speechStarted && size >= MIN_PCM_BYTES) {
-      speechStarted = true;
+    if (speechStartedAt === null && size >= minimumBytes) {
+      speechStartedAt = Date.now();
+      onSpeechStarted();
       hooks.onState?.("capturing");
     }
-    const t = (Date.now() - opened) / 1000;
-    if (!speechStarted && t >= cfg.listenWindowSecs) {
-      markKill(capture, "window");
-      proc.kill();
-    }
-    if (speechStarted && t >= cfg.listenWindowSecs + cfg.maxUtteranceSecs) {
+    if (speechStartedAt !== null && (Date.now() - speechStartedAt) / 1000 >= cfg.maxUtteranceSecs) {
+      stopReason = "max";
       markKill(capture, "max");
       proc.kill();
     }
 
-    // Live partial: transcribe the prefix captured so far. Warm server only
-    // (the cold path's model reload could never keep up); one in flight.
-    if (speechStarted && hooks.onPartial && serverUp() && !partialBusy) {
+    if (speechStartedAt !== null && hooks.onPartial && serverUp() && !partialBusy) {
+      const partial = transcribePartial(readPcm(raw));
+      if (!partial) return;
       partialBusy = true;
-      transcribePcm(cfg, readPcm(raw))
-        .then((r) => {
-          if (r.text) hooks.onPartial!(r.text);
+      partial
+        .then((result) => {
+          if (result.text) onPartial(result.text);
         })
-        .catch(() => {}) // a failed partial must not become an unhandled rejection
+        .catch(() => {})
         .finally(() => {
           partialBusy = false;
         });
     }
   }, 700);
 
-  return { ...capture, watchdog };
-}
+  const finished = proc.exited.then((exitCode): CapturedAudio => {
+    clearInterval(watchdog);
+    const final = finalFileSize(raw);
+    const error = final.error ?? (!capture.killCause && exitCode !== 0 ? `sox exited with code ${exitCode}` : null);
+    finalizeCaptureTrace(capture, exitCode, final.size, error);
+    return {
+      rawPath: raw,
+      finalBytes: final.size,
+      minimumBytes,
+      ...(capture.trace ? { diagnosticId: capture.trace.id } : {}),
+      ...(stopReason ? { cause: stopReason } : {}),
+      ...(error ? { error } : {}),
+    };
+  });
 
-async function disarm(rec: Recorder): Promise<void> {
-  markKill(rec, "disarmed-next");
-  rec.proc.kill();
-  clearInterval(rec.watchdog);
-  const exitCode = await rec.proc.exited;
-  if (rec.trace) completedPcm(rec, exitCode);
-  else discard(rec.raw);
-  emitRecorderTrace(rec.trace, { intent: "disarmed-next", bufferCountAfterReduction: 0 });
+  return {
+    finished,
+    stop(reason) {
+      if (stopReason) return;
+      stopReason = reason;
+      const cause: Exclude<RecorderKillCause, null> = reason === "timeout"
+        ? "window"
+        : reason === "shutdown"
+          ? "shutdown"
+          : "abort";
+      markKill(capture, cause);
+      proc.kill();
+    },
+  };
 }
 
 function markKill(capture: Capture, cause: Exclude<RecorderKillCause, null>): void {
-  if (!capture.trace || capture.killCause) return;
+  if (capture.killCause) {
+    // A shutdown sweep is the terminal owner even if a user-action barrier
+    // initiated the same process stop a moment earlier.
+    if (cause === "shutdown" && capture.killCause === "abort") {
+      capture.killCause = "shutdown";
+      updateRecorderTrace(capture.trace, { killCause: "shutdown" });
+    }
+    return;
+  }
   capture.killCause = cause;
+  if (!capture.trace) return;
   capture.sizeAtKill = fileSize(capture.raw);
   updateRecorderTrace(capture.trace, { killCause: cause, sizeAtKill: capture.sizeAtKill });
-}
-
-function completedPcm(capture: Capture, exitCode: number): Uint8Array {
-  if (!capture.trace) {
-    const pcm = readPcm(capture.raw);
-    discard(capture.raw);
-    return pcm;
-  }
-
-  const final = finalFileSize(capture.raw);
-  let pcm = new Uint8Array(0);
-  let readError = final.error;
-  if (!readError) {
-    try {
-      pcm = new Uint8Array(readFileSync(capture.raw));
-      chmodSync(capture.raw, 0o600);
-    } catch (e) {
-      readError = formatDiagnosticError(e);
-    }
-  }
-  finalizeCaptureTrace(capture, exitCode, final.size, readError);
-  return pcm;
 }
 
 function finalizeCaptureTrace(
@@ -466,7 +695,7 @@ function updateTranscriptionTrace(
   );
 }
 
-function withDiagnostic(result: { text: string; error?: string; aborted?: boolean }, trace: RecorderTrace | undefined): ListenResult {
+function withDiagnostic(result: { text: string; error?: string }, trace: RecorderTrace | undefined): ListenResult {
   return trace ? { ...result, diagnosticId: trace.id } : result;
 }
 

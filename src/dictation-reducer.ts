@@ -236,9 +236,9 @@ export class DictationReducer {
       return [{ type: "barrier-reached", barrierId: input.id, reason: input.reason }];
     }
 
-    // A supplied correlation token must match. A barrier without one is still
-    // safe because both streams are FIFO and only one action may be pending.
-    if (input.requestId !== undefined && input.requestId !== this.#pending.requestId) {
+    // Only the barrier requested for this action may release it. An older
+    // timeout/shutdown barrier can already be ahead in the controller FIFO.
+    if (input.requestId === undefined || input.requestId !== this.#pending.requestId) {
       return [{ type: "barrier-reached", barrierId: input.id, reason: input.reason }];
     }
 

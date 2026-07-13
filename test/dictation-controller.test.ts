@@ -27,11 +27,16 @@ class ManualRecorder implements RecorderHandle {
   readonly completion = deferred<CapturedAudio>();
   readonly finished = this.completion.promise;
   readonly stopReasons: string[] = [];
+  attachedCount = 0;
 
   constructor(readonly context: CaptureContext) {}
 
   stop(reason: string): void {
     this.stopReasons.push(reason);
+  }
+
+  attached(): void {
+    this.attachedCount++;
   }
 
   finish(rawPath: string, finalBytes = 32_000, extra: Partial<CapturedAudio> = {}): void {
@@ -109,6 +114,7 @@ test("0025/0026/0027 are all retained while 0025 transcription is blocked", asyn
   await turns();
   expect(backend.recorders).toHaveLength(2);
   expect(transcriber.calls).toEqual(["rec-0025"]);
+  expect(controller.finalWorkerIdle).toBe(false);
 
   backend.recorders[1]!.finish("rec-0026", 209_280);
   await turns();
@@ -140,6 +146,7 @@ test("0025/0026/0027 are all retained while 0025 transcription is blocked", asyn
   controller.acknowledge(events[3]!);
   await barrier.done;
   expect(controller.state).toBe("idle");
+  expect(controller.finalWorkerIdle).toBe(true);
 });
 
 test("serial worker preserves sequence despite later captures completing during a slow transcript", async () => {
@@ -360,6 +367,7 @@ test("adopted barge capture gets a sequence and opens its normal successor befor
   const adopted = new ManualRecorder({ sequence: -1, generation: -1 });
 
   controller.start(adopted);
+  expect(adopted.attachedCount).toBe(1);
   expect(controller.activeSequence).toBe(1);
   expect(backend.recorders).toHaveLength(0);
   adopted.finish("barge", 5_000, { minimumBytes: 5_000 });

@@ -5,7 +5,7 @@ import { runDaemon } from "./daemon.ts";
 import { runInstall, runDoctor, runService } from "./install.ts";
 import { listenOnce } from "./listen.ts";
 import { speak, probeTtsServer, voiceFor, setVoiceOverride } from "./speak.ts";
-import { emitRecorderTrace } from "./diagnostics.ts";
+import { emitRecorderTraces } from "./diagnostics.ts";
 
 const HELP = `conch — a voice loop for Claude Code
 
@@ -93,22 +93,24 @@ switch (command) {
     const { probeServer } = await import("./transcribe.ts");
     await probeServer(cfg, 1500); // a running daemon's warm server enables live partials
     console.error("[conch] listening... (speak, then pause)");
-    const { text, error, diagnosticId } = await listenOnce(cfg, {
+    const { text, error, diagnosticId, diagnosticIds } = await listenOnce(cfg, {
       onPartial: (t) => process.stderr.write(`\r\x1b[K[conch] ▸ ${t}`),
     });
     process.stderr.write("\r\x1b[K");
     if (error) {
-      emitRecorderTrace(diagnosticId, { intent: "cli-error", bufferCountAfterReduction: 0 });
+      emitRecorderTraces(diagnosticIds ?? [diagnosticId], { intent: "cli-error", bufferCountAfterReduction: 0 });
       console.error(`[conch] ${error}`);
       process.exit(1);
     }
-    emitRecorderTrace(diagnosticId, { intent: "cli-output", bufferCountAfterReduction: 0 });
+    emitRecorderTraces(diagnosticIds ?? [diagnosticId], { intent: "cli-output", bufferCountAfterReduction: 0 });
     console.log(text);
     break;
   }
   case "speak":
-    await probeTtsServer(cfg, 1500); // a running daemon's warm Kokoro serves this too
-    await speak(cfg, rest.join(" "));
+    if (!(await sendToDaemon(cfg.socketPath, { type: "speak", sessionId: "", label: "", announce: rest.join(" ") }))) {
+      await probeTtsServer(cfg, 1500);
+      await speak(cfg, rest.join(" "));
+    }
     break;
   case "voice": {
     const [session, voice] = rest;
@@ -122,18 +124,36 @@ switch (command) {
     }
     setVoiceOverride(session, voice);
     console.log(`[conch] ${session} -> ${voice} (persisted to ~/.config/conch/voices.json)`);
-    if (await probeTtsServer(cfg, 1500)) await speak(cfg, `${session} now sounds like this.`, session);
+    if (!(await sendToDaemon(cfg.socketPath, {
+      type: "speak",
+      sessionId: "",
+      label: session,
+      announce: `${session} now sounds like this.`,
+    })) && (await probeTtsServer(cfg, 1500))) {
+      await speak(cfg, `${session} now sounds like this.`, session);
+    }
     break;
   }
   case "voices": {
-    const up = await probeTtsServer(cfg, 1500);
-    if (!up) {
-      console.error("[conch] TTS server not up (start the daemon, or check CONCH_TTS_PORT) — nothing to audition");
-      process.exit(1);
-    }
+    let localUp: boolean | undefined;
     for (const v of cfg.ttsVoices) {
       console.log(v);
-      await speak({ ...cfg, ttsVoices: [v] }, `Hi, I'm ${v.replace(/^[a-z]+_/, "")}. A session could sound like this.`);
+      const text = `Hi, I'm ${v.replace(/^[a-z]+_/, "")}. A session could sound like this.`;
+      const handedOff = await sendToDaemon(cfg.socketPath, {
+        type: "speak",
+        sessionId: "",
+        label: "",
+        announce: text,
+        voice: v,
+      });
+      if (!handedOff) {
+        localUp ??= await probeTtsServer(cfg, 1500);
+        if (!localUp) {
+          console.error("[conch] TTS server not up (start the daemon, or check CONCH_TTS_PORT) — nothing to audition");
+          process.exit(1);
+        }
+        await speak({ ...cfg, ttsVoices: [v] }, text);
+      }
     }
     break;
   }

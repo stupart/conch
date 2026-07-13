@@ -142,6 +142,20 @@ describe("ordered dictation reducer", () => {
     expect(action.payload).toBe("held");
   });
 
+  test("an older uncorrelated timeout barrier cannot release a later command", () => {
+    const reducer = new DictationReducer({ holdSubmit: true });
+    reducer.consume(transcript(1, "held"));
+    const request = requested(reducer.consume(transcript(2, "repeat")));
+    expect(reducer.consume({
+      type: "barrier",
+      sequence: 3,
+      id: "older-timeout",
+      reason: "timeout",
+    })).toEqual([{ type: "barrier-reached", barrierId: "older-timeout", reason: "timeout" }]);
+    expect(reducer.snapshot.pendingAction).toBe("repeat");
+    expect(ready(reducer.consume(barrier(4, request))).action).toBe("repeat");
+  });
+
   test("non-hold prompt requests a barrier and preserves its hot continuation", () => {
     const reducer = new DictationReducer({ holdSubmit: false });
     const request = requested(reducer.consume(transcript(1, "first half", "first")));
