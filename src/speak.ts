@@ -130,7 +130,12 @@ function sayFlags(cfg: Config): string[] {
 }
 
 function spawnSay(cfg: Config, text: string): ReturnType<typeof Bun.spawn> {
-  const proc = Bun.spawn(["say", ...sayFlags(cfg), "--", text], { stdout: "ignore", stderr: "ignore" });
+  // say is ~3.4x louder than the Kokoro voices (measured RMS 0.112 vs 0.033),
+  // which is jarring on fallback. [[volm]] matches it. Strip any [[ ]] already
+  // in the content first so wiki-links / stray brackets can't be parsed as say
+  // commands (say interprets [[...]] as embedded speech commands).
+  const safe = `[[volm ${cfg.sayVolume}]] ${text.replace(/\[\[|\]\]/g, "")}`;
+  const proc = Bun.spawn(["say", ...sayFlags(cfg), "--", safe], { stdout: "ignore", stderr: "ignore" });
   proc.unref();
   current = proc;
   return proc;

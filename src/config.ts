@@ -18,6 +18,8 @@ export interface Config {
   voice: string;
   /** speech rate for `say`, words per minute; 0 = system default (~175) */
   sayRate: number;
+  /** `say` playback volume (0-1) via [[volm]]; matches the quieter Kokoro voices (say is ~3x louder raw) */
+  sayVolume: number;
   speakSentences: number;
   speakMaxChars: number;
   bell: boolean;
@@ -107,6 +109,7 @@ export function loadConfig(): Config {
     vadModel: env.CONCH_VAD_MODEL ?? join(SEASHELL_ROOT, "whisper.cpp/models/ggml-silero-v6.2.0.bin"),
     voice: env.CONCH_VOICE ?? "",
     sayRate: num(env.CONCH_SAY_RATE, 210),
+    sayVolume: num(env.CONCH_SAY_VOLUME, 0.4), // measured: [[volm 0.4]] ≈ Kokoro loudness (say raw is ~3.4x louder)
     speakSentences: num(env.CONCH_SPEAK_SENTENCES, 2),
     speakMaxChars: num(env.CONCH_SPEAK_MAX_CHARS, 350),
     bell: flag(env.CONCH_BELL, true),

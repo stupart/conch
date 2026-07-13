@@ -29,6 +29,8 @@ export interface ListenHooks {
 export interface ListenResult {
   text: string;
   error?: string;
+  /** true when the mic was closed mid-listen by spacebar (abortListening) */
+  aborted?: boolean;
   /** Present only when CONCH_KEEP_RAW=1; used to enrich the single recorder row. */
   diagnosticId?: string;
 }
@@ -121,6 +123,17 @@ export function killActiveRecorders(): Promise<void> | undefined {
   return diagnosticExits.length ? Promise.all(diagnosticExits).then(() => {}) : undefined;
 }
 
+// Set when the user closes the mic (spacebar) mid-listen: kills the live
+// recorder AND tells listenOnce to bail cleanly instead of re-arming or
+// transcribing the truncated clip. Reset at the top of each listenOnce.
+let listenAborted = false;
+
+/** Close an in-flight listenOnce immediately — spacebar while the mic is open. */
+export function abortListening(): void {
+  listenAborted = true;
+  killActiveRecorders();
+}
+
 /**
  * Capture one utterance and transcribe it.
  *
@@ -138,6 +151,7 @@ export function killActiveRecorders(): Promise<void> | undefined {
  *    stale until sox closes the file).
  */
 export async function listenOnce(cfg: Config, hooks: ListenHooks = {}): Promise<ListenResult> {
+  listenAborted = false; // a stale abort from a past listen must not close this one
   const opened = Date.now();
   const windowSpent = () => (Date.now() - opened) / 1000 >= cfg.listenWindowSecs;
   const parent = createRecorderParent("listen");
@@ -148,6 +162,11 @@ export async function listenOnce(cfg: Config, hooks: ListenHooks = {}): Promise<
   while (true) {
     const exitCode = await rec.proc.exited;
     clearInterval(rec.watchdog);
+
+    if (listenAborted) {
+      discard(rec.raw);
+      return withDiagnostic({ text: "", aborted: true }, rec.trace); // spacebar closed the mic mid-listen
+    }
 
     const pcm = completedPcm(rec, exitCode);
     // Diagnostics-only shutdown waits for SoX to flush before process exit.
@@ -203,6 +222,10 @@ export async function listenOnce(cfg: Config, hooks: ListenHooks = {}): Promise<
     }
     updateTranscriptionTrace(rec.trace, result);
 
+    if (listenAborted) {
+      if (next) await disarm(next);
+      return withDiagnostic({ text: "", aborted: true }, rec.trace);
+    }
     if (result.error || result.text) {
       if (next) await disarm(next);
       return withDiagnostic(result, rec.trace);
@@ -443,7 +466,7 @@ function updateTranscriptionTrace(
   );
 }
 
-function withDiagnostic(result: { text: string; error?: string }, trace: RecorderTrace | undefined): ListenResult {
+function withDiagnostic(result: { text: string; error?: string; aborted?: boolean }, trace: RecorderTrace | undefined): ListenResult {
   return trace ? { ...result, diagnosticId: trace.id } : result;
 }
 

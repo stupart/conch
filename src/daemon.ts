@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
 import { speak, speakCancellable, stopSpeaking, probeTtsServer, voiceFor } from "./speak.ts";
-import { listenOnce, listenGap, armBargeRecorder, killActiveRecorders, type ListenHooks } from "./listen.ts";
+import { listenOnce, listenGap, armBargeRecorder, killActiveRecorders, abortListening, type ListenHooks } from "./listen.ts";
 import { injectText, injectKey } from "./inject.ts";
 import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio, isSendCommand } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences } from "./snippet.ts";
@@ -59,6 +59,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let lastTurn: TurnEvent | null = null;
   let muted = readMuted(); // survives restarts — see STATE_FILE
   let stopKey = false; // spacebar pressed while reciting — the guaranteed interrupt
+  let micOpen = false; // true while a dictation/permission listen is in flight — spacebar closes it
   const injectedAt = new Map<string, number>(); // session -> last time conch drove it
 
   // Record that conch just drove a session, and prune stale entries so this
@@ -130,6 +131,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   async function handle(event: TurnEvent): Promise<void> {
     stopKey = false; // a stale press from a past exchange must not skip this one
+    micOpen = false; // no listen in flight yet for this event
     if (event.type === "mute") return setMuted(true);
     if (event.type === "unmute") return setMuted(false);
 
@@ -407,18 +409,24 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const bufferDiagnosticIds: string[] | undefined = diagnosticsEnabled ? [] : undefined;
     let activeDiagnosticId: string | undefined;
 
+    // Spacebar closed the mic: submit whatever's already held (don't lose
+    // dictation) or just close if nothing's buffered. Carries the held ids.
+    const closeMic = async (): Promise<void> => {
+      if (buffer.length) {
+        await micCue(cfg, "sent");
+        await deliver(event, buffer.join(" "), bufferDiagnosticIds);
+      } else {
+        await micCue(cfg, "close");
+      }
+    };
+
     try {
       while (true) {
-        // Spacebar during the mic phase ends the exchange (rather than leaving a
-        // stale stopKey that the next event's handle() silently wipes). Submit
-        // anything already held so dictation isn't lost; otherwise just close.
+        // Spacebar between segments closes the mic (mid-listen is handled by the
+        // `aborted` return below). Consuming the press also stops a stale stopKey
+        // from being silently wiped by the next event's handle().
         if (consumeStopKey()) {
-          if (buffer.length) {
-            await micCue(cfg, "sent");
-            await deliver(event, buffer.join(" "), bufferDiagnosticIds);
-          } else {
-            await micCue(cfg, "close");
-          }
+          await closeMic();
           return log("⏹ spacebar — closed the mic");
         }
         // Cue "open" only when the mic FIRST opens — not before every held
@@ -427,8 +435,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
         if (!buffer.length) await micCue(cfg, "open");
         const window = buffer.length ? cfg.holdSubmitSecs : cfg.listenWindowSecs;
         log(`listening (start within ${window}s)${buffer.length ? " · holding, say 'send' or pause to submit" : ""}...`);
-        const { text, error, diagnosticId } = await listenOnce({ ...cfg, listenWindowSecs: window }, listenHooks(event.label));
+        micOpen = true;
+        const { text, error, aborted, diagnosticId } = await listenOnce({ ...cfg, listenWindowSecs: window }, listenHooks(event.label));
+        micOpen = false;
         activeDiagnosticId = diagnosticId;
+        if (aborted) {
+          consumeStopKey(); // the spacebar press is handled right here
+          await closeMic();
+          return log("⏹ spacebar — closed the mic");
+        }
         if (error) {
           emitRecorderTrace(diagnosticId, { intent: "listen-error", bufferCountAfterReduction: buffer.length });
           if (bufferDiagnosticIds) emitRecorderTraces(bufferDiagnosticIds);
@@ -538,7 +553,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
   async function permissionLoop(event: TurnEvent): Promise<void> {
     await micCue(cfg, "open");
     log("listening for yes or no...");
-    const { text, error, diagnosticId } = await listenOnce(cfg, listenHooks(event.label));
+    micOpen = true;
+    const { text, error, aborted, diagnosticId } = await listenOnce(cfg, listenHooks(event.label));
+    micOpen = false;
+    if (aborted) {
+      consumeStopKey();
+      await micCue(cfg, "close");
+      return log("⏹ spacebar — closed the mic");
+    }
     if (error) {
       emitRecorderTrace(diagnosticId, { intent: "permission-error", bufferCountAfterReduction: 0 });
       return log(`listen error: ${error}`);
@@ -735,7 +757,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
           // reciting (or mid-exchange): space is the guaranteed stop
           stopKey = true;
           stopSpeaking();
-          log("⏹ spacebar — stopped");
+          if (micOpen) abortListening(); // close a live dictation capture right now
+          log(micOpen ? "⏹ spacebar — closing mic" : "⏹ spacebar — stopped");
         } else {
           enqueue({ type: "wake", sessionId: "", label: "", announce: "" });
         }
