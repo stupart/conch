@@ -120,6 +120,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // The single most-recent turn-end held per snoozed session (overwritten, never
   // a backlog) so resuming can catch you up on just the latest — nothing older.
   const snoozedLatest = new Map<string, TurnEvent>();
+  // The turn-end currently being read aloud (if any) — so snoozing THAT session
+  // stops the read on the spot instead of letting it finish + open the mic.
+  let recitingEvent: TurnEvent | null = null;
 
   const normalMicOpen = (): boolean => Boolean(
     activeDictation?.session.micOpen || micOpen || normalMicReserved || bargeHandoffOpen
@@ -409,7 +412,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
       log(`wake -> "${target.label}"`);
       setState("speaking", target.label);
       await speak(cfg, `Mic open for ${target.label}.`, target.label);
-      await conversationLoop(target);
+      recitingEvent = target;
+      try {
+        await conversationLoop(target);
+      } finally {
+        recitingEvent = null;
+      }
       return;
     }
 
@@ -434,30 +442,35 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const conversationParent = createRecorderParent("conversation");
     let conversationSequence = 0;
     const nextConversationSequence = () => ++conversationSequence;
-    const announce = await speakInterruptible(
-      event,
-      event.announce,
-      false,
-      conversationParent,
-      nextConversationSequence,
-    );
-    if (shuttingDown) return;
-    if (announce.cut && !announce.heard && !announce.initialCapture && !stopKey) {
-      log("announce cut by a noise blip — re-speaking");
-      await speak(cfg, event.announce, event.label);
+    recitingEvent = event; // reading this project aloud now — snoozing it stops the read here
+    try {
+      const announce = await speakInterruptible(
+        event,
+        event.announce,
+        false,
+        conversationParent,
+        nextConversationSequence,
+      );
+      if (shuttingDown) return;
+      if (announce.cut && !announce.heard && !announce.initialCapture && !stopKey) {
+        log("announce cut by a noise blip — re-speaking");
+        await speak(cfg, event.announce, event.label);
+      }
+      lastTurn = event;
+      await conversationLoop(
+        event,
+        announce.heard,
+        announce.diagnosticId,
+        announce.diagnosticIds,
+        announce.initialCapture,
+        announce.captureParent,
+        conversationParent,
+        nextConversationSequence,
+        true, // autoTurn — the mic here is gate-able (skips if you're handling it by text)
+      );
+    } finally {
+      recitingEvent = null;
     }
-    lastTurn = event;
-    await conversationLoop(
-      event,
-      announce.heard,
-      announce.diagnosticId,
-      announce.diagnosticIds,
-      announce.initialCapture,
-      announce.captureParent,
-      conversationParent,
-      nextConversationSequence,
-      true, // autoTurn — the mic here is gate-able (skips if you're handling it by text)
-    );
   }
 
   /**
@@ -1756,6 +1769,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
     void renderSessionPanel();
   }
 
+  // The guaranteed stop while reciting or mid-exchange (space, Enter, and snooze
+  // all share it). Cancels playback + closes the mic; the controller's FIFO
+  // barrier still drains and submits every already-captured tail.
+  const stopReciting = (src: string) => {
+    stopKey = true;
+    speech.cancelCurrent();
+    speech.cancelPendingAudio();
+    activeDictation?.requestExternal("spacebar");
+    log(activeDictation?.session.micOpen || micOpen ? `⏹ ${src} — closing mic` : `⏹ ${src} — stopped`);
+  };
+
   /** Snooze the selected session (goes quiet until resumed) or resume it if already snoozed. */
   function toggleSnooze(id: string): void {
     const label = sessionStates.get(id)?.label ?? id.slice(0, 8);
@@ -1771,6 +1795,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
       pausedSessions.add(id);
       snoozedLatest.delete(id); // start the snooze clean
       log(`⏸ snoozed "${label}" — it stays quiet until you resume it`);
+      // Snoozing the project it's reading aloud right now: stop the read here (don't
+      // finish + open the mic) and hold this turn so resume picks up the latest.
+      if (recitingEvent?.sessionId === id) {
+        snoozedLatest.set(id, recitingEvent);
+        stopReciting("snooze");
+      }
     }
     void renderSessionPanel();
   }
@@ -1779,16 +1809,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
     process.stdin.resume();
-    // The guaranteed stop while reciting or mid-exchange (space and Enter share it).
-    const stopReciting = (src: string) => {
-      stopKey = true;
-      speech.cancelCurrent();
-      speech.cancelPendingAudio();
-      // Synchronously close the controller's producer gate; its FIFO barrier
-      // still drains and submits every already-captured tail.
-      activeDictation?.requestExternal("spacebar");
-      log(activeDictation?.session.micOpen || micOpen ? `⏹ ${src} — closing mic` : `⏹ ${src} — stopped`);
-    };
     process.stdin.on("data", (d) => {
       const c = d.toString();
       if (c === " ") {
