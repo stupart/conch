@@ -26,7 +26,7 @@ import { injectText, injectKey } from "./inject.ts";
 import { classify, classifyReadingGap, wordOverlapRatio } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince } from "./snippet.ts";
 import { probeServer } from "./transcribe.ts";
-import { setState, logAbove, setPanel, type ConchState } from "./status.ts";
+import { setState, logAbove, setPanel, setLogsVisible, logsShown, type ConchState } from "./status.ts";
 import { listSessions, registrySnapshot, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
 import { reconcileStatus, STATUS_RANK, type SessionStatus } from "./panel.ts";
 import {
@@ -1825,7 +1825,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
         else void printSessions();
       }
       else if (c >= "1" && c <= "9") void wakeByNumber(Number(c));
-      else if (c === "s" || c === "l") void printSessions();
+      else if (c === "s") void printSessions();
+      else if (c === "l") { const on = setLogsVisible(!logsShown()); log(on ? "logs on — press l to hide" : "logs off"); }
       else if (c === "v") void auditionVoices();
       else if (c === "m") enqueue({ type: muted ? "unmute" : "mute", sessionId: "", label: "", announce: "" });
       else if (c === "p") enqueue({ type: paused ? "resume" : "pause", sessionId: "", label: "", announce: "" });
@@ -1840,7 +1841,7 @@ function printHelp(): void {
   logAbove(
     [
       "",
-      "  \x1b[1mkeys\x1b[0m   \x1b[36m↑↓\x1b[0m select   \x1b[36mspace\x1b[0m talk to it / stop   \x1b[36menter\x1b[0m snooze/resume it   \x1b[36m1-9\x1b[0m mic to #   \x1b[36mv\x1b[0m voices   \x1b[36mm\x1b[0m mute all   \x1b[36mp\x1b[0m pause all   \x1b[36mq\x1b[0m quit",
+      "  \x1b[1mkeys\x1b[0m   \x1b[36m↑↓\x1b[0m select   \x1b[36mspace\x1b[0m talk / stop   \x1b[36menter\x1b[0m snooze/resume   \x1b[36ml\x1b[0m logs   \x1b[36mv\x1b[0m voices   \x1b[36mm\x1b[0m mute all   \x1b[36mp\x1b[0m pause all   \x1b[36mq\x1b[0m quit",
       '  \x1b[1mvoice\x1b[0m  \x1b[36m"continue"\x1b[0m read more   \x1b[36m"repeat"\x1b[0m again   \x1b[36m"stop"\x1b[0m end reading   \x1b[36m"no response needed"\x1b[0m close mic',
       "  \x1b[1mcli\x1b[0m    conch wake [name] · sessions · voice <session> <voice> · mute · pause · doctor",
       "",

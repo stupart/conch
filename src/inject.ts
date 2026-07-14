@@ -53,6 +53,12 @@ export async function injectText(
       // separate, delayed Return: bundling it with the text occasionally
       // arrived before the terminal finished ingesting the keystrokes
       await Bun.sleep(250);
+      // Re-assert focus first: in the gap between typing and this Return, the
+      // frontmost window can drift (a notification, the window losing front), and
+      // a bare `key code 36` goes to whatever's in front — the text lands but the
+      // submit doesn't ("typed but didn't send", observed rarely). Re-focusing the
+      // session's window makes the Return land where the text went.
+      if (focused && sessionPid) await focusSessionWindow(sessionPid);
       await osa('tell application "System Events" to key code 36');
     }
     return { via: focused ? "osascript-focused" : "osascript-blind" };

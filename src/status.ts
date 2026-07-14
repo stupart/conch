@@ -3,11 +3,25 @@
  *  - a live status line in the daemon's terminal (when it has a TTY)
  *  - /tmp/conch-state.json for anything else (menu-bar apps, status bars)
  */
+import { appendFileSync } from "node:fs";
 
 export type ConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
 
 // Exported as a stable path for external consumers (menu-bar apps, status bars).
 export const STATE_FILE = "/tmp/conch-state.json";
+// Every log line is always appended here (for debugging) but only shown in the
+// pane when logs are toggled on — the dashboard stays clean by default.
+export const LOG_FILE = "/tmp/conch-daemon.log";
+
+let logsVisible = false;
+/** Toggle the in-pane play-by-play log (off by default; `l` in the dashboard). */
+export function setLogsVisible(v: boolean): boolean {
+  logsVisible = v;
+  return logsVisible;
+}
+export function logsShown(): boolean {
+  return logsVisible;
+}
 
 const GLYPHS: Record<ConchState, string> = {
   idle: "\x1b[2m◌ idle · space=wake m=mute p=pause ?=help\x1b[0m",
@@ -66,8 +80,14 @@ export function setPanel(lines: string[]): void {
   drawFooter();
 }
 
-/** Print a log line without clobbering (or being clobbered by) the pinned footer. */
+/** Print a log line without clobbering (or being clobbered by) the pinned footer.
+ *  Always recorded to LOG_FILE; only shown in the pane when logs are toggled on. */
 export function logAbove(msg: string): void {
+  try {
+    // eslint-disable-next-line no-control-regex
+    appendFileSync(LOG_FILE, msg.replace(/\x1b\[[0-9;]*m/g, "") + "\n");
+  } catch {}
+  if (!logsVisible) return; // hidden by default — press `l`, or tail LOG_FILE
   if (tty) clearFooter();
   console.log(msg);
   if (tty) drawFooter();
