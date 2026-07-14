@@ -114,10 +114,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // `selectedId` is the highlighted row. ↑/↓ move it, Enter talks to it.
   let panelOrder: string[] = [];
   let selectedId: string | null = null;
-  // Auto-advance deferral: a turn-end that arrived while you were typing waits
-  // here; the idle poll replays it (opens its mic) once you pause. Newest wins —
-  // "top of the queue" is the most recently finished project.
-  let deferredTurn: TurnEvent | null = null;
 
   const normalMicOpen = (): boolean => Boolean(
     activeDictation?.session.micOpen || micOpen || normalMicReserved || bargeHandoffOpen
@@ -407,21 +403,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
       return log(`skipping "${event.label}" — you already responded, conversation moved on`);
     }
 
-    // Typing gate (before the bell, so deferring is fully silent): if you touched
-    // the keyboard/mouse within `typingGraceSecs`, you're working, not waiting to
-    // talk — so DON'T grab the mic or read aloud. The finished turn stays on the
-    // panel and is remembered as the deferred turn; the idle poll auto-advances to
-    // it (bell + read + mic) the moment you pause. Your keystrokes can never cut a
-    // recitation or become phantom words. A wake (space / `conch wake`) bypasses this.
-    const idle = cfg.typingGraceSecs > 0 ? await idleSeconds() : null;
-    if (event.type === "turn-end" && idle !== null && idle < cfg.typingGraceSecs) {
-      lastTurn = event; // still the newest finished turn — spacebar/wake reaches it
-      deferredTurn = event; // the idle poll auto-advances to it once you stop typing
-      return log(`typing — "${event.label}" queued; auto-opens when you pause (or space/wake)`);
-    }
-
     // The finished-turn attention bell (turn-end only now — the needs-you nag is
     // visual). The hook hands the bell to the daemon so it can't ring over a live mic.
+    // The bell + the read-aloud below happen regardless of what you're doing — you
+    // like the heads-up while you work. Only the MIC is gated (in conversationLoop):
+    // it won't open if you're handling this session by text.
     if (event.type === "turn-end") await ringBell();
 
     // turn-end: read the finished reply aloud, then open the mic — barge-able from
@@ -451,6 +437,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       announce.captureParent,
       conversationParent,
       nextConversationSequence,
+      true, // autoTurn — the mic here is gate-able (skips if you're handling it by text)
     );
   }
 
@@ -601,6 +588,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     announcedCaptureParent?: string,
     suppliedTraceParent?: string,
     suppliedNextTraceSequence?: () => number,
+    autoTurn = false, // true only for the automatic turn-end path — the mic is gate-able; a wake is not
   ): Promise<void> {
     let lastSpoken = event.announce;
     let sentences: string[] | null = null;
@@ -984,6 +972,24 @@ export async function runDaemon(cfg: Config): Promise<void> {
         }
       }
     };
+
+    // Mic gate (auto turns only): the bell + read already happened — you got the
+    // heads-up. Now, only open the mic if you're NOT handling this by keyboard.
+    // Skip it when you're actively typing (idle < grace) OR you already sent a text
+    // reply to this session (userRespondedSince). A wake is explicit and never gated.
+    if (autoTurn && !initialDictationCapture && !deferredInitialExternal) {
+      const idle = cfg.typingGraceSecs > 0 ? await idleSeconds() : null;
+      const activelyTyping = idle !== null && idle < cfg.typingGraceSecs;
+      if (activelyTyping || (await userRespondedSince(event.transcriptPath, event.mark))) {
+        emitRecorderTraces(
+          seededSegments.flatMap((segment) => segment.diagnosticIds),
+          { intent: "text-handled", bufferCountAfterReduction: null },
+        );
+        return log(activelyTyping
+          ? `mic held — you're typing (space or \`conch wake\` to talk to "${event.label}")`
+          : `mic held — you replied to "${event.label}" by text`);
+      }
+    }
 
     if (!initialDictationCapture && !deferredInitialExternal) {
       await micCue(cfg, "open");
@@ -1621,12 +1627,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const panelTimer = setInterval(() => void renderSessionPanel(), 20_000);
   panelTimer.unref?.();
 
-  // Auto-advance poll: once you stop typing, replay the deferred turn-end so its
-  // mic opens — the "machine advances to the next finished project" behaviour,
-  // just timed for when you're actually free to talk.
-  const advanceTimer = setInterval(() => void maybeAutoAdvance(), 1500);
-  advanceTimer.unref?.();
-
   // Warm whisper independently after the socket and signal path are live.
   if (cfg.whisperPort && existsSync(cfg.whisperServerBin)) {
     const adopted = await probeServer(cfg, 1500);
@@ -1735,25 +1735,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const next = cur < 0 ? (delta > 0 ? 0 : panelOrder.length - 1) : (cur + delta + panelOrder.length) % panelOrder.length;
     selectedId = panelOrder[next] ?? null;
     void renderSessionPanel();
-  }
-
-  /**
-   * The machine advancing: once you've stopped typing (and it isn't mid-exchange,
-   * muted, or paused), replay the turn-end that was deferred while you typed — so
-   * its mic opens now that you're free. Skips it if you already replied in text or
-   * the session closed. Runs on the 1.5s poll.
-   */
-  async function maybeAutoAdvance(): Promise<void> {
-    const target = deferredTurn;
-    if (!target || busy || paused || muted || shuttingDown) return;
-    const idle = await idleSeconds();
-    if (idle === null || idle < cfg.typingGraceSecs) return; // still typing (or probe unknown)
-    if (await userRespondedSince(target.transcriptPath, target.mark)) return void (deferredTurn = null);
-    const live = (await listSessions(cfg.claudeDir)).some((s) => s.sessionId === target.sessionId);
-    if (!live) return void (deferredTurn = null);
-    deferredTurn = null;
-    log(`auto-advance → "${target.label}"`);
-    enqueue(target); // replay as a normal turn-end: bell + read + mic, now that you can talk
   }
 
   // Interactive keys when running in a terminal.
