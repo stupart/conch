@@ -407,6 +407,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // visual). The hook hands the bell to the daemon so it can't ring over a live mic.
     if (event.type === "turn-end") await ringBell();
 
+    // Typing gate: if you touched the keyboard/mouse in the last `typingGraceSecs`,
+    // you're working, not waiting to talk. Keep this finished turn VISUAL (panel +
+    // the bell above) — no voice-read, no mic. This is "type wherever without it
+    // reacting": your keystrokes can't cut a recitation (self-hearing) or get
+    // transcribed into a session as phantom words. A wake (space / `conch wake`)
+    // is explicit and bypasses this entirely.
+    if (event.type === "turn-end" && cfg.typingGraceSecs > 0 && (await idleSeconds()) < cfg.typingGraceSecs) {
+      lastTurn = event; // still the newest finished turn — spacebar/wake reaches it
+      return log(`typing — "${event.label}" is on the panel · space or \`conch wake\` to talk`);
+    }
+
     // turn-end: read the finished reply aloud, then open the mic — barge-able from
     // the very first sentence.
     const conversationParent = createRecorderParent("conversation");
