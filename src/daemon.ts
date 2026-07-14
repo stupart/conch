@@ -114,6 +114,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // `selectedId` is the highlighted row. ↑/↓ move it, Enter talks to it.
   let panelOrder: string[] = [];
   let selectedId: string | null = null;
+  // Per-session snooze: sessions you've paused to focus elsewhere. They stay on
+  // the panel (marked ⏸) but never bell/read/open-mic until you resume them.
+  const pausedSessions = new Set<string>();
 
   const normalMicOpen = (): boolean => Boolean(
     activeDictation?.session.micOpen || micOpen || normalMicReserved || bargeHandoffOpen
@@ -274,9 +277,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (!rows.length) return setPanel([]);
     setPanel([
       "",
-      "  \x1b[1msessions\x1b[0m\x1b[2m   ↑↓ select · enter talk/stop\x1b[0m",
+      "  \x1b[1msessions\x1b[0m\x1b[2m   ↑↓ select · enter snooze/resume\x1b[0m",
       ...rows.map((r) => {
         const cursor = r.sessionId === selectedId ? "\x1b[36m▸\x1b[0m " : "  ";
+        // A snoozed session shows dim with a ⏸ instead of its live status.
+        if (pausedSessions.has(r.sessionId)) {
+          return `${cursor}\x1b[2m${r.label.slice(0, 26).padEnd(27)}⏸ snoozed\x1b[0m`;
+        }
         return `${cursor}${r.label.slice(0, 26).padEnd(27)}${r.status ? STATUS_GLYPH[r.status] : "\x1b[2m· idle\x1b[0m"}${r.detail ? ` \x1b[2m(${r.detail})\x1b[0m` : ""}`;
       }),
     ]);
@@ -358,6 +365,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
       return; // stripped: no bell, no announcement, no permission mic
     }
     if (event.type === "turn-end") setSessionState(event.sessionId, event.label, "waiting");
+
+    // Per-session snooze: this project is paused so you can focus elsewhere. Keep
+    // it on the panel (marked ⏸ by renderSessionPanel) but stay quiet — no bell,
+    // no read, no mic — until you resume it. An explicit `wake` still cuts through.
+    if (event.type === "turn-end" && pausedSessions.has(event.sessionId)) {
+      lastTurn = event; // space/wake can still reach it
+      return log(`⏸ "${event.label}" snoozed — enter on it (or conch wake) to resume`);
+    }
 
     // Paused ("away"): hold whatever finishes so it replays on resume — the key
     // difference from mute, which drops it. `wake` always cuts through.
@@ -1737,6 +1752,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
     void renderSessionPanel();
   }
 
+  /** Snooze the selected session (goes quiet until resumed) or resume it if already snoozed. */
+  function toggleSnooze(id: string): void {
+    const label = sessionStates.get(id)?.label ?? id.slice(0, 8);
+    if (pausedSessions.delete(id)) log(`▶ resumed "${label}"`);
+    else { pausedSessions.add(id); log(`⏸ snoozed "${label}" — it stays quiet until you resume it`); }
+    void renderSessionPanel();
+  }
+
   // Interactive keys when running in a terminal.
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
@@ -1755,15 +1778,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const c = d.toString();
       if (c === " ") {
         if (busy) stopReciting("spacebar");
-        else enqueue({ type: "wake", sessionId: "", label: "", announce: "" }); // last-announced session
+        else if (selectedId) void wakeBySessionId(selectedId); // talk to the selected session
+        else enqueue({ type: "wake", sessionId: "", label: "", announce: "" }); // else the last-announced
       }
       // ↑/↓ move the panel cursor (normal `[` and application `O` escape forms).
       else if (c === "\x1b[A" || c === "\x1bOA") moveSelection(-1);
       else if (c === "\x1b[B" || c === "\x1bOB") moveSelection(1);
-      // Enter: talk to the selected session — or, mid-recitation, stop it.
+      // Enter: snooze / resume the selected session (per-session pause).
       else if (c === "\r" || c === "\n") {
-        if (busy) stopReciting("enter");
-        else if (selectedId) void wakeBySessionId(selectedId);
+        if (selectedId) toggleSnooze(selectedId);
         else void printSessions();
       }
       else if (c >= "1" && c <= "9") void wakeByNumber(Number(c));
@@ -1782,7 +1805,7 @@ function printHelp(): void {
   logAbove(
     [
       "",
-      "  \x1b[1mkeys\x1b[0m   \x1b[36mspace\x1b[0m stop / wake last   \x1b[36m↑↓\x1b[0m select session   \x1b[36menter\x1b[0m talk to it   \x1b[36m1-9\x1b[0m mic to #   \x1b[36ms\x1b[0m list   \x1b[36mv\x1b[0m voices   \x1b[36mm\x1b[0m mute   \x1b[36mp\x1b[0m pause   \x1b[36mq\x1b[0m quit",
+      "  \x1b[1mkeys\x1b[0m   \x1b[36m↑↓\x1b[0m select   \x1b[36mspace\x1b[0m talk to it / stop   \x1b[36menter\x1b[0m snooze/resume it   \x1b[36m1-9\x1b[0m mic to #   \x1b[36mv\x1b[0m voices   \x1b[36mm\x1b[0m mute all   \x1b[36mp\x1b[0m pause all   \x1b[36mq\x1b[0m quit",
       '  \x1b[1mvoice\x1b[0m  \x1b[36m"continue"\x1b[0m read more   \x1b[36m"repeat"\x1b[0m again   \x1b[36m"stop"\x1b[0m end reading   \x1b[36m"no response needed"\x1b[0m close mic',
       "  \x1b[1mcli\x1b[0m    conch wake [name] · sessions · voice <session> <voice> · mute · pause · doctor",
       "",
