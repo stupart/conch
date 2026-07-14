@@ -373,7 +373,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // Only reach for ioreg when the away-timer is actually armed (default off) —
     // muted short-circuits without spawning anything.
     if (event.type !== "wake" && (muted || cfg.awayAfterSecs)) {
-      const idle = muted ? 0 : await idleSeconds();
+      const idle = muted ? 0 : (await idleSeconds() ?? 0); // null probe → 0 → not away (fail safe)
       if (muted || idle >= cfg.awayAfterSecs) {
         log(`${muted ? "muted" : `away (idle ${Math.round(idle / 60)}m)`} — staying quiet for "${event.label}"`);
         if (event.type === "turn-end" || event.ntype === "idle_prompt") lastTurn = event; // wake still finds it
@@ -413,7 +413,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // reacting": your keystrokes can't cut a recitation (self-hearing) or get
     // transcribed into a session as phantom words. A wake (space / `conch wake`)
     // is explicit and bypasses this entirely.
-    if (event.type === "turn-end" && cfg.typingGraceSecs > 0 && (await idleSeconds()) < cfg.typingGraceSecs) {
+    const idle = cfg.typingGraceSecs > 0 ? await idleSeconds() : null;
+    if (event.type === "turn-end" && idle !== null && idle < cfg.typingGraceSecs) {
       lastTurn = event; // still the newest finished turn — spacebar/wake reaches it
       return log(`typing — "${event.label}" is on the panel · space or \`conch wake\` to talk`);
     }
@@ -1784,15 +1785,17 @@ function log(msg: string): void {
 }
 
 /** Seconds since the user last touched keyboard or mouse (macOS HID idle time). */
-async function idleSeconds(): Promise<number> {
+/** Seconds since the last keyboard/mouse/trackpad event, or `null` if the HID probe
+ *  couldn't be read — callers must fail SAFE (don't gate / don't auto-mute) on null. */
+async function idleSeconds(): Promise<number | null> {
   try {
     const proc = Bun.spawn(["ioreg", "-c", "IOHIDSystem"], { stdout: "pipe", stderr: "ignore" });
     const out = await new Response(proc.stdout).text();
     await proc.exited;
     const m = out.match(/HIDIdleTime"?\s*=\s*(\d+)/);
-    return m ? Number(m[1]) / 1e9 : 0;
+    return m ? Number(m[1]) / 1e9 : null;
   } catch {
-    return 0;
+    return null;
   }
 }
 

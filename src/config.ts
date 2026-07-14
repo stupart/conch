@@ -144,7 +144,7 @@ export function loadConfig(): Config {
     startThresholdPct: num(env.CONCH_START_THRESHOLD_PCT, 2),
     endThresholdPct: num(env.CONCH_END_THRESHOLD_PCT, 2),
     awayAfterSecs: num(env.CONCH_AWAY_AFTER_SECS, 0),
-    typingGraceSecs: num(env.CONCH_TYPING_GRACE_SECS, 2), // touched keys/mouse within 2s ⇒ you're working, not talking
+    typingGraceSecs: zeroable(env.CONCH_TYPING_GRACE_SECS, 2), // touched keys/mouse within 2s ⇒ working; 0 disables the gate
     readFull: flag(env.CONCH_READ_FULL, true),
     // 0 = no gap at all: barge-in + spacebar cover interrupts, chunks flow
     // back-to-back (when barging is off, a 0.6s floor re-appears in the loop)
