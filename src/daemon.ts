@@ -110,6 +110,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // nag with a glanceable visual: working (you submitted a prompt) / waiting (turn
   // ended, ready for you) / needs (a permission/idle notification fired).
   const sessionStates = new Map<string, { label: string; status: SessionStatus; detail?: string; at: number }>();
+  // Arrow-key session picker: `panelOrder` mirrors the panel's on-screen order,
+  // `selectedId` is the highlighted row. ↑/↓ move it, Enter talks to it.
+  let panelOrder: string[] = [];
+  let selectedId: string | null = null;
 
   const normalMicOpen = (): boolean => Boolean(
     activeDictation?.session.micOpen || micOpen || normalMicReserved || bargeHandoffOpen
@@ -262,16 +266,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
       .map((s) => {
         const st = sessionStates.get(s.sessionId);
         const status = reconcileStatus(s, st);
-        return { label: sessionLabel(s, s.cwd), status, detail: status === "needs" ? st?.detail : undefined };
+        return { sessionId: s.sessionId, label: sessionLabel(s, s.cwd), status, detail: status === "needs" ? st?.detail : undefined };
       })
       .sort((a, b) => (STATUS_RANK[a.status ?? "working"] - STATUS_RANK[b.status ?? "working"]) || a.label.localeCompare(b.label));
+    panelOrder = rows.map((r) => r.sessionId);
+    if (selectedId && !panelOrder.includes(selectedId)) selectedId = null; // selected session closed
     if (!rows.length) return setPanel([]);
     setPanel([
       "",
-      "  \x1b[1msessions\x1b[0m",
-      ...rows.map((r) =>
-        `  ${r.label.slice(0, 26).padEnd(27)}${r.status ? STATUS_GLYPH[r.status] : "\x1b[2m· idle\x1b[0m"}${r.detail ? ` \x1b[2m(${r.detail})\x1b[0m` : ""}`,
-      ),
+      "  \x1b[1msessions\x1b[0m\x1b[2m   ↑↓ select · enter talk/stop\x1b[0m",
+      ...rows.map((r) => {
+        const cursor = r.sessionId === selectedId ? "\x1b[36m▸\x1b[0m " : "  ";
+        return `${cursor}${r.label.slice(0, 26).padEnd(27)}${r.status ? STATUS_GLYPH[r.status] : "\x1b[2m· idle\x1b[0m"}${r.detail ? ` \x1b[2m(${r.detail})\x1b[0m` : ""}`;
+      }),
     ]);
   }
   function setSessionState(sessionId: string, label: string, status: SessionStatus, detail?: string): void {
@@ -1681,25 +1688,60 @@ export async function runDaemon(cfg: Config): Promise<void> {
     });
   }
 
+  /** Open the mic for a specific session by id (the arrow-key picker's Enter action). */
+  async function wakeBySessionId(id: string): Promise<void> {
+    const s = (await listSessions(cfg.claudeDir)).find((x) => x.sessionId === id);
+    if (!s) return log("that session is gone — press s to list");
+    const label = sessionLabel(s, s.cwd);
+    log(`▸ talking to ${label}`);
+    enqueue({
+      type: "wake",
+      sessionId: s.sessionId,
+      label,
+      cwd: s.cwd,
+      pid: s.pid,
+      announce: "",
+      transcriptPath: findTranscript(cfg.claudeDir, s.sessionId),
+    });
+  }
+
+  /** Move the panel selection by delta, wrapping; repaint to show the cursor. */
+  function moveSelection(delta: number): void {
+    if (!panelOrder.length) return;
+    const cur = selectedId ? panelOrder.indexOf(selectedId) : -1;
+    const next = cur < 0 ? (delta > 0 ? 0 : panelOrder.length - 1) : (cur + delta + panelOrder.length) % panelOrder.length;
+    selectedId = panelOrder[next] ?? null;
+    void renderSessionPanel();
+  }
+
   // Interactive keys when running in a terminal.
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
     process.stdin.resume();
+    // The guaranteed stop while reciting or mid-exchange (space and Enter share it).
+    const stopReciting = (src: string) => {
+      stopKey = true;
+      speech.cancelCurrent();
+      speech.cancelPendingAudio();
+      // Synchronously close the controller's producer gate; its FIFO barrier
+      // still drains and submits every already-captured tail.
+      activeDictation?.requestExternal("spacebar");
+      log(activeDictation?.session.micOpen || micOpen ? `⏹ ${src} — closing mic` : `⏹ ${src} — stopped`);
+    };
     process.stdin.on("data", (d) => {
       const c = d.toString();
       if (c === " ") {
-        if (busy) {
-          // reciting (or mid-exchange): space is the guaranteed stop
-          stopKey = true;
-          speech.cancelCurrent();
-          speech.cancelPendingAudio();
-          // Synchronously close the controller's producer gate; its FIFO
-          // barrier still drains and submits every already-captured tail.
-          activeDictation?.requestExternal("spacebar");
-          log(activeDictation?.session.micOpen || micOpen ? "⏹ spacebar — closing mic" : "⏹ spacebar — stopped");
-        } else {
-          enqueue({ type: "wake", sessionId: "", label: "", announce: "" });
-        }
+        if (busy) stopReciting("spacebar");
+        else enqueue({ type: "wake", sessionId: "", label: "", announce: "" }); // last-announced session
+      }
+      // ↑/↓ move the panel cursor (normal `[` and application `O` escape forms).
+      else if (c === "\x1b[A" || c === "\x1bOA") moveSelection(-1);
+      else if (c === "\x1b[B" || c === "\x1bOB") moveSelection(1);
+      // Enter: talk to the selected session — or, mid-recitation, stop it.
+      else if (c === "\r" || c === "\n") {
+        if (busy) stopReciting("enter");
+        else if (selectedId) void wakeBySessionId(selectedId);
+        else void printSessions();
       }
       else if (c >= "1" && c <= "9") void wakeByNumber(Number(c));
       else if (c === "s" || c === "l") void printSessions();
@@ -1717,7 +1759,7 @@ function printHelp(): void {
   logAbove(
     [
       "",
-      "  \x1b[1mkeys\x1b[0m   \x1b[36mspace\x1b[0m stop reciting / open mic   \x1b[36ms\x1b[0m sessions   \x1b[36m1-9\x1b[0m mic to #   \x1b[36mv\x1b[0m voices   \x1b[36mm\x1b[0m mute   \x1b[36mp\x1b[0m pause (away)   \x1b[36m?\x1b[0m help   \x1b[36mq\x1b[0m quit",
+      "  \x1b[1mkeys\x1b[0m   \x1b[36mspace\x1b[0m stop / wake last   \x1b[36m↑↓\x1b[0m select session   \x1b[36menter\x1b[0m talk to it   \x1b[36m1-9\x1b[0m mic to #   \x1b[36ms\x1b[0m list   \x1b[36mv\x1b[0m voices   \x1b[36mm\x1b[0m mute   \x1b[36mp\x1b[0m pause   \x1b[36mq\x1b[0m quit",
       '  \x1b[1mvoice\x1b[0m  \x1b[36m"continue"\x1b[0m read more   \x1b[36m"repeat"\x1b[0m again   \x1b[36m"stop"\x1b[0m end reading   \x1b[36m"no response needed"\x1b[0m close mic',
       "  \x1b[1mcli\x1b[0m    conch wake [name] · sessions · voice <session> <voice> · mute · pause · doctor",
       "",
