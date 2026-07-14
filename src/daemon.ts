@@ -117,6 +117,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // Per-session snooze: sessions you've paused to focus elsewhere. They stay on
   // the panel (marked ⏸) but never bell/read/open-mic until you resume them.
   const pausedSessions = new Set<string>();
+  // The single most-recent turn-end held per snoozed session (overwritten, never
+  // a backlog) so resuming can catch you up on just the latest — nothing older.
+  const snoozedLatest = new Map<string, TurnEvent>();
 
   const normalMicOpen = (): boolean => Boolean(
     activeDictation?.session.micOpen || micOpen || normalMicReserved || bargeHandoffOpen
@@ -371,6 +374,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // no read, no mic — until you resume it. An explicit `wake` still cuts through.
     if (event.type === "turn-end" && pausedSessions.has(event.sessionId)) {
       lastTurn = event; // space/wake can still reach it
+      snoozedLatest.set(event.sessionId, event); // keep ONLY the latest — resume replays this one
       return log(`⏸ "${event.label}" snoozed — enter on it (or conch wake) to resume`);
     }
 
@@ -1755,8 +1759,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
   /** Snooze the selected session (goes quiet until resumed) or resume it if already snoozed. */
   function toggleSnooze(id: string): void {
     const label = sessionStates.get(id)?.label ?? id.slice(0, 8);
-    if (pausedSessions.delete(id)) log(`▶ resumed "${label}"`);
-    else { pausedSessions.add(id); log(`⏸ snoozed "${label}" — it stays quiet until you resume it`); }
+    if (pausedSessions.delete(id)) {
+      log(`▶ resumed "${label}"`);
+      const latest = snoozedLatest.get(id);
+      snoozedLatest.delete(id);
+      // Catch you up on JUST the latest turn from while it was snoozed. Re-entering
+      // handle() means a text reply you already sent (userRespondedSince) correctly
+      // skips it, and the typing gate still applies to its mic.
+      if (latest) enqueue(latest);
+    } else {
+      pausedSessions.add(id);
+      snoozedLatest.delete(id); // start the snooze clean
+      log(`⏸ snoozed "${label}" — it stays quiet until you resume it`);
+    }
     void renderSessionPanel();
   }
 
