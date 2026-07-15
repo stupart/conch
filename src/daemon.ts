@@ -26,7 +26,7 @@ import { injectText, injectKey } from "./inject.ts";
 import { classify, classifyReadingGap, wordOverlapRatio } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince } from "./snippet.ts";
 import { probeServer } from "./transcribe.ts";
-import { setState, logAbove, setPanel, setLogsVisible, logsShown, type ConchState } from "./status.ts";
+import { setState, logAbove, setPanel, setLogsVisible, logsShown, getLiveState, onLiveChange, type ConchState } from "./status.ts";
 import { listSessions, registrySnapshot, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
 import { reconcileStatus, STATUS_RANK, type SessionStatus } from "./panel.ts";
 import {
@@ -259,6 +259,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
     waiting: "\x1b[32m○ waiting for you\x1b[0m",
     working: "\x1b[36m● working…\x1b[0m",
   };
+  // What conch is doing RIGHT NOW with the active session — shown on that row,
+  // overriding its hook glyph. (idle/muted/paused aren't row-specific.)
+  const LIVE_GLYPH: Partial<Record<ConchState, string>> = {
+    listening: "\x1b[32m● mic open\x1b[0m",
+    recording: "\x1b[31m● recording\x1b[0m",
+    speaking: "\x1b[33m▶ speaking\x1b[0m",
+    transcribing: "\x1b[36m… transcribing\x1b[0m",
+  };
   async function renderSessionPanel(): Promise<void> {
     let snap: Awaited<ReturnType<typeof registrySnapshot>> = null;
     try {
@@ -281,6 +289,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     panelOrder = rows.map((r) => r.sessionId);
     if (selectedId && !panelOrder.includes(selectedId)) selectedId = null; // selected session closed
     if (!rows.length) return setPanel([]);
+    const liveState = getLiveState(); // what conch is doing right now, if anything
     setPanel([
       "",
       "  \x1b[1msessions\x1b[0m\x1b[2m   ↑↓ select · enter snooze/resume\x1b[0m",
@@ -290,7 +299,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
         if (pausedSessions.has(r.sessionId)) {
           return `${cursor}\x1b[2m${r.label.slice(0, 26).padEnd(27)}⏸ snoozed\x1b[0m`;
         }
-        return `${cursor}${r.label.slice(0, 26).padEnd(27)}${r.status ? STATUS_GLYPH[r.status] : "\x1b[2m· idle\x1b[0m"}${r.detail ? ` \x1b[2m(${r.detail})\x1b[0m` : ""}`;
+        // Live state (recording/speaking/…) on the active session's row wins over
+        // its hook glyph; otherwise show the reconciled status.
+        const liveGlyph = liveState.label === r.label ? LIVE_GLYPH[liveState.state] : undefined;
+        const glyph = liveGlyph ?? (r.status ? STATUS_GLYPH[r.status] : "\x1b[2m· idle\x1b[0m");
+        return `${cursor}${r.label.slice(0, 26).padEnd(27)}${glyph}${r.detail ? ` \x1b[2m(${r.detail})\x1b[0m` : ""}`;
       }),
     ]);
   }
@@ -1655,6 +1668,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   if (paused) log("resuming paused (persisted) — p or `conch resume` to turn on");
   setState(restState());
   void renderSessionPanel(); // show the dashboard immediately
+  onLiveChange(() => void renderSessionPanel()); // repaint when speaking/recording/… flips
   // Refresh periodically so killed sessions drop off even with no new events.
   const panelTimer = setInterval(() => void renderSessionPanel(), 20_000);
   panelTimer.unref?.();

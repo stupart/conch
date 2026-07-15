@@ -38,6 +38,18 @@ let statusLine = "";
 let panelLines: string[] = []; // the pinned session-status panel, above the status line
 let drawnHeight = 0; // footer lines currently on screen, so a shrink can't leave orphans
 
+// The current live state, exposed so the panel can show it on the ACTIVE session's
+// row (recording/speaking/transcribing). `onLive` repaints the panel on a real
+// state/label transition — NOT on every streaming-partial update.
+let live: { state: ConchState; label: string; partial: string } = { state: "idle", label: "", partial: "" };
+let onLive: (() => void) | null = null;
+export function getLiveState(): { state: ConchState; label: string; partial: string } {
+  return live;
+}
+export function onLiveChange(cb: () => void): void {
+  onLive = cb;
+}
+
 function footerLines(): string[] {
   return statusLine ? [...panelLines, statusLine] : panelLines;
 }
@@ -59,13 +71,17 @@ function drawFooter(): void {
 }
 
 export function setState(state: ConchState, label = "", partial = ""): void {
+  const transition = state !== live.state || label !== live.label; // ignore partial-only updates
+  live = { state, label, partial };
   void Bun.write(STATE_FILE, JSON.stringify({ state, label, partial, ts: Date.now() }) + "\n");
-  if (!tty) return;
-  let text = GLYPHS[state] + (label ? ` — ${label}` : "");
-  if (partial) text += `  \x1b[2m▸\x1b[0m ${partial}`;
-  clearFooter();
-  statusLine = fitToWidth(text, (process.stdout.columns ?? 100) - 1);
-  drawFooter();
+  if (tty) {
+    let text = GLYPHS[state] + (label ? ` — ${label}` : "");
+    if (partial) text += `  \x1b[2m▸\x1b[0m ${partial}`;
+    clearFooter();
+    statusLine = fitToWidth(text, (process.stdout.columns ?? 100) - 1);
+    drawFooter();
+  }
+  if (transition) onLive?.(); // repaint the panel so the active row shows the new live state
 }
 
 /** Set the pinned session-status panel (list of pre-formatted lines; [] to hide). */
