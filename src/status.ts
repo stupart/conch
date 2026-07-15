@@ -67,7 +67,10 @@ function clearFooter(): void {
 
 function drawFooter(): void {
   if (!tty) return;
-  const lines = footerLines();
+  // Fit EVERY line to the width — a line that wraps would make drawnHeight wrong
+  // and re-introduce the scroll. (Re-fits on each draw, so resize just works.)
+  const width = (process.stdout.columns ?? 100) - 1;
+  const lines = footerLines().map((l) => fitToWidth(l, width));
   if (lines.length) process.stdout.write(lines.join("\n"));
   drawnHeight = lines.length;
 }
