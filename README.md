@@ -2,6 +2,8 @@
 
 A voice loop for Claude Code. Your sessions announce themselves out loud when they finish — then you just talk back.
 
+![The conch dashboard — one line per live Claude Code session, sorted so whatever needs you floats to the top; the session conch is talking to lights up as it records your spoken reply.](docs/dashboard.png)
+
 ```
 Claude finishes a turn
   └─> 🔔 ding + "dayloop: Done — the Stats tab renders and all 14 tests pass."
@@ -110,30 +112,35 @@ Commands only match as the *entire* utterance — "continue working on the login
 
 **Stepping away for a bit?** `conch pause` (or **p** in the dashboard) is mute's patient sibling: it stays quiet *and* **holds** every session that finishes while you're gone, then replays them in order on `conch resume`. Mute forgets; pause remembers. **Joining a meeting, use `conch pause` first** — otherwise an open mic window could pick up meeting audio and inject it into a session.
 
+**Want to focus on one thing?** Snooze the noisy sessions instead of pausing everything. Point the cursor at a session (**↑↓**) and press **enter**: it dims to `⏸ snoozed` and goes silent, while the rest of the loop keeps talking to you. Each snoozed session quietly holds only its *latest* turn — press enter again and conch catches you up on just that one, current thing rather than a backlog. Snooze a session conch is mid-sentence on, and it stops reading that one right away.
+
 **Permission prompts** ("dayloop needs you: permission to run npm install") open the mic too, but only accept yes/no: "yes" presses Enter on the highlighted option, "no" presses Escape, anything else is ignored — free text near a permission dialog is deliberately refused. And idle "waiting for your input" nags are filtered: conch checks whether the session's last reply actually asked you something, and stays quiet when the session is just idle ("I'll ping you when it lands").
 
-## Live status & near-real-time transcription
+## The dashboard
 
-Run the daemon in a visible terminal and it renders a live status line:
-
-```
-◌ idle          — waiting for a session to finish
-▶ speaking      — announcement playing (mic closed)
-● mic open      — green: armed, waiting for you to start
-● recording     — red: capturing, with your words streaming in as you talk:
-● recording — dayloop  ▸ okay so let's try the other approach and
-… transcribing  — whisper finishing the final pass
-```
-
-Above the status line sits a **session panel** — one line per live Claude Code session, so you can see at a glance who needs you without conch having to interrupt you out loud:
+Run the daemon in a visible terminal (`conch daemon`) and you get the dashboard from the screenshot above — **one line per live Claude Code session**, so you can see who needs you at a glance without conch ever nagging you aloud:
 
 ```
-  ❗ dayloop — needs a response
-  ○ blueprint — waiting for you
-  ● poaster — working…
+  🐚 conch
+  ──────────────────────────────────────────────────────────
+  boatker                    ❗ needs a response
+  honeyb                     ❗ needs a response
+  dayloop-feature-work       ○ waiting for you
+  tokenworks-app             ○ waiting for you
+▸ arch site                  ● recording
+  conch                      ● working…
+  poaster                    ⏸ snoozed
+
+  🎙  let's try the horizontal layout next then run the whole suite
+
+  ↑↓ select · space talk · enter snooze · m mute · p pause · l logs · ? help · q quit
 ```
 
-Sessions that need input sort to the top. This is deliberately *visual only*: conch announces a finished turn once (with the mic follow), but it never nags you aloud about a session sitting idle — that's what the panel is for.
+Sessions that need input sort to the top. Each row carries its own state — `❗ needs a response`, `○ waiting for you`, `● working…`, `⏸ snoozed` — and the **one conch is currently talking to lights up in place** as it moves through the turn (`▶ speaking` → `● mic open` → `● recording` → `… transcribing`). The reserved line beneath the list streams **your words as you speak them**, so there's no layout shift when the mic opens.
+
+You don't have to touch it — but you can. **↑↓** move a cursor through the sessions; **space** talks to the selected one (or the last announcer if you haven't picked); **enter** snoozes/resumes it; **l** toggles a live log; **?** shows the full key + voice-command help. The play-by-play is always written to `/tmp/conch-daemon.log` whether or not the log is on screen, so the dashboard stays clean by default.
+
+**Windows follow the voice too.** When conch starts talking to a session, that session's Terminal window rises to the front *without stealing your keyboard focus* — you keep typing wherever you are, and the session you're hearing is already there when you look up. (`CONCH_REVEAL_ON_TURN=0` to disable.)
 
 The daemon also spawns a **warm whisper-server** (model stays loaded), which makes every transcription seconds faster and is what powers the live partials — the growing recording is re-transcribed about once a second while you speak. No server binary? Everything still works via the slower cold path, minus partials. `CONCH_WHISPER_PORT=0` disables the server.
 
@@ -153,15 +160,17 @@ All via environment variables (put them in the hook's env or your shell profile)
 | `CONCH_BELL_SOUND` | Glass.aiff | any afplay-able file |
 | `CONCH_LISTEN_WINDOW_SECS` | `30` | how long the mic waits for you to *start* talking |
 | `CONCH_MAX_UTTERANCE_SECS` | `120` | cap on a single utterance once you're talking |
-| `CONCH_END_SILENCE_SECS` | `2.5` | pause length that ends your utterance |
+| `CONCH_END_SILENCE_SECS` | `3.5` | pause length that ends your utterance (drop it for snappier turns) |
 | `CONCH_CONTINUE_SENTENCES` | `6` | sentences per read-aloud / "continue" chunk |
 | `CONCH_GAP_SECS` | `0` (none) | interjection gap between read-aloud chunks |
-| `CONCH_BARGE_THRESHOLD_PCT` | `12` | mic level that interrupts reading mid-chunk; `0` = gaps only |
+| `CONCH_BARGE_THRESHOLD_PCT` | `8` | mic level that interrupts reading mid-chunk; `0` = gaps only |
 | `CONCH_MIC_CUES` | `1` | tink on mic-open, bottle on silent close |
 | `CONCH_AUTO_SUBMIT` | `1` | press Enter after injecting |
 | `CONCH_HOLD_SUBMIT` | `1` | hold Enter; pauses segment dictation, "send"/"go" or a long pause submits |
 | `CONCH_HOLD_SUBMIT_SECS` | `8` | silence before held dictation auto-submits |
 | `CONCH_KEYSTROKE_FALLBACK` | `0` | allow typing into the frontmost window when no tmux pane is found |
+| `CONCH_TYPING_GRACE_SECS` | `2` | if you touched the keyboard/mouse this recently, a finished turn stays visual (bell + panel) and the mic won't open — so typing can't trigger phantom words; `0` disables |
+| `CONCH_REVEAL_ON_TURN` | `1` | raise a session's window (without stealing focus) when conch starts talking to it |
 | `CONCH_SAY_VOLUME` | `0.4` | `say` fallback loudness — tuned to match Kokoro (raw `say` is ~3× louder) |
 | `CONCH_SEASHELL_ROOT` | `~/whisper-cli` | first place probed for the whisper.cpp build + models; falls back to a brew `whisper-cpp` install and `~/.cache/conch/models` |
 | `CONCH_WHISPER_PORT` | `8642` | warm whisper-server port; `0` = cold cli only |
@@ -176,8 +185,9 @@ All via environment variables (put them in the hook's env or your shell profile)
 
 - **Name-addressing** — "hey dayloop, ..." routes to any session, not just the last announcer
 - **Haiku summaries** — pipe replies through `claude -p --model haiku` for a natural spoken one-liner instead of first-two-sentences
+- **Tunable settings** — an in-dashboard panel to dial the pause length, voices, and thresholds by ear, saved as your defaults
+- **Phone remote** — hear from and talk back to your sessions over a websocket when you're away from the machine
 - **Always-listening mode** — seashell's concurrent VAD architecture, once extracted from its TUI, replaces the per-window sox capture
-- **Pluggable TTS** — local neural voices (Kokoro et al.) behind the `speak` interface
 - **Linux** — swap `say`/`afplay` for espeak/paplay, keystroke fallback for xdotool
 
 ## Credits
