@@ -111,9 +111,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // ended, ready for you) / needs (a permission/idle notification fired).
   const sessionStates = new Map<string, { label: string; status: SessionStatus; detail?: string; at: number }>();
   // Arrow-key session picker: `panelOrder` mirrors the panel's on-screen order,
-  // `selectedId` is the highlighted row. ↑/↓ move it, Enter talks to it.
+  // `selectedId` is the highlighted row. `cursorAuto` = the cursor follows whoever
+  // conch is interacting with; arrowing takes manual control, and arrowing off
+  // either end releases back to auto (no cursor when idle — so mute/pause read as
+  // global, not "just this one").
   let panelOrder: string[] = [];
   let selectedId: string | null = null;
+  let cursorAuto = true;
   // Per-session snooze: sessions you've paused to focus elsewhere. They stay on
   // the panel (marked ⏸) but never bell/read/open-mic until you resume them.
   const pausedSessions = new Set<string>();
@@ -287,12 +291,22 @@ export async function runDaemon(cfg: Config): Promise<void> {
       })
       .sort((a, b) => (STATUS_RANK[a.status ?? "working"] - STATUS_RANK[b.status ?? "working"]) || a.label.localeCompare(b.label));
     panelOrder = rows.map((r) => r.sessionId);
-    if (selectedId && !panelOrder.includes(selectedId)) selectedId = null; // selected session closed
-    if (!rows.length) return setPanel([]);
     const liveState = getLiveState(); // what conch is doing right now, if anything
+    // Auto-follow: in auto mode the cursor tracks the session conch is engaged
+    // with (or clears when nothing's live). Manual selection is left untouched.
+    if (cursorAuto) {
+      const active = LIVE_GLYPH[liveState.state] ? rows.find((r) => r.label === liveState.label) : undefined;
+      selectedId = active?.sessionId ?? null;
+    } else if (selectedId && !panelOrder.includes(selectedId)) {
+      selectedId = null; // manually-selected session closed
+    }
+    if (!rows.length) return setPanel([]);
+    const cols = process.stdout.columns ?? 80;
+    const rule = "  \x1b[2m" + "─".repeat(Math.max(10, cols - 4)) + "\x1b[0m";
     setPanel([
       "",
-      "  \x1b[1msessions\x1b[0m\x1b[2m   ↑↓ select · enter snooze/resume\x1b[0m",
+      "  \x1b[1m🐚 conch\x1b[0m\x1b[2m      ↑↓ focus · enter snooze · l logs · ? help\x1b[0m",
+      rule,
       ...rows.map((r) => {
         const cursor = r.sessionId === selectedId ? "\x1b[36m▸\x1b[0m " : "  ";
         // A snoozed session shows dim with a ⏸ instead of its live status.
@@ -305,6 +319,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         const glyph = liveGlyph ?? (r.status ? STATUS_GLYPH[r.status] : "\x1b[2m· idle\x1b[0m");
         return `${cursor}${r.label.slice(0, 26).padEnd(27)}${glyph}${r.detail ? ` \x1b[2m(${r.detail})\x1b[0m` : ""}`;
       }),
+      "",
     ]);
   }
   function setSessionState(sessionId: string, label: string, status: SessionStatus, detail?: string): void {
@@ -1669,6 +1684,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   setState(restState());
   void renderSessionPanel(); // show the dashboard immediately
   onLiveChange(() => void renderSessionPanel()); // repaint when speaking/recording/… flips
+  process.stdout.on("resize", () => void renderSessionPanel()); // re-fit to the new width
   // Refresh periodically so killed sessions drop off even with no new events.
   const panelTimer = setInterval(() => void renderSessionPanel(), 20_000);
   panelTimer.unref?.();
@@ -1774,12 +1790,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
     });
   }
 
-  /** Move the panel selection by delta, wrapping; repaint to show the cursor. */
+  /** Move the panel selection by delta; off either end releases the cursor to auto. */
   function moveSelection(delta: number): void {
     if (!panelOrder.length) return;
-    const cur = selectedId ? panelOrder.indexOf(selectedId) : -1;
-    const next = cur < 0 ? (delta > 0 ? 0 : panelOrder.length - 1) : (cur + delta + panelOrder.length) % panelOrder.length;
-    selectedId = panelOrder[next] ?? null;
+    // From no cursor: ↓ enters at the top, ↑ enters at the bottom.
+    const cur = selectedId ? panelOrder.indexOf(selectedId) : (delta > 0 ? -1 : panelOrder.length);
+    const next = cur + delta;
+    if (next < 0 || next >= panelOrder.length) {
+      cursorAuto = true; // off the end → back to auto-follow (no manual selection)
+      selectedId = null;
+    } else {
+      cursorAuto = false; // took manual control
+      selectedId = panelOrder[next]!;
+    }
     void renderSessionPanel();
   }
 
