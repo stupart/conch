@@ -50,14 +50,15 @@ export async function injectText(
       { stdout: "ignore", stderr: "ignore" },
     ).exited;
     if (submit) {
-      // separate, delayed Return: bundling it with the text occasionally
-      // arrived before the terminal finished ingesting the keystrokes
-      await Bun.sleep(250);
-      // Re-assert focus first: in the gap between typing and this Return, the
-      // frontmost window can drift (a notification, the window losing front), and
-      // a bare `key code 36` goes to whatever's in front — the text lands but the
-      // submit doesn't ("typed but didn't send", observed rarely). Re-focusing the
-      // session's window makes the Return land where the text went.
+      // Separate, delayed Return: bundling it with the text arrived before the
+      // terminal finished ingesting the keystrokes. Scale the settle to the
+      // transcript length — a long dictation's keystrokes can still be landing
+      // when a fixed 250ms Return fires, so the submit is dropped ("typed but
+      // didn't send", observed on long messages). Capped so short prompts stay snappy.
+      await Bun.sleep(250 + Math.min(text.length * 3, 1000));
+      // Re-assert focus first: in that gap the frontmost window can drift (a
+      // notification, the window losing front), and a bare `key code 36` goes to
+      // whatever's in front. Re-focusing makes the Return land where the text went.
       if (focused && sessionPid) await focusSessionWindow(sessionPid);
       await osa('tell application "System Events" to key code 36');
     }

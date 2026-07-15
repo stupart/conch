@@ -52,8 +52,9 @@ export function onLiveChange(cb: () => void): void {
 }
 
 function footerLines(): string[] {
-  // panel → live transcription (only while you're speaking) → keybar (very bottom).
-  return [...panelLines, ...(transcriptLine ? [transcriptLine] : []), ...(keybar ? [keybar] : [])];
+  // panel → a RESERVED transcription slot (blank when idle, your words while you
+  // speak — always present so it never shifts the layout) → keybar (very bottom).
+  return [...panelLines, transcriptLine, ...(keybar ? [keybar] : [])];
 }
 
 // Move to the top-left of the footer and wipe everything below it. `\x1b[0J`
