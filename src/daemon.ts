@@ -22,7 +22,7 @@ import {
   type RuntimeDictationSession,
 } from "./listen.ts";
 import type { RecorderHandle } from "./dictation-controller.ts";
-import { injectText, injectKey } from "./inject.ts";
+import { injectText, injectKey, revealSessionWindow } from "./inject.ts";
 import { classify, classifyReadingGap, wordOverlapRatio } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince } from "./snippet.ts";
 import { probeServer } from "./transcribe.ts";
@@ -439,6 +439,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         return void (await speak(cfg, "Nothing to wake. No session has spoken yet."));
       }
       log(`wake -> "${target.label}"`);
+      if (cfg.revealOnTurn && target.pid) void revealSessionWindow(target.pid); // surface it, no focus steal
       setState("speaking", target.label);
       await speak(cfg, `Mic open for ${target.label}.`, target.label);
       recitingEvent = target;
@@ -465,6 +466,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // like the heads-up while you work. Only the MIC is gated (in conversationLoop):
     // it won't open if you're handling this session by text.
     if (event.type === "turn-end") await ringBell();
+
+    // Surface the session's window as conch starts talking to it — raised so you
+    // can watch, but WITHOUT stealing focus from wherever you're typing (AXRaise).
+    if (event.type === "turn-end" && cfg.revealOnTurn && event.pid) void revealSessionWindow(event.pid);
 
     // turn-end: read the finished reply aloud, then open the mic — barge-able from
     // the very first sentence.

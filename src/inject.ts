@@ -99,9 +99,50 @@ export async function injectKey(
 }
 
 /**
- * Bring the Terminal window/tab hosting the session's tty to the front.
- * The session pid's controlling tty (ps) matches Terminal's per-tab `tty`
- * property — that's an exact address for "the window this session lives in".
+ * Reveal the session's Terminal window/tab WITHOUT stealing keyboard focus.
+ *
+ * Selecting the tab is a background-safe scriptable write; raising is the
+ * Accessibility `AXRaise` action, which surfaces the window WITHOUT activating
+ * Terminal (your keystrokes keep flowing to whatever you're typing in) and
+ * WITHOUT switching Spaces. The one thing it can't do — because macOS layers
+ * windows per-app — is lift the terminal above a *different* frontmost app that's
+ * covering it; there it silently no-ops, and the caller should lean on the audio
+ * cue instead of a focus-stealing `activate`. Uses the same Accessibility grant
+ * conch already needs for keystroke injection — no new permission.
+ */
+export async function revealSessionWindow(sessionPid: number): Promise<boolean> {
+  try {
+    const tty = (await $`ps -o tty= -p ${sessionPid}`.quiet().text()).trim();
+    if (!tty || tty === "??") return false;
+    const script = `
+tell application "Terminal"
+  repeat with w in windows
+    repeat with t in tabs of w
+      if tty of t is "/dev/${tty}" then
+        set selected tab of w to t
+        set winName to name of w
+        try
+          tell application "System Events" to perform action "AXRaise" of (first window of process "Terminal" whose name is winName)
+        end try
+        return "ok"
+      end if
+    end repeat
+  end repeat
+end tell
+return "notfound"`;
+    const proc = Bun.spawn(["osascript", "-e", script], { stdout: "pipe", stderr: "ignore" });
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    return out.trim() === "ok";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Bring the Terminal window/tab hosting the session's tty to the front, ACTIVATING
+ * it (steals focus) — only for injection, where keystrokes must land in it. The
+ * session pid's controlling tty (ps) matches Terminal's per-tab `tty` property.
  */
 async function focusSessionWindow(sessionPid: number): Promise<boolean> {
   try {

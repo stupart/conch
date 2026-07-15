@@ -89,6 +89,8 @@ export interface Config {
   recentInjectSuppressMs: number;
   /** allow blind osascript keystroke injection when no tmux pane is found */
   keystrokeFallback: boolean;
+  /** Reveal a session's window (raise-without-focus-steal) when conch starts talking to it. */
+  revealOnTurn: boolean;
   socketPath: string;
   claudeDir: string;
   /** TTS engine: auto (server if available, say otherwise) | server | say */
@@ -158,6 +160,7 @@ export function loadConfig(): Config {
     holdSubmitSecs: num(env.CONCH_HOLD_SUBMIT_SECS, 8),
     recentInjectSuppressMs: num(env.CONCH_INJECT_SUPPRESS_MS, 30_000),
     keystrokeFallback: flag(env.CONCH_KEYSTROKE_FALLBACK, false),
+    revealOnTurn: flag(env.CONCH_REVEAL_ON_TURN, true),
     socketPath: env.CONCH_SOCKET ?? "/tmp/conch.sock",
     claudeDir: env.CLAUDE_CONFIG_DIR ?? join(HOME, ".claude"),
     ttsEngine: parseTtsEngine(env.CONCH_TTS),
