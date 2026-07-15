@@ -319,7 +319,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
         const glyph = liveGlyph ?? (r.status ? STATUS_GLYPH[r.status] : "\x1b[2m· idle\x1b[0m");
         return `${cursor}${r.label.slice(0, 26).padEnd(27)}${glyph}${r.detail ? ` \x1b[2m(${r.detail})\x1b[0m` : ""}`;
       }),
-      "",
     ]);
   }
   function setSessionState(sessionId: string, label: string, status: SessionStatus, detail?: string): void {
