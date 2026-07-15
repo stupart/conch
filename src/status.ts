@@ -34,8 +34,9 @@ const GLYPHS: Record<ConchState, string> = {
 };
 
 const tty = process.stdout.isTTY ?? false;
-let statusLine = "";
-let panelLines: string[] = []; // the pinned session-status panel, above the status line
+let panelLines: string[] = []; // the pinned session-status panel
+let transcriptLine = ""; // your words as you speak them — shown only while dictating
+let keybar = ""; // the static key hints, always at the very bottom
 let drawnHeight = 0; // footer lines currently on screen, so a shrink can't leave orphans
 
 // The current live state, exposed so the panel can show it on the ACTIVE session's
@@ -51,7 +52,8 @@ export function onLiveChange(cb: () => void): void {
 }
 
 function footerLines(): string[] {
-  return statusLine ? [...panelLines, statusLine] : panelLines;
+  // panel → live transcription (only while you're speaking) → keybar (very bottom).
+  return [...panelLines, ...(transcriptLine ? [transcriptLine] : []), ...(keybar ? [keybar] : [])];
 }
 
 // Move to the top-left of the footer and wipe everything below it. `\x1b[0J`
@@ -75,13 +77,23 @@ export function setState(state: ConchState, label = "", partial = ""): void {
   live = { state, label, partial };
   void Bun.write(STATE_FILE, JSON.stringify({ state, label, partial, ts: Date.now() }) + "\n");
   if (tty) {
-    let text = GLYPHS[state] + (label ? ` — ${label}` : "");
-    if (partial) text += `  \x1b[2m▸\x1b[0m ${partial}`;
+    // The bottom no longer duplicates the state (that's on the row now) — it just
+    // shows your words as they land while you dictate. Empty when you're not.
     clearFooter();
-    statusLine = fitToWidth(text, (process.stdout.columns ?? 100) - 1);
+    transcriptLine = partial ? fitToWidth(`  \x1b[2m🎙\x1b[0m  ${partial}`, (process.stdout.columns ?? 100) - 1) : "";
     drawFooter();
   }
   if (transition) onLive?.(); // repaint the panel so the active row shows the new live state
+}
+
+/** The static key hints, pinned at the very bottom under everything. */
+export function setKeybar(line: string): void {
+  const same = line === keybar;
+  keybar = line;
+  if (tty && !same) {
+    clearFooter();
+    drawFooter();
+  }
 }
 
 /** Set the pinned session-status panel (list of pre-formatted lines; [] to hide). */

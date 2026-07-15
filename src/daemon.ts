@@ -26,7 +26,7 @@ import { injectText, injectKey } from "./inject.ts";
 import { classify, classifyReadingGap, wordOverlapRatio } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince } from "./snippet.ts";
 import { probeServer } from "./transcribe.ts";
-import { setState, logAbove, setPanel, setLogsVisible, logsShown, getLiveState, onLiveChange, type ConchState } from "./status.ts";
+import { setState, logAbove, setPanel, setKeybar, setLogsVisible, logsShown, getLiveState, onLiveChange, type ConchState } from "./status.ts";
 import { listSessions, registrySnapshot, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
 import { reconcileStatus, STATUS_RANK, type SessionStatus } from "./panel.ts";
 import {
@@ -305,10 +305,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const rule = "  \x1b[2m" + "─".repeat(Math.max(10, cols - 4)) + "\x1b[0m";
     setPanel([
       "",
-      "  \x1b[1m🐚 conch\x1b[0m\x1b[2m      ↑↓ focus · enter snooze · l logs · ? help\x1b[0m",
+      "  \x1b[1m🐚 conch\x1b[0m",
       rule,
       ...rows.map((r) => {
-        const cursor = r.sessionId === selectedId ? "\x1b[36m▸\x1b[0m " : "  ";
+        // The ▸ cursor only shows while you're actively navigating (manual mode);
+        // in auto-follow it stays hidden so it can't read as "acting on this one".
+        const cursor = !cursorAuto && r.sessionId === selectedId ? "\x1b[36m▸\x1b[0m " : "  ";
         // A snoozed session shows dim with a ⏸ instead of its live status.
         if (pausedSessions.has(r.sessionId)) {
           return `${cursor}\x1b[2m${r.label.slice(0, 26).padEnd(27)}⏸ snoozed\x1b[0m`;
@@ -1682,6 +1684,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   if (paused) log("resuming paused (persisted) — p or `conch resume` to turn on");
   setState(restState());
   void renderSessionPanel(); // show the dashboard immediately
+  setKeybar("  \x1b[2m↑↓ select · space talk · enter snooze · m mute · p pause · l logs · ? help · q quit\x1b[0m");
   onLiveChange(() => void renderSessionPanel()); // repaint when speaking/recording/… flips
   process.stdout.on("resize", () => void renderSessionPanel()); // re-fit to the new width
   // Refresh periodically so killed sessions drop off even with no new events.
