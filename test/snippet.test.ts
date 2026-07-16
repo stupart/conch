@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { stripMarkdown, firstSentences, lastAssistantText, countCoveredSentences } from "../src/snippet.ts";
+import { stripMarkdown, firstSentences, lastAssistantText, countCoveredSentences, transcriptMark, userRespondedSince } from "../src/snippet.ts";
 import { wavFromRawPcm } from "../src/transcribe.ts";
 
 test("wavFromRawPcm writes a valid 16kHz mono header", () => {
@@ -57,6 +57,26 @@ test("lastAssistantText returns the newest assistant text block", async () => {
 
 test("lastAssistantText returns empty for a missing file", async () => {
   expect(await lastAssistantText("/tmp/does-not-exist.jsonl")).toBe("");
+});
+
+test("transcriptMark ignores synthetic task-notification wakeups (not your replies)", async () => {
+  const path = `/tmp/conch-test-tasknotif-${Date.now()}.jsonl`;
+  const lines = [
+    JSON.stringify({ type: "user", message: { role: "user", content: "do the thing" } }), // a real human prompt
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "on it" }] } }),
+    // a finished background agent — Claude Code injects it as a user entry
+    JSON.stringify({
+      type: "user",
+      message: { role: "user", content: "<task-notification>\n<status>completed</status>\n</task-notification>" },
+      origin: { kind: "task-notification" },
+      promptSource: "system",
+    }),
+    // defensive: the string marker alone (no origin field) must also be skipped
+    JSON.stringify({ type: "user", message: { role: "user", content: "<task-notification>x</task-notification>" } }),
+  ];
+  await Bun.write(path, lines.join("\n"));
+  expect(await transcriptMark(path)).toBe(1); // only the human prompt counts
+  expect(await userRespondedSince(path, 1)).toBe(false); // a wakeup is not a new reply
 });
 
 test("lastAssistantText returns the final message, not interim work notes", async () => {

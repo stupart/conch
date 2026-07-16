@@ -118,7 +118,14 @@ async function countUserPrompts(transcriptPath: string): Promise<number> {
       continue;
     }
     if (e.type !== "user") continue;
+    // Skip Claude Code's synthetic wakeups: a finished background task/agent is
+    // written as a *user* entry (origin.kind "task-notification", promptSource
+    // "system", content the "<task-notification>…" string). Counting these as
+    // your replies misfires userRespondedSince (mic gate) and the inject
+    // confirm-retry ("sent" when nothing was sent).
+    if (e.origin?.kind === "task-notification" || e.promptSource === "system") continue;
     const c = e.message?.content;
+    if (typeof c === "string" && c.startsWith("<task-notification>")) continue;
     const isRealPrompt =
       typeof c === "string" ? c.trim().length > 0 : Array.isArray(c) && c.some((b: any) => b?.type === "text" && b.text?.trim());
     if (isRealPrompt) n++;
