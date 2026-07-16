@@ -26,6 +26,7 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.sayRate).toBe(210);
     expect(cfg.workingMic).toBe(false);
     expect(cfg.interruptOnManualReply).toBe(true);
+    expect(cfg.handoffOrder).toBe("newest");
   });
 
   test("loads native numbers and booleans from settings.json", () => {
@@ -40,6 +41,7 @@ describe("loadConfig tunable layering", () => {
         "kokoro-speed": 1.1,
         "read-full": false,
         "interrupt-on-manual-reply": false,
+        "handoff-order": "oldest",
         "reveal-on-turn": false,
         "working-mic": true,
         "announce-sentences": 4,
@@ -56,6 +58,7 @@ describe("loadConfig tunable layering", () => {
       ttsSpeed: 1.1,
       readFull: false,
       interruptOnManualReply: false,
+      handoffOrder: "oldest",
       revealOnTurn: false,
       workingMic: true,
       speakSentences: 4,
@@ -70,6 +73,7 @@ describe("loadConfig tunable layering", () => {
       "typing-grace": 1.5,
       "read-full": false,
       "interrupt-on-manual-reply": false,
+      "handoff-order": "oldest",
       "working-mic": false,
     });
     const cfg = loadConfig({
@@ -78,6 +82,7 @@ describe("loadConfig tunable layering", () => {
         CONCH_TYPING_GRACE_SECS: "not-a-number",
         CONCH_READ_FULL: "true",
         CONCH_INTERRUPT_ON_MANUAL_REPLY: "true",
+        CONCH_HANDOFF_ORDER: "urgency",
         CONCH_WORKING_MIC: "true",
       },
       settingsPath: path,
@@ -86,6 +91,7 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.typingGraceSecs).toBe(1.5);
     expect(cfg.readFull).toBe(true);
     expect(cfg.interruptOnManualReply).toBe(true);
+    expect(cfg.handoffOrder).toBe("urgency");
     expect(cfg.workingMic).toBe(true);
   });
 
@@ -97,6 +103,7 @@ describe("loadConfig tunable layering", () => {
         "announce-sentences": 2.5,
         "read-full": "sometimes",
         "interrupt-on-manual-reply": "sometimes",
+        "handoff-order": "random",
         "working-mic": "sometimes",
       }),
     });
@@ -104,6 +111,7 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.speakSentences).toBe(2);
     expect(cfg.readFull).toBe(true);
     expect(cfg.interruptOnManualReply).toBe(true);
+    expect(cfg.handoffOrder).toBe("newest");
     expect(cfg.workingMic).toBe(false);
   });
 

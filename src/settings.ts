@@ -25,6 +25,7 @@ export const SETTING_KEYS = [
   "kokoro-speed",
   "read-full",
   "interrupt-on-manual-reply",
+  "handoff-order",
   "reveal-on-turn",
   "working-mic",
   "announce-sentences",
@@ -42,12 +43,14 @@ export type SettingField =
   | "ttsSpeed"
   | "readFull"
   | "interruptOnManualReply"
+  | "handoffOrder"
   | "revealOnTurn"
   | "workingMic"
   | "speakSentences"
   | "speakMaxChars"
   | "sayRate";
-export type SettingValue = number | boolean;
+export type HandoffOrder = "newest" | "oldest" | "urgency";
+export type SettingValue = number | boolean | HandoffOrder;
 export type SettingApply = "live" | "hook";
 export type SettingSource = "env" | "file" | "default";
 
@@ -65,7 +68,7 @@ export interface SettingDescriptor {
   key: SettingKey;
   field: SettingField;
   env: string;
-  kind: "number" | "integer" | "boolean";
+  kind: "number" | "integer" | "boolean" | "enum";
   default: SettingValue;
   parse(raw: unknown): ParseResult<SettingValue>;
   bounds: SettingBounds | null;
@@ -81,6 +84,16 @@ function parseBoolean(raw: unknown): ParseResult<boolean> {
     if (normalized === "false" || normalized === "0") return { ok: true, value: false };
   }
   return { ok: false, err: "expected true/false or 1/0" };
+}
+
+function parseHandoffOrder(raw: unknown): ParseResult<HandoffOrder> {
+  if (typeof raw === "string") {
+    const normalized = raw.trim().toLowerCase();
+    if (normalized === "newest" || normalized === "oldest" || normalized === "urgency") {
+      return { ok: true, value: normalized };
+    }
+  }
+  return { ok: false, err: "expected newest, oldest, or urgency" };
 }
 
 function numberParser(bounds: SettingBounds, description: string): (raw: unknown) => ParseResult<number> {
@@ -198,6 +211,17 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "stop reading when you reply to that session by text",
+  },
+  {
+    key: "handoff-order",
+    field: "handoffOrder",
+    env: "CONCH_HANDOFF_ORDER",
+    kind: "enum",
+    default: "newest",
+    parse: parseHandoffOrder,
+    bounds: null,
+    apply: "live",
+    help: "choose queued sessions by newest, oldest, or urgency",
   },
   {
     key: "reveal-on-turn",

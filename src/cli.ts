@@ -21,6 +21,7 @@ import {
   type ConfigSnapshot,
   type SettingDescriptor,
   type SettingResolution,
+  type SettingValue,
 } from "./settings.ts";
 
 const HELP = `conch — a voice loop for Claude Code
@@ -54,7 +55,7 @@ const cfg = loadConfig();
 const [command, ...rest] = process.argv.slice(2);
 const settingsPath = settingsPathFor(process.env);
 
-function settingValue(value: number | boolean): string {
+function settingValue(value: SettingValue): string {
   return String(value);
 }
 
@@ -105,7 +106,7 @@ function printMutation(
   action: "set" | "unset",
   fresh: SettingResolution,
   result: Awaited<ReturnType<typeof sendControlMessage>>,
-  savedValue?: number | boolean,
+  savedValue?: SettingValue,
 ): void {
   const lead = action === "set"
     ? `[conch] ${descriptor.key} = ${settingValue(savedValue ?? fresh.value)} — saved`

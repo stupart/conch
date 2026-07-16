@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { existsSync } from "node:fs";
-import { DEFAULT_CONCH_CONFIG_DIR, loadSettingResolutions, settingsPathFor } from "./settings.ts";
+import { DEFAULT_CONCH_CONFIG_DIR, loadSettingResolutions, settingsPathFor, type HandoffOrder } from "./settings.ts";
 
 const HOME = homedir();
 
@@ -66,6 +66,8 @@ export interface Config {
   readFull: boolean;
   /** stop a response read-aloud as soon as that session receives a human text reply */
   interruptOnManualReply: boolean;
+  /** ordering policy for queued session handoffs */
+  handoffOrder: HandoffOrder;
   /** interjection gap between read-aloud chunks, seconds — a breath, not an ending; the tink means it's your turn */
   gapSecs: number;
   /**
@@ -163,6 +165,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     typingGraceSecs: settings["typing-grace"].value as number, // touched keys/mouse within 2s ⇒ working; 0 disables the gate
     readFull: settings["read-full"].value as boolean,
     interruptOnManualReply: settings["interrupt-on-manual-reply"].value as boolean,
+    handoffOrder: settings["handoff-order"].value as HandoffOrder,
     // 0 = no gap at all: barge-in + spacebar cover interrupts, chunks flow
     // back-to-back (when barging is off, a 0.6s floor re-appears in the loop)
     gapSecs: zeroable(env.CONCH_GAP_SECS, 0),

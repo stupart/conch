@@ -9,6 +9,7 @@ import {
   resolveWakeTarget,
   shouldHandleTurnAudibly,
   startsConversationByListening,
+  takeNextQueuedEvent,
   TurnEventOrder,
 } from "../src/daemon.ts";
 import type { TurnEvent } from "../src/hook.ts";
@@ -65,6 +66,52 @@ describe("daemon config controller", () => {
 
     expect(resolveWakeTarget(targeted, lastTurn)).toEqual(targeted);
     expect(resolveWakeTarget({ ...targeted, sessionId: "", label: "" }, null)).toBeNull();
+  });
+
+  test("handoff-order picks newest, oldest, and urgency from a mixed session queue", () => {
+    const waiting: TurnEvent = { type: "turn-end", sessionId: "waiting", label: "waiting", announce: "" };
+    const needs: TurnEvent = { type: "needs-you", sessionId: "needs", label: "needs", announce: "" };
+    const working: TurnEvent = { type: "working", sessionId: "working", label: "working", announce: "" };
+    const drained = (order: "newest" | "oldest" | "urgency"): string[] => {
+      const queue = [waiting, needs, working];
+      const picked = [
+        takeNextQueuedEvent(queue, order),
+        takeNextQueuedEvent(queue, order),
+        takeNextQueuedEvent(queue, order),
+      ];
+      expect(queue).toHaveLength(0);
+      return picked.map((event) => event!.sessionId);
+    };
+
+    expect(drained("newest")).toEqual(["working", "needs", "waiting"]);
+    expect(drained("oldest")).toEqual(["waiting", "needs", "working"]);
+    expect(drained("urgency")).toEqual(["needs", "waiting", "working"]);
+  });
+
+  test("urgency breaks equal-status ties by recency and keeps imperative events as barriers", () => {
+    const olderNeeds: TurnEvent = { type: "needs-you", sessionId: "needs-a", label: "a", announce: "" };
+    const newerNeeds: TurnEvent = { type: "needs-you", sessionId: "needs-b", label: "b", announce: "" };
+    const wake: TurnEvent = { type: "wake", sessionId: "target", label: "target", announce: "" };
+
+    expect(takeNextQueuedEvent([olderNeeds, newerNeeds], "urgency")).toBe(newerNeeds);
+    expect(takeNextQueuedEvent([olderNeeds, wake], "oldest")).toBe(wake);
+    expect(takeNextQueuedEvent([olderNeeds, wake], "urgency")).toBe(wake);
+  });
+
+  test("oldest and urgency reorder only the state cohort newer than the latest command", () => {
+    const olderWaiting: TurnEvent = { type: "turn-end", sessionId: "old", label: "old", announce: "" };
+    const wake: TurnEvent = { type: "wake", sessionId: "target", label: "target", announce: "" };
+    const newerWorking: TurnEvent = { type: "working", sessionId: "work", label: "work", announce: "" };
+    const newestNeeds: TurnEvent = { type: "needs-you", sessionId: "need", label: "need", announce: "" };
+    const drained = (order: "oldest" | "urgency"): string[] => {
+      const queue = [olderWaiting, wake, newerWorking, newestNeeds];
+      const ids: string[] = [];
+      while (queue.length) ids.push(takeNextQueuedEvent(queue, order)!.sessionId);
+      return ids;
+    };
+
+    expect(drained("oldest")).toEqual(["work", "need", "target", "old"]);
+    expect(drained("urgency")).toEqual(["need", "work", "target", "old"]);
   });
 
   test("working-mic only makes Stop-reclassified working events audible", () => {
@@ -205,6 +252,52 @@ describe("daemon config controller", () => {
       action: "unset",
       status: "applied",
       effective: true,
+      source: "default",
+    });
+  });
+
+  test("applies and unsets handoff-order live", () => {
+    const { path } = fixture();
+    const env = {};
+    const cfg = loadConfig({ env, settingsPath: path });
+    const controller = createConfigController(cfg, { env, settingsPath: path });
+    expect(cfg.handoffOrder).toBe("newest");
+
+    writeSetting(path, "handoff-order", "urgency");
+    const setReply = controller.handle({
+      kind: "set-config",
+      key: "handoff-order",
+      value: "urgency",
+    });
+
+    expect(cfg.handoffOrder).toBe("urgency");
+    expect(takeNextQueuedEvent([
+      { type: "turn-end", sessionId: "waiting", label: "waiting", announce: "" },
+      { type: "needs-you", sessionId: "needs", label: "needs", announce: "" },
+      { type: "working", sessionId: "working", label: "working", announce: "" },
+    ], cfg.handoffOrder)?.sessionId).toBe("needs");
+    expect(setReply).toMatchObject({
+      kind: "config-ack",
+      key: "handoff-order",
+      status: "applied",
+      effective: "urgency",
+      source: "file",
+    });
+
+    unsetSetting(path, "handoff-order");
+    const unsetReply = controller.handle({ kind: "unset-config", key: "handoff-order" });
+
+    expect(cfg.handoffOrder).toBe("newest");
+    expect(takeNextQueuedEvent([
+      { type: "turn-end", sessionId: "waiting", label: "waiting", announce: "" },
+      { type: "working", sessionId: "working", label: "working", announce: "" },
+    ], cfg.handoffOrder)?.sessionId).toBe("working");
+    expect(unsetReply).toMatchObject({
+      kind: "config-ack",
+      key: "handoff-order",
+      action: "unset",
+      status: "applied",
+      effective: "newest",
       source: "default",
     });
   });

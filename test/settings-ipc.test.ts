@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
-import { SETTING_DESCRIPTORS, sendControlMessage, validateControlMessage } from "../src/settings.ts";
+import { SETTING_DESCRIPTORS, sendControlMessage, validateControlMessage, type SettingValue } from "../src/settings.ts";
 
 interface Fixture {
   root: string;
@@ -23,7 +23,7 @@ interface FakeDaemon {
 
 const roots: string[] = [];
 
-type SnapshotEntry = { value: number | boolean; source: "env" | "file" | "default"; diagnostic?: string };
+type SnapshotEntry = { value: SettingValue; source: "env" | "file" | "default"; diagnostic?: string };
 
 function configSnapshot(overrides: Partial<Record<string, SnapshotEntry>> = {}): Record<string, SnapshotEntry> {
   return Object.fromEntries(SETTING_DESCRIPTORS.map((descriptor) => [

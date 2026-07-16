@@ -65,6 +65,8 @@ import {
   type ConfigSnapshot,
   type SettingKey,
   type SettingResolution,
+  type SettingValue,
+  type HandoffOrder,
 } from "./settings.ts";
 
 /**
@@ -77,8 +79,9 @@ import {
  * announced owns the next utterance. The mic never opens while speaking, so
  * the loop can't hear itself. Events queue while an exchange is in flight —
  * multiple sessions finishing at once take turns, one pending event per
- * session, newest first. A "wake" event (conch wake, or spacebar when the
- * daemon runs in a terminal) reopens the mic for the last announced session.
+ * session, ordered by the live handoff policy (newest first by default). A
+ * "wake" event (conch wake, or spacebar when the daemon runs in a terminal)
+ * reopens the mic for the last announced session.
  */
 // Mute + pause are persisted so a daemon restart (launchd/supervisor respawn)
 // doesn't silently turn conch back ON — "muted for the night" / "paused while
@@ -137,7 +140,7 @@ export function createConfigController(cfg: Config, options: ConfigControllerOpt
     if (descriptor.apply !== "live") continue;
     live.set(descriptor.key, {
       ...initial[descriptor.key],
-      value: cfg[descriptor.field] as number | boolean,
+      value: cfg[descriptor.field] as SettingValue,
     });
   }
 
@@ -251,6 +254,41 @@ export function startsConversationByListening(event: Pick<TurnEvent, "type">, an
 
 type OrderedTurnEvent = Pick<TurnEvent, "type" | "sessionId" | "eventAt">;
 const STATE_EVENT_TYPES = new Set<TurnEvent["type"]>(["working", "turn-end", "needs-you"]);
+const HANDOFF_URGENCY: Partial<Record<TurnEvent["type"], number>> = {
+  working: 1,
+  "turn-end": 2,
+  "needs-you": 3,
+};
+
+/**
+ * Remove the next queued session event without sorting the queue. Imperative
+ * events are LIFO barriers: only the state-event cohort newer than the latest
+ * command is reordered, preserving wake/speak/mode command semantics.
+ */
+export function takeNextQueuedEvent(queue: TurnEvent[], order: HandoffOrder): TurnEvent | undefined {
+  if (!queue.length) return undefined;
+  if (order === "newest") return queue.pop(); // exact current/default behavior
+
+  let latestCommand = -1;
+  for (let i = queue.length - 1; i >= 0; i--) {
+    if (!STATE_EVENT_TYPES.has(queue[i]!.type)) {
+      latestCommand = i;
+      break;
+    }
+  }
+  const cohortStart = latestCommand + 1;
+  if (cohortStart === queue.length) return queue.pop();
+
+  let selected = cohortStart;
+  if (order === "urgency") {
+    for (let i = cohortStart + 1; i < queue.length; i++) {
+      const candidate = HANDOFF_URGENCY[queue[i]!.type] ?? 0;
+      const current = HANDOFF_URGENCY[queue[selected]!.type] ?? 0;
+      if (candidate >= current) selected = i; // equal urgency => newer arrival
+    }
+  }
+  return queue.splice(selected, 1)[0];
+}
 
 function eventTimestamp(eventAt: unknown): number {
   return typeof eventAt === "number" && Number.isFinite(eventAt) && eventAt > 0 ? eventAt : 0;
@@ -258,7 +296,7 @@ function eventTimestamp(eventAt: unknown): number {
 
 /**
  * Arrival can invert occurrence order because separate hooks do different I/O.
- * Keep the newest state event seen for each session before LIFO queueing, and
+ * Keep the newest state event seen for each session before queued handling, and
  * use object identity to invalidate an older event already sitting in the queue.
  */
 export class TurnEventOrder {
@@ -421,12 +459,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
       await ttsStartup;
       if (shuttingDown) return;
       if (stopKey && queue.length) {
-        const skipped = queue.pop()!;
+        const skipped = takeNextQueuedEvent(queue, cfg.handoffOrder)!;
         stopKey = false;
         log(`⏹ spacebar — skipped queued ${skipped.type} for "${skipped.label}" during TTS startup`);
       }
       while (queue.length) {
-        const event = queue.pop()!; // newest first
+        const event = takeNextQueuedEvent(queue, cfg.handoffOrder)!;
         try {
           await handle(event);
         } catch (e) {

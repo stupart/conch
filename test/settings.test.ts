@@ -41,6 +41,7 @@ const expected = {
   "kokoro-speed": ["ttsSpeed", "CONCH_TTS_SPEED", "live", 1.35],
   "read-full": ["readFull", "CONCH_READ_FULL", "live", true],
   "interrupt-on-manual-reply": ["interruptOnManualReply", "CONCH_INTERRUPT_ON_MANUAL_REPLY", "live", true],
+  "handoff-order": ["handoffOrder", "CONCH_HANDOFF_ORDER", "live", "newest"],
   "reveal-on-turn": ["revealOnTurn", "CONCH_REVEAL_ON_TURN", "live", true],
   "working-mic": ["workingMic", "CONCH_WORKING_MIC", "live", false],
   "announce-sentences": ["speakSentences", "CONCH_SPEAK_SENTENCES", "hook", 2],
@@ -49,10 +50,10 @@ const expected = {
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 13 curated, default-bearing knobs", () => {
+  test("contains exactly the 14 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(13);
+    expect(SETTING_DESCRIPTORS).toHaveLength(14);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });
@@ -78,6 +79,7 @@ describe("settings parser", () => {
     expect(parse("read-full", "false")).toEqual({ ok: true, value: false });
     expect(parse("read-full", true)).toEqual({ ok: true, value: true });
     expect(parse("interrupt-on-manual-reply", "false")).toEqual({ ok: true, value: false });
+    expect(parse("handoff-order", " OLDEST ")).toEqual({ ok: true, value: "oldest" });
   });
 
   test("enforces finite positive and zeroable number bounds", () => {
@@ -116,6 +118,13 @@ describe("settings parser", () => {
     expect(parse("interrupt-on-manual-reply", "sometimes").ok).toBe(false);
     expect(parse("reveal-on-turn", 1).ok).toBe(false);
     expect(parse("reveal-on-turn", null).ok).toBe(false);
+  });
+
+  test("handoff-order accepts only the three queue policies", () => {
+    expect(parse("handoff-order", "newest")).toEqual({ ok: true, value: "newest" });
+    expect(parse("handoff-order", "oldest")).toEqual({ ok: true, value: "oldest" });
+    expect(parse("handoff-order", "urgency")).toEqual({ ok: true, value: "urgency" });
+    for (const raw of ["fifo", "", true, 1, null]) expect(parse("handoff-order", raw).ok).toBe(false);
   });
 
   test("parse failures include an actionable error", () => {
