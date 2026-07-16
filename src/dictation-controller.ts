@@ -141,6 +141,14 @@ const systemClock: DictationClock = {
   },
 };
 
+const ABRUPT_USER_FINALIZATIONS = new Set([
+  "dictation-spacebar", // Snooze routes through the spacebar action.
+  "dictation-pause",
+  "dictation-mute",
+  // Controller tests also model the coarser diagnostic kill-cause vocabulary.
+  "abort",
+]);
+
 export class DictationController {
   private readonly backend: DictationCaptureBackend;
   private readonly transcriber: DictationTranscriber;
@@ -437,7 +445,10 @@ export class DictationController {
     let deleteError: unknown;
     if (capture.error) {
       result = this.errorEvent("capture", capture.error, context, capture);
-    } else if (capture.finalBytes < (capture.minimumBytes ?? this.minimumBytes)) {
+    } else if (
+      capture.finalBytes < (capture.minimumBytes ?? this.minimumBytes)
+      && !ABRUPT_USER_FINALIZATIONS.has(capture.cause ?? "")
+    ) {
       result = {
         kind: "short",
         ...context,

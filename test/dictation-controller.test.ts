@@ -224,6 +224,43 @@ test("barrier-first race gates rearm before stop and finalizes exactly once", as
   await ticket.done;
 });
 
+test("short captures rescue abrupt user tails but drop natural and timeout tails", async () => {
+  const cases = [
+    { label: "real spacebar/snooze", cause: "dictation-spacebar", expectedKind: "transcript" },
+    { label: "real pause", cause: "dictation-pause", expectedKind: "transcript" },
+    { label: "real mute", cause: "dictation-mute", expectedKind: "transcript" },
+    { label: "mock user stop", cause: "abort", expectedKind: "transcript" },
+    { label: "natural end", cause: undefined, expectedKind: "short" },
+    { label: "real timeout", cause: "timeout", expectedKind: "short" },
+    { label: "mock timeout", cause: "window", expectedKind: "short" },
+    { label: "shutdown", cause: "shutdown", expectedKind: "short" },
+  ] as const;
+  for (const { label, cause, expectedKind } of cases) {
+    const { backend, transcriber, controller } = fixture();
+    controller.start();
+    const ticket = controller.requestBarrier("test-drain");
+    backend.recorders[0]!.finish(label, 8_000, cause ? { cause } : {});
+
+    const audio = await next(controller);
+    const barrier = await next(controller);
+    const expectedCalls = expectedKind === "transcript" ? [label] : [];
+    expect({
+      label,
+      kind: audio.kind,
+      reads: backend.reads,
+      transcriptions: transcriber.calls,
+    }).toEqual({
+      label,
+      kind: expectedKind,
+      reads: expectedCalls,
+      transcriptions: expectedCalls,
+    });
+    expect(barrier.kind).toBe("barrier");
+    controller.acknowledge(barrier);
+    await ticket.done;
+  }
+});
+
 test("exit-first race makes barrier stop the already-armed successor without double enqueue", async () => {
   const { backend, transcriber, controller } = fixture();
   controller.start();
