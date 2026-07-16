@@ -372,6 +372,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const speech = new SpeechManager(
     { speakCancellable: backendSpeakCancellable, stopSpeaking: backendStopSpeaking },
     (operation, output) => withNormalMicClosed(normalMicOpen, operation, output),
+    { warn: log },
   );
   // Hooks may connect while model startup is in flight; drain() holds their
   // events behind this fully-consumed readiness probe.

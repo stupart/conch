@@ -1,4 +1,11 @@
 import type { Config } from "./config.ts";
+import {
+  audioTimeoutMs,
+  awaitProcessWithWatchdog,
+  awaitWithWatchdog,
+  type AudioSpawner,
+  type WatchdogWarning,
+} from "./audio-watchdog.ts";
 
 export interface CancellableSpeech {
   done: Promise<void>;
@@ -11,7 +18,12 @@ export interface ManagedSpeech extends CancellableSpeech {
 }
 
 export interface SpeechBackend {
-  speakCancellable: (cfg: Config, text: string, label?: string) => CancellableSpeech;
+  speakCancellable: (
+    cfg: Config,
+    text: string,
+    label?: string,
+    options?: { warn?: WatchdogWarning },
+  ) => CancellableSpeech;
   /** Legacy/global safety net used to stop anything the backend still owns. */
   stopSpeaking: () => void;
 }
@@ -37,6 +49,14 @@ interface Enqueued<T> {
 /** The controller-owned guard that every queued audio/probe task enters at actual start time. */
 export type SpeechAudioGate = <T>(operation: string, task: () => Promise<T>) => Promise<T>;
 
+export interface SpeechManagerOptions {
+  spawnAudio?: AudioSpawner;
+  timeoutForText?: (text: string) => number;
+  warn?: WatchdogWarning;
+}
+
+const defaultSpawnAudio: AudioSpawner = (command) => Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
+
 /**
  * The daemon's single queued owner for speech, cues, and TTS probes.
  *
@@ -51,11 +71,19 @@ export class SpeechManager {
   private pumping = false;
   private closed = false;
   private idleWaiters = new Set<() => void>();
+  private readonly spawnAudio: AudioSpawner;
+  private readonly timeoutForText: (text: string) => number;
+  private readonly warn: WatchdogWarning;
 
   constructor(
     private readonly backend: SpeechBackend,
     private readonly audioGate: SpeechAudioGate,
-  ) {}
+    options: SpeechManagerOptions = {},
+  ) {
+    this.spawnAudio = options.spawnAudio ?? defaultSpawnAudio;
+    this.timeoutForText = options.timeoutForText ?? audioTimeoutMs;
+    this.warn = options.warn ?? console.warn;
+  }
 
   speak(cfg: Config, text: string, label = ""): Promise<void> {
     return this.speakCancellable(cfg, text, label).done;
@@ -65,7 +93,7 @@ export class SpeechManager {
     let active: CancellableSpeech | null = null;
     const managed = this.enqueue<void>(
       async () => {
-        active = this.backend.speakCancellable(cfg, text, label);
+        active = this.watchSpeech(this.backend.speakCancellable(cfg, text, label, { warn: this.warn }), text, "TTS");
         await active.done;
       },
       () => active?.cancel(),
@@ -91,7 +119,11 @@ export class SpeechManager {
       () =>
         interaction(() => {
           if (active) throw new Error("interruptible speech already started");
-          active = this.backend.speakCancellable(cfg, text, label);
+          active = this.watchSpeech(
+            this.backend.speakCancellable(cfg, text, label, { warn: this.warn }),
+            text,
+            "barge-in TTS",
+          );
           return active;
         }),
       () => active?.cancel(),
@@ -113,13 +145,19 @@ export class SpeechManager {
 
   /** Play an afplay cue under the same ownership/cancellation rules as speech. */
   playCue(path: string, operation = "audio cue"): Promise<void> {
-    let proc: ReturnType<typeof Bun.spawn> | null = null;
+    let abort: AbortController | null = null;
     return this.enqueue<void>(
       async () => {
-        proc = Bun.spawn(["afplay", path], { stdout: "ignore", stderr: "ignore" });
-        await proc.exited;
+        abort = new AbortController();
+        const proc = this.spawnAudio(["afplay", path]);
+        await awaitProcessWithWatchdog(proc, {
+          operation: `afplay ${operation}`,
+          timeoutMs: this.timeoutForText(""),
+          signal: abort.signal,
+          warn: this.warn,
+        });
       },
-      () => proc?.kill(),
+      () => abort?.abort(),
       "cue",
       operation,
     ).done;
@@ -155,6 +193,29 @@ export class SpeechManager {
     while (this.current || this.queue.length || this.pumping) {
       await new Promise<void>((resolve) => this.idleWaiters.add(resolve));
     }
+  }
+
+  /**
+   * Contain a backend that ignores its own cancel contract. The wrapper settles
+   * independently, so pump() reaches finally and releases the lane on timeout.
+   */
+  private watchSpeech(active: CancellableSpeech, text: string, operation: string): CancellableSpeech {
+    const abort = new AbortController();
+    const done = (async () => {
+      await awaitWithWatchdog(active.done, {
+        operation,
+        timeoutMs: this.timeoutForText(text),
+        signal: abort.signal,
+        onCancel: () => active.cancel(),
+        onTimeout: () => {
+          try { active.cancel(); } catch {}
+          try { this.backend.stopSpeaking(); } catch {}
+        },
+        timeoutAction: "cancelled",
+        warn: this.warn,
+      });
+    })();
+    return { done, cancel: () => abort.abort() };
   }
 
   private enqueue<T>(

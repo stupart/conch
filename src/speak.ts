@@ -1,6 +1,15 @@
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+  audioTimeoutMs,
+  awaitProcessWithWatchdog,
+  awaitWithAbort,
+  awaitWithWatchdog,
+  type AudioSpawner,
+  type WatchdogProcess,
+  type WatchdogWarning,
+} from "./audio-watchdog.ts";
 import type { Config } from "./config.ts";
 import { splitSentences } from "./snippet.ts";
 import { TtsHealthMachine, type TtsHealthSnapshot } from "./tts-health.ts";
@@ -16,13 +25,14 @@ const INFERENCE_ERROR = /(?:broadcast|shape|sinegen|inference|value\s*error)/i;
 const VOICE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const VOICES_FILE = join(homedir(), ".config/conch/voices.json");
 
-type AudioProcess = ReturnType<typeof Bun.spawn>;
+type AudioProcess = WatchdogProcess;
 
 interface CancelControl {
   cancelled: boolean;
   abort: AbortController;
   processes: Set<AudioProcess>;
   tempFiles: Set<string>;
+  runtime: Required<SpeakRuntimeOptions>;
   cancel(): void;
 }
 
@@ -42,6 +52,23 @@ export interface TrySynthOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
   speed?: number;
+  warn?: WatchdogWarning;
+}
+
+export interface SpeakRuntimeOptions {
+  spawnAudio?: AudioSpawner;
+  timeoutForText?: (text: string) => number;
+  warn?: WatchdogWarning;
+}
+
+const spawnAudio: AudioSpawner = (command) => Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
+
+function runtimeOptions(options: SpeakRuntimeOptions): Required<SpeakRuntimeOptions> {
+  return {
+    spawnAudio: options.spawnAudio ?? spawnAudio,
+    timeoutForText: options.timeoutForText ?? audioTimeoutMs,
+    warn: options.warn ?? console.warn,
+  };
 }
 
 const ttsHealth = new TtsHealthMachine();
@@ -74,7 +101,8 @@ function errorText(error: unknown): string {
 }
 
 function combinedSignal(signals: Array<AbortSignal | undefined>): AbortSignal {
-  return AbortSignal.any(signals.filter((signal): signal is AbortSignal => Boolean(signal)));
+  const present = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  return present.length ? AbortSignal.any(present) : new AbortController().signal;
 }
 
 function wasCancelled(control: CancelControl | null, signal?: AbortSignal): boolean {
@@ -94,11 +122,23 @@ export async function trySynth(
 ): Promise<TrySynthOutcome> {
   const health = options.health ?? ttsHealth;
   const token = health.beginAttempt();
-  const timeout = AbortSignal.timeout(options.timeoutMs ?? 30_000);
-  const signal = combinedSignal([control?.abort.signal, options.signal, timeout]);
+  const timeoutMs = options.timeoutMs ?? audioTimeoutMs(input);
+  const cancellationSignal = combinedSignal([control?.abort.signal, options.signal]);
+  const timeoutController = new AbortController();
+  const signal = combinedSignal([cancellationSignal, timeoutController.signal]);
+  const deadline = performance.now() + timeoutMs;
+  const guarded = <T>(work: PromiseLike<T>) => awaitWithWatchdog(work, {
+    operation: "kokoro synth request",
+    timeoutMs: Math.max(1, Math.ceil(deadline - performance.now())),
+    warningTimeoutMs: timeoutMs,
+    signal: cancellationSignal,
+    timeoutAction: "aborted",
+    onTimeout: () => timeoutController.abort(new DOMException("Kokoro synthesis timed out", "TimeoutError")),
+    warn: options.warn,
+  });
   let response: Response;
   try {
-    response = await (options.fetcher ?? fetch)(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/speech`, {
+    const result = await guarded((options.fetcher ?? fetch)(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/speech`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -109,21 +149,33 @@ export async function trySynth(
         response_format: "wav",
       }),
       signal,
-    });
+    }));
+    if (result.status === "cancelled") return { kind: "cancelled" };
+    if (result.status === "timed-out") {
+      health.recordTransportFailure(token);
+      return { kind: "transport-failure", error: "Kokoro synthesis timed out", timedOut: true };
+    }
+    response = result.value;
   } catch (error) {
     if (wasCancelled(control, options.signal)) return { kind: "cancelled" };
     health.recordTransportFailure(token);
-    return { kind: "transport-failure", error: errorText(error), timedOut: timeout.aborted };
+    return { kind: "transport-failure", error: errorText(error), timedOut: timeoutController.signal.aborted };
   }
 
   if (!response.ok) {
     let detail = "";
     try {
-      detail = await response.text();
+      const result = await guarded(response.text());
+      if (result.status === "cancelled") return { kind: "cancelled" };
+      if (result.status === "timed-out") {
+        health.recordDegraded(token);
+        return { kind: "post-header-timeout", status: response.status, detail: "Kokoro response body timed out" };
+      }
+      detail = result.value;
     } catch (error) {
       if (wasCancelled(control, options.signal)) return { kind: "cancelled" };
       detail = errorText(error);
-      if (timeout.aborted) {
+      if (timeoutController.signal.aborted) {
         health.recordDegraded(token);
         return { kind: "post-header-timeout", status: response.status, detail };
       }
@@ -143,7 +195,13 @@ export async function trySynth(
   }
 
   try {
-    const audio = new Uint8Array(await response.arrayBuffer());
+    const result = await guarded(response.arrayBuffer());
+    if (result.status === "cancelled") return { kind: "cancelled" };
+    if (result.status === "timed-out") {
+      health.recordDegraded(token);
+      return { kind: "post-header-timeout", status: response.status, detail: "Kokoro response body timed out" };
+    }
+    const audio = new Uint8Array(result.value);
     if (!parseWav(audio)) {
       health.recordReachable(token);
       return { kind: "post-header-inference-failure", status: response.status, detail: "invalid or empty WAV body" };
@@ -153,7 +211,7 @@ export async function trySynth(
   } catch (error) {
     if (wasCancelled(control, options.signal)) return { kind: "cancelled" };
     const detail = errorText(error);
-    if (timeout.aborted) {
+    if (timeoutController.signal.aborted) {
       health.recordDegraded(token);
       return { kind: "post-header-timeout", status: response.status, detail };
     }
@@ -235,12 +293,12 @@ async function queryAvailableVoices(cfg: Config, signal: AbortSignal): Promise<S
   try {
     const url = new URL(`http://127.0.0.1:${cfg.ttsPort}/v1/audio/voices`);
     url.searchParams.set("model", cfg.ttsModel);
-    const response = await fetch(url, { signal });
+    const response = await awaitWithAbort(fetch(url, { signal }), signal);
     if (!response.ok) {
-      await response.arrayBuffer();
+      await awaitWithAbort(response.arrayBuffer(), signal);
       return null;
     }
-    const body: unknown = await response.json();
+    const body: unknown = await awaitWithAbort(response.json(), signal);
     if (!body || typeof body !== "object" || !("data" in body) || !Array.isArray(body.data)) return null;
     const voices = new Set<string>();
     for (const item of body.data) {
@@ -350,10 +408,12 @@ export function probeTtsServer(cfg: Config, timeoutMs: number, signal?: AbortSig
 export async function probeTtsServerPresence(cfg: Config, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
   if (cfg.ttsEngine === "say" || !cfg.ttsPort || signal?.aborted) return false;
   try {
-    const response = await fetch(`http://127.0.0.1:${cfg.ttsPort}/`, {
-      signal: combinedSignal([signal, AbortSignal.timeout(timeoutMs)]),
-    });
-    await response.arrayBuffer();
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const requestSignal = combinedSignal([signal, timeout]);
+    const response = await awaitWithAbort(fetch(`http://127.0.0.1:${cfg.ttsPort}/`, {
+      signal: requestSignal,
+    }), requestSignal);
+    await awaitWithAbort(response.arrayBuffer(), requestSignal);
     return true;
   } catch {
     return false;
@@ -390,11 +450,42 @@ function trackProcess(process: AudioProcess, control?: CancelControl): AudioProc
   return process;
 }
 
+function untrackProcess(process: AudioProcess, control?: CancelControl): void {
+  activeAudioProcesses.delete(process);
+  control?.processes.delete(process);
+}
+
+async function awaitAudioProcess(
+  process: AudioProcess,
+  operation: string,
+  timeoutMs: number,
+  warn: WatchdogWarning,
+  control?: CancelControl,
+): Promise<void> {
+  let result: Awaited<ReturnType<typeof awaitProcessWithWatchdog>>;
+  try {
+    result = await awaitProcessWithWatchdog(process, {
+      operation,
+      timeoutMs,
+      signal: control?.abort.signal,
+      warn,
+    });
+  } finally {
+    // A fake/broken child may never settle `exited`, even after SIGKILL. Do not
+    // retain it in the global cancellation sets after releasing the await.
+    untrackProcess(process, control);
+  }
+  // Stop the rest of a prefetched utterance after a playback timeout. Moving
+  // on means releasing this utterance, not spawning its remaining children.
+  if (result.status === "timed-out") control?.cancel();
+}
+
 /** Awaitable attention bell; callers can include it in their quiescence barrier. */
-export async function bell(cfg: Config): Promise<void> {
+export async function bell(cfg: Config, options: SpeakRuntimeOptions = {}): Promise<void> {
   if (!cfg.bell) return;
-  const process = trackProcess(Bun.spawn(["afplay", cfg.bellSound], { stdout: "ignore", stderr: "ignore" }));
-  await process.exited;
+  const runtime = runtimeOptions(options);
+  const process = trackProcess(runtime.spawnAudio(["afplay", cfg.bellSound]));
+  await awaitAudioProcess(process, "afplay attention bell", runtime.timeoutForText(""), runtime.warn);
 }
 
 function sayFlags(cfg: Config): string[] {
@@ -405,23 +496,25 @@ function spawnSay(cfg: Config, text: string, control: CancelControl): AudioProce
   // Keep the measured volume match. Strip embedded [[...]] commands first.
   const safe = `[[volm ${cfg.sayVolume}]] ${text.replace(/\[\[|\]\]/g, "")}`;
   return trackProcess(
-    Bun.spawn(["say", ...sayFlags(cfg), "--", safe], { stdout: "ignore", stderr: "ignore" }),
+    control.runtime.spawnAudio(["say", ...sayFlags(cfg), "--", safe]),
     control,
   );
 }
 
-function newControl(): CancelControl {
+function newControl(options: SpeakRuntimeOptions = {}): CancelControl {
   const control: CancelControl = {
     cancelled: false,
     abort: new AbortController(),
     processes: new Set(),
     tempFiles: new Set(),
+    runtime: runtimeOptions(options),
     cancel() {
       if (control.cancelled) return;
       control.cancelled = true;
       control.abort.abort();
       for (const process of control.processes) {
-        try { process.kill(); } catch {}
+        try { process.kill("SIGKILL"); } catch {}
+        try { process.unref?.(); } catch {}
       }
     },
   };
@@ -432,17 +525,23 @@ function newControl(): CancelControl {
 export function stopSpeaking(): void {
   for (const control of activeControls) control.cancel();
   for (const process of activeAudioProcesses) {
-    try { process.kill(); } catch {}
+    try { process.kill("SIGKILL"); } catch {}
+    try { process.unref?.(); } catch {}
   }
 }
 
-export async function speak(cfg: Config, text: string, label = ""): Promise<void> {
-  await speakCancellable(cfg, text, label).done;
+export async function speak(cfg: Config, text: string, label = "", options: SpeakRuntimeOptions = {}): Promise<void> {
+  await speakCancellable(cfg, text, label, options).done;
 }
 
-export function speakCancellable(cfg: Config, text: string, label = ""): { done: Promise<void>; cancel: () => void } {
+export function speakCancellable(
+  cfg: Config,
+  text: string,
+  label = "",
+  options: SpeakRuntimeOptions = {},
+): { done: Promise<void>; cancel: () => void } {
   if (!cfg.speak || !text) return { done: Promise.resolve(), cancel() {} };
-  const control = newControl();
+  const control = newControl(options);
   activeControls.add(control);
 
   const done = (async () => {
@@ -453,11 +552,11 @@ export function speakCancellable(cfg: Config, text: string, label = ""): { done:
         const result = await speakViaServer(cfg, text, label, control);
         if (result !== "ok" && !control.cancelled) {
           const process = spawnSay(cfg, text, control);
-          await process.exited;
+          await awaitAudioProcess(process, "say", control.runtime.timeoutForText(text), control.runtime.warn, control);
         }
       } else if (!control.cancelled) {
         const process = spawnSay(cfg, text, control);
-        await process.exited;
+        await awaitAudioProcess(process, "say", control.runtime.timeoutForText(text), control.runtime.warn, control);
       }
     } finally {
       control.cancel();
@@ -472,7 +571,7 @@ export function speakCancellable(cfg: Config, text: string, label = ""): { done:
   return { done, cancel: () => control.cancel() };
 }
 
-type Playable = { file: string } | { say: string };
+type Playable = { file: string; text: string } | { say: string };
 type SpeakServerResult = "ok" | "synth-failed";
 
 interface SynthBatch {
@@ -564,9 +663,15 @@ async function speakViaServer(cfg: Config, text: string, label: string, control:
         if (control.cancelled) break;
         if ("say" in playable) {
           const process = spawnSay(cfg, playable.say, control);
-          await process.exited;
+          await awaitAudioProcess(
+            process,
+            "say",
+            control.runtime.timeoutForText(playable.say),
+            control.runtime.warn,
+            control,
+          );
         } else {
-          await playFile(playable.file, control);
+          await playFile(playable.file, playable.text, control);
         }
         playedAny = true;
       }
@@ -650,13 +755,14 @@ async function synthPiece(
       last = await budget.attempt(cfg, piece, effectiveVoice, control, {
         speed,
         timeoutMs: Math.min(SYNTH_ATTEMPT_TIMEOUT_MS, remaining),
+        warn: control.runtime.warn,
       });
       if (last.kind === "audio") {
         const file = `/tmp/conch-tts-${process.pid}-${tmpCounter++}.wav`;
         const trimmed = trimWav(last.audio) ?? last.audio;
         control.tempFiles.add(file);
         await Bun.write(file, trimmed);
-        return { kind: "done", playables: [{ file }] };
+        return { kind: "done", playables: [{ file, text: piece }] };
       }
       if (last.kind === "cancelled") return { kind: "done", playables: [] };
       if (timedOut(last)) {
@@ -712,7 +818,7 @@ export async function runSynthLadderForTest(
   if (!outcomes.length) throw new Error("at least one synth outcome is required");
   let attempts = 0;
   const attempt: typeof trySynth = async () => outcomes[Math.min(attempts++, outcomes.length - 1)]!;
-  const control = newControl();
+  const control = newControl({ warn: () => {} });
   try {
     const result = await synthPiece(cfg, piece, "af_heart", control, true, newSentenceSynthBudget(attempt));
     return {
@@ -724,10 +830,16 @@ export async function runSynthLadderForTest(
   }
 }
 
-async function playFile(file: string, control: CancelControl): Promise<void> {
-  const process = trackProcess(Bun.spawn(["afplay", file], { stdout: "ignore", stderr: "ignore" }), control);
+async function playFile(file: string, text: string, control: CancelControl): Promise<void> {
+  const process = trackProcess(control.runtime.spawnAudio(["afplay", file]), control);
   try {
-    await process.exited;
+    await awaitAudioProcess(
+      process,
+      "afplay speech",
+      control.runtime.timeoutForText(text),
+      control.runtime.warn,
+      control,
+    );
   } finally {
     try { unlinkSync(file); } catch {}
     control.tempFiles.delete(file);

@@ -6,6 +6,7 @@ import {
   SYNTH_ATTEMPT_TIMEOUT_MS,
   SYNTH_SENTENCE_BUDGET_MS,
   SYNTH_TIMEOUT_LIMIT,
+  speakCancellable,
   trySynth,
   validateVoiceRing,
   voiceFor,
@@ -208,6 +209,7 @@ test("trySynth classifies a timed-out 200 body separately and degrades ready hea
     fetcher,
     health,
     timeoutMs: 10,
+    warn: () => {},
   });
   expect(outcome.kind).toBe("post-header-timeout");
   expect(health.snapshot()).toMatchObject({ status: "recovering", consecutiveTransportFailures: 0 });
@@ -306,4 +308,60 @@ test("trySynth accepts a valid fully consumed WAV and marks health ready", async
   });
   expect(outcome.kind).toBe("audio");
   expect(health.snapshot().status).toBe("ready");
+});
+
+test("a signal-ignoring Kokoro fetch is still bounded by the watchdog", async () => {
+  const warnings: string[] = [];
+  const health = new TtsHealthMachine();
+  const outcome = await trySynth(loadConfig(), "never returns", "af_heart", null, {
+    fetcher: () => new Promise<Response>(() => {}),
+    health,
+    timeoutMs: 5,
+    warn: (message) => warnings.push(message),
+  });
+
+  expect(outcome).toMatchObject({ kind: "transport-failure", timedOut: true });
+  expect(health.snapshot()).toMatchObject({ status: "recovering", consecutiveTransportFailures: 1 });
+  expect(warnings).toEqual(["⚠ kokoro synth request timed out after 5ms — aborted, moving on"]);
+});
+
+test("a signal-ignoring Kokoro response body cannot wedge synthesis", async () => {
+  const warnings: string[] = [];
+  const body = new ReadableStream<Uint8Array>({ start() {} });
+  const outcome = await trySynth(loadConfig(), "hung body", "af_heart", null, {
+    fetcher: () => Promise.resolve(new Response(body, { status: 200 })),
+    health: new TtsHealthMachine(),
+    timeoutMs: 5,
+    warn: (message) => warnings.push(message),
+  });
+
+  expect(outcome.kind).toBe("post-header-timeout");
+  expect(warnings).toEqual(["⚠ kokoro synth request timed out after 5ms — aborted, moving on"]);
+});
+
+test("a never-exiting say is killed, resolves, and does not poison the next call", async () => {
+  const cfg = loadConfig();
+  cfg.ttsEngine = "say";
+  const kills: Array<number | NodeJS.Signals | undefined> = [];
+  const warnings: string[] = [];
+  let spawns = 0;
+  const spawnAudio = () => {
+    spawns++;
+    return {
+      exited: spawns === 1 ? new Promise<number>(() => {}) : Promise.resolve(0),
+      kill: (signal?: number | NodeJS.Signals) => kills.push(signal),
+    };
+  };
+  const runtime = {
+    spawnAudio,
+    timeoutForText: () => 5,
+    warn: (message: string) => warnings.push(message),
+  };
+
+  await speakCancellable(cfg, "first", "", runtime).done;
+  await speakCancellable(cfg, "second", "", runtime).done;
+
+  expect(spawns).toBe(2);
+  expect(kills).toEqual(["SIGKILL"]);
+  expect(warnings).toEqual(["⚠ say timed out after 5ms — killed, moving on"]);
 });

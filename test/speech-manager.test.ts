@@ -202,7 +202,7 @@ test("interruptible speech holds exclusion through barge recorder cleanup", asyn
   });
 
   playback.resolve();
-  await Promise.resolve();
+  await Bun.sleep(0); // watchdog wrapper settles independently of backend.done
   expect(order).toEqual(["barge-armed", "playback", "playback-done"]);
   recorderFinished.resolve();
   await Promise.all([interaction, recovery]);
@@ -229,4 +229,83 @@ test("a queued interruptible interaction reports cancellation without starting",
   expect(await interaction).toBeUndefined();
   expect(interactionStarted).toBeFalse();
   await probe;
+});
+
+test("a never-resolving backend times out, releases the lane, and later speech runs", async () => {
+  const cfg = loadConfig();
+  const starts: string[] = [];
+  const warnings: string[] = [];
+  let cancels = 0;
+  const manager = new SpeechManager({
+    speakCancellable: (_cfg, text) => {
+      starts.push(text);
+      if (text === "wedged") {
+        return {
+          done: new Promise<void>(() => {}),
+          cancel: () => { cancels++; }, // deliberately does not settle `done`
+        };
+      }
+      return { done: Promise.resolve(), cancel() {} };
+    },
+    stopSpeaking() {},
+  }, passThroughGate, {
+    timeoutForText: () => 8,
+    warn: (message) => warnings.push(message),
+  });
+
+  const wedged = manager.speak(cfg, "wedged");
+  const after = manager.speak(cfg, "after");
+  await Promise.all([wedged, after, manager.quiescent()]);
+
+  expect(cancels).toBe(1);
+  expect(starts).toEqual(["wedged", "after"]);
+  expect(warnings).toEqual(["⚠ TTS timed out after 8ms — cancelled, moving on"]);
+});
+
+test("a never-exiting afplay cue is killed and does not retain the audio gate", async () => {
+  const cfg = loadConfig();
+  const starts: string[] = [];
+  const kills: Array<number | NodeJS.Signals | undefined> = [];
+  const manager = new SpeechManager({
+    speakCancellable: (_cfg, text) => {
+      starts.push(text);
+      return { done: Promise.resolve(), cancel() {} };
+    },
+    stopSpeaking() {},
+  }, passThroughGate, {
+    spawnAudio: () => ({
+      exited: new Promise<number>(() => {}),
+      kill: (signal) => kills.push(signal),
+    }),
+    timeoutForText: () => 8,
+    warn: () => {},
+  });
+
+  const cue = manager.playCue("/fake/bell.aiff", "attention bell");
+  const after = manager.speak(cfg, "after cue");
+  await Promise.all([cue, after, manager.quiescent()]);
+
+  expect(kills).toEqual(["SIGKILL"]);
+  expect(starts).toEqual(["after cue"]);
+});
+
+test("normal speech completing inside its budget is not cancelled", async () => {
+  const cfg = loadConfig();
+  let cancels = 0;
+  const warnings: string[] = [];
+  const manager = new SpeechManager({
+    speakCancellable: () => ({
+      done: Promise.resolve(),
+      cancel: () => { cancels++; },
+    }),
+    stopSpeaking() {},
+  }, passThroughGate, {
+    timeoutForText: () => 25,
+    warn: (message) => warnings.push(message),
+  });
+
+  await manager.speak(cfg, "normal");
+  await manager.quiescent();
+  expect(cancels).toBe(0);
+  expect(warnings).toEqual([]);
 });
