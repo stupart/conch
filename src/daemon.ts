@@ -46,6 +46,11 @@ import {
 } from "./dictation-reducer.ts";
 import { assertNormalMicClosed as assertAudioGate, withNormalMicClosed } from "./audio-gate.ts";
 import {
+  interruptForManualReply,
+  ManualReplyInterrupt,
+  watchManualReplyDuringSpeech,
+} from "./manual-reply.ts";
+import {
   SETTING_DESCRIPTORS,
   SETTING_REGISTRY,
   isControlMessageCandidate,
@@ -707,7 +712,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (shuttingDown) return;
       if (announce.cut && !announce.heard && !announce.initialCapture && !stopKey) {
         log("announce cut by a noise blip — re-speaking");
-        await speak(cfg, event.announce, event.label);
+        await speakInterruptible(event, event.announce, true);
       }
       lastTurn = event;
       await conversationLoop(
@@ -721,6 +726,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
         nextConversationSequence,
         true, // autoTurn — the mic here is gate-able (skips if you're handling it by text)
       );
+    } catch (error) {
+      if (error instanceof ManualReplyInterrupt) {
+        lastTurn = event;
+        log(`stopped reading "${event.label}" — you replied by text`);
+        return;
+      }
+      throw error;
     } finally {
       recitingEvent = null;
     }
@@ -748,7 +760,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
   }> {
     setState("speaking", event.label);
     if (!cfg.bargeThresholdPct || disabled) {
-      await speak(cfg, text, event.label);
+      const playback = speech.speakCancellable(cfg, text, event.label);
+      await watchManualReplyDuringSpeech(
+        event,
+        playback,
+        () => cfg.interruptOnManualReply,
+      );
       return { heard: "", cut: false };
     }
     // Finish any canary already admitted while the mic was closed, then enter
@@ -769,7 +786,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
         }
       }, 120);
       try {
-        await speechRun.done;
+        await watchManualReplyDuringSpeech(
+          event,
+          speechRun,
+          () => cfg.interruptOnManualReply,
+        );
         if (!barge.triggered()) {
           await barge.abort();
           disposed = true;
@@ -930,6 +951,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
     let localTraceSequence = 0;
     const nextTraceSequence = suppliedNextTraceSequence ?? (() => ++localTraceSequence);
 
+    const interruptReadForManualReply = (): Promise<void> => interruptForManualReply(
+      event,
+      () => cfg.interruptOnManualReply,
+    );
+
     // Load + split the full message once, resuming after what the announcement
     // actually covered. Shared by the read-full phase and "continue".
     const ensureSentences = async (): Promise<string[]> => {
@@ -977,6 +1003,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (!skipReading && cfg.readFull && event.type !== "needs-you" && event.transcriptPath) {
       sentences = await ensureSentences();
       reading: while (cursor < sentences.length) {
+        await interruptReadForManualReply();
         // gap between chunks: with barging available it's just a beat; with
         // barging off (echo/noise) it's the only voice interrupt, so keep it real
         const gapSecs = bargeOff ? Math.max(cfg.gapSecs, 0.6) : cfg.gapSecs;
@@ -1077,6 +1104,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
             emitRecorderTraces(gapDiagnosticIds ?? [gapDiagnosticId], { intent: "gap-empty", bufferCountAfterReduction: 0 });
           }
         }
+        await interruptReadForManualReply();
         const chunk = sentences.slice(cursor, cursor + cfg.continueSentences).join(" ");
         lastSpoken = chunk;
         const result = await speakInterruptible(event, chunk, bargeOff, traceParent, nextTraceSequence);

@@ -24,6 +24,7 @@ export const SETTING_KEYS = [
   "barge-threshold",
   "kokoro-speed",
   "read-full",
+  "interrupt-on-manual-reply",
   "reveal-on-turn",
   "working-mic",
   "announce-sentences",
@@ -40,6 +41,7 @@ export type SettingField =
   | "bargeThresholdPct"
   | "ttsSpeed"
   | "readFull"
+  | "interruptOnManualReply"
   | "revealOnTurn"
   | "workingMic"
   | "speakSentences"
@@ -185,6 +187,17 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "read the full final response aloud",
+  },
+  {
+    key: "interrupt-on-manual-reply",
+    field: "interruptOnManualReply",
+    env: "CONCH_INTERRUPT_ON_MANUAL_REPLY",
+    kind: "boolean",
+    default: true,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "stop reading when you reply to that session by text",
   },
   {
     key: "reveal-on-turn",

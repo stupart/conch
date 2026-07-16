@@ -172,6 +172,43 @@ describe("daemon config controller", () => {
     });
   });
 
+  test("applies and unsets interrupt-on-manual-reply live", () => {
+    const { path } = fixture();
+    const env = {};
+    const cfg = loadConfig({ env, settingsPath: path });
+    const controller = createConfigController(cfg, { env, settingsPath: path });
+    expect(cfg.interruptOnManualReply).toBe(true);
+
+    writeSetting(path, "interrupt-on-manual-reply", false);
+    const setReply = controller.handle({
+      kind: "set-config",
+      key: "interrupt-on-manual-reply",
+      value: false,
+    });
+
+    expect(cfg.interruptOnManualReply).toBe(false);
+    expect(setReply).toMatchObject({
+      kind: "config-ack",
+      key: "interrupt-on-manual-reply",
+      status: "applied",
+      effective: false,
+      source: "file",
+    });
+
+    unsetSetting(path, "interrupt-on-manual-reply");
+    const unsetReply = controller.handle({ kind: "unset-config", key: "interrupt-on-manual-reply" });
+
+    expect(cfg.interruptOnManualReply).toBe(true);
+    expect(unsetReply).toMatchObject({
+      kind: "config-ack",
+      key: "interrupt-on-manual-reply",
+      action: "unset",
+      status: "applied",
+      effective: true,
+      source: "default",
+    });
+  });
+
   test("reports an env-masked set and retains the daemon's env value", () => {
     const { path } = fixture();
     const env = { CONCH_END_SILENCE_SECS: "7" };

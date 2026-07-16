@@ -25,6 +25,7 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.bargeThresholdPct).toBe(0);
     expect(cfg.sayRate).toBe(210);
     expect(cfg.workingMic).toBe(false);
+    expect(cfg.interruptOnManualReply).toBe(true);
   });
 
   test("loads native numbers and booleans from settings.json", () => {
@@ -38,6 +39,7 @@ describe("loadConfig tunable layering", () => {
         "barge-threshold": 17,
         "kokoro-speed": 1.1,
         "read-full": false,
+        "interrupt-on-manual-reply": false,
         "reveal-on-turn": false,
         "working-mic": true,
         "announce-sentences": 4,
@@ -53,6 +55,7 @@ describe("loadConfig tunable layering", () => {
       bargeThresholdPct: 17,
       ttsSpeed: 1.1,
       readFull: false,
+      interruptOnManualReply: false,
       revealOnTurn: false,
       workingMic: true,
       speakSentences: 4,
@@ -66,6 +69,7 @@ describe("loadConfig tunable layering", () => {
       "end-silence": 4.25,
       "typing-grace": 1.5,
       "read-full": false,
+      "interrupt-on-manual-reply": false,
       "working-mic": false,
     });
     const cfg = loadConfig({
@@ -73,6 +77,7 @@ describe("loadConfig tunable layering", () => {
         CONCH_END_SILENCE_SECS: "2.75",
         CONCH_TYPING_GRACE_SECS: "not-a-number",
         CONCH_READ_FULL: "true",
+        CONCH_INTERRUPT_ON_MANUAL_REPLY: "true",
         CONCH_WORKING_MIC: "true",
       },
       settingsPath: path,
@@ -80,6 +85,7 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.endSilenceSecs).toBe(2.75);
     expect(cfg.typingGraceSecs).toBe(1.5);
     expect(cfg.readFull).toBe(true);
+    expect(cfg.interruptOnManualReply).toBe(true);
     expect(cfg.workingMic).toBe(true);
   });
 
@@ -90,12 +96,14 @@ describe("loadConfig tunable layering", () => {
         "barge-threshold": 101,
         "announce-sentences": 2.5,
         "read-full": "sometimes",
+        "interrupt-on-manual-reply": "sometimes",
         "working-mic": "sometimes",
       }),
     });
     expect(cfg.bargeThresholdPct).toBe(0);
     expect(cfg.speakSentences).toBe(2);
     expect(cfg.readFull).toBe(true);
+    expect(cfg.interruptOnManualReply).toBe(true);
     expect(cfg.workingMic).toBe(false);
   });
 

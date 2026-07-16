@@ -64,6 +64,8 @@ export interface Config {
   typingGraceSecs: number;
   /** read the whole final message aloud by default; say "stop" between chunks to cut it short */
   readFull: boolean;
+  /** stop a response read-aloud as soon as that session receives a human text reply */
+  interruptOnManualReply: boolean;
   /** interjection gap between read-aloud chunks, seconds — a breath, not an ending; the tink means it's your turn */
   gapSecs: number;
   /**
@@ -160,6 +162,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     awayAfterSecs: num(env.CONCH_AWAY_AFTER_SECS, 0),
     typingGraceSecs: settings["typing-grace"].value as number, // touched keys/mouse within 2s ⇒ working; 0 disables the gate
     readFull: settings["read-full"].value as boolean,
+    interruptOnManualReply: settings["interrupt-on-manual-reply"].value as boolean,
     // 0 = no gap at all: barge-in + spacebar cover interrupts, chunks flow
     // back-to-back (when barging is off, a 0.6s floor re-appears in the loop)
     gapSecs: zeroable(env.CONCH_GAP_SECS, 0),

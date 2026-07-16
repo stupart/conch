@@ -40,6 +40,7 @@ const expected = {
   "barge-threshold": ["bargeThresholdPct", "CONCH_BARGE_THRESHOLD_PCT", "live", 0],
   "kokoro-speed": ["ttsSpeed", "CONCH_TTS_SPEED", "live", 1.35],
   "read-full": ["readFull", "CONCH_READ_FULL", "live", true],
+  "interrupt-on-manual-reply": ["interruptOnManualReply", "CONCH_INTERRUPT_ON_MANUAL_REPLY", "live", true],
   "reveal-on-turn": ["revealOnTurn", "CONCH_REVEAL_ON_TURN", "live", true],
   "working-mic": ["workingMic", "CONCH_WORKING_MIC", "live", false],
   "announce-sentences": ["speakSentences", "CONCH_SPEAK_SENTENCES", "hook", 2],
@@ -48,10 +49,10 @@ const expected = {
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 12 curated, default-bearing knobs", () => {
+  test("contains exactly the 13 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(12);
+    expect(SETTING_DESCRIPTORS).toHaveLength(13);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });
@@ -76,6 +77,7 @@ describe("settings parser", () => {
     expect(parse("typing-grace", 0)).toEqual({ ok: true, value: 0 });
     expect(parse("read-full", "false")).toEqual({ ok: true, value: false });
     expect(parse("read-full", true)).toEqual({ ok: true, value: true });
+    expect(parse("interrupt-on-manual-reply", "false")).toEqual({ ok: true, value: false });
   });
 
   test("enforces finite positive and zeroable number bounds", () => {
@@ -108,8 +110,10 @@ describe("settings parser", () => {
     expect(parse("reveal-on-turn", "false")).toEqual({ ok: true, value: false });
     expect(parse("working-mic", "1")).toEqual({ ok: true, value: true });
     expect(parse("working-mic", false)).toEqual({ ok: true, value: false });
+    expect(parse("interrupt-on-manual-reply", true)).toEqual({ ok: true, value: true });
     expect(parse("reveal-on-turn", "maybe").ok).toBe(false);
     expect(parse("working-mic", "sometimes").ok).toBe(false);
+    expect(parse("interrupt-on-manual-reply", "sometimes").ok).toBe(false);
     expect(parse("reveal-on-turn", 1).ok).toBe(false);
     expect(parse("reveal-on-turn", null).ok).toBe(false);
   });
