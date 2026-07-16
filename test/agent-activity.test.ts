@@ -3,7 +3,6 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
-  BASH_LIVE_WINDOW_MS,
   LIVE_WINDOW_MS,
   sessionHasLiveBackgroundWork,
 } from "../src/agent-activity.ts";
@@ -196,30 +195,12 @@ describe("sessionHasLiveBackgroundWork", () => {
     expect(sessionHasLiveBackgroundWork(f.transcript)).toBe(false);
   });
 
-  test("finds an in-flight background Bash task", () => {
+  test("IGNORES a background Bash task (a dev server must never silence the session)", () => {
     const f = fixture();
     const id = "b44444444";
-    f.lines.push(genuinePrompt("run this"), ...bashLaunch(id));
+    f.lines.push(genuinePrompt("start the dev server"), ...bashLaunch(id));
     writeTranscript(f);
-    bashArtifact(f, id);
-    expect(sessionHasLiveBackgroundWork(f.transcript)).toBe(true);
-  });
-
-  test("allows a live background Bash task to stay quiet longer than an Agent", () => {
-    const f = fixture();
-    const id = "b45454545";
-    f.lines.push(genuinePrompt("run a quiet command"), ...bashLaunch(id));
-    writeTranscript(f);
-    bashArtifact(f, id, LIVE_WINDOW_MS + 5_000);
-    expect(sessionHasLiveBackgroundWork(f.transcript)).toBe(true);
-  });
-
-  test("ages out a background Bash orphan at its longer bound", () => {
-    const f = fixture();
-    const id = "b46464646";
-    f.lines.push(genuinePrompt("run a quiet command"), ...bashLaunch(id));
-    writeTranscript(f);
-    bashArtifact(f, id, BASH_LIVE_WINDOW_MS + 5_000);
+    bashArtifact(f, id); // even a freshly-written, still-running output is ignored — agents only
     expect(sessionHasLiveBackgroundWork(f.transcript)).toBe(false);
   });
 

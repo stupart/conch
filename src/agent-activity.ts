@@ -15,8 +15,6 @@ import { basename, dirname, extname, join } from "node:path";
  * still aging launch-without-completion orphans out in bounded time.
  */
 export const LIVE_WINDOW_MS = 6 * 60 * 1000;
-/** Background shell commands commonly stay silent far longer than agents. */
-export const BASH_LIVE_WINDOW_MS = 30 * 60 * 1000;
 
 const READ_CHUNK_BYTES = 256 * 1024;
 const MAX_SCAN_BYTES = 32 * 1024 * 1024;
@@ -133,11 +131,16 @@ function taskNotificationText(entry: any): string {
 }
 
 /**
- * True when this session has an async Agent or background Bash task whose
- * newest transcript state is still launched and whose output artifact is
- * fresh. The reverse scan is bounded to fresh candidates and a 32 MiB tail, so
- * old transcript launches cannot resurrect stale work while live agents may
- * still span nearby user turns.
+ * True when this session has a background *sub-agent* whose newest transcript
+ * state is still launched (no completion notification yet) and whose log file
+ * is fresh. AGENTS ONLY — a background Bash (`run_in_background`) is deliberately
+ * ignored: it is often a persistent process (dev server, watcher, tail) that
+ * never writes a completion, so counting it would keep the session silent
+ * forever. A background agent re-wakes the session when it finishes; a
+ * background Bash just runs off to the side, so the turn is genuinely done.
+ * The reverse scan is bounded to fresh candidates and a 32 MiB tail, so old
+ * transcript launches cannot resurrect stale work while live agents may still
+ * span nearby user turns.
  */
 export function sessionHasLiveBackgroundWork(transcriptPath: string): boolean {
   try {
@@ -151,26 +154,11 @@ export function sessionHasLiveBackgroundWork(transcriptPath: string): boolean {
       LIVE_WINDOW_MS,
     );
 
-    const uid = process.getuid?.();
-    const tasks = uid === undefined
-      ? new Map<string, Candidate>()
-      : freshIds(
-        join("/private/tmp", `claude-${uid}`, basename(projectDir), sessionId, "tasks"),
-        // Claude background Bash task IDs use the `b…` namespace. Excluding
-        // `a…` Agent output symlinks keeps the longer Bash window from forcing
-        // irrelevant historical scans.
-        (name) => name.match(/^(b[^.]*)\.output$/)?.[1],
-        now,
-        BASH_LIVE_WINDOW_MS,
-      );
-
-    if (!agents.size && !tasks.size) return false;
+    if (!agents.size) return false;
 
     let live = false;
-    visitLinesNewestFirst(transcriptPath, (buffer) => (
-      containsCandidate(buffer, agents) || containsCandidate(buffer, tasks)
-    ), (line) => {
-      if (!containsCandidate(line, agents) && !containsCandidate(line, tasks)) return false;
+    visitLinesNewestFirst(transcriptPath, (buffer) => containsCandidate(buffer, agents), (line) => {
+      if (!containsCandidate(line, agents)) return false;
       let entry: any;
       try {
         entry = JSON.parse(line.toString("utf8"));
@@ -184,14 +172,9 @@ export function sessionHasLiveBackgroundWork(transcriptPath: string): boolean {
         const status = content.match(/<status>\s*([^<]+?)\s*<\/status>/)?.[1];
         if (taskId && status && TERMINAL_TASK_STATUS.has(status)) {
           agents.delete(taskId);
-          tasks.delete(taskId);
         }
       } else if (entry?.type === "user" && entry?.toolUseResult && typeof entry.toolUseResult === "object") {
         const result = entry.toolUseResult;
-        if (typeof result.backgroundTaskId === "string" && tasks.has(result.backgroundTaskId)) {
-          live = true;
-          return true;
-        }
         if (typeof result.agentId === "string" && agents.has(result.agentId)) {
           if (result.isAsync === true) {
             live = true;
@@ -203,7 +186,7 @@ export function sessionHasLiveBackgroundWork(transcriptPath: string): boolean {
         }
       }
 
-      return !agents.size && !tasks.size;
+      return !agents.size;
     });
     return live;
   } catch {
