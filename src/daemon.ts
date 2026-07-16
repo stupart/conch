@@ -233,6 +233,17 @@ export function shouldHandleTurnAudibly(
     || (event.type === "working" && event.backgroundWork === true && workingMic);
 }
 
+/** Resolve a wake without carrying a prior turn's read-aloud discriminator forward. */
+export function resolveWakeTarget(wake: TurnEvent, lastTurn: TurnEvent | null): TurnEvent | null {
+  const target = wake.sessionId ? wake : lastTurn;
+  return target ? { ...target, type: "wake" } : null;
+}
+
+/** Wake/adopted exchanges listen first; ordinary turns read the remaining response first. */
+export function startsConversationByListening(event: Pick<TurnEvent, "type">, announcedCapture = false): boolean {
+  return event.type === "wake" || announcedCapture;
+}
+
 type OrderedTurnEvent = Pick<TurnEvent, "type" | "sessionId" | "eventAt">;
 const STATE_EVENT_TYPES = new Set<TurnEvent["type"]>(["working", "turn-end", "needs-you"]);
 
@@ -641,7 +652,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
 
     if (event.type === "wake") {
-      const target = event.sessionId ? event : lastTurn; // named wake carries its own session
+      const target = resolveWakeTarget(event, lastTurn); // named wake carries its own session
       if (!target) {
         log("wake with nothing to wake — no session has announced yet");
         return void (await speak(cfg, "Nothing to wake. No session has spoken yet."));
@@ -911,7 +922,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }> = [];
     // A wake just reopens the mic (per the README); it must NOT recite the last
     // message from the top — the user says "continue" if they want to hear it.
-    let skipReading = event.type === "wake" || Boolean(announcedCapture);
+    let skipReading = startsConversationByListening(event, Boolean(announcedCapture));
     let initialDictationCapture = announcedCapture;
     let initialCaptureParent = announcedCaptureParent;
     let deferredInitialExternal: ExternalDictationAction | undefined;

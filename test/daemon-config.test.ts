@@ -6,9 +6,12 @@ import { loadConfig } from "../src/config.ts";
 import {
   createConfigController,
   dispatchControlMessage,
+  resolveWakeTarget,
   shouldHandleTurnAudibly,
+  startsConversationByListening,
   TurnEventOrder,
 } from "../src/daemon.ts";
+import type { TurnEvent } from "../src/hook.ts";
 import { unsetSetting, writeSetting } from "../src/settings.ts";
 
 const roots: string[] = [];
@@ -26,6 +29,44 @@ afterEach(() => {
 });
 
 describe("daemon config controller", () => {
+  test("an untargeted wake after turn-end starts by listening without re-reading", () => {
+    const wake: TurnEvent = { type: "wake", sessionId: "", label: "", announce: "" };
+    const turnEnd: TurnEvent = {
+      type: "turn-end",
+      sessionId: "session-a",
+      label: "alpha",
+      announce: "alpha: finished response",
+      transcriptPath: "/tmp/alpha.jsonl",
+      mark: 3,
+    };
+
+    const resolved = resolveWakeTarget(wake, turnEnd);
+
+    expect(resolved).toEqual({ ...turnEnd, type: "wake" });
+    expect(resolved).not.toBe(turnEnd);
+    expect(startsConversationByListening(resolved!)).toBe(true);
+    expect(startsConversationByListening(turnEnd)).toBe(false);
+  });
+
+  test("an explicitly targeted wake wins over lastTurn and an empty wake stays empty", () => {
+    const targeted: TurnEvent = {
+      type: "wake",
+      sessionId: "session-b",
+      label: "beta",
+      announce: "",
+      transcriptPath: "/tmp/beta.jsonl",
+    };
+    const lastTurn: TurnEvent = {
+      type: "turn-end",
+      sessionId: "session-a",
+      label: "alpha",
+      announce: "alpha: done",
+    };
+
+    expect(resolveWakeTarget(targeted, lastTurn)).toEqual(targeted);
+    expect(resolveWakeTarget({ ...targeted, sessionId: "", label: "" }, null)).toBeNull();
+  });
+
   test("working-mic only makes Stop-reclassified working events audible", () => {
     const turnEnd = { type: "turn-end" as const };
     const submitted = { type: "working" as const };
