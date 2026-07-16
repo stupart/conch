@@ -3,6 +3,7 @@ import type { Config } from "./config.ts";
 import { bell, speak } from "./speak.ts";
 import { spokenSnippet, lastAssistantText, stripMarkdown, looksLikeAwaitingReply, transcriptMark } from "./snippet.ts";
 import { findSession, sessionLabel, isEngageable } from "./sessions.ts";
+import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
 
 interface HookPayload {
   hook_event_name?: string;
@@ -28,6 +29,10 @@ export interface TurnEvent {
   mark?: number;
   /** Optional explicit voice for daemon-routed CLI auditions. */
   voice?: string;
+  /** Epoch-ms when the hook observed this event, before any async processing. */
+  eventAt?: number;
+  /** This working state came from a Stop reclassified for live background work. */
+  backgroundWork?: true;
 }
 
 // Notification types that actually need a human; everything else stays silent.
@@ -46,6 +51,9 @@ export async function runHook(cfg: Config): Promise<void> {
   } catch {
     return;
   }
+  // Fractional epoch-ms avoids same-millisecond ties between short-lived hook
+  // processes while remaining directly comparable with registry timestamps.
+  const eventAt = performance.timeOrigin + performance.now();
 
   // Registry-independent backstop: a hook runs as a child of the Claude process,
   // inheriting CLAUDE_CODE_ENTRYPOINT ("cli" for an interactive terminal, "sdk-cli"
@@ -79,17 +87,21 @@ export async function runHook(cfg: Config): Promise<void> {
       cwd: payload.cwd,
       pid: session?.pid,
       announce: "",
+      eventAt,
     });
     return;
   }
 
   let turn: TurnEvent;
   if (event === "Stop") {
+    const backgroundWork = payload.transcript_path
+      ? sessionHasLiveBackgroundWork(payload.transcript_path)
+      : false;
     const snippet = payload.transcript_path
       ? await spokenSnippet(payload.transcript_path, cfg.speakSentences, cfg.speakMaxChars)
       : "";
     turn = {
-      type: "turn-end",
+      type: backgroundWork ? "working" : "turn-end",
       sessionId: payload.session_id ?? "",
       label,
       cwd: payload.cwd,
@@ -97,6 +109,8 @@ export async function runHook(cfg: Config): Promise<void> {
       announce: `${label}: ${snippet || "finished, ready for your next prompt"}`,
       transcriptPath: payload.transcript_path,
       mark: payload.transcript_path ? await transcriptMark(payload.transcript_path) : undefined,
+      eventAt,
+      ...(backgroundWork ? { backgroundWork: true } : {}),
     };
   } else if (event === "Notification") {
     const ntype = payload.notification_type ?? "";
@@ -117,6 +131,7 @@ export async function runHook(cfg: Config): Promise<void> {
       transcriptPath: payload.transcript_path,
       ntype,
       mark: payload.transcript_path ? await transcriptMark(payload.transcript_path) : undefined,
+      eventAt,
     };
   } else {
     return; // unknown/unhandled hook event — never treat it as a needs-you nag
@@ -127,6 +142,9 @@ export async function runHook(cfg: Config): Promise<void> {
   // spawned either way before we return).
   const handedOff = await sendToDaemon(cfg.socketPath, turn);
   if (!handedOff) {
+    // A reclassified Stop is visual-only by default. The opt-in can still bell
+    // and announce without a daemon, though only the daemon owns a listening loop.
+    if (turn.backgroundWork && !cfg.workingMic) return;
     // A live daemon owns playback ordering around its microphone. Ring here
     // only when no daemon accepted the event; otherwise the daemon rings once
     // the preceding dictation controller is fully drained.

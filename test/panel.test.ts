@@ -1,5 +1,5 @@
 import { expect, test, describe } from "bun:test";
-import { reconcileStatus, registryToPanel } from "../src/panel.ts";
+import { latestLatchedState, reconcileStatus, registryToPanel } from "../src/panel.ts";
 
 describe("registryToPanel — maps Claude Code's status vocabulary", () => {
   test("idle → waiting (turn done)", () => expect(registryToPanel("idle")).toBe("waiting"));
@@ -61,5 +61,21 @@ describe("reconcileStatus — BUG A: newer signal wins, so the panel never stick
 
   test("no registry status and no latch → null (dim idle)", () => {
     expect(reconcileStatus({}, undefined)).toBeNull();
+  });
+});
+
+describe("latestLatchedState — event-time ordering", () => {
+  test("an older working event cannot overwrite a newer turn-end latch", () => {
+    const turnEnd = { status: "waiting" as const, at: 2_000 };
+    const olderWorking = { status: "working" as const, at: 1_000 };
+
+    expect(latestLatchedState(turnEnd, olderWorking)).toBe(turnEnd);
+  });
+
+  test("a newer event replaces the current latch", () => {
+    const working = { status: "working" as const, at: 1_000 };
+    const turnEnd = { status: "waiting" as const, at: 2_000 };
+
+    expect(latestLatchedState(working, turnEnd)).toBe(turnEnd);
   });
 });

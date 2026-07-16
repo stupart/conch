@@ -3,7 +3,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
-import { createConfigController, dispatchControlMessage } from "../src/daemon.ts";
+import {
+  createConfigController,
+  dispatchControlMessage,
+  shouldHandleTurnAudibly,
+  TurnEventOrder,
+} from "../src/daemon.ts";
 import { unsetSetting, writeSetting } from "../src/settings.ts";
 
 const roots: string[] = [];
@@ -21,6 +26,48 @@ afterEach(() => {
 });
 
 describe("daemon config controller", () => {
+  test("working-mic only makes Stop-reclassified working events audible", () => {
+    const turnEnd = { type: "turn-end" as const };
+    const submitted = { type: "working" as const };
+    const background = { type: "working" as const, backgroundWork: true as const };
+
+    expect(shouldHandleTurnAudibly(turnEnd, false)).toBe(true);
+    expect(shouldHandleTurnAudibly(background, false)).toBe(false);
+    expect(shouldHandleTurnAudibly(background, true)).toBe(true);
+    expect(shouldHandleTurnAudibly(submitted, true)).toBe(false);
+  });
+
+  test("event-time arbitration suppresses stale state and working-mic audio before LIFO handling", () => {
+    const order = new TurnEventOrder();
+    const newerTurnEnd = { type: "turn-end" as const, sessionId: "session", eventAt: 2_000 };
+    const olderWorking = { type: "working" as const, sessionId: "session", eventAt: 1_000 };
+
+    expect(order.accept(newerTurnEnd)).toBe(true);
+    expect(order.accept(olderWorking)).toBe(false);
+    expect(order.isCurrent(newerTurnEnd)).toBe(true);
+    expect(order.isCurrent(olderWorking) && shouldHandleTurnAudibly({ ...olderWorking, backgroundWork: true }, true))
+      .toBe(false);
+  });
+
+  test("a newer same-type event invalidates its older queued predecessor", () => {
+    const order = new TurnEventOrder();
+    const older = { type: "working" as const, sessionId: "session", eventAt: 1_000 };
+    const newer = { type: "working" as const, sessionId: "session", eventAt: 2_000 };
+
+    expect(order.accept(older)).toBe(true);
+    expect(order.accept(newer)).toBe(true);
+    expect(order.isCurrent(older)).toBe(false);
+    expect(order.isCurrent(newer)).toBe(true);
+    expect(order.accept({ ...older })).toBe(false); // delayed older hook cannot evict newer
+  });
+
+  test("an untimestamped legacy state cannot supersede timestamped truth", () => {
+    const order = new TurnEventOrder();
+    const timestamped = { type: "turn-end" as const, sessionId: "session", eventAt: 2_000 };
+    expect(order.accept(timestamped)).toBe(true);
+    expect(order.accept({ type: "working", sessionId: "session" })).toBe(false);
+  });
+
   test("applies a live set by mutating the shared Config object in place", () => {
     const { path } = fixture();
     const env = {};
@@ -44,6 +91,43 @@ describe("daemon config controller", () => {
       status: "applied",
       effective: 5.25,
       source: "file",
+    });
+  });
+
+  test("applies and unsets working-mic live", () => {
+    const { path } = fixture();
+    const env = {};
+    const cfg = loadConfig({ env, settingsPath: path });
+    const controller = createConfigController(cfg, { env, settingsPath: path });
+    expect(cfg.workingMic).toBe(false);
+
+    writeSetting(path, "working-mic", true);
+    const setReply = controller.handle({
+      kind: "set-config",
+      key: "working-mic",
+      value: true,
+    });
+
+    expect(cfg.workingMic).toBe(true);
+    expect(setReply).toMatchObject({
+      kind: "config-ack",
+      key: "working-mic",
+      status: "applied",
+      effective: true,
+      source: "file",
+    });
+
+    unsetSetting(path, "working-mic");
+    const unsetReply = controller.handle({ kind: "unset-config", key: "working-mic" });
+
+    expect(cfg.workingMic).toBe(false);
+    expect(unsetReply).toMatchObject({
+      kind: "config-ack",
+      key: "working-mic",
+      action: "unset",
+      status: "applied",
+      effective: false,
+      source: "default",
     });
   });
 

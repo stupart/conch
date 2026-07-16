@@ -25,6 +25,7 @@ export const SETTING_KEYS = [
   "kokoro-speed",
   "read-full",
   "reveal-on-turn",
+  "working-mic",
   "announce-sentences",
   "announce-max-chars",
   "say-rate",
@@ -40,6 +41,7 @@ export type SettingField =
   | "ttsSpeed"
   | "readFull"
   | "revealOnTurn"
+  | "workingMic"
   | "speakSentences"
   | "speakMaxChars"
   | "sayRate";
@@ -194,6 +196,17 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "raise a session window when conch starts talking to it",
+  },
+  {
+    key: "working-mic",
+    field: "workingMic",
+    env: "CONCH_WORKING_MIC",
+    kind: "boolean",
+    default: false,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "announce and open the mic while background work remains",
   },
   {
     key: "announce-sentences",

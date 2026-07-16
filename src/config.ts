@@ -92,6 +92,8 @@ export interface Config {
   keystrokeFallback: boolean;
   /** Reveal a session's window (raise-without-focus-steal) when conch starts talking to it. */
   revealOnTurn: boolean;
+  /** Bell, announce, and listen when a stopped turn still has live background work. */
+  workingMic: boolean;
   socketPath: string;
   claudeDir: string;
   /** TTS engine: auto (server if available, say otherwise) | server | say */
@@ -171,6 +173,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     recentInjectSuppressMs: num(env.CONCH_INJECT_SUPPRESS_MS, 30_000),
     keystrokeFallback: flag(env.CONCH_KEYSTROKE_FALLBACK, false),
     revealOnTurn: settings["reveal-on-turn"].value as boolean,
+    workingMic: settings["working-mic"].value as boolean,
     socketPath: env.CONCH_SOCKET ?? "/tmp/conch.sock",
     claudeDir: env.CLAUDE_CONFIG_DIR ?? join(HOME, ".claude"),
     ttsEngine: parseTtsEngine(env.CONCH_TTS),

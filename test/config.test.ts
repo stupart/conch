@@ -24,6 +24,7 @@ describe("loadConfig tunable layering", () => {
     const cfg = loadConfig({ env: {}, settingsPath: settingsPath() });
     expect(cfg.bargeThresholdPct).toBe(0);
     expect(cfg.sayRate).toBe(210);
+    expect(cfg.workingMic).toBe(false);
   });
 
   test("loads native numbers and booleans from settings.json", () => {
@@ -38,6 +39,7 @@ describe("loadConfig tunable layering", () => {
         "kokoro-speed": 1.1,
         "read-full": false,
         "reveal-on-turn": false,
+        "working-mic": true,
         "announce-sentences": 4,
         "announce-max-chars": 480,
         "say-rate": 0,
@@ -52,6 +54,7 @@ describe("loadConfig tunable layering", () => {
       ttsSpeed: 1.1,
       readFull: false,
       revealOnTurn: false,
+      workingMic: true,
       speakSentences: 4,
       speakMaxChars: 480,
       sayRate: 0,
@@ -63,18 +66,21 @@ describe("loadConfig tunable layering", () => {
       "end-silence": 4.25,
       "typing-grace": 1.5,
       "read-full": false,
+      "working-mic": false,
     });
     const cfg = loadConfig({
       env: {
         CONCH_END_SILENCE_SECS: "2.75",
         CONCH_TYPING_GRACE_SECS: "not-a-number",
         CONCH_READ_FULL: "true",
+        CONCH_WORKING_MIC: "true",
       },
       settingsPath: path,
     });
     expect(cfg.endSilenceSecs).toBe(2.75);
     expect(cfg.typingGraceSecs).toBe(1.5);
     expect(cfg.readFull).toBe(true);
+    expect(cfg.workingMic).toBe(true);
   });
 
   test("invalid file values fall through to the registry default", () => {
@@ -84,11 +90,13 @@ describe("loadConfig tunable layering", () => {
         "barge-threshold": 101,
         "announce-sentences": 2.5,
         "read-full": "sometimes",
+        "working-mic": "sometimes",
       }),
     });
     expect(cfg.bargeThresholdPct).toBe(0);
     expect(cfg.speakSentences).toBe(2);
     expect(cfg.readFull).toBe(true);
+    expect(cfg.workingMic).toBe(false);
   });
 
   test("zeroable env knobs preserve zero", () => {

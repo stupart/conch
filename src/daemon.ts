@@ -28,7 +28,7 @@ import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences
 import { probeServer } from "./transcribe.ts";
 import { setState, logAbove, setPanel, setKeybar, setLogsVisible, logsShown, getLiveState, onLiveChange, type ConchState } from "./status.ts";
 import { listSessions, registrySnapshot, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
-import { reconcileStatus, STATUS_RANK, type SessionStatus } from "./panel.ts";
+import { latestLatchedState, reconcileStatus, STATUS_RANK, type SessionStatus } from "./panel.ts";
 import {
   emitRecorderTrace,
   emitRecorderTraces,
@@ -224,6 +224,49 @@ export function dispatchControlMessage(value: unknown, controller: ConfigControl
   return { handled: true, response: controller.handle(validated.value) };
 }
 
+/** Only a genuine turn end, or an explicitly opted-in reclassified Stop, owns audio. */
+export function shouldHandleTurnAudibly(
+  event: Pick<TurnEvent, "type" | "backgroundWork">,
+  workingMic: boolean,
+): boolean {
+  return event.type === "turn-end"
+    || (event.type === "working" && event.backgroundWork === true && workingMic);
+}
+
+type OrderedTurnEvent = Pick<TurnEvent, "type" | "sessionId" | "eventAt">;
+const STATE_EVENT_TYPES = new Set<TurnEvent["type"]>(["working", "turn-end", "needs-you"]);
+
+function eventTimestamp(eventAt: unknown): number {
+  return typeof eventAt === "number" && Number.isFinite(eventAt) && eventAt > 0 ? eventAt : 0;
+}
+
+/**
+ * Arrival can invert occurrence order because separate hooks do different I/O.
+ * Keep the newest state event seen for each session before LIFO queueing, and
+ * use object identity to invalidate an older event already sitting in the queue.
+ */
+export class TurnEventOrder {
+  readonly #latest = new Map<string, { at: number; event: OrderedTurnEvent }>();
+
+  accept(event: OrderedTurnEvent): boolean {
+    if (!event.sessionId || !STATE_EVENT_TYPES.has(event.type)) return true;
+    const at = eventTimestamp(event.eventAt);
+    const current = this.#latest.get(event.sessionId);
+    if (current && current.at > at) return false;
+    this.#latest.set(event.sessionId, { at, event });
+    return true;
+  }
+
+  isCurrent(event: OrderedTurnEvent): boolean {
+    if (!event.sessionId || !STATE_EVENT_TYPES.has(event.type)) return true;
+    return this.#latest.get(event.sessionId)?.event === event;
+  }
+
+  forget(sessionId: string): void {
+    this.#latest.delete(sessionId);
+  }
+}
+
 export async function runDaemon(cfg: Config): Promise<void> {
   const diagnosticsEnabled = recorderDiagnosticsEnabled();
   const queue: TurnEvent[] = [];
@@ -249,6 +292,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // nag with a glanceable visual: working (you submitted a prompt) / waiting (turn
   // ended, ready for you) / needs (a permission/idle notification fired).
   const sessionStates = new Map<string, { label: string; status: SessionStatus; detail?: string; at: number }>();
+  const eventOrder = new TurnEventOrder();
   // Arrow-key session picker: `panelOrder` mirrors the panel's on-screen order,
   // `selectedId` is the highlighted row. `cursorAuto` = the cursor follows whoever
   // conch is interacting with; arrowing takes manual control, and arrowing off
@@ -325,6 +369,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   function enqueue(event: TurnEvent): void {
     if (shuttingDown) return;
+    if (!eventOrder.accept(event)) return;
     if ((event.type === "pause" || event.type === "mute") && activeDictation) {
       // Close the producer gate synchronously while this event waits behind
       // the busy conversation. The active loop drains/submits before the mode
@@ -420,7 +465,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // delete a live session's latch (e.g. a pending "needs"), which never re-fires.
     if (snap?.complete) {
       const liveIds = new Set(live.map((s) => s.sessionId));
-      for (const id of sessionStates.keys()) if (!liveIds.has(id)) sessionStates.delete(id);
+      for (const id of sessionStates.keys()) {
+        if (liveIds.has(id)) continue;
+        sessionStates.delete(id);
+        eventOrder.forget(id);
+      }
     }
     const rows = live
       .map((s) => {
@@ -462,10 +511,22 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }),
     ]);
   }
-  function setSessionState(sessionId: string, label: string, status: SessionStatus, detail?: string): void {
-    if (!sessionId) return;
-    sessionStates.set(sessionId, { label, status, detail, at: Date.now() });
+  function setSessionState(
+    sessionId: string,
+    label: string,
+    status: SessionStatus,
+    detail?: string,
+    eventAt?: number,
+  ): boolean {
+    if (!sessionId) return true; // nothing to latch; preserve the event's non-panel behavior
+    // Legacy clients without eventAt may still work, but their latch is oldest
+    // possible truth and can never clobber a timestamped hook or registry state.
+    const at = eventTimestamp(eventAt);
+    const incoming = { label, status, detail, at };
+    if (latestLatchedState(sessionStates.get(sessionId), incoming) !== incoming) return false;
+    sessionStates.set(sessionId, incoming);
     void renderSessionPanel();
+    return true;
   }
 
   async function setMuted(next: boolean): Promise<void> {
@@ -524,26 +585,34 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const speechCfg = event.voice ? { ...cfg, ttsVoices: [event.voice] } : cfg;
       return speak(speechCfg, event.announce, event.label);
     }
+    if (!eventOrder.isCurrent(event)) return;
 
-    // Dashboard status — visual, and updated even while muted/paused. `working`
-    // and `needs-you` are now VISUAL-ONLY: the spoken "needs you" nag (which
-    // interrupted you and stole the mic to another window) is gone — glance at
-    // the pinned panel instead. turn-end still reads aloud (that part you like).
+    const audibleTurn = shouldHandleTurnAudibly(event, cfg.workingMic);
+
+    // Dashboard status — visual, and updated even while muted/paused. Ordinary
+    // `working` and all `needs-you` events are visual-only. A Stop reclassified
+    // as background-working may opt back into the normal bell/voice/mic path.
     if (event.type === "working") {
-      setSessionState(event.sessionId, event.label, "working");
-      return;
+      if (!setSessionState(event.sessionId, event.label, "working", undefined, event.eventAt)) return;
+      if (!audibleTurn) return;
     }
     if (event.type === "needs-you") {
       const kind = event.ntype && event.ntype !== "idle_prompt" ? event.ntype.replace(/_/g, " ") : undefined;
-      setSessionState(event.sessionId, event.label, "needs", kind);
+      setSessionState(event.sessionId, event.label, "needs", kind, event.eventAt);
       return; // stripped: no bell, no announcement, no permission mic
     }
-    if (event.type === "turn-end") setSessionState(event.sessionId, event.label, "waiting");
+    if (event.type === "turn-end" && !setSessionState(
+      event.sessionId,
+      event.label,
+      "waiting",
+      undefined,
+      event.eventAt,
+    )) return;
 
     // Per-session snooze: this project is paused so you can focus elsewhere. Keep
     // it on the panel (marked ⏸ by renderSessionPanel) but stay quiet — no bell,
     // no read, no mic — until you resume it. An explicit `wake` still cuts through.
-    if (event.type === "turn-end" && pausedSessions.has(event.sessionId)) {
+    if (audibleTurn && pausedSessions.has(event.sessionId)) {
       lastTurn = event; // space/wake can still reach it
       snoozedLatest.set(event.sessionId, event); // keep ONLY the latest — resume replays this one
       return log(`⏸ "${event.label}" snoozed — enter on it (or conch wake) to resume`);
@@ -566,7 +635,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const idle = muted ? 0 : (await idleSeconds() ?? 0); // null probe → 0 → not away (fail safe)
       if (muted || idle >= cfg.awayAfterSecs) {
         log(`${muted ? "muted" : `away (idle ${Math.round(idle / 60)}m)`} — staying quiet for "${event.label}"`);
-        if (event.type === "turn-end" || event.ntype === "idle_prompt") lastTurn = event; // wake still finds it
+        if (audibleTurn || event.ntype === "idle_prompt") lastTurn = event; // wake still finds it
         return;
       }
     }
@@ -595,23 +664,23 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // Already handled it yourself: if you typed a reply to this session (so the
     // conversation moved on) since this fired, don't read it aloud or nag for
     // input. Covers the live path AND pause-replay (both flow through here).
-    if ((event.type === "turn-end" || event.type === "needs-you") && (await userRespondedSince(event.transcriptPath, event.mark))) {
+    if (audibleTurn && (await userRespondedSince(event.transcriptPath, event.mark))) {
       return log(`skipping "${event.label}" — you already responded, conversation moved on`);
     }
 
-    // The finished-turn attention bell (turn-end only now — the needs-you nag is
-    // visual). The hook hands the bell to the daemon so it can't ring over a live mic.
+    // The finished-turn attention bell (including opted-in background-working
+    // Stops). The hook hands it to the daemon so it can't ring over a live mic.
     // The bell + the read-aloud below happen regardless of what you're doing — you
     // like the heads-up while you work. Only the MIC is gated (in conversationLoop):
     // it won't open if you're handling this session by text.
-    if (event.type === "turn-end") await ringBell();
+    if (audibleTurn) await ringBell();
 
     // Surface the session's window as conch starts talking to it — raised so you
     // can watch, but WITHOUT stealing focus from wherever you're typing (AXRaise).
     if (event.type === "turn-end" && cfg.revealOnTurn && event.pid) void revealSessionWindow(event.pid);
 
-    // turn-end: read the finished reply aloud, then open the mic — barge-able from
-    // the very first sentence.
+    // An audible Stop reads the reply, then opens the mic — barge-able from the
+    // very first sentence.
     const conversationParent = createRecorderParent("conversation");
     let conversationSequence = 0;
     const nextConversationSequence = () => ++conversationSequence;

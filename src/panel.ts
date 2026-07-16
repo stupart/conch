@@ -10,6 +10,18 @@ export interface LatchedState {
 }
 
 /**
+ * Keep the newest per-session latch when LIFO handling delivers events out of
+ * occurrence order. Equal timestamps accept the incoming event; only a known-
+ * older event is stale.
+ */
+export function latestLatchedState(
+  current: LatchedState | undefined,
+  incoming: LatchedState,
+): LatchedState {
+  return current && current.at > incoming.at ? current : incoming;
+}
+
+/**
  * Map Claude Code's registry `status` onto a panel state. The registry is the
  * authoritative source of "is this session working or waiting on me":
  *  - `idle` → the turn is done, ready for your next prompt (waiting)
@@ -51,10 +63,8 @@ export function registryToPanel(status: string | undefined): SessionStatus | nul
  * auto-clears the moment a newer event or status change lands. Ties go to the
  * latch (an event we were explicitly handed). With neither signal, null → dim idle.
  *
- * NOTE: the latch timestamp is stamped when the daemon HANDLES the event, not
- * when it occurred; under heavy LIFO-queue reordering that can make a "needs"
- * stickier than ideal (never falsely clears — it errs safe). Event-time stamping
- * is a deferred refinement.
+ * Hook-originated latches carry their event time, so LIFO queue handling cannot
+ * make an older state appear newer than either a later hook or registry update.
  */
 export function reconcileStatus(
   session: Pick<SessionInfo, "status" | "statusUpdatedAt">,

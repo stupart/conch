@@ -274,10 +274,7 @@ describe("settings control IPC", () => {
       const result = await runCli(f, ["settings"]);
       expect(result.exitCode).toBe(0);
       expect(daemon.requests).toEqual([{ kind: "get-config" }]);
-      expect(result.stdout).toContain("read-full");
-      expect(result.stdout).toContain("true");
-      expect(result.stdout).toContain("CONCH_READ_FULL");
-      expect(result.stdout).not.toContain("false");
+      expect(result.stdout).toMatch(/^read-full\s+true\s+env CONCH_READ_FULL$/m);
     } finally {
       await daemon.close();
     }
