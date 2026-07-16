@@ -1,5 +1,45 @@
 import { expect, test, describe } from "bun:test";
-import { latestLatchedState, reconcileStatus, registryToPanel } from "../src/panel.ts";
+import {
+  dashboardPanelLines,
+  latestLatchedState,
+  reconcileStatus,
+  registryToPanel,
+} from "../src/panel.ts";
+
+describe("dashboard global mode banner", () => {
+  const active = dashboardPanelLines(["session row"], 80, { muted: false, paused: false, holding: 0 });
+  const paused = dashboardPanelLines(["session row"], 80, { muted: false, paused: true, holding: 3 });
+  const muted = dashboardPanelLines(["session row"], 80, { muted: true, paused: false, holding: 0 });
+
+  test("uses a fixed slot under the header in every mode", () => {
+    expect(active[1]).toContain("🐚 conch");
+    expect(active[2]).toBe("");
+    expect(active[3]).toContain("─");
+    expect(active[4]).toBe("session row");
+    expect(paused).toHaveLength(active.length);
+    expect(muted).toHaveLength(active.length);
+  });
+
+  test("shows pause with the held-session count", () => {
+    expect(paused[2]).toContain("⏸ PAUSED");
+    expect(paused[2]).toContain("holding 3");
+    expect(paused[2]).toContain("press p to resume");
+  });
+
+  test("shows mute and gives it precedence over a simultaneous pause", () => {
+    expect(muted[2]).toContain("🔇 MUTED");
+    expect(muted[2]).toContain("press m to unmute");
+    const both = dashboardPanelLines([], 80, { muted: true, paused: true, holding: 2 });
+    expect(both[2]).toContain("MUTED");
+    expect(both[2]).not.toContain("PAUSED");
+  });
+
+  test("remains visible with no session rows", () => {
+    const lines = dashboardPanelLines([], 80, { muted: false, paused: true, holding: 0 });
+    expect(lines).toHaveLength(4);
+    expect(lines[2]).toContain("PAUSED");
+  });
+});
 
 describe("registryToPanel — maps Claude Code's status vocabulary", () => {
   test("idle → waiting (turn done)", () => expect(registryToPanel("idle")).toBe("waiting"));

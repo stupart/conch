@@ -28,7 +28,13 @@ import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences
 import { probeServer } from "./transcribe.ts";
 import { setState, logAbove, setPanel, setKeybar, setLogsVisible, logsShown, getLiveState, onLiveChange, type ConchState } from "./status.ts";
 import { listSessions, registrySnapshot, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
-import { latestLatchedState, reconcileStatus, STATUS_RANK, type SessionStatus } from "./panel.ts";
+import {
+  dashboardPanelLines,
+  latestLatchedState,
+  reconcileStatus,
+  STATUS_RANK,
+  type SessionStatus,
+} from "./panel.ts";
 import {
   emitRecorderTrace,
   emitRecorderTraces,
@@ -543,28 +549,27 @@ export async function runDaemon(cfg: Config): Promise<void> {
     } else if (selectedId && !panelOrder.includes(selectedId)) {
       selectedId = null; // manually-selected session closed
     }
-    if (!rows.length) return setPanel([]);
-    const cols = process.stdout.columns ?? 80;
-    const rule = "  \x1b[2m" + "─".repeat(Math.max(10, cols - 4)) + "\x1b[0m";
-    setPanel([
-      "",
-      "  \x1b[1m🐚 conch\x1b[0m",
-      rule,
-      ...rows.map((r) => {
-        // The ▸ cursor only shows while you're actively navigating (manual mode);
-        // in auto-follow it stays hidden so it can't read as "acting on this one".
-        const cursor = !cursorAuto && r.sessionId === selectedId ? "\x1b[36m▸\x1b[0m " : "  ";
-        // A snoozed session shows dim with a ⏸ instead of its live status.
-        if (pausedSessions.has(r.sessionId)) {
-          return `${cursor}\x1b[2m${r.label.slice(0, 26).padEnd(27)}⏸ snoozed\x1b[0m`;
-        }
-        // Live state (recording/speaking/…) on the active session's row wins over
-        // its hook glyph; otherwise show the reconciled status.
-        const liveGlyph = liveState.label === r.label ? LIVE_GLYPH[liveState.state] : undefined;
-        const glyph = liveGlyph ?? (r.status ? STATUS_GLYPH[r.status] : "\x1b[2m· idle\x1b[0m");
-        return `${cursor}${r.label.slice(0, 26).padEnd(27)}${glyph}${r.detail ? ` \x1b[2m(${r.detail})\x1b[0m` : ""}`;
-      }),
-    ]);
+    const renderedRows = rows.map((r) => {
+      // The ▸ cursor only shows while you're actively navigating (manual mode);
+      // in auto-follow it stays hidden so it can't read as "acting on this one".
+      const cursor = !cursorAuto && r.sessionId === selectedId ? "\x1b[36m▸\x1b[0m " : "  ";
+      // A snoozed session shows dim with a ⏸ instead of its live status.
+      if (pausedSessions.has(r.sessionId)) {
+        return `${cursor}\x1b[2m${r.label.slice(0, 26).padEnd(27)}⏸ snoozed\x1b[0m`;
+      }
+      // Live state (recording/speaking/…) on the active session's row wins over
+      // its hook glyph; otherwise show the reconciled status.
+      const liveGlyph = liveState.label === r.label ? LIVE_GLYPH[liveState.state] : undefined;
+      const glyph = liveGlyph ?? (r.status ? STATUS_GLYPH[r.status] : "\x1b[2m· idle\x1b[0m");
+      return `${cursor}${r.label.slice(0, 26).padEnd(27)}${glyph}${r.detail ? ` \x1b[2m(${r.detail})\x1b[0m` : ""}`;
+    });
+    // Read mode state after the async registry snapshot so a slow older redraw
+    // cannot repaint a stale pause/mute banner over a newer toggle.
+    setPanel(dashboardPanelLines(renderedRows, process.stdout.columns ?? 80, {
+      muted,
+      paused,
+      holding: pending.size,
+    }));
   }
   function setSessionState(
     sessionId: string,
@@ -587,6 +592,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   async function setMuted(next: boolean): Promise<void> {
     muted = next;
     writeState({ muted, paused }); // persist so a restart doesn't un-mute
+    void renderSessionPanel(); // visual feedback must not wait on fallible audio
     log(muted ? "muted — announcements and mic off (m or `conch unmute` to resume)" : "unmuted");
     setState(restState());
     await speak(cfg, muted ? "Muted." : "Back on.");
@@ -597,6 +603,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   async function setPaused(next: boolean): Promise<void> {
     paused = next;
     writeState({ muted, paused });
+    void renderSessionPanel(); // clear/show immediately, before speech or registry work
     if (paused) {
       log("paused — holding finished sessions until you resume (p or `conch resume`)");
       setState("paused");
@@ -678,6 +685,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (paused && event.type !== "wake") {
       pending.set(event.sessionId, event); // latest per session
       lastTurn = event; // wake still finds the newest
+      void renderSessionPanel(); // update the visible deduplicated holding count
       return log(`paused — holding "${event.label}" (${pending.size} waiting)`);
     }
 

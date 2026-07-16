@@ -9,6 +9,31 @@ export interface LatchedState {
   at: number;
 }
 
+export interface DashboardMode {
+  muted: boolean;
+  paused: boolean;
+  holding: number;
+}
+
+/** Global mode occupies one permanent slot so rows never jump on toggle. */
+export function dashboardModeBanner({ muted, paused, holding }: DashboardMode): string {
+  if (muted) return "  \x1b[1;33m🔇 MUTED · press m to unmute\x1b[0m";
+  if (paused) return `  \x1b[1;35m⏸ PAUSED · holding ${holding} · press p to resume\x1b[0m`;
+  return "";
+}
+
+/** Compose the pinned panel chrome, including its always-reserved mode line. */
+export function dashboardPanelLines(rows: string[], columns: number, mode: DashboardMode): string[] {
+  const rule = "  \x1b[2m" + "─".repeat(Math.max(10, columns - 4)) + "\x1b[0m";
+  return [
+    "",
+    "  \x1b[1m🐚 conch\x1b[0m",
+    dashboardModeBanner(mode),
+    rule,
+    ...rows,
+  ];
+}
+
 /**
  * Keep the newest per-session latch when LIFO handling delivers events out of
  * occurrence order. Equal timestamps accept the incoming event; only a known-
