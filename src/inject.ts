@@ -171,7 +171,7 @@ return "notfound"`;
   }
 }
 
-async function toClipboard(text: string): Promise<void> {
+export async function toClipboard(text: string): Promise<void> {
   const proc = Bun.spawn(["pbcopy"], { stdin: "pipe" });
   proc.stdin.write(text);
   await proc.stdin.end();
