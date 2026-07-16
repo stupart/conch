@@ -45,6 +45,22 @@ import {
   type ExternalDictationAction,
 } from "./dictation-reducer.ts";
 import { assertNormalMicClosed as assertAudioGate, withNormalMicClosed } from "./audio-gate.ts";
+import {
+  SETTING_DESCRIPTORS,
+  SETTING_REGISTRY,
+  isControlMessageCandidate,
+  loadSettingResolutions,
+  loadSettingsFile,
+  resolveSettingFromLoaded,
+  settingsPathFor,
+  validateControlMessage,
+  type ConfigAck,
+  type ConfigControlMessage,
+  type ConfigControlResponse,
+  type ConfigSnapshot,
+  type SettingKey,
+  type SettingResolution,
+} from "./settings.ts";
 
 /**
  * The turn-based voice loop.
@@ -83,6 +99,129 @@ function writeState(state: DaemonState): void {
     mkdirSync(join(homedir(), ".config/conch"), { recursive: true });
     writeFileSync(STATE_FILE, JSON.stringify(state) + "\n");
   } catch {}
+}
+
+export interface ConfigControllerOptions {
+  env?: Readonly<Record<string, string | undefined>>;
+  settingsPath?: string;
+}
+
+export interface ConfigController {
+  handle(message: ConfigControlMessage): ConfigControlResponse;
+}
+
+function withHookDiagnostic(resolution: SettingResolution, env: string): SettingResolution {
+  const caveat = `next hook — hook env (${env}) may override`;
+  return {
+    ...resolution,
+    diagnostic: resolution.diagnostic ? `${resolution.diagnostic}; ${caveat}` : caveat,
+  };
+}
+
+/**
+ * Owns the daemon's authoritative live provenance. Values are assigned into the
+ * existing Config object so every already-closed-over call site sees updates.
+ */
+export function createConfigController(cfg: Config, options: ConfigControllerOptions = {}): ConfigController {
+  const env = options.env ?? process.env;
+  const settingsPath = options.settingsPath ?? settingsPathFor(env);
+  const initial = loadSettingResolutions({ env, settingsPath });
+  const live = new Map<SettingKey, SettingResolution>();
+
+  for (const descriptor of SETTING_DESCRIPTORS) {
+    if (descriptor.apply !== "live") continue;
+    live.set(descriptor.key, {
+      ...initial[descriptor.key],
+      value: cfg[descriptor.field] as number | boolean,
+    });
+  }
+
+  const hookResolution = (key: SettingKey): SettingResolution => {
+    const descriptor = SETTING_REGISTRY.get(key)!;
+    const loaded = loadSettingsFile(settingsPath);
+    return withHookDiagnostic(resolveSettingFromLoaded(descriptor, env, loaded, false, true), descriptor.env);
+  };
+
+  const ack = (
+    message: Extract<ConfigControlMessage, { kind: "set-config" | "unset-config" }>,
+    resolution: SettingResolution,
+    status: ConfigAck["status"],
+  ): ConfigAck => {
+    const descriptor = SETTING_REGISTRY.get(message.key)!;
+    return {
+      kind: "config-ack",
+      key: message.key,
+      action: message.kind === "set-config" ? "set" : "unset",
+      status,
+      effective: resolution.value,
+      source: resolution.source,
+      ...(status === "masked" ? { env: descriptor.env } : {}),
+      ...(resolution.diagnostic ? { diagnostic: resolution.diagnostic } : {}),
+    };
+  };
+
+  return {
+    handle(message): ConfigControlResponse {
+      if (message.kind === "get-config") {
+        const snapshot = Object.create(null) as ConfigSnapshot;
+        for (const descriptor of SETTING_DESCRIPTORS) {
+          const resolution = descriptor.apply === "hook"
+            ? hookResolution(descriptor.key)
+            : live.get(descriptor.key)!;
+          snapshot[descriptor.key] = { ...resolution };
+        }
+        return { kind: "config-snapshot", snapshot };
+      }
+
+      const descriptor = SETTING_REGISTRY.get(message.key);
+      if (!descriptor) return { kind: "config-error", error: `unknown setting "${message.key}"` };
+
+      if (descriptor.apply === "hook") {
+        const resolution = message.kind === "set-config"
+          ? withHookDiagnostic(
+            resolveSettingFromLoaded(
+              descriptor,
+              env,
+              { path: settingsPath, exists: true, values: { [descriptor.key]: message.value } },
+              false,
+              true,
+            ),
+            descriptor.env,
+          )
+          : withHookDiagnostic(
+            resolveSettingFromLoaded(
+              descriptor,
+              env,
+              { path: settingsPath, exists: false, values: Object.create(null) as Record<string, unknown> },
+              false,
+              true,
+            ),
+            descriptor.env,
+          );
+        return ack(message, resolution, "hook-next");
+      }
+
+      const loaded = message.kind === "set-config"
+        ? { path: settingsPath, exists: true, values: { [descriptor.key]: message.value } }
+        : { path: settingsPath, exists: false, values: Object.create(null) as Record<string, unknown> };
+      const resolution = resolveSettingFromLoaded(descriptor, env, loaded, true, true);
+      Object.assign(cfg, { [descriptor.field]: resolution.value });
+      live.set(descriptor.key, resolution);
+      return ack(message, resolution, message.kind === "set-config" && resolution.source === "env" ? "masked" : "applied");
+    },
+  };
+}
+
+export type SocketControlDispatch =
+  | { handled: false }
+  | { handled: true; response: ConfigControlResponse };
+
+/** Distinguish config control before any value can be cast into TurnEvent. */
+export function dispatchControlMessage(value: unknown, controller: ConfigController): SocketControlDispatch {
+  if (!isControlMessageCandidate(value)) return { handled: false };
+  const validated = validateControlMessage(value);
+  if (!validated.ok) return { handled: true, response: { kind: "config-error", error: validated.err } };
+  return { handled: true, response: controller.handle(validated.value) };
 }
 
 export async function runDaemon(cfg: Config): Promise<void> {
@@ -658,7 +797,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   ): Promise<void> {
     let lastSpoken = event.announce;
     let sentences: string[] | null = null;
-    let cursor = cfg.speakSentences; // the announcement already covered the first sentences
+    let cursor = 0; // derived from the actual announcement once the full reply is loaded
     let bargeOff = false; // set when the echo guard proves the threshold is too low for this room
     let falseTriggers = 0; // noise blips that cancelled speech but transcribed to nothing
     const seededSegments: Array<{
@@ -681,7 +820,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const ensureSentences = async (): Promise<string[]> => {
       if (!sentences) {
         sentences = splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath!)));
-        cursor = countCoveredSentences(event.announce, sentences, cfg.speakSentences);
+        cursor = countCoveredSentences(event.announce, sentences);
       }
       return sentences;
     };
@@ -1492,19 +1631,34 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // Non-null means OWNED. Adopted Kokoro processes are never stored, watched,
   // killed, or respawned by this daemon.
   let ttsServer: ReturnType<typeof Bun.spawn> | null = null;
-  const server = createServer((sock) => {
+  const configController = createConfigController(cfg);
+  const server = createServer({ allowHalfOpen: true }, (sock) => {
     let buf = "";
+    let handled = false;
     sock.on("error", () => {}); // a hook killed mid-write (ECONNRESET) must not throw
-    sock.on("data", (d) => (buf += d.toString()));
-    sock.on("end", () => {
-      for (const line of buf.split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          enqueue(JSON.parse(line) as TurnEvent);
-        } catch {
-          log("ignoring malformed event");
-        }
+    const handleLine = (line: string): void => {
+      if (handled) return;
+      handled = true;
+      let response: ConfigControlResponse | undefined;
+      try {
+        const value: unknown = JSON.parse(line);
+        const control = dispatchControlMessage(value, configController);
+        if (control.handled) response = control.response;
+        else enqueue(value as TurnEvent);
+      } catch {
+        log("ignoring malformed event");
       }
+      if (response) sock.end(JSON.stringify(response) + "\n");
+      else sock.end();
+    };
+    sock.on("data", (data) => {
+      buf += data.toString();
+      const newline = buf.indexOf("\n");
+      if (newline !== -1) handleLine(buf.slice(0, newline));
+    });
+    sock.on("end", () => {
+      if (!handled && buf.trim()) handleLine(buf.trim());
+      else if (!handled) sock.end();
     });
   });
 

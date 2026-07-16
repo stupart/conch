@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { existsSync } from "node:fs";
+import { DEFAULT_CONCH_CONFIG_DIR, loadSettingResolutions, settingsPathFor } from "./settings.ts";
 
 const HOME = homedir();
 
@@ -10,8 +11,8 @@ const HOME = homedir();
 //   1. a seashell checkout (the original: ~/whisper-cli)
 //   2. a Homebrew whisper-cpp install (/opt/homebrew or /usr/local)
 //   3. models downloaded by `conch setup` into ~/.cache/conch
-const SEASHELL_ROOT = process.env.CONCH_SEASHELL_ROOT ?? join(HOME, "whisper-cli");
 export const CONCH_DATA = join(HOME, ".cache", "conch"); // `conch setup` writes models here
+export const CONCH_CONFIG_DIR = process.env.CONCH_CONFIG_DIR ?? DEFAULT_CONCH_CONFIG_DIR;
 const BREW = existsSync("/opt/homebrew/bin") ? "/opt/homebrew/bin" : "/usr/local/bin";
 const WHISPER_MODEL_FILE = "ggml-large-v3-turbo-q5_0.bin";
 const VAD_MODEL_FILE = "ggml-silero-v6.2.0.bin";
@@ -112,9 +113,8 @@ function num(v: string | undefined, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-// For knobs whose off-switch is literally "0" (a disabled port, no gap, no
-// barge-in). num() alone maps "0" to the fallback, so 0 could never disable
-// them — CONCH_BARGE_THRESHOLD_PCT=0 silently kept barge-in on before this.
+// For non-registry knobs whose off-switch is literally "0" (a disabled port
+// or no gap). Curated zeroable values are parsed by the settings registry.
 function zeroable(v: string | undefined, fallback: number): number {
   return v === "0" ? 0 : num(v, fallback);
 }
@@ -124,43 +124,53 @@ function flag(v: string | undefined, fallback: boolean): boolean {
   return v !== "0" && v.toLowerCase() !== "false";
 }
 
-export function loadConfig(): Config {
-  const env = process.env;
+export interface LoadConfigOptions {
+  env?: Readonly<Record<string, string | undefined>>;
+  settingsPath?: string;
+}
+
+export function loadConfig(options: LoadConfigOptions = {}): Config {
+  const env = options.env ?? process.env;
+  const seashellRoot = env.CONCH_SEASHELL_ROOT ?? join(HOME, "whisper-cli");
+  const settings = loadSettingResolutions({
+    env,
+    settingsPath: options.settingsPath ?? settingsPathFor(env),
+  });
   return {
-    whisperCli: env.CONCH_WHISPER_CLI ?? firstExisting(join(SEASHELL_ROOT, "whisper.cpp/build/bin/whisper-cli"), join(BREW, "whisper-cli")),
-    whisperServerBin: env.CONCH_WHISPER_SERVER ?? firstExisting(join(SEASHELL_ROOT, "whisper.cpp/build/bin/whisper-server"), join(BREW, "whisper-server")),
+    whisperCli: env.CONCH_WHISPER_CLI ?? firstExisting(join(seashellRoot, "whisper.cpp/build/bin/whisper-cli"), join(BREW, "whisper-cli")),
+    whisperServerBin: env.CONCH_WHISPER_SERVER ?? firstExisting(join(seashellRoot, "whisper.cpp/build/bin/whisper-server"), join(BREW, "whisper-server")),
     whisperPort: zeroable(env.CONCH_WHISPER_PORT, 8642),
-    whisperModel: env.CONCH_WHISPER_MODEL ?? firstExisting(join(SEASHELL_ROOT, "models", WHISPER_MODEL_FILE), join(CONCH_DATA, "models", WHISPER_MODEL_FILE)),
-    vadModel: env.CONCH_VAD_MODEL ?? firstExisting(join(SEASHELL_ROOT, "whisper.cpp/models", VAD_MODEL_FILE), join(CONCH_DATA, "models", VAD_MODEL_FILE)),
+    whisperModel: env.CONCH_WHISPER_MODEL ?? firstExisting(join(seashellRoot, "models", WHISPER_MODEL_FILE), join(CONCH_DATA, "models", WHISPER_MODEL_FILE)),
+    vadModel: env.CONCH_VAD_MODEL ?? firstExisting(join(seashellRoot, "whisper.cpp/models", VAD_MODEL_FILE), join(CONCH_DATA, "models", VAD_MODEL_FILE)),
     voice: env.CONCH_VOICE ?? "",
-    sayRate: num(env.CONCH_SAY_RATE, 210),
+    sayRate: settings["say-rate"].value as number,
     sayVolume: num(env.CONCH_SAY_VOLUME, 0.4), // measured: [[volm 0.4]] ≈ Kokoro loudness (say raw is ~3.4x louder)
-    speakSentences: num(env.CONCH_SPEAK_SENTENCES, 2),
-    speakMaxChars: num(env.CONCH_SPEAK_MAX_CHARS, 350),
+    speakSentences: settings["announce-sentences"].value as number,
+    speakMaxChars: settings["announce-max-chars"].value as number,
     bell: flag(env.CONCH_BELL, true),
     bellSound: env.CONCH_BELL_SOUND ?? "/System/Library/Sounds/Glass.aiff",
     speak: flag(env.CONCH_SPEAK, true),
-    listenWindowSecs: num(env.CONCH_LISTEN_WINDOW_SECS, 30),
+    listenWindowSecs: settings["listen-window"].value as number,
     maxUtteranceSecs: num(env.CONCH_MAX_UTTERANCE_SECS, 120),
-    endSilenceSecs: num(env.CONCH_END_SILENCE_SECS, 3.5), // 2.5 clipped natural mid-thought pauses (live)
+    endSilenceSecs: settings["end-silence"].value as number, // 2.5 clipped natural mid-thought pauses (live)
     startThresholdPct: num(env.CONCH_START_THRESHOLD_PCT, 2),
     endThresholdPct: num(env.CONCH_END_THRESHOLD_PCT, 2),
     awayAfterSecs: num(env.CONCH_AWAY_AFTER_SECS, 0),
-    typingGraceSecs: zeroable(env.CONCH_TYPING_GRACE_SECS, 2), // touched keys/mouse within 2s ⇒ working; 0 disables the gate
-    readFull: flag(env.CONCH_READ_FULL, true),
+    typingGraceSecs: settings["typing-grace"].value as number, // touched keys/mouse within 2s ⇒ working; 0 disables the gate
+    readFull: settings["read-full"].value as boolean,
     // 0 = no gap at all: barge-in + spacebar cover interrupts, chunks flow
     // back-to-back (when barging is off, a 0.6s floor re-appears in the loop)
     gapSecs: zeroable(env.CONCH_GAP_SECS, 0),
-    bargeThresholdPct: zeroable(env.CONCH_BARGE_THRESHOLD_PCT, 8), // measured: speaker bleed peaks ~4.7%, ambient ~1%; 0 disables
+    bargeThresholdPct: settings["barge-threshold"].value as number, // 0 disables; tune above speaker bleed to opt in
 
     continueSentences: num(env.CONCH_CONTINUE_SENTENCES, 6), // bigger chunks = fewer inter-chunk pauses
     micCues: flag(env.CONCH_MIC_CUES, true),
     autoSubmit: flag(env.CONCH_AUTO_SUBMIT, true),
     holdSubmit: flag(env.CONCH_HOLD_SUBMIT, true),
-    holdSubmitSecs: num(env.CONCH_HOLD_SUBMIT_SECS, 8),
+    holdSubmitSecs: settings["hold-submit-delay"].value as number,
     recentInjectSuppressMs: num(env.CONCH_INJECT_SUPPRESS_MS, 30_000),
     keystrokeFallback: flag(env.CONCH_KEYSTROKE_FALLBACK, false),
-    revealOnTurn: flag(env.CONCH_REVEAL_ON_TURN, true),
+    revealOnTurn: settings["reveal-on-turn"].value as boolean,
     socketPath: env.CONCH_SOCKET ?? "/tmp/conch.sock",
     claudeDir: env.CLAUDE_CONFIG_DIR ?? join(HOME, ".claude"),
     ttsEngine: parseTtsEngine(env.CONCH_TTS),
@@ -171,7 +181,7 @@ export function loadConfig(): Config {
       .split(",")
       .map((v) => v.trim())
       .filter(Boolean),
-    ttsSpeed: num(env.CONCH_TTS_SPEED, 1.35), // brisker Kokoro; CONCH_TTS_SPEED to taste
+    ttsSpeed: settings["kokoro-speed"].value as number, // brisker Kokoro; CONCH_TTS_SPEED to taste
     ttsBatchChars: zeroable(env.CONCH_TTS_BATCH_CHARS, 240),
   };
 }

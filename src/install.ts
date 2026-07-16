@@ -144,6 +144,24 @@ async function downloadModel(url: string, dest: string, minBytes: number): Promi
  * (observed live, three crashes) — the daemon must never live in a Terminal
  * window. View the dashboard anytime with `tmux attach -t conch`.
  */
+export function renderSupervisorScript(tmux: string, daemonCmd: string): string {
+  return `#!/bin/zsh
+# conch supervisor — keeps the daemon's tmux session alive (installed by \`conch service\`)
+while true; do
+  "${tmux}" has-session -t conch 2>/dev/null || \\
+    "${tmux}" new-session -d -s conch '${daemonCmd}'
+  sleep 15
+done
+`;
+}
+
+export function serviceRestartCommands(tmux: string, uid: number): string[][] {
+  return [
+    [tmux, "kill-session", "-t", "conch"],
+    ["launchctl", "kickstart", "-k", `gui/${uid}/${SERVICE_LABEL}`],
+  ];
+}
+
 export async function runService(cfg: Config, action: "install" | "off"): Promise<void> {
   const uid = process.getuid?.() ?? 501;
   const plistPath = join(homedir(), "Library/LaunchAgents", `${SERVICE_LABEL}.plist`);
@@ -172,17 +190,7 @@ export async function runService(cfg: Config, action: "install" | "off"): Promis
   const supervisorDir = IS_COMPILED ? join(homedir(), ".config", "conch") : join(conchRoot, "bin");
   const supervisorPath = join(supervisorDir, "conch-supervisor.sh");
   mkdirSync(supervisorDir, { recursive: true });
-  await Bun.write(
-    supervisorPath,
-    `#!/bin/zsh
-# conch supervisor — keeps the daemon's tmux session alive (installed by \`conch service\`)
-while true; do
-  "${tmux}" has-session -t conch 2>/dev/null || \\
-    "${tmux}" new-session -d -s conch '${daemonCmd}'
-  sleep 15
-done
-`,
-  );
+  await Bun.write(supervisorPath, renderSupervisorScript(tmux, daemonCmd));
   chmodSync(supervisorPath, 0o755);
 
   const path = [
@@ -218,8 +226,12 @@ done
     console.error(`[conch] launchctl bootstrap failed: ${boot.stderr.toString().trim()}`);
     process.exit(1);
   }
+  // The launchd job is the supervisor shell; the live daemon is detached in
+  // tmux. Drop that session first, then kick the managed supervisor so it
+  // recreates the daemon immediately with the regenerated launch environment.
+  for (const restart of serviceRestartCommands(tmux, uid)) Bun.spawnSync(restart);
   const viewHint = IS_COMPILED ? "tmux attach -t conch" : `tmux attach -t conch   (or open ${conchRoot}/dashboard.command)`;
-  console.log(`[conch] service installed — daemon starts at login and self-heals within ~15s.
+  console.log(`[conch] service installed — daemon restarted, starts at login, and self-heals within ~15s.
   view:      ${viewHint}
   logs:      /tmp/conch-supervisor.log
   remove:    conch service off`);

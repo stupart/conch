@@ -10,9 +10,13 @@ import {
   validateVoiceRing,
   voiceFor,
 } from "../src/speak.ts";
-import { loadConfig } from "../src/config.ts";
+import { loadConfig as loadRealConfig } from "../src/config.ts";
 import { TtsHealthMachine } from "../src/tts-health.ts";
 import { parseWav, trimWav } from "../src/tts-wav.ts";
+
+function loadConfig() {
+  return loadRealConfig({ env: {}, settingsPath: `/tmp/conch-speak-test-${process.pid}/settings.json` });
+}
 
 function cfgWithVoices(voices: string[]) {
   const cfg = loadConfig();

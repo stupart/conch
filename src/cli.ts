@@ -6,6 +6,22 @@ import { runInstall, runDoctor, runService, runSetup } from "./install.ts";
 import { listenOnce } from "./listen.ts";
 import { speak, probeTtsServer, voiceFor, setVoiceOverride } from "./speak.ts";
 import { emitRecorderTraces } from "./diagnostics.ts";
+import {
+  SETTING_DESCRIPTORS,
+  getSettingDescriptor,
+  loadSettingResolutions,
+  loadSettingsFile,
+  parseSetting,
+  resolveSettingFromLoaded,
+  sendControlMessage,
+  settingsPathFor,
+  unsetSetting,
+  writeSetting,
+  type ConfigAck,
+  type ConfigSnapshot,
+  type SettingDescriptor,
+  type SettingResolution,
+} from "./settings.ts";
 
 const HELP = `conch — a voice loop for Claude Code
 
@@ -23,6 +39,10 @@ Usage:
   conch speak <text>    say something (TTS test; uses the warm Kokoro server when up)
   conch voices          audition the voice ring — each voice introduces itself
   conch voice <s> [v]   show or pin a session's voice (persisted)
+  conch set <key> <v>   save a curated setting and apply it live when possible
+  conch get <key>       show one effective setting and its source
+  conch unset <key>     remove a saved setting (revert to env/default)
+  conch settings        show all curated settings and their sources
   conch doctor          check external dependencies
 
 Config via env: CONCH_VOICE, CONCH_SPEAK_SENTENCES, CONCH_SPEAK_MAX_CHARS,
@@ -32,6 +52,105 @@ CONCH_AUTO_SUBMIT, CONCH_KEYSTROKE_FALLBACK, CONCH_SEASHELL_ROOT, CONCH_SOCKET
 
 const cfg = loadConfig();
 const [command, ...rest] = process.argv.slice(2);
+const settingsPath = settingsPathFor(process.env);
+
+function settingValue(value: number | boolean): string {
+  return String(value);
+}
+
+function hookCaveat(descriptor: SettingDescriptor): string {
+  return `next hook — hook env (${descriptor.env}) may override`;
+}
+
+function freshResolution(descriptor: SettingDescriptor): SettingResolution {
+  const loaded = loadSettingsFile(settingsPath);
+  const resolution = resolveSettingFromLoaded(
+    descriptor,
+    process.env,
+    loaded,
+    descriptor.apply === "live",
+    true,
+  );
+  if (descriptor.apply === "live") return resolution;
+  const caveat = hookCaveat(descriptor);
+  return {
+    ...resolution,
+    diagnostic: resolution.diagnostic ? `${resolution.diagnostic}; ${caveat}` : caveat,
+  };
+}
+
+function localSnapshot(): ConfigSnapshot {
+  const snapshot = loadSettingResolutions({ env: process.env, settingsPath });
+  const loaded = loadSettingsFile(settingsPath);
+  for (const descriptor of SETTING_DESCRIPTORS) {
+    if (descriptor.apply !== "hook") continue;
+    const resolution = resolveSettingFromLoaded(descriptor, process.env, loaded, false, true);
+    const caveat = hookCaveat(descriptor);
+    snapshot[descriptor.key] = {
+      ...resolution,
+      diagnostic: resolution.diagnostic ? `${resolution.diagnostic}; ${caveat}` : caveat,
+    };
+  }
+  return snapshot;
+}
+
+function printSetting(descriptor: SettingDescriptor, resolution: SettingResolution): void {
+  const source = resolution.source === "env" ? `env ${descriptor.env}` : resolution.source;
+  const diagnostic = resolution.diagnostic ? ` — ${resolution.diagnostic}` : "";
+  console.log(`${descriptor.key.padEnd(22)} ${settingValue(resolution.value).padEnd(8)} ${source}${diagnostic}`);
+}
+
+function printMutation(
+  descriptor: SettingDescriptor,
+  action: "set" | "unset",
+  fresh: SettingResolution,
+  result: Awaited<ReturnType<typeof sendControlMessage>>,
+  savedValue?: number | boolean,
+): void {
+  const lead = action === "set"
+    ? `[conch] ${descriptor.key} = ${settingValue(savedValue ?? fresh.value)} — saved`
+    : `[conch] ${descriptor.key} unset — saved; effective ${settingValue(fresh.value)} (${fresh.source})`;
+  const parts = [lead];
+
+  if (!result.ok) {
+    if (result.reason === "ack-unknown") {
+      if (descriptor.apply === "hook") parts.push(`hook-next (${hookCaveat(descriptor)})`);
+      parts.push("ack-unknown (saved; daemon reply could not be verified)");
+    } else if (descriptor.apply === "hook") {
+      parts.push(`hook-next (${hookCaveat(descriptor)})`, "daemon-down");
+    } else {
+      if (action === "set" && fresh.source === "env") parts.push(`masked-by-env ${descriptor.env}`);
+      parts.push("daemon-down (saved, next start)");
+    }
+  } else if (result.response.kind !== "config-ack"
+    || result.response.key !== descriptor.key
+    || result.response.action !== action) {
+    if (descriptor.apply === "hook") parts.push(`hook-next (${hookCaveat(descriptor)})`);
+    parts.push("ack-unknown (saved; daemon reply did not match the request)");
+  } else {
+    const ack: ConfigAck = result.response;
+    if (ack.status === "applied") {
+      parts.push(`applied-live ${settingValue(ack.effective)} (${ack.source})`);
+    } else if (ack.status === "masked") {
+      parts.push(`masked-by-env ${ack.env ?? descriptor.env} (effective ${settingValue(ack.effective)})`);
+    } else {
+      parts.push(`hook-next (${ack.diagnostic ?? hookCaveat(descriptor)})`);
+    }
+    if (ack.diagnostic && ack.status !== "hook-next") parts.push(ack.diagnostic);
+  }
+
+  if (fresh.diagnostic && !parts.some((part) => part.includes(fresh.diagnostic!))) parts.push(fresh.diagnostic);
+  if (descriptor.key === "barge-threshold") {
+    parts.push("existing supervised daemons need `conch service install` once to shed the old inherited env and restart");
+  }
+  console.log(parts.join("; "));
+}
+
+async function readDaemonSnapshot(): Promise<ConfigSnapshot | "daemon-down" | "ack-unknown"> {
+  const result = await sendControlMessage(cfg.socketPath, { kind: "get-config" });
+  if (!result.ok) return result.reason;
+  return result.response.kind === "config-snapshot" ? result.response.snapshot : "ack-unknown";
+}
 
 switch (command) {
   case "hook":
@@ -136,6 +255,90 @@ switch (command) {
     })) && (await probeTtsServer(cfg, 1500))) {
       await speak(cfg, `${session} now sounds like this.`, session);
     }
+    break;
+  }
+  case "set": {
+    const [key, raw, ...extra] = rest;
+    if (key === undefined || raw === undefined || extra.length) {
+      console.error("usage: conch set <key> <value>");
+      process.exit(1);
+    }
+    const parsed = parseSetting(key, raw);
+    if (!parsed.ok) {
+      console.error(`[conch] ${parsed.err}`);
+      process.exit(1);
+    }
+    try {
+      writeSetting(settingsPath, parsed.value.descriptor.key, parsed.value.value);
+    } catch (error) {
+      console.error(`[conch] ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+    const fresh = freshResolution(parsed.value.descriptor); // re-read the just-renamed file; never report a stale merge
+    const result = await sendControlMessage(cfg.socketPath, {
+      kind: "set-config",
+      key: parsed.value.descriptor.key,
+      value: parsed.value.value,
+    });
+    printMutation(parsed.value.descriptor, "set", fresh, result, parsed.value.value);
+    break;
+  }
+  case "get": {
+    const [key, ...extra] = rest;
+    if (key === undefined || extra.length) {
+      console.error("usage: conch get <key>");
+      process.exit(1);
+    }
+    const found = getSettingDescriptor(key);
+    if (!found.ok) {
+      console.error(`[conch] ${found.err}`);
+      process.exit(1);
+    }
+    const remote = await readDaemonSnapshot();
+    if (remote === "ack-unknown") {
+      console.error("[conch] ack-unknown — daemon reply could not be verified");
+      process.exit(1);
+    }
+    if (remote === "daemon-down") console.log("[conch] daemon-down — showing local settings resolution");
+    const snapshot = remote === "daemon-down" ? localSnapshot() : remote;
+    printSetting(found.value, snapshot[found.value.key]);
+    break;
+  }
+  case "unset": {
+    const [key, ...extra] = rest;
+    if (key === undefined || extra.length) {
+      console.error("usage: conch unset <key>");
+      process.exit(1);
+    }
+    const found = getSettingDescriptor(key);
+    if (!found.ok) {
+      console.error(`[conch] ${found.err}`);
+      process.exit(1);
+    }
+    try {
+      unsetSetting(settingsPath, found.value.key);
+    } catch (error) {
+      console.error(`[conch] ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+    const fresh = freshResolution(found.value); // file layer is gone; resolve env -> default now
+    const result = await sendControlMessage(cfg.socketPath, { kind: "unset-config", key: found.value.key });
+    printMutation(found.value, "unset", fresh, result);
+    break;
+  }
+  case "settings": {
+    if (rest.length) {
+      console.error("usage: conch settings");
+      process.exit(1);
+    }
+    const remote = await readDaemonSnapshot();
+    if (remote === "ack-unknown") {
+      console.error("[conch] ack-unknown — daemon reply could not be verified");
+      process.exit(1);
+    }
+    if (remote === "daemon-down") console.log("[conch] daemon-down — showing local settings resolution");
+    const snapshot = remote === "daemon-down" ? localSnapshot() : remote;
+    for (const descriptor of SETTING_DESCRIPTORS) printSetting(descriptor, snapshot[descriptor.key]);
     break;
   }
   case "voices": {

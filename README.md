@@ -88,6 +88,10 @@ That's it — the daemon finds `mlx_audio.server`, spawns it, and **every sessio
 | `conch speak <text>` | TTS check |
 | `conch voices` | Audition the voice ring — each voice introduces itself |
 | `conch voice <s> [v]` | Show or pin a session's voice (persisted) |
+| `conch set <key> <value>` | Save a curated setting and apply it live when possible |
+| `conch get <key>` | Show one effective setting and its source |
+| `conch unset <key>` | Remove a saved value and revert to env/default |
+| `conch settings` | List all curated settings, effective values, and sources |
 | `conch doctor` | Verify external dependencies |
 
 ## Voice commands
@@ -148,12 +152,23 @@ State is also written to `/tmp/conch-state.json` (`{state, label, partial, ts}`)
 
 ## Config
 
-All via environment variables (put them in the hook's env or your shell profile):
+Curated settings can be changed without editing shell profiles:
+
+```bash
+conch settings
+conch get end-silence
+conch set end-silence 2.75
+conch unset end-silence       # revert to env/default
+```
+
+Values are saved in `~/.config/conch/settings.json`; writes are atomic for readers and intended for one `conch` CLI writer at a time. Environment variables take precedence over saved values. `set` reports whether a value applied live, is masked by an environment variable, waits for the next hook, or was saved for the next daemon start. `get` and `settings` ask the daemon for live truth and fall back to local resolution when it is down.
+
+The full environment-variable surface remains available (put overrides in the hook's env or your shell profile):
 
 | Variable | Default | |
 |---|---|---|
 | `CONCH_VOICE` | system default | `say` voice — try `Ava (Premium)` |
-| `CONCH_SAY_RATE` | `210` | speech rate, words per minute (`0` = say default ~175) |
+| `CONCH_SAY_RATE` | `210` | macOS `say` rate in words per minute; `0` preserves the system default (~175) |
 | `CONCH_SPEAK_SENTENCES` | `2` | how much of the reply to read aloud |
 | `CONCH_SPEAK_MAX_CHARS` | `350` | hard cap on spoken length |
 | `CONCH_BELL` / `CONCH_SPEAK` | `1` | disable the ding / the voice |
@@ -163,7 +178,7 @@ All via environment variables (put them in the hook's env or your shell profile)
 | `CONCH_END_SILENCE_SECS` | `3.5` | pause length that ends your utterance (drop it for snappier turns) |
 | `CONCH_CONTINUE_SENTENCES` | `6` | sentences per read-aloud / "continue" chunk |
 | `CONCH_GAP_SECS` | `0` (none) | interjection gap between read-aloud chunks |
-| `CONCH_BARGE_THRESHOLD_PCT` | `8` | mic level that interrupts reading mid-chunk; `0` = gaps only |
+| `CONCH_BARGE_THRESHOLD_PCT` | `0` (off) | mic level that interrupts reading mid-chunk; after upgrading an existing supervised install, run `conch service install` once to shed the old forced env and restart |
 | `CONCH_MIC_CUES` | `1` | tink on mic-open, bottle on silent close |
 | `CONCH_AUTO_SUBMIT` | `1` | press Enter after injecting |
 | `CONCH_HOLD_SUBMIT` | `1` | hold Enter; pauses segment dictation, "send"/"go" or a long pause submits |
@@ -185,7 +200,6 @@ All via environment variables (put them in the hook's env or your shell profile)
 
 - **Name-addressing** — "hey dayloop, ..." routes to any session, not just the last announcer
 - **Haiku summaries** — pipe replies through `claude -p --model haiku` for a natural spoken one-liner instead of first-two-sentences
-- **Tunable settings** — an in-dashboard panel to dial the pause length, voices, and thresholds by ear, saved as your defaults
 - **Phone remote** — hear from and talk back to your sessions over a websocket when you're away from the machine
 - **Always-listening mode** — seashell's concurrent VAD architecture, once extracted from its TUI, replaces the per-window sox capture
 - **Linux** — swap `say`/`afplay` for espeak/paplay, keystroke fallback for xdotool

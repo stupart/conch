@@ -33,9 +33,16 @@ test("firstSentences takes N whole sentences under the cap — no mid-sentence c
 
 test("countCoveredSentences finds where the announcement stopped", () => {
   const sentences = ["First one.", "Second one!", "Third one?"];
-  expect(countCoveredSentences("conch: First one. Second one!", sentences, 2)).toBe(2);
-  expect(countCoveredSentences("conch: First one. Second on", sentences, 2)).toBe(1); // truncated -> re-read it
-  expect(countCoveredSentences("conch: finished, ready for your next prompt", sentences, 2)).toBe(0);
+  expect(countCoveredSentences("conch: First one. Second one!", sentences)).toBe(2);
+  expect(countCoveredSentences("conch: First one. Second on", sentences)).toBe(1); // truncated -> re-read it
+  expect(countCoveredSentences("conch: finished, ready for your next prompt", sentences)).toBe(0);
+});
+
+test("countCoveredSentences follows the actual announcement, not a configured sentence count", () => {
+  const sentences = ["First one.", "Second one!", "Third one?", "Fourth one."];
+  // The hook that produced this event announced three sentences. A daemon
+  // started with a different announce-sentences value must still resume at 3.
+  expect(countCoveredSentences("conch: First one. Second one! Third one?", sentences)).toBe(3);
 });
 
 test("firstSentences handles a single unterminated sentence", () => {

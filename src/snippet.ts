@@ -45,11 +45,15 @@ export function firstSentences(text: string, count: number, maxChars: number): s
  * How many leading sentences are fully contained in the announcement?
  * The reader resumes AFTER what was actually spoken — never assume.
  */
-export function countCoveredSentences(announce: string, sentences: string[], max: number): number {
+export function countCoveredSentences(announce: string, sentences: string[]): number {
   let covered = 0;
-  for (const s of sentences.slice(0, max)) {
-    if (!announce.includes(s.trim())) break;
+  let offset = 0;
+  for (const s of sentences) {
+    const sentence = s.trim();
+    const at = announce.indexOf(sentence, offset);
+    if (at === -1) break;
     covered++;
+    offset = at + sentence.length;
   }
   return covered;
 }

@@ -1,10 +1,14 @@
 import { expect, test } from "bun:test";
-import { loadConfig } from "../src/config.ts";
+import { loadConfig as loadRealConfig } from "../src/config.ts";
 import {
   SpeechManager,
   type SpeechAudioGate,
   type SpeechBackend,
 } from "../src/speech-manager.ts";
+
+function loadConfig() {
+  return loadRealConfig({ env: {}, settingsPath: `/tmp/conch-speech-manager-test-${process.pid}/settings.json` });
+}
 
 const passThroughGate: SpeechAudioGate = async (_operation, task) => task();
 
