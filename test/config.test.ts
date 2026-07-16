@@ -26,7 +26,7 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.sayRate).toBe(210);
     expect(cfg.workingMic).toBe(false);
     expect(cfg.interruptOnManualReply).toBe(true);
-    expect(cfg.handoffOrder).toBe("newest");
+    expect(cfg.handoffOrder).toBe("oldest");
   });
 
   test("loads native numbers and booleans from settings.json", () => {
@@ -111,7 +111,7 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.speakSentences).toBe(2);
     expect(cfg.readFull).toBe(true);
     expect(cfg.interruptOnManualReply).toBe(true);
-    expect(cfg.handoffOrder).toBe("newest");
+    expect(cfg.handoffOrder).toBe("oldest");
     expect(cfg.workingMic).toBe(false);
   });
 

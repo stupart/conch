@@ -261,7 +261,7 @@ describe("daemon config controller", () => {
     const env = {};
     const cfg = loadConfig({ env, settingsPath: path });
     const controller = createConfigController(cfg, { env, settingsPath: path });
-    expect(cfg.handoffOrder).toBe("newest");
+    expect(cfg.handoffOrder).toBe("oldest");
 
     writeSetting(path, "handoff-order", "urgency");
     const setReply = controller.handle({
@@ -287,17 +287,17 @@ describe("daemon config controller", () => {
     unsetSetting(path, "handoff-order");
     const unsetReply = controller.handle({ kind: "unset-config", key: "handoff-order" });
 
-    expect(cfg.handoffOrder).toBe("newest");
+    expect(cfg.handoffOrder).toBe("oldest");
     expect(takeNextQueuedEvent([
       { type: "turn-end", sessionId: "waiting", label: "waiting", announce: "" },
       { type: "working", sessionId: "working", label: "working", announce: "" },
-    ], cfg.handoffOrder)?.sessionId).toBe("working");
+    ], cfg.handoffOrder)?.sessionId).toBe("waiting");
     expect(unsetReply).toMatchObject({
       kind: "config-ack",
       key: "handoff-order",
       action: "unset",
       status: "applied",
-      effective: "newest",
+      effective: "oldest",
       source: "default",
     });
   });

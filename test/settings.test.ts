@@ -41,7 +41,7 @@ const expected = {
   "kokoro-speed": ["ttsSpeed", "CONCH_TTS_SPEED", "live", 1.35],
   "read-full": ["readFull", "CONCH_READ_FULL", "live", true],
   "interrupt-on-manual-reply": ["interruptOnManualReply", "CONCH_INTERRUPT_ON_MANUAL_REPLY", "live", true],
-  "handoff-order": ["handoffOrder", "CONCH_HANDOFF_ORDER", "live", "newest"],
+  "handoff-order": ["handoffOrder", "CONCH_HANDOFF_ORDER", "live", "oldest"],
   "reveal-on-turn": ["revealOnTurn", "CONCH_REVEAL_ON_TURN", "live", true],
   "working-mic": ["workingMic", "CONCH_WORKING_MIC", "live", false],
   "announce-sentences": ["speakSentences", "CONCH_SPEAK_SENTENCES", "hook", 2],

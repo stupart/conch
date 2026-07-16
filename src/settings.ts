@@ -217,7 +217,7 @@ export const SETTING_DESCRIPTORS = [
     field: "handoffOrder",
     env: "CONCH_HANDOFF_ORDER",
     kind: "enum",
-    default: "newest",
+    default: "oldest",
     parse: parseHandoffOrder,
     bounds: null,
     apply: "live",
