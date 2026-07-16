@@ -22,9 +22,9 @@ import {
   type RuntimeDictationSession,
 } from "./listen.ts";
 import type { RecorderHandle } from "./dictation-controller.ts";
-import { injectText, injectKey, revealSessionWindow } from "./inject.ts";
+import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
 import { classify, classifyReadingGap, wordOverlapRatio } from "./commands.ts";
-import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince } from "./snippet.ts";
+import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
 import { probeServer } from "./transcribe.ts";
 import { setState, logAbove, setPanel, setKeybar, setLogsVisible, logsShown, getLiveState, onLiveChange, type ConchState } from "./status.ts";
 import { listSessions, registrySnapshot, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
@@ -727,13 +727,48 @@ export async function runDaemon(cfg: Config): Promise<void> {
       emitRecorderTraces(diagnosticIds, { finalSubmittedPayload: text });
     }
     markInjected(event.sessionId);
+    // Record the utterance itself, not just the route — a mis-fire used to be
+    // unrecoverable because only "injected via X" was logged, never the words.
+    log(`heard → ${JSON.stringify(text)}`);
+
+    // Baseline the target session's user-prompt count so we can CONFIRM the
+    // prompt actually submitted. null ⇒ no transcript to watch, skip confirmation.
+    const beforeCount = event.transcriptPath ? await transcriptMark(event.transcriptPath) : null;
     const { via } = await injectText(cfg, event.pid, text);
-    log(`injected via ${via}`);
+
     if (via === "clipboard") {
+      log(`injected via ${via}`);
       await speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.", event.label);
-    } else if (via === "none") {
-      await speak(cfg, "Heard you, but I could not find the session's pane.", event.label);
+      return;
     }
+    if (via === "none") {
+      log(`injected via ${via}`);
+      await speak(cfg, "Heard you, but I could not find the session's pane.", event.label);
+      return;
+    }
+    if (beforeCount === null) {
+      log(`injected via ${via}`); // no transcript to confirm against — trust it
+      return;
+    }
+
+    // The osascript path can type the text without the Return landing ("typed but
+    // didn't send"). Watch the transcript for a NEW user prompt; if it doesn't
+    // appear, re-press Return (the text is sitting in the input) a couple of times;
+    // if it still won't take, drop the words on the clipboard so they survive.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await Bun.sleep(900 + attempt * 600); // give Claude Code time to write the prompt entry
+      if ((await transcriptMark(event.transcriptPath!)) > beforeCount) {
+        log(`injected via ${via} — confirmed sent${attempt ? ` (after ${attempt} re-send${attempt > 1 ? "s" : ""})` : ""}`);
+        return;
+      }
+      if (attempt < 2) {
+        log(`not confirmed yet — re-pressing Return (try ${attempt + 1})`);
+        await injectKey(cfg, event.pid, "Enter");
+      }
+    }
+    log(`⚠ inject via ${via} NOT confirmed — words placed on clipboard`);
+    await toClipboard(text);
+    await speak(cfg, "I typed that but it didn't send. Your words are on the clipboard — just paste and press return.", event.label);
   }
 
   /** Shared handling for anything heard while reading aloud (gap or barge-in). */

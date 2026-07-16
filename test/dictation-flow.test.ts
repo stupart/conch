@@ -42,10 +42,12 @@ class FakeRecorder implements RecorderHandle {
   }
 
   finish(text: string, finalBytes = 32_000, diagnosticId = `diag-${text}`): void {
+    const cause = this.stopReasons[0];
     this.result.resolve({
       rawPath: text,
       finalBytes,
       ...(diagnosticId ? { diagnosticId } : {}),
+      ...(cause ? { cause } : {}),
     });
   }
 }
@@ -140,8 +142,9 @@ describe("controller/reducer integration contracts", () => {
       "audio gate violation",
     );
 
-    backend.recorders[1]!.finish("hot tail");
+    backend.recorders[1]!.finish("hot tail", 8_000);
     const tail = await controller.nextEvent();
+    expect(tail).toMatchObject({ kind: "transcript", cause: request.reason });
     consumeTranscript(reducer, tail, 2);
     const barrier = await controller.nextEvent();
     const action = consumeBarrier(reducer, barrier, 3, request);
