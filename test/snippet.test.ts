@@ -1,5 +1,13 @@
 import { test, expect } from "bun:test";
-import { stripMarkdown, firstSentences, lastAssistantText, countCoveredSentences, transcriptMark, userRespondedSince } from "../src/snippet.ts";
+import {
+  stripMarkdown,
+  firstSentences,
+  lastAssistantText,
+  createLastAssistantTextReader,
+  countCoveredSentences,
+  transcriptMark,
+  userRespondedSince,
+} from "../src/snippet.ts";
 import { wavFromRawPcm } from "../src/transcribe.ts";
 
 test("wavFromRawPcm writes a valid 16kHz mono header", () => {
@@ -64,6 +72,116 @@ test("lastAssistantText returns the newest assistant text block", async () => {
 
 test("lastAssistantText returns empty for a missing file", async () => {
   expect(await lastAssistantText("/tmp/does-not-exist.jsonl")).toBe("");
+});
+
+test("lastAssistantText invalidates its real file cache when the transcript grows", async () => {
+  const path = `/tmp/conch-test-cache-${Date.now()}.jsonl`;
+  const entry = (text: string) => JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "text", text }] },
+  });
+  await Bun.write(path, entry("first"));
+  expect(await lastAssistantText(path)).toBe("first");
+
+  await Bun.write(path, `${entry("first")}\n${entry("a longer second reply")}`);
+  expect(await lastAssistantText(path)).toBe("first\na longer second reply");
+});
+
+test("unchanged navigation and overlay repaints share one transcript read", async () => {
+  let reads = 0;
+  let activeReads = 0;
+  let maxActiveReads = 0;
+  let releaseRead!: () => void;
+  let markStarted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const gate = new Promise<void>((resolve) => { releaseRead = resolve; });
+  const raw = JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "text", text: "cached reply" }] },
+  });
+  const reader = createLastAssistantTextReader({
+    fingerprint: async () => "42:100",
+    read: async () => {
+      reads++;
+      activeReads++;
+      maxActiveReads = Math.max(maxActiveReads, activeReads);
+      markStarted();
+      await gate;
+      activeReads--;
+      return raw;
+    },
+  });
+
+  const repaints = [reader("session.jsonl"), reader("session.jsonl"), reader("session.jsonl")];
+  await started;
+  expect(reads).toBe(1);
+  expect(maxActiveReads).toBe(1);
+  releaseRead();
+  expect(await Promise.all(repaints)).toEqual(["cached reply", "cached reply", "cached reply"]);
+  expect(await reader("session.jsonl")).toBe("cached reply");
+  expect(reads).toBe(1);
+});
+
+test("a changed transcript waits for the obsolete read instead of overlapping it", async () => {
+  let version = 1;
+  let reads = 0;
+  let activeReads = 0;
+  let maxActiveReads = 0;
+  let releaseFirst!: () => void;
+  let markFirstStarted!: () => void;
+  const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+  const assistantEntry = (text: string) => JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "text", text }] },
+  });
+  const reader = createLastAssistantTextReader({
+    fingerprint: async () => `fingerprint-${version}`,
+    read: async () => {
+      const readVersion = version;
+      reads++;
+      activeReads++;
+      maxActiveReads = Math.max(maxActiveReads, activeReads);
+      if (readVersion === 1) {
+        markFirstStarted();
+        await firstGate;
+      }
+      activeReads--;
+      return assistantEntry(`reply ${readVersion}`);
+    },
+  });
+
+  const first = reader("session.jsonl");
+  await firstStarted;
+  version = 2;
+  const second = reader("session.jsonl");
+  await Promise.resolve();
+  expect(reads).toBe(1);
+  releaseFirst();
+
+  expect(await first).toBe("reply 1");
+  expect(await second).toBe("reply 2");
+  expect(reads).toBe(2);
+  expect(maxActiveReads).toBe(1);
+});
+
+test("a failed transcript read is retried instead of cached", async () => {
+  let reads = 0;
+  const reader = createLastAssistantTextReader({
+    fingerprint: async () => "1:1",
+    read: async () => {
+      reads++;
+      if (reads === 1) throw new Error("mid-write");
+      return JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "retry succeeded" }] },
+      });
+    },
+  });
+
+  expect(await reader("session.jsonl")).toBe("");
+  expect(await reader("session.jsonl")).toBe("retry succeeded");
+  expect(reads).toBe(2);
 });
 
 test("transcriptMark ignores synthetic task-notification wakeups (not your replies)", async () => {

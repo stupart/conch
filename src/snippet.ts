@@ -1,5 +1,7 @@
 /** Turn a markdown reply into something worth hearing. */
 
+import { stat } from "node:fs/promises";
+
 export function stripMarkdown(md: string): string {
   const kept: string[] = [];
   let inFence = false;
@@ -58,24 +60,7 @@ export function countCoveredSentences(announce: string, sentences: string[]): nu
   return covered;
 }
 
-/**
- * The FINAL message of the last turn, not just any trailing text block.
- *
- * A turn's transcript looks like: interim text -> tool calls -> interim
- * text -> tool calls -> final summary (possibly split across entries).
- * Naively taking "the last text seen" can surface a stale interim note
- * ("let me look into it") when the real ending says the work is done.
- * So: walk backwards, skip meta lines, and collect the trailing run of
- * assistant text — stopping at the first tool call or user entry, which
- * by construction is where the final message begins.
- */
-export async function lastAssistantText(transcriptPath: string): Promise<string> {
-  let raw: string;
-  try {
-    raw = await Bun.file(transcriptPath).text();
-  } catch {
-    return "";
-  }
+function parseLastAssistantText(raw: string): string {
   const lines = raw.split("\n");
   const collected: string[] = [];
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -101,6 +86,93 @@ export async function lastAssistantText(transcriptPath: string): Promise<string>
   // by a line-start ``` — a space glued entry 2's opening fence mid-line, so the
   // fence went undetected, code was read aloud, and the real tail was dropped.
   return collected.join("\n");
+}
+
+export interface LastAssistantTextSource {
+  fingerprint(transcriptPath: string): Promise<string | null>;
+  read(transcriptPath: string): Promise<string>;
+}
+
+interface LastAssistantTextCacheEntry {
+  fingerprint: string;
+  pending: boolean;
+  value: Promise<string>;
+}
+
+/**
+ * Build a metadata-keyed reader. Same-version calls share one promise, while a
+ * changed version waits for any older full-file read before starting its own.
+ */
+export function createLastAssistantTextReader(
+  source: LastAssistantTextSource,
+): (transcriptPath: string) => Promise<string> {
+  const cache = new Map<string, LastAssistantTextCacheEntry>();
+
+  return async function readLastAssistantText(transcriptPath: string): Promise<string> {
+    for (;;) {
+      const fingerprint = await source.fingerprint(transcriptPath).catch(() => null);
+      if (fingerprint === null) return "";
+
+      const cached = cache.get(transcriptPath);
+      if (cached?.fingerprint === fingerprint) return cached.value;
+      if (cached?.pending) {
+        await cached.value.catch(() => "");
+        continue; // Re-stat: the transcript may have changed again while we waited.
+      }
+
+      let entry: LastAssistantTextCacheEntry;
+      const value = Promise.resolve()
+        .then(() => source.read(transcriptPath))
+        .then(
+          (raw) => {
+            try {
+              const text = parseLastAssistantText(raw);
+              entry.pending = false;
+              return text;
+            } catch (error) {
+              entry.pending = false;
+              if (cache.get(transcriptPath) === entry) cache.delete(transcriptPath);
+              throw error; // Preserve the pre-cache behavior for malformed schemas.
+            }
+          },
+          () => {
+            entry.pending = false;
+            if (cache.get(transcriptPath) === entry) cache.delete(transcriptPath);
+            return "";
+          },
+        );
+      entry = { fingerprint, pending: true, value };
+      cache.set(transcriptPath, entry);
+      return value;
+    }
+  };
+}
+
+const readLastAssistantText = createLastAssistantTextReader({
+  async fingerprint(transcriptPath) {
+    try {
+      const info = await stat(transcriptPath, { bigint: true });
+      return `${info.size}:${info.mtimeNs}`;
+    } catch {
+      return null;
+    }
+  },
+  read: (transcriptPath) => Bun.file(transcriptPath).text(),
+});
+
+/**
+ * The FINAL message of the last turn, not just any trailing text block.
+ *
+ * A turn's transcript looks like: interim text -> tool calls -> interim
+ * text -> tool calls -> final summary (possibly split across entries).
+ * Naively taking "the last text seen" can surface a stale interim note
+ * ("let me look into it") when the real ending says the work is done.
+ * So: walk backwards, skip meta lines, and collect the trailing run of
+ * assistant text — stopping at the first tool call or user entry, which
+ * by construction is where the final message begins.
+ */
+export function lastAssistantText(transcriptPath: string): Promise<string> {
+  return readLastAssistantText(transcriptPath);
 }
 
 /** Count real user PROMPT entries (typed messages, not tool_result) in a transcript. */
