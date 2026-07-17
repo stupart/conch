@@ -28,6 +28,29 @@ export interface WhisperServerClientOptions {
   sleep?: (ms: number, signal?: AbortSignal) => Promise<boolean>;
 }
 
+const HALLUCINATION_BLOCKLIST = new Set([
+  "bye",
+  "thank you",
+  "thank you for watching",
+  "thanks for watching",
+  "you",
+]);
+const PROTECTED_SHORT_REPLIES = new Set([
+  "cancel",
+  "continue",
+  "go",
+  "mute",
+  "no",
+  "pause",
+  "send",
+  "stop",
+  "yes",
+]);
+const MAX_HALLUCINATION_CAPTURE_BYTES = 8 * 16_000 * 2;
+const LOW_ENERGY_WINDOW_RMS = 0.012;
+const HIGH_NO_SPEECH_PROBABILITY = 0.8;
+const VERY_LOW_AVG_LOGPROB = -1.5;
+
 function abortError(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("Whisper operation cancelled", "AbortError");
 }
@@ -58,6 +81,75 @@ function responseBody(value: unknown): WhisperResponseBody {
   }
   const body = value as { text: string; segments?: unknown };
   return { text: body.text, ...(body.segments === undefined ? {} : { segments: body.segments }) };
+}
+
+function normalizeTranscriptForMatch(text: string): string {
+  return text
+    .normalize("NFKC")
+    .toLocaleLowerCase("en-US")
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Highest 100ms-window RMS, normalized to full-scale signed 16-bit PCM. */
+function peakWindowRms(pcm: Uint8Array): number {
+  const byteLength = pcm.byteLength - (pcm.byteLength % 2);
+  if (!byteLength) return 0;
+  const view = new DataView(pcm.buffer, pcm.byteOffset, byteLength);
+  const frameSamples = 1_600;
+  let peak = 0;
+  for (let first = 0; first < byteLength / 2; first += frameSamples) {
+    const last = Math.min(byteLength / 2, first + frameSamples);
+    let sumSquares = 0;
+    for (let sample = first; sample < last; sample++) {
+      const normalized = view.getInt16(sample * 2, true) / 32_768;
+      sumSquares += normalized * normalized;
+    }
+    peak = Math.max(peak, Math.sqrt(sumSquares / (last - first)));
+  }
+  return peak;
+}
+
+function hasLowConfidence(segments: unknown): boolean {
+  if (!Array.isArray(segments) || segments.length === 0) return false;
+  const records = segments.filter(
+    (segment): segment is Record<string, unknown> => Boolean(segment) && typeof segment === "object",
+  );
+  if (records.length !== segments.length) return false;
+  const highNoSpeech = records.every((segment) => (
+    typeof segment.no_speech_prob === "number"
+    && Number.isFinite(segment.no_speech_prob)
+    && segment.no_speech_prob >= HIGH_NO_SPEECH_PROBABILITY
+  ));
+  const veryLowLogprob = records.every((segment) => (
+    typeof segment.avg_logprob === "number"
+    && Number.isFinite(segment.avg_logprob)
+    && segment.avg_logprob <= VERY_LOW_AVG_LOGPROB
+  ));
+  return highNoSpeech || veryLowLogprob;
+}
+
+/**
+ * Conservative whole-result hallucination filter. A known phantom phrase is
+ * discarded only for a short capture with strong energy/confidence evidence.
+ * Missing server metadata fails open, and command words are protected even if
+ * a future blocklist edit accidentally adds one.
+ */
+export function isLikelyWhisperHallucination(
+  text: string,
+  pcm: Uint8Array,
+  segments?: unknown,
+): boolean {
+  const normalized = normalizeTranscriptForMatch(text);
+  if (!HALLUCINATION_BLOCKLIST.has(normalized) || PROTECTED_SHORT_REPLIES.has(normalized)) return false;
+  if (pcm.byteLength > MAX_HALLUCINATION_CAPTURE_BYTES) return false;
+  return peakWindowRms(pcm) <= LOW_ENERGY_WINDOW_RMS || hasLowConfidence(segments);
+}
+
+export function filterWhisperTranscript(raw: string, pcm: Uint8Array, segments?: unknown): string {
+  const text = cleanTranscript(raw);
+  return isLikelyWhisperHallucination(text, pcm, segments) ? "" : text;
 }
 
 /**
@@ -192,7 +284,12 @@ export class WhisperServerClient {
     }
   }
 
-  async transcribeWarm(cfg: Config, wav: Uint8Array, timeoutMs = 60_000): Promise<WarmTranscriptionResult> {
+  async transcribeWarm(
+    cfg: Config,
+    wav: Uint8Array,
+    timeoutMs = 60_000,
+    includeConfidence = true,
+  ): Promise<WarmTranscriptionResult> {
     if (!cfg.whisperPort || !this.healthy) return { status: "unavailable" };
     const request = new AbortController();
     this.warmRequests.add(request);
@@ -204,7 +301,14 @@ export class WhisperServerClient {
         try {
           const form = new FormData();
           form.append("file", new Blob([wav.buffer as ArrayBuffer], { type: "audio/wav" }), "audio.wav");
-          form.append("response_format", "json");
+          form.append("response_format", includeConfidence ? "verbose_json" : "json");
+          if (includeConfidence) {
+            // verbose_json is the only whisper.cpp format that exposes segment
+            // confidence. Skip timestamps/language probabilities to avoid their
+            // otherwise unnecessary token and language-detection work.
+            form.append("no_timestamps", "true");
+            form.append("no_language_probabilities", "true");
+          }
           const response = await awaitWithAbort(this.request(
             `http://127.0.0.1:${cfg.whisperPort}/inference`,
             { method: "POST", body: form, signal: laneSignal },
@@ -282,10 +386,15 @@ export async function transcribePcm(
 ): Promise<{ text: string; error?: string }> {
   const wav = wavFromRawPcm(pcm);
 
-  const warm = await whisperServerClient.transcribeWarm(cfg, wav);
+  const warm = await whisperServerClient.transcribeWarm(
+    cfg,
+    wav,
+    60_000,
+    options.coldFallback !== false,
+  );
   if (warm.status === "ok") {
     onEngine?.("warm");
-    return { text: cleanTranscript(warm.body.text) };
+    return { text: filterWhisperTranscript(warm.body.text, pcm, warm.body.segments) };
   }
   if (options.coldFallback === false) return { text: "" };
 
@@ -293,7 +402,8 @@ export async function transcribePcm(
   onEngine?.("cold");
   await Bun.write(tmp, wav as unknown as Uint8Array<ArrayBuffer>);
   try {
-    return await transcribeWavCli(cfg, tmp);
+    const result = await transcribeWavCli(cfg, tmp);
+    return { ...result, text: filterWhisperTranscript(result.text, pcm) };
   } finally {
     try {
       unlinkSync(tmp);
