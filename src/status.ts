@@ -268,7 +268,9 @@ function fullStatus(row: PanelRowModel): string {
 }
 
 function theaterLedgerRow(row: PanelRowModel, width: number, compact: boolean): string {
-  const bodyWidth = Math.max(1, width - (row.active ? 1 : 0));
+  // Reserve a 1-col gutter on EVERY row (accent bar when active, blank space
+  // otherwise) so a row's text never shifts as it gains or loses the highlight.
+  const bodyWidth = Math.max(1, width - 1);
   const cursor = row.navSelected ? "\x1b[38;2;88;201;212m▸\x1b[39m " : "  ";
   let body: string;
   if (compact) {
@@ -284,7 +286,7 @@ function theaterLedgerRow(row: PanelRowModel, width: number, compact: boolean): 
   }
   body = padVisible(body, bodyWidth);
   if (row.snoozed) body = `\x1b[2m${body}\x1b[22m`;
-  if (!row.active) return body;
+  if (!row.active) return ` ${body}`; // blank gutter — keeps text aligned with the active ▎
   // A steady brand accent + neutral fill anchors the live session. State color
   // belongs only to the icon, so the row does not strobe through an exchange.
   return `\x1b[38;2;88;201;212m▎\x1b[0m\x1b[48;2;28;32;36m${body}\x1b[0m`;
@@ -309,16 +311,22 @@ function theaterContentLines(model: PanelModel, width: number, height: number, l
   }
 
   const state = model.live.state;
+  const capturing = state === "listening" || state === "recording";
+  const transcribing = state === "transcribing";
   const note = state === "speaking"
     ? "space to cut in · the mic opens when it finishes"
-    : state === "listening" || state === "recording"
+    : capturing
       ? "pause to send · space to stop · say send to submit now"
-      : "";
+      : transcribing
+        ? "transcribing…"
+        : "";
   const available = Math.max(0, height - (note ? 1 : 0));
   let lines: string[] = [];
 
-  if (state === "listening" || state === "recording") {
-    const partial = `${model.live.partial}▌`;
+  if (capturing || transcribing) {
+    // Keep the live transcript visible through the recording→transcribing
+    // handoff — never flash back to the previous reply while finalizing.
+    const partial = `${model.live.partial}${capturing ? "▌" : ""}`;
     lines = wrapPlainText(partial, width).map((line) => line.text).slice(-available);
   } else {
     const reading = model.live.reading;
