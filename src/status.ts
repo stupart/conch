@@ -61,6 +61,8 @@ export interface RendererIO {
   stdoutTTY: boolean;
   stdinTTY: boolean;
   columns(): number;
+  /** Legacy panel chrome historically used an 80-column fallback. */
+  dashboardColumns?(): number;
   rows(): number;
   write(text: string): void;
   print(line: string): void;
@@ -71,6 +73,7 @@ function processRendererIO(): RendererIO {
     stdoutTTY: process.stdout.isTTY ?? false,
     stdinTTY: process.stdin.isTTY ?? false,
     columns: () => process.stdout.columns ?? 100,
+    dashboardColumns: () => process.stdout.columns ?? 80,
     rows: () => process.stdout.rows ?? 24,
     write: (text) => process.stdout.write(text),
     print: (line) => console.log(line),
@@ -115,7 +118,11 @@ export function createFooterRenderer(io: RendererIO = processRendererIO()): Rend
 
   return {
     panel(model): void {
-      const lines = dashboardPanelLines(dashboardRowsForModel(model), io.columns(), model.mode);
+      const lines = dashboardPanelLines(
+        dashboardRowsForModel(model),
+        io.dashboardColumns?.() ?? io.columns(),
+        model.mode,
+      );
       const width = io.columns() - 1;
       if (!tty) {
         panelLines = lines;
@@ -156,12 +163,54 @@ export function createFooterRenderer(io: RendererIO = processRendererIO()): Rend
 
 const ANSI_SGR = /\x1b\[[0-9;]*m/g;
 
+function codePointWidth(codePoint: number): number {
+  if (
+    codePoint === 0
+    || codePoint === 0x200d
+    || codePoint <= 0x1f
+    || (codePoint >= 0x7f && codePoint <= 0x9f)
+    || (codePoint >= 0x300 && codePoint <= 0x36f)
+    || (codePoint >= 0x1ab0 && codePoint <= 0x1aff)
+    || (codePoint >= 0x1dc0 && codePoint <= 0x1dff)
+    || (codePoint >= 0x20d0 && codePoint <= 0x20ff)
+    || (codePoint >= 0xfe00 && codePoint <= 0xfe0f)
+    || (codePoint >= 0xfe20 && codePoint <= 0xfe2f)
+    || (codePoint >= 0x1f3fb && codePoint <= 0x1f3ff)
+  ) return 0;
+  if (
+    codePoint === 0x2329
+    || codePoint === 0x232a
+    || codePoint === 0x23f8
+    || codePoint === 0x2757
+    || (codePoint >= 0x1100 && codePoint <= 0x115f)
+    || (codePoint >= 0x2e80 && codePoint <= 0xa4cf && codePoint !== 0x303f)
+    || (codePoint >= 0xac00 && codePoint <= 0xd7a3)
+    || (codePoint >= 0xf900 && codePoint <= 0xfaff)
+    || (codePoint >= 0xfe10 && codePoint <= 0xfe19)
+    || (codePoint >= 0xfe30 && codePoint <= 0xfe6f)
+    || (codePoint >= 0xff00 && codePoint <= 0xff60)
+    || (codePoint >= 0xffe0 && codePoint <= 0xffe6)
+    || (codePoint >= 0x1f300 && codePoint <= 0x1faff)
+    || (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+  ) return 2;
+  return 1;
+}
+
+/** Conservative terminal-cell width; over-counting a joined emoji is scroll-safe. */
+export function terminalCellWidth(text: string): number {
+  let width = 0;
+  for (const character of text.replace(ANSI_SGR, "")) {
+    width += codePointWidth(character.codePointAt(0)!);
+  }
+  return width;
+}
+
 function visibleLength(text: string): number {
-  return text.replace(ANSI_SGR, "").length;
+  return terminalCellWidth(text);
 }
 
 function padVisible(text: string, width: number): string {
-  const fitted = fitToWidth(text, width);
+  const fitted = fitTheaterLine(text, width);
   return fitted + " ".repeat(Math.max(0, width - visibleLength(fitted)));
 }
 
@@ -188,15 +237,15 @@ function wrapPlainText(text: string, width: number): Array<{ text: string; start
 }
 
 const THEATER_STATUS_ICON: Record<string, string> = {
-  needs: "\x1b[33m❗\x1b[0m",
-  waiting: "\x1b[32m○\x1b[0m",
-  working: "\x1b[36m●\x1b[0m",
-  idle: "\x1b[2m·\x1b[0m",
-  snoozed: "\x1b[2m⏸\x1b[0m",
-  listening: "\x1b[32m●\x1b[0m",
-  recording: "\x1b[31m●\x1b[0m",
-  speaking: "\x1b[33m▶\x1b[0m",
-  transcribing: "\x1b[36m…\x1b[0m",
+  needs: "\x1b[33m❗\x1b[39m",
+  waiting: "\x1b[32m○\x1b[39m",
+  working: "\x1b[36m●\x1b[39m",
+  idle: "\x1b[2m·\x1b[22m",
+  snoozed: "\x1b[2m⏸\x1b[22m",
+  listening: "\x1b[32m●\x1b[39m",
+  recording: "\x1b[31m●\x1b[39m",
+  speaking: "\x1b[33m▶\x1b[39m",
+  transcribing: "\x1b[36m…\x1b[39m",
 };
 
 function rowState(row: PanelRowModel): string {
@@ -205,39 +254,40 @@ function rowState(row: PanelRowModel): string {
 }
 
 function fullStatus(row: PanelRowModel): string {
-  if (row.snoozed) return "⏸ snoozed";
+  if (row.snoozed) return "\x1b[2m⏸ snoozed\x1b[22m";
   switch (row.liveGlyph ?? row.status) {
-    case "speaking": return "▶ speaking";
-    case "listening": return "● mic open";
-    case "recording": return "● recording";
-    case "transcribing": return "… transcribing";
-    case "needs": return "❗ needs a response";
-    case "waiting": return "○ waiting for you";
-    case "working": return "● working…";
-    default: return "· idle";
+    case "speaking": return "\x1b[33m▶ speaking\x1b[39m";
+    case "listening": return "\x1b[32m● mic open\x1b[39m";
+    case "recording": return "\x1b[31m● recording\x1b[39m";
+    case "transcribing": return "\x1b[36m… transcribing\x1b[39m";
+    case "needs": return "\x1b[33m❗ needs a response\x1b[39m";
+    case "waiting": return "\x1b[32m○ waiting for you\x1b[39m";
+    case "working": return "\x1b[36m● working…\x1b[39m";
+    default: return "\x1b[2m· idle\x1b[22m";
   }
 }
 
 function theaterLedgerRow(row: PanelRowModel, width: number, compact: boolean): string {
-  const cursor = row.navSelected ? "\x1b[38;2;88;201;212m▸\x1b[0m " : "  ";
+  const bodyWidth = Math.max(1, width - (row.active ? 1 : 0));
+  const cursor = row.navSelected ? "\x1b[38;2;88;201;212m▸\x1b[39m " : "  ";
   let body: string;
   if (compact) {
     const icon = THEATER_STATUS_ICON[rowState(row)] ?? THEATER_STATUS_ICON.idle!;
-    const labelWidth = Math.max(1, width - visibleLength(cursor) - visibleLength(icon) - 2);
+    const labelWidth = Math.max(1, bodyWidth - visibleLength(cursor) - visibleLength(icon) - 2);
     const label = padVisible(row.label, labelWidth);
     body = `${cursor}${label} ${icon}`;
   } else {
     const status = fullStatus(row);
-    const labelWidth = Math.max(1, Math.min(30, width - visibleLength(cursor) - visibleLength(status) - 2));
+    const labelWidth = Math.max(1, Math.min(30, bodyWidth - visibleLength(cursor) - visibleLength(status) - 2));
     body = `${cursor}${padVisible(row.label, labelWidth)} ${status}`;
-    if (row.detail) body += ` \x1b[2m(${row.detail})\x1b[0m`;
+    if (row.detail) body += ` \x1b[2m(${row.detail})\x1b[22m`;
   }
-  body = padVisible(body, width);
-  if (row.snoozed) body = `\x1b[2m${body}\x1b[0m`;
+  body = padVisible(body, bodyWidth);
+  if (row.snoozed) body = `\x1b[2m${body}\x1b[22m`;
   if (!row.active) return body;
   // A steady brand accent + neutral fill anchors the live session. State color
   // belongs only to the icon, so the row does not strobe through an exchange.
-  return `\x1b[38;2;88;201;212m▎\x1b[0m\x1b[48;2;28;32;36m${padVisible(body, Math.max(0, width - 1))}\x1b[0m`;
+  return `\x1b[38;2;88;201;212m▎\x1b[0m\x1b[48;2;28;32;36m${body}\x1b[0m`;
 }
 
 function readingLine(
@@ -269,14 +319,18 @@ function theaterContentLines(model: PanelModel, width: number, height: number, l
 
   if (state === "listening" || state === "recording") {
     const partial = `${model.live.partial}▌`;
-    lines = wrapPlainText(partial, width).map((line) => line.text);
+    lines = wrapPlainText(partial, width).map((line) => line.text).slice(-available);
   } else {
     const reading = model.live.reading;
     const text = reading?.text ?? model.reply?.text ?? "";
     const wrapped = wrapPlainText(text, width);
     if (state === "speaking") {
       const spokenChars = reading?.spokenChars ?? model.reply?.spokenChars ?? 0;
-      lines = wrapped.map((line) => readingLine(line, spokenChars));
+      const foundFrontier = wrapped.findIndex((line) => spokenChars <= line.end);
+      const frontier = foundFrontier === -1 ? Math.max(0, wrapped.length - 1) : foundFrontier;
+      const maxStart = Math.max(0, wrapped.length - available);
+      const start = Math.max(0, Math.min(maxStart, frontier - Math.floor(available / 2)));
+      lines = wrapped.slice(start, start + available).map((line) => readingLine(line, spokenChars));
     } else {
       lines = wrapped.map((line) => `\x1b[2m${line.text}\x1b[0m`);
     }
@@ -294,7 +348,12 @@ function theaterSettingsOverlay(
   width: number,
   height: number,
 ): string[] {
-  if (width < 12 || height < 4) return base;
+  if (width < 12 || height < 4) {
+    const compact = [...base];
+    while (compact.length < height) compact.push("");
+    if (height) compact[Math.floor(height / 2)] = " settings · esc close";
+    return compact.slice(0, height);
+  }
   const output = [...base];
   while (output.length < height) output.push("");
   const boxWidth = Math.max(12, Math.min(width - 2, 88));
@@ -347,15 +406,21 @@ export function createTheaterRenderer(io: RendererIO = processRendererIO()): Ren
     if (!entered) return;
     const columns = Math.max(1, io.columns());
     const rows = Math.max(1, io.rows());
+    const frameWidth = Math.max(1, columns - 1); // never arm the terminal's wrap column
     const frame: string[] = [];
     const overlayOpen = Boolean(model?.settingsOverlay);
-    const paneOpen = ((model?.panelOpen ?? true) || overlayOpen) && columns >= (overlayOpen ? 36 : 52);
-    const ledgerWidth = paneOpen
-      ? overlayOpen
-        ? Math.min(28, Math.max(16, Math.floor(columns * 0.28)))
-        : Math.min(34, Math.max(22, Math.floor(columns * 0.3)))
-      : columns;
-    const contentWidth = paneOpen ? Math.max(1, columns - ledgerWidth - 3) : 0;
+    const overlayOnly = overlayOpen && columns < 36;
+    const paneOpen = overlayOpen || ((model?.panelOpen ?? true) && columns >= 52);
+    let ledgerWidth = frameWidth;
+    if (overlayOnly) ledgerWidth = 0;
+    else if (paneOpen && overlayOpen) {
+      ledgerWidth = Math.min(28, Math.max(16, Math.floor(columns * 0.28)));
+    } else if (paneOpen) {
+      ledgerWidth = Math.min(34, Math.max(22, Math.floor(columns * 0.3)));
+    }
+    const contentWidth = paneOpen
+      ? Math.max(1, frameWidth - ledgerWidth - (overlayOnly ? 0 : 3))
+      : 0;
 
     frame.push("  \x1b[1m🐚 conch\x1b[0m");
     if (rows > 1) {
@@ -368,13 +433,23 @@ export function createTheaterRenderer(io: RendererIO = processRendererIO()): Ren
     if (model?.settingsOverlay && paneOpen) {
       content = theaterSettingsOverlay(content, model.settingsOverlay, contentWidth, bodyHeight);
     }
-    const ledgerRows = model?.rows ?? [];
+    const allLedgerRows = model?.rows ?? [];
+    const navFocus = allLedgerRows.findIndex((row) => row.navSelected);
+    const activeFocus = allLedgerRows.findIndex((row) => row.active);
+    const ledgerFocus = navFocus >= 0 ? navFocus : Math.max(0, activeFocus);
+    const ledgerStart = Math.max(0, Math.min(
+      Math.max(0, allLedgerRows.length - bodyHeight),
+      ledgerFocus - Math.floor(bodyHeight / 2),
+    ));
+    const ledgerRows = allLedgerRows.slice(ledgerStart, ledgerStart + bodyHeight);
 
     for (let index = 0; index < bodyHeight; index++) {
       let ledger = ledgerRows[index]
         ? theaterLedgerRow(ledgerRows[index]!, ledgerWidth, paneOpen)
         : " ".repeat(ledgerWidth);
-      frame.push(paneOpen
+      frame.push(overlayOnly
+        ? content[index] ?? ""
+        : paneOpen
         ? `${ledger} \x1b[2m│\x1b[0m ${content[index] ?? ""}`
         : ledger);
     }
@@ -384,13 +459,14 @@ export function createTheaterRenderer(io: RendererIO = processRendererIO()): Ren
         : model?.mode.paused
           ? `⏸ paused · holding ${model.mode.holding} · `
           : "";
-      frame.push(`${modeHint}${keybar}`);
+      frame.push(model?.settingsOverlay
+        ? "  \x1b[2msettings · esc close · ↑↓ choose · ←→ adjust · space toggle · enter commit\x1b[0m"
+        : `${modeHint}${keybar}`);
     }
 
     const bounded = frame.slice(0, rows);
     while (bounded.length < rows) bounded.push("");
-    const width = Math.max(1, columns - 1); // never arm the terminal's wrap column
-    const output = bounded.map((line) => `${fitToWidth(line, width)}\x1b[K`).join("\n");
+    const output = bounded.map((line) => `${fitTheaterLine(line, frameWidth)}\x1b[K`).join("\n");
     io.write(`\x1b[H${output}`);
   };
 
@@ -483,11 +559,14 @@ export function installRendererLifecycle(
   const restore = (): void => {
     if (restored) return;
     restored = true;
-    renderer.shutdown();
-    if (input.isTTY && input.setRawMode) {
-      try {
-        input.setRawMode(false);
-      } catch {}
+    try {
+      renderer.shutdown();
+    } finally {
+      if (input.isTTY && input.setRawMode) {
+        try {
+          input.setRawMode(false);
+        } catch {}
+      }
     }
   };
   const onExit = (): void => restore();
@@ -577,6 +656,7 @@ export function fitToWidth(text: string, width: number): string {
   for (let i = 0; i < text.length; i++) {
     if (text[i] === "\x1b") {
       const end = text.indexOf("m", i);
+      if (end === -1) continue; // malformed/untrusted escape: drop it and progress
       out += text.slice(i, end + 1);
       i = end;
       continue;
@@ -586,4 +666,33 @@ export function fitToWidth(text: string, width: number): string {
     visible++;
   }
   return out + "…\x1b[0m";
+}
+
+function fitTheaterLine(text: string, width: number): string {
+  // Preserve renderer-owned SGR while dropping all other terminal controls from
+  // transcript/session text before it reaches the alternate screen.
+  const safe = text
+    .replace(/\x1b(?!\[[0-9;]*m)/g, "")
+    .replace(/[\u0000-\u001a\u001c-\u001f\u007f]/g, "");
+  if (terminalCellWidth(safe) <= width) return fitToWidth(safe, width);
+  const target = Math.max(0, width - 1);
+  let cells = 0;
+  let out = "";
+  for (let index = 0; index < safe.length;) {
+    if (safe[index] === "\x1b") {
+      const end = safe.indexOf("m", index);
+      if (end === -1) break;
+      out += safe.slice(index, end + 1);
+      index = end + 1;
+      continue;
+    }
+    const codePoint = safe.codePointAt(index)!;
+    const character = String.fromCodePoint(codePoint);
+    const cellWidth = codePointWidth(codePoint);
+    if (cells + cellWidth > target) break;
+    out += character;
+    cells += cellWidth;
+    index += character.length;
+  }
+  return fitToWidth(`${out}…\x1b[0m`, width);
 }

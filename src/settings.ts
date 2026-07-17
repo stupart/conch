@@ -22,7 +22,7 @@ export const SETTING_KEYS = [
   "listen-window",
   "typing-grace",
   "barge-threshold",
-  "kokoro-speed",
+  "voice-speed",
   "read-full",
   "interrupt-on-manual-reply",
   "handoff-order",
@@ -181,7 +181,7 @@ export const SETTING_DESCRIPTORS = [
     help: "mic level that interrupts speech; 0 disables barge-in",
   },
   {
-    key: "kokoro-speed",
+    key: "voice-speed",
     field: "ttsSpeed",
     env: "CONCH_TTS_SPEED",
     kind: "number",
@@ -189,7 +189,7 @@ export const SETTING_DESCRIPTORS = [
     parse: numberParser(positive, "a number greater than 0"),
     bounds: positive,
     apply: "live",
-    help: "Kokoro synthesis speed (does not affect macOS say)",
+    help: "Kokoro/voice synthesis speed",
   },
   {
     key: "read-full",
@@ -286,12 +286,26 @@ export const SETTING_REGISTRY: ReadonlyMap<string, SettingDescriptor> = new Map(
   SETTING_DESCRIPTORS.map((descriptor) => [descriptor.key, descriptor]),
 );
 
+/** Accepted for migration, but deliberately absent from descriptors/presentation. */
+const SETTING_ALIASES: ReadonlyMap<string, SettingKey> = new Map([
+  ["kokoro-speed", "voice-speed"],
+]);
+
+const FILE_ALIASES: Partial<Record<SettingKey, readonly string[]>> = {
+  "voice-speed": ["kokoro-speed"],
+};
+
+function aliasesFor(descriptor: SettingDescriptor): readonly string[] {
+  return FILE_ALIASES[descriptor.key] ?? [];
+}
+
 const FORBIDDEN_KEYS = new Set(["__proto__", "constructor"]);
 
 export function getSettingDescriptor(key: unknown): ParseResult<SettingDescriptor> {
   if (typeof key !== "string") return { ok: false, err: "setting key must be a string" };
   if (FORBIDDEN_KEYS.has(key)) return { ok: false, err: `setting key "${key}" is not allowed` };
-  const descriptor = SETTING_REGISTRY.get(key as SettingKey);
+  const canonical = SETTING_ALIASES.get(key) ?? key;
+  const descriptor = SETTING_REGISTRY.get(canonical);
   if (!descriptor) return { ok: false, err: `unknown setting "${key}"` };
   return { ok: true, value: descriptor };
 }
@@ -382,6 +396,7 @@ export function writeSetting(path: string, key: unknown, raw: unknown): ParsedSe
   if (!parsed.ok) throw new SettingsFileError(parsed.err);
   const values = settingsForWrite(path);
   values[parsed.value.descriptor.key] = parsed.value.value;
+  for (const alias of aliasesFor(parsed.value.descriptor)) delete values[alias];
   writeSettingsFileAtomic(path, values);
   return parsed.value;
 }
@@ -390,9 +405,10 @@ export function unsetSetting(path: string, key: unknown): { descriptor: SettingD
   const found = getSettingDescriptor(key);
   if (!found.ok) throw new SettingsFileError(found.err);
   const values = settingsForWrite(path);
-  const changed = Object.hasOwn(values, found.value.key);
+  const keys = [found.value.key, ...aliasesFor(found.value)];
+  const changed = keys.some((candidate) => Object.hasOwn(values, candidate));
   if (changed) {
-    delete values[found.value.key];
+    for (const candidate of keys) delete values[candidate];
     writeSettingsFileAtomic(path, values);
   }
   return { descriptor: found.value, changed };
@@ -428,8 +444,18 @@ export function resolveSettingFromLoaded(
   if (includeFile) {
     if (loaded.error) {
       diagnostics.push(loaded.error);
-    } else if (Object.hasOwn(loaded.values, descriptor.key)) {
-      const parsed = descriptor.parse(loaded.values[descriptor.key]);
+    } else {
+      const fileKey = Object.hasOwn(loaded.values, descriptor.key)
+        ? descriptor.key
+        : aliasesFor(descriptor).find((alias) => Object.hasOwn(loaded.values, alias));
+      if (!fileKey) {
+        return {
+          value: descriptor.default,
+          source: "default",
+          ...(diagnostics.length ? { diagnostic: diagnostics.join("; ") } : {}),
+        };
+      }
+      const parsed = descriptor.parse(loaded.values[fileKey]);
       if (parsed.ok) {
         return {
           value: parsed.value,
@@ -437,7 +463,7 @@ export function resolveSettingFromLoaded(
           ...(diagnostics.length ? { diagnostic: diagnostics.join("; ") } : {}),
         };
       }
-      diagnostics.push(`invalid file value for ${descriptor.key}: ${parsed.err}`);
+      diagnostics.push(`invalid file value for ${fileKey}: ${parsed.err}`);
     }
   }
   return {

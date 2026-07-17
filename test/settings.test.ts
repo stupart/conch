@@ -38,7 +38,7 @@ const expected = {
   "listen-window": ["listenWindowSecs", "CONCH_LISTEN_WINDOW_SECS", "live", 30],
   "typing-grace": ["typingGraceSecs", "CONCH_TYPING_GRACE_SECS", "live", 2],
   "barge-threshold": ["bargeThresholdPct", "CONCH_BARGE_THRESHOLD_PCT", "live", 0],
-  "kokoro-speed": ["ttsSpeed", "CONCH_TTS_SPEED", "live", 1.35],
+  "voice-speed": ["ttsSpeed", "CONCH_TTS_SPEED", "live", 1.35],
   "read-full": ["readFull", "CONCH_READ_FULL", "live", true],
   "interrupt-on-manual-reply": ["interruptOnManualReply", "CONCH_INTERRUPT_ON_MANUAL_REPLY", "live", true],
   "handoff-order": ["handoffOrder", "CONCH_HANDOFF_ORDER", "live", "oldest"],
@@ -70,6 +70,18 @@ describe("settings registry", () => {
     expect(parseSetting("__proto__", 1).ok).toBe(false);
     expect(parseSetting("constructor", 1).ok).toBe(false);
   });
+
+  test("presents voice-speed while accepting kokoro-speed as a hidden alias", () => {
+    expect(SETTING_REGISTRY.get("voice-speed")?.help).toBe("Kokoro/voice synthesis speed");
+    expect(SETTING_REGISTRY.get("kokoro-speed")).toBeUndefined();
+    expect(parseSetting("kokoro-speed", "1.2")).toEqual({
+      ok: true,
+      value: {
+        descriptor: SETTING_REGISTRY.get("voice-speed")!,
+        value: 1.2,
+      },
+    });
+  });
 });
 
 describe("settings parser", () => {
@@ -85,7 +97,7 @@ describe("settings parser", () => {
   test("enforces finite positive and zeroable number bounds", () => {
     for (const raw of [0, -1, "NaN", "Infinity", null, true]) {
       expect(parse("end-silence", raw).ok).toBe(false);
-      expect(parse("kokoro-speed", raw).ok).toBe(false);
+      expect(parse("voice-speed", raw).ok).toBe(false);
     }
 
     expect(parse("barge-threshold", 0)).toEqual({ ok: true, value: 0 });
@@ -165,6 +177,25 @@ describe("settings file persistence", () => {
     expect(readdirSync(join(path, ".."))).toEqual(["settings.json"]); // temp was renamed/cleaned
   });
 
+  test("canonicalizes legacy voice-speed writes and unsets both spellings", () => {
+    const path = tempSettings('{"kokoro-speed":1.1,"future-setting":"keep"}\n');
+    expect(writeSetting(path, "kokoro-speed", "1.5")).toMatchObject({
+      descriptor: { key: "voice-speed" },
+      value: 1.5,
+    });
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+      "future-setting": "keep",
+      "voice-speed": 1.5,
+    });
+
+    writeFileSync(path, '{"voice-speed":1.4,"kokoro-speed":1.1,"future-setting":"keep"}\n');
+    expect(unsetSetting(path, "kokoro-speed")).toMatchObject({
+      descriptor: { key: "voice-speed" },
+      changed: true,
+    });
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ "future-setting": "keep" });
+  });
+
   test("unset removes only the requested key and avoids creating an absent file", () => {
     const path = tempSettings('{"end-silence":4.75,"read-full":false}\n');
     expect(unsetSetting(path, "end-silence")).toMatchObject({ changed: true });
@@ -217,6 +248,21 @@ describe("settings resolution", () => {
       .toEqual({ value: 3.5, source: "default" });
   });
 
+  test("resolves the legacy speed key only when the canonical key is absent", () => {
+    expect(resolved("voice-speed", {
+      env: {},
+      settingsPath: tempSettings('{"kokoro-speed":1.1}\n'),
+    })).toEqual({ value: 1.1, source: "file" });
+    expect(resolved("voice-speed", {
+      env: {},
+      settingsPath: tempSettings('{"voice-speed":1.4,"kokoro-speed":1.1}\n'),
+    })).toEqual({ value: 1.4, source: "file" });
+    expect(resolved("voice-speed", {
+      env: { CONCH_TTS_SPEED: "1.7" },
+      settingsPath: tempSettings('{"kokoro-speed":1.1}\n'),
+    })).toEqual({ value: 1.7, source: "env" });
+  });
+
   test("reports and skips invalid higher-priority layers", () => {
     const fileFallback = tempSettings('{"end-silence":4.75}\n');
     const fromFile = resolved("end-silence", {
@@ -256,6 +302,10 @@ describe("control-message validation", () => {
     expect(validateControlMessage({ kind: "set-config", key: "read-full", value: "false" })).toEqual({
       ok: true,
       value: { kind: "set-config", key: "read-full", value: false },
+    });
+    expect(validateControlMessage({ kind: "set-config", key: "kokoro-speed", value: "1.25" })).toEqual({
+      ok: true,
+      value: { kind: "set-config", key: "voice-speed", value: 1.25 },
     });
   });
 

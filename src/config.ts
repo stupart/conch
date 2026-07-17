@@ -190,7 +190,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
       .split(",")
       .map((v) => v.trim())
       .filter(Boolean),
-    ttsSpeed: settings["kokoro-speed"].value as number, // brisker Kokoro; CONCH_TTS_SPEED to taste
+    ttsSpeed: settings["voice-speed"].value as number, // brisker voice synthesis; CONCH_TTS_SPEED to taste
     ttsBatchChars: zeroable(env.CONCH_TTS_BATCH_CHARS, 240),
   };
 }

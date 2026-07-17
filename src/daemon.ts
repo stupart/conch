@@ -1951,6 +1951,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // G8: the daemon owns its signal path before exposing the socket.
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
+  process.on("SIGHUP", () => void shutdown());
+  process.on("SIGQUIT", () => void shutdown());
 
   const ttsBinaryAvailable = Boolean(Bun.which(cfg.ttsServerBin));
   const ttsEnabled = cfg.ttsEngine !== "say" && Boolean(cfg.ttsPort) && ttsBinaryAvailable;

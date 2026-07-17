@@ -38,7 +38,7 @@ describe("loadConfig tunable layering", () => {
         "listen-window": 42,
         "typing-grace": 0.75,
         "barge-threshold": 17,
-        "kokoro-speed": 1.1,
+        "kokoro-speed": 1.1, // hidden legacy alias still loads
         "read-full": false,
         "interrupt-on-manual-reply": false,
         "handoff-order": "oldest",
@@ -65,6 +65,14 @@ describe("loadConfig tunable layering", () => {
       speakMaxChars: 480,
       sayRate: 0,
     });
+  });
+
+  test("prefers canonical voice-speed when both spellings are present", () => {
+    const cfg = loadConfig({
+      env: {},
+      settingsPath: settingsPath({ "voice-speed": 1.45, "kokoro-speed": 1.1 }),
+    });
+    expect(cfg.ttsSpeed).toBe(1.45);
   });
 
   test("valid env overrides file, while an invalid env falls through to file", () => {
