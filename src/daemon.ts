@@ -13,6 +13,7 @@ import {
   voiceFor,
 } from "./speak.ts";
 import { SpeechManager } from "./speech-manager.ts";
+import { ServerSupervisor } from "./server-supervisor.ts";
 import { TtsSupervisor } from "./tts-supervisor.ts";
 import {
   listenGap,
@@ -26,7 +27,10 @@ import type { RecorderHandle } from "./dictation-controller.ts";
 import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
 import { classify, classifyReadingGap, wordOverlapRatio } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
-import { probeServer } from "./transcribe.ts";
+import {
+  whisperServerClient,
+  type WhisperRecoveryReason,
+} from "./transcribe.ts";
 import { setState, logAbove, setPanel, setKeybar, setLogsVisible, logsShown, getLiveState, onLiveChange, type ConchState } from "./status.ts";
 import { listSessions, registrySnapshot, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
 import {
@@ -376,7 +380,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     activeDictation?.session.micOpen || micOpen || normalMicReserved || bargeHandoffOpen
   );
   const assertNormalMicClosed = (operation: string): void => assertAudioGate(normalMicOpen, operation);
+  let whisperSupervisor: ServerSupervisor<WhisperRecoveryReason> | null = null;
   let ttsSupervisor: TtsSupervisor | null = null;
+  whisperServerClient.setRecoveryHandler((reason) => whisperSupervisor?.requestRecovery(reason));
   const speech = new SpeechManager(
     { speakCancellable: backendSpeakCancellable, stopSpeaking: backendStopSpeaking },
     (operation, output) => withNormalMicClosed(normalMicOpen, operation, output),
@@ -1822,7 +1828,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
     else log(`sent ${verdict === "approve" ? "Enter" : "Escape"} via ${via}`);
   }
 
-  let whisperServer: ReturnType<typeof Bun.spawn> | null = null;
   const configController = createConfigController(cfg);
   const server = createServer({ allowHalfOpen: true }, (sock) => {
     let buf = "";
@@ -1869,7 +1874,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
     dictationAtShutdown?.requestExternal("spacebar", "shutdown");
     const recorderDrain = killActiveRecorders(); // a live sox capture would keep the mic hot after we die
     if (server.listening) server.close();
-    whisperServer?.kill();
+    whisperServerClient.cancelWarmRequests();
+    whisperSupervisor?.close();
     ttsSupervisor?.close();
     try {
       unlinkSync(cfg.socketPath);
@@ -1916,6 +1922,41 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (!shuttingDown) log(`tts startup gate failed — voices via say: ${error}`);
   });
 
+  const whisperBinaryAvailable = existsSync(cfg.whisperServerBin);
+  whisperServerClient.resetHealth();
+  whisperSupervisor = new ServerSupervisor<WhisperRecoveryReason>({
+    enabled: Boolean(cfg.whisperPort),
+    language: {
+      service: "whisper-server",
+      readiness: "transcription-ready",
+      fallback: "using the cold cli",
+    },
+    probePresence: (signal) => whisperServerClient.probePresenceUnlocked(cfg, 1_500, signal),
+    probeReady: (signal) => whisperServerClient.probeReadyUnlocked(cfg, 60_000, signal),
+    spawn: () => {
+      if (!existsSync(cfg.whisperServerBin)) {
+        throw new Error(`binary not found at ${cfg.whisperServerBin}`);
+      }
+      return Bun.spawn(
+        [
+          cfg.whisperServerBin,
+          "-m", cfg.whisperModel,
+          "-vm", cfg.vadModel,
+          "--vad",
+          "--vad-speech-pad-ms", "300",
+          "--host", "127.0.0.1",
+          "--port", String(cfg.whisperPort),
+          "-l", "en",
+          "-t", "6",
+        ],
+        { stdout: "ignore", stderr: "ignore" },
+      );
+    },
+    resetReadiness: () => whisperServerClient.resetHealth(),
+    exclusive: (task, signal) => whisperServerClient.runExclusive(task, signal),
+    log,
+  });
+
   if (existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath); // stale socket from a previous run
   server.listen(cfg.socketPath);
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);
@@ -1930,38 +1971,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const panelTimer = setInterval(() => void renderSessionPanel(), 20_000);
   panelTimer.unref?.();
 
-  // Warm whisper independently after the socket and signal path are live.
-  if (cfg.whisperPort && existsSync(cfg.whisperServerBin)) {
-    const adopted = await probeServer(cfg, 1500);
-    if (shuttingDown) return;
-    if (adopted) {
-      log(`whisper-server adopted on :${cfg.whisperPort} — fast transcription + live partials`);
-    } else {
-      if (shuttingDown) return;
-      whisperServer = Bun.spawn(
-        [
-          cfg.whisperServerBin,
-          "-m", cfg.whisperModel,
-          "-vm", cfg.vadModel,
-          "--vad",
-          "--vad-speech-pad-ms", "300",
-          "--host", "127.0.0.1",
-          "--port", String(cfg.whisperPort),
-          "-l", "en",
-          "-t", "6",
-        ],
-        { stdout: "ignore", stderr: "ignore" },
-      );
-      void probeServer(cfg, 60_000).then((up) => {
-        if (!shuttingDown) {
-          log(up
-            ? `whisper-server warm on :${cfg.whisperPort} — fast transcription + live partials`
-            : "whisper-server failed to come up — using the cold cli path");
-        }
-      });
-    }
-  } else if (cfg.whisperPort) {
+  // Warm Whisper independently after the socket and signal path are live.
+  // Startup/recovery never blocks dictation: finals use the cold CLI until the
+  // full inference canary marks this client healthy.
+  if (cfg.whisperPort && !whisperBinaryAvailable) {
     log(`whisper-server binary not found at ${cfg.whisperServerBin} — using the cold cli path`);
+  }
+  if (cfg.whisperPort) {
+    void whisperSupervisor.start().catch((error) => {
+      if (!shuttingDown) log(`whisper-server startup failed — using the cold cli: ${error}`);
+    });
   }
 
   /** Live sessions in a stable order so number keys mean the same thing between glances. */

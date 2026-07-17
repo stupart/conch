@@ -188,7 +188,7 @@ export function createDictationSession(
         options.traceSequence?.() ?? context.sequence,
         context,
         hooks,
-        (pcm) => transcriptionGate.tryRunPartial(() => transcribePcm(cfg, pcm)),
+        (pcm) => transcriptionGate.tryRunPartial(() => transcribePcm(cfg, pcm, undefined, { coldFallback: false })),
         () => {
           nextOpenBeginsNewWindow = true;
           controller.cancelTimeout();
