@@ -42,6 +42,22 @@ export interface PanelReplyModel {
   spokenChars: number;
 }
 
+export interface SettingsOverlayRowModel {
+  key: string;
+  value: string;
+  source: "env" | "file" | "default";
+  help: string;
+  selected: boolean;
+  editing: boolean;
+  ack?: string;
+}
+
+export interface SettingsOverlayModel {
+  rows: SettingsOverlayRowModel[];
+  selectedIndex: number;
+  error?: string;
+}
+
 export interface PanelModel {
   rows: PanelRowModel[];
   mode: DashboardMode;
@@ -49,6 +65,7 @@ export interface PanelModel {
   reply: PanelReplyModel | null;
   /** Theater-only presentation state. Footer rendering intentionally ignores it. */
   panelOpen: boolean;
+  settingsOverlay?: SettingsOverlayModel | null;
 }
 
 export interface PanelSessionState extends LatchedState {

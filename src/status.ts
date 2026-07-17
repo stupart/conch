@@ -288,6 +288,54 @@ function theaterContentLines(model: PanelModel, width: number, height: number, l
   return lines;
 }
 
+function theaterSettingsOverlay(
+  base: string[],
+  overlay: NonNullable<PanelModel["settingsOverlay"]>,
+  width: number,
+  height: number,
+): string[] {
+  if (width < 12 || height < 4) return base;
+  const output = [...base];
+  while (output.length < height) output.push("");
+  const boxWidth = Math.max(12, Math.min(width - 2, 88));
+  const innerWidth = boxWidth - 2;
+  const errorRows = overlay.error && height >= 6 ? 1 : 0;
+  const visibleCount = Math.max(1, Math.min(overlay.rows.length, height - 3 - errorRows));
+  const maxStart = Math.max(0, overlay.rows.length - visibleCount);
+  const start = Math.max(0, Math.min(
+    maxStart,
+    overlay.selectedIndex - Math.floor(visibleCount / 2),
+  ));
+  const visibleRows = overlay.rows.slice(start, start + visibleCount);
+  const keyWidth = Math.max(6, Math.min(22, ...overlay.rows.map((row) => row.key.length)));
+  const valueWidth = Math.max(5, Math.min(12, ...overlay.rows.map((row) => row.value.length + (row.editing ? 1 : 0))));
+  const lines: string[] = [];
+  lines.push(`\x1b[2m╭${"─".repeat(innerWidth)}╮\x1b[0m`);
+  lines.push(`\x1b[2m│\x1b[0m${padVisible(" settings · ←→/space adjust · type + enter · esc close", innerWidth)}\x1b[2m│\x1b[0m`);
+  for (const row of visibleRows) {
+    const cursor = row.selected ? "›" : " ";
+    const value = `${row.value}${row.editing ? "▌" : ""}`;
+    const ack = row.ack ? ` · \x1b[2m${row.ack}\x1b[22m` : "";
+    const text = `${cursor} ${row.key.padEnd(keyWidth)} · ${value.padEnd(valueWidth)} · \x1b[2m[${row.source}]\x1b[22m${ack} · ${row.help}`;
+    const fitted = padVisible(text, innerWidth);
+    const styled = row.selected
+      ? `\x1b[38;2;88;201;212m\x1b[48;2;28;32;36m${fitted}\x1b[0m`
+      : fitted;
+    lines.push(`\x1b[2m│\x1b[0m${styled}\x1b[2m│\x1b[0m`);
+  }
+  if (errorRows) {
+    lines.push(`\x1b[2m│\x1b[0m${padVisible(` ${overlay.error}`, innerWidth)}\x1b[2m│\x1b[0m`);
+  }
+  lines.push(`\x1b[2m╰${"─".repeat(innerWidth)}╯\x1b[0m`);
+
+  const top = Math.max(0, Math.floor((height - lines.length) / 2));
+  const left = " ".repeat(Math.max(0, Math.floor((width - boxWidth) / 2)));
+  for (let index = 0; index < lines.length && top + index < height; index++) {
+    output[top + index] = left + lines[index]!;
+  }
+  return output.slice(0, height);
+}
+
 /** Full-frame alternate-screen renderer. Its tests assert invariants, not pixels. */
 export function createTheaterRenderer(io: RendererIO = processRendererIO()): Renderer {
   let entered = false;
@@ -300,8 +348,13 @@ export function createTheaterRenderer(io: RendererIO = processRendererIO()): Ren
     const columns = Math.max(1, io.columns());
     const rows = Math.max(1, io.rows());
     const frame: string[] = [];
-    const paneOpen = (model?.panelOpen ?? true) && columns >= 52;
-    const ledgerWidth = paneOpen ? Math.min(34, Math.max(22, Math.floor(columns * 0.3))) : columns;
+    const overlayOpen = Boolean(model?.settingsOverlay);
+    const paneOpen = ((model?.panelOpen ?? true) || overlayOpen) && columns >= (overlayOpen ? 36 : 52);
+    const ledgerWidth = paneOpen
+      ? overlayOpen
+        ? Math.min(28, Math.max(16, Math.floor(columns * 0.28)))
+        : Math.min(34, Math.max(22, Math.floor(columns * 0.3)))
+      : columns;
     const contentWidth = paneOpen ? Math.max(1, columns - ledgerWidth - 3) : 0;
 
     frame.push("  \x1b[1m🐚 conch\x1b[0m");
@@ -309,9 +362,12 @@ export function createTheaterRenderer(io: RendererIO = processRendererIO()): Ren
       frame.push(`\x1b[2m${"─".repeat(Math.max(1, columns - 1))}\x1b[0m`);
     }
     const bodyHeight = Math.max(0, rows - 3);
-    const content = model && paneOpen
+    let content = model && paneOpen
       ? theaterContentLines(model, contentWidth, bodyHeight, logLines)
       : [];
+    if (model?.settingsOverlay && paneOpen) {
+      content = theaterSettingsOverlay(content, model.settingsOverlay, contentWidth, bodyHeight);
+    }
     const ledgerRows = model?.rows ?? [];
 
     for (let index = 0; index < bodyHeight; index++) {

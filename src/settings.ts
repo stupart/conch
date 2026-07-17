@@ -72,6 +72,7 @@ export interface SettingDescriptor {
   default: SettingValue;
   parse(raw: unknown): ParseResult<SettingValue>;
   bounds: SettingBounds | null;
+  choices?: readonly SettingValue[];
   apply: SettingApply;
   help: string;
 }
@@ -220,6 +221,7 @@ export const SETTING_DESCRIPTORS = [
     default: "oldest",
     parse: parseHandoffOrder,
     bounds: null,
+    choices: ["newest", "oldest", "urgency"],
     apply: "live",
     help: "choose queued sessions by newest, oldest, or urgency",
   },

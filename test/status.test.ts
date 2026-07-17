@@ -116,6 +116,31 @@ describe("theater renderer lifecycle", () => {
     expect(frame).not.toContain("│");
   });
 
+  test("settings temporarily opens a collapsed content pane", () => {
+    const { io, writes } = recordingIO({ columns: 80, rows: 10 });
+    const renderer = createTheaterRenderer(io);
+    renderer.enter();
+    renderer.panel(sampleModel({
+      panelOpen: false,
+      settingsOverlay: {
+        selectedIndex: 0,
+        rows: [{
+          key: "end-silence",
+          value: "3.5",
+          source: "default",
+          help: "pause that ends an utterance",
+          selected: true,
+          editing: false,
+        }],
+      },
+    }));
+
+    const frame = writes.at(-1)!;
+    expect(frame).toContain("settings");
+    expect(frame).toContain("end-silence");
+    expect(frame).toContain("│");
+  });
+
   test("fatal-process and explicit restore paths share one idempotent cleanup", () => {
     const calls: string[] = [];
     const renderer: Renderer = {

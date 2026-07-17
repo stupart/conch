@@ -84,6 +84,7 @@ import {
   resolveSettingFromLoaded,
   settingsPathFor,
   validateControlMessage,
+  writeSetting,
   type ConfigAck,
   type ConfigControlMessage,
   type ConfigControlResponse,
@@ -93,6 +94,7 @@ import {
   type SettingValue,
   type HandoffOrder,
 } from "./settings.ts";
+import { SettingsOverlay } from "./settings-overlay.ts";
 
 /**
  * The turn-based voice loop.
@@ -388,6 +390,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let cursorAuto = true;
   let panelOpen = true;
   const theaterNavigation = new TheaterNavigation(() => void renderSessionPanel());
+  let settingsOverlay: SettingsOverlay | null = null;
   // Per-session snooze: sessions you've paused to focus elsewhere. They stay on
   // the panel (marked ⏸) but never bell/read/open-mic until you resume them.
   const pausedSessions = new Set<string>();
@@ -605,6 +608,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         : null,
       panelOpen,
     });
+    model.settingsOverlay = settingsOverlay?.model() ?? null;
     panelOrder = model.rows.map((row) => row.sessionId);
     // Read mode state after the async registry snapshot so a slow older redraw
     // cannot repaint a stale pause/mute banner over a newer toggle.
@@ -1870,6 +1874,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
   }
 
   const configController = createConfigController(cfg);
+  if (theaterMode) {
+    settingsOverlay = new SettingsOverlay({
+      controller: configController,
+      settingsPath: settingsPathFor(),
+      persist: writeSetting,
+      onChange: () => void renderSessionPanel(),
+    });
+  }
   const server = createServer({ allowHalfOpen: true }, (sock) => {
     let buf = "";
     let handled = false;
@@ -2011,7 +2023,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   setState(restState());
   void renderSessionPanel(); // show the dashboard immediately
   setKeybar(theaterMode
-    ? "  \x1b[2m↑↓ select · \\ pane · space talk · enter snooze · m mute · p pause · l logs · ? help · q quit\x1b[0m"
+    ? "  \x1b[2m↑↓ select · \\ pane · , settings · space talk · enter snooze · m mute · p pause · l logs · ? help · q quit\x1b[0m"
     : "  \x1b[2m↑↓ select · space talk · enter snooze · m mute · p pause · l logs · ? help · q quit\x1b[0m");
   onLiveChange(() => void renderSessionPanel()); // repaint when speaking/recording/… flips
   process.stdout.on("resize", () => {
@@ -2171,6 +2183,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
     process.stdin.resume();
     process.stdin.on("data", (d) => {
       const c = d.toString();
+      // Modal routing owns every key first. Raw Ctrl-C is the one intentional
+      // fallthrough so terminal-safe daemon shutdown can always run.
+      if (settingsOverlay?.handleKey(c)) return;
+      if (theaterMode && c === ",") {
+        settingsOverlay?.open();
+        return;
+      }
       if (c === " ") {
         if (busy) stopReciting("spacebar");
         else if (theaterMode && theaterActionTarget()) void wakeBySessionId(theaterActionTarget()!);
