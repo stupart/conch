@@ -16,8 +16,11 @@ const defaultScheduler: NavigationScheduler = {
 
 /** Theater's active anchor and transient manual cursor are intentionally separate. */
 export class TheaterNavigation {
+  /** Active session in the last frame that reached the renderer. */
   activeSessionId: string | null = null;
+  /** Pending manual selection for the next frame. */
   manualSelectedId: string | null = null;
+  #paintedSelectedId: string | null = null;
   readonly #onChange: () => void;
   readonly #fadeMs: number;
   readonly #scheduler: NavigationScheduler;
@@ -33,8 +36,15 @@ export class TheaterNavigation {
     this.#scheduler = scheduler;
   }
 
-  setActive(sessionId: string | null): void {
-    this.activeSessionId = sessionId;
+  /** Manual selection in the last frame that reached the renderer. */
+  get paintedSelectedId(): string | null {
+    return this.#paintedSelectedId;
+  }
+
+  /** Commit exactly the navigation state used by a synchronously-painted frame. */
+  commitFrame(activeSessionId: string | null, manualSelectedId: string | null): void {
+    this.activeSessionId = activeSessionId;
+    this.#paintedSelectedId = manualSelectedId;
   }
 
   /** Called during the current repaint, so it does not schedule another one. */
@@ -46,7 +56,10 @@ export class TheaterNavigation {
 
   move(order: readonly string[], delta: -1 | 1, fallbackSessionId: string | null = null): void {
     if (!order.length) return;
-    const base = this.manualSelectedId ?? this.activeSessionId ?? fallbackSessionId;
+    const base = this.manualSelectedId
+      ?? this.#paintedSelectedId
+      ?? this.activeSessionId
+      ?? fallbackSessionId;
     const baseIndex = base ? order.indexOf(base) : -1;
     const current = baseIndex >= 0 ? baseIndex : (delta > 0 ? -1 : order.length);
     const next = current + delta;
@@ -60,7 +73,7 @@ export class TheaterNavigation {
   }
 
   actionTarget(fallbackSessionId: string | null = null): string | null {
-    return this.manualSelectedId ?? this.activeSessionId ?? fallbackSessionId;
+    return this.#paintedSelectedId ?? this.activeSessionId ?? fallbackSessionId;
   }
 
   release(): void {
@@ -71,7 +84,9 @@ export class TheaterNavigation {
   }
 
   dispose(): void {
+    this.activeSessionId = null;
     this.manualSelectedId = null;
+    this.#paintedSelectedId = null;
     this.#clearFade();
   }
 

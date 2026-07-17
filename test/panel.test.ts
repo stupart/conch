@@ -65,7 +65,7 @@ describe("buildPanelModel — renderer seam", () => {
       navSelectedId: actionTargetId,
     });
     const theaterNavigation = new TheaterNavigation(() => {});
-    theaterNavigation.setActive(actionTargetId);
+    theaterNavigation.commitFrame(actionTargetId, null);
 
     expect(orderedRows.map((row) => row.sessionId)).toEqual(["sorted-first", "raw-first"]);
     expect(actionTargetId).toBe("sorted-first");

@@ -52,6 +52,7 @@ import {
   activeSessionIdForRows,
   buildPanelModel,
   buildPanelRows,
+  commitLatestPanelRender,
   latestLatchedState,
   type SessionStatus,
 } from "./panel.ts";
@@ -568,29 +569,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
       activeSessionId: null,
       navSelectedId: null,
     });
-    const preferredActiveSessionId = theaterMode
-      && recitingEvent
-      && live.some((session) => session.sessionId === recitingEvent!.sessionId)
-      ? recitingEvent.sessionId
-      : null;
-    const nextActiveSessionId = activeSessionIdForRows(orderedRows, liveState, preferredActiveSessionId);
-    let activeSessionId = nextActiveSessionId;
-    let navSelectedId: string | null;
-    if (theaterMode) {
-      theaterNavigation.setActive(nextActiveSessionId);
-      theaterNavigation.reconcile(new Set(live.map((session) => session.sessionId)));
-      navSelectedId = theaterNavigation.manualSelectedId;
-    } else {
-      // Legacy auto-follow: selectedId also owns the action target, but its cursor
-      // is hidden until arrowing explicitly turns cursorAuto off.
-      if (cursorAuto) {
-        selectedId = nextActiveSessionId;
-      } else if (selectedId && !live.some((session) => session.sessionId === selectedId)) {
-        selectedId = null;
-      }
-      activeSessionId = nextActiveSessionId;
-      navSelectedId = cursorAuto ? null : selectedId;
-    }
+    const nextActiveSessionId = activeSessionIdForRows(orderedRows, liveState, {
+      preferredSessionId: theaterMode ? recitingEvent?.sessionId : null,
+      liveSessionIds: snap?.liveIds,
+    });
 
     const contentEvent = recitingEvent ?? lastTurn;
     let replyText = liveState.reading?.text ?? "";
@@ -599,30 +581,47 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
     // Registry and transcript reads can overlap; only the newest complete model
     // may reach the renderer.
-    if (version !== panelRenderVersion) return;
-    const model = buildPanelModel({
-      sessions: live,
-      sessionStates,
-      snoozedSessionIds: pausedSessions,
-      live: liveState,
-      mode: { muted, paused, holding: pending.size },
-      activeSessionId,
-      navSelectedId,
-      reply: contentEvent && replyText
-        ? {
-          sessionId: contentEvent.sessionId,
-          text: replyText,
-          spokenChars: liveState.reading?.spokenChars ?? 0,
+    commitLatestPanelRender(version, panelRenderVersion, () => {
+      let navSelectedId: string | null;
+      if (theaterMode) {
+        theaterNavigation.reconcile(new Set(live.map((session) => session.sessionId)));
+        navSelectedId = theaterNavigation.manualSelectedId;
+      } else {
+        // Legacy auto-follow: selectedId also owns the action target, but its cursor
+        // is hidden until arrowing explicitly turns cursorAuto off.
+        if (cursorAuto) {
+          selectedId = nextActiveSessionId;
+        } else if (selectedId && !live.some((session) => session.sessionId === selectedId)) {
+          selectedId = null;
         }
-        : null,
-      panelOpen,
+        navSelectedId = cursorAuto ? null : selectedId;
+      }
+
+      const model = buildPanelModel({
+        sessions: live,
+        sessionStates,
+        snoozedSessionIds: pausedSessions,
+        live: liveState,
+        mode: { muted, paused, holding: pending.size },
+        activeSessionId: nextActiveSessionId,
+        navSelectedId,
+        reply: contentEvent && replyText
+          ? {
+            sessionId: contentEvent.sessionId,
+            text: replyText,
+            spokenChars: liveState.reading?.spokenChars ?? 0,
+          }
+          : null,
+        panelOpen,
+      });
+      model.settingsOverlay = settingsOverlay?.model() ?? null;
+      panelOrder = model.rows.map((row) => row.sessionId);
+      // Read mode state after the async registry snapshot so a slow older redraw
+      // cannot repaint a stale pause/mute banner over a newer toggle.
+      model.mode = { muted, paused, holding: pending.size };
+      renderPanel(model);
+      if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
     });
-    model.settingsOverlay = settingsOverlay?.model() ?? null;
-    panelOrder = model.rows.map((row) => row.sessionId);
-    // Read mode state after the async registry snapshot so a slow older redraw
-    // cannot repaint a stale pause/mute banner over a newer toggle.
-    model.mode = { muted, paused, holding: pending.size };
-    renderPanel(model);
   }
   function setSessionState(
     sessionId: string,

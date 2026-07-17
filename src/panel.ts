@@ -115,11 +115,27 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
 export function activeSessionIdForRows(
   rows: readonly Pick<PanelRowModel, "sessionId" | "label">[],
   live: Pick<PanelLiveState, "state" | "label">,
-  preferredSessionId: string | null = null,
+  options: {
+    preferredSessionId?: string | null;
+    liveSessionIds?: ReadonlySet<string>;
+  } = {},
 ): string | null {
   if (!ROW_LIVE_STATES.has(live.state)) return null;
-  if (preferredSessionId) return preferredSessionId;
+  if (options.preferredSessionId && options.liveSessionIds?.has(options.preferredSessionId)) {
+    return options.preferredSessionId;
+  }
   return rows.find((row) => row.label === live.label)?.sessionId ?? null;
+}
+
+/** Run a panel commit only when its async inputs still belong to the newest render. */
+export function commitLatestPanelRender(
+  generation: number,
+  latestGeneration: number,
+  commit: () => void,
+): boolean {
+  if (generation !== latestGeneration) return false;
+  commit();
+  return true;
 }
 
 /** Build the semantic dashboard once; renderers decide how it looks. */

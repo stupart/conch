@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { isEngageable, registrySnapshot } from "../src/sessions.ts";
+import { activeSessionIdForRows, buildPanelRows } from "../src/panel.ts";
 
 describe("isEngageable — only top-level interactive CLI sessions get engaged", () => {
   test("a real interactive CLI session passes", () => {
@@ -58,6 +59,42 @@ describe("registrySnapshot — torn-file salvage + completeness (FEATURE C safet
       expect(snap!.infos.map((s) => s.sessionId)).toEqual(["aaa"]); // unparseable → not rendered
       rmSync(root, { recursive: true, force: true });
     });
+  });
+
+  test("a torn live reciting id never retargets to a complete same-label session", async () => {
+    const root = makeRegistry({
+      "1.json": JSON.stringify({
+        sessionId: "other",
+        name: "duplicate",
+        kind: "interactive",
+        entrypoint: "cli",
+        status: "busy",
+      }),
+      "2.json": '{"sessionId":"reciting","name":"duplicate","kind":"inter',
+    });
+    const snap = await registrySnapshot(root);
+    const live = { state: "speaking" as const, label: "duplicate", partial: "" };
+    const rows = buildPanelRows({
+      sessions: snap!.infos,
+      sessionStates: new Map(),
+      snoozedSessionIds: new Set(),
+      live,
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+    });
+
+    expect(snap!.infos.map((session) => session.sessionId)).toEqual(["other"]);
+    expect(snap!.liveIds).toEqual(new Set(["other", "reciting"]));
+    expect(activeSessionIdForRows(rows, live, {
+      preferredSessionId: "reciting",
+      liveSessionIds: snap!.liveIds,
+    })).toBe("reciting");
+    expect(activeSessionIdForRows(rows, live, {
+      preferredSessionId: "reciting",
+      liveSessionIds: new Set(["other"]),
+    })).toBe("other");
+    rmSync(root, { recursive: true, force: true });
   });
 
   test("unreadable registry dir → null (total uncertainty; callers keep everything)", () => {
