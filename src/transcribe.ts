@@ -1,5 +1,11 @@
 import { existsSync, unlinkSync } from "node:fs";
-import { awaitWithAbort } from "./audio-watchdog.ts";
+import {
+  awaitWithAbort,
+  awaitWithWatchdog,
+  type WatchdogProcess,
+  type WatchdogResult,
+  type WatchdogWarning,
+} from "./audio-watchdog.ts";
 import type { Config } from "./config.ts";
 import type { TranscriptionEngine } from "./diagnostics.ts";
 
@@ -26,6 +32,22 @@ export type WarmTranscriptionResult =
 export interface WhisperServerClientOptions {
   request?: (url: string, init?: RequestInit) => Promise<Response>;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<boolean>;
+}
+
+export const WARM_TRANSCRIPTION_TIMEOUT_MS = 60_000;
+export const COLD_TRANSCRIPTION_TIMEOUT_MS = 60_000;
+
+export interface ColdTranscriptionProcess extends WatchdogProcess {
+  stdout: ReadableStream<Uint8Array>;
+}
+
+export interface TranscribePcmOptions {
+  coldFallback?: boolean;
+  client?: WhisperServerClient;
+  spawnCold?: (command: string[]) => ColdTranscriptionProcess;
+  warmTimeoutMs?: number;
+  coldTimeoutMs?: number;
+  warn?: WatchdogWarning;
 }
 
 const HALLUCINATION_BLOCKLIST = new Set([
@@ -382,14 +404,15 @@ export async function transcribePcm(
   cfg: Config,
   pcm: Uint8Array,
   onEngine?: (engine: TranscriptionEngine) => void,
-  options: { coldFallback?: boolean } = {},
+  options: TranscribePcmOptions = {},
 ): Promise<{ text: string; error?: string }> {
   const wav = wavFromRawPcm(pcm);
+  const client = options.client ?? whisperServerClient;
 
-  const warm = await whisperServerClient.transcribeWarm(
+  const warm = await client.transcribeWarm(
     cfg,
     wav,
-    60_000,
+    options.warmTimeoutMs ?? WARM_TRANSCRIPTION_TIMEOUT_MS,
     options.coldFallback !== false,
   );
   if (warm.status === "ok") {
@@ -400,9 +423,9 @@ export async function transcribePcm(
 
   const tmp = `/tmp/conch-cli-${process.pid}-${Date.now()}.wav`;
   onEngine?.("cold");
-  await Bun.write(tmp, wav as unknown as Uint8Array<ArrayBuffer>);
   try {
-    const result = await transcribeWavCli(cfg, tmp);
+    await Bun.write(tmp, wav as unknown as Uint8Array<ArrayBuffer>);
+    const result = await transcribeWavCli(cfg, tmp, options);
     return { ...result, text: filterWhisperTranscript(result.text, pcm) };
   } finally {
     try {
@@ -412,10 +435,14 @@ export async function transcribePcm(
 }
 
 /** Cold path: whisper-cli on a wav file. Same invocation seashell uses. */
-async function transcribeWavCli(cfg: Config, wavPath: string): Promise<{ text: string; error?: string }> {
+async function transcribeWavCli(
+  cfg: Config,
+  wavPath: string,
+  options: TranscribePcmOptions,
+): Promise<{ text: string; error?: string }> {
   if (!existsSync(wavPath)) return { text: "", error: `File not found: ${wavPath}` };
 
-  const proc = Bun.spawn(
+  const command =
     [
       cfg.whisperCli,
       "-m", cfg.whisperModel,
@@ -428,14 +455,39 @@ async function transcribeWavCli(cfg: Config, wavPath: string): Promise<{ text: s
       "-nt",
       "-np",
       "-mc", "0",
-    ],
-    { stdout: "pipe", stderr: "ignore" },
-  );
+    ];
+  const proc = options.spawnCold
+    ? options.spawnCold(command)
+    : Bun.spawn(command, { stdout: "pipe", stderr: "ignore" }) as ColdTranscriptionProcess;
 
-  const output = await new Response(proc.stdout).text();
-  const code = await proc.exited;
+  // Start both consumers immediately so a full stdout pipe cannot prevent the
+  // child from exiting. The watchdog covers the combined drain+exit operation;
+  // it settles independently even if either injected/native primitive wedges.
+  const abandon = (): void => {
+    try { proc.kill("SIGKILL"); } catch {}
+    try { proc.unref?.(); } catch {}
+  };
+  let completed: WatchdogResult<[string, number]>;
+  try {
+    const output = new Response(proc.stdout).text();
+    completed = await awaitWithWatchdog(Promise.all([output, proc.exited]), {
+      operation: "cold transcription",
+      timeoutMs: options.coldTimeoutMs ?? COLD_TRANSCRIPTION_TIMEOUT_MS,
+      onTimeout: abandon,
+      timeoutAction: "killed",
+      warn: options.warn,
+    });
+  } catch {
+    // Promise.all rejects as soon as either primitive fails. Dispose the child
+    // because the other primitive may still be alive/wedged outside that race.
+    abandon();
+    return { text: "", error: "Cold transcription failed" };
+  }
+  if (completed.status === "timed-out") return { text: "", error: "Cold transcription timed out" };
+  if (completed.status === "cancelled") return { text: "", error: "Cold transcription cancelled" };
+  const [raw, code] = completed.value;
 
-  const text = cleanTranscript(output);
+  const text = cleanTranscript(raw);
   if (code !== 0 && !text) return { text: "", error: "Transcription failed" };
   return { text };
 }

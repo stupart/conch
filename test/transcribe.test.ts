@@ -1,16 +1,43 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import {
   filterWhisperTranscript,
   isLikelyWhisperHallucination,
+  transcribePcm,
   WhisperServerClient,
 } from "../src/transcribe.ts";
 import type { Config } from "../src/config.ts";
+import type { ColdTranscriptionProcess } from "../src/transcribe.ts";
 
 function constantPcm(sample: number, seconds = 1): Uint8Array {
   const pcm = new Uint8Array(16_000 * 2 * seconds);
   const view = new DataView(pcm.buffer);
   for (let offset = 0; offset < pcm.byteLength; offset += 2) view.setInt16(offset, sample, true);
   return pcm;
+}
+
+function stream(text: string): ReadableStream<Uint8Array> {
+  return new Blob([text]).stream();
+}
+
+function transcriptionConfig(): Config {
+  return {
+    whisperPort: 8642,
+    whisperCli: "fake-whisper-cli",
+    whisperModel: "fake-model.bin",
+    vadModel: "fake-vad.bin",
+  } as Config;
+}
+
+async function readyClient(finalResponse: Response): Promise<WhisperServerClient> {
+  const responses = [
+    new Response("root", { status: 200 }),
+    Response.json({ text: "" }),
+    finalResponse,
+  ];
+  const client = new WhisperServerClient({ request: async () => responses.shift()! });
+  expect(await client.probeReadyUnlocked(transcriptionConfig(), 1_000)).toBeTrue();
+  return client;
 }
 
 describe("Whisper hallucination filtering", () => {
@@ -92,5 +119,189 @@ describe("Whisper hallucination filtering", () => {
     const longQuiet = constantPcm(0, 9);
     const weak = [{ no_speech_prob: 0.99, avg_logprob: -9 }];
     expect(filterWhisperTranscript("Thank you.", longQuiet, weak)).toBe("Thank you.");
+  });
+});
+
+describe("cold transcription recovery", () => {
+  test("runs the cold CLI once after a warm error and returns the recovered tail", async () => {
+    const client = await readyClient(new Response("warm down", { status: 503 }));
+    const commands: string[][] = [];
+    const engines: string[] = [];
+    const result = await transcribePcm(
+      transcriptionConfig(),
+      constantPcm(2_000),
+      (engine) => engines.push(engine),
+      {
+        client,
+        spawnCold: (command) => {
+          commands.push(command);
+          return {
+            stdout: stream("recovered tail\n"),
+            exited: Promise.resolve(0),
+            kill() {},
+          };
+        },
+      },
+    );
+
+    expect(result).toEqual({ text: "recovered tail" });
+    expect(engines).toEqual(["cold"]);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]![0]).toBe("fake-whisper-cli");
+    const inputIndex = commands[0]!.indexOf("-f");
+    expect(inputIndex).toBeGreaterThan(0);
+    expect(existsSync(commands[0]![inputIndex + 1]!)).toBeFalse();
+  });
+
+  test("bounds one cold attempt when stdout completes but process exit wedges", async () => {
+    const client = await readyClient(new Response("warm down", { status: 503 }));
+    const kills: Array<number | NodeJS.Signals | undefined> = [];
+    const warnings: string[] = [];
+    let spawns = 0;
+    let unrefs = 0;
+    let coldInput = "";
+    const hung: ColdTranscriptionProcess = {
+      stdout: stream(""),
+      exited: new Promise<number>(() => {}),
+      kill: (signal) => kills.push(signal),
+      unref: () => { unrefs++; },
+    };
+
+    const result = await transcribePcm(transcriptionConfig(), constantPcm(2_000), undefined, {
+      client,
+      spawnCold: (command) => {
+        spawns++;
+        coldInput = command[command.indexOf("-f") + 1]!;
+        return hung;
+      },
+      coldTimeoutMs: 5,
+      warn: (message) => warnings.push(message),
+    });
+
+    expect(result).toEqual({ text: "", error: "Cold transcription timed out" });
+    expect(spawns).toBe(1);
+    expect(kills).toEqual(["SIGKILL"]);
+    expect(unrefs).toBe(1);
+    expect(warnings).toEqual(["⚠ cold transcription timed out after 5ms — killed, moving on"]);
+    expect(existsSync(coldInput)).toBeFalse();
+  });
+
+  test("bounds one cold attempt when process exit completes but stdout wedges", async () => {
+    const client = await readyClient(new Response("warm down", { status: 503 }));
+    const kills: Array<number | NodeJS.Signals | undefined> = [];
+    let unrefs = 0;
+    let spawns = 0;
+    const result = await transcribePcm(transcriptionConfig(), constantPcm(2_000), undefined, {
+      client,
+      spawnCold: () => {
+        spawns++;
+        return {
+          stdout: new ReadableStream<Uint8Array>({ start() {} }),
+          exited: Promise.resolve(0),
+          kill: (signal) => kills.push(signal),
+          unref: () => { unrefs++; },
+        };
+      },
+      coldTimeoutMs: 5,
+      warn() {},
+    });
+
+    expect(result).toEqual({ text: "", error: "Cold transcription timed out" });
+    expect(spawns).toBe(1);
+    expect(kills).toEqual(["SIGKILL"]);
+    expect(unrefs).toBe(1);
+  });
+
+  test("disposes the cold child when stdout rejects before process exit", async () => {
+    const client = await readyClient(new Response("warm down", { status: 503 }));
+    const kills: Array<number | NodeJS.Signals | undefined> = [];
+    let unrefs = 0;
+    const result = await transcribePcm(transcriptionConfig(), constantPcm(2_000), undefined, {
+      client,
+      spawnCold: () => ({
+        stdout: new ReadableStream<Uint8Array>({
+          start(controller) { controller.error(new Error("stdout failed")); },
+        }),
+        exited: new Promise<number>(() => {}),
+        kill: (signal) => kills.push(signal),
+        unref: () => { unrefs++; },
+      }),
+      coldTimeoutMs: 1_000,
+      warn() {},
+    });
+
+    expect(result).toEqual({ text: "", error: "Cold transcription failed" });
+    expect(kills).toEqual(["SIGKILL"]);
+    expect(unrefs).toBe(1);
+  });
+
+  test("a warm timeout falls through to exactly one cold recovery attempt", async () => {
+    let requests = 0;
+    const warmNever = new Promise<Response>(() => {});
+    const client = new WhisperServerClient({
+      request: async () => {
+        requests++;
+        if (requests === 1) return new Response("root", { status: 200 });
+        if (requests === 2) return Response.json({ text: "" });
+        return warmNever;
+      },
+    });
+    expect(await client.probeReadyUnlocked(transcriptionConfig(), 1_000)).toBeTrue();
+    let coldSpawns = 0;
+    const result = await transcribePcm(transcriptionConfig(), constantPcm(2_000), undefined, {
+      client,
+      warmTimeoutMs: 5,
+      spawnCold: () => {
+        coldSpawns++;
+        return { stdout: stream("timeout tail"), exited: Promise.resolve(0), kill() {} };
+      },
+    });
+
+    expect(result).toEqual({ text: "timeout tail" });
+    expect(coldSpawns).toBe(1);
+  });
+
+  test("a failed warm request with empty cold output remains a single empty result", async () => {
+    const client = await readyClient(new Response("warm down", { status: 503 }));
+    let coldSpawns = 0;
+    const engines: string[] = [];
+    const result = await transcribePcm(
+      transcriptionConfig(),
+      constantPcm(0),
+      (engine) => engines.push(engine),
+      {
+        client,
+        spawnCold: () => {
+          coldSpawns++;
+          return { stdout: stream(""), exited: Promise.resolve(0), kill() {} };
+        },
+      },
+    );
+
+    expect(result).toEqual({ text: "" });
+    expect(engines).toEqual(["cold"]);
+    expect(coldSpawns).toBe(1);
+  });
+
+  test("keeps a successful empty warm result empty without starting cold", async () => {
+    const client = await readyClient(Response.json({ text: "", segments: [] }));
+    let coldSpawns = 0;
+    const engines: string[] = [];
+    const result = await transcribePcm(
+      transcriptionConfig(),
+      constantPcm(0),
+      (engine) => engines.push(engine),
+      {
+        client,
+        spawnCold: () => {
+          coldSpawns++;
+          throw new Error("cold path must not run for warm silence");
+        },
+      },
+    );
+
+    expect(result).toEqual({ text: "" });
+    expect(engines).toEqual(["warm"]);
+    expect(coldSpawns).toBe(0);
   });
 });
