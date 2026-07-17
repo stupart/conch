@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
 import {
   makeSynthBatches,
+  resetTtsReadiness,
   runSynthLadderForTest,
   selectVoice,
   SYNTH_ATTEMPT_TIMEOUT_MS,
@@ -221,10 +222,12 @@ test("trySynth classifies a timed-out 200 body separately and degrades ready hea
 test("synth ladder bails to say after two timeout outcomes", async () => {
   const piece = "This deliberately long sentence has enough words to trigger recursive bisection.";
   const timeout = { kind: "post-header-timeout", status: 200, detail: "TimeoutError" } as const;
-  const result = await runSynthLadderForTest(loadConfig(), piece, [timeout]);
+  const failures: string[] = [];
+  const result = await runSynthLadderForTest(loadConfig(), piece, [timeout], (reason) => failures.push(reason));
 
   expect(result.attempts).toBe(2);
   expect(result.sayFallbacks).toEqual([piece]);
+  expect(failures).toEqual(["synth-timeout"]); // once per utterance, not once per retry
 });
 
 test("synth timeout policy caps attempts at 4s inside an 8.5s two-timeout budget", () => {
@@ -263,11 +266,34 @@ test("fast inference failures continue through the shape-bisection ladder", asyn
     status: 200,
     detail: "broadcast shapes cannot be aligned",
   } as const;
-  const result = await runSynthLadderForTest(loadConfig(), piece, [inference]);
+  const failures: string[] = [];
+  const result = await runSynthLadderForTest(loadConfig(), piece, [inference], (reason) => failures.push(reason));
 
   expect(result.attempts).toBeGreaterThan(2);
   expect(result.sayFallbacks.length).toBeGreaterThan(1);
   expect(result.sayFallbacks.join(" ")).toBe(piece);
+  expect(failures).toEqual([]); // shape/inference errors do not restart the server
+});
+
+test("cancelled and ordinary 4xx synth outcomes do not request a Kokoro restart", async () => {
+  const cfg = loadConfig();
+  const failures: string[] = [];
+  const cancelled = await runSynthLadderForTest(
+    cfg,
+    "cancel this synthesis",
+    [{ kind: "cancelled" }],
+    (reason) => failures.push(reason),
+  );
+  const configFailure = await runSynthLadderForTest(
+    cfg,
+    "keep the server for this bad request",
+    [{ kind: "http-config-failure", status: 422, retryable: false, detail: "bad input" }],
+    (reason) => failures.push(reason),
+  );
+
+  expect(cancelled.sayFallbacks).toEqual([]);
+  expect(configFailure.sayFallbacks).toEqual(["keep the server for this bad request"]);
+  expect(failures).toEqual([]);
 });
 
 test("trySynth distinguishes transport, config, overload, and recognized HTTP inference failures", async () => {
@@ -364,4 +390,39 @@ test("a never-exiting say is killed, resolves, and does not poison the next call
   expect(spawns).toBe(2);
   expect(kills).toEqual(["SIGKILL"]);
   expect(warnings).toEqual(["⚠ say timed out after 5ms — killed, moving on"]);
+});
+
+test("a failed readiness canary reports recovery once before falling back to say", async () => {
+  const cfg = loadConfig();
+  cfg.ttsEngine = "server";
+  const failures: string[] = [];
+  const commands: string[][] = [];
+  const originalFetch = globalThis.fetch;
+  resetTtsReadiness();
+  globalThis.fetch = Object.assign(
+    (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.includes("/v1/audio/voices")) return Promise.resolve(new Response("missing", { status: 404 }));
+      return Promise.resolve(new Response("bad server config", { status: 422 }));
+    },
+    { preconnect: originalFetch.preconnect },
+  );
+
+  try {
+    await speakCancellable(cfg, "fallback please", "", {
+      spawnAudio: (command) => {
+        commands.push(command);
+        return { exited: Promise.resolve(0), kill() {} };
+      },
+      onKokoroFailure: (reason) => failures.push(reason),
+      warn: () => {},
+    }).done;
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetTtsReadiness();
+  }
+
+  expect(failures).toEqual(["readiness-failed"]);
+  expect(commands).toHaveLength(1);
+  expect(commands[0]?.[0]).toBe("say");
 });

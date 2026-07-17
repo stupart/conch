@@ -33,6 +33,7 @@ interface CancelControl {
   processes: Set<AudioProcess>;
   tempFiles: Set<string>;
   runtime: Required<SpeakRuntimeOptions>;
+  kokoroFailureReported: boolean;
   cancel(): void;
 }
 
@@ -59,6 +60,7 @@ export interface SpeakRuntimeOptions {
   spawnAudio?: AudioSpawner;
   timeoutForText?: (text: string) => number;
   warn?: WatchdogWarning;
+  onKokoroFailure?: (reason: "readiness-failed" | "synth-timeout") => void;
 }
 
 const spawnAudio: AudioSpawner = (command) => Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
@@ -68,6 +70,7 @@ function runtimeOptions(options: SpeakRuntimeOptions): Required<SpeakRuntimeOpti
     spawnAudio: options.spawnAudio ?? spawnAudio,
     timeoutForText: options.timeoutForText ?? audioTimeoutMs,
     warn: options.warn ?? console.warn,
+    onKokoroFailure: options.onKokoroFailure ?? (() => {}),
   };
 }
 
@@ -339,7 +342,12 @@ async function abortableSleep(ms: number, signal?: AbortSignal): Promise<boolean
  * Shared synthesis-readiness canary. It requests WAV, consumes the entire body,
  * validates RIFF/PCM, and only then transitions health to ready.
  */
-export async function ensureTtsReady(cfg: Config, timeoutMs = 30_000, signal?: AbortSignal): Promise<boolean> {
+export async function ensureTtsReady(
+  cfg: Config,
+  timeoutMs = 30_000,
+  signal?: AbortSignal,
+  warn?: WatchdogWarning,
+): Promise<boolean> {
   if (cfg.ttsEngine === "say" || !cfg.ttsPort || signal?.aborted) return false;
   const key = readinessConfigKey(cfg);
   if (readinessKey === key && ttsHealth.snapshot().status === "ready") return true;
@@ -368,6 +376,7 @@ export async function ensureTtsReady(cfg: Config, timeoutMs = 30_000, signal?: A
         signal: canarySignal,
         timeoutMs: Math.min(30_000, remaining),
         speed: cfg.ttsSpeed * (inferenceRetries ? 1.003 : 1),
+        warn,
       });
       if (outcome.kind === "audio") {
         if (readinessKey !== key || readinessController !== controller) return false;
@@ -397,8 +406,13 @@ export async function ensureTtsReady(cfg: Config, timeoutMs = 30_000, signal?: A
 }
 
 /** Backwards-compatible name; now an actual fully-consumed synthesis probe. */
-export function probeTtsServer(cfg: Config, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
-  return ensureTtsReady(cfg, timeoutMs, signal);
+export function probeTtsServer(
+  cfg: Config,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  warn?: WatchdogWarning,
+): Promise<boolean> {
+  return ensureTtsReady(cfg, timeoutMs, signal, warn);
 }
 
 /**
@@ -501,6 +515,15 @@ function spawnSay(cfg: Config, text: string, control: CancelControl): AudioProce
   );
 }
 
+function reportKokoroFailure(
+  control: CancelControl,
+  reason: "readiness-failed" | "synth-timeout",
+): void {
+  if (control.cancelled || control.kokoroFailureReported) return;
+  control.kokoroFailureReported = true;
+  try { control.runtime.onKokoroFailure(reason); } catch {}
+}
+
 function newControl(options: SpeakRuntimeOptions = {}): CancelControl {
   const control: CancelControl = {
     cancelled: false,
@@ -508,6 +531,7 @@ function newControl(options: SpeakRuntimeOptions = {}): CancelControl {
     processes: new Set(),
     tempFiles: new Set(),
     runtime: runtimeOptions(options),
+    kokoroFailureReported: false,
     cancel() {
       if (control.cancelled) return;
       control.cancelled = true;
@@ -548,13 +572,16 @@ export function speakCancellable(
     try {
       // Ordinary/standalone calls recover quickly, then use legitimate `say`.
       // Daemon startup/supervision explicitly owns the longer 30s canary.
-      if (cfg.ttsEngine !== "say" && cfg.ttsPort && await ensureTtsReady(cfg, 1500, control.abort.signal)) {
+      const wantsKokoro = cfg.ttsEngine !== "say" && Boolean(cfg.ttsPort);
+      const kokoroReady = wantsKokoro && await ensureTtsReady(cfg, 1500, control.abort.signal, control.runtime.warn);
+      if (kokoroReady) {
         const result = await speakViaServer(cfg, text, label, control);
         if (result !== "ok" && !control.cancelled) {
           const process = spawnSay(cfg, text, control);
           await awaitAudioProcess(process, "say", control.runtime.timeoutForText(text), control.runtime.warn, control);
         }
       } else if (!control.cancelled) {
+        if (wantsKokoro) reportKokoroFailure(control, "readiness-failed");
         const process = spawnSay(cfg, text, control);
         await awaitAudioProcess(process, "say", control.runtime.timeoutForText(text), control.runtime.warn, control);
       }
@@ -766,6 +793,7 @@ async function synthPiece(
       }
       if (last.kind === "cancelled") return { kind: "done", playables: [] };
       if (timedOut(last)) {
+        reportKokoroFailure(control, "synth-timeout");
         budget.timeoutCount++;
         if (budget.timeoutCount >= SYNTH_TIMEOUT_LIMIT || performance.now() >= budget.deadline) {
           return { kind: "done", playables: [{ say: piece }] };
@@ -814,11 +842,12 @@ export async function runSynthLadderForTest(
   cfg: Config,
   piece: string,
   outcomes: TrySynthOutcome[],
+  onKokoroFailure: SpeakRuntimeOptions["onKokoroFailure"] = () => {},
 ): Promise<{ attempts: number; sayFallbacks: string[] }> {
   if (!outcomes.length) throw new Error("at least one synth outcome is required");
   let attempts = 0;
   const attempt: typeof trySynth = async () => outcomes[Math.min(attempts++, outcomes.length - 1)]!;
-  const control = newControl({ warn: () => {} });
+  const control = newControl({ warn: () => {}, onKokoroFailure });
   try {
     const result = await synthPiece(cfg, piece, "af_heart", control, true, newSentenceSynthBudget(attempt));
     return {

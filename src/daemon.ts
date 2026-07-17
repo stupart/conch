@@ -13,6 +13,7 @@ import {
   voiceFor,
 } from "./speak.ts";
 import { SpeechManager } from "./speech-manager.ts";
+import { TtsSupervisor } from "./tts-supervisor.ts";
 import {
   listenGap,
   armBargeRecorder,
@@ -375,10 +376,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
     activeDictation?.session.micOpen || micOpen || normalMicReserved || bargeHandoffOpen
   );
   const assertNormalMicClosed = (operation: string): void => assertAudioGate(normalMicOpen, operation);
+  let ttsSupervisor: TtsSupervisor | null = null;
   const speech = new SpeechManager(
     { speakCancellable: backendSpeakCancellable, stopSpeaking: backendStopSpeaking },
     (operation, output) => withNormalMicClosed(normalMicOpen, operation, output),
-    { warn: log },
+    {
+      warn: log,
+      onKokoroFailure: (reason) => ttsSupervisor?.requestRecovery(reason),
+    },
   );
   // Hooks may connect while model startup is in flight; drain() holds their
   // events behind this fully-consumed readiness probe.
@@ -1818,9 +1823,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
   }
 
   let whisperServer: ReturnType<typeof Bun.spawn> | null = null;
-  // Non-null means OWNED. Adopted Kokoro processes are never stored, watched,
-  // killed, or respawned by this daemon.
-  let ttsServer: ReturnType<typeof Bun.spawn> | null = null;
   const configController = createConfigController(cfg);
   const server = createServer({ allowHalfOpen: true }, (sock) => {
     let buf = "";
@@ -1868,7 +1870,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const recorderDrain = killActiveRecorders(); // a live sox capture would keep the mic hot after we die
     if (server.listening) server.close();
     whisperServer?.kill();
-    ttsServer?.kill();
+    ttsSupervisor?.close();
     try {
       unlinkSync(cfg.socketPath);
     } catch {}
@@ -1887,142 +1889,30 @@ export async function runDaemon(cfg: Config): Promise<void> {
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
 
-  const spawnOwnedTts = (): ReturnType<typeof Bun.spawn> => {
-    const proc = Bun.spawn([cfg.ttsServerBin, "--port", String(cfg.ttsPort)], {
+  const ttsBinaryAvailable = Boolean(Bun.which(cfg.ttsServerBin));
+  const ttsEnabled = cfg.ttsEngine !== "say" && Boolean(cfg.ttsPort) && ttsBinaryAvailable;
+  if (!ttsBinaryAvailable && cfg.ttsEngine === "server") {
+    log(`CONCH_TTS=server but ${cfg.ttsServerBin} not found (uv tool install "mlx-audio[server]") — voices via say`);
+  }
+  ttsSupervisor = new TtsSupervisor({
+    enabled: ttsEnabled,
+    probePresence: (signal) => probeTtsServerPresence(cfg, 1_500, signal),
+    probeReady: (signal) => probeTtsServer(cfg, 30_000, signal, log),
+    spawn: () => Bun.spawn([cfg.ttsServerBin, "--port", String(cfg.ttsPort)], {
       // Separate handles avoid independent offsets clobbering one log file.
       stdout: Bun.file("/tmp/conch-kokoro.log"),
       stderr: Bun.file("/tmp/conch-kokoro.err.log"),
-    });
-    ttsServer = proc;
-    return proc;
-  };
-
-  const retryOwnedTtsReadiness = async (child: ReturnType<typeof Bun.spawn>): Promise<void> => {
-    let deferrals = 0;
-    while (!shuttingDown && ttsServer === child) {
-      await Bun.sleep(Math.min(5_000, 500 * 2 ** Math.min(deferrals, 3)));
-      if (shuttingDown || ttsServer !== child) return;
-      try {
-        const up = await speech.runProbe((signal) => probeTtsServer(cfg, 30_000, signal));
-        if (shuttingDown || ttsServer !== child) return;
-        if (up) {
-          log(`kokoro restarted on :${cfg.ttsPort} — per-session voices on`);
-        } else {
-          log("kokoro restart did not become synthesis-ready");
-          child.kill();
-        }
-        return;
-      } catch (error) {
-        if (shuttingDown || ttsServer !== child) return;
-        deferrals++;
-        log(`kokoro readiness still deferred until the mic closes: ${error}`);
-      }
-    }
-  };
-
-  const superviseOwnedTts = async (initial: ReturnType<typeof Bun.spawn>): Promise<void> => {
-    let child: ReturnType<typeof Bun.spawn> | null = initial;
-    let failures = 0;
-    while (!shuttingDown) {
-      if (child) {
-        const exitedChild = child;
-        const code = await exitedChild.exited;
-        if (ttsServer !== exitedChild) return; // stale watcher
-        ttsServer = null;
-        child = null;
-        if (shuttingDown) return;
-        resetTtsReadiness();
-        failures++;
-        log(`owned kokoro exited (${code})`);
-      }
-
-      const delayMs = Math.min(30_000, 500 * 2 ** Math.min(failures - 1, 6));
-      log(`kokoro recovery attempt in ${Math.round(delayMs / 100) / 10}s`);
-      await Bun.sleep(delayMs);
-      if (shuttingDown) return;
-
-      let adopted: { ready: boolean } | null;
-      try {
-        adopted = await speech.runProbe(async (signal) => {
-          if (!(await probeTtsServerPresence(cfg, 1500, signal))) return null;
-          const ready = await probeTtsServer(cfg, 30_000, signal);
-          return { ready };
-        });
-      } catch (error) {
-        if (shuttingDown) return;
-        failures++;
-        log(`kokoro recovery deferred until the mic closes: ${error}`);
-        continue;
-      }
-      if (shuttingDown) return;
-      if (adopted) {
-        log(`kokoro replacement adopted on :${cfg.ttsPort} — owned supervision ended${adopted.ready ? "" : "; readiness recovering"}`);
-        return;
-      }
-
-      try {
-        if (shuttingDown) return;
-        child = spawnOwnedTts();
-      } catch (error) {
-        failures++;
-        log(`kokoro restart spawn failed: ${error}`);
-        continue;
-      }
-
-      try {
-        const up = await speech.runProbe((signal) => probeTtsServer(cfg, 30_000, signal));
-        if (up) {
-          failures = 0;
-          log(`kokoro restarted on :${cfg.ttsPort} — per-session voices on`);
-        } else {
-          log("kokoro restart did not become synthesis-ready");
-          child.kill(); // its exit drives the next bounded-backoff attempt
-        }
-      } catch (error) {
-        if (shuttingDown) return;
-        // The child may be healthy; a normal mic opening only defers its
-        // readiness proof. Keep watching it and retry once the gate reopens.
-        failures = 0;
-        log(`kokoro readiness deferred until the mic closes: ${error}`);
-        if (child) void retryOwnedTtsReadiness(child);
-      }
-    }
-  };
+    }),
+    resetReadiness: resetTtsReadiness,
+    exclusive: (task, outerSignal) => speech.runProbe((laneSignal) => {
+      return task(AbortSignal.any([outerSignal, laneSignal]));
+    }),
+    log,
+  });
 
   // Assign synchronously before listen: early hook events queue behind this
-  // one full-body capability canary instead of falling through to `say`.
-  ttsStartup = speech.runProbe(async (signal) => {
-    if (cfg.ttsEngine === "say" || !cfg.ttsPort) return;
-    if (!Bun.which(cfg.ttsServerBin)) {
-      if (cfg.ttsEngine === "server") {
-        log(`CONCH_TTS=server but ${cfg.ttsServerBin} not found (uv tool install "mlx-audio[server]") — voices via say`);
-      }
-      return;
-    }
-    try {
-      const adopted = await probeTtsServerPresence(cfg, 1500, signal);
-      if (signal.aborted || shuttingDown) return;
-      if (adopted) {
-        const ready = await probeTtsServer(cfg, 30_000, signal);
-        if (signal.aborted || shuttingDown) return;
-        log(ready
-          ? `kokoro adopted on :${cfg.ttsPort} — per-session voices on`
-          : `kokoro adopted on :${cfg.ttsPort} — readiness canary failed; voices via say while it recovers`);
-        return;
-      }
-      if (shuttingDown) return;
-      const child = spawnOwnedTts();
-      void superviseOwnedTts(child);
-      const up = await probeTtsServer(cfg, 30_000, signal);
-      if (signal.aborted || shuttingDown) return;
-      log(up
-        ? `kokoro warm on :${cfg.ttsPort} — per-session voices on`
-        : "tts server didn't become synthesis-ready — voices via say while it recovers");
-      if (!up && !shuttingDown) child.kill();
-    } catch (error) {
-      if (!shuttingDown) log(`tts startup failed — voices via say: ${error}`);
-    }
-  }).catch((error) => {
+  // one full-body capability canary. Every later repair is fire-and-forget.
+  ttsStartup = ttsSupervisor.start().then(() => {}).catch((error) => {
     if (!shuttingDown) log(`tts startup gate failed — voices via say: ${error}`);
   });
 

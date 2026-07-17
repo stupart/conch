@@ -309,3 +309,20 @@ test("normal speech completing inside its budget is not cancelled", async () => 
   expect(cancels).toBe(0);
   expect(warnings).toEqual([]);
 });
+
+test("Kokoro failure notifications pass through without blocking the speech lane", async () => {
+  const cfg = loadConfig();
+  const failures: string[] = [];
+  const manager = new SpeechManager({
+    speakCancellable: (_cfg, _text, _label, options) => {
+      options?.onKokoroFailure?.("synth-timeout");
+      return { done: Promise.resolve(), cancel() {} };
+    },
+    stopSpeaking() {},
+  }, passThroughGate, {
+    onKokoroFailure: (reason) => failures.push(reason),
+  });
+
+  await manager.speak(cfg, "fallback now");
+  expect(failures).toEqual(["synth-timeout"]);
+});

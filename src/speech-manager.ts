@@ -22,7 +22,10 @@ export interface SpeechBackend {
     cfg: Config,
     text: string,
     label?: string,
-    options?: { warn?: WatchdogWarning },
+    options?: {
+      warn?: WatchdogWarning;
+      onKokoroFailure?: (reason: "readiness-failed" | "synth-timeout") => void;
+    },
   ) => CancellableSpeech;
   /** Legacy/global safety net used to stop anything the backend still owns. */
   stopSpeaking: () => void;
@@ -53,6 +56,7 @@ export interface SpeechManagerOptions {
   spawnAudio?: AudioSpawner;
   timeoutForText?: (text: string) => number;
   warn?: WatchdogWarning;
+  onKokoroFailure?: (reason: "readiness-failed" | "synth-timeout") => void;
 }
 
 const defaultSpawnAudio: AudioSpawner = (command) => Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
@@ -74,6 +78,7 @@ export class SpeechManager {
   private readonly spawnAudio: AudioSpawner;
   private readonly timeoutForText: (text: string) => number;
   private readonly warn: WatchdogWarning;
+  private readonly onKokoroFailure: (reason: "readiness-failed" | "synth-timeout") => void;
 
   constructor(
     private readonly backend: SpeechBackend,
@@ -83,6 +88,7 @@ export class SpeechManager {
     this.spawnAudio = options.spawnAudio ?? defaultSpawnAudio;
     this.timeoutForText = options.timeoutForText ?? audioTimeoutMs;
     this.warn = options.warn ?? console.warn;
+    this.onKokoroFailure = options.onKokoroFailure ?? (() => {});
   }
 
   speak(cfg: Config, text: string, label = ""): Promise<void> {
@@ -93,7 +99,10 @@ export class SpeechManager {
     let active: CancellableSpeech | null = null;
     const managed = this.enqueue<void>(
       async () => {
-        active = this.watchSpeech(this.backend.speakCancellable(cfg, text, label, { warn: this.warn }), text, "TTS");
+        active = this.watchSpeech(this.backend.speakCancellable(cfg, text, label, {
+          warn: this.warn,
+          onKokoroFailure: this.onKokoroFailure,
+        }), text, "TTS");
         await active.done;
       },
       () => active?.cancel(),
@@ -120,7 +129,10 @@ export class SpeechManager {
         interaction(() => {
           if (active) throw new Error("interruptible speech already started");
           active = this.watchSpeech(
-            this.backend.speakCancellable(cfg, text, label, { warn: this.warn }),
+            this.backend.speakCancellable(cfg, text, label, {
+              warn: this.warn,
+              onKokoroFailure: this.onKokoroFailure,
+            }),
             text,
             "barge-in TTS",
           );
