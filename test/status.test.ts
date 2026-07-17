@@ -93,6 +93,29 @@ describe("theater renderer lifecycle", () => {
     expect(frame.endsWith("\n")).toBe(false);
   });
 
+  test("collapsed frames use the full-width status-word ledger", () => {
+    const { io, writes } = recordingIO({ columns: 80, rows: 7 });
+    const renderer = createTheaterRenderer(io);
+    renderer.enter();
+    renderer.panel(sampleModel({
+      panelOpen: false,
+      live: { state: "idle", label: "", partial: "" },
+      rows: [{
+        sessionId: "one",
+        label: "project-one",
+        status: "needs",
+        snoozed: false,
+        liveGlyph: null,
+        active: false,
+        navSelected: false,
+      }],
+    }));
+
+    const frame = writes.at(-1)!;
+    expect(frame).toContain("needs a response");
+    expect(frame).not.toContain("│");
+  });
+
   test("fatal-process and explicit restore paths share one idempotent cleanup", () => {
     const calls: string[] = [];
     const renderer: Renderer = {

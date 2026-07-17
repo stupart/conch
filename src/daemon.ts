@@ -53,6 +53,7 @@ import {
   latestLatchedState,
   type SessionStatus,
 } from "./panel.ts";
+import { TheaterNavigation } from "./theater-navigation.ts";
 import {
   emitRecorderTrace,
   emitRecorderTraces,
@@ -380,14 +381,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // ended, ready for you) / needs (a permission/idle notification fired).
   const sessionStates = new Map<string, { label: string; status: SessionStatus; detail?: string; at: number }>();
   const eventOrder = new TurnEventOrder();
-  // Arrow-key session picker: `panelOrder` mirrors the panel's on-screen order,
-  // `selectedId` is the highlighted row. `cursorAuto` = the cursor follows whoever
-  // conch is interacting with; arrowing takes manual control, and arrowing off
-  // either end releases back to auto (no cursor when idle — so mute/pause read as
-  // global, not "just this one").
+  // Footer mode keeps its established persistent picker untouched. Theater uses
+  // a separate active anchor + transient manual cursor below.
   let panelOrder: string[] = [];
   let selectedId: string | null = null;
   let cursorAuto = true;
+  let panelOpen = true;
+  const theaterNavigation = new TheaterNavigation(() => void renderSessionPanel());
   // Per-session snooze: sessions you've paused to focus elsewhere. They stay on
   // the panel (marked ⏸) but never bell/read/open-mic until you resume them.
   const pausedSessions = new Set<string>();
@@ -555,19 +555,29 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
     }
     const liveState = getLiveState(); // what conch is doing right now, if anything
-    const activeSessionId = ROW_LIVE_STATES.has(liveState.state)
+    const nextActiveSessionId = ROW_LIVE_STATES.has(liveState.state)
       ? (
         theaterMode && recitingEvent && live.some((session) => session.sessionId === recitingEvent!.sessionId)
           ? recitingEvent.sessionId
           : live.find((session) => sessionLabel(session, session.cwd) === liveState.label)?.sessionId ?? null
       )
       : null;
-    // Auto-follow: in auto mode the cursor tracks the session conch is engaged
-    // with (or clears when nothing's live). Manual selection is left untouched.
-    if (cursorAuto) {
-      selectedId = activeSessionId;
-    } else if (selectedId && !live.some((session) => session.sessionId === selectedId)) {
-      selectedId = null; // manually-selected session closed
+    let activeSessionId = nextActiveSessionId;
+    let navSelectedId: string | null;
+    if (theaterMode) {
+      theaterNavigation.setActive(nextActiveSessionId);
+      theaterNavigation.reconcile(new Set(live.map((session) => session.sessionId)));
+      navSelectedId = theaterNavigation.manualSelectedId;
+    } else {
+      // Legacy auto-follow: selectedId also owns the action target, but its cursor
+      // is hidden until arrowing explicitly turns cursorAuto off.
+      if (cursorAuto) {
+        selectedId = nextActiveSessionId;
+      } else if (selectedId && !live.some((session) => session.sessionId === selectedId)) {
+        selectedId = null;
+      }
+      activeSessionId = nextActiveSessionId;
+      navSelectedId = cursorAuto ? null : selectedId;
     }
 
     const contentEvent = recitingEvent ?? lastTurn;
@@ -585,7 +595,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       live: liveState,
       mode: { muted, paused, holding: pending.size },
       activeSessionId,
-      navSelectedId: cursorAuto ? null : selectedId,
+      navSelectedId,
       reply: contentEvent && replyText
         ? {
           sessionId: contentEvent.sessionId,
@@ -593,6 +603,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           spokenChars: liveState.reading?.spokenChars ?? 0,
         }
         : null,
+      panelOpen,
     });
     panelOrder = model.rows.map((row) => row.sessionId);
     // Read mode state after the async registry snapshot so a slow older redraw
@@ -1898,6 +1909,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // Synchronous and first: no cancellation/cleanup failure may strand the
     // alternate screen or hidden cursor before either process.exit below.
     rendererLifecycle.restore();
+    theaterNavigation.dispose();
     shuttingDown = true;
     queue.length = 0;
     speech.close(); // cancel and seal speech, cues, and in-flight/future canaries
@@ -1998,7 +2010,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
   rendererLifecycle.enter();
   setState(restState());
   void renderSessionPanel(); // show the dashboard immediately
-  setKeybar("  \x1b[2m↑↓ select · space talk · enter snooze · m mute · p pause · l logs · ? help · q quit\x1b[0m");
+  setKeybar(theaterMode
+    ? "  \x1b[2m↑↓ select · \\ pane · space talk · enter snooze · m mute · p pause · l logs · ? help · q quit\x1b[0m"
+    : "  \x1b[2m↑↓ select · space talk · enter snooze · m mute · p pause · l logs · ? help · q quit\x1b[0m");
   onLiveChange(() => void renderSessionPanel()); // repaint when speaking/recording/… flips
   process.stdout.on("resize", () => {
     resizeRenderer();
@@ -2090,6 +2104,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
   /** Move the panel selection by delta; off either end releases the cursor to auto. */
   function moveSelection(delta: number): void {
     if (!panelOrder.length) return;
+    if (theaterMode) {
+      theaterNavigation.move(
+        panelOrder,
+        delta < 0 ? -1 : 1,
+        lastTurn?.sessionId ?? null,
+      );
+      return;
+    }
     // From no cursor: ↓ enters at the top, ↑ enters at the bottom.
     const cur = selectedId ? panelOrder.indexOf(selectedId) : (delta > 0 ? -1 : panelOrder.length);
     const next = cur + delta;
@@ -2101,6 +2123,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
       selectedId = panelOrder[next]!;
     }
     void renderSessionPanel();
+  }
+
+  function theaterActionTarget(): string | null {
+    return theaterNavigation.actionTarget(lastTurn?.sessionId ?? null);
   }
 
   // The guaranteed stop while reciting or mid-exchange (space, Enter, and snooze
@@ -2147,6 +2173,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const c = d.toString();
       if (c === " ") {
         if (busy) stopReciting("spacebar");
+        else if (theaterMode && theaterActionTarget()) void wakeBySessionId(theaterActionTarget()!);
         else if (selectedId) void wakeBySessionId(selectedId); // talk to the selected session
         else enqueue({ type: "wake", sessionId: "", label: "", announce: "" }); // else the last-announced
       }
@@ -2155,8 +2182,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
       else if (c === "\x1b[B" || c === "\x1bOB") moveSelection(1);
       // Enter: snooze / resume the selected session (per-session pause).
       else if (c === "\r" || c === "\n") {
-        if (selectedId) toggleSnooze(selectedId);
+        const target = theaterMode ? theaterActionTarget() : selectedId;
+        if (target) toggleSnooze(target);
         else void printSessions();
+      }
+      else if (theaterMode && c === "\\") {
+        panelOpen = !panelOpen;
+        void renderSessionPanel();
       }
       else if (c >= "1" && c <= "9") void wakeByNumber(Number(c));
       else if (c === "s") void printSessions();
