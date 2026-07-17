@@ -1,10 +1,45 @@
 import { expect, test, describe } from "bun:test";
 import {
+  buildPanelModel,
   dashboardPanelLines,
   latestLatchedState,
   reconcileStatus,
   registryToPanel,
 } from "../src/panel.ts";
+
+describe("buildPanelModel — renderer seam", () => {
+  test("builds sorted semantic rows with independent active and nav cursors", () => {
+    const model = buildPanelModel({
+      sessions: [
+        { sessionId: "working", name: "Work", status: "busy", statusUpdatedAt: 30 },
+        { sessionId: "waiting", name: "Wait", status: "idle", statusUpdatedAt: 30 },
+        { sessionId: "needs", name: "Need", status: "busy", statusUpdatedAt: 10 },
+      ],
+      sessionStates: new Map([
+        ["needs", { label: "Need", status: "needs" as const, detail: "permission", at: 40 }],
+      ]),
+      snoozedSessionIds: new Set(["waiting"]),
+      live: { state: "speaking", label: "Work", partial: "" },
+      mode: { muted: false, paused: true, holding: 2 },
+      activeSessionId: "working",
+      navSelectedId: "waiting",
+      reply: { sessionId: "working", text: "A finished response.", spokenChars: 2 },
+    });
+
+    expect(model.rows.map((row) => row.sessionId)).toEqual(["needs", "waiting", "working"]);
+    expect(model.rows[0]).toMatchObject({ status: "needs", detail: "permission" });
+    expect(model.rows[1]).toMatchObject({ snoozed: true, active: false, navSelected: true });
+    expect(model.rows[2]).toMatchObject({
+      status: "working",
+      liveGlyph: "speaking",
+      active: true,
+      navSelected: false,
+    });
+    expect(model.mode).toEqual({ muted: false, paused: true, holding: 2 });
+    expect(model.live).toEqual({ state: "speaking", label: "Work", partial: "" });
+    expect(model.reply).toEqual({ sessionId: "working", text: "A finished response.", spokenChars: 2 });
+  });
+});
 
 describe("dashboard global mode banner", () => {
   const active = dashboardPanelLines(["session row"], 80, { muted: false, paused: false, holding: 0 });

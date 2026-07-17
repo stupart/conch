@@ -31,13 +31,26 @@ import {
   whisperServerClient,
   type WhisperRecoveryReason,
 } from "./transcribe.ts";
-import { setState, logAbove, setPanel, setKeybar, setLogsVisible, logsShown, getLiveState, onLiveChange, type ConchState } from "./status.ts";
+import {
+  clearReadingProgress,
+  configureRenderer,
+  getLiveState,
+  installRendererLifecycle,
+  logAbove,
+  logsShown,
+  onLiveChange,
+  renderPanel,
+  resizeRenderer,
+  setKeybar,
+  setLogsVisible,
+  setReadingProgress,
+  setState,
+  type ConchState,
+} from "./status.ts";
 import { listSessions, registrySnapshot, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
 import {
-  dashboardPanelLines,
+  buildPanelModel,
   latestLatchedState,
-  reconcileStatus,
-  STATUS_RANK,
   type SessionStatus,
 } from "./panel.ts";
 import {
@@ -333,6 +346,15 @@ export class TurnEventOrder {
 }
 
 export async function runDaemon(cfg: Config): Promise<void> {
+  const rendererSelection = configureRenderer();
+  const rendererLifecycle = installRendererLifecycle(rendererSelection.renderer);
+  const theaterMode = rendererSelection.kind === "theater";
+  const resetReadingProgress = (): void => {
+    if (theaterMode) clearReadingProgress();
+  };
+  const updateReadingProgress = (text: string, spokenChars: number): void => {
+    if (theaterMode) setReadingProgress(text, spokenChars);
+  };
   const diagnosticsEnabled = recorderDiagnosticsEnabled();
   const queue: TurnEvent[] = [];
   let busy = false;
@@ -513,21 +535,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // The at-rest status when nothing's in flight: muted wins over paused for display.
   const restState = (): ConchState => (muted ? "muted" : paused ? "paused" : "idle");
 
-  // Record a session's status and repaint the pinned dashboard panel.
-  const STATUS_GLYPH: Record<SessionStatus, string> = {
-    needs: "\x1b[33m❗ needs a response\x1b[0m",
-    waiting: "\x1b[32m○ waiting for you\x1b[0m",
-    working: "\x1b[36m● working…\x1b[0m",
-  };
-  // What conch is doing RIGHT NOW with the active session — shown on that row,
-  // overriding its hook glyph. (idle/muted/paused aren't row-specific.)
-  const LIVE_GLYPH: Partial<Record<ConchState, string>> = {
-    listening: "\x1b[32m● mic open\x1b[0m",
-    recording: "\x1b[31m● recording\x1b[0m",
-    speaking: "\x1b[33m▶ speaking\x1b[0m",
-    transcribing: "\x1b[36m… transcribing\x1b[0m",
-  };
+  const ROW_LIVE_STATES = new Set<ConchState>(["listening", "recording", "speaking", "transcribing"]);
+  let panelRenderVersion = 0;
   async function renderSessionPanel(): Promise<void> {
+    const version = ++panelRenderVersion;
     let snap: Awaited<ReturnType<typeof registrySnapshot>> = null;
     try {
       snap = await registrySnapshot(cfg.claudeDir);
@@ -543,44 +554,51 @@ export async function runDaemon(cfg: Config): Promise<void> {
         eventOrder.forget(id);
       }
     }
-    const rows = live
-      .map((s) => {
-        const st = sessionStates.get(s.sessionId);
-        const status = reconcileStatus(s, st);
-        return { sessionId: s.sessionId, label: sessionLabel(s, s.cwd), status, detail: status === "needs" ? st?.detail : undefined };
-      })
-      .sort((a, b) => (STATUS_RANK[a.status ?? "working"] - STATUS_RANK[b.status ?? "working"]) || a.label.localeCompare(b.label));
-    panelOrder = rows.map((r) => r.sessionId);
     const liveState = getLiveState(); // what conch is doing right now, if anything
+    const activeSessionId = ROW_LIVE_STATES.has(liveState.state)
+      ? (
+        theaterMode && recitingEvent && live.some((session) => session.sessionId === recitingEvent!.sessionId)
+          ? recitingEvent.sessionId
+          : live.find((session) => sessionLabel(session, session.cwd) === liveState.label)?.sessionId ?? null
+      )
+      : null;
     // Auto-follow: in auto mode the cursor tracks the session conch is engaged
     // with (or clears when nothing's live). Manual selection is left untouched.
     if (cursorAuto) {
-      const active = LIVE_GLYPH[liveState.state] ? rows.find((r) => r.label === liveState.label) : undefined;
-      selectedId = active?.sessionId ?? null;
-    } else if (selectedId && !panelOrder.includes(selectedId)) {
+      selectedId = activeSessionId;
+    } else if (selectedId && !live.some((session) => session.sessionId === selectedId)) {
       selectedId = null; // manually-selected session closed
     }
-    const renderedRows = rows.map((r) => {
-      // The ▸ cursor only shows while you're actively navigating (manual mode);
-      // in auto-follow it stays hidden so it can't read as "acting on this one".
-      const cursor = !cursorAuto && r.sessionId === selectedId ? "\x1b[36m▸\x1b[0m " : "  ";
-      // A snoozed session shows dim with a ⏸ instead of its live status.
-      if (pausedSessions.has(r.sessionId)) {
-        return `${cursor}\x1b[2m${r.label.slice(0, 26).padEnd(27)}⏸ snoozed\x1b[0m`;
-      }
-      // Live state (recording/speaking/…) on the active session's row wins over
-      // its hook glyph; otherwise show the reconciled status.
-      const liveGlyph = liveState.label === r.label ? LIVE_GLYPH[liveState.state] : undefined;
-      const glyph = liveGlyph ?? (r.status ? STATUS_GLYPH[r.status] : "\x1b[2m· idle\x1b[0m");
-      return `${cursor}${r.label.slice(0, 26).padEnd(27)}${glyph}${r.detail ? ` \x1b[2m(${r.detail})\x1b[0m` : ""}`;
+
+    const contentEvent = recitingEvent ?? lastTurn;
+    let replyText = liveState.reading?.text ?? "";
+    if (theaterMode && !replyText && contentEvent?.transcriptPath) {
+      replyText = stripMarkdown(await lastAssistantText(contentEvent.transcriptPath));
+    }
+    // Registry and transcript reads can overlap; only the newest complete model
+    // may reach the renderer.
+    if (version !== panelRenderVersion) return;
+    const model = buildPanelModel({
+      sessions: live,
+      sessionStates,
+      snoozedSessionIds: pausedSessions,
+      live: liveState,
+      mode: { muted, paused, holding: pending.size },
+      activeSessionId,
+      navSelectedId: cursorAuto ? null : selectedId,
+      reply: contentEvent && replyText
+        ? {
+          sessionId: contentEvent.sessionId,
+          text: replyText,
+          spokenChars: liveState.reading?.spokenChars ?? 0,
+        }
+        : null,
     });
+    panelOrder = model.rows.map((row) => row.sessionId);
     // Read mode state after the async registry snapshot so a slow older redraw
     // cannot repaint a stale pause/mute banner over a newer toggle.
-    setPanel(dashboardPanelLines(renderedRows, process.stdout.columns ?? 80, {
-      muted,
-      paused,
-      holding: pending.size,
-    }));
+    model.mode = { muted, paused, holding: pending.size };
+    renderPanel(model);
   }
   function setSessionState(
     sessionId: string,
@@ -722,10 +740,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
       log(`wake -> "${target.label}"`);
       if (cfg.revealOnTurn && target.pid) void revealSessionWindow(target.pid); // surface it, no focus steal
-      setState("speaking", target.label);
-      await speak(cfg, `Mic open for ${target.label}.`, target.label);
+      resetReadingProgress();
       recitingEvent = target;
       try {
+        setState("speaking", target.label);
+        await speak(cfg, `Mic open for ${target.label}.`, target.label);
         await conversationLoop(target);
       } finally {
         recitingEvent = null;
@@ -758,6 +777,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const conversationParent = createRecorderParent("conversation");
     let conversationSequence = 0;
     const nextConversationSequence = () => ++conversationSequence;
+    resetReadingProgress();
     recitingEvent = event; // reading this project aloud now — snoozing it stops the read here
     try {
       const announce = await speakInterruptible(
@@ -1020,6 +1040,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (!sentences) {
         sentences = splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath!)));
         cursor = countCoveredSentences(event.announce, sentences);
+        const text = sentences.join(" ");
+        updateReadingProgress(text, sentences.slice(0, cursor).join(" ").length);
       }
       return sentences;
     };
@@ -1194,6 +1216,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
         }
         if (!result.heard) {
           cursor += cfg.continueSentences; // spoken in full — advance to the next chunk
+          updateReadingProgress(
+            sentences.join(" "),
+            sentences.slice(0, Math.min(cursor, sentences.length)).join(" ").length,
+          );
           continue;
         }
         const action = await onReadingUtterance(event, result.heard, chunk, result.diagnosticId, result.diagnosticIds);
@@ -1374,6 +1400,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
           setState("speaking", event.label);
           await speak(cfg, chunk, event.label);
           cursor += cfg.continueSentences;
+          updateReadingProgress(
+            full.join(" "),
+            full.slice(0, Math.min(cursor, full.length)).join(" ").length,
+          );
           return "resume";
         }
       }
@@ -1865,6 +1895,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const shutdown = async (): Promise<void> => {
     if (shutdownStarted) return;
     shutdownStarted = true;
+    // Synchronous and first: no cancellation/cleanup failure may strand the
+    // alternate screen or hidden cursor before either process.exit below.
+    rendererLifecycle.restore();
     shuttingDown = true;
     queue.length = 0;
     speech.close(); // cancel and seal speech, cues, and in-flight/future canaries
@@ -1962,11 +1995,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);
   if (muted) log("resuming muted (persisted) — m or `conch unmute` to turn on");
   if (paused) log("resuming paused (persisted) — p or `conch resume` to turn on");
+  rendererLifecycle.enter();
   setState(restState());
   void renderSessionPanel(); // show the dashboard immediately
   setKeybar("  \x1b[2m↑↓ select · space talk · enter snooze · m mute · p pause · l logs · ? help · q quit\x1b[0m");
   onLiveChange(() => void renderSessionPanel()); // repaint when speaking/recording/… flips
-  process.stdout.on("resize", () => void renderSessionPanel()); // re-fit to the new width
+  process.stdout.on("resize", () => {
+    resizeRenderer();
+    void renderSessionPanel(); // refresh the model and re-fit to the new width
+  });
   // Refresh periodically so killed sessions drop off even with no new events.
   const panelTimer = setInterval(() => void renderSessionPanel(), 20_000);
   panelTimer.unref?.();

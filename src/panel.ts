@@ -1,4 +1,14 @@
-import type { SessionInfo } from "./sessions.ts";
+import { sessionLabel, type SessionInfo } from "./sessions.ts";
+
+export type PanelConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
+
+export interface PanelLiveState {
+  state: PanelConchState;
+  label: string;
+  partial: string;
+  /** Chunk-level reading progress. The audio backend does not expose word timing. */
+  reading?: { text: string; spokenChars: number };
+}
 
 /** The three states a session row can show in the dashboard panel. */
 export type SessionStatus = "working" | "waiting" | "needs";
@@ -13,6 +23,115 @@ export interface DashboardMode {
   muted: boolean;
   paused: boolean;
   holding: number;
+}
+
+export interface PanelRowModel {
+  sessionId: string;
+  label: string;
+  status: SessionStatus | null;
+  detail?: string;
+  snoozed: boolean;
+  liveGlyph: PanelConchState | null;
+  active: boolean;
+  navSelected: boolean;
+}
+
+export interface PanelReplyModel {
+  sessionId: string;
+  text: string;
+  spokenChars: number;
+}
+
+export interface PanelModel {
+  rows: PanelRowModel[];
+  mode: DashboardMode;
+  live: PanelLiveState;
+  reply: PanelReplyModel | null;
+  /** Theater-only presentation state. Footer rendering intentionally ignores it. */
+  panelOpen: boolean;
+}
+
+export interface PanelSessionState extends LatchedState {
+  label: string;
+  detail?: string;
+}
+
+export interface BuildPanelModelOptions {
+  sessions: readonly SessionInfo[];
+  sessionStates: ReadonlyMap<string, PanelSessionState>;
+  snoozedSessionIds: ReadonlySet<string>;
+  live: PanelLiveState;
+  mode: DashboardMode;
+  activeSessionId: string | null;
+  navSelectedId: string | null;
+  reply?: PanelReplyModel | null;
+  panelOpen?: boolean;
+}
+
+const ROW_LIVE_STATES = new Set<PanelConchState>(["listening", "recording", "speaking", "transcribing"]);
+
+/** Build the semantic dashboard once; renderers decide how it looks. */
+export function buildPanelModel(options: BuildPanelModelOptions): PanelModel {
+  const rows = options.sessions
+    .map((session): PanelRowModel => {
+      const latched = options.sessionStates.get(session.sessionId);
+      const status = reconcileStatus(session, latched);
+      const active = session.sessionId === options.activeSessionId;
+      return {
+        sessionId: session.sessionId,
+        label: sessionLabel(session, session.cwd),
+        status,
+        ...(status === "needs" && latched?.detail ? { detail: latched.detail } : {}),
+        snoozed: options.snoozedSessionIds.has(session.sessionId),
+        liveGlyph: active && ROW_LIVE_STATES.has(options.live.state) ? options.live.state : null,
+        active,
+        navSelected: session.sessionId === options.navSelectedId,
+      };
+    })
+    .sort((a, b) => (
+      STATUS_RANK[a.status ?? "working"] - STATUS_RANK[b.status ?? "working"]
+      || a.label.localeCompare(b.label)
+    ));
+
+  return {
+    rows,
+    mode: { ...options.mode },
+    live: {
+      ...options.live,
+      ...(options.live.reading ? { reading: { ...options.live.reading } } : {}),
+    },
+    reply: options.reply ? { ...options.reply } : null,
+    panelOpen: options.panelOpen ?? true,
+  };
+}
+
+const STATUS_GLYPH: Record<SessionStatus, string> = {
+  needs: "\x1b[33m❗ needs a response\x1b[0m",
+  waiting: "\x1b[32m○ waiting for you\x1b[0m",
+  working: "\x1b[36m● working…\x1b[0m",
+};
+
+const LIVE_GLYPH: Partial<Record<PanelConchState, string>> = {
+  listening: "\x1b[32m● mic open\x1b[0m",
+  recording: "\x1b[31m● recording\x1b[0m",
+  speaking: "\x1b[33m▶ speaking\x1b[0m",
+  transcribing: "\x1b[36m… transcribing\x1b[0m",
+};
+
+/** The legacy row view, kept byte-for-byte so footer mode does not drift. */
+export function dashboardRowsForModel(model: PanelModel): string[] {
+  return model.rows.map((row) => {
+    const cursor = row.navSelected ? "\x1b[36m▸\x1b[0m " : "  ";
+    if (row.snoozed) {
+      return `${cursor}\x1b[2m${row.label.slice(0, 26).padEnd(27)}⏸ snoozed\x1b[0m`;
+    }
+    // Footer mode historically keyed its live glyph by label. Keep that exact
+    // behavior here; theater uses the unambiguous active/liveGlyph model fields.
+    const legacyLiveGlyph = row.label === model.live.label ? LIVE_GLYPH[model.live.state] : undefined;
+    const glyph = legacyLiveGlyph
+      ?? (row.status ? STATUS_GLYPH[row.status] : "\x1b[2m· idle\x1b[0m");
+    return `${cursor}${row.label.slice(0, 26).padEnd(27)}${glyph}${row.detail ? ` \x1b[2m(${row.detail})\x1b[0m` : ""}`;
+  });
 }
 
 /** Global mode occupies one permanent slot so rows never jump on toggle. */
