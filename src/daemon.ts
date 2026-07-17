@@ -49,7 +49,9 @@ import {
 } from "./status.ts";
 import { listSessions, registrySnapshot, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
 import {
+  activeSessionIdForRows,
   buildPanelModel,
+  buildPanelRows,
   latestLatchedState,
   type SessionStatus,
 } from "./panel.ts";
@@ -538,7 +540,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // The at-rest status when nothing's in flight: muted wins over paused for display.
   const restState = (): ConchState => (muted ? "muted" : paused ? "paused" : "idle");
 
-  const ROW_LIVE_STATES = new Set<ConchState>(["listening", "recording", "speaking", "transcribing"]);
   let panelRenderVersion = 0;
   async function renderSessionPanel(): Promise<void> {
     const version = ++panelRenderVersion;
@@ -558,13 +559,21 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
     }
     const liveState = getLiveState(); // what conch is doing right now, if anything
-    const nextActiveSessionId = ROW_LIVE_STATES.has(liveState.state)
-      ? (
-        theaterMode && recitingEvent && live.some((session) => session.sessionId === recitingEvent!.sessionId)
-          ? recitingEvent.sessionId
-          : live.find((session) => sessionLabel(session, session.cwd) === liveState.label)?.sessionId ?? null
-      )
+    const orderedRows = buildPanelRows({
+      sessions: live,
+      sessionStates,
+      snoozedSessionIds: pausedSessions,
+      live: liveState,
+      mode: { muted, paused, holding: pending.size },
+      activeSessionId: null,
+      navSelectedId: null,
+    });
+    const preferredActiveSessionId = theaterMode
+      && recitingEvent
+      && live.some((session) => session.sessionId === recitingEvent!.sessionId)
+      ? recitingEvent.sessionId
       : null;
+    const nextActiveSessionId = activeSessionIdForRows(orderedRows, liveState, preferredActiveSessionId);
     let activeSessionId = nextActiveSessionId;
     let navSelectedId: string | null;
     if (theaterMode) {

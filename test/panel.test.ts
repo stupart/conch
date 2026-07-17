@@ -1,11 +1,15 @@
 import { expect, test, describe } from "bun:test";
 import {
+  activeSessionIdForRows,
   buildPanelModel,
+  buildPanelRows,
   dashboardPanelLines,
+  dashboardRowsForModel,
   latestLatchedState,
   reconcileStatus,
   registryToPanel,
 } from "../src/panel.ts";
+import { TheaterNavigation } from "../src/theater-navigation.ts";
 
 describe("buildPanelModel — renderer seam", () => {
   test("builds sorted semantic rows with independent active and nav cursors", () => {
@@ -38,6 +42,36 @@ describe("buildPanelModel — renderer seam", () => {
     expect(model.mode).toEqual({ muted: false, paused: true, holding: 2 });
     expect(model.live).toEqual({ state: "speaking", label: "Work", partial: "" });
     expect(model.reply).toEqual({ sessionId: "working", text: "A finished response.", spokenChars: 2 });
+  });
+
+  test("duplicate labels resolve highlight and action id from status-sorted row order", () => {
+    const options = {
+      sessions: [
+        { sessionId: "raw-first", name: "same", status: "busy", statusUpdatedAt: 30 },
+        { sessionId: "sorted-first", name: "same", status: "waiting", statusUpdatedAt: 30 },
+      ],
+      sessionStates: new Map(),
+      snoozedSessionIds: new Set<string>(),
+      live: { state: "speaking" as const, label: "same", partial: "" },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+    };
+    const orderedRows = buildPanelRows(options);
+    const actionTargetId = activeSessionIdForRows(orderedRows, options.live);
+    const model = buildPanelModel({
+      ...options,
+      activeSessionId: actionTargetId,
+      navSelectedId: actionTargetId,
+    });
+    const theaterNavigation = new TheaterNavigation(() => {});
+    theaterNavigation.setActive(actionTargetId);
+
+    expect(orderedRows.map((row) => row.sessionId)).toEqual(["sorted-first", "raw-first"]);
+    expect(actionTargetId).toBe("sorted-first");
+    expect(theaterNavigation.actionTarget("fallback")).toBe("sorted-first");
+    expect(model.rows.find((row) => row.active)?.sessionId).toBe("sorted-first");
+    expect(dashboardRowsForModel(model)[0]?.startsWith("\x1b[36m▸\x1b[0m ")).toBe(true);
   });
 });
 

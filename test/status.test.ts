@@ -5,7 +5,6 @@ import {
   ALT_SCREEN_RESTORE,
   createFooterRenderer,
   createTheaterRenderer,
-  fitToWidth,
   installRendererLifecycle,
   shouldUseTheater,
   terminalCellWidth,
@@ -13,10 +12,21 @@ import {
   type RendererIO,
 } from "../src/status.ts";
 import {
-  dashboardPanelLines,
-  dashboardRowsForModel,
   type PanelModel,
 } from "../src/panel.ts";
+
+const ACTIVE_FOOTER_GOLDEN = "\n"
+  + "  \x1b[1m🐚 conch\x1b[0m\n"
+  + "\n"
+  + "  \x1b[2m────────────────────────────────────────────────────────────────────────────\x1b[0m\n"
+  + "  project-one                \x1b[33m▶ speaking\x1b[0m\n";
+
+const PAUSED_FOOTER_GOLDEN = "\n"
+  + "  \x1b[1m🐚 conch\x1b[0m\n"
+  + "  \x1b[1;35m⏸ PAUSED · holding 2 · press p to resume\x1b[0m\n"
+  + "  \x1b[2m────────────────────────────────────────────────────────────────────────────\x1b[0m\n"
+  + "\x1b[36m▸\x1b[0m alpha                      \x1b[33m❗ needs a response\x1b[0m \x1b[2m(permission)\x1b[0m\n"
+  + "  \x1b[2mbeta                       ⏸ snoozed\x1b[0m\n";
 
 function sampleModel(overrides: Partial<PanelModel> = {}): PanelModel {
   return {
@@ -54,26 +64,51 @@ function recordingIO(options: { columns?: number; rows?: number; tty?: boolean }
 }
 
 describe("footer renderer seam", () => {
-  test("renders a semantic model through the unchanged dashboard/footer view", () => {
+  test("matches the frozen active footer bytes", () => {
     const { io, writes } = recordingIO({ columns: 80 });
-    const model = sampleModel();
-    createFooterRenderer(io).panel(model);
+    createFooterRenderer(io).panel(sampleModel());
 
-    const legacyPanel = dashboardPanelLines(dashboardRowsForModel(model), 80, model.mode)
-      .map((line) => fitToWidth(line, 79));
-    const expected = [...legacyPanel, ""].map((line) => fitToWidth(line, 79)).join("\n");
-    expect(writes).toEqual([expected]);
+    expect(writes).toEqual([ACTIVE_FOOTER_GOLDEN]);
+  });
+
+  test("matches frozen paused, selected, detailed, and snoozed footer bytes", () => {
+    const { io, writes } = recordingIO({ columns: 80 });
+    createFooterRenderer(io).panel(sampleModel({
+      rows: [
+        {
+          sessionId: "need",
+          label: "alpha",
+          status: "needs",
+          detail: "permission",
+          snoozed: false,
+          liveGlyph: null,
+          active: false,
+          navSelected: true,
+        },
+        {
+          sessionId: "sleep",
+          label: "beta",
+          status: "working",
+          snoozed: true,
+          liveGlyph: null,
+          active: false,
+          navSelected: false,
+        },
+      ],
+      mode: { muted: false, paused: true, holding: 2 },
+      live: { state: "paused", label: "", partial: "" },
+      reply: null,
+    }));
+
+    expect(writes).toEqual([PAUSED_FOOTER_GOLDEN]);
   });
 
   test("keeps the legacy 80-column dashboard fallback separate from line fitting", () => {
     const { io, writes } = recordingIO({ columns: 100 });
     io.dashboardColumns = () => 80;
-    const model = sampleModel();
-    createFooterRenderer(io).panel(model);
+    createFooterRenderer(io).panel(sampleModel());
 
-    const legacyPanel = dashboardPanelLines(dashboardRowsForModel(model), 80, model.mode)
-      .map((line) => fitToWidth(line, 99));
-    expect(writes).toEqual([[...legacyPanel, ""].join("\n")]);
+    expect(writes).toEqual([ACTIVE_FOOTER_GOLDEN]);
   });
 });
 

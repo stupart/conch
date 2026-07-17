@@ -87,9 +87,9 @@ export interface BuildPanelModelOptions {
 
 const ROW_LIVE_STATES = new Set<PanelConchState>(["listening", "recording", "speaking", "transcribing"]);
 
-/** Build the semantic dashboard once; renderers decide how it looks. */
-export function buildPanelModel(options: BuildPanelModelOptions): PanelModel {
-  const rows = options.sessions
+/** Build rows in the canonical panel order used by rendering and interaction. */
+export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[] {
+  return options.sessions
     .map((session): PanelRowModel => {
       const latched = options.sessionStates.get(session.sessionId);
       const status = reconcileStatus(session, latched);
@@ -109,6 +109,22 @@ export function buildPanelModel(options: BuildPanelModelOptions): PanelModel {
       STATUS_RANK[a.status ?? "working"] - STATUS_RANK[b.status ?? "working"]
       || a.label.localeCompare(b.label)
     ));
+}
+
+/** Resolve label-based auto-follow against the exact order visible in the panel. */
+export function activeSessionIdForRows(
+  rows: readonly Pick<PanelRowModel, "sessionId" | "label">[],
+  live: Pick<PanelLiveState, "state" | "label">,
+  preferredSessionId: string | null = null,
+): string | null {
+  if (!ROW_LIVE_STATES.has(live.state)) return null;
+  if (preferredSessionId) return preferredSessionId;
+  return rows.find((row) => row.label === live.label)?.sessionId ?? null;
+}
+
+/** Build the semantic dashboard once; renderers decide how it looks. */
+export function buildPanelModel(options: BuildPanelModelOptions): PanelModel {
+  const rows = buildPanelRows(options);
 
   return {
     rows,
