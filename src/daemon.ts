@@ -45,6 +45,7 @@ import {
   setLogsVisible,
   setReadingProgress,
   setState,
+  setTranscriptPrefix,
   type ConchState,
 } from "./status.ts";
 import { listSessions, registrySnapshot, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
@@ -351,10 +352,53 @@ export class TurnEventOrder {
   }
 }
 
+/**
+ * Wire listen-phase state and live partials into the status renderer.
+ *
+ * The prefix provider is conversation-scoped. Reading it at render events keeps
+ * the theater transcript aligned with the reducer's accepted buffer instead of
+ * guessing which final transcriptions will survive command reduction.
+ */
+export function listenHooks(
+  label: string,
+  transcriptPrefix?: () => string,
+  status: {
+    setState(state: ConchState, label?: string, partial?: string): void;
+    setTranscriptPrefix(prefix: string): void;
+  } = { setState, setTranscriptPrefix },
+): ListenHooks {
+  const refreshTranscriptPrefix = (): void => {
+    if (transcriptPrefix) status.setTranscriptPrefix(transcriptPrefix());
+  };
+  // A newly-created conversation may adopt an already-open barge recorder, in
+  // which case no initial "armed" transition fires. Reset eagerly so that path
+  // cannot inherit another turn's theater-only prefix.
+  refreshTranscriptPrefix();
+  return {
+    onState: (state) => {
+      // Refresh before the visible state transition: setState intentionally
+      // preserves the prefix, so theater never paints a stale one in between.
+      refreshTranscriptPrefix();
+      if (state === "armed") status.setState("listening", label);
+      else if (state === "capturing") status.setState("recording", label);
+      else status.setState("transcribing", label);
+    },
+    onPartial: (text) => {
+      // Footer remains the current capture only; theater separately reads the
+      // authoritative committed prefix installed immediately afterward.
+      status.setState("recording", label, text);
+      refreshTranscriptPrefix();
+    },
+  };
+}
+
 export async function runDaemon(cfg: Config): Promise<void> {
   const rendererSelection = configureRenderer();
   const rendererLifecycle = installRendererLifecycle(rendererSelection.renderer);
   const theaterMode = rendererSelection.kind === "theater";
+  const resetTheaterTranscriptPrefix = (): void => {
+    if (theaterMode) setTranscriptPrefix("");
+  };
   const resetReadingProgress = (): void => {
     if (theaterMode) clearReadingProgress();
   };
@@ -524,18 +568,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
       busy = false;
       setState(restState());
     }
-  }
-
-  /** Wire listen-phase state + live partials into the status line. */
-  function listenHooks(label: string): ListenHooks {
-    return {
-      onState: (s) => {
-        if (s === "armed") setState("listening", label);
-        else if (s === "capturing") setState("recording", label);
-        else setState("transcribing", label);
-      },
-      onPartial: (text) => setState("recording", label, text),
-    };
   }
 
   // The at-rest status when nothing's in flight: muted wins over paused for display.
@@ -897,6 +929,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
           disposed = true;
           return { heard: "", cut: false };
         }
+        // This fresh barge capture becomes a new reducer session below. Clear
+        // any completed turn's theater-only prefix before recording is visible.
+        resetTheaterTranscriptPrefix();
         setState("recording", event.label);
         const initialCapture = barge.adopt();
         disposed = Boolean(initialCapture);
@@ -1111,6 +1146,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
         // barging off (echo/noise) it's the only voice interrupt, so keep it real
         const gapSecs = bargeOff ? Math.max(cfg.gapSecs, 0.6) : cfg.gapSecs;
         if (gapSecs > 0) {
+          // A read gap precedes the conversation reducer/hooks, so it must not
+          // briefly expose the previous completed turn's transcript prefix.
+          resetTheaterTranscriptPrefix();
           setState("listening", event.label);
           let gapExternal: ExternalDictationAction | undefined;
           let resolveGapDone!: () => void;
@@ -1278,7 +1316,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // ordered paths while the single worker transcribes older paths; only the
     // reducer mutates held text or authorizes a cue/TTS/injection at a barrier.
     const reducer = new DictationReducer({ holdSubmit: cfg.holdSubmit });
-    const session = createDictationSession(cfg, listenHooks(event.label), {
+    const session = createDictationSession(cfg, listenHooks(
+      event.label,
+      theaterMode
+        ? () => reducer.snapshot.buffer.map((segment) => segment.text).join(" ")
+        : undefined,
+    ), {
       parent: traceParent ?? initialCaptureParent,
       traceSequence: nextTraceSequence,
     });
@@ -1756,7 +1799,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
     await micCue(cfg, "open");
     if (shuttingDown) return;
     log("listening for yes or no...");
-    const session = createDictationSession(cfg, listenHooks(event.label), { tag: "permission" });
+    const session = createDictationSession(
+      cfg,
+      listenHooks(event.label, theaterMode ? () => "" : undefined),
+      { tag: "permission" },
+    );
     const texts: string[] = [];
     const diagnosticIds: string[] = [];
     let closing = false;

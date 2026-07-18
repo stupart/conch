@@ -6,6 +6,8 @@ export interface PanelLiveState {
   state: PanelConchState;
   label: string;
   partial: string;
+  /** Theater-only committed transcript shown before the current live partial. */
+  transcriptPrefix?: string;
   /** Chunk-level reading progress. The audio backend does not expose word timing. */
   reading?: { text: string; spokenChars: number };
 }

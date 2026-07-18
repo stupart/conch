@@ -6,12 +6,14 @@ import { loadConfig } from "../src/config.ts";
 import {
   createConfigController,
   dispatchControlMessage,
+  listenHooks,
   resolveWakeTarget,
   shouldHandleTurnAudibly,
   startsConversationByListening,
   takeNextQueuedEvent,
   TurnEventOrder,
 } from "../src/daemon.ts";
+import { DictationReducer } from "../src/dictation-reducer.ts";
 import type { TurnEvent } from "../src/hook.ts";
 import { unsetSetting, writeSetting } from "../src/settings.ts";
 
@@ -27,6 +29,96 @@ function fixture(settings: Record<string, unknown> = {}): { path: string } {
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe("daemon listen status hooks", () => {
+  test("live transcript hooks join only reducer-kept segments with the current partial", () => {
+    const reducer = new DictationReducer({ holdSubmit: true });
+    reducer.consume({ type: "transcript", sequence: 1, text: "first kept segment" });
+    reducer.consume({ type: "transcript", sequence: 2, text: "second kept segment" });
+    reducer.consume({ type: "transcript", sequence: 3, text: "repeat" });
+
+    let prefix = "stale prior turn";
+    let partial = "";
+    const calls: string[] = [];
+    const hooks = listenHooks(
+      "alpha",
+      () => reducer.snapshot.buffer.map((segment) => segment.text).join(" "),
+      {
+        setState(state, label, text = "") {
+          calls.push(`state:${state}:${label}:${text}`);
+          partial = text;
+        },
+        setTranscriptPrefix(text) {
+          calls.push(`prefix:${text}`);
+          prefix = text;
+        },
+      },
+    );
+
+    hooks.onState?.("capturing");
+    hooks.onPartial?.("current live words");
+
+    expect(`${prefix ? `${prefix} ` : ""}${partial}`).toBe(
+      "first kept segment second kept segment current live words",
+    );
+    expect(prefix).not.toContain("repeat");
+    expect(calls).toEqual([
+      "prefix:first kept segment second kept segment",
+      "prefix:first kept segment second kept segment",
+      "state:recording:alpha:",
+      "state:recording:alpha:current live words",
+      "prefix:first kept segment second kept segment",
+    ]);
+  });
+
+  test("discard commands and empty final transcripts never enter the live prefix", () => {
+    const reducer = new DictationReducer({ holdSubmit: true });
+    reducer.consume({ type: "transcript", sequence: 1, text: "discarded draft" });
+    reducer.consume({ type: "transcript", sequence: 2, text: "cancel" });
+    reducer.consume({ type: "transcript", sequence: 3, text: "" });
+
+    let prefix = "stale prior turn";
+    let partial = "";
+    const hooks = listenHooks(
+      "alpha",
+      () => reducer.snapshot.buffer.map((segment) => segment.text).join(" "),
+      {
+        setState(_state, _label, text = "") {
+          partial = text;
+        },
+        setTranscriptPrefix(text) {
+          prefix = text;
+        },
+      },
+    );
+
+    hooks.onPartial?.("replacement words");
+
+    expect(`${prefix ? `${prefix} ` : ""}${partial}`).toBe("replacement words");
+    expect(prefix).not.toContain("discarded draft");
+    expect(prefix).not.toContain("cancel");
+  });
+
+  test("footer listen hooks never call the theater-only prefix sink", () => {
+    const calls: string[] = [];
+    const hooks = listenHooks("permission", undefined, {
+      setState(state, label, partial = "") {
+        calls.push(`state:${state}:${label}:${partial}`);
+      },
+      setTranscriptPrefix(prefix) {
+        calls.push(`prefix:${prefix}`);
+      },
+    });
+
+    hooks.onState?.("armed");
+    hooks.onPartial?.("yes");
+
+    expect(calls).toEqual([
+      "state:listening:permission:",
+      "state:recording:permission:yes",
+    ]);
+  });
 });
 
 describe("daemon config controller", () => {

@@ -1,13 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { DictationReducer } from "../src/dictation-reducer.ts";
 import {
   ALT_SCREEN_ENTER,
   ALT_SCREEN_RESTORE,
   createFooterRenderer,
   createTheaterRenderer,
+  getLiveState,
   installRendererLifecycle,
+  setState,
+  setTranscriptPrefix,
   shouldUseTheater,
   terminalCellWidth,
+  type LiveState,
   type Renderer,
   type RendererIO,
 } from "../src/status.ts";
@@ -109,6 +114,19 @@ describe("footer renderer seam", () => {
     createFooterRenderer(io).panel(sampleModel());
 
     expect(writes).toEqual([ACTIVE_FOOTER_GOLDEN]);
+  });
+
+  test("ignores the theater-only transcript prefix byte-for-byte", () => {
+    const render = (live: LiveState): string => {
+      const { io, writes } = recordingIO({ columns: 80 });
+      const renderer = createFooterRenderer(io);
+      renderer.panel(sampleModel({ live }));
+      renderer.live(live);
+      return writes.join("");
+    };
+    const current = { state: "recording", label: "project-one", partial: "current words" } as const;
+
+    expect(render({ ...current, transcriptPrefix: "prior kept segment" })).toBe(render(current));
   });
 });
 
@@ -269,6 +287,38 @@ describe("theater renderer lifecycle", () => {
     expect(frame).toContain("▌");
   });
 
+  test("shows the reducer-kept transcript before the live partial through transcription", () => {
+    const { io, writes } = recordingIO({ columns: 120, rows: 7 });
+    const renderer = createTheaterRenderer(io);
+    const reducer = new DictationReducer({ holdSubmit: true });
+    reducer.consume({ type: "transcript", sequence: 1, text: "first kept segment" });
+    reducer.consume({ type: "transcript", sequence: 2, text: "second kept segment" });
+    reducer.consume({ type: "transcript", sequence: 3, text: "repeat" });
+    const transcriptPrefix = reducer.snapshot.buffer.map((segment) => segment.text).join(" ");
+
+    renderer.enter();
+    renderer.panel(sampleModel({
+      live: {
+        state: "recording",
+        label: "project-one",
+        partial: "current words",
+        transcriptPrefix,
+      },
+    }));
+
+    expect(writes.at(-1)).toContain("first kept segment second kept segment current words▌");
+    expect(writes.at(-1)).not.toContain("repeat");
+
+    renderer.live({
+      state: "transcribing",
+      label: "project-one",
+      partial: "current words",
+      transcriptPrefix,
+    });
+    expect(writes.at(-1)).toContain("first kept segment second kept segment current words");
+    expect(writes.at(-1)).not.toContain("▌");
+  });
+
   test("long speaking replies keep the dim/bright frontier in view", () => {
     const { io, writes } = recordingIO({ columns: 72, rows: 7 });
     const renderer = createTheaterRenderer(io);
@@ -327,6 +377,22 @@ describe("theater renderer lifecycle", () => {
     expect(calls).toEqual(["shutdown", "raw:false"]);
     lifecycle.dispose();
   });
+});
+
+test("setState preserves the transcript prefix across partials and transitions", () => {
+  setTranscriptPrefix("prior kept segment");
+  setState("recording", "project-one", "current");
+  expect(getLiveState().transcriptPrefix).toBe("prior kept segment");
+
+  setState("transcribing", "project-one", "current finalized");
+  expect(getLiveState()).toMatchObject({
+    state: "transcribing",
+    partial: "current finalized",
+    transcriptPrefix: "prior kept segment",
+  });
+
+  setTranscriptPrefix("");
+  setState("idle");
 });
 
 test("theater requires the exact opt-in and both terminal sides", () => {

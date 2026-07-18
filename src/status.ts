@@ -326,8 +326,9 @@ function theaterContentLines(model: PanelModel, width: number, height: number, l
   if (capturing || transcribing) {
     // Keep the live transcript visible through the recording→transcribing
     // handoff — never flash back to the previous reply while finalizing.
-    const partial = `${model.live.partial}${capturing ? "▌" : ""}`;
-    lines = wrapPlainText(partial, width).map((line) => line.text).slice(-available);
+    const prefix = model.live.transcriptPrefix;
+    const transcript = `${prefix ? `${prefix} ` : ""}${model.live.partial}${capturing ? "▌" : ""}`;
+    lines = wrapPlainText(transcript, width).map((line) => line.text).slice(-available);
   } else {
     const reading = model.live.reading;
     const text = reading?.text ?? model.reply?.text ?? "";
@@ -622,10 +623,23 @@ export function clearReadingProgress(): void {
   activeRenderer.live(live);
 }
 
+/** Set the committed transcript rendered before the current theater partial. */
+export function setTranscriptPrefix(prefix: string): void {
+  live = { ...live, transcriptPrefix: prefix };
+  activeRenderer.live(live);
+}
+
 export function setState(state: ConchState, label = "", partial = ""): void {
   const transition = state !== live.state || label !== live.label; // ignore partial-only updates
   const reading = label && label === live.label ? live.reading : undefined;
-  live = { state, label, partial, ...(reading ? { reading } : {}) };
+  const transcriptPrefix = live.transcriptPrefix;
+  live = {
+    state,
+    label,
+    partial,
+    ...(transcriptPrefix !== undefined ? { transcriptPrefix } : {}),
+    ...(reading ? { reading } : {}),
+  };
   void Bun.write(STATE_FILE, JSON.stringify({ state, label, partial, ts: Date.now() }) + "\n");
   activeRenderer.live(live);
   if (transition) onLive?.(); // repaint the panel so the active row shows the new live state
