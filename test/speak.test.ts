@@ -398,6 +398,7 @@ test("a failed readiness canary reports recovery once before falling back to say
   const failures: string[] = [];
   const commands: string[][] = [];
   const originalFetch = globalThis.fetch;
+  process.env.CONCH_PLATFORM = "darwin"; // pin the say-fallback argv regardless of host OS
   resetTtsReadiness();
   globalThis.fetch = Object.assign(
     (input: string | URL | Request) => {
@@ -419,6 +420,7 @@ test("a failed readiness canary reports recovery once before falling back to say
     }).done;
   } finally {
     globalThis.fetch = originalFetch;
+    delete process.env.CONCH_PLATFORM;
     resetTtsReadiness();
   }
 

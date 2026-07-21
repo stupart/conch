@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, chmodSync, unlinkSync, statSync, renameSync } fr
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
 import { CONCH_DATA } from "./config.ts";
+import { serviceManager } from "./platform.ts";
 
 const SERVICE_LABEL = "com.conch.daemon";
 
@@ -163,6 +164,13 @@ export function serviceRestartCommands(tmux: string, uid: number): string[][] {
 }
 
 export async function runService(cfg: Config, action: "install" | "off"): Promise<void> {
+  if (serviceManager() !== "launchd") {
+    // systemd user unit is on the roadmap for the Linux/WSL port; until then
+    // the supervisor loop in a tmux session is the same self-healing daemon.
+    console.log("[conch] `conch service` is macOS (launchd) only for now.");
+    console.log("        Run the daemon under tmux instead:  tmux new-session -d -s conch 'conch daemon'");
+    return;
+  }
   const uid = process.getuid?.() ?? 501;
   const plistPath = join(homedir(), "Library/LaunchAgents", `${SERVICE_LABEL}.plist`);
 

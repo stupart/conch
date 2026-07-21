@@ -19,6 +19,7 @@ import {
   type RecorderTrace,
   type TranscriptionEngine,
 } from "./diagnostics.ts";
+import { captureEnv } from "./platform.ts";
 import { TranscriptionGate } from "./transcription-gate.ts";
 
 // Anything smaller than this is silence (raw 16kHz 16-bit mono = 32KB/s).
@@ -97,7 +98,8 @@ function spawnCapture(
         "1", "0.15", `${startPct}%`,
         "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
       ],
-      { stdout: "ignore", stderr: "ignore" },
+      // captureEnv steers sox's default device to PulseAudio on Linux/WSL.
+      { stdout: "ignore", stderr: "ignore", env: { ...process.env, ...captureEnv() } },
     );
   } catch (e) {
     if (trace) {

@@ -26,6 +26,7 @@ import {
 import type { RecorderHandle } from "./dictation-controller.ts";
 import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
 import { classify, classifyReadingGap, wordOverlapRatio } from "./commands.ts";
+import { defaultCueSounds, supportsHidIdle } from "./platform.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
 import {
   whisperServerClient,
@@ -2302,6 +2303,7 @@ function log(msg: string): void {
 /** Seconds since the last keyboard/mouse/trackpad event, or `null` if the HID probe
  *  couldn't be read — callers must fail SAFE (don't gate / don't auto-mute) on null. */
 async function idleSeconds(): Promise<number | null> {
+  if (!supportsHidIdle()) return null; // no HID probe off macOS — callers treat null as "not idle"
   try {
     const proc = Bun.spawn(["ioreg", "-c", "IOHIDSystem"], { stdout: "pipe", stderr: "ignore" });
     const out = await new Response(proc.stdout).text();
@@ -2313,8 +2315,5 @@ async function idleSeconds(): Promise<number | null> {
   }
 }
 
-const CUE_SOUND = {
-  open: "/System/Library/Sounds/Tink.aiff", // mic opened, start talking
-  close: "/System/Library/Sounds/Bottle.aiff", // window closed on silence
-  sent: "/System/Library/Sounds/Pop.aiff", // dictation submitted
-};
+// mic opened / window closed on silence / dictation submitted — per-platform paths
+const CUE_SOUND = defaultCueSounds();

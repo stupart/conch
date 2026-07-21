@@ -1,5 +1,6 @@
 import { $ } from "bun";
 import type { Config } from "./config.ts";
+import { clipboardArgs, supportsUiScripting } from "./platform.ts";
 
 export type InjectRoute = "tmux" | "osascript-focused" | "osascript-blind" | "clipboard" | "none";
 
@@ -36,7 +37,7 @@ export async function injectText(
     }
   }
 
-  if (cfg.keystrokeFallback) {
+  if (cfg.keystrokeFallback && supportsUiScripting()) {
     const focused = sessionPid ? await focusSessionWindow(sessionPid) : false;
     if (!focused && sessionPid) {
       // We know which session this is for but can't put its window in
@@ -87,7 +88,7 @@ export async function injectKey(
       if (r.exitCode === 0) return { via: "tmux" };
     }
   }
-  if (cfg.keystrokeFallback) {
+  if (cfg.keystrokeFallback && supportsUiScripting()) {
     const focused = sessionPid ? await focusSessionWindow(sessionPid) : false;
     if (!focused && sessionPid) return { via: "none" }; // never press keys in an unknown window
     if (focused) await Bun.sleep(300);
@@ -111,6 +112,7 @@ export async function injectKey(
  * conch already needs for keystroke injection — no new permission.
  */
 export async function revealSessionWindow(sessionPid: number): Promise<boolean> {
+  if (!supportsUiScripting()) return false; // no window scripting off macOS — audio cues carry the signal
   try {
     const tty = (await $`ps -o tty= -p ${sessionPid}`.quiet().text()).trim();
     if (!tty || tty === "??") return false;
@@ -172,7 +174,9 @@ return "notfound"`;
 }
 
 export async function toClipboard(text: string): Promise<void> {
-  const proc = Bun.spawn(["pbcopy"], { stdin: "pipe" });
+  const args = clipboardArgs();
+  if (!args) return; // no clipboard tool on this box — nothing useful to do
+  const proc = Bun.spawn(args, { stdin: "pipe" });
   proc.stdin.write(text);
   await proc.stdin.end();
   await proc.exited;

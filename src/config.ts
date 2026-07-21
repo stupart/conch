@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { existsSync } from "node:fs";
 import { DEFAULT_CONCH_CONFIG_DIR, loadSettingResolutions, settingsPathFor, type HandoffOrder } from "./settings.ts";
+import { defaultBellSound } from "./platform.ts";
 
 const HOME = homedir();
 
@@ -9,8 +10,9 @@ const HOME = homedir();
 // each existing setup keeps working AND a fresh `brew install whisper-cpp`
 // + `conch setup` works with zero env vars:
 //   1. a seashell checkout (the original: ~/whisper-cli)
-//   2. a Homebrew whisper-cpp install (/opt/homebrew or /usr/local)
-//   3. models downloaded by `conch setup` into ~/.cache/conch
+//   2. binaries/models `conch setup` put in ~/.cache/conch (the Linux CUDA
+//      build lands in ~/.cache/conch/bin)
+//   3. a Homebrew whisper-cpp install (/opt/homebrew or /usr/local)
 export const CONCH_DATA = join(HOME, ".cache", "conch"); // `conch setup` writes models here
 export const CONCH_CONFIG_DIR = process.env.CONCH_CONFIG_DIR ?? DEFAULT_CONCH_CONFIG_DIR;
 const BREW = existsSync("/opt/homebrew/bin") ? "/opt/homebrew/bin" : "/usr/local/bin";
@@ -143,8 +145,8 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     settingsPath: options.settingsPath ?? settingsPathFor(env),
   });
   return {
-    whisperCli: env.CONCH_WHISPER_CLI ?? firstExisting(join(seashellRoot, "whisper.cpp/build/bin/whisper-cli"), join(BREW, "whisper-cli")),
-    whisperServerBin: env.CONCH_WHISPER_SERVER ?? firstExisting(join(seashellRoot, "whisper.cpp/build/bin/whisper-server"), join(BREW, "whisper-server")),
+    whisperCli: env.CONCH_WHISPER_CLI ?? firstExisting(join(seashellRoot, "whisper.cpp/build/bin/whisper-cli"), join(CONCH_DATA, "bin", "whisper-cli"), join(BREW, "whisper-cli")),
+    whisperServerBin: env.CONCH_WHISPER_SERVER ?? firstExisting(join(seashellRoot, "whisper.cpp/build/bin/whisper-server"), join(CONCH_DATA, "bin", "whisper-server"), join(BREW, "whisper-server")),
     whisperPort: zeroable(env.CONCH_WHISPER_PORT, 8642),
     whisperModel: env.CONCH_WHISPER_MODEL ?? firstExisting(join(seashellRoot, "models", WHISPER_MODEL_FILE), join(CONCH_DATA, "models", WHISPER_MODEL_FILE)),
     vadModel: env.CONCH_VAD_MODEL ?? firstExisting(join(seashellRoot, "whisper.cpp/models", VAD_MODEL_FILE), join(CONCH_DATA, "models", VAD_MODEL_FILE)),
@@ -154,7 +156,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     speakSentences: settings["announce-sentences"].value as number,
     speakMaxChars: settings["announce-max-chars"].value as number,
     bell: flag(env.CONCH_BELL, true),
-    bellSound: env.CONCH_BELL_SOUND ?? "/System/Library/Sounds/Glass.aiff",
+    bellSound: env.CONCH_BELL_SOUND ?? defaultBellSound(),
     speak: flag(env.CONCH_SPEAK, true),
     listenWindowSecs: settings["listen-window"].value as number,
     maxUtteranceSecs: num(env.CONCH_MAX_UTTERANCE_SECS, 120),

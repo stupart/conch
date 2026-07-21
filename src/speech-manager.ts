@@ -6,6 +6,7 @@ import {
   type AudioSpawner,
   type WatchdogWarning,
 } from "./audio-watchdog.ts";
+import { playFileArgs } from "./platform.ts";
 
 export interface CancellableSpeech {
   done: Promise<void>;
@@ -155,15 +156,15 @@ export class SpeechManager {
     ).done;
   }
 
-  /** Play an afplay cue under the same ownership/cancellation rules as speech. */
+  /** Play an audio cue under the same ownership/cancellation rules as speech. */
   playCue(path: string, operation = "audio cue"): Promise<void> {
     let abort: AbortController | null = null;
     return this.enqueue<void>(
       async () => {
         abort = new AbortController();
-        const proc = this.spawnAudio(["afplay", path]);
+        const proc = this.spawnAudio(playFileArgs(path));
         await awaitProcessWithWatchdog(proc, {
-          operation: `afplay ${operation}`,
+          operation,
           timeoutMs: this.timeoutForText(""),
           signal: abort.signal,
           warn: this.warn,

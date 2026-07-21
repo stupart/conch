@@ -11,6 +11,7 @@ import {
   type WatchdogWarning,
 } from "./audio-watchdog.ts";
 import type { Config } from "./config.ts";
+import { playFileArgs, speakArgs } from "./platform.ts";
 import { splitSentences } from "./snippet.ts";
 import { TtsHealthMachine, type TtsHealthSnapshot } from "./tts-health.ts";
 import { parseWav, trimWav } from "./tts-wav.ts";
@@ -498,19 +499,14 @@ async function awaitAudioProcess(
 export async function bell(cfg: Config, options: SpeakRuntimeOptions = {}): Promise<void> {
   if (!cfg.bell) return;
   const runtime = runtimeOptions(options);
-  const process = trackProcess(runtime.spawnAudio(["afplay", cfg.bellSound]));
-  await awaitAudioProcess(process, "afplay attention bell", runtime.timeoutForText(""), runtime.warn);
-}
-
-function sayFlags(cfg: Config): string[] {
-  return [...(cfg.voice ? ["-v", cfg.voice] : []), ...(cfg.sayRate > 0 ? ["-r", String(cfg.sayRate)] : [])];
+  const process = trackProcess(runtime.spawnAudio(playFileArgs(cfg.bellSound)));
+  await awaitAudioProcess(process, "attention bell", runtime.timeoutForText(""), runtime.warn);
 }
 
 function spawnSay(cfg: Config, text: string, control: CancelControl): AudioProcess {
-  // Keep the measured volume match. Strip embedded [[...]] commands first.
-  const safe = `[[volm ${cfg.sayVolume}]] ${text.replace(/\[\[|\]\]/g, "")}`;
+  // Volume matching + [[...]] stripping live in speakArgs (platform-specific).
   return trackProcess(
-    control.runtime.spawnAudio(["say", ...sayFlags(cfg), "--", safe]),
+    control.runtime.spawnAudio(speakArgs(cfg, text)),
     control,
   );
 }
@@ -860,11 +856,11 @@ export async function runSynthLadderForTest(
 }
 
 async function playFile(file: string, text: string, control: CancelControl): Promise<void> {
-  const process = trackProcess(control.runtime.spawnAudio(["afplay", file]), control);
+  const process = trackProcess(control.runtime.spawnAudio(playFileArgs(file)), control);
   try {
     await awaitAudioProcess(
       process,
-      "afplay speech",
+      "speech playback",
       control.runtime.timeoutForText(text),
       control.runtime.warn,
       control,
