@@ -27,6 +27,8 @@ import {
 const HELP = `conch — a voice loop for Claude Code
 
 Usage:
+  conch                 open the dashboard: watch the live daemon (ctrl-b d detaches)
+  conch dashboard       alias for bare 'conch'
   conch setup           one-command install: deps, models, hooks (run this first)
   conch install         wire Stop/Notification hooks into ~/.claude/settings.json
   conch service [off]   launchd supervision: start at login, self-heal on crash
@@ -48,8 +50,40 @@ Usage:
 
 Config via env: CONCH_VOICE, CONCH_SPEAK_SENTENCES, CONCH_SPEAK_MAX_CHARS,
 CONCH_BELL, CONCH_BELL_SOUND, CONCH_SPEAK, CONCH_LISTEN_WINDOW_SECS,
-CONCH_AUTO_SUBMIT, CONCH_KEYSTROKE_FALLBACK, CONCH_SEASHELL_ROOT, CONCH_SOCKET
+CONCH_AUTO_SUBMIT, CONCH_KEYSTROKE_FALLBACK, CONCH_SEASHELL_ROOT, CONCH_SOCKET,
+CONCH_TUI (set to "footer" to force the classic single-line UI)
 `;
+
+/**
+ * Open the dashboard: attach to the daemon's detached tmux session, and if the
+ * daemon restarts (launchd respawns it), wait and reattach so the window
+ * survives restarts. Detaching on purpose (ctrl-b d) leaves the session alive,
+ * so we exit cleanly. Mirrors dashboard.command as a first-class subcommand.
+ */
+async function runDashboard(): Promise<void> {
+  const tmux = Bun.which("tmux") ?? "/opt/homebrew/bin/tmux";
+  const hasSession = () =>
+    Bun.spawnSync([tmux, "has-session", "-t", "conch"]).exitCode === 0;
+  console.log("🐚 conch dashboard  ·  ctrl-b d to detach (leaves the daemon running)");
+  let warned = false;
+  while (true) {
+    while (!hasSession()) {
+      if (!warned) {
+        console.log("daemon not up yet — waiting for the conch session (launchd starts it)…");
+        warned = true;
+      }
+      await Bun.sleep(1000);
+    }
+    warned = false;
+    Bun.spawnSync([tmux, "attach", "-t", "conch"], {
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    if (hasSession()) break; // session still alive => you detached on purpose
+    console.log("daemon restarting… reattaching");
+  }
+}
 
 const cfg = loadConfig();
 const [command, ...rest] = process.argv.slice(2);
@@ -365,7 +399,20 @@ switch (command) {
     }
     break;
   }
-  default:
+  case "dashboard":
+  case "dash":
+    await runDashboard();
+    break;
+  case "help":
+  case "--help":
+  case "-h":
     console.log(HELP);
-    process.exit(command ? 1 : 0);
+    break;
+  default:
+    if (command === undefined) {
+      await runDashboard();
+      break;
+    }
+    console.log(HELP);
+    process.exit(1);
 }

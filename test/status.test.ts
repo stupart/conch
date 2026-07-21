@@ -395,9 +395,10 @@ test("setState preserves the transcript prefix across partials and transitions",
   setState("idle");
 });
 
-test("theater requires the exact opt-in and both terminal sides", () => {
+test("theater is the default on a full TTY; footer is the opt-out", () => {
+  expect(shouldUseTheater({}, true, true)).toBe(true);
   expect(shouldUseTheater({ CONCH_TUI: "theater" }, true, true)).toBe(true);
-  expect(shouldUseTheater({ CONCH_TUI: "theater" }, true, false)).toBe(false);
-  expect(shouldUseTheater({ CONCH_TUI: "theater" }, false, true)).toBe(false);
   expect(shouldUseTheater({ CONCH_TUI: "footer" }, true, true)).toBe(false);
+  expect(shouldUseTheater({}, true, false)).toBe(false);
+  expect(shouldUseTheater({}, false, true)).toBe(false);
 });

@@ -524,7 +524,8 @@ export function shouldUseTheater(
   stdoutTTY = process.stdout.isTTY ?? false,
   stdinTTY = process.stdin.isTTY ?? false,
 ): boolean {
-  return stdoutTTY && stdinTTY && env.CONCH_TUI === "theater";
+  // Theater is the default on a full TTY (the dashboard); CONCH_TUI=footer opts out.
+  return stdoutTTY && stdinTTY && env.CONCH_TUI !== "footer";
 }
 
 /** Select once at daemon startup; importing status.ts never enters alt-screen. */
