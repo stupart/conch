@@ -2,7 +2,7 @@
 
 A voice loop for Claude Code. Your sessions announce themselves out loud when they finish — then you just talk back.
 
-![The conch dashboard — one line per live Claude Code session, sorted so whatever needs you floats to the top; the session conch is talking to lights up as it records your spoken reply.](docs/dashboard.png)
+![The conch dashboard — a live session ledger down the left (sorted so whatever needs you floats to the top, each row a colored status dot), and a pane on the right that reads along with the session conch is talking to: here, your spoken reply building word by word as it records.](docs/dashboard.png)
 
 ```
 Claude finishes a turn
@@ -122,27 +122,24 @@ Commands only match as the *entire* utterance — "continue working on the login
 
 ## The dashboard
 
-Run the daemon in a visible terminal (`conch daemon`) and you get the dashboard from the screenshot above — **one line per live Claude Code session**, so you can see who needs you at a glance without conch ever nagging you aloud:
+Run the daemon in a visible terminal (`conch daemon`), or just type **`conch`** to attach to the one `conch service` keeps running in the background — either way you get the dashboard from the screenshot above: a **live session ledger** on the left, a **read-along pane** on the right, so you can see who needs you at a glance without conch ever nagging you aloud:
 
 ```
   🐚 conch
-  ──────────────────────────────────────────────────────────
-  boatker                    ❗ needs a response
-  honeyb                     ❗ needs a response
-  dayloop-feature-work       ○ waiting for you
-  tokenworks-app             ○ waiting for you
-▸ arch site                  ● recording
-  conch                      ● working…
-  poaster                    ⏸ snoozed
-
-  🎙  let's try the horizontal layout next then run the whole suite
-
-  ↑↓ select · space talk · enter snooze · m mute · p pause · l logs · ? help · q quit
+  ─────────────────────────────────────────────────────────────────
+   boatker      ❗ │ yeah let's make theater the default and
+   honeyb       ❗ │ auto-open the dashboard at login so i never
+   dayloop      ○ │ have to think about it▌
+   tokenworks   ○ │
+ ▎ arch site    ● │
+   conch        ● │
+   poaster      ⏸ │ pause to send · space to stop · say send to submit now
+   ↑↓ select · \ pane · , settings · space talk · enter snooze · m mute · ? help
 ```
 
-Sessions that need input sort to the top. Each row carries its own state — `❗ needs a response`, `○ waiting for you`, `● working…`, `⏸ snoozed` — and the **one conch is currently talking to lights up in place** as it moves through the turn (`▶ speaking` → `● mic open` → `● recording` → `… transcribing`). The reserved line beneath the list streams **your words as you speak them**, so there's no layout shift when the mic opens.
+Sessions that need input sort to the top. Each row carries a **colored status dot** — `❗ needs a response`, `○ waiting for you`, `● working…`, `● recording`, `⏸ snoozed` — and the **session conch is currently talking to** takes a cyan accent bar and lights up in place as it moves through the turn (`▶ speaking` → `● mic open` → `● recording` → `… transcribing`). The **pane on the right reads along**: your words build there as you speak them while it records, and when conch reads a reply back the pane scrolls through it, dimming what's already been spoken.
 
-You don't have to touch it — but you can. **↑↓** move a cursor through the sessions; **space** talks to the selected one (or the last announcer if you haven't picked); **enter** snoozes/resumes it; **l** toggles a live log; **?** shows the full key + voice-command help. The play-by-play is always written to `/tmp/conch-daemon.log` whether or not the log is on screen, so the dashboard stays clean by default.
+You don't have to touch it — but you can. **↑↓** move a cursor through the sessions; **space** talks to the selected one (or the last announcer if you haven't picked); **enter** snoozes/resumes it; **\\** hides the pane for a full-width ledger; **,** opens live settings; **l** toggles a log in the pane; **?** shows the full key + voice-command help. The play-by-play is always written to `/tmp/conch-daemon.log` whether or not the log is on screen, so the dashboard stays clean by default.
 
 **Windows follow the voice too.** When conch starts talking to a session, that session's Terminal window rises to the front *without stealing your keyboard focus* — you keep typing wherever you are, and the session you're hearing is already there when you look up. (`CONCH_REVEAL_ON_TURN=0` to disable.)
 
