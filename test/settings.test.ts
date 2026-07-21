@@ -34,6 +34,7 @@ afterEach(() => {
 
 const expected = {
   "end-silence": ["endSilenceSecs", "CONCH_END_SILENCE_SECS", "live", 3.5],
+  "mic-gain": ["micGainDb", "CONCH_MIC_GAIN_DB", "live", 0],
   "hold-submit-delay": ["holdSubmitSecs", "CONCH_HOLD_SUBMIT_SECS", "live", 8],
   "listen-window": ["listenWindowSecs", "CONCH_LISTEN_WINDOW_SECS", "live", 30],
   "typing-grace": ["typingGraceSecs", "CONCH_TYPING_GRACE_SECS", "live", 2],
@@ -50,10 +51,10 @@ const expected = {
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 14 curated, default-bearing knobs", () => {
+  test("contains exactly the 15 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(14);
+    expect(SETTING_DESCRIPTORS).toHaveLength(15);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });
@@ -105,6 +106,16 @@ describe("settings parser", () => {
     expect(parse("barge-threshold", -0.1).ok).toBe(false);
     expect(parse("barge-threshold", 100.1).ok).toBe(false);
     expect(parse("typing-grace", -0.1).ok).toBe(false);
+  });
+
+  test("accepts mic gain within bounds and rejects values outside", () => {
+    expect(parse("mic-gain", " -20 ")).toEqual({ ok: true, value: -20 });
+    expect(parse("mic-gain", 0)).toEqual({ ok: true, value: 0 });
+    expect(parse("mic-gain", 12)).toEqual({ ok: true, value: 12 });
+    expect(parse("mic-gain", 30)).toEqual({ ok: true, value: 30 });
+    for (const raw of [-20.1, 30.1, "NaN", "Infinity", null, true]) {
+      expect(parse("mic-gain", raw).ok).toBe(false);
+    }
   });
 
   test("enforces integer-only announce and say values", () => {

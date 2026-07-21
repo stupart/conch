@@ -173,6 +173,7 @@ The full environment-variable surface remains available (put overrides in the ho
 | `CONCH_LISTEN_WINDOW_SECS` | `30` | how long the mic waits for you to *start* talking |
 | `CONCH_MAX_UTTERANCE_SECS` | `120` | cap on a single utterance once you're talking |
 | `CONCH_END_SILENCE_SECS` | `3.5` | pause length that ends your utterance (drop it for snappier turns) |
+| `CONCH_MIC_GAIN_DB` | `0` (off) | software mic gain in dB (`-20` to `30`; `conch set mic-gain …`); boosts conch capture without changing macOS input volume |
 | `CONCH_CONTINUE_SENTENCES` | `6` | sentences per read-aloud / "continue" chunk |
 | `CONCH_GAP_SECS` | `0` (none) | interjection gap between read-aloud chunks |
 | `CONCH_BARGE_THRESHOLD_PCT` | `0` (off) | mic level that interrupts reading mid-chunk; after upgrading an existing supervised install, run `conch service install` once to shed the old forced env and restart |

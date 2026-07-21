@@ -18,6 +18,7 @@ export const SETTINGS_FILE = "settings.json";
 
 export const SETTING_KEYS = [
   "end-silence",
+  "mic-gain",
   "hold-submit-delay",
   "listen-window",
   "typing-grace",
@@ -36,6 +37,7 @@ export const SETTING_KEYS = [
 export type SettingKey = typeof SETTING_KEYS[number];
 export type SettingField =
   | "endSilenceSecs"
+  | "micGainDb"
   | "holdSubmitSecs"
   | "listenWindowSecs"
   | "typingGraceSecs"
@@ -121,6 +123,7 @@ function numberParser(bounds: SettingBounds, description: string): (raw: unknown
 const positive = { min: 0, minInclusive: false } satisfies SettingBounds;
 const zeroable = { min: 0, minInclusive: true } satisfies SettingBounds;
 const percentage = { min: 0, max: 100, minInclusive: true, maxInclusive: true } satisfies SettingBounds;
+const micGain = { min: -20, max: 30, minInclusive: true, maxInclusive: true } satisfies SettingBounds;
 const positiveInteger = { min: 1, minInclusive: true, integer: true } satisfies SettingBounds;
 const zeroableInteger = { min: 0, minInclusive: true, integer: true } satisfies SettingBounds;
 
@@ -135,6 +138,17 @@ export const SETTING_DESCRIPTORS = [
     bounds: positive,
     apply: "live",
     help: "pause that ends an utterance, in seconds",
+  },
+  {
+    key: "mic-gain",
+    field: "micGainDb",
+    env: "CONCH_MIC_GAIN_DB",
+    kind: "number",
+    default: 0,
+    parse: numberParser(micGain, "a number from -20 to 30"),
+    bounds: micGain,
+    apply: "live",
+    help: "software gain in dB added to mic capture (sox); lifts a quiet mic without touching the system input; 0 = off",
   },
   {
     key: "hold-submit-delay",

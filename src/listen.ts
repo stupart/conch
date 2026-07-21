@@ -76,6 +76,22 @@ const tracedRecorders = new Map<ReturnType<typeof Bun.spawn>, Capture>();
 const activeControllers = new Set<DictationController>();
 const activeBargeShutdowns = new Map<ReturnType<typeof Bun.spawn>, () => Promise<void>>();
 
+export function soxCaptureArgs(
+  cfg: Pick<Config, "micGainDb" | "endSilenceSecs" | "endThresholdPct">,
+  raw: string,
+  startPct: number,
+): string[] {
+  return [
+    "sox", "-d", "-q",
+    "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
+    raw,
+    ...(cfg.micGainDb ? ["gain", String(cfg.micGainDb)] : []),
+    "silence", "-l",
+    "1", "0.15", `${startPct}%`,
+    "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
+  ];
+}
+
 function spawnCapture(
   cfg: Config,
   tag: string,
@@ -89,14 +105,7 @@ function spawnCapture(
   let proc: ReturnType<typeof Bun.spawn>;
   try {
     proc = Bun.spawn(
-      [
-        "sox", "-d", "-q",
-        "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-t", "raw",
-        raw,
-        "silence", "-l",
-        "1", "0.15", `${startPct}%`,
-        "1", `${cfg.endSilenceSecs}`, `${cfg.endThresholdPct}%`,
-      ],
+      soxCaptureArgs(cfg, raw, startPct),
       { stdout: "ignore", stderr: "ignore" },
     );
   } catch (e) {

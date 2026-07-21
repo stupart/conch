@@ -23,6 +23,7 @@ describe("loadConfig tunable layering", () => {
   test("uses the registry defaults, including barge off", () => {
     const cfg = loadConfig({ env: {}, settingsPath: settingsPath() });
     expect(cfg.bargeThresholdPct).toBe(0);
+    expect(cfg.micGainDb).toBe(0);
     expect(cfg.sayRate).toBe(210);
     expect(cfg.workingMic).toBe(false);
     expect(cfg.interruptOnManualReply).toBe(true);
@@ -34,6 +35,7 @@ describe("loadConfig tunable layering", () => {
       env: {},
       settingsPath: settingsPath({
         "end-silence": 4.25,
+        "mic-gain": 12,
         "hold-submit-delay": 9.5,
         "listen-window": 42,
         "typing-grace": 0.75,
@@ -51,6 +53,7 @@ describe("loadConfig tunable layering", () => {
     });
     expect(cfg).toMatchObject({
       endSilenceSecs: 4.25,
+      micGainDb: 12,
       holdSubmitSecs: 9.5,
       listenWindowSecs: 42,
       typingGraceSecs: 0.75,
@@ -78,6 +81,7 @@ describe("loadConfig tunable layering", () => {
   test("valid env overrides file, while an invalid env falls through to file", () => {
     const path = settingsPath({
       "end-silence": 4.25,
+      "mic-gain": -3,
       "typing-grace": 1.5,
       "read-full": false,
       "interrupt-on-manual-reply": false,
@@ -87,6 +91,7 @@ describe("loadConfig tunable layering", () => {
     const cfg = loadConfig({
       env: {
         CONCH_END_SILENCE_SECS: "2.75",
+        CONCH_MIC_GAIN_DB: "12",
         CONCH_TYPING_GRACE_SECS: "not-a-number",
         CONCH_READ_FULL: "true",
         CONCH_INTERRUPT_ON_MANUAL_REPLY: "true",
@@ -96,6 +101,7 @@ describe("loadConfig tunable layering", () => {
       settingsPath: path,
     });
     expect(cfg.endSilenceSecs).toBe(2.75);
+    expect(cfg.micGainDb).toBe(12);
     expect(cfg.typingGraceSecs).toBe(1.5);
     expect(cfg.readFull).toBe(true);
     expect(cfg.interruptOnManualReply).toBe(true);

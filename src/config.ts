@@ -46,6 +46,8 @@ export interface Config {
   maxUtteranceSecs: number;
   /** seconds of trailing silence that end an utterance */
   endSilenceSecs: number;
+  /** software gain applied to mic capture by sox, in dB; 0 disables */
+  micGainDb: number;
   /** sox amplitude thresholds (percent) for speech start/end detection */
   startThresholdPct: number;
   endThresholdPct: number;
@@ -159,6 +161,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     listenWindowSecs: settings["listen-window"].value as number,
     maxUtteranceSecs: num(env.CONCH_MAX_UTTERANCE_SECS, 120),
     endSilenceSecs: settings["end-silence"].value as number, // 2.5 clipped natural mid-thought pauses (live)
+    micGainDb: settings["mic-gain"].value as number,
     startThresholdPct: num(env.CONCH_START_THRESHOLD_PCT, 2),
     endThresholdPct: num(env.CONCH_END_THRESHOLD_PCT, 2),
     awayAfterSecs: num(env.CONCH_AWAY_AFTER_SECS, 0),
