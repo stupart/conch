@@ -142,9 +142,7 @@ const systemClock: DictationClock = {
 };
 
 const ABRUPT_USER_FINALIZATIONS = new Set([
-  "dictation-spacebar", // Snooze routes through the spacebar action.
-  "dictation-pause",
-  "dictation-mute",
+  "dictation-spacebar",
   // Controller tests also model the coarser diagnostic kill-cause vocabulary.
   "abort",
 ]);

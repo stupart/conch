@@ -77,7 +77,8 @@ describe("registrySnapshot — torn-file salvage + completeness (FEATURE C safet
     const rows = buildPanelRows({
       sessions: snap!.infos,
       sessionStates: new Map(),
-      snoozedSessionIds: new Set(),
+      pausedSessionIds: new Set(),
+      mutedSessionIds: new Set(),
       live,
       mode: { muted: false, paused: false, holding: 0 },
       activeSessionId: null,

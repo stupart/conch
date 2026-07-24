@@ -32,7 +32,8 @@ export interface PanelRowModel {
   label: string;
   status: SessionStatus | null;
   detail?: string;
-  snoozed: boolean;
+  paused: boolean;
+  muted: boolean;
   liveGlyph: PanelConchState | null;
   active: boolean;
   navSelected: boolean;
@@ -78,7 +79,8 @@ export interface PanelSessionState extends LatchedState {
 export interface BuildPanelModelOptions {
   sessions: readonly SessionInfo[];
   sessionStates: ReadonlyMap<string, PanelSessionState>;
-  snoozedSessionIds: ReadonlySet<string>;
+  pausedSessionIds: ReadonlySet<string>;
+  mutedSessionIds: ReadonlySet<string>;
   live: PanelLiveState;
   mode: DashboardMode;
   activeSessionId: string | null;
@@ -101,7 +103,8 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         label: sessionLabel(session, session.cwd),
         status,
         ...(status === "needs" && latched?.detail ? { detail: latched.detail } : {}),
-        snoozed: options.snoozedSessionIds.has(session.sessionId),
+        paused: options.pausedSessionIds.has(session.sessionId),
+        muted: options.mutedSessionIds.has(session.sessionId),
         liveGlyph: active && ROW_LIVE_STATES.has(options.live.state) ? options.live.state : null,
         active,
         navSelected: session.sessionId === options.navSelectedId,
@@ -173,8 +176,11 @@ const LIVE_GLYPH: Partial<Record<PanelConchState, string>> = {
 export function dashboardRowsForModel(model: PanelModel): string[] {
   return model.rows.map((row) => {
     const cursor = row.navSelected ? "\x1b[36m▸\x1b[0m " : "  ";
-    if (row.snoozed) {
-      return `${cursor}\x1b[2m${row.label.slice(0, 26).padEnd(27)}⏸ snoozed\x1b[0m`;
+    if (row.muted) {
+      return `${cursor}\x1b[2m${row.label.slice(0, 26).padEnd(27)}🔇 muted\x1b[0m`;
+    }
+    if (row.paused) {
+      return `${cursor}\x1b[2m${row.label.slice(0, 26).padEnd(27)}⏸ paused\x1b[0m`;
     }
     // Footer mode historically keyed its live glyph by label. Keep that exact
     // behavior here; theater uses the unambiguous active/liveGlyph model fields.
@@ -187,8 +193,8 @@ export function dashboardRowsForModel(model: PanelModel): string[] {
 
 /** Global mode occupies one permanent slot so rows never jump on toggle. */
 export function dashboardModeBanner({ muted, paused, holding }: DashboardMode): string {
-  if (muted) return "  \x1b[1;33m🔇 MUTED · press m to unmute\x1b[0m";
-  if (paused) return `  \x1b[1;35m⏸ PAUSED · holding ${holding} · press p to resume\x1b[0m`;
+  if (muted) return "  \x1b[1;33m🔇 MUTED · no parked cursor: m to unmute\x1b[0m";
+  if (paused) return `  \x1b[1;35m⏸ PAUSED · holding ${holding} · no parked cursor: p to resume\x1b[0m`;
   return "";
 }
 

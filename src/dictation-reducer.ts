@@ -14,11 +14,10 @@ export type DictationAction =
   | "continue"
   | "discard"
   | "timeout"
-  | "spacebar"
-  | "pause"
-  | "mute";
+  | "spacebar";
 
-export type ExternalDictationAction = "spacebar" | "pause" | "mute";
+/** Space deliberately drains captured speech; mode controls use instant abort. */
+export type ExternalDictationAction = "spacebar";
 
 export interface OrderedTranscript {
   type: "transcript";
@@ -316,7 +315,7 @@ export class DictationReducer {
   }
 }
 
-const SUBMIT_ACTIONS = new Set<DictationAction>(["send", "timeout", "spacebar", "pause", "mute"]);
+const SUBMIT_ACTIONS = new Set<DictationAction>(["send", "timeout", "spacebar"]);
 const RETAIN_ACTIONS = new Set<DictationAction>(["repeat", "continue", "discard"]);
 
 function trace(

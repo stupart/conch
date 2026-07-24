@@ -28,10 +28,11 @@ const ACTIVE_FOOTER_GOLDEN = "\n"
 
 const PAUSED_FOOTER_GOLDEN = "\n"
   + "  \x1b[1m🐚 conch\x1b[0m\n"
-  + "  \x1b[1;35m⏸ PAUSED · holding 2 · press p to resume\x1b[0m\n"
+  + "  \x1b[1;35m⏸ PAUSED · holding 2 · no parked cursor: p to resume\x1b[0m\n"
   + "  \x1b[2m────────────────────────────────────────────────────────────────────────────\x1b[0m\n"
   + "\x1b[36m▸\x1b[0m alpha                      \x1b[33m❗ needs a response\x1b[0m \x1b[2m(permission)\x1b[0m\n"
-  + "  \x1b[2mbeta                       ⏸ snoozed\x1b[0m\n";
+  + "  \x1b[2mbeta                       ⏸ paused\x1b[0m\n"
+  + "  \x1b[2mgamma                      🔇 muted\x1b[0m\n";
 
 function sampleModel(overrides: Partial<PanelModel> = {}): PanelModel {
   return {
@@ -40,7 +41,8 @@ function sampleModel(overrides: Partial<PanelModel> = {}): PanelModel {
         sessionId: "one",
         label: "project-one",
         status: "waiting",
-        snoozed: false,
+        paused: false,
+        muted: false,
         liveGlyph: "speaking",
         active: true,
         navSelected: false,
@@ -76,7 +78,7 @@ describe("footer renderer seam", () => {
     expect(writes).toEqual([ACTIVE_FOOTER_GOLDEN]);
   });
 
-  test("matches frozen paused, selected, detailed, and snoozed footer bytes", () => {
+  test("matches frozen paused, muted, selected, and detailed footer bytes", () => {
     const { io, writes } = recordingIO({ columns: 80 });
     createFooterRenderer(io).panel(sampleModel({
       rows: [
@@ -85,7 +87,8 @@ describe("footer renderer seam", () => {
           label: "alpha",
           status: "needs",
           detail: "permission",
-          snoozed: false,
+          paused: false,
+          muted: false,
           liveGlyph: null,
           active: false,
           navSelected: true,
@@ -94,7 +97,18 @@ describe("footer renderer seam", () => {
           sessionId: "sleep",
           label: "beta",
           status: "working",
-          snoozed: true,
+          paused: true,
+          muted: false,
+          liveGlyph: null,
+          active: false,
+          navSelected: false,
+        },
+        {
+          sessionId: "quiet",
+          label: "gamma",
+          status: "waiting",
+          paused: true,
+          muted: true,
           liveGlyph: null,
           active: false,
           navSelected: false,
@@ -106,6 +120,7 @@ describe("footer renderer seam", () => {
     }));
 
     expect(writes).toEqual([PAUSED_FOOTER_GOLDEN]);
+    expect(writes.join("").toLowerCase()).not.toContain("snooz");
   });
 
   test("keeps the legacy 80-column dashboard fallback separate from line fitting", () => {
@@ -170,7 +185,8 @@ describe("theater renderer lifecycle", () => {
         sessionId: "one",
         label: "project-one",
         status: "needs",
-        snoozed: false,
+        paused: false,
+        muted: false,
         liveGlyph: null,
         active: false,
         navSelected: false,
@@ -181,6 +197,46 @@ describe("theater renderer lifecycle", () => {
     expect(frame).toContain("needs a response");
     expect(frame).not.toContain("│");
     expect(frame).not.toContain("…");
+  });
+
+  test("quiet session rows show mute ahead of pause without legacy snooze wording", () => {
+    const { io, writes } = recordingIO({ columns: 80, rows: 7 });
+    const renderer = createTheaterRenderer(io);
+    renderer.enter();
+    renderer.panel(sampleModel({
+      panelOpen: false,
+      live: { state: "idle", label: "", partial: "" },
+      rows: [
+        {
+          sessionId: "paused",
+          label: "paused-only",
+          status: "waiting",
+          paused: true,
+          muted: false,
+          liveGlyph: null,
+          active: false,
+          navSelected: false,
+        },
+        {
+          sessionId: "muted",
+          label: "muted-and-paused",
+          status: "needs",
+          paused: true,
+          muted: true,
+          liveGlyph: "speaking",
+          active: true,
+          navSelected: false,
+        },
+      ],
+    }));
+
+    const frame = writes.at(-1)!;
+    const plain = frame.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+    const mutedLine = plain.split("\n").find((line) => line.includes("muted-and-paused"));
+    expect(plain).toContain("⏸ paused");
+    expect(mutedLine).toContain("🔇 muted");
+    expect(mutedLine).not.toContain("⏸ paused");
+    expect(plain.toLowerCase()).not.toContain("snooz");
   });
 
   test("settings temporarily opens a collapsed content pane", () => {
@@ -241,7 +297,8 @@ describe("theater renderer lifecycle", () => {
         sessionId: "wide",
         label: `漢字漢字漢字漢字漢字漢字漢字\x1b]2;unsafe\u0007`,
         status: "working",
-        snoozed: false,
+        paused: false,
+        muted: false,
         liveGlyph: "recording",
         active: true,
         navSelected: false,
@@ -267,7 +324,8 @@ describe("theater renderer lifecycle", () => {
       sessionId: `row-${index}`,
       label: index === 8 ? "manual-eight" : `row-${index}`,
       status: "working" as const,
-      snoozed: false,
+      paused: false,
+      muted: false,
       liveGlyph: index === 0 ? "recording" as const : null,
       active: index === 0,
       navSelected: index === 8,

@@ -16,6 +16,9 @@ import {
   type RequestBarrierEffect,
 } from "../src/dictation-reducer.ts";
 import { withNormalMicClosed } from "../src/audio-gate.ts";
+import type { TurnEvent } from "../src/hook.ts";
+import { InstantControls } from "../src/instant-controls.ts";
+import { PauseController } from "../src/pause-controller.ts";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -160,28 +163,6 @@ describe("controller/reducer integration contracts", () => {
     expect(outputs).toEqual(["cue", "inject:first half hot tail"]);
   });
 
-  for (const external of ["pause", "mute"] as const) {
-    test(`${external} drains captured text before its acknowledgement can play`, async () => {
-      const { backend, controller } = flow();
-      const reducer = new DictationReducer({ holdSubmit: true });
-      const request = requestEffect(reducer.requestExternalAction(external));
-      const ticket = controller.requestBarrier(request.reason);
-      backend.recorders[0]!.finish(`${external} tail`);
-
-      const transcript = await controller.nextEvent();
-      consumeTranscript(reducer, transcript, 1);
-      const barrier = await controller.nextEvent();
-      const action = consumeBarrier(reducer, barrier, 2, request);
-      controller.acknowledge(barrier);
-      await ticket.done;
-
-      expect(action.action).toBe(external);
-      expect(action.payload).toBe(`${external} tail`);
-      expect(controller.micOpen).toBe(false);
-      await withNormalMicClosed(() => controller.micOpen, `${external} acknowledgement`, async () => {});
-    });
-  }
-
   test("a spacebar arriving with an adopted barge drains that capture without opening a successor", async () => {
     const initial = new FakeRecorder({ sequence: 0, generation: 0 });
     const { backend, controller } = flow(initial);
@@ -201,6 +182,149 @@ describe("controller/reducer integration contracts", () => {
     expect(action.payload).toBe("barge tail");
     expect(backend.recorders).toHaveLength(0);
   });
+
+  for (const control of [
+    { label: "global pause", command: "pause", scoped: false, holds: true },
+    { label: "global resume", command: "resume", scoped: false, holds: false },
+    { label: "session pause", command: "pause", scoped: true, holds: true },
+    { label: "session resume", command: "resume", scoped: true, holds: false },
+    { label: "global mute", command: "mute", scoped: false, holds: false },
+    { label: "global unmute", command: "unmute", scoped: false, holds: false },
+    { label: "session mute", command: "mute", scoped: true, holds: false },
+    { label: "session unmute", command: "unmute", scoped: true, holds: false },
+  ] as const) {
+    test(`${control.label} lets an active Whisper finish but drops every result`, async () => {
+      const backend = new FakeBackend();
+      const transcriberStarted = deferred<void>();
+      const releaseTranscriber = deferred<void>();
+      const completed: string[] = [];
+      const controller = new DictationController({
+        backend,
+        minimumBytes: 16_000,
+        transcriber: {
+          async transcribe(pcm) {
+            const text = new TextDecoder().decode(pcm);
+            transcriberStarted.resolve();
+            await releaseTranscriber.promise;
+            completed.push(text);
+            return { text, engine: "warm" };
+          },
+        },
+        deleteRaw() {},
+      });
+      controller.start();
+      backend.recorders[0]!.finish("whisper already running");
+      await transcriberStarted.promise;
+      expect(backend.recorders).toHaveLength(2);
+
+      const current: TurnEvent = {
+        type: "turn-end",
+        sessionId: "session-a",
+        label: "alpha",
+        announce: "alpha: response from the top",
+        transcriptPath: "/tmp/alpha.jsonl",
+        mark: 4,
+      };
+      const globalHeldTurns = new Map<string, TurnEvent>();
+      const pausedSessionIds = new Set<string>();
+      const mutedSessionIds = new Set<string>();
+      const sessionHeldTurns = new Map<string, TurnEvent>();
+      let muted = !control.scoped && control.command === "unmute";
+      let abortCalls = 0;
+      let abortTicket: ReturnType<DictationController["requestBarrier"]> | null = null;
+      const pause = new PauseController({
+        initialPaused: !control.scoped && control.command === "resume",
+        pending: globalHeldTurns,
+        currentTurn: () => current,
+        activeSession: () => ({
+          abort() {
+            abortCalls++;
+            abortTicket ??= controller.requestBarrier("manual-reply");
+            return abortTicket.done;
+          },
+        }),
+        cancelCurrentSpeech() {},
+        cancelPendingAudio() {},
+        persist() {},
+        render() {},
+        setModeState() {},
+        log() {},
+        speak: async () => {},
+        liveSessionIds: async () => new Set(["session-a"]),
+        userRespondedSince: async () => false,
+        enqueue() {},
+      });
+      const controls = new InstantControls({
+        pause,
+        globalHeldTurns,
+        pausedSessionIds,
+        mutedSessionIds,
+        sessionHeldTurns,
+        setMuted: (next) => void (muted = next),
+        enqueue() {},
+        forgetQueued() {},
+        forgetLatest() {},
+        cancelQueuedWakes() {},
+        labelFor: () => "alpha",
+        log() {},
+        render() {},
+      });
+      if (control.scoped && control.command === "resume") {
+        pausedSessionIds.add("session-a");
+        sessionHeldTurns.set("session-a", current);
+      }
+      if (control.scoped && control.command === "unmute") {
+        mutedSessionIds.add("session-a");
+      }
+      const capturedGeneration = pause.capture();
+
+      if (control.scoped) {
+        if (control.command === "pause" || control.command === "resume") {
+          controls.setSessionPaused("session-a", control.command === "pause");
+        } else {
+          controls.setSessionMuted("session-a", control.command === "mute");
+        }
+      } else {
+        controls.applyGlobal(control.command);
+      }
+
+      // The control edge is complete while Whisper remains deliberately blocked.
+      expect(abortCalls).toBe(1);
+      expect(pause.interrupted(capturedGeneration)).toBeTrue();
+      expect(completed).toEqual([]);
+      expect(backend.recorders[1]!.stopReasons).toEqual(["manual-reply"]);
+      expect(pause.paused).toBe(!control.scoped && control.command === "pause");
+      expect(muted).toBe(!control.scoped && control.command === "mute");
+      expect(pausedSessionIds.has("session-a")).toBe(control.scoped && control.command === "pause");
+      expect(mutedSessionIds.has("session-a")).toBe(control.scoped && control.command === "mute");
+
+      backend.recorders[1]!.finish("aborted successor");
+      releaseTranscriber.resolve();
+
+      const reducer = new DictationReducer({ holdSubmit: true });
+      const accepted: DictationEvent[] = [];
+      while (true) {
+        const event = await controller.nextEvent();
+        const disposition = pause.interceptDictationEvent(
+          capturedGeneration,
+          event,
+          controller,
+        );
+        if (!disposition.intercepted) {
+          accepted.push(event);
+          if (event.kind === "transcript") consumeTranscript(reducer, event, accepted.length);
+        }
+        if (disposition.terminal) break;
+      }
+      await abortTicket!.done;
+
+      expect(completed).toEqual(["whisper already running"]);
+      expect(accepted).toEqual([]);
+      expect(reducer.snapshot.buffer).toEqual([]);
+      const held = control.scoped ? sessionHeldTurns : globalHeldTurns;
+      expect(held.get("session-a")).toBe(control.holds ? current : undefined);
+    });
+  }
 
   test("a manual-reply abort discards even a transcribable active tail", async () => {
     const { backend, controller, transcribed } = flow();
@@ -294,7 +418,7 @@ describe("controller/reducer integration contracts", () => {
     const reducer = new DictationReducer({ holdSubmit: true });
     reducer.consume({ type: "transcript", sequence: 1, text: "held" });
     const repeat = requestEffect(reducer.consume({ type: "transcript", sequence: 2, text: "repeat" }));
-    expect(reducer.requestExternalAction("pause")).toEqual([]);
+    expect(reducer.requestExternalAction("spacebar")).toEqual([]);
     const action = consumeBarrier(
       reducer,
       { kind: "barrier", id: 1, reason: repeat.reason } as DictationEvent,
@@ -303,6 +427,6 @@ describe("controller/reducer integration contracts", () => {
     );
     expect(action.action).toBe("repeat");
     expect(action.shouldResume).toBe(true);
-    expect(requestEffect(reducer.requestExternalAction("pause")).action).toBe("pause");
+    expect(requestEffect(reducer.requestExternalAction("spacebar")).action).toBe("spacebar");
   });
 });

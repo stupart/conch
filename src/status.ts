@@ -241,7 +241,8 @@ const THEATER_STATUS_ICON: Record<string, string> = {
   waiting: "\x1b[32m○\x1b[39m",
   working: "\x1b[36m●\x1b[39m",
   idle: "\x1b[2m·\x1b[22m",
-  snoozed: "\x1b[2m⏸\x1b[22m",
+  paused: "\x1b[2m⏸\x1b[22m",
+  muted: "\x1b[2m🔇\x1b[22m",
   listening: "\x1b[32m●\x1b[39m",
   recording: "\x1b[31m●\x1b[39m",
   speaking: "\x1b[33m▶\x1b[39m",
@@ -249,12 +250,14 @@ const THEATER_STATUS_ICON: Record<string, string> = {
 };
 
 function rowState(row: PanelRowModel): string {
-  if (row.snoozed) return "snoozed";
+  if (row.muted) return "muted";
+  if (row.paused) return "paused";
   return row.liveGlyph ?? row.status ?? "idle";
 }
 
 function fullStatus(row: PanelRowModel): string {
-  if (row.snoozed) return "\x1b[2m⏸ snoozed\x1b[22m";
+  if (row.muted) return "\x1b[2m🔇 muted\x1b[22m";
+  if (row.paused) return "\x1b[2m⏸ paused\x1b[22m";
   switch (row.liveGlyph ?? row.status) {
     case "speaking": return "\x1b[33m▶ speaking\x1b[39m";
     case "listening": return "\x1b[32m● mic open\x1b[39m";
@@ -285,7 +288,7 @@ function theaterLedgerRow(row: PanelRowModel, width: number, compact: boolean): 
     if (row.detail) body += ` \x1b[2m(${row.detail})\x1b[22m`;
   }
   body = padVisible(body, bodyWidth);
-  if (row.snoozed) body = `\x1b[2m${body}\x1b[22m`;
+  if (row.muted || row.paused) body = `\x1b[2m${body}\x1b[22m`;
   if (!row.active) return ` ${body}`; // blank gutter — keeps text aligned with the active ▎
   // A steady brand accent + neutral fill anchors the live session. State color
   // belongs only to the icon, so the row does not strobe through an exchange.

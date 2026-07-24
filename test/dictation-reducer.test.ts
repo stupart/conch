@@ -105,14 +105,14 @@ describe("ordered dictation reducer", () => {
     expect(action.finalSubmittedDiagnosticIds).toEqual(["one", "timeout", "two"]);
   });
 
-  test.each(["spacebar", "pause", "mute"] as const)("external %s drains held text at its barrier", (actionName) => {
+  test("external spacebar drains held text at its barrier", () => {
     const reducer = new DictationReducer({ holdSubmit: true });
     reducer.consume(transcript(1, "preserve me", "held"));
-    const request = requested(reducer.requestExternalAction(actionName));
+    const request = requested(reducer.requestExternalAction("spacebar"));
     reducer.consume(transcript(2, "and me", "active-tail"));
 
     const action = ready(reducer.consume(barrier(3, request)));
-    expect(action.action).toBe(actionName);
+    expect(action.action).toBe("spacebar");
     expect(action.payload).toBe("preserve me and me");
     expect(action.payloadDiagnosticIds).toEqual(["held", "active-tail"]);
     expect(action.shouldResume).toBe(false);

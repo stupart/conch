@@ -64,6 +64,30 @@ describe("TheaterNavigation", () => {
     expect(navigation.actionTarget("last")).toBe("a");
   });
 
+  test("manual controls never fall back to the active or last session", () => {
+    const navigation = new TheaterNavigation(() => {});
+    navigation.commitFrame("active", null);
+
+    expect(navigation.actionTarget("last")).toBe("active");
+    expect(navigation.manualControlTarget()).toBeNull();
+  });
+
+  test("manual controls target the live cursor before paint and stop at fade expiry", () => {
+    const scheduler = new FakeScheduler();
+    const navigation = new TheaterNavigation(() => {}, 2_500, scheduler);
+    navigation.commitFrame("active", null);
+
+    navigation.move(["active", "parked"], 1);
+    expect(navigation.manualControlTarget()).toBe("parked");
+    navigation.commitFrame("active", navigation.manualSelectedId);
+    expect(navigation.paintedSelectedId).toBe("parked");
+
+    scheduler.fire(1);
+    expect(navigation.manualSelectedId).toBeNull();
+    expect(navigation.paintedSelectedId).toBe("parked");
+    expect(navigation.manualControlTarget()).toBeNull();
+  });
+
   test("re-arms the fade and ignores the stale timer", () => {
     const scheduler = new FakeScheduler();
     const navigation = new TheaterNavigation(() => {}, 2_500, scheduler);

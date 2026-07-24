@@ -226,9 +226,7 @@ test("barrier-first race gates rearm before stop and finalizes exactly once", as
 
 test("short captures rescue abrupt user tails but drop natural and timeout tails", async () => {
   const cases = [
-    { label: "real spacebar/snooze", cause: "dictation-spacebar", expectedKind: "transcript" },
-    { label: "real pause", cause: "dictation-pause", expectedKind: "transcript" },
-    { label: "real mute", cause: "dictation-mute", expectedKind: "transcript" },
+    { label: "real spacebar", cause: "dictation-spacebar", expectedKind: "transcript" },
     { label: "mock user stop", cause: "abort", expectedKind: "transcript" },
     { label: "natural end", cause: undefined, expectedKind: "short" },
     { label: "real timeout", cause: "timeout", expectedKind: "short" },
@@ -285,14 +283,14 @@ test("only captures at or above MIN are transcribed, and two barriers stop once"
   controller.start();
   backend.recorders[0]!.finish("accepted", 100);
   await turns();
-  const first = controller.requestBarrier("pause");
-  const second = controller.requestBarrier("mute");
+  const first = controller.requestBarrier("first");
+  const second = controller.requestBarrier("second");
   backend.recorders[1]!.finish("short", 99);
 
   const events = [await next(controller), await next(controller), await next(controller), await next(controller)];
   expect(events.map((event) => event.kind)).toEqual(["transcript", "short", "barrier", "barrier"]);
   expect(transcriber.calls).toEqual(["accepted"]);
-  expect(backend.recorders[1]!.stopReasons).toEqual(["pause"]);
+  expect(backend.recorders[1]!.stopReasons).toEqual(["first"]);
   controller.acknowledge(events[2]!);
   controller.acknowledge(events[3]!);
   await Promise.all([first.done, second.done]);

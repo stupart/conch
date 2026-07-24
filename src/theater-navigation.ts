@@ -76,6 +76,15 @@ export class TheaterNavigation {
     return this.#paintedSelectedId ?? this.activeSessionId ?? fallbackSessionId;
   }
 
+  /**
+   * A control is session-scoped only while manual navigation is still live.
+   * Unlike actionTarget(), this deliberately never falls back to the active or
+   * last session, and a stale painted cursor stops counting as soon as it fades.
+   */
+  manualControlTarget(): string | null {
+    return this.manualSelectedId;
+  }
+
   release(): void {
     const changed = this.manualSelectedId !== null;
     this.manualSelectedId = null;

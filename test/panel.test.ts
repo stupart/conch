@@ -22,7 +22,8 @@ describe("buildPanelModel — renderer seam", () => {
       sessionStates: new Map([
         ["needs", { label: "Need", status: "needs" as const, detail: "permission", at: 40 }],
       ]),
-      snoozedSessionIds: new Set(["waiting"]),
+      pausedSessionIds: new Set(["waiting"]),
+      mutedSessionIds: new Set(["needs"]),
       live: { state: "speaking", label: "Work", partial: "" },
       mode: { muted: false, paused: true, holding: 2 },
       activeSessionId: "working",
@@ -31,10 +32,22 @@ describe("buildPanelModel — renderer seam", () => {
     });
 
     expect(model.rows.map((row) => row.sessionId)).toEqual(["needs", "waiting", "working"]);
-    expect(model.rows[0]).toMatchObject({ status: "needs", detail: "permission" });
-    expect(model.rows[1]).toMatchObject({ snoozed: true, active: false, navSelected: true });
+    expect(model.rows[0]).toMatchObject({
+      status: "needs",
+      detail: "permission",
+      paused: false,
+      muted: true,
+    });
+    expect(model.rows[1]).toMatchObject({
+      paused: true,
+      muted: false,
+      active: false,
+      navSelected: true,
+    });
     expect(model.rows[2]).toMatchObject({
       status: "working",
+      paused: false,
+      muted: false,
       liveGlyph: "speaking",
       active: true,
       navSelected: false,
@@ -51,7 +64,8 @@ describe("buildPanelModel — renderer seam", () => {
         { sessionId: "sorted-first", name: "same", status: "waiting", statusUpdatedAt: 30 },
       ],
       sessionStates: new Map(),
-      snoozedSessionIds: new Set<string>(),
+      pausedSessionIds: new Set<string>(),
+      mutedSessionIds: new Set<string>(),
       live: { state: "speaking" as const, label: "same", partial: "" },
       mode: { muted: false, paused: false, holding: 0 },
       activeSessionId: null,
@@ -73,6 +87,25 @@ describe("buildPanelModel — renderer seam", () => {
     expect(model.rows.find((row) => row.active)?.sessionId).toBe("sorted-first");
     expect(dashboardRowsForModel(model)[0]?.startsWith("\x1b[36m▸\x1b[0m ")).toBe(true);
   });
+
+  test("renders per-session mute ahead of pause without legacy snooze wording", () => {
+    const model = buildPanelModel({
+      sessions: [{ sessionId: "quiet", name: "Quiet", status: "idle", statusUpdatedAt: 30 }],
+      sessionStates: new Map(),
+      pausedSessionIds: new Set(["quiet"]),
+      mutedSessionIds: new Set(["quiet"]),
+      live: { state: "idle", label: "", partial: "" },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+    });
+
+    const row = dashboardRowsForModel(model)[0]!;
+    expect(row).toContain("\x1b[2m");
+    expect(row).toContain("🔇 muted");
+    expect(row).not.toContain("⏸ paused");
+    expect(row.toLowerCase()).not.toContain("snooz");
+  });
 });
 
 describe("dashboard global mode banner", () => {
@@ -92,12 +125,12 @@ describe("dashboard global mode banner", () => {
   test("shows pause with the held-session count", () => {
     expect(paused[2]).toContain("⏸ PAUSED");
     expect(paused[2]).toContain("holding 3");
-    expect(paused[2]).toContain("press p to resume");
+    expect(paused[2]).toContain("no parked cursor: p to resume");
   });
 
   test("shows mute and gives it precedence over a simultaneous pause", () => {
     expect(muted[2]).toContain("🔇 MUTED");
-    expect(muted[2]).toContain("press m to unmute");
+    expect(muted[2]).toContain("no parked cursor: m to unmute");
     const both = dashboardPanelLines([], 80, { muted: true, paused: true, holding: 2 });
     expect(both[2]).toContain("MUTED");
     expect(both[2]).not.toContain("PAUSED");
