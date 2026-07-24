@@ -149,6 +149,10 @@ const ABRUPT_USER_FINALIZATIONS = new Set([
   "abort",
 ]);
 
+// A manual text reply supersedes this exchange. Stop the recorder in FIFO
+// order, but never spend time transcribing or surface its truncated voice tail.
+const DISCARDED_FINALIZATIONS = new Set(["manual-reply"]);
+
 export class DictationController {
   private readonly backend: DictationCaptureBackend;
   private readonly transcriber: DictationTranscriber;
@@ -445,6 +449,15 @@ export class DictationController {
     let deleteError: unknown;
     if (capture.error) {
       result = this.errorEvent("capture", capture.error, context, capture);
+    } else if (DISCARDED_FINALIZATIONS.has(capture.cause ?? "")) {
+      result = {
+        kind: "short",
+        ...context,
+        diagnosticId: capture.diagnosticId,
+        rawPath: capture.rawPath,
+        finalBytes: capture.finalBytes,
+        cause: capture.cause,
+      };
     } else if (
       capture.finalBytes < (capture.minimumBytes ?? this.minimumBytes)
       && !ABRUPT_USER_FINALIZATIONS.has(capture.cause ?? "")

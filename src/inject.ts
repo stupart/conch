@@ -2,6 +2,10 @@ import { $ } from "bun";
 import type { Config } from "./config.ts";
 
 export type InjectRoute = "tmux" | "osascript-focused" | "osascript-blind" | "clipboard" | "none";
+export interface InjectTextResult {
+  via: InjectRoute;
+  interrupted?: true;
+}
 
 /**
  * Deliver a transcript into the session's prompt.
@@ -19,11 +23,15 @@ export async function injectText(
   cfg: Config,
   sessionPid: number | undefined,
   text: string,
-): Promise<{ via: InjectRoute }> {
+  beforeInject?: () => boolean | Promise<boolean>,
+): Promise<InjectTextResult> {
   const submit = cfg.autoSubmit;
+  const mayInject = async (): Promise<boolean> => beforeInject ? await beforeInject() : true;
+  const interrupted = (): InjectTextResult => ({ via: "none", interrupted: true });
   if (sessionPid) {
     const pane = await findTmuxPane(sessionPid);
     if (pane) {
+      if (!(await mayInject())) return interrupted();
       // `-l --`: -l sends the text as literal keys, -- stops flag parsing so a
       // transcript starting with "-" isn't read as an option (which both fails
       // AND used to throw, killing the daemon). nothrow + exit check so any
@@ -41,10 +49,12 @@ export async function injectText(
     if (!focused && sessionPid) {
       // We know which session this is for but can't put its window in
       // front — typing would land somewhere unknowable. Clipboard instead.
+      if (!(await mayInject())) return interrupted();
       await toClipboard(text);
       return { via: "clipboard" };
     }
     if (focused) await Bun.sleep(300); // let the window raise settle
+    if (!(await mayInject())) return interrupted();
     await Bun.spawn(
       ["osascript", "-e", "on run argv", "-e", 'tell application "System Events" to keystroke (item 1 of argv)', "-e", "end run", "--", text],
       { stdout: "ignore", stderr: "ignore" },
@@ -65,6 +75,7 @@ export async function injectText(
     return { via: focused ? "osascript-focused" : "osascript-blind" };
   }
 
+  if (!(await mayInject())) return interrupted();
   await toClipboard(text);
   return { via: "clipboard" };
 }

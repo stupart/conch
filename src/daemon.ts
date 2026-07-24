@@ -75,9 +75,12 @@ import {
 } from "./dictation-reducer.ts";
 import { assertNormalMicClosed as assertAudioGate, withNormalMicClosed } from "./audio-gate.ts";
 import {
+  createManualReplyListenGuard,
   interruptForManualReply,
+  manualReplyListenBaseline,
   ManualReplyInterrupt,
   watchManualReplyDuringSpeech,
+  type ManualReplyListenGuard,
 } from "./manual-reply.ts";
 import {
   SETTING_DESCRIPTORS,
@@ -957,35 +960,52 @@ export async function runDaemon(cfg: Config): Promise<void> {
     event: TurnEvent,
     text: string,
     diagnosticIds?: string | Iterable<string | undefined>,
-  ): Promise<void> {
-    if (typeof diagnosticIds === "string") {
-      emitRecorderTrace(diagnosticIds, { finalSubmittedPayload: text });
-    } else if (diagnosticIds) {
-      emitRecorderTraces(diagnosticIds, { finalSubmittedPayload: text });
-    }
-    markInjected(event.sessionId);
-    // Record the utterance itself, not just the route — a mis-fire used to be
-    // unrecoverable because only "injected via X" was logged, never the words.
-    log(`heard → ${JSON.stringify(text)}`);
+    beforeInject?: () => boolean | Promise<boolean>,
+  ): Promise<boolean> {
+    let committed = false;
+    const commit = async (): Promise<boolean> => {
+      if (committed) return true;
+      if (beforeInject && !(await beforeInject())) return false;
+      committed = true;
+      if (typeof diagnosticIds === "string") {
+        emitRecorderTrace(diagnosticIds, { finalSubmittedPayload: text });
+      } else if (diagnosticIds) {
+        emitRecorderTraces(diagnosticIds, { finalSubmittedPayload: text });
+      }
+      markInjected(event.sessionId);
+      // Record the utterance itself, not just the route — a mis-fire used to be
+      // unrecoverable because only "injected via X" was logged, never the words.
+      log(`heard → ${JSON.stringify(text)}`);
+      return true;
+    };
+    // Reading-phase delivery has no live listen watcher; retain its established
+    // annotation timing. Dictation commits inside injectText at the actual route.
+    if (!beforeInject) await commit();
 
     // Baseline the target session's user-prompt count so we can CONFIRM the
     // prompt actually submitted. null ⇒ no transcript to watch, skip confirmation.
     const beforeCount = event.transcriptPath ? await transcriptMark(event.transcriptPath) : null;
-    const { via } = await injectText(cfg, event.pid, text);
+    const { via, interrupted } = await injectText(
+      cfg,
+      event.pid,
+      text,
+      beforeInject ? commit : undefined,
+    );
+    if (interrupted) return false;
 
     if (via === "clipboard") {
       log(`injected via ${via}`);
       await speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.", event.label);
-      return;
+      return true;
     }
     if (via === "none") {
       log(`injected via ${via}`);
       await speak(cfg, "Heard you, but I could not find the session's pane.", event.label);
-      return;
+      return true;
     }
     if (beforeCount === null) {
       log(`injected via ${via}`); // no transcript to confirm against — trust it
-      return;
+      return true;
     }
 
     // The osascript path can type the text without the Return landing ("typed but
@@ -996,7 +1016,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       await Bun.sleep(900 + attempt * 600); // give Claude Code time to write the prompt entry
       if ((await transcriptMark(event.transcriptPath!)) > beforeCount) {
         log(`injected via ${via} — confirmed sent${attempt ? ` (after ${attempt} re-send${attempt > 1 ? "s" : ""})` : ""}`);
-        return;
+        return true;
       }
       if (attempt < 2) {
         log(`not confirmed yet — re-pressing Return (try ${attempt + 1})`);
@@ -1006,6 +1026,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     log(`⚠ inject via ${via} NOT confirmed — words placed on clipboard`);
     await toClipboard(text);
     await speak(cfg, "I typed that but it didn't send. Your words are on the clipboard — just paste and press return.", event.label);
+    return true;
   }
 
   /** Shared handling for anything heard while reading aloud (gap or barge-in). */
@@ -1339,6 +1360,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const dictationDone = new Promise<void>((resolve) => {
       resolveDictationDone = resolve;
     });
+    const manualReplyEvent = await manualReplyListenBaseline(event);
+    let manualReplyGuard: ManualReplyListenGuard | null = null;
+    let manualReplyWatch: Promise<void> | null = null;
+    let manualReplyWatchError: unknown;
+    const interruptedByManualReply = (): boolean => manualReplyGuard?.interrupted === true;
 
     const applyEffects = (
       effects: DictationReducerEffect[],
@@ -1414,7 +1440,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
       emitRecorderTraces(expandDiagnosticIds(action.discardedDiagnosticIds));
     };
 
-    const executeAction = async (action: DictationActionReadyEffect): Promise<"resume" | "done"> => {
+    const executeAction = async (
+      action: DictationActionReadyEffect,
+    ): Promise<"resume" | "done" | "manual-reply"> => {
       if (shuttingDown) {
         emitRecorderTraces(expandDiagnosticIds([
           ...action.payloadDiagnosticIds,
@@ -1431,7 +1459,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
         case "mute": {
           if (action.payload) {
             await micCue(cfg, "sent");
-            await deliver(event, action.payload, expandDiagnosticIds(action.finalSubmittedDiagnosticIds));
+            const delivered = await deliver(
+              event,
+              action.payload,
+              expandDiagnosticIds(action.finalSubmittedDiagnosticIds),
+              manualReplyGuard ? () => manualReplyGuard!.closeBeforeSubmit() : undefined,
+            );
+            if (!delivered) return "manual-reply";
           } else {
             emitTerminalRows(action);
             await micCue(cfg, "close");
@@ -1532,6 +1566,22 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
     }
     activeDictation = { session, requestExternal, done: dictationDone };
+    if (session.state === "running") {
+      manualReplyGuard = createManualReplyListenGuard(
+        manualReplyEvent,
+        session,
+        dictationDone,
+        () => cfg.interruptOnManualReply,
+        () => {
+          // Synchronous and before session.abort(): even a voice-submit barrier
+          // already ahead in FIFO must not authorize an injection now.
+          terminal = true;
+        },
+      );
+      manualReplyWatch = manualReplyGuard.done.catch((error) => {
+        manualReplyWatchError = error;
+      });
+    }
 
     // Establish controller ownership before reducing a seed. Non-hold mode can
     // request a terminal barrier immediately; after a drained gap external-stop,
@@ -1554,6 +1604,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
     try {
       while (!terminal) {
         const controllerEvent = await session.nextEvent();
+        if (interruptedByManualReply()) {
+          if (controllerEvent.kind === "barrier") {
+            session.acknowledge(controllerEvent);
+          } else if (controllerEvent.kind !== "timeout") {
+            emitRecorderTrace(controllerEvent.diagnosticId, {
+              intent: "manual-reply",
+              bufferCountAfterReduction: reducer.snapshot.buffer.length,
+            });
+          }
+          continue;
+        }
         let effects: DictationReducerEffect[] = [];
 
         if (controllerEvent.kind === "transcript") {
@@ -1657,6 +1718,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           if (!shuttingDown && reducer.snapshot.buffer.length === 0) {
             await speak(cfg, lastSpoken, event.label);
           }
+          if (interruptedByManualReply()) continue;
           if (deferredExternal) {
             const external = deferredExternal;
             const barrierReason = deferredExternalBarrierReason;
@@ -1666,6 +1728,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
           } else {
             if (!(await reserveNormalMic())) {
               terminal = true;
+              continue;
+            }
+            if (interruptedByManualReply()) {
+              normalMicReserved = false;
               continue;
             }
             if (deferredExternal) {
@@ -1700,8 +1766,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
         }
         if (!action) continue;
         micOpen = false;
+        if (!action.shouldResume && !action.payload && manualReplyGuard) {
+          if (!(await manualReplyGuard.closeBeforeSubmit())) {
+            emitRecorderTraces(expandDiagnosticIds([
+              ...action.payloadDiagnosticIds,
+              ...action.actionDiagnosticIds,
+              ...action.discardedDiagnosticIds,
+            ]), { intent: "manual-reply", bufferCountAfterReduction: 0 });
+            continue;
+          }
+        }
         if (!action.shouldResume) activeDictation = null;
-        let result: "resume" | "done";
+        let result: "resume" | "done" | "manual-reply";
         try {
           result = await executeAction(action);
         } catch (error) {
@@ -1714,6 +1790,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
             ...action.discardedDiagnosticIds,
           ]));
           throw error;
+        }
+        if (result === "manual-reply") {
+          emitRecorderTraces(expandDiagnosticIds([
+            ...action.payloadDiagnosticIds,
+            ...action.actionDiagnosticIds,
+            ...action.discardedDiagnosticIds,
+          ]), { intent: "manual-reply", bufferCountAfterReduction: 0 });
+        }
+        if (result === "manual-reply" || interruptedByManualReply()) {
+          terminal = true;
+          continue;
         }
         if (result === "done") {
           terminal = true;
@@ -1728,6 +1815,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
           }
           session.setIdleWindowSecs(cfg.holdSubmitSecs);
           if (!(await reserveNormalMic())) {
+            terminal = true;
+            continue;
+          }
+          if (interruptedByManualReply()) {
+            normalMicReserved = false;
             terminal = true;
             continue;
           }
@@ -1757,21 +1849,22 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (session.state === "running" || session.state === "draining") {
         const ticket = session.requestBarrier("conversation-exit");
         let exitBarrierReached = false;
+        const exitIntent = interruptedByManualReply() ? "manual-reply" : "conversation-exit";
         while (true) {
           const pendingEvent = await session.nextEvent();
           if (pendingEvent.kind === "transcript") {
             emitRecorderTrace(pendingEvent.diagnosticId, {
-              intent: "conversation-exit",
+              intent: exitIntent,
               bufferCountAfterReduction: reducer.snapshot.buffer.length,
             });
           } else if (pendingEvent.kind === "short") {
             emitRecorderTrace(pendingEvent.diagnosticId, {
-              intent: "conversation-exit-short",
+              intent: interruptedByManualReply() ? "manual-reply" : "conversation-exit-short",
               bufferCountAfterReduction: reducer.snapshot.buffer.length,
             });
           } else if (pendingEvent.kind === "error") {
             emitRecorderTrace(pendingEvent.diagnosticId, {
-              intent: `${pendingEvent.stage}-error`,
+              intent: interruptedByManualReply() ? "manual-reply" : `${pendingEvent.stage}-error`,
               bufferCountAfterReduction: reducer.snapshot.buffer.length,
             });
           } else if (pendingEvent.kind === "barrier") {
@@ -1788,8 +1881,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const pendingIds = expandDiagnosticIds(
         reducer.snapshot.buffer.flatMap((segment) => segment.diagnosticId ? [segment.diagnosticId] : []),
       );
-      emitRecorderTraces(pendingIds);
+      if (interruptedByManualReply()) {
+        emitRecorderTraces(pendingIds, { intent: "manual-reply", bufferCountAfterReduction: 0 });
+      } else {
+        emitRecorderTraces(pendingIds);
+      }
       resolveDictationDone();
+    }
+    if (manualReplyWatch) await manualReplyWatch;
+    if (manualReplyWatchError && !(manualReplyWatchError instanceof ManualReplyInterrupt)) {
+      throw manualReplyWatchError;
+    }
+    if (interruptedByManualReply() || manualReplyWatchError instanceof ManualReplyInterrupt) {
+      log(`closed mic for "${event.label}" — you replied by text`);
     }
   }
 

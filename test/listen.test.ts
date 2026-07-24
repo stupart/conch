@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { soxCaptureArgs } from "../src/listen.ts";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadConfig } from "../src/config.ts";
+import { createDictationSession, soxCaptureArgs } from "../src/listen.ts";
 
 describe("sox capture arguments", () => {
   test("puts configured mic gain immediately before silence", () => {
@@ -37,4 +41,46 @@ describe("sox capture arguments", () => {
     ]);
     expect(args).not.toContain("gain");
   });
+});
+
+test("runtime session abort closes its recorder through a manual-reply barrier", async () => {
+  const root = mkdtempSync(join(tmpdir(), "conch-listen-abort-test-"));
+  const fakeSox = join(root, "sox");
+  writeFileSync(fakeSox, `#!/usr/bin/env bun
+import { writeFileSync } from "node:fs";
+const raw = process.argv[process.argv.indexOf("raw") + 1];
+writeFileSync(raw, new Uint8Array());
+await new Promise(() => {});
+`);
+  chmodSync(fakeSox, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${root}:${previousPath ?? ""}`;
+
+  try {
+    const cfg = loadConfig({ env: {}, settingsPath: join(root, "settings.json") });
+    const session = createDictationSession(cfg);
+    session.start();
+    expect(session.micOpen).toBe(true);
+    await Bun.sleep(50); // let the fake recorder create its raw output
+
+    const aborting = session.abort();
+    expect(session.abort()).toBe(aborting); // scoped abort is idempotent
+    let barrierReason = "";
+    while (!barrierReason) {
+      const event = await session.nextEvent();
+      if (event.kind === "barrier") {
+        barrierReason = event.reason;
+        session.acknowledge(event);
+      }
+    }
+
+    await aborting;
+    expect(barrierReason).toBe("manual-reply");
+    expect(session.micOpen).toBe(false);
+    expect(session.state).toBe("idle");
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH;
+    else process.env.PATH = previousPath;
+    rmSync(root, { recursive: true, force: true });
+  }
 });

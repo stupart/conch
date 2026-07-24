@@ -54,6 +54,8 @@ export interface RuntimeDictationSession {
   requestBarrier(reason: string): BarrierTicket;
   requestTimeout(): BarrierTicket;
   setIdleWindowSecs(seconds: number): void;
+  /** Stop this scoped exchange without submitting its captured tail. */
+  abort(): Promise<void>;
 }
 
 interface Capture {
@@ -184,6 +186,7 @@ export function createDictationSession(
   let idleDeadline = Date.now() + idleWindowSecs * 1000;
   let nextOpenBeginsNewWindow = false;
   let controller!: DictationController;
+  let abortDone: Promise<void> | null = null;
   const transcriptionGate = new TranscriptionGate(() => controller.finalWorkerIdle);
 
   const backend = {
@@ -280,6 +283,15 @@ export function createDictationSession(
     },
     requestBarrier: (reason) => controller.requestBarrier(reason),
     requestTimeout: () => controller.requestTimeout(),
+    abort() {
+      if (abortDone) return abortDone;
+      if (controller.state === "closed" || controller.state === "idle") {
+        abortDone = Promise.resolve();
+      } else {
+        abortDone = controller.requestBarrier("manual-reply").done;
+      }
+      return abortDone;
+    },
     setIdleWindowSecs(seconds) {
       idleWindowSecs = seconds;
       idleDeadline = Date.now() + seconds * 1000;

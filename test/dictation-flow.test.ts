@@ -69,12 +69,15 @@ class FakeBackend implements DictationCaptureBackend {
 function flow(initialCapture?: FakeRecorder) {
   const backend = new FakeBackend();
   const deleted: string[] = [];
+  const transcribed: string[] = [];
   const controller = new DictationController({
     backend,
     minimumBytes: 16_000,
     transcriber: {
       async transcribe(pcm) {
-        return { text: new TextDecoder().decode(pcm), engine: "warm" };
+        const text = new TextDecoder().decode(pcm);
+        transcribed.push(text);
+        return { text, engine: "warm" };
       },
     },
     deleteRaw(capture) {
@@ -82,7 +85,7 @@ function flow(initialCapture?: FakeRecorder) {
     },
   });
   controller.start(initialCapture);
-  return { backend, controller, deleted };
+  return { backend, controller, deleted, transcribed };
 }
 
 function requestEffect(effects: DictationReducerEffect[]): RequestBarrierEffect {
@@ -197,6 +200,28 @@ describe("controller/reducer integration contracts", () => {
 
     expect(action.payload).toBe("barge tail");
     expect(backend.recorders).toHaveLength(0);
+  });
+
+  test("a manual-reply abort discards even a transcribable active tail", async () => {
+    const { backend, controller, transcribed } = flow();
+    const ticket = controller.requestBarrier("manual-reply");
+    expect(backend.recorders[0]!.stopReasons).toEqual(["manual-reply"]);
+    backend.recorders[0]!.finish("voice that must not be submitted", 32_000, "manual-tail");
+
+    const discarded = await controller.nextEvent();
+    expect(discarded).toMatchObject({
+      kind: "short",
+      cause: "manual-reply",
+      finalBytes: 32_000,
+      diagnosticId: "manual-tail",
+    });
+    expect(transcribed).toEqual([]);
+
+    const barrier = await controller.nextEvent();
+    expect(barrier).toMatchObject({ kind: "barrier", reason: "manual-reply" });
+    controller.acknowledge(barrier);
+    await ticket.done;
+    expect(controller.micOpen).toBe(false);
   });
 
   test("a non-hold seeded fragment starts a generation before requesting its send barrier", async () => {

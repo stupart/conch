@@ -66,7 +66,7 @@ export interface Config {
   typingGraceSecs: number;
   /** read the whole final message aloud by default; say "stop" between chunks to cut it short */
   readFull: boolean;
-  /** stop a response read-aloud as soon as that session receives a human text reply */
+  /** stop a response read/listen exchange when that session receives a human text reply */
   interruptOnManualReply: boolean;
   /** ordering policy for queued session handoffs */
   handoffOrder: HandoffOrder;

@@ -225,7 +225,7 @@ export const SETTING_DESCRIPTORS = [
     parse: parseBoolean,
     bounds: null,
     apply: "live",
-    help: "stop reading when you reply to that session by text",
+    help: "stop reading/listening when you reply to that session by text",
   },
   {
     key: "handoff-order",
