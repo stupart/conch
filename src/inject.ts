@@ -38,7 +38,10 @@ export async function injectText(
       // send-keys refusal falls through to clipboard instead of crashing.
       const r = await $`tmux send-keys -t ${pane} -l -- ${text}`.quiet().nothrow();
       if (r.exitCode === 0) {
-        if (submit) await $`tmux send-keys -t ${pane} Enter`.quiet().nothrow();
+        if (submit) {
+          if (!(await mayInject())) return interrupted();
+          await $`tmux send-keys -t ${pane} Enter`.quiet().nothrow();
+        }
         return { via: "tmux" };
       }
     }
@@ -69,7 +72,9 @@ export async function injectText(
       // Re-assert focus first: in that gap the frontmost window can drift (a
       // notification, the window losing front), and a bare `key code 36` goes to
       // whatever's in front. Re-focusing makes the Return land where the text went.
+      if (!(await mayInject())) return interrupted();
       if (focused && sessionPid) await focusSessionWindow(sessionPid);
+      if (!(await mayInject())) return interrupted();
       await osa('tell application "System Events" to key code 36');
     }
     return { via: focused ? "osascript-focused" : "osascript-blind" };
@@ -90,22 +95,31 @@ export async function injectKey(
   cfg: Config,
   sessionPid: number | undefined,
   key: "Enter" | "Escape",
-): Promise<{ via: InjectRoute }> {
+  beforeInject?: () => boolean | Promise<boolean>,
+): Promise<InjectTextResult> {
+  const mayInject = async (): Promise<boolean> => beforeInject ? await beforeInject() : true;
+  const interrupted = (): InjectTextResult => ({ via: "none", interrupted: true });
   if (sessionPid) {
     const pane = await findTmuxPane(sessionPid);
     if (pane) {
+      if (!(await mayInject())) return interrupted();
       const r = await $`tmux send-keys -t ${pane} ${key}`.quiet().nothrow();
       if (r.exitCode === 0) return { via: "tmux" };
     }
   }
   if (cfg.keystrokeFallback) {
     const focused = sessionPid ? await focusSessionWindow(sessionPid) : false;
-    if (!focused && sessionPid) return { via: "none" }; // never press keys in an unknown window
+    if (!focused && sessionPid) {
+      if (!(await mayInject())) return interrupted();
+      return { via: "none" }; // never press keys in an unknown window
+    }
     if (focused) await Bun.sleep(300);
+    if (!(await mayInject())) return interrupted();
     const keyCode = key === "Enter" ? 36 : 53;
     await osa(`tell application "System Events" to key code ${keyCode}`);
     return { via: focused ? "osascript-focused" : "osascript-blind" };
   }
+  if (!(await mayInject())) return interrupted();
   return { via: "none" };
 }
 

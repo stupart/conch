@@ -16,6 +16,8 @@ export interface SettingsOverlayOptions {
   controller: SettingsOverlayConfigController;
   settingsPath: string;
   persist(path: string, key: unknown, value: unknown): unknown;
+  onOpen?(): void;
+  onClose?(): void;
   onChange(): void;
 }
 
@@ -35,6 +37,8 @@ export class SettingsOverlay {
   readonly #controller: SettingsOverlayConfigController;
   readonly #settingsPath: string;
   readonly #persist: SettingsOverlayOptions["persist"];
+  readonly #onOpen: () => void;
+  readonly #onClose: () => void;
   readonly #onChange: () => void;
   #opened = false;
   #selectedIndex = 0;
@@ -46,6 +50,8 @@ export class SettingsOverlay {
     this.#controller = options.controller;
     this.#settingsPath = options.settingsPath;
     this.#persist = options.persist;
+    this.#onOpen = options.onOpen ?? (() => {});
+    this.#onClose = options.onClose ?? (() => {});
     this.#onChange = options.onChange;
   }
 
@@ -54,8 +60,10 @@ export class SettingsOverlay {
   }
 
   open(): void {
-    const response = this.#controller.handle({ kind: "get-config" });
+    if (this.#opened) return;
     this.#opened = true;
+    this.#onOpen();
+    const response = this.#controller.handle({ kind: "get-config" });
     this.#editBuffer = null;
     this.#error = undefined;
     if (response.kind === "config-snapshot") {
@@ -81,6 +89,7 @@ export class SettingsOverlay {
     if (!this.#opened) return;
     this.#opened = false;
     this.#editBuffer = null;
+    this.#onClose();
     this.#onChange();
   }
 

@@ -83,6 +83,11 @@ import {
   type ManualReplyListenGuard,
 } from "./manual-reply.ts";
 import {
+  PauseController,
+  SettingsPauseLifecycle,
+  type SetPausedOptions,
+} from "./pause-controller.ts";
+import {
   SETTING_DESCRIPTORS,
   SETTING_REGISTRY,
   isControlMessageCandidate,
@@ -414,7 +419,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let lastTurn: TurnEvent | null = null;
   const persisted = readState(); // survives restarts — see STATE_FILE
   let muted = persisted.muted;
-  let paused = persisted.paused; // "away" mode: quiet, but HOLD finished sessions to replay on resume
+  let pause!: PauseController; // "away" mode: quiet, but HOLD finished sessions to replay on resume
   let stopKey = false; // spacebar pressed while reciting — the guaranteed interrupt
   let micOpen = false; // true while a dictation/permission listen is in flight — spacebar closes it
   let activeDictation: {
@@ -425,7 +430,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let shuttingDown = false;
   let normalMicReserved = false;
   let bargeHandoffOpen = false;
-  let pendingMicControl: "pause" | "mute" | null = null;
+  let pendingMicControl: "mute" | null = null;
   const injectedAt = new Map<string, number>(); // session -> last time conch drove it
   const pending = new Map<string, TurnEvent>(); // sessions that finished while paused — latest per session
   // Live session status for the dashboard panel — replaces the spoken "needs you"
@@ -450,6 +455,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // The turn-end currently being read aloud (if any) — so snoozing THAT session
   // stops the read on the spot instead of letting it finish + open the mic.
   let recitingEvent: TurnEvent | null = null;
+  let handlingEvent: TurnEvent | null = null;
+  let handlingPauseGeneration: number | null = null;
 
   const normalMicOpen = (): boolean => Boolean(
     activeDictation?.session.micOpen || micOpen || normalMicReserved || bargeHandoffOpen
@@ -465,6 +472,31 @@ export async function runDaemon(cfg: Config): Promise<void> {
       warn: log,
       onKokoroFailure: (reason) => ttsSupervisor?.requestRecovery(reason),
     },
+  );
+  pause = new PauseController({
+    initialPaused: persisted.paused,
+    pending,
+    currentTurn: () => recitingEvent ?? handlingEvent,
+    currentTurnGeneration: () => handlingPauseGeneration,
+    activeSession: () => activeDictation?.session ?? null,
+    cancelCurrentSpeech: () => speech.cancelCurrent(),
+    cancelPendingAudio: () => speech.cancelPendingAudio(),
+    persist: (paused) => writeState({ muted, paused }),
+    render: () => void renderSessionPanel(),
+    setModeState: (paused) => setState(muted ? "muted" : paused ? "paused" : "idle"),
+    log,
+    speak: (text) => speak(cfg, text),
+    liveSessionIds: async () => (await registrySnapshot(cfg.claudeDir))?.liveIds ?? null,
+    userRespondedSince: (event) => userRespondedSince(event.transcriptPath, event.mark),
+    enqueue,
+    onHold: (event) => {
+      lastTurn = event;
+    },
+    onInterruptError: (error) => log(`pause interrupt cleanup failed: ${error}`),
+  });
+  const settingsPause = new SettingsPauseLifecycle(
+    pause,
+    (error) => log(`settings pause transition failed: ${error}`),
   );
   // Hooks may connect while model startup is in flight; drain() holds their
   // events behind this fully-consumed readiness probe.
@@ -517,13 +549,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
   function enqueue(event: TurnEvent): void {
     if (shuttingDown) return;
     if (!eventOrder.accept(event)) return;
-    if ((event.type === "pause" || event.type === "mute") && activeDictation) {
-      // Close the producer gate synchronously while this event waits behind
-      // the busy conversation. The active loop drains/submits before the mode
-      // event is allowed to speak its acknowledgement.
-      activeDictation.requestExternal(event.type);
+    if (event.type === "pause") {
+      // Pause is a synchronous drop-and-hold edge. Its queued control event
+      // remains behind the interrupted exchange only to speak the manual ack
+      // after the abort barrier has closed the mic.
+      pause.beginPause();
+    } else if (event.type === "mute" && activeDictation) {
+      // Mute retains its established drain-and-submit semantics.
+      activeDictation.requestExternal("mute");
     } else if (
-      (event.type === "pause" || event.type === "mute")
+      event.type === "mute"
       && (normalMicReserved || bargeHandoffOpen)
     ) {
       // A control event can land in the atomic audio-to-mic handoff before a
@@ -574,7 +609,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   }
 
   // The at-rest status when nothing's in flight: muted wins over paused for display.
-  const restState = (): ConchState => (muted ? "muted" : paused ? "paused" : "idle");
+  const restState = (): ConchState => (muted ? "muted" : pause.paused ? "paused" : "idle");
 
   let panelRenderVersion = 0;
   async function renderSessionPanel(): Promise<void> {
@@ -600,7 +635,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       sessionStates,
       snoozedSessionIds: pausedSessions,
       live: liveState,
-      mode: { muted, paused, holding: pending.size },
+      mode: { muted, paused: pause.paused, holding: pending.size },
       activeSessionId: null,
       navSelectedId: null,
     });
@@ -637,7 +672,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         sessionStates,
         snoozedSessionIds: pausedSessions,
         live: liveState,
-        mode: { muted, paused, holding: pending.size },
+        mode: { muted, paused: pause.paused, holding: pending.size },
         activeSessionId: nextActiveSessionId,
         navSelectedId,
         reply: contentEvent && replyText
@@ -653,7 +688,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       panelOrder = model.rows.map((row) => row.sessionId);
       // Read mode state after the async registry snapshot so a slow older redraw
       // cannot repaint a stale pause/mute banner over a newer toggle.
-      model.mode = { muted, paused, holding: pending.size };
+      model.mode = { muted, paused: pause.paused, holding: pending.size };
       renderPanel(model);
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
     });
@@ -678,62 +713,46 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   async function setMuted(next: boolean): Promise<void> {
     muted = next;
-    writeState({ muted, paused }); // persist so a restart doesn't un-mute
+    writeState({ muted, paused: pause.paused }); // persist so a restart doesn't un-mute
     void renderSessionPanel(); // visual feedback must not wait on fallible audio
     log(muted ? "muted — announcements and mic off (m or `conch unmute` to resume)" : "unmuted");
     setState(restState());
     await speak(cfg, muted ? "Muted." : "Back on.");
   }
 
-  // "Away" mode: quiet like mute, but HOLD every session that finishes so they
-  // replay on resume instead of being dropped. Persisted across restarts.
-  async function setPaused(next: boolean): Promise<void> {
-    paused = next;
-    writeState({ muted, paused });
-    void renderSessionPanel(); // clear/show immediately, before speech or registry work
-    if (paused) {
-      log("paused — holding finished sessions until you resume (p or `conch resume`)");
-      setState("paused");
-      await speak(cfg, "Paused. I'll hold your queue.");
-      return;
-    }
-    const held = [...pending.values()];
-    pending.clear(); // snapshot + clear synchronously, before any await
-    // Drop entries that went stale while you were away: the session has since
-    // closed, or you already replied in text so the conversation moved on. Tri-
-    // state liveness — a registry READ FAILURE (null liveIds) must NOT be read as
-    // "all closed" (that would nuke the whole queue); on that uncertainty we keep.
-    const liveIds = (await registrySnapshot(cfg.claudeDir))?.liveIds ?? null;
-    const fresh: TurnEvent[] = [];
-    for (const ev of held) {
-      if (liveIds && !liveIds.has(ev.sessionId)) continue; // session closed
-      if (await userRespondedSince(ev.transcriptPath, ev.mark)) continue; // you moved on
-      fresh.push(ev);
-    }
-    const dropped = held.length - fresh.length;
-    log(`resumed — ${fresh.length} session(s) waited while you were away${dropped ? ` (${dropped} stale, dropped)` : ""}`);
-    setState(restState());
-    // Enqueue the replay BEFORE the (fallible) summary speak: (1) loss-safe — a
-    // TTS throw can't discard the snapshot; (2) a newer same-session turn-end that
-    // arrives during the summary correctly SUPERSEDES its replay (enqueue dedups to
-    // the latest), instead of the old replay clobbering the newer event.
-    for (const ev of fresh) enqueue(ev); // each announces in turn (barge/spacebar to skip)
-    await speak(cfg, fresh.length
-      ? `Back. ${fresh.length} session${fresh.length === 1 ? "" : "s"} finished while you were away.`
-      : "Back on.");
-  }
+  const setPaused = (next: boolean, options?: SetPausedOptions): Promise<void> =>
+    pause.setPaused(next, options);
 
   async function handle(event: TurnEvent): Promise<void> {
     stopKey = false; // a stale press from a past exchange must not skip this one
     micOpen = false; // no listen in flight yet for this event
     if (event.type === "mute") return setMuted(true);
     if (event.type === "unmute") return setMuted(false);
-    if (event.type === "pause") return setPaused(true);
-    if (event.type === "resume") return setPaused(false);
+    if (event.type === "pause") {
+      return setPaused(true);
+    }
+    if (event.type === "resume") {
+      if (settingsOverlay?.isOpen()) return;
+      return setPaused(false);
+    }
     if (event.type === "speak") {
       const speechCfg = event.voice ? { ...cfg, ttsVoices: [event.voice] } : cfg;
       return speak(speechCfg, event.announce, event.label);
     }
+    handlingEvent = event;
+    handlingPauseGeneration = pause.capture();
+    try {
+      await handleTurn(event, handlingPauseGeneration);
+    } finally {
+      if (handlingEvent === event) {
+        handlingEvent = null;
+        handlingPauseGeneration = null;
+      }
+    }
+  }
+
+  async function handleTurn(event: TurnEvent, pauseGeneration: number): Promise<void> {
+    const interruptedByPause = (): boolean => pause.interrupted(pauseGeneration);
     if (!eventOrder.isCurrent(event)) return;
 
     const audibleTurn = shouldHandleTurnAudibly(event, cfg.workingMic);
@@ -769,7 +788,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
     // Paused ("away"): hold whatever finishes so it replays on resume — the key
     // difference from mute, which drops it. `wake` always cuts through.
-    if (paused && event.type !== "wake") {
+    if (pause.paused && (event.type !== "wake" || settingsOverlay?.isOpen())) {
       pending.set(event.sessionId, event); // latest per session
       lastTurn = event; // wake still finds the newest
       void renderSessionPanel(); // update the visible deduplicated holding count
@@ -803,7 +822,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       try {
         setState("speaking", target.label);
         await speak(cfg, `Mic open for ${target.label}.`, target.label);
-        await conversationLoop(target);
+        if (interruptedByPause()) return;
+        await conversationLoop(target, "", undefined, undefined, undefined, undefined, undefined, undefined, false, pauseGeneration);
       } finally {
         recitingEvent = null;
       }
@@ -811,44 +831,63 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
 
     log(`${event.type}${event.ntype ? `/${event.ntype}` : ""} from "${event.label}" (${event.sessionId.slice(0, 8)})`);
-
-    // Already handled it yourself: if you typed a reply to this session (so the
-    // conversation moved on) since this fired, don't read it aloud or nag for
-    // input. Covers the live path AND pause-replay (both flow through here).
-    if (audibleTurn && (await userRespondedSince(event.transcriptPath, event.mark))) {
-      return log(`skipping "${event.label}" — you already responded, conversation moved on`);
-    }
-
-    // The finished-turn attention bell (including opted-in background-working
-    // Stops). The hook hands it to the daemon so it can't ring over a live mic.
-    // The bell + the read-aloud below happen regardless of what you're doing — you
-    // like the heads-up while you work. Only the MIC is gated (in conversationLoop):
-    // it won't open if you're handling this session by text.
-    if (audibleTurn) await ringBell();
-
-    // Surface the session's window as conch starts talking to it — raised so you
-    // can watch, but WITHOUT stealing focus from wherever you're typing (AXRaise).
-    if (event.type === "turn-end" && cfg.revealOnTurn && event.pid) void revealSessionWindow(event.pid);
-
-    // An audible Stop reads the reply, then opens the mic — barge-able from the
-    // very first sentence.
-    const conversationParent = createRecorderParent("conversation");
-    let conversationSequence = 0;
-    const nextConversationSequence = () => ++conversationSequence;
-    resetReadingProgress();
-    recitingEvent = event; // reading this project aloud now — snoozing it stops the read here
+    recitingEvent = event;
     try {
+      // Already handled it yourself: if you typed a reply to this session (so the
+      // conversation moved on) since this fired, don't read it aloud or nag for
+      // input. Covers the live path AND pause-replay (both flow through here).
+      if (audibleTurn && (await userRespondedSince(event.transcriptPath, event.mark))) {
+        return log(`skipping "${event.label}" — you already responded, conversation moved on`);
+      }
+      if (interruptedByPause()) return;
+
+      // An audible Stop reads the reply, then opens the mic — barge-able from the
+      // very first sentence.
+      const conversationParent = createRecorderParent("conversation");
+      let conversationSequence = 0;
+      const nextConversationSequence = () => ++conversationSequence;
+      resetReadingProgress();
+      // The hook hands the bell to the daemon so it cannot ring over a live mic.
+      // Track the exact turn before this first cancellable audio boundary.
+      if (audibleTurn) await ringBell();
+      if (interruptedByPause()) return;
+
+      // Surface the session's window as conch starts talking to it — raised so
+      // you can watch, but WITHOUT stealing focus (AXRaise).
+      if (event.type === "turn-end" && cfg.revealOnTurn && event.pid) void revealSessionWindow(event.pid);
+
       const announce = await speakInterruptible(
         event,
         event.announce,
         false,
         conversationParent,
         nextConversationSequence,
+        interruptedByPause,
       );
       if (shuttingDown) return;
+      if (interruptedByPause()) {
+        // A triggered barge may already have transferred recorder ownership.
+        // Let conversationLoop attach and abort that capture instead of orphaning it.
+        if (announce.initialCapture) {
+          await conversationLoop(
+            event,
+            "",
+            undefined,
+            undefined,
+            announce.initialCapture,
+            announce.captureParent,
+            conversationParent,
+            nextConversationSequence,
+            true,
+            pauseGeneration,
+          );
+        }
+        return;
+      }
       if (announce.cut && !announce.heard && !announce.initialCapture && !stopKey) {
         log("announce cut by a noise blip — re-speaking");
-        await speakInterruptible(event, event.announce, true);
+        await speakInterruptible(event, event.announce, true, undefined, undefined, interruptedByPause);
+        if (interruptedByPause()) return;
       }
       lastTurn = event;
       await conversationLoop(
@@ -861,6 +900,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         conversationParent,
         nextConversationSequence,
         true, // autoTurn — the mic here is gate-able (skips if you're handling it by text)
+        pauseGeneration,
       );
     } catch (error) {
       if (error instanceof ManualReplyInterrupt) {
@@ -886,6 +926,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     disabled: boolean,
     traceParent?: string,
     nextTraceSequence?: () => number,
+    interrupted: () => boolean = () => false,
   ): Promise<{
     heard: string;
     cut: boolean;
@@ -894,6 +935,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     initialCapture?: RecorderHandle;
     captureParent?: string;
   }> {
+    if (interrupted()) return { heard: "", cut: true };
     setState("speaking", event.label);
     if (!cfg.bargeThresholdPct || disabled) {
       const playback = speech.speakCancellable(cfg, text, event.label);
@@ -908,9 +950,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // the manager's audio FIFO. Its actual-start gate checks this precondition
     // again before the intentional high-threshold barge recorder is armed.
     await speech.quiescent();
-    if (stopKey) return { heard: "", cut: true };
+    if (stopKey || interrupted()) return { heard: "", cut: true };
     assertNormalMicClosed("barge-in TTS");
     const result = await speech.runInterruptible(cfg, text, event.label, async (startSpeech) => {
+      if (interrupted()) return { heard: "", cut: true };
       const barge = armBargeRecorder(cfg, traceParent, nextTraceSequence?.() ?? 1);
       const speechRun = startSpeech();
       let cut = false;
@@ -964,8 +1007,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
   ): Promise<boolean> {
     let committed = false;
     const commit = async (): Promise<boolean> => {
-      if (committed) return true;
       if (beforeInject && !(await beforeInject())) return false;
+      if (committed) return true;
       committed = true;
       if (typeof diagnosticIds === "string") {
         emitRecorderTrace(diagnosticIds, { finalSubmittedPayload: text });
@@ -995,11 +1038,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
     if (via === "clipboard") {
       log(`injected via ${via}`);
+      if (beforeInject && !(await beforeInject())) return false;
       await speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.", event.label);
       return true;
     }
     if (via === "none") {
       log(`injected via ${via}`);
+      if (beforeInject && !(await beforeInject())) return false;
       await speak(cfg, "Heard you, but I could not find the session's pane.", event.label);
       return true;
     }
@@ -1014,17 +1059,21 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // if it still won't take, drop the words on the clipboard so they survive.
     for (let attempt = 0; attempt < 3; attempt++) {
       await Bun.sleep(900 + attempt * 600); // give Claude Code time to write the prompt entry
+      if (beforeInject && !(await beforeInject())) return false;
       if ((await transcriptMark(event.transcriptPath!)) > beforeCount) {
         log(`injected via ${via} — confirmed sent${attempt ? ` (after ${attempt} re-send${attempt > 1 ? "s" : ""})` : ""}`);
         return true;
       }
       if (attempt < 2) {
         log(`not confirmed yet — re-pressing Return (try ${attempt + 1})`);
-        await injectKey(cfg, event.pid, "Enter");
+        const retry = await injectKey(cfg, event.pid, "Enter", beforeInject ? commit : undefined);
+        if (retry.interrupted) return false;
       }
     }
+    if (beforeInject && !(await beforeInject())) return false;
     log(`⚠ inject via ${via} NOT confirmed — words placed on clipboard`);
     await toClipboard(text);
+    if (beforeInject && !(await beforeInject())) return false;
     await speak(cfg, "I typed that but it didn't send. Your words are on the clipboard — just paste and press return.", event.label);
     return true;
   }
@@ -1036,6 +1085,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     spokenChunk: string,
     diagnosticId?: string,
     diagnosticIds?: string[],
+    beforeInject?: () => boolean | Promise<boolean>,
   ): Promise<"stop" | "seed" | "handled" | "keep-reading" | "echo"> {
     const traceIds = diagnosticIds ?? [diagnosticId];
     const intent = classifyReadingGap(text);
@@ -1068,7 +1118,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         return "handled";
       case "prompt":
         for (const id of traceIds) updateRecorderTrace(id, { intent: "prompt", bufferCountAfterReduction: 0 });
-        await deliver(event, text, diagnosticIds ?? diagnosticId);
+        await deliver(event, text, diagnosticIds ?? diagnosticId, beforeInject);
         return "handled";
       default:
         emitRecorderTraces(traceIds, { intent, bufferCountAfterReduction: 0 });
@@ -1087,7 +1137,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     suppliedTraceParent?: string,
     suppliedNextTraceSequence?: () => number,
     autoTurn = false, // true only for the automatic turn-end path — the mic is gate-able; a wake is not
+    pauseGeneration = pause.capture(),
   ): Promise<void> {
+    const interruptedByPause = (): boolean => pause.interrupted(pauseGeneration);
     let lastSpoken = event.announce;
     let sentences: string[] | null = null;
     let cursor = 0; // derived from the actual announcement once the full reply is loaded
@@ -1100,13 +1152,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }> = [];
     // A wake just reopens the mic (per the README); it must NOT recite the last
     // message from the top — the user says "continue" if they want to hear it.
-    let skipReading = startsConversationByListening(event, Boolean(announcedCapture));
+    let skipReading = startsConversationByListening(event, Boolean(announcedCapture)) || interruptedByPause();
     let initialDictationCapture = announcedCapture;
     let initialCaptureParent = announcedCaptureParent;
     let deferredInitialExternal: ExternalDictationAction | undefined;
     const traceParent = suppliedTraceParent ?? announcedCaptureParent ?? createRecorderParent("conversation");
     let localTraceSequence = 0;
     const nextTraceSequence = suppliedNextTraceSequence ?? (() => ++localTraceSequence);
+
+    // A normal cancelled read has no recorder ownership to settle. An adopted
+    // barge capture is the exception: attach it below, then abort the session.
+    if (interruptedByPause() && !announcedCapture) return;
 
     const interruptReadForManualReply = (): Promise<void> => interruptForManualReply(
       event,
@@ -1133,7 +1189,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
         event.announce,
         pendingDiagnosticId,
         pendingDiagnosticIds,
+        () => !interruptedByPause(),
       );
+      if (interruptedByPause()) return;
       if (action === "handled") return;
       if (action === "stop") skipReading = true;
       if (action === "seed") {
@@ -1161,8 +1219,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
     if (!skipReading && cfg.readFull && event.type !== "needs-you" && event.transcriptPath) {
       sentences = await ensureSentences();
+      if (interruptedByPause()) return;
       reading: while (cursor < sentences.length) {
+        if (interruptedByPause()) return;
         await interruptReadForManualReply();
+        if (interruptedByPause()) return;
         // gap between chunks: with barging available it's just a beat; with
         // barging off (echo/noise) it's the only voice interrupt, so keep it real
         const gapSecs = bargeOff ? Math.max(cfg.gapSecs, 0.6) : cfg.gapSecs;
@@ -1180,6 +1241,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
           let gapResult!: Awaited<ReturnType<typeof listenGap>>;
           try {
             if (!(await reserveNormalMic())) break reading;
+            if (interruptedByPause()) {
+              normalMicReserved = false;
+              return;
+            }
             if (stopKey || pendingMicControl) {
               deferredInitialExternal = pendingMicControl ?? "spacebar";
               pendingMicControl = null;
@@ -1215,6 +1280,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
             micOpen = false;
             resolveGapDone();
           }
+          if (interruptedByPause()) {
+            emitRecorderTraces(
+              gapResult.diagnosticIds ?? [gapResult.diagnosticId],
+              { intent: "pause", bufferCountAfterReduction: 0 },
+            );
+            return;
+          }
           const {
             text: gapText,
             error: gapError,
@@ -1248,7 +1320,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
           if (gapError) {
             emitRecorderTraces(gapDiagnosticIds ?? [gapDiagnosticId], { intent: "transcription-error", bufferCountAfterReduction: 0 });
           } else if (gapText) {
-            const action = await onReadingUtterance(event, gapText, "", gapDiagnosticId, gapDiagnosticIds);
+            const action = await onReadingUtterance(
+              event,
+              gapText,
+              "",
+              gapDiagnosticId,
+              gapDiagnosticIds,
+              () => !interruptedByPause(),
+            );
+            if (interruptedByPause()) return;
             if (action === "stop") break reading;
             if (action === "seed") {
               const diagnosticIds = (gapDiagnosticIds ?? [gapDiagnosticId])
@@ -1267,9 +1347,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
           }
         }
         await interruptReadForManualReply();
+        if (interruptedByPause()) return;
         const chunk = sentences.slice(cursor, cursor + cfg.continueSentences).join(" ");
         lastSpoken = chunk;
-        const result = await speakInterruptible(event, chunk, bargeOff, traceParent, nextTraceSequence);
+        const result = await speakInterruptible(
+          event,
+          chunk,
+          bargeOff,
+          traceParent,
+          nextTraceSequence,
+          interruptedByPause,
+        );
         if (shuttingDown) return;
         // The cursor advances ONLY when a chunk is spoken in full (below). Every
         // early exit here leaves it at this chunk's start, so a "stop" followed
@@ -1282,6 +1370,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           if (consumeStopKey()) deferredInitialExternal = "spacebar";
           break reading;
         }
+        if (interruptedByPause()) return;
         if (consumeStopKey()) {
           emitRecorderTrace(result.diagnosticId, { intent: "spacebar", bufferCountAfterReduction: 0 });
           break reading; // spacebar: guaranteed stop
@@ -1304,7 +1393,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
           );
           continue;
         }
-        const action = await onReadingUtterance(event, result.heard, chunk, result.diagnosticId, result.diagnosticIds);
+        const action = await onReadingUtterance(
+          event,
+          result.heard,
+          chunk,
+          result.diagnosticId,
+          result.diagnosticIds,
+          () => !interruptedByPause(),
+        );
+        if (interruptedByPause()) return;
         if (action === "stop") break reading;
         if (action === "seed") {
           seededSegments.push({
@@ -1329,6 +1426,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
       emitRecorderTraces(
         seededSegments.flatMap((segment) => segment.diagnosticIds),
         { intent: "shutdown", bufferCountAfterReduction: null },
+      );
+      return;
+    }
+    if (interruptedByPause() && !initialDictationCapture) {
+      emitRecorderTraces(
+        seededSegments.flatMap((segment) => segment.diagnosticIds),
+        { intent: "pause", bufferCountAfterReduction: 0 },
       );
       return;
     }
@@ -1360,7 +1464,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const dictationDone = new Promise<void>((resolve) => {
       resolveDictationDone = resolve;
     });
-    const manualReplyEvent = await manualReplyListenBaseline(event);
+    let manualReplyEvent!: Pick<TurnEvent, "transcriptPath" | "mark">;
     let manualReplyGuard: ManualReplyListenGuard | null = null;
     let manualReplyWatch: Promise<void> | null = null;
     let manualReplyWatchError: unknown;
@@ -1420,6 +1524,31 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
       beginExternalAction(action, barrierReason);
     };
+    let attachedInitialCapture = false;
+    if (initialDictationCapture) {
+      // Ownership was transferred out of the barge helper already. Attach and
+      // establish controller ownership synchronously before any transcript or
+      // audio-gate await can leave this adopted SoX process hot.
+      micOpen = true;
+      try {
+        session.start(initialDictationCapture);
+        attachedInitialCapture = true;
+        bargeHandoffOpen = false;
+      } catch (error) {
+        micOpen = false;
+        void Promise.resolve(killActiveRecorders()).catch(() => {});
+        bargeHandoffOpen = false;
+        throw error;
+      }
+      activeDictation = { session, requestExternal, done: dictationDone };
+      if (interruptedByPause()) {
+        void session.abort().catch((error) => log(`pause interrupt cleanup failed: ${error}`));
+      }
+    }
+    manualReplyEvent = interruptedByPause()
+      ? { transcriptPath: event.transcriptPath, mark: event.mark }
+      : await manualReplyListenBaseline(event);
+    if (interruptedByPause() && !initialDictationCapture) return;
 
     const expandDiagnosticIds = (ids: Iterable<string>): string[] => {
       const expanded: string[] = [];
@@ -1443,12 +1572,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const executeAction = async (
       action: DictationActionReadyEffect,
     ): Promise<"resume" | "done" | "manual-reply"> => {
-      if (shuttingDown) {
+      if (shuttingDown || interruptedByPause()) {
         emitRecorderTraces(expandDiagnosticIds([
           ...action.payloadDiagnosticIds,
           ...action.actionDiagnosticIds,
           ...action.discardedDiagnosticIds,
-        ]));
+        ]), interruptedByPause() ? { intent: "pause", bufferCountAfterReduction: 0 } : {});
         return "done";
       }
       switch (action.action) {
@@ -1459,13 +1588,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
         case "mute": {
           if (action.payload) {
             await micCue(cfg, "sent");
+            if (interruptedByPause()) return "done";
             const delivered = await deliver(
               event,
               action.payload,
               expandDiagnosticIds(action.finalSubmittedDiagnosticIds),
-              manualReplyGuard ? () => manualReplyGuard!.closeBeforeSubmit() : undefined,
+              async () => {
+                if (interruptedByPause()) return false;
+                if (manualReplyGuard && !(await manualReplyGuard.closeBeforeSubmit())) return false;
+                return !interruptedByPause();
+              },
             );
-            if (!delivered) return "manual-reply";
+            if (!delivered) return interruptedByPause() ? "done" : "manual-reply";
           } else {
             emitTerminalRows(action);
             await micCue(cfg, "close");
@@ -1477,28 +1611,34 @@ export async function runDaemon(cfg: Config): Promise<void> {
           emitTerminalRows(action);
           markInjected(event.sessionId);
           await speak(cfg, "Okay.", event.label);
+          if (interruptedByPause()) return "done";
           return action.shouldResume ? "resume" : "done";
         }
         case "repeat":
           emitTerminalRows(action);
           setState("speaking", event.label);
           await speak(cfg, lastSpoken, event.label);
+          if (interruptedByPause()) return "done";
           return "resume";
         case "continue": {
           emitTerminalRows(action);
           if (!event.transcriptPath) {
             await speak(cfg, "I don't have the full message for this one.", event.label);
+            if (interruptedByPause()) return "done";
             return "resume";
           }
           const full = await ensureSentences();
+          if (interruptedByPause()) return "done";
           const chunk = full.slice(cursor, cursor + cfg.continueSentences).join(" ");
           if (!chunk) {
             await speak(cfg, "That's the whole message.", event.label);
+            if (interruptedByPause()) return "done";
             return "resume";
           }
           lastSpoken = chunk;
           setState("speaking", event.label);
           await speak(cfg, chunk, event.label);
+          if (interruptedByPause()) return "done";
           cursor += cfg.continueSentences;
           updateReadingProgress(
             full.join(" "),
@@ -1515,8 +1655,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // reply to this session (userRespondedSince). A wake is explicit and never gated.
     if (autoTurn && !initialDictationCapture && !deferredInitialExternal) {
       const idle = cfg.typingGraceSecs > 0 ? await idleSeconds() : null;
+      if (interruptedByPause()) return;
       const activelyTyping = idle !== null && idle < cfg.typingGraceSecs;
-      if (activelyTyping || (await userRespondedSince(event.transcriptPath, event.mark))) {
+      const responded = activelyTyping ? false : await userRespondedSince(event.transcriptPath, event.mark);
+      if (interruptedByPause()) return;
+      if (activelyTyping || responded) {
         emitRecorderTraces(
           seededSegments.flatMap((segment) => segment.diagnosticIds),
           { intent: "text-handled", bufferCountAfterReduction: null },
@@ -1529,20 +1672,28 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
     if (!initialDictationCapture && !deferredInitialExternal) {
       await micCue(cfg, "open");
-      if (shuttingDown) {
+      if (shuttingDown || interruptedByPause()) {
         emitRecorderTraces(
           seededSegments.flatMap((segment) => segment.diagnosticIds),
-          { intent: "shutdown", bufferCountAfterReduction: null },
+          {
+            intent: interruptedByPause() ? "pause" : "shutdown",
+            bufferCountAfterReduction: interruptedByPause() ? 0 : null,
+          },
         );
         return;
       }
     }
     const initialWindow = seededSegments.length ? cfg.holdSubmitSecs : cfg.listenWindowSecs;
     log(`listening (start within ${initialWindow}s)${seededSegments.length ? " · holding" : ""}...`);
-    if (shuttingDown) return;
-    let needsCapture = Boolean(initialDictationCapture) || !deferredInitialExternal;
-    if (needsCapture) {
+    if (shuttingDown || (interruptedByPause() && !initialDictationCapture)) return;
+    let needsCapture = attachedInitialCapture || Boolean(initialDictationCapture)
+      || (!deferredInitialExternal && !interruptedByPause());
+    if (needsCapture && !attachedInitialCapture) {
       if (!(await reserveNormalMic())) return;
+      if (interruptedByPause() && !initialDictationCapture) {
+        normalMicReserved = false;
+        return;
+      }
       if (stopKey || pendingMicControl) {
         deferredInitialExternal ??= pendingMicControl ?? "spacebar";
         pendingMicControl = null;
@@ -1566,7 +1717,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
     }
     activeDictation = { session, requestExternal, done: dictationDone };
-    if (session.state === "running") {
+    if (interruptedByPause() && session.state === "running") {
+      void session.abort().catch((error) => log(`pause interrupt cleanup failed: ${error}`));
+    } else if (session.state === "running") {
       manualReplyGuard = createManualReplyListenGuard(
         manualReplyEvent,
         session,
@@ -1586,24 +1739,42 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // Establish controller ownership before reducing a seed. Non-hold mode can
     // request a terminal barrier immediately; after a drained gap external-stop,
     // the closed controller supplies that FIFO sentinel without reopening SoX.
-    for (const seed of seededSegments) {
-      if (seed.diagnosticId) seedDiagnosticGroups.set(seed.diagnosticId, seed.diagnosticIds);
-      applyEffects(reducer.consume({
-        type: "transcript",
-        sequence: ++reductionSequence,
-        text: seed.text,
-        ...(seed.diagnosticId ? { diagnosticId: seed.diagnosticId } : {}),
-      }));
-    }
-    if (seededSegments.length) session.setIdleWindowSecs(cfg.holdSubmitSecs);
-    if (deferredInitialExternal) {
-      if (needsCapture) requestExternal(deferredInitialExternal);
-      else beginExternalAction(deferredInitialExternal);
+    if (!interruptedByPause()) {
+      for (const seed of seededSegments) {
+        if (seed.diagnosticId) seedDiagnosticGroups.set(seed.diagnosticId, seed.diagnosticIds);
+        applyEffects(reducer.consume({
+          type: "transcript",
+          sequence: ++reductionSequence,
+          text: seed.text,
+          ...(seed.diagnosticId ? { diagnosticId: seed.diagnosticId } : {}),
+        }));
+      }
+      if (seededSegments.length) session.setIdleWindowSecs(cfg.holdSubmitSecs);
+      if (deferredInitialExternal) {
+        if (needsCapture) requestExternal(deferredInitialExternal);
+        else beginExternalAction(deferredInitialExternal);
+      }
     }
 
     try {
       while (!terminal) {
         const controllerEvent = await session.nextEvent();
+        const pauseDisposition = pause.interceptDictationEvent(
+          pauseGeneration,
+          controllerEvent,
+          session,
+          (dropped) => {
+            if (dropped.kind === "timeout") return;
+            emitRecorderTrace(dropped.diagnosticId, {
+              intent: "pause",
+              bufferCountAfterReduction: 0,
+            });
+          },
+        );
+        if (pauseDisposition.intercepted) {
+          terminal = pauseDisposition.terminal;
+          continue;
+        }
         if (interruptedByManualReply()) {
           if (controllerEvent.kind === "barrier") {
             session.acknowledge(controllerEvent);
@@ -1718,6 +1889,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
           if (!shuttingDown && reducer.snapshot.buffer.length === 0) {
             await speak(cfg, lastSpoken, event.label);
           }
+          if (interruptedByPause()) {
+            terminal = true;
+            continue;
+          }
           if (interruptedByManualReply()) continue;
           if (deferredExternal) {
             const external = deferredExternal;
@@ -1727,6 +1902,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
             beginExternalAction(external, barrierReason);
           } else {
             if (!(await reserveNormalMic())) {
+              terminal = true;
+              continue;
+            }
+            if (interruptedByPause()) {
+              normalMicReserved = false;
               terminal = true;
               continue;
             }
@@ -1741,6 +1921,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
               deferredExternalBarrierReason = undefined;
               normalMicReserved = false;
               beginExternalAction(external, barrierReason);
+              continue;
+            }
+            if (interruptedByPause()) {
+              normalMicReserved = false;
+              terminal = true;
               continue;
             }
             micOpen = true;
@@ -1766,6 +1951,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
         }
         if (!action) continue;
         micOpen = false;
+        if (interruptedByPause()) {
+          terminal = true;
+          continue;
+        }
         if (!action.shouldResume && !action.payload && manualReplyGuard) {
           if (!(await manualReplyGuard.closeBeforeSubmit())) {
             emitRecorderTraces(expandDiagnosticIds([
@@ -1773,6 +1962,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
               ...action.actionDiagnosticIds,
               ...action.discardedDiagnosticIds,
             ]), { intent: "manual-reply", bufferCountAfterReduction: 0 });
+            continue;
+          }
+          if (interruptedByPause()) {
+            terminal = true;
             continue;
           }
         }
@@ -1790,6 +1983,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
             ...action.discardedDiagnosticIds,
           ]));
           throw error;
+        }
+        if (interruptedByPause()) {
+          terminal = true;
+          continue;
         }
         if (result === "manual-reply") {
           emitRecorderTraces(expandDiagnosticIds([
@@ -1818,6 +2015,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
             terminal = true;
             continue;
           }
+          if (interruptedByPause()) {
+            normalMicReserved = false;
+            terminal = true;
+            continue;
+          }
           if (interruptedByManualReply()) {
             normalMicReserved = false;
             terminal = true;
@@ -1830,6 +2032,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
             deferredExternalBarrierReason = undefined;
             normalMicReserved = false;
             beginExternalAction(external, barrierReason);
+            continue;
+          }
+          if (interruptedByPause()) {
+            normalMicReserved = false;
+            terminal = true;
             continue;
           }
           micOpen = true;
@@ -1849,7 +2056,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (session.state === "running" || session.state === "draining") {
         const ticket = session.requestBarrier("conversation-exit");
         let exitBarrierReached = false;
-        const exitIntent = interruptedByManualReply() ? "manual-reply" : "conversation-exit";
+        const exitIntent = interruptedByPause()
+          ? "pause"
+          : interruptedByManualReply()
+            ? "manual-reply"
+            : "conversation-exit";
         while (true) {
           const pendingEvent = await session.nextEvent();
           if (pendingEvent.kind === "transcript") {
@@ -1859,12 +2070,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
             });
           } else if (pendingEvent.kind === "short") {
             emitRecorderTrace(pendingEvent.diagnosticId, {
-              intent: interruptedByManualReply() ? "manual-reply" : "conversation-exit-short",
+              intent: interruptedByPause()
+                ? "pause"
+                : interruptedByManualReply()
+                  ? "manual-reply"
+                  : "conversation-exit-short",
               bufferCountAfterReduction: reducer.snapshot.buffer.length,
             });
           } else if (pendingEvent.kind === "error") {
             emitRecorderTrace(pendingEvent.diagnosticId, {
-              intent: interruptedByManualReply() ? "manual-reply" : `${pendingEvent.stage}-error`,
+              intent: interruptedByPause()
+                ? "pause"
+                : interruptedByManualReply()
+                  ? "manual-reply"
+                  : `${pendingEvent.stage}-error`,
               bufferCountAfterReduction: reducer.snapshot.buffer.length,
             });
           } else if (pendingEvent.kind === "barrier") {
@@ -1881,7 +2100,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const pendingIds = expandDiagnosticIds(
         reducer.snapshot.buffer.flatMap((segment) => segment.diagnosticId ? [segment.diagnosticId] : []),
       );
-      if (interruptedByManualReply()) {
+      if (interruptedByPause()) {
+        emitRecorderTraces(pendingIds, { intent: "pause", bufferCountAfterReduction: 0 });
+      } else if (interruptedByManualReply()) {
         emitRecorderTraces(pendingIds, { intent: "manual-reply", bufferCountAfterReduction: 0 });
       } else {
         emitRecorderTraces(pendingIds);
@@ -1899,9 +2120,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   /** Permission/elicitation dialogs: "yes" -> Enter (highlighted option), "no" -> Escape. Free text is refused on purpose. */
   async function permissionLoop(event: TurnEvent): Promise<void> {
+    const pauseGeneration = pause.capture();
+    const interruptedByPause = (): boolean => pause.interrupted(pauseGeneration);
     if (shuttingDown) return;
     await micCue(cfg, "open");
-    if (shuttingDown) return;
+    if (shuttingDown || interruptedByPause()) return;
     log("listening for yes or no...");
     const session = createDictationSession(
       cfg,
@@ -1927,6 +2150,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
     if (shuttingDown) return;
     if (!(await reserveNormalMic())) return;
+    if (interruptedByPause()) {
+      normalMicReserved = false;
+      return;
+    }
     if (stopKey || pendingMicControl) {
       const control = pendingMicControl;
       pendingMicControl = null;
@@ -1948,6 +2175,22 @@ export async function runDaemon(cfg: Config): Promise<void> {
     try {
       while (true) {
         const controllerEvent = await session.nextEvent();
+        const pauseDisposition = pause.interceptDictationEvent(
+          pauseGeneration,
+          controllerEvent,
+          session,
+          (dropped) => {
+            if (dropped.kind === "timeout") return;
+            emitRecorderTrace(dropped.diagnosticId, {
+              intent: "pause",
+              bufferCountAfterReduction: 0,
+            });
+          },
+        );
+        if (pauseDisposition.intercepted) {
+          if (pauseDisposition.terminal) break;
+          continue;
+        }
         if (controllerEvent.kind === "transcript") {
           if (controllerEvent.diagnosticId) diagnosticIds.push(controllerEvent.diagnosticId);
           if (controllerEvent.text) texts.push(controllerEvent.text);
@@ -2006,6 +2249,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
       resolvePermissionDone();
     }
 
+    if (interruptedByPause()) {
+      emitRecorderTraces(diagnosticIds, { intent: "pause", bufferCountAfterReduction: 0 });
+      return;
+    }
     if (externalReason) {
       emitRecorderTraces(diagnosticIds, { intent: `permission-${externalReason}`, bufferCountAfterReduction: 0 });
       if (externalReason === "spacebar") consumeStopKey();
@@ -2026,8 +2273,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const heard = texts.join(" ");
     log(`heard: "${heard}" -> ${verdict ?? "unclear"}`);
     emitRecorderTraces(diagnosticIds, { intent: verdict ?? "permission-unclear", bufferCountAfterReduction: 0 });
+    if (interruptedByPause()) return;
     if (!verdict) return void (await speak(cfg, "For permission prompts, say yes or no. Ignoring.", event.label));
-    const { via } = await injectKey(cfg, event.pid, verdict === "approve" ? "Enter" : "Escape");
+    const { via, interrupted } = await injectKey(
+      cfg,
+      event.pid,
+      verdict === "approve" ? "Enter" : "Escape",
+      () => !interruptedByPause(),
+    );
+    if (interrupted || interruptedByPause()) return;
     if (via === "none") await speak(cfg, "Could not reach the session's window to answer — do it by hand.", event.label);
     else log(`sent ${verdict === "approve" ? "Enter" : "Escape"} via ${via}`);
   }
@@ -2038,6 +2292,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       controller: configController,
       settingsPath: settingsPathFor(),
       persist: writeSetting,
+      onOpen: () => settingsPause.open(),
+      onClose: () => settingsPause.close(),
       onChange: () => void renderSessionPanel(),
     });
   }
@@ -2179,7 +2435,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   server.listen(cfg.socketPath);
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);
   if (muted) log("resuming muted (persisted) — m or `conch unmute` to turn on");
-  if (paused) log("resuming paused (persisted) — p or `conch resume` to turn on");
+  if (pause.paused) log("resuming paused (persisted) — p or `conch resume` to turn on");
   rendererLifecycle.enter();
   setState(restState());
   void renderSessionPanel(); // show the dashboard immediately
@@ -2375,7 +2631,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       else if (c === "l") { const on = setLogsVisible(!logsShown()); log(on ? "logs on — press l to hide" : "logs off"); }
       else if (c === "v") void auditionVoices();
       else if (c === "m") enqueue({ type: muted ? "unmute" : "mute", sessionId: "", label: "", announce: "" });
-      else if (c === "p") enqueue({ type: paused ? "resume" : "pause", sessionId: "", label: "", announce: "" });
+      else if (c === "p") enqueue({ type: pause.paused ? "resume" : "pause", sessionId: "", label: "", announce: "" });
       else if (c === "?" || c === "h") printHelp();
       else if (c === "q" || c === "\u0003") void shutdown();
     });

@@ -176,7 +176,10 @@ export class SpeechManager {
   }
 
   cancelCurrent(): void {
-    this.current?.cancelActive();
+    if (this.current) {
+      this.current.cancelled = true;
+      this.current.cancelActive();
+    }
     // Also cover a backend process that predates the manager or failed before
     // handing its cancel handle back. The backend owns no concurrent speech.
     this.backend.stopSpeaking();
@@ -286,7 +289,12 @@ export class SpeechManager {
         task.resolveStarted();
         try {
           if (task.cancelled) task.resolve(undefined);
-          else task.resolve(await this.audioGate(task.operation, task.start));
+          else {
+            task.resolve(await this.audioGate(
+              task.operation,
+              () => task.cancelled ? Promise.resolve(undefined) : task.start(),
+            ));
+          }
         } catch (error) {
           task.reject(error);
         } finally {

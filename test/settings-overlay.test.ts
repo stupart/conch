@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { SettingsPauseLifecycle } from "../src/pause-controller.ts";
 import { SettingsOverlay, type SettingsOverlayConfigController } from "../src/settings-overlay.ts";
 import {
   SETTING_DESCRIPTORS,
@@ -56,6 +57,86 @@ function moveTo(overlay: SettingsOverlay, key: SettingKey): void {
 }
 
 describe("SettingsOverlay", () => {
+  test("fires lifecycle hooks once per open and close transition", () => {
+    const controller = new FakeController();
+    const lifecycle: string[] = [];
+    const overlay = new SettingsOverlay({
+      controller,
+      settingsPath: "/tmp/settings.json",
+      persist() {},
+      onOpen: () => lifecycle.push("open"),
+      onClose: () => lifecycle.push("close"),
+      onChange() {},
+    });
+
+    overlay.open();
+    overlay.open();
+    expect(lifecycle).toEqual(["open"]);
+    expect(controller.requests.filter((request) => request.kind === "get-config")).toHaveLength(1);
+
+    expect(overlay.handleKey("\x1b")).toBe(true);
+    overlay.close();
+    expect(lifecycle).toEqual(["open", "close"]);
+
+    overlay.open();
+    overlay.close();
+    overlay.close();
+    expect(lifecycle).toEqual(["open", "close", "open", "close"]);
+    expect(controller.requests.filter((request) => request.kind === "get-config")).toHaveLength(2);
+  });
+
+  test.each([
+    {
+      initialPaused: false,
+      expected: [
+        { paused: true, announce: false, interrupt: true },
+        { paused: false, announce: false, interrupt: false },
+      ],
+    },
+    {
+      initialPaused: true,
+      expected: [
+        { paused: true, announce: false, interrupt: true },
+      ],
+    },
+  ])("silently restores prior pause state after settings when initial paused=$initialPaused", ({
+    initialPaused,
+    expected,
+  }) => {
+    let paused = initialPaused;
+    const transitions: Array<{ paused: boolean; announce: boolean; interrupt: boolean }> = [];
+    const pauseLifecycle = new SettingsPauseLifecycle({
+      get paused() {
+        return paused;
+      },
+      setPaused(next, options = {}) {
+        transitions.push({
+          paused: next,
+          announce: options.announce ?? true,
+          interrupt: options.interrupt ?? false,
+        });
+        paused = next;
+      },
+    });
+    const overlay = new SettingsOverlay({
+      controller: new FakeController(),
+      settingsPath: "/tmp/settings.json",
+      persist() {},
+      onOpen: () => pauseLifecycle.open(),
+      onClose: () => pauseLifecycle.close(),
+      onChange() {},
+    });
+
+    overlay.open();
+    overlay.open();
+    overlay.handleKey("\x1b");
+    overlay.close();
+
+    expect(paused).toBe(initialPaused);
+    expect(transitions).toEqual([...expected]);
+    expect(transitions.every((transition) => !transition.announce)).toBe(true);
+  });
+
   test("loads controller provenance and traps keys until Escape", () => {
     const controller = new FakeController();
     const overlay = new SettingsOverlay({

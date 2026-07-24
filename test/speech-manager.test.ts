@@ -126,6 +126,67 @@ test("cancelAll cancels active playback and skips queued utterances", async () =
   expect(starts).toEqual(["first"]);
 });
 
+test("cancelCurrent stops active TTS without waiting for backend completion", async () => {
+  const cfg = loadConfig();
+  const started = deferred<void>();
+  let cancels = 0;
+  let stopCalls = 0;
+  const manager = new SpeechManager({
+    speakCancellable: () => {
+      started.resolve();
+      return {
+        done: new Promise<void>(() => {}),
+        cancel() {
+          cancels++;
+        },
+      };
+    },
+    stopSpeaking() {
+      stopCalls++;
+    },
+  }, passThroughGate);
+
+  const speaking = manager.speak(cfg, "still in the middle of this sentence");
+  await started.promise;
+  manager.cancelCurrent();
+
+  expect(cancels).toBe(1);
+  expect(stopCalls).toBe(1);
+  await speaking;
+  await manager.quiescent();
+});
+
+test("cancelCurrent prevents an admitted TTS task from starting after its audio gate yields", async () => {
+  const cfg = loadConfig();
+  const releaseGate = deferred<void>();
+  const enteredGate = deferred<void>();
+  let speechStarts = 0;
+  let stopCalls = 0;
+  const manager = new SpeechManager({
+    speakCancellable: () => {
+      speechStarts++;
+      return { done: Promise.resolve(), cancel() {} };
+    },
+    stopSpeaking() {
+      stopCalls++;
+    },
+  }, async (_operation, task) => {
+    enteredGate.resolve();
+    await releaseGate.promise;
+    return task();
+  });
+
+  const speaking = manager.speak(cfg, "cancel before backend start");
+  await enteredGate.promise;
+  manager.cancelCurrent();
+  expect(stopCalls).toBe(1);
+  releaseGate.resolve();
+
+  await speaking;
+  expect(speechStarts).toBe(0);
+  await manager.quiescent();
+});
+
 test("close seals the manager against work enqueued after shutdown", async () => {
   const cfg = loadConfig();
   const starts: string[] = [];
