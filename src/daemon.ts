@@ -33,6 +33,7 @@ import {
 } from "./transcribe.ts";
 import {
   clearReadingProgress,
+  clearTheaterSelection,
   configureRenderer,
   getLiveState,
   installRendererLifecycle,
@@ -41,11 +42,13 @@ import {
   onLiveChange,
   renderPanel,
   resizeRenderer,
+  scrollTheaterPane,
   setKeybar,
   setLogsVisible,
   setReadingProgress,
   setState,
   setTranscriptPrefix,
+  theaterPointerEvent,
   type ConchState,
 } from "./status.ts";
 import { listSessions, registrySnapshot, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
@@ -55,9 +58,11 @@ import {
   buildPanelRows,
   commitLatestPanelRender,
   latestLatchedState,
+  previewForPanelSelection,
   type SessionStatus,
 } from "./panel.ts";
 import { TheaterNavigation } from "./theater-navigation.ts";
+import { SgrMouseParser } from "./theater-mouse.ts";
 import {
   FOOTER_KEYBAR,
   THEATER_KEYBAR,
@@ -455,12 +460,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const sessionStates = new Map<string, { label: string; status: SessionStatus; detail?: string; at: number }>();
   const eventOrder = new TurnEventOrder();
   // Footer mode keeps its established persistent picker untouched. Theater uses
-  // a separate active anchor + transient manual cursor below.
+  // a separate active anchor + explicitly released parked cursor below.
   let panelOrder: string[] = [];
   let selectedId: string | null = null;
   let cursorAuto = true;
   let panelOpen = true;
   const theaterNavigation = new TheaterNavigation(() => void renderSessionPanel());
+  const mouseParser = new SgrMouseParser();
   let settingsOverlay: SettingsOverlay | null = null;
   // Per-session modes are transient dashboard state. Pause holds only the newest
   // turn for replay; mute deliberately forgets.
@@ -708,17 +714,31 @@ export async function runDaemon(cfg: Config): Promise<void> {
       liveSessionIds: snap?.liveIds,
     });
 
+    const previewId = theaterMode ? theaterNavigation.manualSelectedId : null;
+    const previewPath = previewId && previewId !== nextActiveSessionId
+      ? findTranscript(cfg.claudeDir, previewId)
+      : undefined;
     const contentEvent = recitingEvent ?? lastTurn;
-    let replyText = liveState.reading?.text ?? "";
-    if (theaterMode && !replyText && contentEvent?.transcriptPath) {
-      replyText = stripMarkdown(await lastAssistantText(contentEvent.transcriptPath));
-    }
+    const liveReplyText = liveState.reading?.text ?? "";
+    const [transcriptReplyText, previewText] = await Promise.all([
+      theaterMode && !liveReplyText && contentEvent?.transcriptPath
+        ? lastAssistantText(contentEvent.transcriptPath).then(stripMarkdown)
+        : Promise.resolve(""),
+      previewPath
+        ? lastAssistantText(previewPath).then(stripMarkdown)
+        : Promise.resolve(""),
+    ]);
+    const replyText = liveReplyText || transcriptReplyText;
     // Registry and transcript reads can overlap; only the newest complete model
     // may reach the renderer.
     commitLatestPanelRender(version, panelRenderVersion, () => {
       let navSelectedId: string | null;
       if (theaterMode) {
-        theaterNavigation.reconcile(new Set(live.map((session) => session.sessionId)));
+        // Absence is authoritative only for a complete registry read. A torn
+        // per-session file must not release a cursor that was meant to stay put.
+        if (snap?.complete) {
+          theaterNavigation.reconcile(new Set(live.map((session) => session.sessionId)));
+        }
         navSelectedId = theaterNavigation.manualSelectedId;
       } else {
         // Legacy auto-follow: selectedId also owns the action target, but its cursor
@@ -749,6 +769,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
           : null,
         panelOpen,
       });
+      model.preview = previewForPanelSelection(
+        navSelectedId,
+        previewId,
+        nextActiveSessionId,
+        previewText,
+      );
       model.settingsOverlay = settingsOverlay?.model() ?? null;
       panelOrder = model.rows.map((row) => row.sessionId);
       // Read mode state after the async registry snapshot so a slow older redraw
@@ -2675,7 +2701,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
     process.stdin.setRawMode(true);
     process.stdin.resume();
     process.stdin.on("data", (d) => {
-      const c = d.toString();
+      const { events, rest } = mouseParser.feed(d.toString());
+      if (theaterMode && !settingsOverlay?.isOpen()) {
+        let wheel = 0;
+        for (const event of events) {
+          if (event.kind === "wheel") wheel += event.delta;
+          else theaterPointerEvent(event);
+        }
+        if (wheel) scrollTheaterPane(wheel * 3);
+      }
+      if (!rest) return;
+      // Ctrl-C is terminal-safety critical. Even malformed mouse-looking
+      // residue must not make an adjacent interrupt miss the equality router.
+      const c = rest.includes("\u0003") ? "\u0003" : rest;
       // Modal routing owns every key first. Raw Ctrl-C is the one intentional
       // fallthrough so terminal-safe daemon shutdown can always run.
       if (settingsOverlay?.handleKey(c)) return;
@@ -2692,6 +2730,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // ↑/↓ move the panel cursor (normal `[` and application `O` escape forms).
       else if (c === "\x1b[A" || c === "\x1bOA") moveSelection(-1);
       else if (c === "\x1b[B" || c === "\x1bOB") moveSelection(1);
+      else if (c === "\x1b") {
+        if (theaterMode) {
+          if (!clearTheaterSelection()) theaterNavigation.release();
+        } else {
+          cursorAuto = true;
+          selectedId = null;
+          void renderSessionPanel();
+        }
+      }
       else if (theaterMode && c === "\\") {
         panelOpen = !panelOpen;
         void renderSessionPanel();

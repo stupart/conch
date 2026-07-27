@@ -1,33 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { TheaterNavigation, type NavigationScheduler } from "../src/theater-navigation.ts";
+import { TheaterNavigation } from "../src/theater-navigation.ts";
 import { commitLatestPanelRender } from "../src/panel.ts";
-
-class FakeScheduler implements NavigationScheduler {
-  callbacks = new Map<number, () => void>();
-  nextId = 1;
-
-  set(callback: () => void): number {
-    const id = this.nextId++;
-    this.callbacks.set(id, callback);
-    return id;
-  }
-
-  clear(handle: unknown): void {
-    this.callbacks.delete(handle as number);
-  }
-
-  fire(id: number): void {
-    const callback = this.callbacks.get(id);
-    this.callbacks.delete(id);
-    callback?.();
-  }
-}
 
 describe("TheaterNavigation", () => {
   test("keeps the committed active anchor independent from the pending manual cursor", () => {
-    const scheduler = new FakeScheduler();
     let changes = 0;
-    const navigation = new TheaterNavigation(() => changes++, 2_500, scheduler);
+    const navigation = new TheaterNavigation(() => changes++);
     navigation.commitFrame("b", null);
 
     navigation.move(["a", "b", "c"], 1);
@@ -42,26 +20,34 @@ describe("TheaterNavigation", () => {
     expect(changes).toBe(1);
   });
 
-  test("keeps the action target on the visibly selected session across fade expiry", () => {
-    const scheduler = new FakeScheduler();
+  test("keeps a parked selection across later active frames until explicit release", () => {
     let changes = 0;
-    const navigation = new TheaterNavigation(() => changes++, 2_500, scheduler);
+    const navigation = new TheaterNavigation(() => changes++);
     navigation.commitFrame("a", null);
     navigation.move(["a", "b"], 1);
     navigation.commitFrame("a", navigation.manualSelectedId);
 
     expect(navigation.paintedSelectedId).toBe("b");
     expect(navigation.actionTarget("last")).toBe("b");
+    expect(navigation.manualControlTarget()).toBe("b");
 
-    scheduler.fire(1);
+    navigation.commitFrame("other-active", navigation.manualSelectedId);
+    expect(navigation.activeSessionId).toBe("other-active");
+    expect(navigation.manualSelectedId).toBe("b");
+    expect(navigation.paintedSelectedId).toBe("b");
+    expect(navigation.actionTarget("last")).toBe("b");
+    expect(navigation.manualControlTarget()).toBe("b");
+    expect(changes).toBe(1);
+
+    navigation.release();
     expect(navigation.manualSelectedId).toBeNull();
     expect(navigation.paintedSelectedId).toBe("b");
     expect(navigation.actionTarget("last")).toBe("b");
     expect(changes).toBe(2);
 
-    navigation.commitFrame("a", navigation.manualSelectedId);
+    navigation.commitFrame("other-active", navigation.manualSelectedId);
     expect(navigation.paintedSelectedId).toBeNull();
-    expect(navigation.actionTarget("last")).toBe("a");
+    expect(navigation.actionTarget("last")).toBe("other-active");
   });
 
   test("manual controls never fall back to the active or last session", () => {
@@ -72,41 +58,35 @@ describe("TheaterNavigation", () => {
     expect(navigation.manualControlTarget()).toBeNull();
   });
 
-  test("manual controls target the live cursor before paint and stop at fade expiry", () => {
-    const scheduler = new FakeScheduler();
-    const navigation = new TheaterNavigation(() => {}, 2_500, scheduler);
+  test("manual controls target the parked cursor before and after paint", () => {
+    const navigation = new TheaterNavigation(() => {});
     navigation.commitFrame("active", null);
 
     navigation.move(["active", "parked"], 1);
     expect(navigation.manualControlTarget()).toBe("parked");
     navigation.commitFrame("active", navigation.manualSelectedId);
     expect(navigation.paintedSelectedId).toBe("parked");
+    expect(navigation.manualSelectedId).toBe("parked");
+    expect(navigation.manualControlTarget()).toBe("parked");
+  });
 
-    scheduler.fire(1);
+  test("dispose clears active, pending, and painted identities", () => {
+    const navigation = new TheaterNavigation(() => {});
+    navigation.commitFrame("active", null);
+    navigation.move(["active", "parked"], 1);
+    navigation.commitFrame("active", navigation.manualSelectedId);
+
+    navigation.dispose();
+
+    expect(navigation.activeSessionId).toBeNull();
     expect(navigation.manualSelectedId).toBeNull();
-    expect(navigation.paintedSelectedId).toBe("parked");
+    expect(navigation.paintedSelectedId).toBeNull();
+    expect(navigation.actionTarget()).toBeNull();
     expect(navigation.manualControlTarget()).toBeNull();
   });
 
-  test("re-arms the fade and ignores the stale timer", () => {
-    const scheduler = new FakeScheduler();
-    const navigation = new TheaterNavigation(() => {}, 2_500, scheduler);
-
-    navigation.move(["a", "b", "c"], 1);
-    navigation.move(["a", "b", "c"], 1);
-    expect(navigation.manualSelectedId).toBe("b");
-    expect(scheduler.callbacks.has(1)).toBe(false);
-    expect(scheduler.callbacks.has(2)).toBe(true);
-
-    scheduler.fire(1);
-    expect(navigation.manualSelectedId).toBe("b");
-    scheduler.fire(2);
-    expect(navigation.manualSelectedId).toBeNull();
-  });
-
   test("clears a vanished selection and falls back to the last session", () => {
-    const scheduler = new FakeScheduler();
-    const navigation = new TheaterNavigation(() => {}, 2_500, scheduler);
+    const navigation = new TheaterNavigation(() => {});
     navigation.move(["a", "b"], 1);
     navigation.commitFrame(null, navigation.manualSelectedId);
     expect(navigation.manualSelectedId).toBe("a");
@@ -116,7 +96,6 @@ describe("TheaterNavigation", () => {
     expect(navigation.actionTarget("last")).toBe("a");
     navigation.commitFrame(null, navigation.manualSelectedId);
     expect(navigation.actionTarget("last")).toBe("last");
-    expect(scheduler.callbacks.size).toBe(0);
   });
 
   test("moving off either edge releases manual control", () => {

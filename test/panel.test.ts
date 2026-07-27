@@ -6,6 +6,7 @@ import {
   dashboardPanelLines,
   dashboardRowsForModel,
   latestLatchedState,
+  previewForPanelSelection,
   reconcileStatus,
   registryToPanel,
 } from "../src/panel.ts";
@@ -219,5 +220,55 @@ describe("latestLatchedState — event-time ordering", () => {
     const turnEnd = { status: "waiting" as const, at: 2_000 };
 
     expect(latestLatchedState(working, turnEnd)).toBe(turnEnd);
+  });
+});
+
+describe("previewForPanelSelection — async cursor stale guard", () => {
+  test("never attaches A's completed read beneath a cursor that moved to B", () => {
+    expect(previewForPanelSelection("b", "a", null, "A's latest output")).toBeNull();
+    expect(previewForPanelSelection("b", "b", null, "B's latest output")).toEqual({
+      sessionId: "b",
+      text: "B's latest output",
+      spokenChars: 0,
+    });
+  });
+
+  test("suppresses empty and active-session previews", () => {
+    expect(previewForPanelSelection("b", "b", "b", "live output")).toBeNull();
+    expect(previewForPanelSelection("b", "b", null, "")).toBeNull();
+    expect(previewForPanelSelection(null, "b", null, "output")).toBeNull();
+  });
+
+  test("daemon captures the requested id before await and commits through the guard", async () => {
+    const source = await Bun.file(new URL("../src/daemon.ts", import.meta.url)).text();
+    const render = source.slice(
+      source.indexOf("async function renderSessionPanel"),
+      source.indexOf("function setSessionState"),
+    );
+    expect(render).toContain(
+      "const previewId = theaterMode ? theaterNavigation.manualSelectedId : null",
+    );
+    expect(render).toContain(
+      `model.preview = previewForPanelSelection(
+        navSelectedId,
+        previewId,
+        nextActiveSessionId,
+        previewText,
+      )`,
+    );
+    expect(render).toContain(
+      `if (snap?.complete) {
+          theaterNavigation.reconcile(new Set(live.map((session) => session.sessionId)));
+        }`,
+    );
+    expect(render.indexOf("const previewId")).toBeLessThan(
+      render.indexOf("await Promise.all"),
+    );
+    expect(render.indexOf("model.preview = previewForPanelSelection(")).toBeGreaterThan(
+      render.indexOf("navSelectedId = theaterNavigation.manualSelectedId"),
+    );
+    expect(render.indexOf("model.preview = previewForPanelSelection(")).toBeGreaterThan(
+      render.indexOf("commitLatestPanelRender("),
+    );
   });
 });

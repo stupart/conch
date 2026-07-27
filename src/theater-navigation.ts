@@ -1,20 +1,4 @@
-export interface NavigationScheduler {
-  set(callback: () => void, delayMs: number): unknown;
-  clear(handle: unknown): void;
-}
-
-const defaultScheduler: NavigationScheduler = {
-  set(callback, delayMs) {
-    const timer = setTimeout(callback, delayMs);
-    timer.unref?.();
-    return timer;
-  },
-  clear(handle) {
-    clearTimeout(handle as ReturnType<typeof setTimeout>);
-  },
-};
-
-/** Theater's active anchor and transient manual cursor are intentionally separate. */
+/** Theater's active anchor and parked manual cursor are intentionally separate. */
 export class TheaterNavigation {
   /** Active session in the last frame that reached the renderer. */
   activeSessionId: string | null = null;
@@ -22,18 +6,9 @@ export class TheaterNavigation {
   manualSelectedId: string | null = null;
   #paintedSelectedId: string | null = null;
   readonly #onChange: () => void;
-  readonly #fadeMs: number;
-  readonly #scheduler: NavigationScheduler;
-  #fadeTimer: unknown = null;
 
-  constructor(
-    onChange: () => void,
-    fadeMs = 2_500,
-    scheduler: NavigationScheduler = defaultScheduler,
-  ) {
+  constructor(onChange: () => void) {
     this.#onChange = onChange;
-    this.#fadeMs = fadeMs;
-    this.#scheduler = scheduler;
   }
 
   /** Manual selection in the last frame that reached the renderer. */
@@ -51,7 +26,6 @@ export class TheaterNavigation {
   reconcile(liveIds: ReadonlySet<string>): void {
     if (!this.manualSelectedId || liveIds.has(this.manualSelectedId)) return;
     this.manualSelectedId = null;
-    this.#clearFade();
   }
 
   move(order: readonly string[], delta: -1 | 1, fallbackSessionId: string | null = null): void {
@@ -68,7 +42,6 @@ export class TheaterNavigation {
       return;
     }
     this.manualSelectedId = order[next]!;
-    this.#armFade();
     this.#onChange();
   }
 
@@ -77,9 +50,9 @@ export class TheaterNavigation {
   }
 
   /**
-   * A control is session-scoped only while manual navigation is still live.
+   * A control is session-scoped while a manual selection remains parked.
    * Unlike actionTarget(), this deliberately never falls back to the active or
-   * last session, and a stale painted cursor stops counting as soon as it fades.
+   * last session.
    */
   manualControlTarget(): string | null {
     return this.manualSelectedId;
@@ -88,7 +61,6 @@ export class TheaterNavigation {
   release(): void {
     const changed = this.manualSelectedId !== null;
     this.manualSelectedId = null;
-    this.#clearFade();
     if (changed) this.#onChange();
   }
 
@@ -96,22 +68,5 @@ export class TheaterNavigation {
     this.activeSessionId = null;
     this.manualSelectedId = null;
     this.#paintedSelectedId = null;
-    this.#clearFade();
-  }
-
-  #armFade(): void {
-    this.#clearFade();
-    this.#fadeTimer = this.#scheduler.set(() => {
-      this.#fadeTimer = null;
-      if (!this.manualSelectedId) return;
-      this.manualSelectedId = null;
-      this.#onChange();
-    }, this.#fadeMs);
-  }
-
-  #clearFade(): void {
-    if (this.#fadeTimer === null) return;
-    this.#scheduler.clear(this.#fadeTimer);
-    this.#fadeTimer = null;
   }
 }
