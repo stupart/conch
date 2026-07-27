@@ -342,6 +342,11 @@ export function startsConversationByListening(event: Pick<TurnEvent, "type">, an
 }
 
 type OrderedTurnEvent = Pick<TurnEvent, "type" | "sessionId" | "eventAt">;
+interface NumberedSessionRow {
+  n: number;
+  s: SessionInfo;
+  label: string;
+}
 const STATE_EVENT_TYPES = new Set<TurnEvent["type"]>(["working", "turn-end", "needs-you"]);
 const HANDOFF_URGENCY: Partial<Record<TurnEvent["type"], number>> = {
   working: 1,
@@ -349,6 +354,51 @@ const HANDOFF_URGENCY: Partial<Record<TurnEvent["type"], number>> = {
   "needs-you": 3,
 };
 const MODE_CONTROL_TYPES = new Set<TurnEvent["type"]>(["mute", "unmute", "pause", "resume"]);
+const NO_INSTANT_QUEUE_BARRIERS = { has: (_event: TurnEvent): boolean => false };
+
+/**
+ * Keep mode acknowledgements last as before, while an opt-in dashboard
+ * takeover stays ahead of every ordinary command/state arrival that follows it.
+ */
+export function insertQueuedEvent(
+  queue: TurnEvent[],
+  event: TurnEvent,
+  instantBarriers: { has(event: TurnEvent): boolean } = NO_INSTANT_QUEUE_BARRIERS,
+): boolean {
+  const instant = instantBarriers.has(event);
+  const duplicateIndex = event.type === "speak" && !event.sessionId
+    ? -1
+    : queue.findIndex(
+      (queued) => queued.sessionId === event.sessionId && queued.type === event.type,
+    );
+  if (duplicateIndex !== -1) {
+    const duplicate = queue[duplicateIndex]!;
+    // An ordinary socket command cannot silently dislodge the dashboard
+    // takeover that already interrupted the active exchange. A later instant
+    // edge or mode/space cancellation removes that protection explicitly.
+    if (instantBarriers.has(duplicate) && !instant) return false;
+    queue.splice(duplicateIndex, 1);
+  }
+
+  if (MODE_CONTROL_TYPES.has(event.type)) {
+    queue.push(event);
+    return true;
+  }
+
+  const modeIndex = queue.findIndex((queued) => MODE_CONTROL_TYPES.has(queued.type));
+  if (instant) {
+    if (modeIndex === -1) queue.push(event);
+    else queue.splice(modeIndex, 0, event);
+    return true;
+  }
+
+  const barrierIndex = queue.findIndex(
+    (queued) => MODE_CONTROL_TYPES.has(queued.type) || instantBarriers.has(queued),
+  );
+  if (barrierIndex === -1) queue.push(event);
+  else queue.splice(barrierIndex, 0, event);
+  return true;
+}
 
 /**
  * Remove the next queued session event without sorting the queue. Imperative
@@ -531,6 +581,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // a separate active anchor + explicitly released parked cursor below.
   let panelOrder: string[] = [];
   let panelLabels = new Map<string, string>();
+  let panelSessions = new Map<string, SessionInfo>();
+  let numberedSessionRows: NumberedSessionRow[] = [];
   let selectedId: string | null = null;
   let cursorAuto = true;
   let panelOpen = true;
@@ -547,6 +599,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const sessionHeldTurns = new Map<string, TurnEvent>();
   const latestTurnBySession = new Map<string, TurnEvent>();
   const forgottenTurns = new WeakSet<TurnEvent>();
+  const instantQueueBarriers = new WeakSet<TurnEvent>();
+  const forgetQueuedAudioCommand = (event: TurnEvent): void => {
+    forgottenTurns.add(event);
+    instantQueueBarriers.delete(event);
+  };
   // The turn currently being handled, used by PauseController's scoped edge.
   let recitingEvent: TurnEvent | null = null;
   let handlingEvent: TurnEvent | null = null;
@@ -601,6 +658,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     sessionHeldTurns,
     setMuted,
     enqueue,
+    markInstantQueued: (event) => instantQueueBarriers.add(event),
     forgetQueued: (sessionId) =>
       markQueuedTurnsForMute(queue, (event) => forgottenTurns.add(event), sessionId),
     forgetLatest: (sessionId) => {
@@ -610,7 +668,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     cancelQueuedWakes: (sessionId) =>
       markQueuedWakesForControl(
         queue,
-        (event) => forgottenTurns.add(event),
+        forgetQueuedAudioCommand,
         sessionId,
       ),
     labelFor: (id) => sessionStates.get(id)?.label ?? id.slice(0, 8),
@@ -710,17 +768,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const transition = instantControls.applyGlobal(event.type);
       if (transition) resumeTransitions.set(event, transition);
     }
-    const i = event.type === "speak" && !event.sessionId
-      ? -1
-      : queue.findIndex((e) => e.sessionId === event.sessionId && e.type === event.type);
-    if (i !== -1) queue.splice(i, 1); // newer event for the same session supersedes
-    if (MODE_CONTROL_TYPES.has(event.type)) {
-      queue.push(event); // acknowledgements run next after interrupted cleanup
-    } else {
-      const controlIndex = queue.findIndex((queued) => MODE_CONTROL_TYPES.has(queued.type));
-      if (controlIndex === -1) queue.push(event);
-      else queue.splice(controlIndex, 0, event); // keep the control event at the pop() end
-    }
+    insertQueuedEvent(queue, event, instantQueueBarriers);
     void drain();
   }
 
@@ -871,6 +919,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       model.sessionActionsOverlay = sessionActionsOverlay?.model() ?? null;
       panelOrder = model.rows.map((row) => row.sessionId);
       panelLabels = new Map(model.rows.map((row) => [row.sessionId, row.label]));
+      panelSessions = new Map(live.map((session) => [session.sessionId, session]));
+      numberedSessionRows = numberSessionRows(live);
       // Read mode state after the async registry snapshot so a slow older redraw
       // cannot repaint a stale pause/mute banner over a newer toggle.
       model.mode = { muted, paused: pause.paused, holding: pending.size };
@@ -923,6 +973,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const latched = sessionStates.get(sessionId);
     if (latched) sessionStates.set(sessionId, { ...latched, label: newLabel });
     if (panelLabels.has(sessionId)) panelLabels.set(sessionId, newLabel);
+    numberedSessionRows = numberSessionRows([...panelSessions.values()]);
   }
 
   function setMuted(next: boolean): void {
@@ -1028,6 +1079,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // Mute stamps at enqueue/control time, so a quick unmute cannot resurrect a
     // turn that completed while quiet. Keep the status update above visible.
     if (forgottenTurns.delete(event)) {
+      if (event.type === "wake" || event.type === "recite") {
+        return log(`cancelled queued ${event.type} for "${event.label}"`);
+      }
       if (audibleTurn) lastTurn = event;
       return log(`muted — forgot queued turn for "${event.label}"`);
     }
@@ -1095,7 +1149,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
           log(`nothing to recite for "${target.label}" — transcript not found`);
           return;
         }
-        const latest = stripMarkdown(await lastAssistantText(target.transcriptPath));
+        const [latestReply, currentMark] = await Promise.all([
+          lastAssistantText(target.transcriptPath),
+          transcriptMark(target.transcriptPath),
+        ]);
+        const latest = stripMarkdown(latestReply);
+        target.mark = currentMark;
         if (shuttingDown || interruptedByPause() || consumeStopKey()) return;
         if (!latest.trim()) {
           log(`nothing to recite for "${target.label}" — no assistant output`);
@@ -1470,10 +1529,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
     pauseGeneration = pause.capture(),
   ): Promise<void> {
     const interruptedByPause = (): boolean => pause.interrupted(pauseGeneration);
+    const reciteOnly = event.type === "recite";
     let lastSpoken = event.announce;
     let sentences: string[] | null = null;
     let cursor = 0; // derived from the actual announcement once the full reply is loaded
-    let bargeOff = false; // set when the echo guard proves the threshold is too low for this room
+    // Recite is read-only: keyboard controls may still cancel it, but it never
+    // arms a barge/gap recorder or transitions into a normal dictation session.
+    let bargeOff = reciteOnly; // also set when the echo guard proves the threshold is too low for this room
     let falseTriggers = 0; // noise blips that cancelled speech but transcribed to nothing
     const seededSegments: Array<{
       text: string;
@@ -1547,7 +1609,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (initialDictationCapture) deferredInitialExternal = "spacebar";
     }
 
-    if (!skipReading && cfg.readFull && event.type !== "needs-you" && event.transcriptPath) {
+    if (
+      !skipReading
+      && (cfg.readFull || reciteOnly)
+      && event.type !== "needs-you"
+      && event.transcriptPath
+    ) {
       sentences = await ensureSentences();
       if (interruptedByPause()) return;
       reading: while (cursor < sentences.length) {
@@ -1556,7 +1623,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
         if (interruptedByPause()) return;
         // gap between chunks: with barging available it's just a beat; with
         // barging off (echo/noise) it's the only voice interrupt, so keep it real
-        const gapSecs = bargeOff ? Math.max(cfg.gapSecs, 0.6) : cfg.gapSecs;
+        const gapSecs = reciteOnly
+          ? 0
+          : bargeOff ? Math.max(cfg.gapSecs, 0.6) : cfg.gapSecs;
         if (gapSecs > 0) {
           // A read gap precedes the conversation reducer/hooks, so it must not
           // briefly expose the previous completed turn's transcript prefix.
@@ -1747,6 +1816,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
         if (action === "echo") bargeOff = true;
       }
     }
+
+    if (reciteOnly) return;
 
     // A shutdown can complete an active read-gap barrier while this function is
     // awaiting it. Never open a fresh controller after shutdown took its
@@ -2676,6 +2747,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           dismissedSessionIds.add(target.sessionId);
           panelOrder = panelOrder.filter((sessionId) => sessionId !== target.sessionId);
           panelLabels.delete(target.sessionId);
+          numberedSessionRows = numberSessionRows([...panelSessions.values()]);
           speech.cancelCurrent();
           for (let index = queue.length - 1; index >= 0; index--) {
             const queued = queue[index]!;
@@ -2858,8 +2930,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   }
 
   /** Live sessions in a stable order so number keys mean the same thing between glances. */
-  async function numberedSessions(): Promise<Array<{ n: number; s: SessionInfo; label: string }>> {
-    const sessions = await listSessions(cfg.claudeDir);
+  function numberSessionRows(sessions: readonly SessionInfo[]): NumberedSessionRow[] {
     return sessions
       .filter((session) => !dismissedSessionIds.has(session.sessionId))
       .map((s) => ({ s, label: sessionLabel(s, s.cwd) }))
@@ -2868,8 +2939,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
       .map((x, i) => ({ n: i + 1, ...x }));
   }
 
+  async function numberedSessions(): Promise<NumberedSessionRow[]> {
+    return numberSessionRows(await listSessions(cfg.claudeDir));
+  }
+
   async function printSessions(): Promise<void> {
     const rows = await numberedSessions();
+    numberedSessionRows = rows;
     if (!rows.length) return log("no live sessions");
     logAbove(rows.map((r) => `  \x1b[36m${r.n}\x1b[0m ${r.label}${lastTurn?.sessionId === r.s.sessionId ? " \x1b[2m(space wakes this one)\x1b[0m" : ""}`).join("\n"));
   }
@@ -2900,11 +2976,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
   }
 
-  async function wakeByNumber(n: number): Promise<void> {
-    const rows = await numberedSessions();
-    const row = rows.find((r) => r.n === n);
+  function wakeByNumber(n: number): void {
+    const row = numberedSessionRows.find(
+      (candidate) => candidate.n === n && !dismissedSessionIds.has(candidate.s.sessionId),
+    );
     if (!row) return log(`no session #${n} — press s to list`);
-    enqueue({
+    instantControls.enqueueInstant({
       type: "wake",
       sessionId: row.s.sessionId,
       label: row.label,
@@ -2916,8 +2993,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
   }
 
   /** Open the mic for a specific session by id (space on the parked cursor). */
-  async function wakeBySessionId(id: string): Promise<void> {
-    const s = (await listSessions(cfg.claudeDir)).find((x) => x.sessionId === id);
+  function wakeBySessionId(id: string): void {
+    const s = panelSessions.get(id);
     if (!s) return log("that session is gone — press s to list");
     const label = sessionLabel(s, s.cwd);
     log(`▸ talking to ${label}`);
@@ -2933,22 +3010,28 @@ export async function runDaemon(cfg: Config): Promise<void> {
   }
 
   /** Read a target session's latest assistant output from sentence zero. */
-  async function reciteBySessionId(id: string | null): Promise<void> {
+  function reciteBySessionId(id: string | null): void {
     if (!id) return log("nothing to recite — no session is parked or active");
-    const s = (await listSessions(cfg.claudeDir)).find((session) => session.sessionId === id);
-    if (!s) return log("nothing to recite — that session is gone");
-    const transcriptPath = findTranscript(cfg.claudeDir, s.sessionId);
-    if (!transcriptPath) return log(`nothing to recite for "${sessionLabel(s, s.cwd)}" — transcript not found`);
-    const label = sessionLabel(s, s.cwd);
-    enqueue({
+    const known = latestTurnBySession.get(id)
+      ?? (recitingEvent?.sessionId === id ? recitingEvent : null)
+      ?? (lastTurn?.sessionId === id ? lastTurn : null);
+    const session = panelSessions.get(id);
+    const label = panelLabels.get(id)
+      ?? sessionStates.get(id)?.label
+      ?? known?.label
+      ?? sessionLabel(session ?? null, session?.cwd);
+    const transcriptPath = known?.transcriptPath ?? findTranscript(cfg.claudeDir, id);
+    if (!transcriptPath) return log(`nothing to recite for "${label}" — transcript not found`);
+    instantControls.enqueueInstant({
+      ...known,
       type: "recite",
-      sessionId: s.sessionId,
+      sessionId: id,
       label,
-      cwd: s.cwd,
-      pid: s.pid,
+      cwd: session?.cwd ?? known?.cwd,
+      pid: session?.pid ?? known?.pid,
       announce: "",
       transcriptPath,
-      mark: await transcriptMark(transcriptPath),
+      mark: undefined,
     });
   }
 
@@ -2987,6 +3070,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     stopKey = true;
     speech.cancelCurrent();
     speech.cancelPendingAudio();
+    // Space remains the guaranteed stop even when an instant takeover is
+    // queued behind the old exchange's deliberately un-killed Whisper job.
+    markQueuedWakesForControl(queue, forgetQueuedAudioCommand);
     activeDictation?.requestExternal("spacebar");
     log(activeDictation?.session.micOpen || micOpen ? `⏹ ${src} — closing mic` : `⏹ ${src} — stopped`);
   };
@@ -3059,8 +3145,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
       if (c === " ") {
         if (busy) stopReciting("spacebar");
-        else if (theaterMode && theaterActionTarget()) void wakeBySessionId(theaterActionTarget()!);
-        else if (selectedId) void wakeBySessionId(selectedId); // talk to the selected session
+        else if (theaterMode && theaterActionTarget()) wakeBySessionId(theaterActionTarget()!);
+        else if (selectedId) wakeBySessionId(selectedId); // talk to the selected session
         else enqueue({ type: "wake", sessionId: "", label: "", announce: "" }); // else the last-announced
       }
       // ↑/↓ move the panel cursor (normal `[` and application `O` escape forms).
@@ -3079,11 +3165,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
         panelOpen = !panelOpen;
         void renderSessionPanel();
       }
-      else if (c >= "1" && c <= "9") void wakeByNumber(Number(c));
+      else if (c >= "1" && c <= "9") wakeByNumber(Number(c));
       else if (c === "s") void printSessions();
       else if (c === "l") { const on = setLogsVisible(!logsShown()); log(on ? "logs on — press l to hide" : "logs off"); }
       else if (c === "v") void auditionVoices();
-      else if (theaterMode && c === "r") void reciteBySessionId(theaterActionTarget());
+      else if (theaterMode && c === "r") reciteBySessionId(theaterActionTarget());
       else if (dispatchTheaterControlKey(c, theaterControls)) {}
       else if (c === "?" || c === "h") printHelp();
       else if (c === "q" || c === "\u0003") void shutdown();

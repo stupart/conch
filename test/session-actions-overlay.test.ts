@@ -184,6 +184,7 @@ describe("SessionActionsOverlay", () => {
     overlay.handleKey(" X_2.-");
     overlay.handleKey("/");
     expect(overlay.model()?.rows[2]?.value).toBe("Alpha X_2.-");
+    expect(controller.renames).toEqual([]);
     overlay.handleKey("\x1b");
     expect(overlay.isOpen()).toBe(true);
     expect(overlay.model()?.rows[2]).toMatchObject({
@@ -221,6 +222,7 @@ describe("SessionActionsOverlay", () => {
       confirming: true,
       ack: "press enter again to dismiss",
     });
+    expect(controller.dismissals).toEqual([]);
     overlay.handleKey("q");
     expect(overlay.model()?.rows[3]?.confirming).toBeUndefined();
     expect(controller.dismissals).toEqual([]);

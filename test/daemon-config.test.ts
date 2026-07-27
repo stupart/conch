@@ -7,6 +7,7 @@ import {
   createConfigController,
   downgradeTurnWithLiveBackgroundWork,
   dispatchControlMessage,
+  insertQueuedEvent,
   listenHooks,
   resolveWakeTarget,
   shouldHandleTurnAudibly,
@@ -194,6 +195,113 @@ describe("daemon config controller", () => {
     expect(takeNextQueuedEvent([olderNeeds, wake], "urgency")).toBe(wake);
   });
 
+  test("an instant recite stays next while a later state event arrives during cleanup", () => {
+    const recite: TurnEvent = {
+      type: "recite",
+      sessionId: "target",
+      label: "target",
+      announce: "",
+    };
+    const laterTurn: TurnEvent = {
+      type: "turn-end",
+      sessionId: "later",
+      label: "later",
+      announce: "later: finished",
+    };
+    const instantBarriers = new WeakSet<TurnEvent>([recite]);
+    const queue: TurnEvent[] = [];
+
+    insertQueuedEvent(queue, recite, instantBarriers);
+    insertQueuedEvent(queue, laterTurn, instantBarriers);
+
+    expect(queue).toEqual([laterTurn, recite]);
+    expect(takeNextQueuedEvent(queue, "newest")).toBe(recite);
+    expect(takeNextQueuedEvent(queue, "newest")).toBe(laterTurn);
+  });
+
+  test("mode acknowledgements retain priority over a protected instant takeover", () => {
+    const recite: TurnEvent = {
+      type: "recite",
+      sessionId: "target",
+      label: "target",
+      announce: "",
+    };
+    const pause: TurnEvent = {
+      type: "pause",
+      sessionId: "",
+      label: "",
+      announce: "",
+    };
+    const laterTurn: TurnEvent = {
+      type: "turn-end",
+      sessionId: "later",
+      label: "later",
+      announce: "later: finished",
+    };
+    const instantBarriers = new WeakSet<TurnEvent>([recite]);
+    const queue: TurnEvent[] = [];
+
+    insertQueuedEvent(queue, recite, instantBarriers);
+    insertQueuedEvent(queue, pause, instantBarriers);
+    insertQueuedEvent(queue, laterTurn, instantBarriers);
+
+    expect(queue).toEqual([laterTurn, recite, pause]);
+    expect(takeNextQueuedEvent(queue, "newest")).toBe(pause);
+    expect(takeNextQueuedEvent(queue, "newest")).toBe(recite);
+    expect(takeNextQueuedEvent(queue, "newest")).toBe(laterTurn);
+  });
+
+  test("an ordinary duplicate cannot dislodge a protected instant takeover", () => {
+    const protectedRecite: TurnEvent = {
+      type: "recite",
+      sessionId: "target",
+      label: "target",
+      announce: "",
+    };
+    const ordinaryDuplicate: TurnEvent = {
+      ...protectedRecite,
+      announce: "ordinary socket duplicate",
+    };
+    const laterWake: TurnEvent = {
+      type: "wake",
+      sessionId: "other",
+      label: "other",
+      announce: "",
+    };
+    const instantBarriers = new WeakSet<TurnEvent>([protectedRecite]);
+    const queue: TurnEvent[] = [];
+
+    expect(insertQueuedEvent(queue, protectedRecite, instantBarriers)).toBeTrue();
+    expect(insertQueuedEvent(queue, ordinaryDuplicate, instantBarriers)).toBeFalse();
+    expect(insertQueuedEvent(queue, laterWake, instantBarriers)).toBeTrue();
+
+    expect(queue).toEqual([laterWake, protectedRecite]);
+    expect(takeNextQueuedEvent(queue, "newest")).toBe(protectedRecite);
+    expect(takeNextQueuedEvent(queue, "newest")).toBe(laterWake);
+  });
+
+  test("a cancelled takeover may be superseded by a later ordinary duplicate", () => {
+    const cancelledRecite: TurnEvent = {
+      type: "recite",
+      sessionId: "target",
+      label: "target",
+      announce: "",
+    };
+    const laterRecite: TurnEvent = {
+      ...cancelledRecite,
+      announce: "later explicit command",
+    };
+    const instantBarriers = new WeakSet<TurnEvent>([cancelledRecite]);
+    const queue: TurnEvent[] = [];
+
+    insertQueuedEvent(queue, cancelledRecite, instantBarriers);
+    instantBarriers.delete(cancelledRecite);
+    expect(insertQueuedEvent(queue, laterRecite, instantBarriers)).toBeTrue();
+
+    expect(queue).toEqual([laterRecite]);
+    expect(takeNextQueuedEvent(queue, "newest")).toBe(laterRecite);
+  });
+
   test("oldest and urgency reorder only the state cohort newer than the latest command", () => {
     const olderWaiting: TurnEvent = { type: "turn-end", sessionId: "old", label: "old", announce: "" };
     const wake: TurnEvent = { type: "wake", sessionId: "target", label: "target", announce: "" };
@@ -312,6 +420,17 @@ describe("daemon config controller", () => {
     expect(branch).toContain("false,\n          pauseGeneration");
     expect(branch).not.toContain("ringBell");
     expect(branch).not.toContain("userRespondedSince");
+
+    const conversation = daemonSource.slice(
+      daemonSource.indexOf("async function conversationLoop"),
+      daemonSource.indexOf("async function permissionLoop"),
+    );
+    expect(conversation).toContain('const reciteOnly = event.type === "recite"');
+    expect(conversation).toContain("&& (cfg.readFull || reciteOnly)");
+    expect(conversation).toContain("const gapSecs = reciteOnly");
+    expect(conversation.indexOf("if (reciteOnly) return")).toBeLessThan(
+      conversation.indexOf("const reducer = new DictationReducer"),
+    );
   });
 
   test("working-mic only makes Stop-reclassified working events audible", () => {

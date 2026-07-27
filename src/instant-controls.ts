@@ -5,6 +5,7 @@ import {
 } from "./pause-controller.ts";
 
 export type GlobalModeControl = "pause" | "resume" | "mute" | "unmute";
+export type InstantAudioCommand = TurnEvent & { type: "wake" | "recite" };
 export type TurnControlDisposition =
   | "session-muted"
   | "global-muted"
@@ -20,11 +21,13 @@ export interface InstantControlsOptions {
   sessionHeldTurns: Map<string, TurnEvent>;
   setMuted(next: boolean): void;
   enqueue(event: TurnEvent): void;
+  /** Mark this exact event as the protected replacement in the daemon queue. */
+  markInstantQueued(event: InstantAudioCommand): void;
   /** Permanently stamp already-queued turns as forgotten without hiding status. */
   forgetQueued(sessionId?: string): void;
   /** Remove muted work from the latest-turn replay index. */
   forgetLatest(sessionId?: string): void;
-  /** A queued wake/recite command must not restart audio after a mode edge. */
+  /** A queued wake/recite command must not restart audio after an instant edge. */
   cancelQueuedWakes(sessionId?: string): void;
   labelFor(sessionId: string): string;
   log(message: string): void;
@@ -67,6 +70,17 @@ export class InstantControls {
         this.#options.setMuted(control === "mute");
         return null;
     }
+  }
+
+  /**
+   * Newest explicit dashboard takeover wins synchronously; the replacement
+   * still enters the daemon's serialized queue after the old barrier cleanup.
+   */
+  enqueueInstant(event: InstantAudioCommand): void {
+    this.#options.cancelQueuedWakes();
+    this.#options.pause.interrupt();
+    this.#options.markInstantQueued(event);
+    this.#options.enqueue(event);
   }
 
   setSessionPaused(sessionId: string, next: boolean): void {

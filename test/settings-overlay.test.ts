@@ -200,6 +200,8 @@ describe("SettingsOverlay", () => {
     });
     overlay.open();
     overlay.handleKey("0");
+    expect(persisted).toEqual([]);
+    expect(controller.requests.filter((request) => request.kind === "set-config")).toEqual([]);
     overlay.handleKey("\r");
     expect(persisted).toEqual([]);
     expect(overlay.model()?.rows[0]?.ack).toContain("greater than 0");
