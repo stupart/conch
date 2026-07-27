@@ -90,6 +90,18 @@ export interface RegistrySnapshot {
 }
 
 /**
+ * True only when a complete registry read positively lacks this session.
+ * A missing/incomplete snapshot or empty id is uncertain, so it must fail open.
+ */
+export function sessionGoneFromSnapshot(
+  snap: RegistrySnapshot | null,
+  sessionId: string,
+): boolean {
+  if (!sessionId || !snap || !snap.complete) return false;
+  return !snap.liveIds.has(sessionId);
+}
+
+/**
  * Read the whole registry once. Returns `null` only when the registry directory
  * itself is unreadable (total uncertainty). A torn/unparseable individual file
  * sets `complete = false` but the snapshot is still returned, with that session's

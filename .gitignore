@@ -7,3 +7,6 @@ dist/
 
 # personal roadmap / plans — local only
 ROADMAP.md
+
+# local deep-codebase analysis notes
+docs/codebase-analysis/

@@ -48,7 +48,15 @@ import {
   setTranscriptPrefix,
   type ConchState,
 } from "./status.ts";
-import { listSessions, registrySnapshot, sessionLabel, findTranscript, type SessionInfo } from "./sessions.ts";
+import {
+  listSessions,
+  registrySnapshot,
+  sessionGoneFromSnapshot,
+  sessionLabel,
+  findTranscript,
+  type SessionInfo,
+} from "./sessions.ts";
+import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
 import {
   activeSessionIdForRows,
   buildPanelModel,
@@ -293,6 +301,22 @@ export function shouldHandleTurnAudibly(
 ): boolean {
   return event.type === "turn-end"
     || (event.type === "working" && event.backgroundWork === true && workingMic);
+}
+
+/**
+ * A daemon-time background-work check may learn more than the hook-time scan.
+ * Mutate the queued object itself: ordering, mute-forget, and pause replay all
+ * retain this exact reference.
+ */
+export function downgradeTurnWithLiveBackgroundWork(
+  event: TurnEvent,
+  hasLiveWork: boolean,
+): TurnEvent {
+  if (event.type === "turn-end" && hasLiveWork) {
+    event.type = "working";
+    event.backgroundWork = true;
+  }
+  return event;
 }
 
 /** Resolve a wake without carrying a prior turn's read-aloud discriminator forward. */
@@ -821,7 +845,36 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const interruptedByPause = (): boolean => pause.interrupted(pauseGeneration);
     if (!eventOrder.isCurrent(event)) return;
 
+    if (
+      event.type === "turn-end"
+      && event.transcriptPath
+      && sessionHasLiveBackgroundWork(event.transcriptPath)
+    ) {
+      downgradeTurnWithLiveBackgroundWork(event, true);
+      log(`"${event.label}" still has live background work — downgrading to working`);
+    }
+
     const audibleTurn = shouldHandleTurnAudibly(event, cfg.workingMic);
+    if (
+      audibleTurn
+      && sessionGoneFromSnapshot(
+        await registrySnapshot(cfg.claudeDir),
+        event.sessionId,
+      )
+    ) {
+      log(`skipping "${event.label}" — session closed`);
+      sessionStates.delete(event.sessionId);
+      eventOrder.forget(event.sessionId);
+      latestTurnBySession.delete(event.sessionId);
+      pausedSessionIds.delete(event.sessionId);
+      mutedSessionIds.delete(event.sessionId);
+      sessionHeldTurns.delete(event.sessionId);
+      if (lastTurn?.sessionId === event.sessionId) lastTurn = null;
+      void renderSessionPanel();
+      return;
+    }
+    if (shuttingDown || interruptedByPause() || consumeStopKey()) return;
+    if (!eventOrder.isCurrent(event)) return;
 
     // Dashboard status — visual, and updated even while muted/paused. Ordinary
     // `working` and all `needs-you` events are visual-only. A Stop reclassified
@@ -894,11 +947,22 @@ export async function runDaemon(cfg: Config): Promise<void> {
         log("wake with nothing to wake — no session has announced yet");
         return void (await speak(cfg, "Nothing to wake. No session has spoken yet."));
       }
-      log(`wake -> "${target.label}"`);
-      if (cfg.revealOnTurn && target.pid) void revealSessionWindow(target.pid); // surface it, no focus steal
-      resetReadingProgress();
       recitingEvent = target;
       try {
+        const targetGone = sessionGoneFromSnapshot(
+          await registrySnapshot(cfg.claudeDir),
+          target.sessionId,
+        );
+        if (shuttingDown || interruptedByPause()) return;
+        if (consumeStopKey()) return;
+        if (targetGone) {
+          if (lastTurn?.sessionId === target.sessionId) lastTurn = null;
+          log("wake target closed");
+          return void (await speak(cfg, "That session is closed."));
+        }
+        log(`wake -> "${target.label}"`);
+        if (cfg.revealOnTurn && target.pid) void revealSessionWindow(target.pid); // surface it, no focus steal
+        resetReadingProgress();
         setState("speaking", target.label);
         await speak(cfg, `Mic open for ${target.label}.`, target.label);
         if (interruptedByPause()) return;
@@ -1735,11 +1799,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const activelyTyping = idle !== null && idle < cfg.typingGraceSecs;
       const responded = activelyTyping ? false : await userRespondedSince(event.transcriptPath, event.mark);
       if (interruptedByPause()) return;
-      if (activelyTyping || responded) {
+      const gone = sessionGoneFromSnapshot(
+        await registrySnapshot(cfg.claudeDir),
+        event.sessionId,
+      );
+      if (interruptedByPause()) return;
+      if (activelyTyping || responded || gone) {
         emitRecorderTraces(
           seededSegments.flatMap((segment) => segment.diagnosticIds),
           { intent: "text-handled", bufferCountAfterReduction: null },
         );
+        if (gone) return log(`mic held — "${event.label}" closed`);
         return log(activelyTyping
           ? `mic held — you're typing (space or \`conch wake\` to talk to "${event.label}")`
           : `mic held — you replied to "${event.label}" by text`);

@@ -118,6 +118,13 @@ function agentArtifact(f: Fixture, id: string, stale = false): string {
   return path;
 }
 
+function agentMetaArtifact(f: Fixture, id: string): string {
+  const path = join(dirname(f.transcript), f.sessionId, "subagents", `agent-${id}.meta.json`);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, "{}\n");
+  return path;
+}
+
 function bashArtifact(f: Fixture, id: string, ageMs = 0): string {
   if (process.getuid === undefined) throw new Error("test requires a Unix uid");
   const root = join("/private/tmp", `claude-${process.getuid()}`, basename(dirname(f.transcript)), f.sessionId);
@@ -220,6 +227,24 @@ describe("sessionHasLiveBackgroundWork", () => {
     writeTranscript(f);
     agentArtifact(f, id);
     expect(sessionHasLiveBackgroundWork(f.transcript)).toBe(true);
+  });
+
+  test("accepts fresh spawn metadata before the Agent transcript exists", () => {
+    const f = fixture();
+    const id = "a6767676767676767";
+    f.lines.push(genuinePrompt("delegate this"), ...agentLaunch(id));
+    writeTranscript(f);
+    agentMetaArtifact(f, id);
+    expect(sessionHasLiveBackgroundWork(f.transcript)).toBe(true);
+  });
+
+  test("does not let spawn metadata resurrect a completed Agent", () => {
+    const f = fixture();
+    const id = "a6868686868686868";
+    f.lines.push(genuinePrompt("delegate this"), ...agentLaunch(id), completion(id));
+    writeTranscript(f);
+    agentMetaArtifact(f, id);
+    expect(sessionHasLiveBackgroundWork(f.transcript)).toBe(false);
   });
 
   test("fails safe when the transcript cannot be read", () => {

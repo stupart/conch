@@ -2,7 +2,7 @@ import { expect, test, describe } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { isEngageable, registrySnapshot } from "../src/sessions.ts";
+import { isEngageable, registrySnapshot, sessionGoneFromSnapshot } from "../src/sessions.ts";
 import { activeSessionIdForRows, buildPanelRows } from "../src/panel.ts";
 
 describe("isEngageable — only top-level interactive CLI sessions get engaged", () => {
@@ -102,5 +102,51 @@ describe("registrySnapshot — torn-file salvage + completeness (FEATURE C safet
     return registrySnapshot(join(tmpdir(), "conch-does-not-exist-xyz")).then((snap) => {
       expect(snap).toBeNull();
     });
+  });
+});
+
+describe("sessionGoneFromSnapshot — complete snapshots only", () => {
+  test("complete snapshot, id absent → gone", () => {
+    expect(sessionGoneFromSnapshot({
+      infos: [],
+      liveIds: new Set(["live"]),
+      complete: true,
+    }, "closed")).toBe(true);
+  });
+
+  test("complete snapshot, id present → live", () => {
+    expect(sessionGoneFromSnapshot({
+      infos: [],
+      liveIds: new Set(["live"]),
+      complete: true,
+    }, "live")).toBe(false);
+  });
+
+  test("incomplete snapshot, id absent → uncertainty is live", () => {
+    expect(sessionGoneFromSnapshot({
+      infos: [],
+      liveIds: new Set(),
+      complete: false,
+    }, "possibly-live")).toBe(false);
+  });
+
+  test("torn-file-salvaged id in incomplete snapshot → live", () => {
+    expect(sessionGoneFromSnapshot({
+      infos: [],
+      liveIds: new Set(["salvaged"]),
+      complete: false,
+    }, "salvaged")).toBe(false);
+  });
+
+  test("null snapshot → uncertainty is live", () => {
+    expect(sessionGoneFromSnapshot(null, "possibly-live")).toBe(false);
+  });
+
+  test("empty session id → uncertainty is live", () => {
+    expect(sessionGoneFromSnapshot({
+      infos: [],
+      liveIds: new Set(),
+      complete: true,
+    }, "")).toBe(false);
   });
 });

@@ -149,7 +149,9 @@ export function sessionHasLiveBackgroundWork(transcriptPath: string): boolean {
     const projectDir = dirname(transcriptPath);
     const agents = freshIds(
       join(projectDir, sessionId, "subagents"),
-      (name) => name.match(/^agent-(.+)\.jsonl$/)?.[1],
+      // Spawn metadata can land before the transcript. It contributes only a
+      // candidate id; the parent transcript still proves launch/completion.
+      (name) => name.match(/^agent-(.+?)(?:\.jsonl|\.meta\.json)$/)?.[1],
       now,
       LIVE_WINDOW_MS,
     );

@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import {
   createConfigController,
+  downgradeTurnWithLiveBackgroundWork,
   dispatchControlMessage,
   listenHooks,
   resolveWakeTarget,
@@ -18,6 +19,7 @@ import type { TurnEvent } from "../src/hook.ts";
 import { unsetSetting, writeSetting } from "../src/settings.ts";
 
 const roots: string[] = [];
+const daemonSource = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
 
 function fixture(settings: Record<string, unknown> = {}): { path: string } {
   const root = mkdtempSync(join(tmpdir(), "conch-daemon-config-test-"));
@@ -215,6 +217,134 @@ describe("daemon config controller", () => {
     expect(shouldHandleTurnAudibly(background, false)).toBe(false);
     expect(shouldHandleTurnAudibly(background, true)).toBe(true);
     expect(shouldHandleTurnAudibly(submitted, true)).toBe(false);
+  });
+
+  test("live background work downgrades a turn end by mutating the same event", () => {
+    const event: TurnEvent = {
+      type: "turn-end",
+      sessionId: "session-a",
+      label: "alpha",
+      announce: "alpha: finished response",
+      transcriptPath: "/tmp/alpha.jsonl",
+      mark: 3,
+      eventAt: 2_000,
+    };
+
+    const downgraded = downgradeTurnWithLiveBackgroundWork(event, true);
+
+    expect(downgraded).toBe(event);
+    expect(event).toEqual({
+      type: "working",
+      sessionId: "session-a",
+      label: "alpha",
+      announce: "alpha: finished response",
+      transcriptPath: "/tmp/alpha.jsonl",
+      mark: 3,
+      eventAt: 2_000,
+      backgroundWork: true,
+    });
+
+    const handleTurn = daemonSource.slice(
+      daemonSource.indexOf("async function handleTurn"),
+      daemonSource.indexOf("/**\n   * Speak with the barge-in recorder"),
+    );
+    const refreshAt = handleTurn.indexOf("sessionHasLiveBackgroundWork(event.transcriptPath)");
+    const audibleAt = handleTurn.indexOf("const audibleTurn = shouldHandleTurnAudibly");
+    expect(refreshAt).toBeGreaterThan(-1);
+    expect(audibleAt).toBeGreaterThan(refreshAt);
+    expect(handleTurn).toContain("downgradeTurnWithLiveBackgroundWork(event, true)");
+  });
+
+  test("a turn end with no live background work remains untouched", () => {
+    const event: TurnEvent = {
+      type: "turn-end",
+      sessionId: "session-a",
+      label: "alpha",
+      announce: "alpha: done",
+      eventAt: 2_000,
+    };
+    const before = { ...event };
+
+    const unchanged = downgradeTurnWithLiveBackgroundWork(event, false);
+
+    expect(unchanged).toBe(event);
+    expect(event).toEqual(before);
+    expect(event.backgroundWork).toBeUndefined();
+  });
+
+  test("wake, needs-you, and working events remain unchanged regardless of live-work detection", () => {
+    const events: TurnEvent[] = [
+      { type: "wake", sessionId: "session-a", label: "alpha", announce: "" },
+      { type: "needs-you", sessionId: "session-a", label: "alpha", announce: "", ntype: "idle_prompt" },
+      { type: "working", sessionId: "session-a", label: "alpha", announce: "" },
+    ];
+
+    for (const event of events) {
+      const before = { ...event };
+      expect(downgradeTurnWithLiveBackgroundWork(event, false)).toBe(event);
+      expect(event).toEqual(before);
+      expect(downgradeTurnWithLiveBackgroundWork(event, true)).toBe(event);
+      expect(event).toEqual(before);
+    }
+
+    const wakeBranch = daemonSource.slice(
+      daemonSource.indexOf('if (event.type === "wake")'),
+      daemonSource.indexOf("recitingEvent = event;"),
+    );
+    expect(wakeBranch).toContain("const targetGone = sessionGoneFromSnapshot(");
+    expect(wakeBranch).toContain("target.sessionId");
+    expect(wakeBranch).toContain("if (consumeStopKey()) return");
+    expect(wakeBranch).toContain("if (targetGone)");
+
+    const handleEntry = daemonSource.slice(
+      daemonSource.indexOf("async function handleTurn"),
+      daemonSource.indexOf('if (event.type === "wake")'),
+    );
+    const audibleAt = handleEntry.indexOf("const audibleTurn = shouldHandleTurnAudibly");
+    const closedAt = handleEntry.indexOf("&& sessionGoneFromSnapshot(");
+    const statusAt = handleEntry.indexOf("// Dashboard status");
+    expect(closedAt).toBeGreaterThan(audibleAt);
+    expect(statusAt).toBeGreaterThan(closedAt);
+    expect(handleEntry).toContain("event.sessionId");
+    expect(handleEntry).toContain("if (shuttingDown || interruptedByPause() || consumeStopKey()) return");
+
+    const micGate = daemonSource.slice(
+      daemonSource.indexOf("// Mic gate (auto turns only)"),
+      daemonSource.indexOf("if (!initialDictationCapture && !deferredInitialExternal)"),
+    );
+    expect(micGate).toContain("const gone = sessionGoneFromSnapshot(");
+    expect(micGate).toContain("event.sessionId");
+    expect(micGate).toContain("activelyTyping || responded || gone");
+  });
+
+  test("live-work downgrade preserves WeakSet identity", () => {
+    const event: TurnEvent = {
+      type: "turn-end",
+      sessionId: "session-a",
+      label: "alpha",
+      announce: "alpha: done",
+    };
+    const forgotten = new WeakSet<TurnEvent>([event]);
+
+    const downgraded = downgradeTurnWithLiveBackgroundWork(event, true);
+
+    expect(forgotten.has(downgraded)).toBeTrue();
+    expect(forgotten.delete(downgraded)).toBeTrue();
+    expect(forgotten.has(event)).toBeFalse();
+  });
+
+  test("working-mic composes with a daemon-time live-work downgrade", () => {
+    const event: TurnEvent = {
+      type: "turn-end",
+      sessionId: "session-a",
+      label: "alpha",
+      announce: "alpha: done",
+    };
+
+    const downgraded = downgradeTurnWithLiveBackgroundWork(event, true);
+
+    expect(shouldHandleTurnAudibly(downgraded, false)).toBe(false);
+    expect(shouldHandleTurnAudibly(downgraded, true)).toBe(true);
   });
 
   test("event-time arbitration suppresses stale state and working-mic audio before LIFO handling", () => {
