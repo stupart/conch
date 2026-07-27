@@ -46,6 +46,12 @@ test("countCoveredSentences finds where the announcement stopped", () => {
   expect(countCoveredSentences("conch: finished, ready for your next prompt", sentences)).toBe(0);
 });
 
+test("recite header covers zero reply sentences so reading starts from sentence 0", () => {
+  const sentences = ["First one.", "Second one!", "Third one?"];
+  const label = "conch";
+  expect(countCoveredSentences(`${label}:`, sentences)).toBe(0);
+});
+
 test("countCoveredSentences follows the actual announcement, not a configured sentence count", () => {
   const sentences = ["First one.", "Second one!", "Third one?", "Fourth one."];
   // The hook that produced this event announced three sentences. A daemon

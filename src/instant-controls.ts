@@ -24,7 +24,7 @@ export interface InstantControlsOptions {
   forgetQueued(sessionId?: string): void;
   /** Remove muted work from the latest-turn replay index. */
   forgetLatest(sessionId?: string): void;
-  /** A wake queued before a mode edge must not reopen the mic afterward. */
+  /** A queued wake/recite command must not restart audio after a mode edge. */
   cancelQueuedWakes(sessionId?: string): void;
   labelFor(sessionId: string): string;
   log(message: string): void;
@@ -135,6 +135,7 @@ export function shouldForgetMutedArrival(
 ): boolean {
   if (!globalMuted && !sessionMuted) return false;
   return event.type !== "wake"
+    && event.type !== "recite"
     && event.type !== "speak"
     && event.type !== "mute"
     && event.type !== "unmute"
@@ -161,19 +162,19 @@ export function markQueuedTurnsForMute(
   }
 }
 
-/** A wake requested before a mode edge cannot reopen the mic after that edge. */
+/** Explicit audio commands requested before a mode edge cannot restart afterward. */
 export function markQueuedWakesForControl(
   queue: readonly TurnEvent[],
   mark: (event: TurnEvent) => void,
   sessionId?: string,
 ): void {
   for (const event of queue) {
-    if (event.type !== "wake") continue;
+    if (event.type !== "wake" && event.type !== "recite") continue;
     if (
       sessionId === undefined
       || event.sessionId === sessionId
-      // Unnamed wakes resolve against mutable lastTurn only when handled, so a
-      // scoped edge must conservatively cancel every older unnamed wake.
+      // Unnamed commands resolve against mutable lastTurn only when handled, so a
+      // scoped edge must conservatively cancel every older unnamed command.
       || !event.sessionId
     ) {
       mark(event);
@@ -198,16 +199,27 @@ export function gateTurnForControls(
     sessionHeldTurns: Map<string, TurnEvent>;
   },
 ): TurnControlDisposition {
-  if (audible && options.mutedSessionIds.has(event.sessionId)) {
+  // Explicit user commands cut through quiet modes. Settings remains a modal
+  // pause: it traps input itself, and a queued command must not pierce it.
+  const explicitQuietOverride = event.type === "wake" || event.type === "recite";
+  if (
+    audible
+    && !explicitQuietOverride
+    && options.mutedSessionIds.has(event.sessionId)
+  ) {
     options.sessionHeldTurns.delete(event.sessionId);
     return "session-muted";
   }
-  if (event.type !== "wake" && options.globalMuted) return "global-muted";
-  if (audible && options.pausedSessionIds.has(event.sessionId)) {
+  if (!explicitQuietOverride && options.globalMuted) return "global-muted";
+  if (
+    audible
+    && !explicitQuietOverride
+    && options.pausedSessionIds.has(event.sessionId)
+  ) {
     options.sessionHeldTurns.set(event.sessionId, event);
     return "session-paused";
   }
-  if (options.globalPaused && (event.type !== "wake" || options.settingsOpen)) {
+  if (options.globalPaused && (!explicitQuietOverride || options.settingsOpen)) {
     options.globalHeldTurns.set(event.sessionId, event);
     return "global-paused";
   }

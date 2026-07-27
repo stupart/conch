@@ -15,7 +15,7 @@ interface HookPayload {
 }
 
 export interface TurnEvent {
-  type: "turn-end" | "needs-you" | "wake" | "mute" | "unmute" | "pause" | "resume" | "speak" | "working";
+  type: "turn-end" | "needs-you" | "wake" | "recite" | "mute" | "unmute" | "pause" | "resume" | "speak" | "working";
   sessionId: string;
   label: string;
   cwd?: string;

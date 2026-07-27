@@ -1,9 +1,14 @@
 import { test, expect } from "bun:test";
 import {
+  availableVoiceRing,
+  clearVoiceOverride,
   makeSynthBatches,
+  migrateVoiceOverride,
+  migrateVoiceOverrideMap,
   resetTtsReadiness,
   runSynthLadderForTest,
   selectVoice,
+  setVoiceOverride,
   SYNTH_ATTEMPT_TIMEOUT_MS,
   SYNTH_SENTENCE_BUDGET_MS,
   SYNTH_TIMEOUT_LIMIT,
@@ -15,6 +20,9 @@ import {
 import { loadConfig as loadRealConfig } from "../src/config.ts";
 import { TtsHealthMachine } from "../src/tts-health.ts";
 import { parseWav, trimWav } from "../src/tts-wav.ts";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function loadConfig() {
   return loadRealConfig({ env: {}, settingsPath: `/tmp/conch-speak-test-${process.pid}/settings.json` });
@@ -54,6 +62,64 @@ test("voice validation removes malformed and unavailable entries", () => {
   expect(validateVoiceRing(["af_heart", "bad voice", "missing", "af_heart"], ["af_heart", "am_adam"]))
     .toEqual(["af_heart"]);
   expect(validateVoiceRing(["missing"], ["am_adam", "af_heart"])).toEqual(["af_heart"]);
+});
+
+test("availableVoiceRing uses configured voices without a server list and filters against one when supplied", () => {
+  resetTtsReadiness();
+  const cfg = cfgWithVoices(["af_heart", "bad voice", "am_adam", "af_heart"]);
+  expect(availableVoiceRing(cfg)).toEqual(["af_heart", "am_adam"]);
+  expect(availableVoiceRing(cfg, new Set(["am_adam", "bf_emma"]))).toEqual(["am_adam"]);
+});
+
+test("voice override reset returns a label to its automatic ring voice", () => {
+  resetTtsReadiness();
+  const root = mkdtempSync(join(tmpdir(), "conch-voices-"));
+  const voicesPath = join(root, "nested", "voices.json");
+  const cfg = cfgWithVoices(["af_heart", "am_adam"]);
+  try {
+    setVoiceOverride("  DayLoop  ", "am_adam", { voicesPath });
+    expect(voiceFor(cfg, "dayloop", { voicesPath })).toBe("am_adam");
+    expect(clearVoiceOverride("DAYLOOP", { voicesPath })).toBe(true);
+    expect(clearVoiceOverride("dayloop", { voicesPath })).toBe(false);
+    expect(JSON.parse(readFileSync(voicesPath, "utf8"))).toEqual({});
+    expect(availableVoiceRing(cfg, null)).toContain(voiceFor(cfg, "dayloop", { voicesPath }));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("voice-pin map migration is a same-key no-op and the migrating pin wins a collision", () => {
+  expect(migrateVoiceOverrideMap(
+    { old: "am_adam", new: "af_heart", untouched: "bf_emma" },
+    " OLD ",
+    "New",
+  )).toEqual({
+    overrides: { new: "am_adam", untouched: "bf_emma" },
+    migrated: true,
+    voice: "am_adam",
+  });
+  expect(migrateVoiceOverrideMap({ same: "am_adam" }, "Same", " same ")).toEqual({
+    overrides: { same: "am_adam" },
+    migrated: false,
+  });
+});
+
+test("persisted voice-pin migration moves the normalized old key to the new label", () => {
+  resetTtsReadiness();
+  const root = mkdtempSync(join(tmpdir(), "conch-voice-migrate-"));
+  const voicesPath = join(root, "voices.json");
+  const cfg = cfgWithVoices(["af_heart", "bf_emma"]);
+  try {
+    setVoiceOverride("Old Label", "am_adam", { voicesPath });
+    // This is the rename hazard: the new label hashes into the ring until its
+    // label-keyed pin is explicitly migrated.
+    expect(voiceFor(cfg, "New Label", { voicesPath })).not.toBe("am_adam");
+    expect(migrateVoiceOverride(" OLD LABEL ", "New Label", { voicesPath })).toBe(true);
+    expect(voiceFor(cfg, "New Label", { voicesPath })).toBe("am_adam");
+    expect(JSON.parse(readFileSync(voicesPath, "utf8"))).toEqual({ "new label": "am_adam" });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("invalid persisted override selects a known ring voice instead", () => {

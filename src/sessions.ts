@@ -1,5 +1,31 @@
-import { join } from "node:path";
-import { readdirSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import {
+  migrateVoiceOverride,
+  type VoiceOverrideOptions,
+} from "./speak.ts";
+
+const LABELS_FILE = join(homedir(), ".config/conch/labels.json");
+const MAX_SESSION_LABEL_LENGTH = 40;
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+
+export interface LabelOverrideOptions {
+  /** Injectable so tests and alternate front-ends never need to touch the real home directory. */
+  labelsPath?: string;
+}
+
+export interface RenameSessionLabelOptions extends LabelOverrideOptions, VoiceOverrideOptions {}
 
 export interface SessionInfo {
   sessionId: string;
@@ -68,8 +94,116 @@ function toInfo(entry: any): SessionInfo {
   };
 }
 
-/** Session name if set, else the project folder name. */
-export function sessionLabel(info: SessionInfo | null, cwd: string | undefined): string {
+function labelOverridePath(options: LabelOverrideOptions): string {
+  return options.labelsPath ?? LABELS_FILE;
+}
+
+/** Canonical persisted form: printable, trimmed, non-empty, and dashboard-sized. */
+export function normalizeSessionLabel(label: string): string {
+  const printable = label.replace(CONTROL_CHARS, "").trim();
+  const capped = Array.from(printable).slice(0, MAX_SESSION_LABEL_LENGTH).join("").trim();
+  if (!capped) throw new Error("Session label cannot be empty");
+  return capped;
+}
+
+/** Read conch-owned labels; Claude's frequently rewritten registry remains read-only. */
+export function labelOverrides(options: LabelOverrideOptions = {}): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(labelOverridePath(options), "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const entries: Array<[string, string]> = [];
+    for (const [sessionId, value] of Object.entries(parsed)) {
+      if (!sessionId || typeof value !== "string") continue;
+      try {
+        entries.push([sessionId, normalizeSessionLabel(value)]);
+      } catch {}
+    }
+    return Object.fromEntries(entries);
+  } catch {
+    return {};
+  }
+}
+
+function writeLabelOverrides(
+  overrides: Readonly<Record<string, string>>,
+  options: LabelOverrideOptions,
+): void {
+  const path = labelOverridePath(options);
+  mkdirSync(dirname(path), { recursive: true });
+  const temp = join(
+    dirname(path),
+    `.labels.json.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
+  );
+  let fd: number | undefined;
+  try {
+    fd = openSync(temp, "wx", 0o600);
+    writeFileSync(fd, JSON.stringify(overrides, null, 2) + "\n", "utf8");
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temp, path);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    try {
+      unlinkSync(temp);
+    } catch {}
+  }
+}
+
+/** Persist one session-id-keyed display label without modifying Claude's registry. */
+export function setLabelOverride(
+  sessionId: string,
+  label: string,
+  options: LabelOverrideOptions = {},
+): string {
+  const id = sessionId.trim();
+  if (!id || id.replace(CONTROL_CHARS, "") !== id) {
+    throw new Error("Session id cannot be empty or contain control characters");
+  }
+  const canonical = normalizeSessionLabel(label);
+  const map = new Map(Object.entries(labelOverrides(options)));
+  map.set(id, canonical);
+  writeLabelOverrides(Object.fromEntries(map), options);
+  return canonical;
+}
+
+/**
+ * The one rename operation for UI/CLI callers: persist the canonical label and
+ * carry its label-keyed voice pin along. If the voice write fails, restore the
+ * previous label map so callers never report a half-completed rename.
+ */
+export function renameSessionLabel(
+  sessionId: string,
+  oldLabel: string,
+  newLabel: string,
+  options: RenameSessionLabelOptions = {},
+): { label: string; voiceMigrated: boolean } {
+  const canonical = normalizeSessionLabel(newLabel);
+  const originalLabels = labelOverrides(options);
+  setLabelOverride(sessionId, canonical, options);
+  try {
+    return {
+      label: canonical,
+      voiceMigrated: migrateVoiceOverride(oldLabel, canonical, options),
+    };
+  } catch (error) {
+    writeLabelOverrides(originalLabels, options);
+    throw error;
+  }
+}
+
+/** Session label precedence: conch override, registry name, then project folder. */
+export function sessionLabel(
+  info: SessionInfo | null,
+  cwd: string | undefined,
+  options: LabelOverrideOptions = {},
+): string {
+  if (info?.sessionId) {
+    const overrides = labelOverrides(options);
+    const override = Object.hasOwn(overrides, info.sessionId)
+      ? overrides[info.sessionId]
+      : undefined;
+    if (override) return override;
+  }
   if (info?.name) return info.name;
   const dir = cwd ?? info?.cwd ?? process.cwd();
   return dir.split("/").filter(Boolean).pop() ?? "claude";
@@ -148,11 +282,22 @@ export async function listSessions(claudeDir: string): Promise<SessionInfo[]> {
   return (await registrySnapshot(claudeDir))?.infos ?? [];
 }
 
-/** Match a spoken/typed query against session names, then project folder names. */
-export async function findSessionByName(claudeDir: string, query: string): Promise<SessionInfo | null> {
+/** Match conch overrides first, then registry names, then project folder names. */
+export async function findSessionByName(
+  claudeDir: string,
+  query: string,
+  options: LabelOverrideOptions = {},
+): Promise<SessionInfo | null> {
   const q = query.toLowerCase().trim();
   const sessions = await listSessions(claudeDir);
+  const overrides = labelOverrides(options);
+  const overrideFor = (session: SessionInfo): string | undefined => {
+    return Object.hasOwn(overrides, session.sessionId)
+      ? overrides[session.sessionId]
+      : undefined;
+  };
   return (
+    sessions.find((s) => overrideFor(s)?.toLowerCase() === q) ??
     sessions.find((s) => s.name?.toLowerCase() === q) ??
     sessions.find((s) => s.name?.toLowerCase().includes(q)) ??
     sessions.find((s) => (s.cwd ?? "").split("/").pop()?.toLowerCase() === q) ??

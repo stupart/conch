@@ -35,6 +35,8 @@ Usage:
   conch hook            hook entrypoint (reads payload JSON on stdin)
   conch daemon          run the voice loop: announce -> listen -> inject
   conch wake [name]     reopen the mic — last announced session, or by name
+  conch recite [name]   read the latest response — last session, or by name
+  conch rename <s> <n>  persist a conch display label for a live session
   conch sessions        list live Claude Code sessions
   conch mute | unmute   silence announcements + mic (auto-away covers this too)
   conch pause | resume  step away: stay quiet but HOLD finished sessions, replay on resume
@@ -219,6 +221,76 @@ switch (command) {
     if (!ok) process.exit(1);
     break;
   }
+  case "recite": {
+    const {
+      findSessionByName,
+      findTranscript,
+      listSessions,
+      sessionLabel,
+    } = await import("./sessions.ts");
+    const { transcriptMark } = await import("./snippet.ts");
+    let event = { type: "recite" as const, sessionId: "", label: "", announce: "" };
+    const query = rest.join(" ").trim();
+    if (query) {
+      const s = await findSessionByName(cfg.claudeDir, query);
+      if (!s) {
+        const names = (await listSessions(cfg.claudeDir)).map((session) =>
+          sessionLabel(session, session.cwd)
+        );
+        console.error(`[conch] no live session matching "${query}". Live: ${names.join(", ") || "none"}`);
+        process.exit(1);
+      }
+      const transcriptPath = findTranscript(cfg.claudeDir, s.sessionId);
+      if (!transcriptPath) {
+        console.error(`[conch] nothing to recite for "${sessionLabel(s, s.cwd)}" — transcript not found`);
+        process.exit(1);
+      }
+      event = {
+        ...event,
+        sessionId: s.sessionId,
+        label: sessionLabel(s, s.cwd),
+        pid: s.pid,
+        cwd: s.cwd,
+        transcriptPath,
+        mark: await transcriptMark(transcriptPath),
+      } as typeof event & {
+        pid?: number;
+        cwd?: string;
+        transcriptPath?: string;
+        mark?: number;
+      };
+    }
+    const ok = await sendToDaemon(cfg.socketPath, event);
+    console.log(ok
+      ? `[conch] recite sent${event.label ? ` -> ${event.label}` : ""}`
+      : "[conch] daemon not running");
+    if (!ok) process.exit(1);
+    break;
+  }
+  case "rename": {
+    const [query, ...labelParts] = rest;
+    const label = labelParts.join(" ").trim();
+    if (!query || !label) {
+      console.error("usage: conch rename <session> <label>");
+      process.exit(1);
+    }
+    const {
+      findSessionByName,
+      renameSessionLabel,
+      sessionLabel,
+    } = await import("./sessions.ts");
+    const session = await findSessionByName(cfg.claudeDir, query);
+    if (!session) {
+      console.error(`[conch] no live session matching "${query}"`);
+      process.exit(1);
+    }
+    const oldLabel = sessionLabel(session, session.cwd);
+    const renamed = renameSessionLabel(session.sessionId, oldLabel, label);
+    console.log(`[conch] ${oldLabel} -> ${renamed.label} (persisted to ~/.config/conch/labels.json)${
+      renamed.voiceMigrated ? "; voice pin migrated" : ""
+    }`);
+    break;
+  }
   case "mute":
   case "unmute":
   case "pause":
@@ -229,9 +301,9 @@ switch (command) {
     break;
   }
   case "sessions": {
-    const { listSessions } = await import("./sessions.ts");
+    const { listSessions, sessionLabel } = await import("./sessions.ts");
     for (const s of await listSessions(cfg.claudeDir)) {
-      console.log(`${(s.name ?? "(unnamed)").padEnd(30)} ${s.cwd ?? ""}  pid=${s.pid}`);
+      console.log(`${sessionLabel(s, s.cwd).padEnd(30)} ${s.cwd ?? ""}  pid=${s.pid}`);
     }
     break;
   }

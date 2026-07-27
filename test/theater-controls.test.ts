@@ -108,7 +108,7 @@ describe("dispatchTheaterControlKey", () => {
     ]);
   });
 
-  test("Enter is unbound and space remains owned by talk/stop", () => {
+  test("Enter and space remain owned by the daemon actions and talk paths", () => {
     const h = harness();
     h.setManualSessionId("session-a");
 
@@ -126,7 +126,7 @@ describe("dashboard control copy", () => {
     );
   });
 
-  test("keybars and help agree on space, p, m with no snooze binding", () => {
+  test("theater copy adds actions and recite without changing the footer contract", () => {
     const plain = (text: string): string =>
       text.replace(/\x1b\[[0-9;]*m/g, "").toLowerCase();
     const copy = [
@@ -139,8 +139,13 @@ describe("dashboard control copy", () => {
 
     for (const text of copy) {
       expect(plain(text)).not.toContain("snooze");
-      expect(plain(text)).not.toContain("enter");
     }
+
+    const theater = plain(THEATER_KEYBAR);
+    expect(theater).toContain("⏎ actions · r recite");
+    expect(theater).not.toContain("l logs");
+    expect(plain(FOOTER_KEYBAR)).not.toContain("actions");
+    expect(plain(FOOTER_KEYBAR)).not.toContain("recite");
 
     for (const keybar of [THEATER_KEYBAR, FOOTER_KEYBAR]) {
       const text = plain(keybar);
@@ -152,6 +157,8 @@ describe("dashboard control copy", () => {
     }
 
     const keys = plain(DASHBOARD_HELP_KEYS);
+    expect(keys).toContain("⏎ actions");
+    expect(keys).toContain("r recite");
     expect(keys).toContain("space talk / stop");
     expect(keys).toContain("p pause/resume");
     expect(keys).toContain("m mute/unmute");
@@ -198,9 +205,13 @@ describe("dashboard control copy", () => {
 
     expect(rawKeys).toContain("dispatchTheaterControlKey(c, theaterControls)");
     expect(rawKeys).toContain("mouseParser.feed(d.toString())");
-    expect(rawKeys).toContain(
-      "if (theaterMode && !settingsOverlay?.isOpen())",
+    const pointerGate = rawKeys.slice(
+      rawKeys.indexOf("mouseParser.feed(d.toString())"),
+      rawKeys.indexOf("let wheel"),
     );
+    expect(pointerGate).toContain("theaterMode");
+    expect(pointerGate).toContain("!settingsOverlay?.isOpen()");
+    expect(pointerGate).toContain("!sessionActionsOverlay?.isOpen()");
     expect(rawKeys).toContain("theaterPointerEvent(event)");
     expect(rawKeys).toContain("scrollTheaterPane(wheel * 3)");
     expect(rawKeys).toContain("clearTheaterSelection()");
@@ -214,8 +225,15 @@ describe("dashboard control copy", () => {
     expect(rawKeys.indexOf("mouseParser.feed(d.toString())")).toBeLessThan(
       rawKeys.indexOf("settingsOverlay?.handleKey(c)"),
     );
-    expect(rawKeys).not.toContain('c === "\\r"');
+    expect(rawKeys.indexOf("settingsOverlay?.handleKey(c)")).toBeLessThan(
+      rawKeys.indexOf("sessionActionsOverlay?.handleKey(c)"),
+    );
+    expect(rawKeys).toContain('c === "\\r"');
     expect(rawKeys).not.toContain('c === "\\n"');
+    expect(rawKeys).toContain("sessionActionsOverlay?.open(");
+    expect(rawKeys).toContain("theaterNavigation.manualControlTarget()");
+    expect(rawKeys).toContain('c === "r"');
+    expect(rawKeys).toContain("reciteBySessionId(theaterActionTarget())");
     expect(callbacks).toContain("theaterNavigation.manualControlTarget()");
     expect(callbacks).not.toContain("theaterActionTarget()");
     expect(enqueue).toContain("instantControls.applyGlobal(event.type)");

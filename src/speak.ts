@@ -1,6 +1,14 @@
-import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   audioTimeoutMs,
   awaitProcessWithWatchdog,
@@ -24,6 +32,11 @@ const OVERLOAD_STATUSES = new Set([429, 502, 503, 504]);
 const INFERENCE_ERROR = /(?:broadcast|shape|sinegen|inference|value\s*error)/i;
 const VOICE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const VOICES_FILE = join(homedir(), ".config/conch/voices.json");
+
+export interface VoiceOverrideOptions {
+  /** Injectable so tests and alternate front-ends never need to touch the real home directory. */
+  voicesPath?: string;
+}
 
 type AudioProcess = WatchdogProcess;
 
@@ -225,9 +238,14 @@ export async function trySynth(
 
 // --- readiness + voices -------------------------------------------------
 
-function voiceOverrides(): Record<string, string> {
+function voiceOverridePath(options: VoiceOverrideOptions): string {
+  return options.voicesPath ?? VOICES_FILE;
+}
+
+/** Read the tiny label-keyed override file afresh so short-lived CLI/hooks see changes. */
+export function voiceOverrides(options: VoiceOverrideOptions = {}): Record<string, string> {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(VOICES_FILE, "utf8"));
+    const parsed: unknown = JSON.parse(readFileSync(voiceOverridePath(options), "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     return Object.fromEntries(
       Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
@@ -235,6 +253,35 @@ function voiceOverrides(): Record<string, string> {
   } catch {
     return {};
   }
+}
+
+function writeVoiceOverrides(
+  overrides: Readonly<Record<string, string>>,
+  options: VoiceOverrideOptions,
+): void {
+  const path = voiceOverridePath(options);
+  mkdirSync(dirname(path), { recursive: true });
+  const temp = join(
+    dirname(path),
+    `.voices.json.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
+  );
+  let fd: number | undefined;
+  try {
+    fd = openSync(temp, "wx", 0o600);
+    writeFileSync(fd, JSON.stringify(overrides, null, 2) + "\n", "utf8");
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temp, path);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    try {
+      unlinkSync(temp);
+    } catch {}
+  }
+}
+
+function voiceOverrideKey(label: string): string {
+  return label.toLowerCase().trim();
 }
 
 export function isValidVoiceName(voice: string): boolean {
@@ -251,6 +298,21 @@ export function validateVoiceRing(configured: string[], available?: Iterable<str
   if (serverVoices?.has("af_heart")) return ["af_heart"];
   if (serverVoices?.size) return [serverVoices.values().next().value!];
   return ["af_heart"];
+}
+
+/**
+ * The same usable ring voiceFor selects from. The optional availability input
+ * is a test seam; normal callers use the matching server-discovery cache.
+ */
+export function availableVoiceRing(
+  cfg: Config,
+  available?: Iterable<string> | null,
+): string[] {
+  const cacheMatches = voiceCacheKey === `${cfg.ttsPort}|${cfg.ttsModel}`;
+  const serverVoices = available === undefined
+    ? (cacheMatches ? availableVoices : null)
+    : available;
+  return validateVoiceRing(cfg.ttsVoices, serverVoices);
 }
 
 function hashLabel(label: string): number {
@@ -276,18 +338,82 @@ export function selectVoice(
 }
 
 /** Pin a syntactically valid session voice. Server availability is checked before use. */
-export function setVoiceOverride(label: string, voice: string): void {
+export function setVoiceOverride(
+  label: string,
+  voice: string,
+  options: VoiceOverrideOptions = {},
+): void {
   const clean = voice.trim();
   if (!isValidVoiceName(clean)) throw new Error(`Invalid TTS voice: ${voice}`);
-  const map = voiceOverrides();
-  map[label.toLowerCase().trim()] = clean;
-  mkdirSync(join(homedir(), ".config/conch"), { recursive: true });
-  writeFileSync(VOICES_FILE, JSON.stringify(map, null, 2) + "\n");
+  const key = voiceOverrideKey(label);
+  if (!key) throw new Error("Voice override label cannot be empty");
+  const map = new Map(Object.entries(voiceOverrides(options)));
+  map.set(key, clean);
+  writeVoiceOverrides(Object.fromEntries(map), options);
+}
+
+/** Remove a voice pin so the label returns to stable hash-based selection. */
+export function clearVoiceOverride(
+  label: string,
+  options: VoiceOverrideOptions = {},
+): boolean {
+  const key = voiceOverrideKey(label);
+  const map = voiceOverrides(options);
+  if (!key || !Object.hasOwn(map, key)) return false;
+  delete map[key];
+  writeVoiceOverrides(map, options);
+  return true;
+}
+
+export interface VoiceOverrideMapMigration {
+  overrides: Record<string, string>;
+  migrated: boolean;
+  voice?: string;
+}
+
+/**
+ * Move an old normalized label key to a new one. The old pin wins a collision:
+ * it represents the session being renamed, while the destination pin belonged
+ * to some other label and must not silently change this session's voice.
+ */
+export function migrateVoiceOverrideMap(
+  overrides: Readonly<Record<string, string>>,
+  oldLabel: string,
+  newLabel: string,
+): VoiceOverrideMapMigration {
+  const oldKey = voiceOverrideKey(oldLabel);
+  const newKey = voiceOverrideKey(newLabel);
+  const next = new Map(Object.entries(overrides));
+  if (!oldKey || !newKey || oldKey === newKey || !next.has(oldKey)) {
+    return { overrides: Object.fromEntries(next), migrated: false };
+  }
+  const voice = next.get(oldKey)!;
+  next.delete(oldKey);
+  next.set(newKey, voice);
+  return { overrides: Object.fromEntries(next), migrated: true, voice };
+}
+
+/** Persist the label-key migration used by session rename. */
+export function migrateVoiceOverride(
+  oldLabel: string,
+  newLabel: string,
+  options: VoiceOverrideOptions = {},
+): boolean {
+  const migration = migrateVoiceOverrideMap(voiceOverrides(options), oldLabel, newLabel);
+  if (!migration.migrated) return false;
+  writeVoiceOverrides(migration.overrides, options);
+  return true;
 }
 
 /** Stable per-session voice; a stale/invalid override falls back within the valid ring. */
-export function voiceFor(cfg: Config, label: string): string {
-  const override = voiceOverrides()[label.toLowerCase().trim()] ?? "";
+export function voiceFor(
+  cfg: Config,
+  label: string,
+  options: VoiceOverrideOptions = {},
+): string {
+  const map = voiceOverrides(options);
+  const key = voiceOverrideKey(label);
+  const override = Object.hasOwn(map, key) ? map[key]! : "";
   const cacheMatches = voiceCacheKey === `${cfg.ttsPort}|${cfg.ttsModel}`;
   return selectVoice(cfg.ttsVoices, label, override, cacheMatches ? availableVoices : null, knownGoodVoice || "af_heart");
 }

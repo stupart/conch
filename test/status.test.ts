@@ -161,6 +161,25 @@ describe("footer renderer seam", () => {
 
     expect(writes).toEqual([ACTIVE_FOOTER_GOLDEN]);
   });
+
+  test("ignores the theater-only session actions overlay byte-for-byte", () => {
+    const { io, writes } = recordingIO({ columns: 80 });
+    createFooterRenderer(io).panel(sampleModel({
+      sessionActionsOverlay: {
+        target: { sessionId: "one", label: "project-one" },
+        selectedIndex: 0,
+        rows: [{
+          key: "voice",
+          value: "Nova",
+          help: "preview voice",
+          selected: true,
+          editing: false,
+        }],
+      },
+    }));
+
+    expect(writes).toEqual([ACTIVE_FOOTER_GOLDEN]);
+  });
 });
 
 describe("theater renderer lifecycle", () => {
@@ -346,6 +365,84 @@ describe("theater renderer lifecycle", () => {
 
     const frame = writes.at(-1)!;
     expect(frame).toContain("settings");
+    expect(frame).toContain("esc close");
+  });
+
+  test("session actions temporarily open the pane and render the captured target and safe dismiss copy", () => {
+    const { io, writes } = recordingIO({ columns: 140, rows: 10 });
+    const renderer = createTheaterRenderer(io);
+    renderer.enter();
+    renderer.panel(sampleModel({
+      panelOpen: false,
+      sessionActionsOverlay: {
+        target: { sessionId: "parked", label: "Parked Project" },
+        selectedIndex: 3,
+        rows: [
+          {
+            key: "voice",
+            value: "Nova",
+            help: "←/→ preview · enter pin · a reset to auto",
+            selected: false,
+            editing: false,
+          },
+          {
+            key: "prioritize",
+            value: "off",
+            help: "← off · → on · space/enter toggle hand-off priority",
+            selected: false,
+            editing: false,
+          },
+          {
+            key: "rename",
+            value: "Parked Project",
+            help: "enter edit/commit · esc cancel",
+            selected: false,
+            editing: false,
+          },
+          {
+            key: "dismiss",
+            value: "CONFIRM",
+            help: "enter twice · stops announcements; session keeps running",
+            selected: true,
+            editing: false,
+            confirming: true,
+          },
+        ],
+      },
+    }));
+
+    const frame = writes.at(-1)!;
+    expect(frame).toContain("actions");
+    expect(frame).toContain("Parked Project");
+    expect(frame).toContain("voice");
+    expect(frame).toContain("prioritize");
+    expect(frame).toContain("rename");
+    expect(frame).toContain("dismiss");
+    expect(frame).toContain("session keeps running");
+    expect(frame).toContain("│");
+  });
+
+  test("a narrow session actions overlay remains visible and explains how to close it", () => {
+    const { io, writes } = recordingIO({ columns: 30, rows: 6 });
+    const renderer = createTheaterRenderer(io);
+    renderer.enter();
+    renderer.panel(sampleModel({
+      panelOpen: false,
+      sessionActionsOverlay: {
+        target: { sessionId: "parked", label: "Parked Project" },
+        selectedIndex: 0,
+        rows: [{
+          key: "voice",
+          value: "Nova",
+          help: "preview voice",
+          selected: true,
+          editing: false,
+        }],
+      },
+    }));
+
+    const frame = writes.at(-1)!;
+    expect(frame).toContain("actions");
     expect(frame).toContain("esc close");
   });
 

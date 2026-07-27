@@ -13,6 +13,8 @@ import {
   startsConversationByListening,
   takeNextQueuedEvent,
   TurnEventOrder,
+  withoutDismissedSessions,
+  pruneSessionCommandSets,
 } from "../src/daemon.ts";
 import { DictationReducer } from "../src/dictation-reducer.ts";
 import type { TurnEvent } from "../src/hook.ts";
@@ -206,6 +208,110 @@ describe("daemon config controller", () => {
 
     expect(drained("oldest")).toEqual(["work", "need", "target", "old"]);
     expect(drained("urgency")).toEqual(["need", "work", "target", "old"]);
+  });
+
+  test("LIFO barrier holds under priority", () => {
+    const prioritizedOld: TurnEvent = {
+      type: "turn-end",
+      sessionId: "priority",
+      label: "priority",
+      announce: "",
+    };
+    const wake: TurnEvent = {
+      type: "wake",
+      sessionId: "target",
+      label: "target",
+      announce: "",
+    };
+    const normalNew: TurnEvent = {
+      type: "working",
+      sessionId: "normal",
+      label: "normal",
+      announce: "",
+    };
+    const queue = [prioritizedOld, wake, normalNew];
+    const priority = new Set(["priority"]);
+
+    expect(takeNextQueuedEvent(queue, "newest", priority)).toBe(normalNew);
+    expect(takeNextQueuedEvent(queue, "newest", priority)).toBe(wake);
+    expect(takeNextQueuedEvent(queue, "newest", priority)).toBe(prioritizedOld);
+  });
+
+  test("newest fast path honors priority inside the eligible state cohort", () => {
+    const priorityOlder: TurnEvent = {
+      type: "turn-end",
+      sessionId: "priority",
+      label: "priority",
+      announce: "",
+    };
+    const normalNewest: TurnEvent = {
+      type: "needs-you",
+      sessionId: "normal",
+      label: "normal",
+      announce: "",
+    };
+    const queue = [priorityOlder, normalNewest];
+
+    expect(takeNextQueuedEvent(queue, "newest", new Set(["priority"]))).toBe(priorityOlder);
+    expect(queue).toEqual([normalNewest]);
+  });
+
+  test("dismiss filtering and transient-set pruning use complete registry truth", () => {
+    const sessions = [
+      { sessionId: "visible", name: "visible" },
+      { sessionId: "hidden", name: "hidden" },
+    ];
+    const prioritized = new Set(["visible", "gone"]);
+    const dismissed = new Set(["hidden", "gone"]);
+
+    expect(withoutDismissedSessions(sessions, dismissed).map((session) => session.sessionId))
+      .toEqual(["visible"]);
+
+    pruneSessionCommandSets({
+      complete: false,
+      liveIds: new Set(["visible"]),
+    }, prioritized, dismissed);
+    expect(prioritized).toEqual(new Set(["visible", "gone"]));
+    expect(dismissed).toEqual(new Set(["hidden", "gone"]));
+
+    pruneSessionCommandSets({
+      complete: true,
+      liveIds: new Set(["visible", "hidden"]),
+    }, prioritized, dismissed);
+    expect(prioritized).toEqual(new Set(["visible"]));
+    expect(dismissed).toEqual(new Set(["hidden"]));
+
+    const render = daemonSource.slice(
+      daemonSource.indexOf("async function renderSessionPanel"),
+      daemonSource.indexOf("function setSessionState"),
+    );
+    const dismiss = daemonSource.slice(
+      daemonSource.indexOf("dismiss: (target)"),
+      daemonSource.indexOf("onOpen:", daemonSource.indexOf("dismiss: (target)")),
+    );
+    expect(render).toContain(
+      "withoutDismissedSessions(registryLive, dismissedSessionIds)",
+    );
+    expect(render).toContain("...prioritizedSessionIds");
+    expect(render).toContain("...dismissedSessionIds");
+    expect(dismiss.indexOf("dismissedSessionIds.add(target.sessionId)")).toBeLessThan(
+      dismiss.indexOf("instantControls.setSessionMuted(target.sessionId, true)"),
+    );
+    expect(daemonSource).toContain("dismissedSessionIds.delete(event.sessionId)");
+  });
+
+  test("recite routes through the existing reader without a bell or responded guard", () => {
+    const branch = daemonSource.slice(
+      daemonSource.indexOf('if (event.type === "recite")'),
+      daemonSource.indexOf('if (event.type === "wake")', daemonSource.indexOf('if (event.type === "recite")')),
+    );
+
+    expect(branch).toContain("lastAssistantText(target.transcriptPath)");
+    expect(branch).toContain("await speak(cfg, `${target.label}:`, target.label)");
+    expect(branch).toContain("await conversationLoop(");
+    expect(branch).toContain("false,\n          pauseGeneration");
+    expect(branch).not.toContain("ringBell");
+    expect(branch).not.toContain("userRespondedSince");
   });
 
   test("working-mic only makes Stop-reclassified working events audible", () => {

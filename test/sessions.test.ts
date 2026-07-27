@@ -1,9 +1,20 @@
 import { expect, test, describe } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { isEngageable, registrySnapshot, sessionGoneFromSnapshot } from "../src/sessions.ts";
+import {
+  findSessionByName,
+  isEngageable,
+  normalizeSessionLabel,
+  registrySnapshot,
+  renameSessionLabel,
+  sessionGoneFromSnapshot,
+  sessionLabel,
+  setLabelOverride,
+} from "../src/sessions.ts";
 import { activeSessionIdForRows, buildPanelRows } from "../src/panel.ts";
+import { setVoiceOverride, voiceFor } from "../src/speak.ts";
+import { loadConfig } from "../src/config.ts";
 
 describe("isEngageable — only top-level interactive CLI sessions get engaged", () => {
   test("a real interactive CLI session passes", () => {
@@ -148,5 +159,94 @@ describe("sessionGoneFromSnapshot — complete snapshots only", () => {
       liveIds: new Set(),
       complete: true,
     }, "")).toBe(false);
+  });
+});
+
+describe("conch session-label overrides", () => {
+  function fixture(): {
+    root: string;
+    claudeDir: string;
+    labelsPath: string;
+    voicesPath: string;
+  } {
+    const root = mkdtempSync(join(tmpdir(), "conch-labels-"));
+    const claudeDir = join(root, "claude");
+    mkdirSync(join(claudeDir, "sessions"), { recursive: true });
+    return {
+      root,
+      claudeDir,
+      labelsPath: join(root, "config", "labels.json"),
+      voicesPath: join(root, "config", "voices.json"),
+    };
+  }
+
+  test("sessionLabel precedence is override > registry name > folder, and lookup matches override first", async () => {
+    const f = fixture();
+    try {
+      const session = {
+        sessionId: "session-a",
+        name: "registry-name",
+        cwd: "/work/folder-name",
+        kind: "interactive",
+        entrypoint: "cli",
+      };
+      writeFileSync(join(f.claudeDir, "sessions", "1.json"), JSON.stringify(session));
+      writeFileSync(join(f.claudeDir, "sessions", "2.json"), JSON.stringify({
+        ...session,
+        sessionId: "session-b",
+        name: "conch-name",
+      }));
+
+      expect(sessionLabel(session, session.cwd, { labelsPath: f.labelsPath })).toBe("registry-name");
+      expect(sessionLabel({ sessionId: "folder-only", cwd: session.cwd }, session.cwd, {
+        labelsPath: f.labelsPath,
+      })).toBe("folder-name");
+
+      setLabelOverride(session.sessionId, "  conch-name  ", { labelsPath: f.labelsPath });
+      expect(sessionLabel(session, session.cwd, { labelsPath: f.labelsPath })).toBe("conch-name");
+      expect((await findSessionByName(f.claudeDir, "CONCH-NAME", {
+        labelsPath: f.labelsPath,
+      }))?.sessionId).toBe(session.sessionId);
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  test("persisted labels strip controls, cap at 40 code points, and reject empty input", () => {
+    const f = fixture();
+    try {
+      const long = ` \u0000hello\n${"🦪".repeat(50)} `;
+      const canonical = setLabelOverride("session-a", long, { labelsPath: f.labelsPath });
+      expect(canonical.startsWith("hello")).toBe(true);
+      expect(Array.from(canonical)).toHaveLength(40);
+      expect(canonical).toBe(normalizeSessionLabel(long));
+      expect(() => setLabelOverride("session-a", "\n\t\u0000", {
+        labelsPath: f.labelsPath,
+      })).toThrow("Session label cannot be empty");
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  test("voice-pin migration on rename persists one canonical operation and preserves the old pin", () => {
+    const f = fixture();
+    const cfg = loadConfig({
+      env: { CONCH_TTS_VOICES: "af_heart,bf_emma" },
+      settingsPath: join(f.root, "settings.json"),
+    });
+    try {
+      setVoiceOverride("Old Label", "am_adam", { voicesPath: f.voicesPath });
+      const result = renameSessionLabel("session-a", "Old Label", "  New Label\n  ", {
+        labelsPath: f.labelsPath,
+        voicesPath: f.voicesPath,
+      });
+
+      expect(result).toEqual({ label: "New Label", voiceMigrated: true });
+      expect(JSON.parse(readFileSync(f.labelsPath, "utf8"))).toEqual({ "session-a": "New Label" });
+      expect(JSON.parse(readFileSync(f.voicesPath, "utf8"))).toEqual({ "new label": "am_adam" });
+      expect(voiceFor(cfg, "New Label", { voicesPath: f.voicesPath })).toBe("am_adam");
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
   });
 });

@@ -10,6 +10,9 @@ import {
   probeTtsServer,
   probeTtsServerPresence,
   resetTtsReadiness,
+  availableVoiceRing,
+  clearVoiceOverride,
+  setVoiceOverride,
   voiceFor,
 } from "./speak.ts";
 import { SpeechManager } from "./speech-manager.ts";
@@ -57,6 +60,8 @@ import {
   sessionGoneFromSnapshot,
   sessionLabel,
   findTranscript,
+  renameSessionLabel,
+  type RegistrySnapshot,
   type SessionInfo,
 } from "./sessions.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
@@ -135,6 +140,7 @@ import {
   type HandoffOrder,
 } from "./settings.ts";
 import { SettingsOverlay } from "./settings-overlay.ts";
+import { SessionActionsOverlay } from "./session-actions-overlay.ts";
 
 /**
  * The turn-based voice loop.
@@ -347,11 +353,15 @@ const MODE_CONTROL_TYPES = new Set<TurnEvent["type"]>(["mute", "unmute", "pause"
 /**
  * Remove the next queued session event without sorting the queue. Imperative
  * events are LIFO barriers: only the state-event cohort newer than the latest
- * command is reordered, preserving wake/speak/mode command semantics.
+ * command is reordered, preserving wake/speak/mode command semantics. Session
+ * priority narrows that eligible cohort but can never reach below the barrier.
  */
-export function takeNextQueuedEvent(queue: TurnEvent[], order: HandoffOrder): TurnEvent | undefined {
+export function takeNextQueuedEvent(
+  queue: TurnEvent[],
+  order: HandoffOrder,
+  prioritized: ReadonlySet<string> = new Set(),
+): TurnEvent | undefined {
   if (!queue.length) return undefined;
-  if (order === "newest") return queue.pop(); // exact current/default behavior
 
   let latestCommand = -1;
   for (let i = queue.length - 1; i >= 0; i--) {
@@ -363,9 +373,21 @@ export function takeNextQueuedEvent(queue: TurnEvent[], order: HandoffOrder): Tu
   const cohortStart = latestCommand + 1;
   if (cohortStart === queue.length) return queue.pop();
 
-  let selected = cohortStart;
+  const prioritizedIndices: number[] = [];
+  if (prioritized.size) {
+    for (let i = cohortStart; i < queue.length; i++) {
+      if (prioritized.has(queue[i]!.sessionId)) prioritizedIndices.push(i);
+    }
+  }
+  const candidates = prioritizedIndices.length
+    ? prioritizedIndices
+    : Array.from({ length: queue.length - cohortStart }, (_, index) => cohortStart + index);
+
+  let selected = order === "newest"
+    ? candidates[candidates.length - 1]!
+    : candidates[0]!;
   if (order === "urgency") {
-    for (let i = cohortStart + 1; i < queue.length; i++) {
+    for (const i of candidates.slice(1)) {
       const candidate = HANDOFF_URGENCY[queue[i]!.type] ?? 0;
       const current = HANDOFF_URGENCY[queue[selected]!.type] ?? 0;
       if (candidate >= current) selected = i; // equal urgency => newer arrival
@@ -402,6 +424,28 @@ export class TurnEventOrder {
 
   forget(sessionId: string): void {
     this.#latest.delete(sessionId);
+  }
+}
+
+/** Keep dismissed sessions live in the registry while omitting their dashboard rows. */
+export function withoutDismissedSessions<T extends Pick<SessionInfo, "sessionId">>(
+  sessions: readonly T[],
+  dismissedSessionIds: ReadonlySet<string>,
+): T[] {
+  return sessions.filter((session) => !dismissedSessionIds.has(session.sessionId));
+}
+
+/** Transient command state dies only when a complete registry proves the session exited. */
+export function pruneSessionCommandSets(
+  snapshot: Pick<RegistrySnapshot, "complete" | "liveIds"> | null,
+  prioritizedSessionIds: Set<string>,
+  dismissedSessionIds: Set<string>,
+): void {
+  if (!snapshot?.complete) return;
+  for (const ids of [prioritizedSessionIds, dismissedSessionIds]) {
+    for (const sessionId of ids) {
+      if (!snapshot.liveIds.has(sessionId)) ids.delete(sessionId);
+    }
   }
 }
 
@@ -486,16 +530,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // Footer mode keeps its established persistent picker untouched. Theater uses
   // a separate active anchor + explicitly released parked cursor below.
   let panelOrder: string[] = [];
+  let panelLabels = new Map<string, string>();
   let selectedId: string | null = null;
   let cursorAuto = true;
   let panelOpen = true;
   const theaterNavigation = new TheaterNavigation(() => void renderSessionPanel());
   const mouseParser = new SgrMouseParser();
   let settingsOverlay: SettingsOverlay | null = null;
+  let sessionActionsOverlay: SessionActionsOverlay | null = null;
   // Per-session modes are transient dashboard state. Pause holds only the newest
   // turn for replay; mute deliberately forgets.
   const pausedSessionIds = new Set<string>();
   const mutedSessionIds = new Set<string>();
+  const prioritizedSessionIds = new Set<string>();
+  const dismissedSessionIds = new Set<string>();
   const sessionHeldTurns = new Map<string, TurnEvent>();
   const latestTurnBySession = new Map<string, TurnEvent>();
   const forgottenTurns = new WeakSet<TurnEvent>();
@@ -503,6 +551,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let recitingEvent: TurnEvent | null = null;
   let handlingEvent: TurnEvent | null = null;
   let handlingPauseGeneration: number | null = null;
+  const sessionModalOpen = (): boolean =>
+    Boolean(settingsOverlay?.isOpen() || sessionActionsOverlay?.isOpen());
 
   const normalMicOpen = (): boolean => Boolean(
     activeDictation?.session.micOpen || micOpen || normalMicReserved || bargeHandoffOpen
@@ -621,6 +671,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   function enqueue(event: TurnEvent): void {
     if (shuttingDown) return;
+    // A named wake is the deliberate escape hatch from safe dismiss. Clear the
+    // hidden/muted state before arrival stamping so the wake and future turns
+    // are both usable again; an unnamed wake cannot identify a dismissed owner.
+    if (
+      event.type === "wake"
+      && event.sessionId
+      && dismissedSessionIds.delete(event.sessionId)
+    ) {
+      mutedSessionIds.delete(event.sessionId);
+      log(`▶ restored "${event.label}" after dismiss`);
+      void renderSessionPanel();
+    }
     if (!eventOrder.accept(event)) return;
     const forgetOnArrival = shouldForgetMutedArrival(
       event,
@@ -634,8 +696,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
     if (event.type === "resume") {
       // Settings owns its silent pause lifetime; an external resume cannot cut
-      // through an open overlay.
-      if (settingsOverlay?.isOpen()) return;
+      // through an open modal.
+      if (sessionModalOpen()) return;
     }
     if (
       event.type === "pause"
@@ -648,7 +710,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const transition = instantControls.applyGlobal(event.type);
       if (transition) resumeTransitions.set(event, transition);
     }
-    const i = event.type === "speak"
+    const i = event.type === "speak" && !event.sessionId
       ? -1
       : queue.findIndex((e) => e.sessionId === event.sessionId && e.type === event.type);
     if (i !== -1) queue.splice(i, 1); // newer event for the same session supersedes
@@ -669,12 +731,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
       await ttsStartup;
       if (shuttingDown) return;
       if (stopKey && queue.length) {
-        const skipped = takeNextQueuedEvent(queue, cfg.handoffOrder)!;
+        const skipped = takeNextQueuedEvent(queue, cfg.handoffOrder, prioritizedSessionIds)!;
         stopKey = false;
         log(`⏹ spacebar — skipped queued ${skipped.type} for "${skipped.label}" during TTS startup`);
       }
       while (queue.length) {
-        const event = takeNextQueuedEvent(queue, cfg.handoffOrder)!;
+        const event = takeNextQueuedEvent(queue, cfg.handoffOrder, prioritizedSessionIds)!;
         try {
           await handle(event);
         } catch (e) {
@@ -700,15 +762,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
     try {
       snap = await registrySnapshot(cfg.claudeDir);
     } catch {}
-    const live = snap?.infos ?? [];
+    const registryLive = snap?.infos ?? [];
+    pruneSessionCommandSets(snap, prioritizedSessionIds, dismissedSessionIds);
     // Prune a latch only on a COMPLETE snapshot — a torn/unreadable file must not
     // delete a live session's latch (e.g. a pending "needs"), which never re-fires.
     if (snap?.complete) {
-      const liveIds = new Set(live.map((s) => s.sessionId));
+      const liveIds = new Set(registryLive.map((s) => s.sessionId));
       const trackedIds = new Set([
         ...sessionStates.keys(),
         ...pausedSessionIds,
         ...mutedSessionIds,
+        ...prioritizedSessionIds,
+        ...dismissedSessionIds,
         ...sessionHeldTurns.keys(),
         ...latestTurnBySession.keys(),
       ]);
@@ -718,10 +783,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
         eventOrder.forget(id);
         pausedSessionIds.delete(id);
         mutedSessionIds.delete(id);
+        prioritizedSessionIds.delete(id);
+        dismissedSessionIds.delete(id);
         sessionHeldTurns.delete(id);
         latestTurnBySession.delete(id);
       }
     }
+    const live = withoutDismissedSessions(registryLive, dismissedSessionIds);
     const liveState = getLiveState(); // what conch is doing right now, if anything
     const orderedRows = buildPanelRows({
       sessions: live,
@@ -800,7 +868,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
         previewText,
       );
       model.settingsOverlay = settingsOverlay?.model() ?? null;
+      model.sessionActionsOverlay = sessionActionsOverlay?.model() ?? null;
       panelOrder = model.rows.map((row) => row.sessionId);
+      panelLabels = new Map(model.rows.map((row) => [row.sessionId, row.label]));
       // Read mode state after the async registry snapshot so a slow older redraw
       // cannot repaint a stale pause/mute banner over a newer toggle.
       model.mode = { muted, paused: pause.paused, holding: pending.size };
@@ -826,6 +896,35 @@ export async function runDaemon(cfg: Config): Promise<void> {
     return true;
   }
 
+  function relabelRuntimeSession(
+    sessionId: string,
+    oldLabel: string,
+    newLabel: string,
+  ): void {
+    const events = new Set<TurnEvent>([
+      ...queue,
+      ...pending.values(),
+      ...sessionHeldTurns.values(),
+      ...latestTurnBySession.values(),
+      ...(lastTurn ? [lastTurn] : []),
+      ...(recitingEvent ? [recitingEvent] : []),
+      ...(handlingEvent ? [handlingEvent] : []),
+    ]);
+    const oldPrefix = `${oldLabel}:`;
+    for (const event of events) {
+      if (event.sessionId !== sessionId) continue;
+      event.label = newLabel;
+      if (event.announce.startsWith(oldPrefix)) {
+        event.announce = `${newLabel}:${event.announce.slice(oldPrefix.length)}`;
+      } else if (event.announce.startsWith(`${oldLabel} `)) {
+        event.announce = `${newLabel} ${event.announce.slice(oldLabel.length + 1)}`;
+      }
+    }
+    const latched = sessionStates.get(sessionId);
+    if (latched) sessionStates.set(sessionId, { ...latched, label: newLabel });
+    if (panelLabels.has(sessionId)) panelLabels.set(sessionId, newLabel);
+  }
+
   function setMuted(next: boolean): void {
     muted = next;
     writeState({ muted, paused: pause.paused }); // persist so a restart doesn't un-mute
@@ -845,7 +944,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (event.type === "unmute") return !muted ? announceMuted(false) : undefined;
     if (event.type === "pause") return pause.paused ? pause.announcePaused() : undefined;
     if (event.type === "resume") {
-      if (settingsOverlay?.isOpen() || pause.paused) return;
+      if (sessionModalOpen() || pause.paused) return;
       const transition = resumeTransitions.get(event);
       return pause.announceResumed(transition
         ? await transition
@@ -853,7 +952,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
     if (event.type === "speak") {
       const speechCfg = event.voice ? { ...cfg, ttsVoices: [event.voice] } : cfg;
-      return speak(speechCfg, event.announce, event.label);
+      // Explicit previews bypass both modal pause gating and a label-keyed
+      // persisted pin; an empty selection label makes the one-item ring win.
+      return speak(speechCfg, event.announce, event.voice ? "" : event.label);
     }
     handlingEvent = event;
     handlingPauseGeneration = pause.capture();
@@ -894,6 +995,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       latestTurnBySession.delete(event.sessionId);
       pausedSessionIds.delete(event.sessionId);
       mutedSessionIds.delete(event.sessionId);
+      prioritizedSessionIds.delete(event.sessionId);
+      dismissedSessionIds.delete(event.sessionId);
       sessionHeldTurns.delete(event.sessionId);
       if (lastTurn?.sessionId === event.sessionId) lastTurn = null;
       void renderSessionPanel();
@@ -932,7 +1035,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const controlDisposition = gateTurnForControls(event, audibleTurn, {
       globalMuted: muted,
       globalPaused: pause.paused,
-      settingsOpen: settingsOverlay?.isOpen() ?? false,
+      settingsOpen: sessionModalOpen(),
       globalHeldTurns: pending,
       pausedSessionIds,
       mutedSessionIds,
@@ -958,13 +1061,71 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // pings the phone. `conch wake` always cuts through.
     // Only reach for ioreg when the away-timer is actually armed (default off) —
     // muted short-circuits without spawning anything.
-    if (event.type !== "wake" && (muted || cfg.awayAfterSecs)) {
+    if (event.type !== "wake" && event.type !== "recite" && (muted || cfg.awayAfterSecs)) {
       const idle = muted ? 0 : (await idleSeconds() ?? 0); // null probe → 0 → not away (fail safe)
       if (muted || idle >= cfg.awayAfterSecs) {
         log(`${muted ? "muted" : `away (idle ${Math.round(idle / 60)}m)`} — staying quiet for "${event.label}"`);
         if (audibleTurn || event.ntype === "idle_prompt") lastTurn = event; // wake still finds it
         return;
       }
+    }
+
+    if (event.type === "recite") {
+      const target: TurnEvent | null = event.sessionId
+        ? event
+        : lastTurn
+          ? { ...lastTurn, type: "recite", announce: "" }
+          : null;
+      if (!target) {
+        log("nothing to recite — no session has spoken yet");
+        return;
+      }
+      recitingEvent = target;
+      try {
+        const targetGone = sessionGoneFromSnapshot(
+          await registrySnapshot(cfg.claudeDir),
+          target.sessionId,
+        );
+        if (shuttingDown || interruptedByPause() || consumeStopKey()) return;
+        if (targetGone) {
+          log(`nothing to recite — "${target.label}" is closed`);
+          return;
+        }
+        if (!target.transcriptPath) {
+          log(`nothing to recite for "${target.label}" — transcript not found`);
+          return;
+        }
+        const latest = stripMarkdown(await lastAssistantText(target.transcriptPath));
+        if (shuttingDown || interruptedByPause() || consumeStopKey()) return;
+        if (!latest.trim()) {
+          log(`nothing to recite for "${target.label}" — no assistant output`);
+          return;
+        }
+
+        log(`recite -> "${target.label}"`);
+        if (cfg.revealOnTurn && target.pid) void revealSessionWindow(target.pid);
+        resetReadingProgress();
+        setState("speaking", target.label);
+        await speak(cfg, `${target.label}:`, target.label);
+        if (shuttingDown || interruptedByPause()) return;
+        // event.announce is intentionally empty, so conversationLoop starts at
+        // sentence zero. autoTurn=false avoids the keyboard-activity mic gate.
+        await conversationLoop(
+          target,
+          "",
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          false,
+          pauseGeneration,
+        );
+      } finally {
+        recitingEvent = null;
+      }
+      return;
     }
 
     if (event.type === "wake") {
@@ -2465,6 +2626,72 @@ export async function runDaemon(cfg: Config): Promise<void> {
       onClose: () => settingsPause.close(),
       onChange: () => void renderSessionPanel(),
     });
+    sessionActionsOverlay = new SessionActionsOverlay({
+      controller: {
+        voiceCandidates: () => availableVoiceRing(cfg),
+        effectiveVoice: (target) => voiceFor(cfg, target.label),
+        previewVoice: (target, voice) => {
+          speech.cancelCurrent();
+          enqueue({
+            type: "speak",
+            sessionId: target.sessionId,
+            label: "",
+            announce: `${target.label} sounds like this.`,
+            voice,
+          });
+        },
+        setVoice: (target, voice) => {
+          setVoiceOverride(target.label, voice);
+          log(`voice pinned for "${target.label}" -> ${voice}`);
+        },
+        resetVoice: (target) => {
+          clearVoiceOverride(target.label);
+          log(`voice reset to auto for "${target.label}"`);
+        },
+        isPrioritized: (sessionId) => prioritizedSessionIds.has(sessionId),
+        setPrioritized: (sessionId, prioritized) => {
+          if (prioritized) prioritizedSessionIds.add(sessionId);
+          else prioritizedSessionIds.delete(sessionId);
+          log(`${prioritized ? "★ prioritized" : "normal hand-off for"} "${
+            panelLabels.get(sessionId) ?? sessionId.slice(0, 8)
+          }"`);
+          void renderSessionPanel();
+        },
+        rename: (target, label) => {
+          const renamed = renameSessionLabel(
+            target.sessionId,
+            target.label,
+            label,
+          );
+          relabelRuntimeSession(target.sessionId, target.label, renamed.label);
+          log(`renamed "${target.label}" -> "${renamed.label}"${
+            renamed.voiceMigrated ? " (voice pin migrated)" : ""
+          }`);
+          void renderSessionPanel();
+          return renamed.label;
+        },
+        dismiss: (target) => {
+          // Hide before the mute helper repaints, so no intermediate
+          // muted-but-visible row flashes behind the closing modal.
+          dismissedSessionIds.add(target.sessionId);
+          panelOrder = panelOrder.filter((sessionId) => sessionId !== target.sessionId);
+          panelLabels.delete(target.sessionId);
+          speech.cancelCurrent();
+          for (let index = queue.length - 1; index >= 0; index--) {
+            const queued = queue[index]!;
+            if (queued.type === "speak" && queued.sessionId === target.sessionId) {
+              queue.splice(index, 1);
+            }
+          }
+          theaterNavigation.release();
+          instantControls.setSessionMuted(target.sessionId, true);
+          log(`dismissed "${target.label}" — announcements stopped; session keeps running`);
+        },
+      },
+      onOpen: () => settingsPause.open(),
+      onClose: () => settingsPause.close(),
+      onChange: () => void renderSessionPanel(),
+    });
   }
   const server = createServer({ allowHalfOpen: true }, (sock) => {
     let buf = "";
@@ -2634,6 +2861,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   async function numberedSessions(): Promise<Array<{ n: number; s: SessionInfo; label: string }>> {
     const sessions = await listSessions(cfg.claudeDir);
     return sessions
+      .filter((session) => !dismissedSessionIds.has(session.sessionId))
       .map((s) => ({ s, label: sessionLabel(s, s.cwd) }))
       .sort((a, b) => a.label.localeCompare(b.label))
       .slice(0, 9)
@@ -2704,6 +2932,26 @@ export async function runDaemon(cfg: Config): Promise<void> {
     });
   }
 
+  /** Read a target session's latest assistant output from sentence zero. */
+  async function reciteBySessionId(id: string | null): Promise<void> {
+    if (!id) return log("nothing to recite — no session is parked or active");
+    const s = (await listSessions(cfg.claudeDir)).find((session) => session.sessionId === id);
+    if (!s) return log("nothing to recite — that session is gone");
+    const transcriptPath = findTranscript(cfg.claudeDir, s.sessionId);
+    if (!transcriptPath) return log(`nothing to recite for "${sessionLabel(s, s.cwd)}" — transcript not found`);
+    const label = sessionLabel(s, s.cwd);
+    enqueue({
+      type: "recite",
+      sessionId: s.sessionId,
+      label,
+      cwd: s.cwd,
+      pid: s.pid,
+      announce: "",
+      transcriptPath,
+      mark: await transcriptMark(transcriptPath),
+    });
+  }
+
   /** Move the panel selection by delta; off either end releases the cursor to auto. */
   function moveSelection(delta: number): void {
     if (!panelOrder.length) return;
@@ -2729,7 +2977,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
   }
 
   function theaterActionTarget(): string | null {
-    return theaterNavigation.actionTarget(lastTurn?.sessionId ?? null);
+    const target = theaterNavigation.actionTarget(lastTurn?.sessionId ?? null);
+    return target && !dismissedSessionIds.has(target) ? target : null;
   }
 
   // Space remains the guaranteed stop while reciting or mid-exchange. Unlike
@@ -2772,7 +3021,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
     process.stdin.resume();
     process.stdin.on("data", (d) => {
       const { events, rest } = mouseParser.feed(d.toString());
-      if (theaterMode && !settingsOverlay?.isOpen()) {
+      if (
+        theaterMode
+        && !settingsOverlay?.isOpen()
+        && !sessionActionsOverlay?.isOpen()
+      ) {
         let wheel = 0;
         for (const event of events) {
           if (event.kind === "wheel") wheel += event.delta;
@@ -2787,9 +3040,22 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // Modal routing owns every key first. Raw Ctrl-C is the one intentional
       // fallthrough so terminal-safe daemon shutdown can always run.
       if (settingsOverlay?.handleKey(c)) return;
+      if (sessionActionsOverlay?.handleKey(c)) return;
       if (theaterMode && c === ",") {
         settingsOverlay?.open();
         return;
+      }
+      if (theaterMode && c === "\r") {
+        const sessionId = theaterNavigation.manualControlTarget();
+        if (sessionId) {
+          sessionActionsOverlay?.open({
+            sessionId,
+            label: panelLabels.get(sessionId)
+              ?? sessionStates.get(sessionId)?.label
+              ?? sessionId.slice(0, 8),
+          });
+          return;
+        }
       }
       if (c === " ") {
         if (busy) stopReciting("spacebar");
@@ -2817,6 +3083,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       else if (c === "s") void printSessions();
       else if (c === "l") { const on = setLogsVisible(!logsShown()); log(on ? "logs on — press l to hide" : "logs off"); }
       else if (c === "v") void auditionVoices();
+      else if (theaterMode && c === "r") void reciteBySessionId(theaterActionTarget());
       else if (dispatchTheaterControlKey(c, theaterControls)) {}
       else if (c === "?" || c === "h") printHelp();
       else if (c === "q" || c === "\u0003") void shutdown();

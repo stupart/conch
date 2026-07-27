@@ -61,6 +61,30 @@ export interface SettingsOverlayModel {
   error?: string;
 }
 
+export type SessionActionKey = "voice" | "prioritize" | "rename" | "dismiss";
+
+export interface SessionActionsOverlayRowModel {
+  key: SessionActionKey;
+  value: string;
+  help: string;
+  selected: boolean;
+  editing: boolean;
+  ack?: string;
+  /** The dismiss row is armed only between its first and confirming Enter. */
+  confirming?: boolean;
+}
+
+export interface SessionActionsOverlayModel {
+  /** Captured when the modal opens; never derived from the fading theater cursor. */
+  target: {
+    sessionId: string;
+    label: string;
+  };
+  rows: SessionActionsOverlayRowModel[];
+  selectedIndex: number;
+  error?: string;
+}
+
 export interface PanelModel {
   rows: PanelRowModel[];
   mode: DashboardMode;
@@ -71,6 +95,7 @@ export interface PanelModel {
   /** Theater-only presentation state. Footer rendering intentionally ignores it. */
   panelOpen: boolean;
   settingsOverlay?: SettingsOverlayModel | null;
+  sessionActionsOverlay?: SessionActionsOverlayModel | null;
 }
 
 export interface PanelSessionState extends LatchedState {

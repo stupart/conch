@@ -494,22 +494,40 @@ describe("future-turn control gates", () => {
     expect(h.enqueued).toEqual([]);
   });
 
-  test("mute stamps ordinary arrivals but explicit post-mute wake stays available", () => {
+  test("mute stamps ordinary arrivals but explicit post-mute commands stay available", () => {
     expect(shouldForgetMutedArrival(turn(), true, false)).toBeTrue();
     expect(shouldForgetMutedArrival(turn(), false, true)).toBeTrue();
     expect(shouldForgetMutedArrival(turn({ type: "wake" }), true, true)).toBeFalse();
+    expect(shouldForgetMutedArrival(turn({ type: "recite" }), true, true)).toBeFalse();
     expect(shouldForgetMutedArrival(turn({ type: "unmute" }), true, false)).toBeFalse();
   });
 
-  test("queue stamping respects global versus selected-session scope", () => {
+  test("queue stamping cancels queued wake and recite commands at mode edges", () => {
     const alphaTurn = turn();
     const betaTurn = turn({ sessionId: "session-b", label: "beta" });
     const alphaWake = turn({ type: "wake", announce: "" });
     const betaWake = turn({ type: "wake", sessionId: "session-b", label: "beta", announce: "" });
     const unnamedWake = turn({ type: "wake", sessionId: "", label: "", announce: "" });
+    const alphaRecite = turn({ type: "recite", announce: "" });
+    const betaRecite = turn({
+      type: "recite",
+      sessionId: "session-b",
+      label: "beta",
+      announce: "",
+    });
     const control = turn({ type: "pause", sessionId: "", announce: "" });
     const explicitSpeech = turn({ type: "speak", sessionId: "", announce: "test" });
-    const queue = [alphaTurn, betaTurn, alphaWake, betaWake, unnamedWake, control, explicitSpeech];
+    const queue = [
+      alphaTurn,
+      betaTurn,
+      alphaWake,
+      betaWake,
+      unnamedWake,
+      alphaRecite,
+      betaRecite,
+      control,
+      explicitSpeech,
+    ];
     const globallyForgotten: TurnEvent[] = [];
     const scopedForgotten: TurnEvent[] = [];
     const globalWakes: TurnEvent[] = [];
@@ -524,10 +542,48 @@ describe("future-turn control gates", () => {
       "session-b",
     );
 
-    expect(globallyForgotten).toEqual([alphaTurn, betaTurn, alphaWake, betaWake, unnamedWake]);
-    expect(scopedForgotten).toEqual([alphaTurn, alphaWake]);
-    expect(globalWakes).toEqual([alphaWake, betaWake, unnamedWake]);
-    expect(scopedWakes).toEqual([betaWake, unnamedWake]);
+    expect(globallyForgotten).toEqual([
+      alphaTurn,
+      betaTurn,
+      alphaWake,
+      betaWake,
+      unnamedWake,
+      alphaRecite,
+      betaRecite,
+    ]);
+    expect(scopedForgotten).toEqual([alphaTurn, alphaWake, alphaRecite]);
+    expect(globalWakes).toEqual([
+      alphaWake,
+      betaWake,
+      unnamedWake,
+      alphaRecite,
+      betaRecite,
+    ]);
+    expect(scopedWakes).toEqual([betaWake, unnamedWake, betaRecite]);
+  });
+
+  test("explicit recite cuts through global and per-session quiet modes", () => {
+    const recite = turn({ type: "recite", announce: "" });
+    const heldGlobal = turn({ announce: "alpha: older globally held turn" });
+    const heldSession = turn({ announce: "alpha: older session-held turn" });
+    const globalHeldTurns = new Map<string, TurnEvent>([
+      ["session-a", heldGlobal],
+    ]);
+    const sessionHeldTurns = new Map<string, TurnEvent>([
+      ["session-a", heldSession],
+    ]);
+
+    expect(gateTurnForControls(recite, true, {
+      globalMuted: true,
+      globalPaused: true,
+      settingsOpen: false,
+      globalHeldTurns,
+      pausedSessionIds: new Set(["session-a"]),
+      mutedSessionIds: new Set(["session-a"]),
+      sessionHeldTurns,
+    })).toBeNull();
+    expect(globalHeldTurns.get("session-a")).toBe(heldGlobal);
+    expect(sessionHeldTurns.get("session-a")).toBe(heldSession);
   });
 
   test("manual global mute and unmute keep their spoken acknowledgements", () => {

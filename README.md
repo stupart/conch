@@ -80,6 +80,8 @@ That's it — the daemon finds `mlx_audio.server`, spawns it, and **every sessio
 | `conch install` | Merge hooks into `~/.claude/settings.json` (backs up first) |
 | `conch daemon` | Run the voice loop: announce → listen → inject |
 | `conch wake [name]` | Reopen the mic — last announced session, or by name (bind it to a hotkey) |
+| `conch recite [name]` | Read the latest response aloud — last announced session, or by name |
+| `conch rename <session> <label>` | Save a conch display label and migrate its pinned voice |
 | `conch sessions` | List live Claude Code sessions |
 | `conch mute` / `unmute` | Silence announcements + mic |
 | `conch pause` / `resume` | Step away: stay quiet but HOLD finished sessions, replay on resume |
@@ -116,7 +118,7 @@ Commands only match as the *entire* utterance — "continue working on the login
 
 **Stepping away for a bit?** `conch pause` (or **p** with no session parked) is mute's patient sibling: it stays quiet *and* **holds** every session that finishes while you're gone, then replays them on `conch resume` or the next **p**. **Joining a meeting, pause first** — otherwise an open mic window could pick up meeting audio and inject it into a session.
 
-**Want to focus on one thing?** Use **↑↓** to park the cursor on a session. Its latest output follows into the pane and stays there; **esc** releases the cursor back to automatic follow. While it is parked, **p** pauses or resumes just that session, holding only its latest turn and replaying that turn from the top on resume; **m** mutes or unmutes just that session, forgetting what finishes with no replay. With no parked cursor, **p** and **m** are global. Either control takes effect instantly: an active read stops, the mic closes, and its in-flight capture is dropped.
+**Want to focus on one thing?** Use **↑↓** to park the cursor on a session. Its latest output follows into the pane and stays there; **esc** releases the cursor back to automatic follow. Press **r** to read that output aloud, or **Enter** for its actions menu: preview/pin a voice, prioritize its next hand-off, rename it, or safely dismiss it from conch while leaving the Claude process running. While it is parked, **p** pauses or resumes just that session, holding only its latest turn and replaying that turn from the top on resume; **m** mutes or unmutes just that session, forgetting what finishes with no replay. With no parked cursor, **p** and **m** are global. Either control takes effect instantly: an active read stops, the mic closes, and its in-flight capture is dropped.
 
 **Permission prompts** ("dayloop needs you: permission to run npm install") open the mic too, but only accept yes/no: "yes" presses Enter on the highlighted option, "no" presses Escape, anything else is ignored — free text near a permission dialog is deliberately refused. And idle "waiting for your input" nags are filtered: conch checks whether the session's last reply actually asked you something, and stays quiet when the session is just idle ("I'll ping you when it lands").
 
@@ -134,12 +136,12 @@ Run the daemon in a visible terminal (`conch daemon`), or just type **`conch`** 
  ▎ arch site    ● │
    conch        ● │
    poaster      ⏸ │ pause to send · space to stop · say send to submit now
-   ↑↓ park · esc back · wheel scroll · drag copy · \ pane · , settings · space talk · p pause · m mute · l logs · ? help · q quit
+   ↑↓ park · esc back · wheel scroll · drag copy · \ pane · , settings · ⏎ actions · r recite · space talk · p pause · m mute · ? help · q quit
 ```
 
 Sessions that need input sort to the top. Each row carries a **colored status dot** — `❗ needs a response`, `○ waiting for you`, `● working…`, `● recording`, `⏸ paused`, `🔇 muted` — and the **session conch is currently talking to** takes a cyan accent bar and lights up in place as it moves through the turn (`▶ speaking` → `● mic open` → `● recording` → `… transcribing`). The **pane on the right reads along**: your words build there as you speak them while it records, and when conch reads a reply back the pane scrolls through it, dimming what's already been spoken.
 
-You don't have to touch it — but you can. **↑↓** park a cursor on a session and make the pane follow its latest output until **esc** releases it; **space** talks to the parked session (or the active one); **p** toggles pause and **m** toggles mute, targeting the parked session while the cursor is parked and the whole app otherwise. The mouse wheel scrolls long pane output, and dragging in the pane selects and copies text through both the macOS clipboard and OSC 52 (including tmux passthrough). **\\** hides the pane for a full-width ledger; **,** opens live settings; **l** toggles a log in the pane; **?** shows the full key + voice-command help; **q** quits. Set `CONCH_NO_MOUSE=1` to keep the dashboard but restore terminal-native mouse selection. The play-by-play is always written to `/tmp/conch-daemon.log` whether or not the log is on screen, so the dashboard stays clean by default.
+You don't have to touch it — but you can. **↑↓** park a cursor on a session and make the pane follow its latest output until **esc** releases it; **Enter** opens that parked session's trapped actions menu; **r** recites the parked output (or the active/last session when no cursor is parked); **space** talks to the parked session (or the active one); **p** toggles pause and **m** toggles mute, targeting the parked session while the cursor is parked and the whole app otherwise. The mouse wheel scrolls long pane output, and dragging in the pane selects and copies text through both the macOS clipboard and OSC 52 (including tmux passthrough). **\\** hides the pane for a full-width ledger; **,** opens live settings; **l** toggles a log in the pane; **?** shows the full key + voice-command help; **q** quits. Set `CONCH_NO_MOUSE=1` to keep the dashboard but restore terminal-native mouse selection. The play-by-play is always written to `/tmp/conch-daemon.log` whether or not the log is on screen, so the dashboard stays clean by default.
 
 An ordinary exit restores mouse tracking automatically. If the daemon is killed with untrappable `SIGKILL` and the shell starts printing mouse reports, recover with `printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l'`.
 

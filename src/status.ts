@@ -634,6 +634,67 @@ function theaterSettingsOverlay(
   return output.slice(0, height);
 }
 
+function theaterSessionActionsOverlay(
+  base: string[],
+  overlay: NonNullable<PanelModel["sessionActionsOverlay"]>,
+  width: number,
+  height: number,
+): string[] {
+  if (width < 12 || height < 4) {
+    const compact = [...base];
+    while (compact.length < height) compact.push("");
+    if (height) compact[Math.floor(height / 2)] = " actions · esc close";
+    return compact.slice(0, height);
+  }
+  const output = [...base];
+  while (output.length < height) output.push("");
+  const boxWidth = Math.max(12, Math.min(width - 2, 88));
+  const innerWidth = boxWidth - 2;
+  const errorRows = overlay.error && height >= 6 ? 1 : 0;
+  const visibleCount = Math.max(1, Math.min(overlay.rows.length, height - 3 - errorRows));
+  const maxStart = Math.max(0, overlay.rows.length - visibleCount);
+  const start = Math.max(0, Math.min(
+    maxStart,
+    overlay.selectedIndex - Math.floor(visibleCount / 2),
+  ));
+  const visibleRows = overlay.rows.slice(start, start + visibleCount);
+  const keyWidth = Math.max(6, Math.min(14, ...overlay.rows.map((row) => row.key.length)));
+  const valueWidth = Math.max(5, Math.min(
+    20,
+    ...overlay.rows.map((row) => row.value.length + (row.editing ? 1 : 0)),
+  ));
+  const lines: string[] = [];
+  lines.push(`\x1b[2m╭${"─".repeat(innerWidth)}╮\x1b[0m`);
+  lines.push(`\x1b[2m│\x1b[0m${padVisible(
+    ` actions · ${overlay.target.label} · ↑↓ choose · esc close`,
+    innerWidth,
+  )}\x1b[2m│\x1b[0m`);
+  for (const row of visibleRows) {
+    const cursor = row.selected ? "›" : " ";
+    const value = `${row.value}${row.editing ? "▌" : ""}`;
+    const ack = row.ack ? ` · \x1b[2m${row.ack}\x1b[22m` : "";
+    const text = `${cursor} ${row.key.padEnd(keyWidth)} · ${value.padEnd(valueWidth)}${ack} · ${row.help}`;
+    const fitted = padVisible(text, innerWidth);
+    const styled = row.confirming
+      ? `\x1b[1;31m\x1b[48;2;48;24;24m${fitted}\x1b[0m`
+      : row.selected
+        ? `\x1b[38;2;88;201;212m\x1b[48;2;28;32;36m${fitted}\x1b[0m`
+        : fitted;
+    lines.push(`\x1b[2m│\x1b[0m${styled}\x1b[2m│\x1b[0m`);
+  }
+  if (errorRows) {
+    lines.push(`\x1b[2m│\x1b[0m${padVisible(` ${overlay.error}`, innerWidth)}\x1b[2m│\x1b[0m`);
+  }
+  lines.push(`\x1b[2m╰${"─".repeat(innerWidth)}╯\x1b[0m`);
+
+  const top = Math.max(0, Math.floor((height - lines.length) / 2));
+  const left = " ".repeat(Math.max(0, Math.floor((width - boxWidth) / 2)));
+  for (let index = 0; index < lines.length && top + index < height; index++) {
+    output[top + index] = left + lines[index]!;
+  }
+  return output.slice(0, height);
+}
+
 /** Full-frame alternate-screen renderer. Its tests assert invariants, not pixels. */
 export function createTheaterRenderer(
   io: RendererIO = processRendererIO(),
@@ -668,7 +729,7 @@ export function createTheaterRenderer(
     const rows = Math.max(1, io.rows());
     const frameWidth = Math.max(1, columns - 1); // never arm the terminal's wrap column
     const frame: string[] = [];
-    const overlayOpen = Boolean(model?.settingsOverlay);
+    const overlayOpen = Boolean(model?.settingsOverlay || model?.sessionActionsOverlay);
     const overlayOnly = overlayOpen && columns < 36;
     const paneOpen = overlayOpen || ((model?.panelOpen ?? true) && columns >= 52);
     let ledgerWidth = frameWidth;
@@ -731,6 +792,13 @@ export function createTheaterRenderer(
     }
     if (model?.settingsOverlay && paneOpen) {
       content = theaterSettingsOverlay(content, model.settingsOverlay, contentWidth, bodyHeight);
+    } else if (model?.sessionActionsOverlay && paneOpen) {
+      content = theaterSessionActionsOverlay(
+        content,
+        model.sessionActionsOverlay,
+        contentWidth,
+        bodyHeight,
+      );
     }
     const allLedgerRows = model?.rows ?? [];
     const navFocus = allLedgerRows.findIndex((row) => row.navSelected);
@@ -758,9 +826,13 @@ export function createTheaterRenderer(
         : model?.mode.paused
           ? `⏸ paused · holding ${model.mode.holding} · `
           : "";
-      frame.push(model?.settingsOverlay
-        ? "  \x1b[2msettings · esc close · ↑↓ choose · ←→ adjust · space toggle · enter commit\x1b[0m"
-        : `${modeHint}${keybar}`);
+      frame.push(
+        model?.settingsOverlay
+          ? "  \x1b[2msettings · esc close · ↑↓ choose · ←→ adjust · space toggle · enter commit\x1b[0m"
+          : model?.sessionActionsOverlay
+            ? "  \x1b[2mactions · esc close · ↑↓ choose · ←→ adjust · enter select\x1b[0m"
+            : `${modeHint}${keybar}`,
+      );
     }
 
     const bounded = frame.slice(0, rows);
