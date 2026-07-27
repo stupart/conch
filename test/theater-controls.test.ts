@@ -202,6 +202,18 @@ describe("dashboard control copy", () => {
       source.indexOf("const theaterControls"),
       source.indexOf("// Interactive keys"),
     );
+    const numberedWake = source.slice(
+      source.indexOf("function wakeByNumber"),
+      source.indexOf("function wakeBySessionId"),
+    );
+    const targetedWake = source.slice(
+      source.indexOf("function wakeBySessionId"),
+      source.indexOf("function reciteBySessionId"),
+    );
+    const recite = source.slice(
+      source.indexOf("function reciteBySessionId"),
+      source.indexOf("function moveSelection"),
+    );
 
     expect(rawKeys).toContain("dispatchTheaterControlKey(c, theaterControls)");
     expect(rawKeys).toContain("mouseParser.feed(d.toString())");
@@ -228,12 +240,25 @@ describe("dashboard control copy", () => {
     expect(rawKeys.indexOf("settingsOverlay?.handleKey(c)")).toBeLessThan(
       rawKeys.indexOf("sessionActionsOverlay?.handleKey(c)"),
     );
+    expect(rawKeys.indexOf("sessionActionsOverlay?.handleKey(c)")).toBeLessThan(
+      rawKeys.indexOf('c === "r"'),
+    );
+    expect(rawKeys.indexOf("sessionActionsOverlay?.handleKey(c)")).toBeLessThan(
+      rawKeys.indexOf("dispatchTheaterControlKey(c, theaterControls)"),
+    );
     expect(rawKeys).toContain('c === "\\r"');
     expect(rawKeys).not.toContain('c === "\\n"');
     expect(rawKeys).toContain("sessionActionsOverlay?.open(");
     expect(rawKeys).toContain("theaterNavigation.manualControlTarget()");
     expect(rawKeys).toContain('c === "r"');
     expect(rawKeys).toContain("reciteBySessionId(theaterActionTarget())");
+    expect(numberedWake).toContain("instantControls.enqueueInstant({");
+    expect(numberedWake).toContain("numberedSessionRows.find(");
+    expect(numberedWake).not.toContain("await ");
+    expect(targetedWake).toContain("panelSessions.get(id)");
+    expect(targetedWake).not.toContain("await ");
+    expect(recite).toContain("instantControls.enqueueInstant({");
+    expect(recite).not.toContain("await ");
     expect(callbacks).toContain("theaterNavigation.manualControlTarget()");
     expect(callbacks).not.toContain("theaterActionTarget()");
     expect(enqueue).toContain("instantControls.applyGlobal(event.type)");
@@ -246,6 +271,10 @@ describe("dashboard control copy", () => {
     expect(source).toContain("else latestTurnBySession.delete(sessionId)");
     expect(source).not.toContain('requestExternal("mute")');
     expect(source).not.toContain('requestExternal("pause")');
+    expect(source).toContain(
+      "markQueuedWakesForControl(queue, forgetQueuedAudioCommand)",
+    );
+    expect(source).toContain("instantQueueBarriers.delete(event)");
     expect(source).toContain('if (event.type === "mute") return muted ? announceMuted(true)');
     expect(source).toContain('if (event.type === "unmute") return !muted ? announceMuted(false)');
     expect(source).toContain("muted || cfg.awayAfterSecs");

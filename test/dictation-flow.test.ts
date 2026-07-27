@@ -192,6 +192,7 @@ describe("controller/reducer integration contracts", () => {
     { label: "global unmute", command: "unmute", scoped: false, holds: false },
     { label: "session mute", command: "mute", scoped: true, holds: false },
     { label: "session unmute", command: "unmute", scoped: true, holds: false },
+    { label: "instant recite", command: "recite", scoped: false, holds: false },
   ] as const) {
     test(`${control.label} lets an active Whisper finish but drops every result`, async () => {
       const backend = new FakeBackend();
@@ -229,6 +230,7 @@ describe("controller/reducer integration contracts", () => {
       const pausedSessionIds = new Set<string>();
       const mutedSessionIds = new Set<string>();
       const sessionHeldTurns = new Map<string, TurnEvent>();
+      const enqueued: TurnEvent[] = [];
       let muted = !control.scoped && control.command === "unmute";
       let abortCalls = 0;
       let abortTicket: ReturnType<DictationController["requestBarrier"]> | null = null;
@@ -252,7 +254,9 @@ describe("controller/reducer integration contracts", () => {
         speak: async () => {},
         liveSessionIds: async () => new Set(["session-a"]),
         userRespondedSince: async () => false,
-        enqueue() {},
+        enqueue(event) {
+          enqueued.push(event);
+        },
       });
       const controls = new InstantControls({
         pause,
@@ -261,7 +265,10 @@ describe("controller/reducer integration contracts", () => {
         mutedSessionIds,
         sessionHeldTurns,
         setMuted: (next) => void (muted = next),
-        enqueue() {},
+        enqueue(event) {
+          enqueued.push(event);
+        },
+        markInstantQueued() {},
         forgetQueued() {},
         forgetLatest() {},
         cancelQueuedWakes() {},
@@ -278,7 +285,10 @@ describe("controller/reducer integration contracts", () => {
       }
       const capturedGeneration = pause.capture();
 
-      if (control.scoped) {
+      const recite = { ...current, type: "recite" as const, announce: "" };
+      if (control.command === "recite") {
+        controls.enqueueInstant(recite);
+      } else if (control.scoped) {
         if (control.command === "pause" || control.command === "resume") {
           controls.setSessionPaused("session-a", control.command === "pause");
         } else {
@@ -297,12 +307,14 @@ describe("controller/reducer integration contracts", () => {
       expect(muted).toBe(!control.scoped && control.command === "mute");
       expect(pausedSessionIds.has("session-a")).toBe(control.scoped && control.command === "pause");
       expect(mutedSessionIds.has("session-a")).toBe(control.scoped && control.command === "mute");
+      if (control.command === "recite") expect(enqueued).toEqual([recite]);
 
       backend.recorders[1]!.finish("aborted successor");
       releaseTranscriber.resolve();
 
       const reducer = new DictationReducer({ holdSubmit: true });
       const accepted: DictationEvent[] = [];
+      const injectionAuthorizations: string[] = [];
       while (true) {
         const event = await controller.nextEvent();
         const disposition = pause.interceptDictationEvent(
@@ -312,7 +324,13 @@ describe("controller/reducer integration contracts", () => {
         );
         if (!disposition.intercepted) {
           accepted.push(event);
-          if (event.kind === "transcript") consumeTranscript(reducer, event, accepted.length);
+          if (event.kind === "transcript") {
+            for (const effect of consumeTranscript(reducer, event, accepted.length)) {
+              if (effect.type === "action-ready" && effect.payload) {
+                injectionAuthorizations.push(effect.payload);
+              }
+            }
+          }
         }
         if (disposition.terminal) break;
       }
@@ -321,6 +339,7 @@ describe("controller/reducer integration contracts", () => {
       expect(completed).toEqual(["whisper already running"]);
       expect(accepted).toEqual([]);
       expect(reducer.snapshot.buffer).toEqual([]);
+      expect(injectionAuthorizations).toEqual([]);
       const held = control.scoped ? sessionHeldTurns : globalHeldTurns;
       expect(held.get("session-a")).toBe(control.holds ? current : undefined);
     });

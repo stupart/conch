@@ -40,6 +40,9 @@ function harness(options: {
   holdableTurn?: PauseControllerOptions["holdableTurn"];
   latestTurns?: Map<string, TurnEvent>;
   liveSessionIds?: PauseControllerOptions["liveSessionIds"];
+  activeSession?: PauseSession | null;
+  cancelCurrentSpeech?: () => void;
+  cancelPendingAudio?: () => void;
 } = {}) {
   let current: TurnEvent | null = options.current === undefined ? turn() : options.current;
   let muted = false;
@@ -59,6 +62,7 @@ function harness(options: {
   const sessionHeldTurns = new Map<string, TurnEvent>();
   const latestTurns = options.latestTurns ?? new Map<string, TurnEvent>();
   const enqueued: TurnEvent[] = [];
+  const markedInstant: TurnEvent[] = [];
   const logs: string[] = [];
   const forgottenQueuedScopes: Array<string | undefined> = [];
   const cancelledWakeScopes: Array<string | undefined> = [];
@@ -69,9 +73,15 @@ function harness(options: {
     pending: globalHeldTurns,
     currentTurn: () => current,
     holdableTurn: options.holdableTurn,
-    activeSession: () => session,
-    cancelCurrentSpeech: () => void cancelCurrentCalls++,
-    cancelPendingAudio: () => void cancelPendingCalls++,
+    activeSession: () => options.activeSession === undefined ? session : options.activeSession,
+    cancelCurrentSpeech: () => {
+      cancelCurrentCalls++;
+      options.cancelCurrentSpeech?.();
+    },
+    cancelPendingAudio: () => {
+      cancelPendingCalls++;
+      options.cancelPendingAudio?.();
+    },
     persist() {},
     render: () => void renders++,
     setModeState() {},
@@ -91,6 +101,7 @@ function harness(options: {
       muted = next;
     },
     enqueue: (event) => enqueued.push(event),
+    markInstantQueued: (event) => markedInstant.push(event),
     forgetQueued: (sessionId) => forgottenQueuedScopes.push(sessionId),
     forgetLatest: (sessionId) => {
       if (sessionId === undefined) latestTurns.clear();
@@ -111,6 +122,7 @@ function harness(options: {
     sessionHeldTurns,
     latestTurns,
     enqueued,
+    markedInstant,
     logs,
     forgottenQueuedScopes,
     cancelledWakeScopes,
@@ -137,6 +149,70 @@ function harness(options: {
 }
 
 describe("InstantControls", () => {
+  test("instant recite synchronously cuts an active read and queues the replacement", () => {
+    const original = turn();
+    const recite = { ...turn(), type: "recite" as const, announce: "" };
+    let reading = true;
+    const h = harness({
+      current: original,
+      activeSession: null,
+      cancelCurrentSpeech: () => void (reading = false),
+    });
+    const generation = h.pause.capture();
+
+    h.controls.enqueueInstant(recite);
+
+    expect(reading).toBeFalse();
+    expect(h.pause.interrupted(generation)).toBeTrue();
+    expect(h.cancelCurrentCalls).toBe(1);
+    expect(h.cancelPendingCalls).toBe(1);
+    expect(h.abortCalls).toBe(0);
+    expect(h.cancelledWakeScopes).toEqual([undefined]);
+    expect(h.markedInstant).toEqual([recite]);
+    expect(h.enqueued).toEqual([recite]);
+    expect(h.pause.paused).toBeFalse();
+    expect(h.muted).toBeFalse();
+    expect(h.globalHeldTurns.size).toBe(0);
+    expect(h.sessionHeldTurns.size).toBe(0);
+  });
+
+  test("instant recite closes an open mic without waiting for its abort promise", () => {
+    const original = turn();
+    const recite = { ...turn(), type: "recite" as const, announce: "" };
+    const h = harness({ current: original });
+    const generation = h.pause.capture();
+
+    h.controls.enqueueInstant(recite);
+
+    expect(h.pause.interrupted(generation)).toBeTrue();
+    expect(h.abortCalls).toBe(1);
+    expect(h.cancelCurrentCalls).toBe(1);
+    expect(h.cancelPendingCalls).toBe(1);
+    expect(h.markedInstant).toEqual([recite]);
+    expect(h.enqueued).toEqual([recite]);
+  });
+
+  test("targeted dashboard wake uses the same unscoped instant takeover edge", () => {
+    const current = turn({ sessionId: "session-a" });
+    const wake = {
+      ...turn(),
+      type: "wake",
+      sessionId: "session-b",
+      label: "beta",
+      announce: "",
+    } as const;
+    const h = harness({ current });
+    const generation = h.pause.capture();
+
+    h.controls.enqueueInstant(wake);
+
+    expect(h.pause.interrupted(generation)).toBeTrue();
+    expect(h.abortCalls).toBe(1);
+    expect(h.markedInstant).toEqual([wake]);
+    expect(h.enqueued).toEqual([wake]);
+    expect(h.cancelledWakeScopes).toEqual([undefined]);
+  });
+
   test("global pause and resume apply before abort or replay filtering can finish", async () => {
     const live = deferred<ReadonlySet<string> | null>();
     const original = turn();
