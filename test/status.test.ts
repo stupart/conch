@@ -799,6 +799,80 @@ describe("theater renderer lifecycle", () => {
     expect(copies).toEqual([]);
   });
 
+  test("live dictation renders the dimmed assistant reply above the transcript through transcription", () => {
+    const { io, writes } = recordingIO({ columns: 140, rows: 8 });
+    const renderer = createTheaterRenderer(io);
+    const reply = "The assistant context that this spoken response is answering.";
+    const partial = "Here is my live spoken response";
+    renderer.enter();
+    renderer.panel(sampleModel({
+      live: {
+        state: "recording",
+        label: "project-one",
+        partial,
+      },
+      reply: {
+        sessionId: "one",
+        text: reply,
+        spokenChars: reply.length,
+      },
+    }));
+
+    for (const state of ["listening", "recording", "transcribing"] as const) {
+      renderer.live({ state, label: "project-one", partial });
+      const frame = writes.at(-1)!;
+      expect(frame).toContain(`\x1b[2m↪ replying to · ${reply}\x1b[0m`);
+      expect(frame).toContain(partial);
+      if (state === "transcribing") expect(frame).not.toContain(`${partial}▌`);
+      else expect(frame).toContain(`${partial}▌`);
+      expect(frame.indexOf(reply)).toBeLessThan(frame.indexOf(partial));
+    }
+  });
+
+  test("tight conversation panes drop help then truncate the quote before the transcript", () => {
+    const dimensions = { columns: 72, rows: 6 };
+    const { io, writes } = recordingIO(dimensions);
+    const renderer = createTheaterRenderer(io);
+    const reply = `quote-start ${"assistant context ".repeat(40)}quote-tail`;
+    const partial = `${"earlier transcript ".repeat(30)}latest-live-tail`;
+    renderer.enter();
+    renderer.panel(sampleModel({
+      live: {
+        state: "recording",
+        label: "project-one",
+        partial,
+      },
+      reply: {
+        sessionId: "one",
+        text: reply,
+        spokenChars: reply.length,
+      },
+    }));
+
+    const tightFrame = writes.at(-1)!;
+    expect(tightFrame).toContain("↪ replying to · quote-start");
+    expect(tightFrame).not.toContain("quote-tail");
+    expect(tightFrame).toContain("latest-live-tail▌");
+    expect(tightFrame.indexOf("quote-start")).toBeLessThan(
+      tightFrame.indexOf("latest-live-tail▌"),
+    );
+
+    dimensions.rows = 5;
+    renderer.resize();
+    const conversationOnlyFrame = writes.at(-1)!;
+    expect(conversationOnlyFrame).toContain("↪ replying to · quote-start");
+    expect(conversationOnlyFrame).toContain("latest-live-tail▌");
+    expect(conversationOnlyFrame).not.toContain("pause to send");
+
+    dimensions.rows = 4;
+    renderer.resize();
+    const transcriptOnlyFrame = writes.at(-1)!;
+    expect(transcriptOnlyFrame).toContain("latest-live-tail▌");
+    expect(transcriptOnlyFrame).not.toContain("↪ replying to");
+    expect(transcriptOnlyFrame).not.toContain("quote-start");
+    expect(transcriptOnlyFrame).not.toContain("pause to send");
+  });
+
   test("shows the reducer-kept transcript before the live partial through transcription", () => {
     const { io, writes } = recordingIO({ columns: 120, rows: 7 });
     const renderer = createTheaterRenderer(io);

@@ -509,20 +509,45 @@ function theaterContentLines(
   if (capturing || transcribing) {
     // Dictation deliberately outranks a parked preview: never hide the words
     // currently headed toward a session while the mic is open/finalizing.
-    const available = Math.max(0, height - (note ? 1 : 0));
     const prefix = model.live.transcriptPrefix;
     const transcript = `${prefix ? `${prefix} ` : ""}${model.live.partial}${capturing ? "▌" : ""}`;
-    const doc = wrapPlainText(transcript, width).map(({ text }) => ({ text }));
-    const viewStart = Math.max(0, doc.length - available);
+    const transcriptDoc = wrapPlainText(transcript, width).map(({ text }) => ({ text }));
+    const reply = plainTheaterDocumentText(model.reply?.text ?? "");
+    const replyDoc = reply
+      ? wrapPlainText(`↪ replying to · ${reply}`, width).map(({ text }) => ({ text }))
+      : [];
+    const minimumConversationHeight =
+      (replyDoc.length ? 1 : 0) + (transcriptDoc.length ? 1 : 0);
+    // Help text yields before either side of the conversation. Two rows can
+    // therefore show quote + transcript; one row always belongs to dictation.
+    const conversationNote = note && (
+      minimumConversationHeight === 0 || height > minimumConversationHeight
+    ) ? note : "";
+    const available = Math.max(0, height - (conversationNote ? 1 : 0));
+    // Give the live transcript every row it needs when it fits. If it does not,
+    // retain only one quoted row and keep the transcript tail beside the cursor.
+    // At a one-row extreme the quote yields entirely to current dictation.
+    const minimumTranscriptHeight = transcriptDoc.length ? 1 : 0;
+    const replyHeight = replyDoc.length && available > minimumTranscriptHeight
+      ? Math.min(replyDoc.length, Math.max(1, available - Math.max(1, transcriptDoc.length)))
+      : 0;
+    const transcriptHeight = Math.max(0, available - replyHeight);
+    const transcriptStart = Math.max(0, transcriptDoc.length - transcriptHeight);
+    const visibleReply = replyDoc.slice(0, replyHeight);
+    const visibleTranscript = transcriptDoc.slice(transcriptStart);
+    const visibleDoc = [...visibleReply, ...visibleTranscript];
     return staticTheaterContent(
-      doc.slice(viewStart).map((line) => line.text),
-      doc,
+      [
+        ...visibleReply.map((line) => `\x1b[2m${line.text}\x1b[0m`),
+        ...visibleTranscript.map((line) => line.text),
+      ],
+      visibleDoc,
       `live:${state}:${model.live.label}`,
       width,
       height,
-      viewStart,
+      0,
       available,
-      note,
+      conversationNote,
     );
   }
 
