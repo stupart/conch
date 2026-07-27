@@ -66,6 +66,8 @@ export interface PanelModel {
   mode: DashboardMode;
   live: PanelLiveState;
   reply: PanelReplyModel | null;
+  /** Theater-only parked-session output. Footer rendering intentionally ignores it. */
+  preview?: PanelReplyModel | null;
   /** Theater-only presentation state. Footer rendering intentionally ignores it. */
   panelOpen: boolean;
   settingsOverlay?: SettingsOverlayModel | null;
@@ -141,6 +143,26 @@ export function commitLatestPanelRender(
   if (generation !== latestGeneration) return false;
   commit();
   return true;
+}
+
+/**
+ * Attach transcript text only when it still belongs to the cursor that will be
+ * painted. The daemon captures `requestedSessionId` before its async read; a
+ * later cursor move must never put that stale text under a different row.
+ */
+export function previewForPanelSelection(
+  navSelectedId: string | null,
+  requestedSessionId: string | null,
+  activeSessionId: string | null,
+  text: string,
+): PanelReplyModel | null {
+  if (
+    !text
+    || !navSelectedId
+    || navSelectedId !== requestedSessionId
+    || navSelectedId === activeSessionId
+  ) return null;
+  return { sessionId: navSelectedId, text, spokenChars: 0 };
 }
 
 /** Build the semantic dashboard once; renderers decide how it looks. */

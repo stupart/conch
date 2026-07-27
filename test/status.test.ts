@@ -2,18 +2,19 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { DictationReducer } from "../src/dictation-reducer.ts";
 import {
-  ALT_SCREEN_ENTER,
-  ALT_SCREEN_RESTORE,
+  configureRenderer,
   createFooterRenderer,
   createTheaterRenderer,
   getLiveState,
   installRendererLifecycle,
+  scrollTheaterPane,
+  setLogsVisible,
   setState,
   setTranscriptPrefix,
   shouldUseTheater,
   terminalCellWidth,
+  theaterPointerEvent,
   type LiveState,
-  type Renderer,
   type RendererIO,
 } from "../src/status.ts";
 import {
@@ -59,6 +60,7 @@ function sampleModel(overrides: Partial<PanelModel> = {}): PanelModel {
 function recordingIO(options: { columns?: number; rows?: number; tty?: boolean } = {}) {
   const writes: string[] = [];
   const prints: string[] = [];
+  const copies: string[] = [];
   const io: RendererIO = {
     stdoutTTY: options.tty ?? true,
     stdinTTY: options.tty ?? true,
@@ -66,8 +68,11 @@ function recordingIO(options: { columns?: number; rows?: number; tty?: boolean }
     rows: () => options.rows ?? 8,
     write: (text) => writes.push(text),
     print: (line) => prints.push(line),
+    copy: (text) => {
+      copies.push(text);
+    },
   };
-  return { io, writes, prints };
+  return { io, writes, prints, copies };
 }
 
 describe("footer renderer seam", () => {
@@ -143,6 +148,19 @@ describe("footer renderer seam", () => {
 
     expect(render({ ...current, transcriptPrefix: "prior kept segment" })).toBe(render(current));
   });
+
+  test("ignores a theater-only parked preview byte-for-byte", () => {
+    const { io, writes } = recordingIO({ columns: 80 });
+    createFooterRenderer(io).panel(sampleModel({
+      preview: {
+        sessionId: "parked",
+        text: "footer must never render this",
+        spokenChars: 0,
+      },
+    }));
+
+    expect(writes).toEqual([ACTIVE_FOOTER_GOLDEN]);
+  });
 });
 
 describe("theater renderer lifecycle", () => {
@@ -155,7 +173,50 @@ describe("theater renderer lifecycle", () => {
     renderer.shutdown();
     renderer.shutdown();
 
-    expect(writes).toEqual([ALT_SCREEN_ENTER, ALT_SCREEN_RESTORE]);
+    expect(writes).toEqual([
+      "\x1b[?1049h\x1b[?25l",
+      "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h",
+      "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l",
+      "\x1b[?1049l\x1b[?25h",
+    ]);
+  });
+
+  test("CONCH_NO_MOUSE leaves lifecycle bytes and interaction entry points inert", () => {
+    const dimensions = { columns: 72, rows: 7 };
+    const { io, writes, copies } = recordingIO(dimensions);
+    const configured = configureRenderer({ CONCH_NO_MOUSE: "1" }, io);
+    const renderer = configured.renderer;
+    try {
+      expect(configured.kind).toBe("theater");
+      renderer.enter();
+      renderer.panel(sampleModel({
+        live: { state: "idle", label: "", partial: "" },
+        reply: {
+          sessionId: "one",
+          text: `${"first ".repeat(40)}last`,
+          spokenChars: 0,
+        },
+      }));
+      const frame = writes.at(-1)!;
+
+      renderer.scrollPane?.(100);
+      renderer.pointerEvent?.({ kind: "down", button: 0, column: 26, row: 3 });
+      scrollTheaterPane(100);
+      theaterPointerEvent({ kind: "drag", button: 0, column: 34, row: 3 });
+      theaterPointerEvent({ kind: "up", button: 0, column: 34, row: 3 });
+      renderer.shutdown();
+
+      expect(writes.join("")).not.toMatch(/\x1b\[\?100[0236][hl]/);
+      expect(writes).toEqual([
+        "\x1b[?1049h\x1b[?25l",
+        frame,
+        "\x1b[?1049l\x1b[?25h",
+      ]);
+      expect(copies).toEqual([]);
+    } finally {
+      renderer.shutdown();
+      configureRenderer({ CONCH_TUI: "footer" }, recordingIO().io);
+    }
   });
 
   test("full frames cannot scroll by construction", () => {
@@ -345,6 +406,302 @@ describe("theater renderer lifecycle", () => {
     expect(frame).toContain("▌");
   });
 
+  test("wheel offset clamps on resize and resets when the pane source changes", () => {
+    const dimensions = { columns: 72, rows: 7 };
+    const { io, writes } = recordingIO(dimensions);
+    const renderer = createTheaterRenderer(io);
+    const longReply = `start-token ${Array.from({ length: 90 }, (_, i) => `word-${i}`).join(" ")} end-token`;
+    renderer.enter();
+    renderer.panel(sampleModel({
+      live: { state: "idle", label: "", partial: "" },
+      reply: { sessionId: "one", text: longReply, spokenChars: 0 },
+    }));
+    expect(writes.at(-1)).toContain("start-token");
+    expect(writes.at(-1)).not.toContain("end-token");
+
+    renderer.scrollPane?.(10_000);
+    expect(writes.at(-1)).toContain("end-token");
+    expect(writes.at(-1)).not.toContain("start-token");
+
+    dimensions.rows = 30;
+    renderer.resize();
+    expect(writes.at(-1)).toContain("start-token");
+
+    dimensions.rows = 7;
+    renderer.resize();
+    expect(writes.at(-1)).toContain("start-token");
+    expect(writes.at(-1)).not.toContain("end-token");
+    renderer.scrollPane?.(10_000);
+    expect(writes.at(-1)).toContain("end-token");
+    renderer.panel(sampleModel({
+      live: { state: "idle", label: "", partial: "" },
+      reply: {
+        sessionId: "new-session",
+        text: `new-source ${"fresh ".repeat(90)}new-tail`,
+        spokenChars: 0,
+      },
+    }));
+    expect(writes.at(-1)).toContain("new-source");
+    expect(writes.at(-1)).not.toContain("new-tail");
+  });
+
+  test("preview targets and log toggles reset stale offsets to their natural edge", () => {
+    const { io, writes } = recordingIO({ columns: 72, rows: 7 });
+    const renderer = createTheaterRenderer(io);
+    const preview = (sessionId: string, head: string, tail: string): PanelModel =>
+      sampleModel({
+        live: { state: "idle", label: "", partial: "" },
+        preview: {
+          sessionId,
+          text: `${head} ${"preview ".repeat(90)}${tail}`,
+          spokenChars: 0,
+        },
+      });
+
+    renderer.enter();
+    renderer.panel(preview("parked-a", "preview-a-head", "preview-a-tail"));
+    renderer.scrollPane?.(10_000);
+    expect(writes.at(-1)).toContain("preview-a-tail");
+
+    renderer.panel(preview("parked-b", "preview-b-head", "preview-b-tail"));
+    expect(writes.at(-1)).toContain("preview-b-head");
+    expect(writes.at(-1)).not.toContain("preview-b-tail");
+
+    renderer.log([
+      "oldest-log-token",
+      ...Array.from({ length: 12 }, (_, index) => `middle-log-${index}`),
+      "newest-log-token",
+    ].join("\n"));
+    try {
+      setLogsVisible(true);
+      renderer.resize();
+      expect(writes.at(-1)).toContain("newest-log-token");
+      expect(writes.at(-1)).not.toContain("oldest-log-token");
+
+      renderer.scrollPane?.(-10_000);
+      expect(writes.at(-1)).toContain("oldest-log-token");
+      expect(writes.at(-1)).not.toContain("newest-log-token");
+
+      setLogsVisible(false);
+      renderer.resize();
+      expect(writes.at(-1)).toContain("preview-b-head");
+      expect(writes.at(-1)).not.toContain("preview-b-tail");
+
+      setLogsVisible(true);
+      renderer.resize();
+      expect(writes.at(-1)).toContain("newest-log-token");
+      expect(writes.at(-1)).not.toContain("oldest-log-token");
+    } finally {
+      setLogsVisible(false);
+    }
+  });
+
+  test("parked preview renders its own note, but live dictation keeps priority", () => {
+    const { io, writes } = recordingIO({ columns: 100, rows: 8 });
+    const renderer = createTheaterRenderer(io);
+    renderer.enter();
+    renderer.panel(sampleModel({
+      live: { state: "idle", label: "", partial: "" },
+      preview: {
+        sessionId: "parked",
+        text: "parked-only-output",
+        spokenChars: 0,
+      },
+      rows: [
+        ...sampleModel().rows.map((row) => ({ ...row, active: false })),
+        {
+          sessionId: "parked",
+          label: "parked-project",
+          status: "waiting",
+          paused: false,
+          muted: false,
+          liveGlyph: null,
+          active: false,
+          navSelected: true,
+        },
+      ],
+    }));
+    expect(writes.at(-1)).toContain("parked-only-output");
+    expect(writes.at(-1)).toContain("‹parked-project› · esc back · space talk");
+
+    renderer.panel(sampleModel({
+      live: {
+        state: "speaking",
+        label: "project-one",
+        partial: "",
+        reading: { text: "other-session-live-output", spokenChars: 0 },
+      },
+      preview: {
+        sessionId: "parked",
+        text: "parked-stays-during-other-speech",
+        spokenChars: 0,
+      },
+      rows: [
+        ...sampleModel().rows,
+        {
+          sessionId: "parked",
+          label: "parked-project",
+          status: "waiting",
+          paused: false,
+          muted: false,
+          liveGlyph: null,
+          active: false,
+          navSelected: true,
+        },
+      ],
+    }));
+    expect(writes.at(-1)).toContain("parked-stays-during-other-speech");
+    expect(writes.at(-1)).not.toContain("other-session-live-output");
+
+    renderer.panel(sampleModel({
+      live: {
+        state: "speaking",
+        label: "parked-project",
+        partial: "",
+        reading: { text: "parked-session-is-live-now", spokenChars: 0 },
+      },
+      preview: {
+        sessionId: "parked",
+        text: "stale-parked-preview",
+        spokenChars: 0,
+      },
+      rows: [{
+        sessionId: "parked",
+        label: "parked-project",
+        status: "working",
+        paused: false,
+        muted: false,
+        liveGlyph: "speaking",
+        active: true,
+        navSelected: true,
+      }],
+      reply: {
+        sessionId: "parked",
+        text: "parked-session-is-live-now",
+        spokenChars: 0,
+      },
+    }));
+    expect(writes.at(-1)).toContain("parked-session-is-live-now");
+    expect(writes.at(-1)).not.toContain("stale-parked-preview");
+
+    renderer.panel(sampleModel({
+      live: {
+        state: "recording",
+        label: "project-one",
+        partial: "live-dictation-wins",
+      },
+      preview: {
+        sessionId: "parked",
+        text: "parked-must-wait",
+        spokenChars: 0,
+      },
+    }));
+    expect(writes.at(-1)).toContain("live-dictation-wins▌");
+    expect(writes.at(-1)).not.toContain("parked-must-wait");
+  });
+
+  test("selection plus non-zero offset preserves frame bounds and copies highlighted text", () => {
+    const dimensions = { columns: 72, rows: 7 };
+    const { io, writes, copies } = recordingIO(dimensions);
+    const renderer = createTheaterRenderer(io, {});
+    renderer.enter();
+    renderer.panel(sampleModel({
+      live: { state: "idle", label: "", partial: "" },
+      reply: {
+        sessionId: "one",
+        text: `zero-one-two ${"middle ".repeat(60)}final-tail`,
+        spokenChars: 0,
+      },
+    }));
+    renderer.scrollPane?.(3);
+    // At 72 columns the content pane begins at zero-based column 25, row 2.
+    renderer.pointerEvent?.({ kind: "down", button: 0, column: 26, row: 3 });
+    renderer.pointerEvent?.({ kind: "drag", button: 0, column: 36, row: 5 });
+
+    const frame = writes.at(-1)!;
+    const lines = frame
+      .replace(/^\x1b\[H/, "")
+      .split("\n")
+      .map((line) => line.replace(/\x1b\[K$/, ""));
+    expect(frame).toContain("\x1b[7m");
+    expect(frame.match(/\x1b\[K/g)).toHaveLength(7);
+    expect(frame.match(/\n/g)).toHaveLength(6);
+    expect(lines.every((line) => terminalCellWidth(line) <= 71)).toBe(true);
+
+    renderer.pointerEvent?.({ kind: "up", button: 0, column: 36, row: 5 });
+    expect(copies).toHaveLength(1);
+    expect(copies[0]?.length).toBeGreaterThan(0);
+    expect(writes.some((write) => write.startsWith("\x1b]52;c;"))).toBe(true);
+  });
+
+  test("selection maps terminal cells to Unicode boundaries and copies plain text only", () => {
+    const { io, copies } = recordingIO({ columns: 72, rows: 7 });
+    const renderer = createTheaterRenderer(io);
+    renderer.enter();
+    renderer.panel(sampleModel({
+      live: { state: "idle", label: "", partial: "" },
+      reply: {
+        sessionId: "one",
+        text: `\x1b[31m${"漢".repeat(30)}\x1b[0m`,
+        spokenChars: 0,
+      },
+    }));
+
+    // Pane starts at one-based column 26. Ten terminal cells contain five
+    // double-width glyphs, not ten JavaScript string indices.
+    renderer.pointerEvent?.({ kind: "down", button: 0, column: 26, row: 3 });
+    renderer.pointerEvent?.({ kind: "drag", button: 0, column: 36, row: 3 });
+    renderer.pointerEvent?.({ kind: "up", button: 0, column: 36, row: 3 });
+
+    expect(copies).toEqual(["漢".repeat(5)]);
+    expect(copies[0]).not.toContain("\x1b");
+  });
+
+  test("dragging beyond the pane auto-scrolls and selects off-viewport rows", () => {
+    const { io, copies } = recordingIO({ columns: 72, rows: 7 });
+    const renderer = createTheaterRenderer(io, {});
+    renderer.enter();
+    renderer.panel(sampleModel({
+      live: { state: "idle", label: "", partial: "" },
+      reply: {
+        sessionId: "one",
+        text: Array.from({ length: 120 }, (_, index) => `token-${index}`).join(" "),
+        spokenChars: 0,
+      },
+    }));
+    renderer.pointerEvent?.({ kind: "down", button: 0, column: 26, row: 3 });
+    for (let index = 0; index < 12; index++) {
+      renderer.pointerEvent?.({ kind: "drag", button: 0, column: 70, row: 8 });
+    }
+    renderer.pointerEvent?.({ kind: "up", button: 0, column: 70, row: 8 });
+
+    expect(copies).toHaveLength(1);
+    expect(copies[0]!.split("\n").length).toBeGreaterThan(4);
+    expect(copies[0]).toContain("token-0");
+    expect(copies[0]).toContain("token-40");
+  });
+
+  test("a same-length document rewrite clears stale coordinates before mouse-up", () => {
+    const { io, copies } = recordingIO({ columns: 72, rows: 7 });
+    const renderer = createTheaterRenderer(io);
+    renderer.enter();
+    renderer.panel(sampleModel({
+      live: { state: "idle", label: "", partial: "" },
+      reply: { sessionId: "one", text: "alpha bravo charlie", spokenChars: 0 },
+    }));
+    renderer.pointerEvent?.({ kind: "down", button: 0, column: 26, row: 3 });
+    renderer.pointerEvent?.({ kind: "drag", button: 0, column: 31, row: 3 });
+
+    renderer.panel(sampleModel({
+      live: { state: "idle", label: "", partial: "" },
+      // Deliberately equal length: a length-only fingerprint copies the wrong bytes.
+      reply: { sessionId: "one", text: "xxxxx yyyyy zzzzzzz", spokenChars: 0 },
+    }));
+    renderer.pointerEvent?.({ kind: "up", button: 0, column: 31, row: 3 });
+
+    expect(copies).toEqual([]);
+  });
+
   test("shows the reducer-kept transcript before the live partial through transcription", () => {
     const { io, writes } = recordingIO({ columns: 120, rows: 7 });
     const renderer = createTheaterRenderer(io);
@@ -394,16 +751,13 @@ describe("theater renderer lifecycle", () => {
   });
 
   test("fatal-process and explicit restore paths share one idempotent cleanup", () => {
-    const calls: string[] = [];
-    const renderer: Renderer = {
-      panel() {}, live() {}, keybar() {}, log() {}, resize() {},
-      enter: () => calls.push("enter"),
-      shutdown: () => calls.push("shutdown"),
-    };
+    const { io, writes } = recordingIO();
+    const raw: boolean[] = [];
+    const renderer = createTheaterRenderer(io);
     const events = new EventEmitter();
     const lifecycle = installRendererLifecycle(
       renderer,
-      { isTTY: true, setRawMode: (enabled) => calls.push(`raw:${enabled}`) },
+      { isTTY: true, setRawMode: (enabled) => raw.push(enabled) },
       events,
     );
 
@@ -412,27 +766,47 @@ describe("theater renderer lifecycle", () => {
     events.emit("exit", 1);
     lifecycle.restore();
 
-    expect(calls).toEqual(["enter", "shutdown", "raw:false"]);
+    expect(writes).toEqual([
+      "\x1b[?1049h\x1b[?25l",
+      "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h",
+      "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l",
+      "\x1b[?1049l\x1b[?25h",
+    ]);
+    expect(raw).toEqual([false]);
     lifecycle.dispose();
   });
 
   test("raw mode is restored even if the terminal writer throws during shutdown", () => {
-    const calls: string[] = [];
-    const renderer: Renderer = {
-      panel() {}, live() {}, keybar() {}, log() {}, resize() {}, enter() {},
-      shutdown() {
-        calls.push("shutdown");
-        throw new Error("writer closed");
+    const { io: baseIO } = recordingIO();
+    const writes: string[] = [];
+    const raw: boolean[] = [];
+    const io: RendererIO = {
+      ...baseIO,
+      write(text) {
+        writes.push(text);
+        if (text === "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l") {
+          throw new Error("writer closed");
+        }
       },
     };
+    const renderer = createTheaterRenderer(io);
     const events = new EventEmitter();
     const lifecycle = installRendererLifecycle(
       renderer,
-      { isTTY: true, setRawMode: (enabled) => calls.push(`raw:${enabled}`) },
+      { isTTY: true, setRawMode: (enabled) => raw.push(enabled) },
       events,
     );
+    lifecycle.enter();
     expect(() => lifecycle.restore()).toThrow("writer closed");
-    expect(calls).toEqual(["shutdown", "raw:false"]);
+    lifecycle.restore();
+    events.emit("exit", 1);
+    expect(writes).toEqual([
+      "\x1b[?1049h\x1b[?25l",
+      "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h",
+      "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l",
+      "\x1b[?1049l\x1b[?25h",
+    ]);
+    expect(raw).toEqual([false]);
     lifecycle.dispose();
   });
 });

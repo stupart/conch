@@ -120,6 +120,12 @@ describe("dispatchTheaterControlKey", () => {
 });
 
 describe("dashboard control copy", () => {
+  test("keeps the footer keybar byte-for-byte frozen", () => {
+    expect(FOOTER_KEYBAR).toBe(
+      "  \x1b[2m↑↓ park · space talk · p pause · m mute · l logs · ? help · q quit\x1b[0m",
+    );
+  });
+
   test("keybars and help agree on space, p, m with no snooze binding", () => {
     const plain = (text: string): string =>
       text.replace(/\x1b\[[0-9;]*m/g, "").toLowerCase();
@@ -154,6 +160,8 @@ describe("dashboard control copy", () => {
 
     const controls = plain(DASHBOARD_HELP_CONTROLS);
     expect(controls).toContain("parked cursor");
+    expect(controls).toContain("esc");
+    expect(controls).toContain("releases it");
     expect(controls).toContain("affect that session");
     expect(controls).toContain("affect the whole app");
     expect(controls).toContain("holds + replays");
@@ -165,7 +173,9 @@ describe("dashboard control copy", () => {
     const dashboard = readme.slice(readme.indexOf("## the dashboard"));
 
     expect(dashboard).toContain("space talk · p pause · m mute");
-    expect(dashboard).toContain("while the cursor is live and the whole app otherwise");
+    expect(dashboard).toContain("while the cursor is parked and the whole app otherwise");
+    expect(dashboard).toContain("**esc** releases");
+    expect(dashboard).toContain("`conch_no_mouse=1`");
     expect(dashboard).toContain("**q** quits");
     expect(dashboard).not.toContain("enter snooze");
     expect(dashboard).not.toContain("enter** snooze");
@@ -187,6 +197,23 @@ describe("dashboard control copy", () => {
     );
 
     expect(rawKeys).toContain("dispatchTheaterControlKey(c, theaterControls)");
+    expect(rawKeys).toContain("mouseParser.feed(d.toString())");
+    expect(rawKeys).toContain(
+      "if (theaterMode && !settingsOverlay?.isOpen())",
+    );
+    expect(rawKeys).toContain("theaterPointerEvent(event)");
+    expect(rawKeys).toContain("scrollTheaterPane(wheel * 3)");
+    expect(rawKeys).toContain("clearTheaterSelection()");
+    expect(rawKeys).toContain("if (!rest) return");
+    expect(rawKeys).toContain(
+      'const c = rest.includes("\\u0003") ? "\\u0003" : rest',
+    );
+    expect(rawKeys).toContain(
+      "if (!clearTheaterSelection()) theaterNavigation.release()",
+    );
+    expect(rawKeys.indexOf("mouseParser.feed(d.toString())")).toBeLessThan(
+      rawKeys.indexOf("settingsOverlay?.handleKey(c)"),
+    );
     expect(rawKeys).not.toContain('c === "\\r"');
     expect(rawKeys).not.toContain('c === "\\n"');
     expect(callbacks).toContain("theaterNavigation.manualControlTarget()");

@@ -116,7 +116,7 @@ Commands only match as the *entire* utterance — "continue working on the login
 
 **Stepping away for a bit?** `conch pause` (or **p** with no session parked) is mute's patient sibling: it stays quiet *and* **holds** every session that finishes while you're gone, then replays them on `conch resume` or the next **p**. **Joining a meeting, pause first** — otherwise an open mic window could pick up meeting audio and inject it into a session.
 
-**Want to focus on one thing?** Use **↑↓** to park the cursor on a session for about 2.5 seconds. While it is parked, **p** pauses or resumes just that session, holding only its latest turn and replaying that turn from the top on resume; **m** mutes or unmutes just that session, forgetting what finishes with no replay. After the cursor fades, **p** and **m** are global again. Either control takes effect instantly: an active read stops, the mic closes, and its in-flight capture is dropped.
+**Want to focus on one thing?** Use **↑↓** to park the cursor on a session. Its latest output follows into the pane and stays there; **esc** releases the cursor back to automatic follow. While it is parked, **p** pauses or resumes just that session, holding only its latest turn and replaying that turn from the top on resume; **m** mutes or unmutes just that session, forgetting what finishes with no replay. With no parked cursor, **p** and **m** are global. Either control takes effect instantly: an active read stops, the mic closes, and its in-flight capture is dropped.
 
 **Permission prompts** ("dayloop needs you: permission to run npm install") open the mic too, but only accept yes/no: "yes" presses Enter on the highlighted option, "no" presses Escape, anything else is ignored — free text near a permission dialog is deliberately refused. And idle "waiting for your input" nags are filtered: conch checks whether the session's last reply actually asked you something, and stays quiet when the session is just idle ("I'll ping you when it lands").
 
@@ -134,12 +134,14 @@ Run the daemon in a visible terminal (`conch daemon`), or just type **`conch`** 
  ▎ arch site    ● │
    conch        ● │
    poaster      ⏸ │ pause to send · space to stop · say send to submit now
-   ↑↓ park · \ pane · , settings · space talk · p pause · m mute · l logs · ? help · q quit
+   ↑↓ park · esc back · wheel scroll · drag copy · \ pane · , settings · space talk · p pause · m mute · l logs · ? help · q quit
 ```
 
 Sessions that need input sort to the top. Each row carries a **colored status dot** — `❗ needs a response`, `○ waiting for you`, `● working…`, `● recording`, `⏸ paused`, `🔇 muted` — and the **session conch is currently talking to** takes a cyan accent bar and lights up in place as it moves through the turn (`▶ speaking` → `● mic open` → `● recording` → `… transcribing`). The **pane on the right reads along**: your words build there as you speak them while it records, and when conch reads a reply back the pane scrolls through it, dimming what's already been spoken.
 
-You don't have to touch it — but you can. **↑↓** park a cursor on a session for about 2.5 seconds; **space** talks to the parked session (or the active one); **p** toggles pause and **m** toggles mute, targeting the parked session while the cursor is live and the whole app otherwise. **\\** hides the pane for a full-width ledger; **,** opens live settings; **l** toggles a log in the pane; **?** shows the full key + voice-command help; **q** quits. The play-by-play is always written to `/tmp/conch-daemon.log` whether or not the log is on screen, so the dashboard stays clean by default.
+You don't have to touch it — but you can. **↑↓** park a cursor on a session and make the pane follow its latest output until **esc** releases it; **space** talks to the parked session (or the active one); **p** toggles pause and **m** toggles mute, targeting the parked session while the cursor is parked and the whole app otherwise. The mouse wheel scrolls long pane output, and dragging in the pane selects and copies text through both the macOS clipboard and OSC 52 (including tmux passthrough). **\\** hides the pane for a full-width ledger; **,** opens live settings; **l** toggles a log in the pane; **?** shows the full key + voice-command help; **q** quits. Set `CONCH_NO_MOUSE=1` to keep the dashboard but restore terminal-native mouse selection. The play-by-play is always written to `/tmp/conch-daemon.log` whether or not the log is on screen, so the dashboard stays clean by default.
+
+An ordinary exit restores mouse tracking automatically. If the daemon is killed with untrappable `SIGKILL` and the shell starts printing mouse reports, recover with `printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l'`.
 
 **Windows follow the voice too.** When conch starts talking to a session, that session's Terminal window rises to the front *without stealing your keyboard focus* — you keep typing wherever you are, and the session you're hearing is already there when you look up. (`CONCH_REVEAL_ON_TURN=0` to disable.)
 
@@ -184,6 +186,7 @@ The full environment-variable surface remains available (put overrides in the ho
 | `CONCH_KEYSTROKE_FALLBACK` | `0` | allow typing into the frontmost window when no tmux pane is found |
 | `CONCH_TYPING_GRACE_SECS` | `2` | if you touched the keyboard/mouse this recently, a finished turn stays visual (bell + panel) and the mic won't open — so typing can't trigger phantom words; `0` disables |
 | `CONCH_REVEAL_ON_TURN` | `1` | raise a session's window (without stealing focus) when conch starts talking to it |
+| `CONCH_NO_MOUSE` | `0` | set to `1` to disable dashboard mouse capture and use native terminal selection |
 | `CONCH_SAY_VOLUME` | `0.4` | `say` fallback loudness — tuned to match Kokoro (raw `say` is ~3× louder) |
 | `CONCH_SEASHELL_ROOT` | `~/whisper-cli` | first place probed for the whisper.cpp build + models; falls back to a brew `whisper-cpp` install and `~/.cache/conch/models` |
 | `CONCH_WHISPER_PORT` | `8642` | warm whisper-server port; `0` = cold cli only |
