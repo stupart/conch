@@ -6,6 +6,46 @@
 
 export type VoiceIntent = "continue" | "repeat" | "discard" | "prompt";
 
+/**
+ * Leading spoken address: "hey <name>[,.] rest". Raw text in — command
+ * normalization strips the "hey" and punctuation this grammar depends on.
+ *
+ * A delimiter makes the name boundary explicit. Without one, retain at least
+ * one content word and offer up to three-word names longest-first; a single
+ * word may stand alone as a bare address/wake.
+ */
+export function parseNameAddress(text: string): Array<{ name: string; rest: string }> {
+  const prefix = text.match(/^\s*hey\s+/i);
+  if (!prefix) return [];
+  const body = text.slice(prefix[0].length).trim();
+  if (!body) return [];
+
+  const delimiterAt = body.search(/[,.:]/);
+  if (delimiterAt !== -1) {
+    const name = body.slice(0, delimiterAt).trim();
+    const nameWords = name.split(/\s+/).filter(Boolean);
+    // "within the first 4 words" includes "hey", so spoken names are 1..3 words.
+    if (nameWords.length >= 1 && nameWords.length <= 3) {
+      return [{ name, rest: body.slice(delimiterAt + 1).trim() }];
+    }
+  }
+
+  const words = [...body.matchAll(/\S+/g)];
+  const maxNameWords = words.length === 1
+    ? 1
+    : Math.min(3, words.length - 1);
+  const candidates: Array<{ name: string; rest: string }> = [];
+  for (let count = maxNameWords; count >= 1; count--) {
+    const last = words[count - 1]!;
+    const end = last.index! + last[0].length;
+    candidates.push({
+      name: body.slice(0, end).trim(),
+      rest: body.slice(end).trim(),
+    });
+  }
+  return candidates;
+}
+
 const CONTINUE = new Set([
   "continue", "keep going", "go on", "keep reading",
   "read the rest", "read me the rest", "read more", "more",
