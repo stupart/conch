@@ -43,6 +43,7 @@ import {
   logAbove,
   logsShown,
   onLiveChange,
+  publishSessionsFile,
   renderPanel,
   resizeRenderer,
   scrollTheaterPane,
@@ -69,6 +70,7 @@ import {
   activeSessionIdForRows,
   buildPanelModel,
   buildPanelRows,
+  buildPublishedState,
   commitLatestPanelRender,
   latestLatchedState,
   previewForPanelSelection,
@@ -925,6 +927,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // cannot repaint a stale pause/mute banner over a newer toggle.
       model.mode = { muted, paused: pause.paused, holding: pending.size };
       renderPanel(model);
+      publishSessionsFile(buildPublishedState(
+        model,
+        new Map(
+          [...latestTurnBySession].map(([sessionId, event]) => [sessionId, event.announce]),
+        ),
+        dismissedSessionIds,
+        Date.now(),
+      ));
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
     });
   }

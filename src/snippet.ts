@@ -99,12 +99,15 @@ interface LastAssistantTextCacheEntry {
   value: Promise<string>;
 }
 
+const DEFAULT_LAST_ASSISTANT_TEXT_CACHE_CAP = 64;
+
 /**
  * Build a metadata-keyed reader. Same-version calls share one promise, while a
  * changed version waits for any older full-file read before starting its own.
  */
 export function createLastAssistantTextReader(
   source: LastAssistantTextSource,
+  cacheCap = DEFAULT_LAST_ASSISTANT_TEXT_CACHE_CAP,
 ): (transcriptPath: string) => Promise<string> {
   const cache = new Map<string, LastAssistantTextCacheEntry>();
 
@@ -143,11 +146,17 @@ export function createLastAssistantTextReader(
         );
       entry = { fingerprint, pending: true, value };
       cache.set(transcriptPath, entry);
+      if (cache.size > cacheCap) {
+        const oldestPath = cache.keys().next().value;
+        if (oldestPath !== undefined) cache.delete(oldestPath);
+      }
       return value;
     }
   };
 }
 
+// Deferred read-cost work: use bounded-tail reply reads and incremental prompt
+// counting; both paths intentionally retain their whole-file strategy for now.
 const readLastAssistantText = createLastAssistantTextReader({
   async fingerprint(transcriptPath) {
     try {

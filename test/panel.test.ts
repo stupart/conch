@@ -3,6 +3,7 @@ import {
   activeSessionIdForRows,
   buildPanelModel,
   buildPanelRows,
+  buildPublishedState,
   dashboardPanelLines,
   dashboardRowsForModel,
   latestLatchedState,
@@ -106,6 +107,71 @@ describe("buildPanelModel — renderer seam", () => {
     expect(row).toContain("🔇 muted");
     expect(row).not.toContain("⏸ paused");
     expect(row.toLowerCase()).not.toContain("snooz");
+  });
+});
+
+describe("buildPublishedState — external session snapshot", () => {
+  test("maps semantic rows, snippets, dismissed ids, and version metadata", () => {
+    const model = buildPanelModel({
+      sessions: [
+        { sessionId: "waiting", name: "Wait", status: "idle", statusUpdatedAt: 30 },
+        { sessionId: "needs", name: "Need", status: "busy", statusUpdatedAt: 10 },
+      ],
+      sessionStates: new Map([
+        ["needs", { label: "Need", status: "needs" as const, detail: "permission", at: 40 }],
+      ]),
+      pausedSessionIds: new Set(["needs"]),
+      mutedSessionIds: new Set(["needs"]),
+      live: { state: "speaking", label: "Need", partial: "TUI-only partial" },
+      mode: { muted: false, paused: true, holding: 2 },
+      activeSessionId: "needs",
+      navSelectedId: "waiting",
+    });
+
+    const published = buildPublishedState(
+      model,
+      new Map([
+        ["needs", "Need: latest reply"],
+        ["wrong-session", "must not attach"],
+      ]),
+      new Set(["dismissed-session"]),
+      1_234_567,
+    );
+
+    expect(published).toEqual({
+      v: 1,
+      ts: 1_234_567,
+      mode: { muted: false, paused: true, holding: 2 },
+      live: { state: "speaking", label: "Need" },
+      rows: [
+        {
+          id: "needs",
+          label: "Need",
+          status: "needs",
+          needsResponse: true,
+          detail: "permission",
+          paused: true,
+          muted: true,
+          live: "speaking",
+          active: true,
+          snippet: "Need: latest reply",
+        },
+        {
+          id: "waiting",
+          label: "Wait",
+          status: "waiting",
+          needsResponse: false,
+          paused: false,
+          muted: false,
+          live: null,
+          active: false,
+        },
+      ],
+      dismissed: ["dismissed-session"],
+    });
+    expect(published.rows.some((row) => row.id === "dismissed-session")).toBe(false);
+    expect("snippet" in published.rows[1]!).toBe(false);
+    expect(JSON.parse(JSON.stringify(published))).toEqual(published);
   });
 });
 
