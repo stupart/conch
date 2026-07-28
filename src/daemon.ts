@@ -28,7 +28,7 @@ import {
 } from "./listen.ts";
 import type { RecorderHandle } from "./dictation-controller.ts";
 import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
-import { classify, classifyReadingGap, wordOverlapRatio } from "./commands.ts";
+import { classify, classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
 import {
   whisperServerClient,
@@ -60,6 +60,7 @@ import {
   registrySnapshot,
   sessionGoneFromSnapshot,
   sessionLabel,
+  findSessionBySpokenName,
   findTranscript,
   renameSessionLabel,
   type RegistrySnapshot,
@@ -341,6 +342,84 @@ export function resolveWakeTarget(wake: TurnEvent, lastTurn: TurnEvent | null): 
 /** Wake/adopted exchanges listen first; ordinary turns read the remaining response first. */
 export function startsConversationByListening(event: Pick<TurnEvent, "type">, announcedCapture = false): boolean {
   return event.type === "wake" || announcedCapture;
+}
+
+export type NameAddressRoute =
+  | {
+    kind: "deliver";
+    event: TurnEvent;
+    text: string;
+    addressed?: { name: string; label: string };
+  }
+  | {
+    kind: "wake";
+    event: TurnEvent;
+    addressed: { name: string; label: string };
+  };
+
+export interface NameAddressRouteOptions {
+  findSession?: (claudeDir: string, name: string) => Promise<SessionInfo | null>;
+  labelFor?: (session: SessionInfo, cwd: string | undefined) => string;
+  transcriptFor?: (claudeDir: string, sessionId: string) => string | undefined;
+}
+
+/** Resolve a raw spoken address without mutating the event held by daemon state. */
+export async function resolveNameAddressRoute(
+  claudeDir: string,
+  event: TurnEvent,
+  text: string,
+  options: NameAddressRouteOptions = {},
+): Promise<NameAddressRoute> {
+  const findSession = options.findSession ?? findSessionBySpokenName;
+  const labelFor = options.labelFor ?? sessionLabel;
+  const transcriptFor = options.transcriptFor ?? findTranscript;
+
+  for (const candidate of parseNameAddress(text)) {
+    let session: SessionInfo | null;
+    try {
+      session = await findSession(claudeDir, candidate.name);
+    } catch {
+      continue;
+    }
+    if (!session) continue;
+
+    const label = labelFor(session, session.cwd);
+    const transcriptPath = transcriptFor(claudeDir, session.sessionId);
+    const addressed = { name: candidate.name, label };
+    if (!candidate.rest) {
+      return {
+        kind: "wake",
+        addressed,
+        event: {
+          type: "wake",
+          sessionId: session.sessionId,
+          label,
+          cwd: session.cwd,
+          pid: session.pid,
+          announce: "",
+          transcriptPath,
+        },
+      };
+    }
+
+    return {
+      kind: "deliver",
+      addressed,
+      event: event.sessionId === session.sessionId
+        ? event
+        : {
+          ...event,
+          sessionId: session.sessionId,
+          label,
+          cwd: session.cwd,
+          pid: session.pid,
+          transcriptPath,
+        },
+      text: candidate.rest,
+    };
+  }
+
+  return { kind: "deliver", event, text };
 }
 
 type OrderedTurnEvent = Pick<TurnEvent, "type" | "sessionId" | "eventAt">;
@@ -1404,6 +1483,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
     diagnosticIds?: string | Iterable<string | undefined>,
     beforeInject?: () => boolean | Promise<boolean>,
   ): Promise<boolean> {
+    const addressed = await resolveNameAddressRoute(cfg.claudeDir, event, text);
+    if (addressed.addressed) {
+      log(`addressed "${addressed.addressed.name}" -> "${addressed.addressed.label}"`);
+    }
+    if (addressed.kind === "wake") {
+      if (beforeInject && !(await beforeInject())) return false;
+      enqueue(addressed.event);
+      return true;
+    }
+    event = addressed.event;
+    text = addressed.text;
+
     let committed = false;
     const commit = async (): Promise<boolean> => {
       if (beforeInject && !(await beforeInject())) return false;

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   findSessionByName,
+  findSessionBySpokenName,
   isEngageable,
   normalizeSessionLabel,
   registrySnapshot,
@@ -207,6 +208,46 @@ describe("conch session-label overrides", () => {
       expect((await findSessionByName(f.claudeDir, "CONCH-NAME", {
         labelsPath: f.labelsPath,
       }))?.sessionId).toBe(session.sessionId);
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  test("spoken lookup preserves match precedence, retries without spaces, and misses safely", async () => {
+    const f = fixture();
+    try {
+      writeFileSync(join(f.claudeDir, "sessions", "1.json"), JSON.stringify({
+        sessionId: "override",
+        name: "registry-only",
+        cwd: "/work/override",
+        kind: "interactive",
+        entrypoint: "cli",
+      }));
+      writeFileSync(join(f.claudeDir, "sessions", "2.json"), JSON.stringify({
+        sessionId: "registry",
+        name: "spoken target",
+        cwd: "/work/registry",
+        kind: "interactive",
+        entrypoint: "cli",
+      }));
+      writeFileSync(join(f.claudeDir, "sessions", "3.json"), JSON.stringify({
+        sessionId: "collapsed",
+        name: "dayloop",
+        cwd: "/work/collapsed",
+        kind: "interactive",
+        entrypoint: "cli",
+      }));
+      setLabelOverride("override", "spoken target", { labelsPath: f.labelsPath });
+
+      expect((await findSessionBySpokenName(f.claudeDir, "SPOKEN TARGET", {
+        labelsPath: f.labelsPath,
+      }))?.sessionId).toBe("override");
+      expect((await findSessionBySpokenName(f.claudeDir, "day loop", {
+        labelsPath: f.labelsPath,
+      }))?.sessionId).toBe("collapsed");
+      expect(await findSessionBySpokenName(f.claudeDir, "missing", {
+        labelsPath: f.labelsPath,
+      })).toBeNull();
     } finally {
       rmSync(f.root, { recursive: true, force: true });
     }

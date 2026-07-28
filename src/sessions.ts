@@ -305,6 +305,20 @@ export async function findSessionByName(
   );
 }
 
+/** Find by the spoken form, retrying without spaces ("day loop" -> "dayloop"). */
+export async function findSessionBySpokenName(
+  claudeDir: string,
+  query: string,
+  options: LabelOverrideOptions = {},
+): Promise<SessionInfo | null> {
+  const direct = await findSessionByName(claudeDir, query, options);
+  if (direct) return direct;
+  const collapsed = query.replace(/\s+/g, "");
+  return collapsed === query
+    ? null
+    : findSessionByName(claudeDir, collapsed, options);
+}
+
 /** Locate a session's transcript by id — project dirs encode the cwd, so search them all. */
 export function findTranscript(claudeDir: string, sessionId: string): string | undefined {
   const projects = join(claudeDir, "projects");
