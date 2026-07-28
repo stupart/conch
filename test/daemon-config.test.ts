@@ -403,7 +403,7 @@ describe("daemon config controller", () => {
     expect(render).toContain("...prioritizedSessionIds");
     expect(render).toContain("...dismissedSessionIds");
     expect(dismiss.indexOf("dismissedSessionIds.add(target.sessionId)")).toBeLessThan(
-      dismiss.indexOf("instantControls.setSessionMuted(target.sessionId, true)"),
+      dismiss.indexOf("setSessionMutedWithDigest(target.sessionId, true)"),
     );
     expect(daemonSource).toContain("dismissedSessionIds.delete(event.sessionId)");
   });
@@ -431,6 +431,88 @@ describe("daemon config controller", () => {
     expect(conversation.indexOf("if (reciteOnly) return")).toBeLessThan(
       conversation.indexOf("const reducer = new DictationReducer"),
     );
+  });
+
+  test("voice QA wraps the one injector choke point shared by both utterance paths", () => {
+    const route = daemonSource.slice(
+      daemonSource.indexOf("async function deliver("),
+      daemonSource.indexOf("async function deliverToSession("),
+    );
+    const injector = daemonSource.slice(
+      daemonSource.indexOf("async function deliverToSession("),
+      daemonSource.indexOf("/** Shared handling for anything heard while reading aloud"),
+    );
+    const reading = daemonSource.slice(
+      daemonSource.indexOf("async function onReadingUtterance("),
+      daemonSource.indexOf("async function conversationLoop("),
+    );
+    const action = daemonSource.slice(
+      daemonSource.indexOf("const executeAction = async"),
+      daemonSource.indexOf("// Mic gate (auto turns only)"),
+    );
+
+    expect(route).toContain("routeVoicePrompt(cfg.voiceQa");
+    expect(route).toContain("inject: (prompt) => deliverToSession(");
+    expect(route).not.toContain("injectText(");
+    expect(injector).toContain("await injectText(");
+    expect(reading).toContain("await deliver(event, text");
+    expect(action).toContain("await deliver(");
+  });
+
+  test("resume digest audio is serialized in the resume handler with exact replay fallback", () => {
+    const wiring = daemonSource.slice(
+      daemonSource.indexOf("pause = new PauseController"),
+      daemonSource.indexOf("const instantControls"),
+    );
+    const handler = daemonSource.slice(
+      daemonSource.indexOf("async function listenForResumeDigest"),
+      daemonSource.indexOf("async function handle(event"),
+    );
+    const settingsPause = daemonSource.slice(
+      daemonSource.indexOf("const settingsPause"),
+      daemonSource.indexOf("// Hooks may connect while model startup"),
+    );
+
+    expect(wiring).toContain("replayOverride: async (events)");
+    expect(wiring).toContain(
+      "shouldUseResumeDigest(cfg.resumeDigest, events, pausedSessionIds)",
+    );
+    expect(settingsPause).toContain("resumeDigestArm = null");
+    expect(handler).toContain("await runResumeDigest(");
+    expect(handler).toContain("for (const event of fallbackEvents) enqueue(event)");
+    expect(handler).toContain("if (plan.cancelled) return");
+    expect(handler).toContain("plan.cancelled");
+    expect(handler).toContain("plan.invalidated");
+    expect(handler).toContain("if (consumeStopKey()) digestStopRequested = true");
+    expect(handler).toContain("await listenOnce(");
+    expect(handler.indexOf("await speak(cfg, text)")).toBeLessThan(
+      handler.indexOf("return listenForResumeDigest"),
+    );
+  });
+
+  test("resume digest escrow rejects stale ownership and scoped mute invalidates it", () => {
+    const setup = daemonSource.slice(
+      daemonSource.indexOf("const resumeDigestEscrow"),
+      daemonSource.indexOf("const settingsPause"),
+    );
+    const modeEdges = daemonSource.slice(
+      daemonSource.indexOf("// Apply every mode edge synchronously"),
+      daemonSource.indexOf("insertQueuedEvent(queue", daemonSource.indexOf("// Apply every mode edge synchronously")),
+    );
+    const resumeHandler = daemonSource.slice(
+      daemonSource.indexOf('if (event.type === "resume") {', daemonSource.indexOf("async function handle(event")),
+      daemonSource.indexOf('if (event.type === "speak")'),
+    );
+
+    expect(setup).toContain("new ResumeDigestEscrow<TurnEvent>()");
+    expect(setup).toContain("resumeDigestEscrow.forget(sessionId)");
+    expect(setup).toContain("resumeDigestEscrow.invalidate(sessionId)");
+    expect(setup).toContain("setSessionMutedWithDigest");
+    expect(setup).toContain("setSessionPausedWithDigest");
+    expect(setup).toContain("shouldUseResumeDigest(cfg.resumeDigest, events, pausedSessionIds)");
+    expect(modeEdges).toContain("resumeDigestEscrow.settle(event, result.digested === true)");
+    expect(resumeHandler).toContain("handlePreparedResumeDigest(event, result)");
+    expect(daemonSource).toContain("setSessionPaused: setSessionPausedWithDigest");
   });
 
   test("working-mic only makes Stop-reclassified working events audible", () => {

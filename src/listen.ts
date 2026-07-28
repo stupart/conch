@@ -316,8 +316,19 @@ export function createDictationSession(
  *    mid-recording for live partials (a wav header's size fields would be
  *    stale until sox closes the file).
  */
-export async function listenOnce(cfg: Config, hooks: ListenHooks = {}): Promise<ListenResult> {
-  return collectContinuousResult(cfg, hooks);
+export interface ListenOnceOptions {
+  parent?: string;
+  traceSequence?: () => number;
+  tag?: string;
+  onSessionStarted?: (session: RuntimeDictationSession) => void;
+}
+
+export async function listenOnce(
+  cfg: Config,
+  hooks: ListenHooks = {},
+  options: ListenOnceOptions = {},
+): Promise<ListenResult> {
+  return collectContinuousResult(cfg, hooks, undefined, options);
 }
 
 /** Adopt a live barge capture, rearm behind it, and drain all ordered speech. */

@@ -1,5 +1,12 @@
 import { test, expect } from "bun:test";
-import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio, isSendCommand } from "../src/commands.ts";
+import {
+  classify,
+  classifyApproval,
+  classifyReadingGap,
+  isSendCommand,
+  parseQuery,
+  wordOverlapRatio,
+} from "../src/commands.ts";
 import { looksLikeAwaitingReply } from "../src/snippet.ts";
 
 test("bare commands match despite whisper's punctuation and casing", () => {
@@ -17,6 +24,20 @@ test("real prompts that merely contain command words stay prompts", () => {
   expect(classify("Can you repeat the migration for staging?")).toBe("prompt");
   expect(classify("No, use the other approach.")).toBe("prompt");
   expect(classify("Stop using the legacy API and switch to v2.")).toBe("prompt");
+});
+
+test("conch-prefixed questions are parsed from the raw utterance", () => {
+  expect(parseQuery("conch, did the tests pass?")).toBe("did the tests pass?");
+  expect(parseQuery("hey conch what changed")).toBe("what changed");
+  expect(parseQuery("Okay, conch, status?")).toBe("status?");
+  expect(parseQuery("  CONCH. Who failed?  ")).toBe("Who failed?");
+});
+
+test("bare conch and ordinary prompts are not voice questions", () => {
+  expect(parseQuery("conch")).toBeNull();
+  expect(parseQuery("continue")).toBeNull();
+  expect(parseQuery("can conch summarize this?")).toBeNull();
+  expect(parseQuery("the conch is on the desk")).toBeNull();
 });
 
 test("bare stop closes the mic — a finished session can't be told to stop", () => {

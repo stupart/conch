@@ -29,6 +29,9 @@ export const SETTING_KEYS = [
   "handoff-order",
   "reveal-on-turn",
   "working-mic",
+  "voice-qa",
+  "resume-digest",
+  "announce-summary",
   "announce-sentences",
   "announce-max-chars",
   "say-rate",
@@ -48,6 +51,9 @@ export type SettingField =
   | "handoffOrder"
   | "revealOnTurn"
   | "workingMic"
+  | "voiceQa"
+  | "resumeDigest"
+  | "announceSummary"
   | "speakSentences"
   | "speakMaxChars"
   | "sayRate";
@@ -260,6 +266,39 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "announce and open the mic while background work remains",
+  },
+  {
+    key: "voice-qa",
+    field: "voiceQa",
+    env: "CONCH_VOICE_QA",
+    kind: "boolean",
+    default: false,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "answer conch-prefixed questions from the current session without injecting them",
+  },
+  {
+    key: "resume-digest",
+    field: "resumeDigest",
+    env: "CONCH_RESUME_DIGEST",
+    kind: "boolean",
+    default: false,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "on resume, speak one composed briefing instead of replaying each held turn",
+  },
+  {
+    key: "announce-summary",
+    field: "announceSummary",
+    env: "CONCH_ANNOUNCE_SUMMARY",
+    kind: "boolean",
+    default: false,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "hook",
+    help: "summarize long replies in one spoken sentence for the next hook announcement",
   },
   {
     key: "announce-sentences",

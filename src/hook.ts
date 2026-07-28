@@ -4,6 +4,7 @@ import { bell, speak } from "./speak.ts";
 import { spokenSnippet, lastAssistantText, stripMarkdown, looksLikeAwaitingReply, transcriptMark } from "./snippet.ts";
 import { findSession, sessionLabel, isEngageable } from "./sessions.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
+import { askClaude } from "./model.ts";
 
 interface HookPayload {
   hook_event_name?: string;
@@ -45,6 +46,7 @@ const ACTIONABLE = new Set(["permission_prompt", "idle_prompt", "elicitation_dia
  * (which owns speak -> listen -> inject) or speaks the announcement itself.
  */
 export async function runHook(cfg: Config): Promise<void> {
+  if (process.env.CONCH_INTERNAL) return; // conch's own model shell-outs must never announce
   let payload: HookPayload;
   try {
     payload = JSON.parse(await new Response(Bun.stdin.stream()).text());
@@ -98,7 +100,12 @@ export async function runHook(cfg: Config): Promise<void> {
       ? sessionHasLiveBackgroundWork(payload.transcript_path)
       : false;
     const snippet = payload.transcript_path
-      ? await spokenSnippet(payload.transcript_path, cfg.speakSentences, cfg.speakMaxChars)
+      ? await spokenSnippet(
+        payload.transcript_path,
+        cfg.speakSentences,
+        cfg.speakMaxChars,
+        { summarize: cfg.announceSummary, askClaude },
+      )
       : "";
     turn = {
       type: backgroundWork ? "working" : "turn-end",

@@ -239,16 +239,45 @@ export function looksLikeAwaitingReply(text: string): boolean {
   return /\b(let me know|tell me|your call|which (one|way|option)|should i|do you want|want me to|say the word|waiting on you|give me the go)\b/i.test(tail);
 }
 
+const SUMMARY_PROMPT = [
+  "In one spoken sentence under 120 characters, summarize what this coding-assistant reply accomplished or is asking for.",
+  "Use plain words, no markdown, and no preamble:",
+].join(" ");
+
+export interface SpokenSnippetOptions {
+  summarize?: boolean;
+  askClaude?: (
+    prompt: string,
+    options?: { timeoutMs?: number; maxChars?: number },
+  ) => Promise<string | null>;
+}
+
 export async function spokenSnippet(
   transcriptPath: string,
   sentences: number,
   maxChars: number,
+  options: SpokenSnippetOptions = {},
 ): Promise<string> {
   // The Stop hook can fire before the final text is flushed to the
   // transcript; a couple of short retries beat announcing a stale line.
   for (let attempt = 0; attempt < 3; attempt++) {
     const text = await lastAssistantText(transcriptPath);
-    if (text) return firstSentences(stripMarkdown(text), sentences, maxChars);
+    if (text) {
+      const plain = stripMarkdown(text);
+      const fallback = firstSentences(plain, sentences, maxChars);
+      if (!options.summarize || plain.length <= maxChars || !options.askClaude) {
+        return fallback;
+      }
+      try {
+        const summary = await options.askClaude(
+          `${SUMMARY_PROMPT}\n\n${plain.slice(-6000)}`,
+          { timeoutMs: 8_000, maxChars: 160 },
+        );
+        return summary?.trim() || fallback;
+      } catch {
+        return fallback;
+      }
+    }
     await Bun.sleep(400);
   }
   return "";

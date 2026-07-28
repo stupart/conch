@@ -45,16 +45,19 @@ const expected = {
   "handoff-order": ["handoffOrder", "CONCH_HANDOFF_ORDER", "live", "oldest"],
   "reveal-on-turn": ["revealOnTurn", "CONCH_REVEAL_ON_TURN", "live", true],
   "working-mic": ["workingMic", "CONCH_WORKING_MIC", "live", false],
+  "voice-qa": ["voiceQa", "CONCH_VOICE_QA", "live", false],
+  "resume-digest": ["resumeDigest", "CONCH_RESUME_DIGEST", "live", false],
+  "announce-summary": ["announceSummary", "CONCH_ANNOUNCE_SUMMARY", "hook", false],
   "announce-sentences": ["speakSentences", "CONCH_SPEAK_SENTENCES", "hook", 2],
   "announce-max-chars": ["speakMaxChars", "CONCH_SPEAK_MAX_CHARS", "hook", 350],
   "say-rate": ["sayRate", "CONCH_SAY_RATE", "live", 210],
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 15 curated, default-bearing knobs", () => {
+  test("contains exactly the 18 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(15);
+    expect(SETTING_DESCRIPTORS).toHaveLength(18);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });
@@ -92,6 +95,9 @@ describe("settings parser", () => {
     expect(parse("read-full", "false")).toEqual({ ok: true, value: false });
     expect(parse("read-full", true)).toEqual({ ok: true, value: true });
     expect(parse("interrupt-on-manual-reply", "false")).toEqual({ ok: true, value: false });
+    expect(parse("announce-summary", "true")).toEqual({ ok: true, value: true });
+    expect(parse("voice-qa", "1")).toEqual({ ok: true, value: true });
+    expect(parse("resume-digest", "0")).toEqual({ ok: true, value: false });
     expect(parse("handoff-order", " OLDEST ")).toEqual({ ok: true, value: "oldest" });
   });
 
@@ -136,9 +142,15 @@ describe("settings parser", () => {
     expect(parse("working-mic", "1")).toEqual({ ok: true, value: true });
     expect(parse("working-mic", false)).toEqual({ ok: true, value: false });
     expect(parse("interrupt-on-manual-reply", true)).toEqual({ ok: true, value: true });
+    expect(parse("announce-summary", false)).toEqual({ ok: true, value: false });
+    expect(parse("voice-qa", true)).toEqual({ ok: true, value: true });
+    expect(parse("resume-digest", false)).toEqual({ ok: true, value: false });
     expect(parse("reveal-on-turn", "maybe").ok).toBe(false);
     expect(parse("working-mic", "sometimes").ok).toBe(false);
     expect(parse("interrupt-on-manual-reply", "sometimes").ok).toBe(false);
+    expect(parse("announce-summary", "sometimes").ok).toBe(false);
+    expect(parse("voice-qa", "sometimes").ok).toBe(false);
+    expect(parse("resume-digest", "sometimes").ok).toBe(false);
     expect(parse("reveal-on-turn", 1).ok).toBe(false);
     expect(parse("reveal-on-turn", null).ok).toBe(false);
   });
@@ -257,6 +269,22 @@ describe("settings resolution", () => {
       .toEqual({ value: 4.75, source: "file" });
     expect(resolved("end-silence", { env: {}, settingsPath: tempSettings() }))
       .toEqual({ value: 3.5, source: "default" });
+  });
+
+  test("resolves fast-model booleans from env, file, and default", () => {
+    for (const [key, env] of [
+      ["announce-summary", "CONCH_ANNOUNCE_SUMMARY"],
+      ["voice-qa", "CONCH_VOICE_QA"],
+      ["resume-digest", "CONCH_RESUME_DIGEST"],
+    ] as const) {
+      const path = tempSettings(JSON.stringify({ [key]: true }));
+      expect(resolved(key, { env: { [env]: "false" }, settingsPath: path }))
+        .toEqual({ value: false, source: "env" });
+      expect(resolved(key, { env: {}, settingsPath: path }))
+        .toEqual({ value: true, source: "file" });
+      expect(resolved(key, { env: {}, settingsPath: tempSettings() }))
+        .toEqual({ value: false, source: "default" });
+    }
   });
 
   test("resolves the legacy speed key only when the canonical key is absent", () => {

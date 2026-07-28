@@ -20,6 +20,7 @@ import { ServerSupervisor } from "./server-supervisor.ts";
 import { TtsSupervisor } from "./tts-supervisor.ts";
 import {
   listenGap,
+  listenOnce,
   armBargeRecorder,
   killActiveRecorders,
   createDictationSession,
@@ -30,6 +31,14 @@ import type { RecorderHandle } from "./dictation-controller.ts";
 import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
 import { classify, classifyReadingGap, wordOverlapRatio } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
+import { askClaude } from "./model.ts";
+import { routeVoicePrompt } from "./voice-qa.ts";
+import {
+  composeResumeBriefing,
+  ResumeDigestEscrow,
+  runResumeDigest,
+  shouldUseResumeDigest,
+} from "./resume-digest.ts";
 import {
   whisperServerClient,
   type WhisperRecoveryReason,
@@ -572,6 +581,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const injectedAt = new Map<string, number>(); // session -> last time conch drove it
   const pending = new Map<string, TurnEvent>(); // sessions that finished while paused — latest per session
   const resumeTransitions = new WeakMap<TurnEvent, Promise<PauseResumeResult>>();
+  const resumeDigestEscrow = new ResumeDigestEscrow<TurnEvent>();
+  let resumeDigestArm: {
+    owner: TurnEvent;
+    generation: number | null;
+  } | null = null;
+  const restorePreparedResumeDigest = (): void => {
+    for (const event of resumeDigestEscrow.restore()) {
+      if (!pending.has(event.sessionId)) pending.set(event.sessionId, event);
+    }
+  };
   // Live session status for the dashboard panel — replaces the spoken "needs you"
   // nag with a glanceable visual: working (you submitted a prompt) / waiting (turn
   // ended, ready for you) / needs (a permission/idle notification fired).
@@ -644,6 +663,31 @@ export async function runDaemon(cfg: Config): Promise<void> {
     speak: (text) => speak(cfg, text),
     liveSessionIds: async () => (await registrySnapshot(cfg.claudeDir))?.liveIds ?? null,
     userRespondedSince: (event) => userRespondedSince(event.transcriptPath, event.mark),
+    replayOverride: async (events) => {
+      const arm = resumeDigestArm;
+      resumeDigestArm = null;
+      if (
+        !arm
+        || arm.generation === null
+        || pause.interrupted(arm.generation)
+        || !shouldUseResumeDigest(cfg.resumeDigest, events, pausedSessionIds)
+      ) {
+        return false;
+      }
+      const briefing = await composeResumeBriefing(events, askClaude);
+      if (
+        pause.interrupted(arm.generation)
+        || !shouldUseResumeDigest(cfg.resumeDigest, events, pausedSessionIds)
+      ) {
+        return false;
+      }
+      return Boolean(resumeDigestEscrow.prepare(
+        arm.owner,
+        events,
+        briefing,
+        arm.generation,
+      ));
+    },
     enqueue,
     onHold: (event) => {
       lastTurn = event;
@@ -675,8 +719,56 @@ export async function runDaemon(cfg: Config): Promise<void> {
     log,
     render: () => void renderSessionPanel(),
   });
+  const cancelConsumingResumeDigest = (reason: string): void => {
+    try {
+      speech.cancelCurrent();
+    } catch (error) {
+      log(`resume digest speech cancellation failed: ${error}`);
+    }
+    try {
+      speech.cancelPendingAudio();
+    } catch (error) {
+      log(`resume digest pending-audio cancellation failed: ${error}`);
+    }
+    try {
+      activeDictation?.requestExternal("spacebar", reason);
+    } catch (error) {
+      log(`resume digest mic cancellation failed: ${error}`);
+    }
+  };
+  const setSessionMutedWithDigest = (sessionId: string, next: boolean): void => {
+    let digestWasConsuming = false;
+    if (next) {
+      const forgotten = resumeDigestEscrow.forget(sessionId);
+      digestWasConsuming = forgotten.consuming;
+    }
+    instantControls.setSessionMuted(sessionId, next);
+    if (digestWasConsuming) {
+      cancelConsumingResumeDigest("resume-digest-session-muted");
+    }
+  };
+  const setSessionPausedWithDigest = (sessionId: string, next: boolean): void => {
+    const digestWasConsuming = next
+      ? resumeDigestEscrow.invalidate(sessionId).consuming
+      : false;
+    instantControls.setSessionPaused(sessionId, next);
+    if (digestWasConsuming) {
+      cancelConsumingResumeDigest("resume-digest-session-paused");
+    }
+  };
   const settingsPause = new SettingsPauseLifecycle(
-    pause,
+    {
+      get paused() {
+        return pause.paused;
+      },
+      setPaused(next, options) {
+        if (next) {
+          resumeDigestArm = null;
+          restorePreparedResumeDigest();
+        }
+        return pause.setPaused(next, options);
+      },
+    },
     (error) => log(`settings pause transition failed: ${error}`),
   );
   // Hooks may connect while model startup is in flight; drain() holds their
@@ -765,8 +857,39 @@ export async function runDaemon(cfg: Config): Promise<void> {
     ) {
       // Apply every mode edge synchronously. The queued event owns only its
       // spoken acknowledgement after the aborted exchange closes its barrier.
+      if (event.type === "resume") {
+        // A second resume can overtake a prepared-but-not-yet-spoken digest.
+        // Put its exact work back under PauseController before snapshotting.
+        restorePreparedResumeDigest();
+        resumeDigestArm = { owner: event, generation: null };
+      } else if (event.type === "pause") {
+        restorePreparedResumeDigest();
+        resumeDigestArm = null;
+      } else if (event.type === "mute") {
+        // Global mute deliberately forgets every held turn.
+        resumeDigestEscrow.restore();
+        resumeDigestArm = null;
+      } else {
+        // An intervening global edge makes a not-yet-started model plan stale.
+        resumeDigestArm = null;
+      }
       const transition = instantControls.applyGlobal(event.type);
-      if (transition) resumeTransitions.set(event, transition);
+      if (transition) {
+        if (resumeDigestArm?.owner === event) {
+          resumeDigestArm.generation = pause.capture();
+        }
+        const tracked = transition.then(
+          (result) => {
+            resumeDigestEscrow.settle(event, result.digested === true);
+            return result;
+          },
+          (error) => {
+            resumeDigestEscrow.settle(event, false);
+            throw error;
+          },
+        );
+        resumeTransitions.set(event, tracked);
+      }
     }
     insertQueuedEvent(queue, event, instantQueueBarriers);
     void drain();
@@ -959,6 +1082,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       ...(lastTurn ? [lastTurn] : []),
       ...(recitingEvent ? [recitingEvent] : []),
       ...(handlingEvent ? [handlingEvent] : []),
+      ...resumeDigestEscrow.events(),
     ]);
     const oldPrefix = `${oldLabel}:`;
     for (const event of events) {
@@ -988,6 +1112,149 @@ export async function runDaemon(cfg: Config): Promise<void> {
     await speak(cfg, muteAcknowledgement(next));
   }
 
+  async function listenForResumeDigest(
+    generation: number,
+    canContinue: () => boolean,
+  ): Promise<{ text: string; error?: string }> {
+    let digestActive: typeof activeDictation = null;
+    let closing = false;
+    let resolveDone!: () => void;
+    const done = new Promise<void>((resolve) => {
+      resolveDone = resolve;
+    });
+
+    if (!canContinue() || !(await reserveNormalMic())) {
+      return { text: "", error: "daemon is shutting down" };
+    }
+    if (!canContinue() || pause.interrupted(generation)) {
+      normalMicReserved = false;
+      return { text: "", error: "resume was interrupted" };
+    }
+
+    resetTheaterTranscriptPrefix();
+    setState("listening", "who first");
+    micOpen = true;
+    try {
+      return await listenOnce(
+        {
+          ...cfg,
+          listenWindowSecs: Math.min(cfg.listenWindowSecs, 10),
+        },
+        listenHooks("who first", theaterMode ? () => "" : undefined),
+        {
+          tag: "digest",
+          onSessionStarted(session) {
+            digestActive = {
+              session,
+              requestExternal(_action, barrierReason) {
+                if (closing || session.state !== "running") return;
+                closing = true;
+                session.requestBarrier(barrierReason ?? "resume-digest-spacebar");
+              },
+              done,
+            };
+            activeDictation = digestActive;
+            normalMicReserved = false;
+            micOpen = true;
+          },
+        },
+      );
+    } catch (error) {
+      return {
+        text: "",
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      normalMicReserved = false;
+      if (activeDictation === digestActive) activeDictation = null;
+      micOpen = false;
+      resolveDone();
+    }
+  }
+
+  async function handlePreparedResumeDigest(
+    owner: TurnEvent,
+    result: PauseResumeResult,
+  ): Promise<void> {
+    const plan = resumeDigestEscrow.begin(owner);
+    if (!plan) {
+      // A newer pause/resume or settings modal already restored/consumed this
+      // stale resume's escrow. Its acknowledgement must not speak twice.
+      log("resume digest plan already restored or consumed");
+      return;
+    }
+
+    for (const sessionId of pausedSessionIds) {
+      resumeDigestEscrow.invalidate(sessionId);
+    }
+    for (const sessionId of mutedSessionIds) {
+      resumeDigestEscrow.forget(sessionId);
+    }
+    const events = plan.events;
+    let digestStopRequested = false;
+    const digestInterrupted = (): boolean => {
+      if (consumeStopKey()) digestStopRequested = true;
+      return digestStopRequested
+        || plan.cancelled
+        || plan.invalidated
+        || shuttingDown
+        || pause.interrupted(plan.generation);
+    };
+    const enqueueFullReplay = async (fallbackEvents: readonly TurnEvent[]) => {
+      // A newer pause/resume restored this same plan to pending; it now owns
+      // the work, so this stale handler must neither duplicate nor announce it.
+      if (plan.cancelled) return;
+      resumeDigestEscrow.finish(plan);
+      // Queue first: even if the spoken count fails, the exact held work stays
+      // reachable and will resume after this handler unwinds.
+      for (const event of fallbackEvents) enqueue(event);
+      if (
+        !digestStopRequested
+        && !pause.paused
+        && !muted
+        && !shuttingDown
+      ) {
+        await pause.announceResumed({
+          replayed: fallbackEvents.length,
+          dropped: result.dropped + (result.replayed - fallbackEvents.length),
+          cancelled: false,
+        });
+      }
+    };
+
+    try {
+      if (
+        digestInterrupted()
+        || !shouldUseResumeDigest(cfg.resumeDigest, events, pausedSessionIds)
+      ) {
+        await enqueueFullReplay(events);
+        return;
+      }
+
+      await runResumeDigest(events, plan.briefing, {
+        speak: async (text) => {
+          setState("speaking");
+          await speak(cfg, text);
+        },
+        listen: async () => {
+          await micCue(cfg, "open");
+          if (digestInterrupted()) {
+            return { text: "", error: "resume was interrupted" };
+          }
+          return listenForResumeDigest(
+            plan.generation,
+            () => !digestInterrupted(),
+          );
+        },
+        enqueue,
+        fallback: enqueueFullReplay,
+        interrupted: digestInterrupted,
+      });
+    } finally {
+      resumeDigestEscrow.finish(plan);
+    }
+  }
+
   async function handle(event: TurnEvent): Promise<void> {
     stopKey = false; // a stale press from a past exchange must not skip this one
     micOpen = false; // no listen in flight yet for this event
@@ -997,9 +1264,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (event.type === "resume") {
       if (sessionModalOpen() || pause.paused) return;
       const transition = resumeTransitions.get(event);
-      return pause.announceResumed(transition
+      const result = transition
         ? await transition
-        : { replayed: 0, dropped: 0, cancelled: false });
+        : { replayed: 0, dropped: 0, cancelled: false };
+      if (result.digested) return handlePreparedResumeDigest(event, result);
+      return pause.announceResumed(result);
     }
     if (event.type === "speak") {
       const speechCfg = event.voice ? { ...cfg, ttsVoices: [event.voice] } : cfg;
@@ -1389,6 +1658,26 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   /** Inject a prompt utterance and report how it went. */
   async function deliver(
+    event: TurnEvent,
+    text: string,
+    diagnosticIds?: string | Iterable<string | undefined>,
+    beforeInject?: () => boolean | Promise<boolean>,
+  ): Promise<boolean> {
+    return routeVoicePrompt(cfg.voiceQa, text, event.transcriptPath, {
+      askClaude,
+      speak: (answer) => speak(cfg, answer, event.label),
+      inject: (prompt) => deliverToSession(
+        event,
+        prompt,
+        diagnosticIds,
+        beforeInject,
+      ),
+      ...(beforeInject ? { canContinue: beforeInject } : {}),
+    });
+  }
+
+  /** The original session delivery path, reached only after local voice routing. */
+  async function deliverToSession(
     event: TurnEvent,
     text: string,
     diagnosticIds?: string | Iterable<string | undefined>,
@@ -2756,7 +3045,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
             }
           }
           theaterNavigation.release();
-          instantControls.setSessionMuted(target.sessionId, true);
+          setSessionMutedWithDigest(target.sessionId, true);
           log(`dismissed "${target.label}" — announcements stopped; session keeps running`);
         },
       },
@@ -3097,8 +3386,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       label: "",
       announce: "",
     }),
-    setSessionPaused: (id, next) => instantControls.setSessionPaused(id, next),
-    setSessionMuted: (id, next) => instantControls.setSessionMuted(id, next),
+    setSessionPaused: setSessionPausedWithDigest,
+    setSessionMuted: setSessionMutedWithDigest,
   };
 
   // Interactive keys when running in a terminal.
