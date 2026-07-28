@@ -7,3 +7,5 @@ A turn-based voice loop for Claude Code: hooks announce finished turns aloud (`s
 - The mic must never open while TTS is speaking — that invariant (in `daemon.ts`) is what prevents the loop hearing itself.
 - Whisper engine resolves in order: a seashell checkout (`CONCH_SEASHELL_ROOT`, default `~/whisper-cli`) → a brew `whisper-cpp` install → `~/.cache/conch/models` (where `conch setup` downloads them). conch doesn't vendor models in the repo; `conch setup` fetches them.
 - Test text processing with `bun test`; mic/TTS paths need a human (`conch listen`, `conch speak`).
+- When work needs Tyler's review, end the final reply with its own line:
+  `conch:review <one-line spoken summary> | <PR-url-or-path>` (link optional).

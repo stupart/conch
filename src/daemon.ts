@@ -326,7 +326,7 @@ export function downgradeTurnWithLiveBackgroundWork(
   event: TurnEvent,
   hasLiveWork: boolean,
 ): TurnEvent {
-  if (event.type === "turn-end" && hasLiveWork) {
+  if (event.type === "turn-end" && hasLiveWork && !event.review) {
     event.type = "working";
     event.backgroundWork = true;
   }
@@ -656,7 +656,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // Live session status for the dashboard panel — replaces the spoken "needs you"
   // nag with a glanceable visual: working (you submitted a prompt) / waiting (turn
   // ended, ready for you) / needs (a permission/idle notification fired).
-  const sessionStates = new Map<string, { label: string; status: SessionStatus; detail?: string; at: number }>();
+  const sessionStates = new Map<string, {
+    label: string;
+    status: SessionStatus;
+    detail?: string;
+    at: number;
+    review?: { summary: string; link?: string };
+  }>();
   const eventOrder = new TurnEventOrder();
   // Footer mode keeps its established persistent picker untouched. Theater uses
   // a separate active anchor + explicitly released parked cursor below.
@@ -1023,12 +1029,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
     status: SessionStatus,
     detail?: string,
     eventAt?: number,
+    review?: { summary: string; link?: string },
   ): boolean {
     if (!sessionId) return true; // nothing to latch; preserve the event's non-panel behavior
     // Legacy clients without eventAt may still work, but their latch is oldest
     // possible truth and can never clobber a timestamped hook or registry state.
     const at = eventTimestamp(eventAt);
-    const incoming = { label, status, detail, at };
+    const incoming = { label, status, detail, at, ...(review ? { review } : {}) };
     if (latestLatchedState(sessionStates.get(sessionId), incoming) !== incoming) return false;
     sessionStates.set(sessionId, incoming);
     void renderSessionPanel();
@@ -1160,9 +1167,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (event.type === "turn-end" && !setSessionState(
       event.sessionId,
       event.label,
-      "waiting",
-      undefined,
+      event.review ? "review" : "waiting",
+      event.review?.summary,
       event.eventAt,
+      event.review,
     )) return;
 
     // Mute stamps at enqueue/control time, so a quick unmute cannot resurrect a
@@ -1667,7 +1675,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const ensureSentences = async (): Promise<string[]> => {
       if (!sentences) {
         sentences = splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath!)));
-        cursor = countCoveredSentences(event.announce, sentences);
+        cursor = autoTurn
+          ? event.review ? sentences.length : countCoveredSentences(event.announce, sentences)
+          : countCoveredSentences(event.announce, sentences);
         const text = sentences.join(" ");
         updateReadingProgress(text, sentences.slice(0, cursor).join(" ").length);
       }
