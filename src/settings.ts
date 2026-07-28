@@ -29,6 +29,7 @@ export const SETTING_KEYS = [
   "handoff-order",
   "reveal-on-turn",
   "working-mic",
+  "meeting-autopause",
   "announce-sentences",
   "announce-max-chars",
   "say-rate",
@@ -48,6 +49,7 @@ export type SettingField =
   | "handoffOrder"
   | "revealOnTurn"
   | "workingMic"
+  | "meetingAutopause"
   | "speakSentences"
   | "speakMaxChars"
   | "sayRate";
@@ -260,6 +262,17 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "announce and open the mic while background work remains",
+  },
+  {
+    key: "meeting-autopause",
+    field: "meetingAutopause",
+    env: "CONCH_MEETING_AUTOPAUSE",
+    kind: "boolean",
+    default: false,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "pause while another app is using the default microphone",
   },
   {
     key: "announce-sentences",

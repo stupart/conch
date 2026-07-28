@@ -100,6 +100,8 @@ export interface Config {
   revealOnTurn: boolean;
   /** Bell, announce, and listen when a stopped turn still has live background work. */
   workingMic: boolean;
+  /** Silently pause while another app is using the default microphone. */
+  meetingAutopause: boolean;
   socketPath: string;
   claudeDir: string;
   /** TTS engine: auto (server if available, say otherwise) | server | say */
@@ -183,6 +185,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     keystrokeFallback: flag(env.CONCH_KEYSTROKE_FALLBACK, false),
     revealOnTurn: settings["reveal-on-turn"].value as boolean,
     workingMic: settings["working-mic"].value as boolean,
+    meetingAutopause: settings["meeting-autopause"].value as boolean,
     socketPath: env.CONCH_SOCKET ?? "/tmp/conch.sock",
     claudeDir: env.CLAUDE_CONFIG_DIR ?? join(HOME, ".claude"),
     ttsEngine: parseTtsEngine(env.CONCH_TTS),

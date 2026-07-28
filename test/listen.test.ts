@@ -3,7 +3,12 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
-import { createDictationSession, soxCaptureArgs } from "../src/listen.ts";
+import {
+  armBargeRecorder,
+  createDictationSession,
+  hasActiveRecorders,
+  soxCaptureArgs,
+} from "../src/listen.ts";
 
 describe("sox capture arguments", () => {
   test("puts configured mic gain immediately before silence", () => {
@@ -61,6 +66,7 @@ await new Promise(() => {});
     const session = createDictationSession(cfg);
     session.start();
     expect(session.micOpen).toBe(true);
+    expect(hasActiveRecorders()).toBeTrue();
     await Bun.sleep(50); // let the fake recorder create its raw output
 
     const aborting = session.abort();
@@ -78,6 +84,12 @@ await new Promise(() => {});
     expect(barrierReason).toBe("manual-reply");
     expect(session.micOpen).toBe(false);
     expect(session.state).toBe("idle");
+    expect(hasActiveRecorders()).toBeFalse();
+
+    const barge = armBargeRecorder(cfg);
+    expect(hasActiveRecorders()).toBeTrue();
+    await barge.abort();
+    expect(hasActiveRecorders()).toBeFalse();
   } finally {
     if (previousPath === undefined) delete process.env.PATH;
     else process.env.PATH = previousPath;

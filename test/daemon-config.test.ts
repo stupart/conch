@@ -726,6 +726,57 @@ describe("daemon config controller", () => {
     });
   });
 
+  test("applies and unsets meeting-autopause live and reports the effective boolean", () => {
+    const { path } = fixture();
+    const env = {};
+    const cfg = loadConfig({ env, settingsPath: path });
+    const changes: Array<{ key: string; value: unknown }> = [];
+    const controller = createConfigController(cfg, {
+      env,
+      settingsPath: path,
+      onLiveChange(key, value) {
+        changes.push({ key, value });
+      },
+    });
+    expect(cfg.meetingAutopause).toBe(false);
+
+    writeSetting(path, "meeting-autopause", true);
+    const setReply = controller.handle({
+      kind: "set-config",
+      key: "meeting-autopause",
+      value: true,
+    });
+
+    expect(cfg.meetingAutopause).toBe(true);
+    expect(setReply).toMatchObject({
+      kind: "config-ack",
+      key: "meeting-autopause",
+      status: "applied",
+      effective: true,
+      source: "file",
+    });
+
+    unsetSetting(path, "meeting-autopause");
+    const unsetReply = controller.handle({
+      kind: "unset-config",
+      key: "meeting-autopause",
+    });
+
+    expect(cfg.meetingAutopause).toBe(false);
+    expect(unsetReply).toMatchObject({
+      kind: "config-ack",
+      key: "meeting-autopause",
+      action: "unset",
+      status: "applied",
+      effective: false,
+      source: "default",
+    });
+    expect(changes).toEqual([
+      { key: "meeting-autopause", value: true },
+      { key: "meeting-autopause", value: false },
+    ]);
+  });
+
   test("applies and unsets interrupt-on-manual-reply live", () => {
     const { path } = fixture();
     const env = {};
