@@ -480,6 +480,66 @@ describe("daemon config controller", () => {
     expect(handleTurn).toContain("downgradeTurnWithLiveBackgroundWork(event, true)");
   });
 
+  test("review turns bypass the live-work downgrade while ordinary turns still mutate", () => {
+    const review: TurnEvent = {
+      type: "turn-end",
+      sessionId: "session-review",
+      label: "review",
+      announce: "review has work ready for your review: inspect the result",
+      review: {
+        summary: "inspect the result",
+        link: "https://example.com/review",
+      },
+    };
+    const ordinary: TurnEvent = {
+      type: "turn-end",
+      sessionId: "session-ordinary",
+      label: "ordinary",
+      announce: "ordinary: finished response",
+    };
+
+    expect(downgradeTurnWithLiveBackgroundWork(review, true)).toBe(review);
+    expect(review.type).toBe("turn-end");
+    expect(review.backgroundWork).toBeUndefined();
+
+    expect(downgradeTurnWithLiveBackgroundWork(ordinary, true)).toBe(ordinary);
+    expect(ordinary.type).toBe("working");
+    expect(ordinary.backgroundWork).toBe(true);
+  });
+
+  test("review status and automatic cursor skip stay wired without changing recite", () => {
+    const conversation = daemonSource.slice(
+      daemonSource.indexOf("async function conversationLoop"),
+      daemonSource.indexOf("async function permissionLoop"),
+    );
+    const cursorBranch = conversation.slice(
+      conversation.indexOf("cursor = autoTurn"),
+      conversation.indexOf("const text = sentences.join"),
+    );
+    expect(cursorBranch).toContain("event.review ? sentences.length");
+    expect(cursorBranch).toContain(
+      ": countCoveredSentences(event.announce, sentences)",
+    );
+    expect(cursorBranch.indexOf("autoTurn")).toBeLessThan(
+      cursorBranch.indexOf("event.review ? sentences.length"),
+    );
+
+    const turnEndStatus = daemonSource.slice(
+      daemonSource.indexOf('if (event.type === "turn-end" && !setSessionState('),
+      daemonSource.indexOf("// Mute stamps", daemonSource.indexOf('if (event.type === "turn-end" && !setSessionState(')),
+    );
+    expect(turnEndStatus).toContain('event.review ? "review" : "waiting"');
+    expect(turnEndStatus).toContain("event.review?.summary");
+    expect(turnEndStatus).toContain("event.eventAt");
+    expect(turnEndStatus).toContain("event.review");
+
+    const recite = daemonSource.slice(
+      daemonSource.indexOf('if (event.type === "recite")'),
+      daemonSource.indexOf('if (event.type === "wake")', daemonSource.indexOf('if (event.type === "recite")')),
+    );
+    expect(recite).toContain("false,\n          pauseGeneration");
+  });
+
   test("a turn end with no live background work remains untouched", () => {
     const event: TurnEvent = {
       type: "turn-end",

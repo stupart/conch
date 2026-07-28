@@ -7,6 +7,7 @@ import {
   countCoveredSentences,
   transcriptMark,
   userRespondedSince,
+  parseReviewRequest,
 } from "../src/snippet.ts";
 import { wavFromRawPcm } from "../src/transcribe.ts";
 
@@ -61,6 +62,47 @@ test("countCoveredSentences follows the actual announcement, not a configured se
 
 test("firstSentences handles a single unterminated sentence", () => {
   expect(firstSentences("no punctuation here", 2, 350)).toBe("no punctuation here");
+});
+
+test("parseReviewRequest reads a marker with a link and omits an absent link", () => {
+  expect(parseReviewRequest("Done.\nconch:review Review the new dashboard | https://example.com/pr/42"))
+    .toEqual({ summary: "Review the new dashboard", link: "https://example.com/pr/42" });
+  const withoutLink = parseReviewRequest("conch:review Review the local dashboard");
+  expect(withoutLink).toEqual({ summary: "Review the local dashboard" });
+  expect(Object.hasOwn(withoutLink!, "link")).toBe(false);
+});
+
+test("parseReviewRequest uses the last marker in the final message", () => {
+  expect(parseReviewRequest([
+    "conch:review Review the first draft | /tmp/first",
+    "A correction follows.",
+    "conch:review Review the corrected draft | /tmp/final",
+  ].join("\n"))).toEqual({
+    summary: "Review the corrected draft",
+    link: "/tmp/final",
+  });
+});
+
+test("parseReviewRequest rejects missing markers and empty summaries", () => {
+  expect(parseReviewRequest("The implementation is ready for review.")).toBeNull();
+  expect(parseReviewRequest("conch:review")).toBeNull();
+  expect(parseReviewRequest("conch:review   ")).toBeNull();
+});
+
+test("parseReviewRequest rejects prose and markers that do not start on their own line", () => {
+  expect(parseReviewRequest("Please review: the implementation is complete.")).toBeNull();
+  expect(parseReviewRequest("Status: conch:review Review this | /tmp/review")).toBeNull();
+  expect(parseReviewRequest("conch:review\nReview this | /tmp/review")).toBeNull();
+});
+
+test("parseReviewRequest trims and sanitizes a summary before capping it at 200 characters", () => {
+  const review = parseReviewRequest(`conch:review  \u0000${"x".repeat(201)}\u007f  | /tmp/review`);
+  expect(review).toEqual({ summary: "x".repeat(200), link: "/tmp/review" });
+});
+
+test("parseReviewRequest matches the marker case-insensitively", () => {
+  expect(parseReviewRequest("CONCH:REVIEW Check the uppercase marker | /tmp/review"))
+    .toEqual({ summary: "Check the uppercase marker", link: "/tmp/review" });
 });
 
 test("lastAssistantText returns the newest assistant text block", async () => {

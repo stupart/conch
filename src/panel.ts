@@ -12,8 +12,8 @@ export interface PanelLiveState {
   reading?: { text: string; spokenChars: number };
 }
 
-/** The three states a session row can show in the dashboard panel. */
-export type SessionStatus = "working" | "waiting" | "needs";
+/** The states a session row can show in the dashboard panel. */
+export type SessionStatus = "working" | "waiting" | "needs" | "review";
 
 /** A panel state latched from a hook event, with the epoch-ms it was latched. */
 export interface LatchedState {
@@ -32,6 +32,7 @@ export interface PanelRowModel {
   label: string;
   status: SessionStatus | null;
   detail?: string;
+  review?: { summary: string; link?: string; at: number };
   paused: boolean;
   muted: boolean;
   liveGlyph: PanelConchState | null;
@@ -101,6 +102,7 @@ export interface PanelModel {
 export interface PanelSessionState extends LatchedState {
   label: string;
   detail?: string;
+  review?: { summary: string; link?: string };
 }
 
 export interface BuildPanelModelOptions {
@@ -129,7 +131,16 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         sessionId: session.sessionId,
         label: sessionLabel(session, session.cwd),
         status,
-        ...(status === "needs" && latched?.detail ? { detail: latched.detail } : {}),
+        ...(
+          (status === "needs" || status === "review") && latched?.detail
+            ? { detail: latched.detail }
+            : {}
+        ),
+        ...(
+          status === "review" && latched?.review
+            ? { review: { ...latched.review, at: latched.at } }
+            : {}
+        ),
         paused: options.pausedSessionIds.has(session.sessionId),
         muted: options.mutedSessionIds.has(session.sessionId),
         liveGlyph: active && ROW_LIVE_STATES.has(options.live.state) ? options.live.state : null,
@@ -207,6 +218,7 @@ export function buildPanelModel(options: BuildPanelModelOptions): PanelModel {
 }
 
 const STATUS_GLYPH: Record<SessionStatus, string> = {
+  review: "\x1b[33m⭐ needs review\x1b[0m",
   needs: "\x1b[33m❗ needs a response\x1b[0m",
   waiting: "\x1b[32m○ waiting for you\x1b[0m",
   working: "\x1b[36m● working…\x1b[0m",
@@ -321,9 +333,15 @@ export function reconcileStatus(
   const reg = registryToPanel(session.status);
   const regAt = session.statusUpdatedAt ?? 0;
   if (latched && latched.at >= regAt) return latched.status;
+  if (reg === "waiting" && latched?.status === "review") return "review";
   if (reg) return reg;
   return latched?.status ?? null;
 }
 
-/** Sort order: what needs you first, then waiting, then working. */
-export const STATUS_RANK: Record<SessionStatus, number> = { needs: 0, waiting: 1, working: 2 };
+/** Sort order: review first, then what needs you, then waiting, then working. */
+export const STATUS_RANK: Record<SessionStatus, number> = {
+  review: 0,
+  needs: 1,
+  waiting: 2,
+  working: 3,
+};

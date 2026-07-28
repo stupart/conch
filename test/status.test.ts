@@ -270,11 +270,24 @@ describe("theater renderer lifecycle", () => {
         liveGlyph: null,
         active: false,
         navSelected: false,
+      }, {
+        sessionId: "review",
+        label: "review-project",
+        status: "review",
+        detail: "PR ready to inspect",
+        review: { summary: "PR ready to inspect", at: 20 },
+        paused: false,
+        muted: false,
+        liveGlyph: null,
+        active: false,
+        navSelected: false,
       }],
     }));
 
     const frame = writes.at(-1)!;
     expect(frame).toContain("needs a response");
+    expect(frame).toContain("⭐ needs review");
+    expect(frame).toContain("(PR ready to inspect)");
     expect(frame).not.toContain("│");
     expect(frame).not.toContain("…");
   });

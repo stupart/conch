@@ -205,6 +205,115 @@ describe("reconcileStatus — BUG A: newer signal wins, so the panel never stick
   test("no registry status and no latch → null (dim idle)", () => {
     expect(reconcileStatus({}, undefined)).toBeNull();
   });
+
+  test("a review latch survives a newer idle registry refresh", () => {
+    expect(reconcileStatus(
+      { status: "idle", statusUpdatedAt: 3_000 },
+      { status: "review", at: 2_000 },
+    )).toBe("review");
+  });
+
+  test("the review exception is waiting-only, so newer busy clears it", () => {
+    expect(reconcileStatus(
+      { status: "busy", statusUpdatedAt: 3_000 },
+      { status: "review", at: 2_000 },
+    )).toBe("working");
+  });
+
+  test("an equal-timestamp review latch wins the boundary tie", () => {
+    expect(reconcileStatus(
+      { status: "busy", statusUpdatedAt: 2_000 },
+      { status: "review", at: 2_000 },
+    )).toBe("review");
+  });
+});
+
+test("review rows sort ahead of needs, waiting, and working", () => {
+  const rows = buildPanelRows({
+    sessions: [
+      { sessionId: "working", name: "Working", status: "busy", statusUpdatedAt: 10 },
+      { sessionId: "waiting", name: "Waiting", status: "idle", statusUpdatedAt: 10 },
+      { sessionId: "needs", name: "Needs", status: "waiting", statusUpdatedAt: 10 },
+      { sessionId: "review", name: "Review", status: "idle", statusUpdatedAt: 10 },
+    ],
+    sessionStates: new Map([
+      ["review", {
+        label: "Review",
+        status: "review",
+        at: 20,
+        review: { summary: "Ready to inspect" },
+      }],
+    ]),
+    pausedSessionIds: new Set(),
+    mutedSessionIds: new Set(),
+    live: { state: "idle", label: "", partial: "" },
+    mode: { muted: false, paused: false, holding: 0 },
+    activeSessionId: null,
+    navSelectedId: null,
+  });
+
+  expect(rows.map((row) => row.sessionId)).toEqual([
+    "review",
+    "needs",
+    "waiting",
+    "working",
+  ]);
+});
+
+test("buildPanelRows carries review detail and timestamped metadata", () => {
+  const [row] = buildPanelRows({
+    sessions: [{ sessionId: "review", name: "Review", status: "idle", statusUpdatedAt: 10 }],
+    sessionStates: new Map([
+      ["review", {
+        label: "Review",
+        status: "review",
+        detail: "PR ready to inspect",
+        at: 20,
+        review: { summary: "PR ready to inspect", link: "https://example.com/pr/1" },
+      }],
+    ]),
+    pausedSessionIds: new Set(),
+    mutedSessionIds: new Set(),
+    live: { state: "idle", label: "", partial: "" },
+    mode: { muted: false, paused: false, holding: 0 },
+    activeSessionId: null,
+    navSelectedId: null,
+  });
+
+  expect(row).toMatchObject({
+    status: "review",
+    detail: "PR ready to inspect",
+    review: {
+      summary: "PR ready to inspect",
+      link: "https://example.com/pr/1",
+      at: 20,
+    },
+  });
+});
+
+test("dashboardRowsForModel renders the review star and dimmed summary detail", () => {
+  const model = buildPanelModel({
+    sessions: [{ sessionId: "review", name: "Review", status: "idle", statusUpdatedAt: 10 }],
+    sessionStates: new Map([
+      ["review", {
+        label: "Review",
+        status: "review",
+        detail: "PR ready to inspect",
+        at: 20,
+        review: { summary: "PR ready to inspect" },
+      }],
+    ]),
+    pausedSessionIds: new Set(),
+    mutedSessionIds: new Set(),
+    live: { state: "idle", label: "", partial: "" },
+    mode: { muted: false, paused: false, holding: 0 },
+    activeSessionId: null,
+    navSelectedId: null,
+  });
+
+  const row = dashboardRowsForModel(model)[0]!;
+  expect(row).toContain("\x1b[33m⭐ needs review\x1b[0m");
+  expect(row).toContain("\x1b[2m(PR ready to inspect)\x1b[0m");
 });
 
 describe("latestLatchedState — event-time ordering", () => {
