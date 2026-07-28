@@ -45,16 +45,17 @@ const expected = {
   "handoff-order": ["handoffOrder", "CONCH_HANDOFF_ORDER", "live", "oldest"],
   "reveal-on-turn": ["revealOnTurn", "CONCH_REVEAL_ON_TURN", "live", true],
   "working-mic": ["workingMic", "CONCH_WORKING_MIC", "live", false],
+  "meeting-autopause": ["meetingAutopause", "CONCH_MEETING_AUTOPAUSE", "live", false],
   "announce-sentences": ["speakSentences", "CONCH_SPEAK_SENTENCES", "hook", 2],
   "announce-max-chars": ["speakMaxChars", "CONCH_SPEAK_MAX_CHARS", "hook", 350],
   "say-rate": ["sayRate", "CONCH_SAY_RATE", "live", 210],
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 15 curated, default-bearing knobs", () => {
+  test("contains exactly the 16 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(15);
+    expect(SETTING_DESCRIPTORS).toHaveLength(16);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });
@@ -135,9 +136,13 @@ describe("settings parser", () => {
     expect(parse("reveal-on-turn", "false")).toEqual({ ok: true, value: false });
     expect(parse("working-mic", "1")).toEqual({ ok: true, value: true });
     expect(parse("working-mic", false)).toEqual({ ok: true, value: false });
+    expect(parse("meeting-autopause", "true")).toEqual({ ok: true, value: true });
+    expect(parse("meeting-autopause", false)).toEqual({ ok: true, value: false });
     expect(parse("interrupt-on-manual-reply", true)).toEqual({ ok: true, value: true });
     expect(parse("reveal-on-turn", "maybe").ok).toBe(false);
     expect(parse("working-mic", "sometimes").ok).toBe(false);
+    expect(parse("meeting-autopause", "sometimes").ok).toBe(false);
+    expect(parse("meeting-autopause", 1).ok).toBe(false);
     expect(parse("interrupt-on-manual-reply", "sometimes").ok).toBe(false);
     expect(parse("reveal-on-turn", 1).ok).toBe(false);
     expect(parse("reveal-on-turn", null).ok).toBe(false);

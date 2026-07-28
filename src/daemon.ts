@@ -21,6 +21,7 @@ import { TtsSupervisor } from "./tts-supervisor.ts";
 import {
   listenGap,
   armBargeRecorder,
+  hasActiveRecorders,
   killActiveRecorders,
   createDictationSession,
   type ListenHooks,
@@ -117,9 +118,15 @@ import {
 } from "./manual-reply.ts";
 import {
   PauseController,
+  SilentPauseCoordinator,
   SettingsPauseLifecycle,
   type PauseResumeResult,
 } from "./pause-controller.ts";
+import {
+  MicClaimPoller,
+  MicClaimWatcher,
+  readMicInUse,
+} from "./mic-claim.ts";
 import {
   SETTING_DESCRIPTORS,
   SETTING_REGISTRY,
@@ -185,6 +192,7 @@ function writeState(state: DaemonState): void {
 export interface ConfigControllerOptions {
   env?: Readonly<Record<string, string | undefined>>;
   settingsPath?: string;
+  onLiveChange?(key: SettingKey, value: SettingValue): void;
 }
 
 export interface ConfigController {
@@ -288,6 +296,7 @@ export function createConfigController(cfg: Config, options: ConfigControllerOpt
       const resolution = resolveSettingFromLoaded(descriptor, env, loaded, true, true);
       Object.assign(cfg, { [descriptor.field]: resolution.value });
       live.set(descriptor.key, resolution);
+      options.onLiveChange?.(descriptor.key, resolution.value);
       return ack(message, resolution, message.kind === "set-config" && resolution.source === "env" ? "masked" : "applied");
     },
   };
@@ -590,6 +599,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const mouseParser = new SgrMouseParser();
   let settingsOverlay: SettingsOverlay | null = null;
   let sessionActionsOverlay: SessionActionsOverlay | null = null;
+  let meetingMic: MicClaimPoller | null = null;
   // Per-session modes are transient dashboard state. Pause holds only the newest
   // turn for replay; mute deliberately forgets.
   const pausedSessionIds = new Set<string>();
@@ -610,6 +620,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let handlingPauseGeneration: number | null = null;
   const sessionModalOpen = (): boolean =>
     Boolean(settingsOverlay?.isOpen() || sessionActionsOverlay?.isOpen());
+  const explicitQuietOverrideBlocked = (): boolean =>
+    sessionModalOpen() || Boolean(meetingMic?.claimed);
 
   const normalMicOpen = (): boolean => Boolean(
     activeDictation?.session.micOpen || micOpen || normalMicReserved || bargeHandoffOpen
@@ -675,10 +687,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
     log,
     render: () => void renderSessionPanel(),
   });
-  const settingsPause = new SettingsPauseLifecycle(
+  const silentPause = new SilentPauseCoordinator(
     pause,
     (error) => log(`settings pause transition failed: ${error}`),
   );
+  const settingsPause = new SettingsPauseLifecycle(silentPause);
+  const meetingPause = new SettingsPauseLifecycle(silentPause);
   // Hooks may connect while model startup is in flight; drain() holds their
   // events behind this fully-consumed readiness probe.
   let ttsStartup: Promise<void> = Promise.resolve();
@@ -765,6 +779,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     ) {
       // Apply every mode edge synchronously. The queued event owns only its
       // spoken acknowledgement after the aborted exchange closes its barrier.
+      if (event.type === "pause" || event.type === "resume") {
+        silentPause.recordManualState(event.type === "pause");
+      }
       const transition = instantControls.applyGlobal(event.type);
       if (transition) resumeTransitions.set(event, transition);
     }
@@ -1089,7 +1106,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const controlDisposition = gateTurnForControls(event, audibleTurn, {
       globalMuted: muted,
       globalPaused: pause.paused,
-      settingsOpen: sessionModalOpen(),
+      settingsOpen: explicitQuietOverrideBlocked(),
       globalHeldTurns: pending,
       pausedSessionIds,
       mutedSessionIds,
@@ -2687,7 +2704,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
     else log(`sent ${verdict === "approve" ? "Enter" : "Escape"} via ${via}`);
   }
 
-  const configController = createConfigController(cfg);
+  const configController = createConfigController(cfg, {
+    onLiveChange: (key, value) => {
+      if (key === "meeting-autopause") meetingMic?.setEnabled(value === true);
+    },
+  });
   if (theaterMode) {
     settingsOverlay = new SettingsOverlay({
       controller: configController,
@@ -2806,6 +2827,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     rendererLifecycle.restore();
     theaterNavigation.dispose();
     shuttingDown = true;
+    meetingMic?.close();
     queue.length = 0;
     speech.close(); // cancel and seal speech, cues, and in-flight/future canaries
     // Close the controller's rearm gate synchronously before taking the
@@ -2836,6 +2858,26 @@ export async function runDaemon(cfg: Config): Promise<void> {
   process.on("SIGTERM", () => void shutdown());
   process.on("SIGHUP", () => void shutdown());
   process.on("SIGQUIT", () => void shutdown());
+
+  meetingMic = new MicClaimPoller({
+    enabled: cfg.meetingAutopause,
+    createWatcher: () => new MicClaimWatcher({
+      inUse: readMicInUse,
+      // CoreAudio exposes one aggregate bit. Skip it whenever Conch could own
+      // that bit, including the pre-adoption SoX barge recorder.
+      selfOwned: () => normalMicOpen() || hasActiveRecorders(),
+      onClaim: () => {
+        log("another app is using the microphone — auto-pausing");
+        meetingPause.open();
+      },
+      onRelease: () => {
+        log("microphone released — restoring pre-meeting pause state");
+        meetingPause.close();
+      },
+      onError: (error) => log(`meeting microphone poll failed: ${error}`),
+    }),
+    onError: (error) => log(`meeting microphone watcher failed: ${error}`),
+  });
 
   const ttsBinaryAvailable = Boolean(Bun.which(cfg.ttsServerBin));
   const ttsEnabled = cfg.ttsEngine !== "say" && Boolean(cfg.ttsPort) && ttsBinaryAvailable;

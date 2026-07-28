@@ -134,6 +134,11 @@ function spawnCapture(
   return capture;
 }
 
+/** True for every Conch-owned SoX child, including pre-adoption barge capture. */
+export function hasActiveRecorders(): boolean {
+  return activeRecorders.size > 0;
+}
+
 /** Kill any in-flight sox capture — daemon shutdown must not leave the mic hot. */
 export function killActiveRecorders(): Promise<void> | undefined {
   const diagnosticExits: Promise<void>[] = [];

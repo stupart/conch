@@ -26,6 +26,7 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.micGainDb).toBe(0);
     expect(cfg.sayRate).toBe(210);
     expect(cfg.workingMic).toBe(false);
+    expect(cfg.meetingAutopause).toBe(false);
     expect(cfg.interruptOnManualReply).toBe(true);
     expect(cfg.handoffOrder).toBe("oldest");
   });
@@ -46,6 +47,7 @@ describe("loadConfig tunable layering", () => {
         "handoff-order": "oldest",
         "reveal-on-turn": false,
         "working-mic": true,
+        "meeting-autopause": true,
         "announce-sentences": 4,
         "announce-max-chars": 480,
         "say-rate": 0,
@@ -64,6 +66,7 @@ describe("loadConfig tunable layering", () => {
       handoffOrder: "oldest",
       revealOnTurn: false,
       workingMic: true,
+      meetingAutopause: true,
       speakSentences: 4,
       speakMaxChars: 480,
       sayRate: 0,
@@ -87,6 +90,7 @@ describe("loadConfig tunable layering", () => {
       "interrupt-on-manual-reply": false,
       "handoff-order": "oldest",
       "working-mic": false,
+      "meeting-autopause": true,
     });
     const cfg = loadConfig({
       env: {
@@ -97,6 +101,7 @@ describe("loadConfig tunable layering", () => {
         CONCH_INTERRUPT_ON_MANUAL_REPLY: "true",
         CONCH_HANDOFF_ORDER: "urgency",
         CONCH_WORKING_MIC: "true",
+        CONCH_MEETING_AUTOPAUSE: "false",
       },
       settingsPath: path,
     });
@@ -107,6 +112,13 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.interruptOnManualReply).toBe(true);
     expect(cfg.handoffOrder).toBe("urgency");
     expect(cfg.workingMic).toBe(true);
+    expect(cfg.meetingAutopause).toBe(false);
+
+    const invalidMeetingEnv = loadConfig({
+      env: { CONCH_MEETING_AUTOPAUSE: "sometimes" },
+      settingsPath: path,
+    });
+    expect(invalidMeetingEnv.meetingAutopause).toBe(true);
   });
 
   test("invalid file values fall through to the registry default", () => {
@@ -119,6 +131,7 @@ describe("loadConfig tunable layering", () => {
         "interrupt-on-manual-reply": "sometimes",
         "handoff-order": "random",
         "working-mic": "sometimes",
+        "meeting-autopause": "sometimes",
       }),
     });
     expect(cfg.bargeThresholdPct).toBe(0);
@@ -127,6 +140,7 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.interruptOnManualReply).toBe(true);
     expect(cfg.handoffOrder).toBe("oldest");
     expect(cfg.workingMic).toBe(false);
+    expect(cfg.meetingAutopause).toBe(false);
   });
 
   test("zeroable env knobs preserve zero", () => {

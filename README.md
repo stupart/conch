@@ -116,7 +116,7 @@ Commands only match as the *entire* utterance — "continue working on the login
 
 **Leaving?** `conch mute` silences announcements and the mic until `conch unmute`; in the dashboard, **m** does the same globally whenever no session is parked. Mute forgets what finishes, so there is no reminder loop, and a closed window costs nothing (no sox, no whisper). `CONCH_AWAY_AFTER_SECS` adds opt-in auto-silence after N seconds of keyboard/mouse idle, but note it's off by default for a reason: idle time doesn't count *voice* activity, so it would mute a fully hands-free session mid-conversation.
 
-**Stepping away for a bit?** `conch pause` (or **p** with no session parked) is mute's patient sibling: it stays quiet *and* **holds** every session that finishes while you're gone, then replays them on `conch resume` or the next **p**. **Joining a meeting, pause first** — otherwise an open mic window could pick up meeting audio and inject it into a session.
+**Stepping away for a bit?** `conch pause` (or **p** with no session parked) is mute's patient sibling: it stays quiet *and* **holds** every session that finishes while you're gone, then replays them on `conch resume` or the next **p**. Joining meetings often? `conch set meeting-autopause true` enables a default-off CoreAudio watcher that silently pauses when another app takes the default microphone, then restores your prior pause state when it releases.
 
 **Want to focus on one thing?** Use **↑↓** to park the cursor on a session. Its latest output follows into the pane and stays there; **esc** releases the cursor back to automatic follow. Press **r** to read that output aloud, or **Enter** for its actions menu: preview/pin a voice, prioritize its next hand-off, rename it, or safely dismiss it from conch while leaving the Claude process running. Recite is immediate and read-only: it cuts any active read or mic, reads the latest reply from the top, then returns to rest. While it is parked, **p** pauses or resumes just that session, holding only its latest turn and replaying that turn from the top on resume; **m** mutes or unmutes just that session, forgetting what finishes with no replay. With no parked cursor, **p** and **m** are global. These controls take effect instantly: an active read stops, the mic closes, and its in-flight capture is dropped.
 
@@ -193,6 +193,7 @@ The full environment-variable surface remains available (put overrides in the ho
 | `CONCH_SEASHELL_ROOT` | `~/whisper-cli` | first place probed for the whisper.cpp build + models; falls back to a brew `whisper-cpp` install and `~/.cache/conch/models` |
 | `CONCH_WHISPER_PORT` | `8642` | warm whisper-server port; `0` = cold cli only |
 | `CONCH_AWAY_AFTER_SECS` | `0` (off) | opt-in: silence everything after N seconds of keyboard idle |
+| `CONCH_MEETING_AUTOPAUSE` | `0` (off) | silently pause while another app is using the default microphone |
 | `CONCH_TTS` | `auto` | voices: `auto` (Kokoro server if installed, else say) / `server` / `say` |
 | `CONCH_TTS_PORT` | `8880` | warm Kokoro server port; `0` disables |
 | `CONCH_TTS_VOICES` | 8-voice ring | comma-separated Kokoro voices; sessions hash onto the ring |
