@@ -108,6 +108,8 @@ export interface Config {
   announceSummary: boolean;
   /** seconds the fast model (Haiku) may run before a voice feature falls back */
   haikuTimeoutSecs: number;
+  /** Silently pause while another app is using the default microphone. */
+  meetingAutopause: boolean;
   socketPath: string;
   claudeDir: string;
   /** TTS engine: owned stdin/stdout worker (default) | legacy HTTP server | say */
@@ -197,6 +199,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     resumeDigest: settings["resume-digest"].value as boolean,
     announceSummary: settings["announce-summary"].value as boolean,
     haikuTimeoutSecs: settings["haiku-timeout"].value as number,
+    meetingAutopause: settings["meeting-autopause"].value as boolean,
     socketPath: env.CONCH_SOCKET ?? "/tmp/conch.sock",
     claudeDir: env.CLAUDE_CONFIG_DIR ?? join(HOME, ".claude"),
     ttsEngine: parseTtsEngine(env.CONCH_TTS),

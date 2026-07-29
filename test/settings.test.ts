@@ -49,16 +49,17 @@ const expected = {
   "resume-digest": ["resumeDigest", "CONCH_RESUME_DIGEST", "live", false],
   "announce-summary": ["announceSummary", "CONCH_ANNOUNCE_SUMMARY", "hook", false],
   "haiku-timeout": ["haikuTimeoutSecs", "CONCH_HAIKU_TIMEOUT_SECS", "live", 10],
+  "meeting-autopause": ["meetingAutopause", "CONCH_MEETING_AUTOPAUSE", "live", false],
   "announce-sentences": ["speakSentences", "CONCH_SPEAK_SENTENCES", "hook", 2],
   "announce-max-chars": ["speakMaxChars", "CONCH_SPEAK_MAX_CHARS", "hook", 350],
   "say-rate": ["sayRate", "CONCH_SAY_RATE", "live", 210],
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 19 curated, default-bearing knobs", () => {
+  test("contains exactly the 20 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(19);
+    expect(SETTING_DESCRIPTORS).toHaveLength(20);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });
@@ -142,12 +143,16 @@ describe("settings parser", () => {
     expect(parse("reveal-on-turn", "false")).toEqual({ ok: true, value: false });
     expect(parse("working-mic", "1")).toEqual({ ok: true, value: true });
     expect(parse("working-mic", false)).toEqual({ ok: true, value: false });
+    expect(parse("meeting-autopause", "true")).toEqual({ ok: true, value: true });
+    expect(parse("meeting-autopause", false)).toEqual({ ok: true, value: false });
     expect(parse("interrupt-on-manual-reply", true)).toEqual({ ok: true, value: true });
     expect(parse("announce-summary", false)).toEqual({ ok: true, value: false });
     expect(parse("voice-qa", true)).toEqual({ ok: true, value: true });
     expect(parse("resume-digest", false)).toEqual({ ok: true, value: false });
     expect(parse("reveal-on-turn", "maybe").ok).toBe(false);
     expect(parse("working-mic", "sometimes").ok).toBe(false);
+    expect(parse("meeting-autopause", "sometimes").ok).toBe(false);
+    expect(parse("meeting-autopause", 1).ok).toBe(false);
     expect(parse("interrupt-on-manual-reply", "sometimes").ok).toBe(false);
     expect(parse("announce-summary", "sometimes").ok).toBe(false);
     expect(parse("voice-qa", "sometimes").ok).toBe(false);

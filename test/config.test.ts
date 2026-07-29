@@ -29,6 +29,7 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.announceSummary).toBe(false);
     expect(cfg.voiceQa).toBe(false);
     expect(cfg.resumeDigest).toBe(false);
+    expect(cfg.meetingAutopause).toBe(false);
     expect(cfg.interruptOnManualReply).toBe(true);
     expect(cfg.handoffOrder).toBe("oldest");
   });
@@ -52,6 +53,7 @@ describe("loadConfig tunable layering", () => {
         "announce-summary": true,
         "voice-qa": true,
         "resume-digest": true,
+        "meeting-autopause": true,
         "announce-sentences": 4,
         "announce-max-chars": 480,
         "say-rate": 0,
@@ -73,6 +75,7 @@ describe("loadConfig tunable layering", () => {
       announceSummary: true,
       voiceQa: true,
       resumeDigest: true,
+      meetingAutopause: true,
       speakSentences: 4,
       speakMaxChars: 480,
       sayRate: 0,
@@ -99,6 +102,7 @@ describe("loadConfig tunable layering", () => {
       "announce-summary": true,
       "voice-qa": false,
       "resume-digest": false,
+      "meeting-autopause": true,
     });
     const cfg = loadConfig({
       env: {
@@ -112,6 +116,7 @@ describe("loadConfig tunable layering", () => {
         CONCH_ANNOUNCE_SUMMARY: "false",
         CONCH_VOICE_QA: "true",
         CONCH_RESUME_DIGEST: "true",
+        CONCH_MEETING_AUTOPAUSE: "false",
       },
       settingsPath: path,
     });
@@ -125,6 +130,13 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.announceSummary).toBe(false);
     expect(cfg.voiceQa).toBe(true);
     expect(cfg.resumeDigest).toBe(true);
+    expect(cfg.meetingAutopause).toBe(false);
+
+    const invalidMeetingEnv = loadConfig({
+      env: { CONCH_MEETING_AUTOPAUSE: "sometimes" },
+      settingsPath: path,
+    });
+    expect(invalidMeetingEnv.meetingAutopause).toBe(true);
   });
 
   test("invalid file values fall through to the registry default", () => {
@@ -140,6 +152,7 @@ describe("loadConfig tunable layering", () => {
         "announce-summary": "sometimes",
         "voice-qa": "sometimes",
         "resume-digest": "sometimes",
+        "meeting-autopause": "sometimes",
       }),
     });
     expect(cfg.bargeThresholdPct).toBe(0);
@@ -151,6 +164,7 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.announceSummary).toBe(false);
     expect(cfg.voiceQa).toBe(false);
     expect(cfg.resumeDigest).toBe(false);
+    expect(cfg.meetingAutopause).toBe(false);
   });
 
   test("zeroable env knobs preserve zero", () => {

@@ -4,6 +4,7 @@ import type { DictationControllerState, DictationEvent } from "../src/dictation-
 import type { TurnEvent } from "../src/hook.ts";
 import {
   PauseController,
+  SilentPauseCoordinator,
   SettingsPauseLifecycle,
   type PauseControllerOptions,
   type PauseSession,
@@ -424,6 +425,53 @@ describe("PauseController", () => {
     await h.controller.setPaused(false, { announce: false });
     expect(h.enqueued).toEqual([latest]);
     expect(h.enqueued[0]).toBe(latest);
+  });
+
+  test("overlapping silent pause owners restore only after the final owner closes", async () => {
+    const h = harness();
+    const coordinator = new SilentPauseCoordinator(h.controller);
+    const settings = new SettingsPauseLifecycle(coordinator);
+    const meeting = new SettingsPauseLifecycle(coordinator);
+
+    settings.open();
+    meeting.open();
+    expect(h.controller.paused).toBeTrue();
+    expect(h.cancelCurrentCalls).toBe(2);
+
+    settings.close();
+    await Bun.sleep(0);
+    expect(h.controller.paused).toBeTrue();
+    expect(h.persisted).toEqual([true]);
+
+    meeting.close();
+    await Bun.sleep(0);
+    expect(h.controller.paused).toBeFalse();
+    expect(h.persisted).toEqual([true, false]);
+    expect(h.spoken).toEqual([]);
+  });
+
+  test("explicit pause and resume become the state restored after a silent owner", async () => {
+    const initiallyActive = harness();
+    const activeCoordinator = new SilentPauseCoordinator(initiallyActive.controller);
+    const activeMeeting = new SettingsPauseLifecycle(activeCoordinator);
+    activeMeeting.open();
+    activeCoordinator.recordManualState(true);
+    await initiallyActive.controller.setPaused(true, { announce: false });
+    activeMeeting.close();
+    await Bun.sleep(0);
+    expect(initiallyActive.controller.paused).toBeTrue();
+    expect(initiallyActive.persisted).toEqual([true]);
+
+    const initiallyPaused = harness({ initialPaused: true });
+    const pausedCoordinator = new SilentPauseCoordinator(initiallyPaused.controller);
+    const pausedMeeting = new SettingsPauseLifecycle(pausedCoordinator);
+    pausedMeeting.open();
+    pausedCoordinator.recordManualState(false);
+    await initiallyPaused.controller.setPaused(false, { announce: false });
+    pausedMeeting.close();
+    await Bun.sleep(0);
+    expect(initiallyPaused.controller.paused).toBeFalse();
+    expect(initiallyPaused.persisted).toEqual([false]);
   });
 
   test("manual pause and resume retain their spoken acknowledgements", async () => {

@@ -123,7 +123,7 @@ Commands only match as the *entire* utterance — "continue working on the login
 
 **Leaving?** `conch mute` silences announcements and the mic until `conch unmute`; in the dashboard, **m** does the same globally whenever no session is parked. Mute forgets what finishes, so there is no reminder loop, and a closed window costs nothing (no sox, no whisper). `CONCH_AWAY_AFTER_SECS` adds opt-in auto-silence after N seconds of keyboard/mouse idle, but note it's off by default for a reason: idle time doesn't count *voice* activity, so it would mute a fully hands-free session mid-conversation.
 
-**Stepping away for a bit?** `conch pause` (or **p** with no session parked) is mute's patient sibling: it stays quiet *and* **holds** every session that finishes while you're gone, then replays them on `conch resume` or the next **p**. **Joining a meeting, pause first** — otherwise an open mic window could pick up meeting audio and inject it into a session.
+**Stepping away for a bit?** `conch pause` (or **p** with no session parked) is mute's patient sibling: it stays quiet *and* **holds** every session that finishes while you're gone, then replays them on `conch resume` or the next **p**. Joining meetings often? `conch set meeting-autopause true` enables a default-off CoreAudio watcher that silently pauses when another app takes the default microphone, then restores your prior pause state when it releases.
 
 With the default-off `resume-digest` setting enabled, two or more held sessions are composed into one short Haiku briefing, followed by one "Who first?" listen. If Haiku is unavailable, conch uses a deterministic label briefing; a failed listen or session match falls back to the normal full replay, so held work is never discarded.
 
@@ -207,6 +207,7 @@ The full environment-variable surface remains available (put overrides in the ho
 | `CONCH_SEASHELL_ROOT` | `~/whisper-cli` | first place probed for the whisper.cpp build + models; falls back to a brew `whisper-cpp` install and `~/.cache/conch/models` |
 | `CONCH_WHISPER_PORT` | `8642` | warm whisper-server port; `0` = cold cli only |
 | `CONCH_AWAY_AFTER_SECS` | `0` (off) | opt-in: silence everything after N seconds of keyboard idle |
+| `CONCH_MEETING_AUTOPAUSE` | `0` (off) | silently pause while another app is using the default microphone |
 | `CONCH_TTS` | `worker` | `worker` (owned, no HTTP) / `server` (legacy rollback) / `say`; old `auto` aliases to `worker` |
 | `CONCH_TTS_PORT` | `8880` | legacy `server` mode only; `0` disables that backend |
 | `CONCH_TTS_SERVER` | `mlx_audio.server` | legacy server binary and launcher whose shebang locates the uv-tool Python |

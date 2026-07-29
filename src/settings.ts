@@ -33,6 +33,7 @@ export const SETTING_KEYS = [
   "resume-digest",
   "announce-summary",
   "haiku-timeout",
+  "meeting-autopause",
   "announce-sentences",
   "announce-max-chars",
   "say-rate",
@@ -56,6 +57,7 @@ export type SettingField =
   | "resumeDigest"
   | "announceSummary"
   | "haikuTimeoutSecs"
+  | "meetingAutopause"
   | "speakSentences"
   | "speakMaxChars"
   | "sayRate";
@@ -313,6 +315,17 @@ export const SETTING_DESCRIPTORS = [
     bounds: haikuTimeout,
     apply: "live",
     help: "seconds the fast model (Haiku) may take for a spoken summary, voice answer, or resume briefing before falling back",
+  },
+  {
+    key: "meeting-autopause",
+    field: "meetingAutopause",
+    env: "CONCH_MEETING_AUTOPAUSE",
+    kind: "boolean",
+    default: false,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "pause while another app is using the default microphone",
   },
   {
     key: "announce-sentences",

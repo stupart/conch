@@ -68,10 +68,14 @@ export interface SettingsPauseTarget {
   setPaused(next: boolean, options?: SetPausedOptions): void | Promise<void>;
 }
 
-/** One overlay-open lifetime owns one silent pause and one prior-state restore. */
-export class SettingsPauseLifecycle {
+/**
+ * Coordinates overlapping silent-pause owners around one prior-state snapshot.
+ * Every new owner still force-interrupts, but only the last release restores.
+ */
+export class SilentPauseCoordinator {
   readonly #target: SettingsPauseTarget;
   readonly #onError: (error: unknown) => void;
+  readonly #owners = new Set<object>();
   #priorPaused: boolean | null = null;
 
   constructor(target: SettingsPauseTarget, onError: (error: unknown) => void = () => {}) {
@@ -79,13 +83,20 @@ export class SettingsPauseLifecycle {
     this.#onError = onError;
   }
 
-  open(): void {
-    if (this.#priorPaused !== null) return;
-    this.#priorPaused = this.#target.paused;
+  acquire(owner: object): void {
+    if (this.#owners.has(owner)) return;
+    if (!this.#owners.size) this.#priorPaused = this.#target.paused;
+    this.#owners.add(owner);
     this.#transition(true, { announce: false, interrupt: true });
   }
 
-  close(): void {
+  /** An explicit global control becomes the state restored after all owners leave. */
+  recordManualState(paused: boolean): void {
+    if (this.#owners.size) this.#priorPaused = paused;
+  }
+
+  release(owner: object): void {
+    if (!this.#owners.delete(owner) || this.#owners.size) return;
     const priorPaused = this.#priorPaused;
     this.#priorPaused = null;
     if (priorPaused === null || this.#target.paused === priorPaused) return;
@@ -98,6 +109,29 @@ export class SettingsPauseLifecycle {
     } catch (error) {
       this.#onError(error);
     }
+  }
+}
+
+/** One caller lifetime owns one silent pause and one prior-state restore. */
+export class SettingsPauseLifecycle {
+  readonly #coordinator: SilentPauseCoordinator;
+  readonly #owner = {};
+
+  constructor(
+    target: SettingsPauseTarget | SilentPauseCoordinator,
+    onError: (error: unknown) => void = () => {},
+  ) {
+    this.#coordinator = target instanceof SilentPauseCoordinator
+      ? target
+      : new SilentPauseCoordinator(target, onError);
+  }
+
+  open(): void {
+    this.#coordinator.acquire(this.#owner);
+  }
+
+  close(): void {
+    this.#coordinator.release(this.#owner);
   }
 }
 
