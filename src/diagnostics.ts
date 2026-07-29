@@ -81,7 +81,6 @@ export class DiagnosticsSession {
   private parentCounter = 0;
   private recorderCounter = 0;
   private pending = new Map<string, RecorderDiagnosticRecord>();
-  private emitted = new Set<string>();
 
   constructor(options: DiagnosticsSessionOptions = {}) {
     const baseDir = options.baseDir ?? "/tmp";
@@ -148,13 +147,13 @@ export class DiagnosticsSession {
 
   update(id: string, patch: RecorderDiagnosticPatch): void {
     const record = this.pending.get(id);
-    if (!record || this.emitted.has(id)) return;
+    if (!record) return;
     applyPatch(record, patch);
   }
 
   emit(id: string, patch: RecorderDiagnosticPatch = {}): void {
     const record = this.pending.get(id);
-    if (!record || this.emitted.has(id)) return;
+    if (!record) return;
     applyPatch(record, patch);
     if (!record.exitReason) {
       record.exitReason = "error";
@@ -162,7 +161,6 @@ export class DiagnosticsSession {
     }
     appendFileSync(this.logPath, `${JSON.stringify(record)}\n`);
     this.pending.delete(id);
-    this.emitted.add(id);
   }
 
   emitMany(ids: Iterable<string>, patch: RecorderDiagnosticPatch = {}): void {

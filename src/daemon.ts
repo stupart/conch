@@ -475,6 +475,12 @@ export class TurnEventOrder {
   forget(sessionId: string): void {
     this.#latest.delete(sessionId);
   }
+
+  prune(liveIds: ReadonlySet<string>): void {
+    for (const id of this.#latest.keys()) {
+      if (!liveIds.has(id)) this.#latest.delete(id);
+    }
+  }
 }
 
 /** Keep dismissed sessions live in the registry while omitting their dashboard rows. */
@@ -824,6 +830,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         ...dismissedSessionIds,
         ...sessionHeldTurns.keys(),
         ...latestTurnBySession.keys(),
+        ...pending.keys(),
       ]);
       for (const id of trackedIds) {
         if (liveIds.has(id)) continue;
@@ -835,7 +842,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
         dismissedSessionIds.delete(id);
         sessionHeldTurns.delete(id);
         latestTurnBySession.delete(id);
+        pending.delete(id);
       }
+      eventOrder.prune(liveIds);
     }
     const live = withoutDismissedSessions(registryLive, dismissedSessionIds);
     const liveState = getLiveState(); // what conch is doing right now, if anything
@@ -1049,6 +1058,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       prioritizedSessionIds.delete(event.sessionId);
       dismissedSessionIds.delete(event.sessionId);
       sessionHeldTurns.delete(event.sessionId);
+      pending.delete(event.sessionId);
       if (lastTurn?.sessionId === event.sessionId) lastTurn = null;
       void renderSessionPanel();
       return;
@@ -2785,6 +2795,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       else sock.end();
     };
     sock.on("data", (data) => {
+      if (handled) return;
       buf += data.toString();
       const newline = buf.indexOf("\n");
       if (newline !== -1) handleLine(buf.slice(0, newline));
