@@ -1,6 +1,55 @@
 import { test, expect } from "bun:test";
-import { classify, classifyApproval, classifyReadingGap, wordOverlapRatio, isSendCommand } from "../src/commands.ts";
+import {
+  classify,
+  classifyApproval,
+  classifyReadingGap,
+  isSendCommand,
+  parseNameAddress,
+  wordOverlapRatio,
+} from "../src/commands.ts";
 import { looksLikeAwaitingReply } from "../src/snippet.ts";
+
+test("spoken name addresses preserve raw casing and split explicit punctuation", () => {
+  expect(parseNameAddress("hey dayloop, ship it")).toEqual([
+    { name: "dayloop", rest: "ship it" },
+  ]);
+  expect(parseNameAddress("  HEY Day Loop: Fix API, please.  ")).toEqual([
+    { name: "Day Loop", rest: "Fix API, please." },
+  ]);
+  expect(parseNameAddress("hey one two three: go")).toEqual([
+    { name: "one two three", rest: "go" },
+  ]);
+});
+
+test("unpunctuated name addresses produce longest-first candidates with content", () => {
+  expect(parseNameAddress("Hey Dayloop ship it")).toEqual([
+    { name: "Dayloop ship", rest: "it" },
+    { name: "Dayloop", rest: "ship it" },
+  ]);
+  expect(parseNameAddress("Hey Big Blue Heron ship it")).toEqual([
+    { name: "Big Blue Heron", rest: "ship it" },
+    { name: "Big Blue", rest: "Heron ship it" },
+    { name: "Big", rest: "Blue Heron ship it" },
+  ]);
+  expect(parseNameAddress("hey one two three four: go")).toEqual([
+    { name: "one two three", rest: "four: go" },
+    { name: "one two", rest: "three four: go" },
+    { name: "one", rest: "two three four: go" },
+  ]);
+});
+
+test("bare spoken name addresses are wakes and unrelated prefixes do not parse", () => {
+  expect(parseNameAddress("hey dayloop.")).toEqual([
+    { name: "dayloop", rest: "" },
+  ]);
+  expect(parseNameAddress("hey Dayloop")).toEqual([
+    { name: "Dayloop", rest: "" },
+  ]);
+  expect(parseNameAddress("they dayloop, ship it")).toEqual([]);
+  expect(parseNameAddress("okay continue")).toEqual([]);
+  expect(parseNameAddress("hey")).toEqual([]);
+  expect(parseNameAddress("hey, dayloop")).toEqual([]);
+});
 
 test("bare commands match despite whisper's punctuation and casing", () => {
   expect(classify("Continue.")).toBe("continue");
