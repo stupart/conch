@@ -98,6 +98,64 @@ export interface PanelModel {
   sessionActionsOverlay?: SessionActionsOverlayModel | null;
 }
 
+export interface PublishedSessionRow {
+  id: string;
+  label: string;
+  status: SessionStatus | null;
+  needsResponse: boolean;
+  detail?: string;
+  paused: boolean;
+  muted: boolean;
+  live: PanelConchState | null;
+  active: boolean;
+  snippet?: string;
+}
+
+export interface PublishedState {
+  v: 1;
+  ts: number;
+  mode: DashboardMode;
+  live: {
+    state: PanelConchState;
+    label: string;
+  };
+  rows: PublishedSessionRow[];
+  dismissed: string[];
+}
+
+/** Build the versioned, renderer-independent state exposed to external consumers. */
+export function buildPublishedState(
+  model: PanelModel,
+  snippets: ReadonlyMap<string, string>,
+  dismissed: ReadonlySet<string>,
+  now: number,
+): PublishedState {
+  return {
+    v: 1,
+    ts: now,
+    mode: { ...model.mode },
+    live: {
+      state: model.live.state,
+      label: model.live.label,
+    },
+    rows: model.rows.map((row) => ({
+      id: row.sessionId,
+      label: row.label,
+      status: row.status,
+      needsResponse: row.status === "needs",
+      ...(row.detail !== undefined ? { detail: row.detail } : {}),
+      paused: row.paused,
+      muted: row.muted,
+      live: row.liveGlyph,
+      active: row.active,
+      ...(snippets.has(row.sessionId)
+        ? { snippet: snippets.get(row.sessionId)! }
+        : {}),
+    })),
+    dismissed: [...dismissed],
+  };
+}
+
 export interface PanelSessionState extends LatchedState {
   label: string;
   detail?: string;

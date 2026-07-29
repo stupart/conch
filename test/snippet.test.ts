@@ -190,6 +190,30 @@ test("a failed transcript read is retried instead of cached", async () => {
   expect(reads).toBe(2);
 });
 
+test("transcript cache evicts its oldest entry past the cap", async () => {
+  const reads = new Map<string, number>();
+  const reader = createLastAssistantTextReader({
+    fingerprint: async (transcriptPath) => transcriptPath,
+    read: async (transcriptPath) => {
+      reads.set(transcriptPath, (reads.get(transcriptPath) ?? 0) + 1);
+      return JSON.stringify({
+        type: "assistant",
+        message: { content: [{ type: "text", text: transcriptPath }] },
+      });
+    },
+  }, 2);
+
+  expect(await reader("oldest.jsonl")).toBe("oldest.jsonl");
+  expect(await reader("middle.jsonl")).toBe("middle.jsonl");
+  expect(await reader("newest.jsonl")).toBe("newest.jsonl");
+  expect(await reader("middle.jsonl")).toBe("middle.jsonl");
+  expect(await reader("oldest.jsonl")).toBe("oldest.jsonl");
+
+  expect(reads.get("oldest.jsonl")).toBe(2);
+  expect(reads.get("middle.jsonl")).toBe(1);
+  expect(reads.get("newest.jsonl")).toBe(1);
+});
+
 test("transcriptMark ignores synthetic task-notification wakeups (not your replies)", async () => {
   const path = `/tmp/conch-test-tasknotif-${Date.now()}.jsonl`;
   const lines = [

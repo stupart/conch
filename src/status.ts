@@ -1,9 +1,18 @@
 /**
- * Daemon state, made visible twice over:
+ * Daemon state, made visible through:
  *  - a live terminal renderer (the legacy footer or opt-in theater mode)
  *  - /tmp/conch-state.json for anything else (menu-bar apps, status bars)
+ *  - /tmp/conch-sessions.json for versioned per-session snapshots
  */
-import { appendFileSync } from "node:fs";
+import {
+  appendFileSync,
+  closeSync,
+  openSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
 import {
   dashboardPanelLines,
   dashboardRowsForModel,
@@ -11,6 +20,7 @@ import {
   type PanelLiveState,
   type PanelModel,
   type PanelRowModel,
+  type PublishedState,
 } from "./panel.ts";
 import { toClipboard } from "./inject.ts";
 import { buildClipboardEscape, type MouseEvent } from "./theater-mouse.ts";
@@ -24,9 +34,44 @@ export type LiveState = PanelLiveState;
 
 // Exported as a stable path for external consumers (menu-bar apps, status bars).
 export const STATE_FILE = "/tmp/conch-state.json";
+export const SESSIONS_FILE = "/tmp/conch-sessions.json";
 // Every log line is always appended here (for debugging) but only shown in the
 // pane when logs are toggled on — the dashboard stays clean by default.
 export const LOG_FILE = "/tmp/conch-daemon.log";
+
+/**
+ * Publish a whole session snapshot with a same-directory atomic rename.
+ * State publication is best-effort and must never interrupt the live renderer.
+ */
+export function publishSessionsFile(
+  state: PublishedState,
+  path: string = SESSIONS_FILE,
+): void {
+  const directory = dirname(path);
+  const temp = join(
+    directory,
+    `.${basename(path)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
+  );
+  let fd: number | undefined;
+  try {
+    fd = openSync(temp, "wx", 0o600);
+    writeFileSync(fd, JSON.stringify(state) + "\n", "utf8");
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temp, path);
+  } catch {
+    // External state is advisory; a missing/unwritable /tmp must not break conch.
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {}
+    }
+    try {
+      unlinkSync(temp);
+    } catch {}
+  }
+}
 
 export const ALT_SCREEN_ENTER = "\x1b[?1049h\x1b[?25l";
 export const ALT_SCREEN_RESTORE = "\x1b[?1049l\x1b[?25h";
