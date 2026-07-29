@@ -295,7 +295,7 @@ export async function spokenSnippet(
       try {
         const summary = await options.askClaude(
           `${SUMMARY_PROMPT}\n\n${plain.slice(-6000)}`,
-          { timeoutMs: 8_000, maxChars: 160 },
+          { maxChars: 160 },
         );
         return summary?.trim() || fallback;
       } catch {

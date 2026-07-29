@@ -153,7 +153,7 @@ test("announce summary uses one fast-model result for a long reply", async () =>
   expect(await spokenSnippet(path, 2, 80, {
     summarize: true,
     askClaude: async (_prompt, options) => {
-      expect(options).toEqual({ timeoutMs: 8_000, maxChars: 160 });
+      expect(options).toEqual({ maxChars: 160 });
       return "Migration finished and all tests now pass.";
     },
   })).toBe("Migration finished and all tests now pass.");

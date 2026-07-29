@@ -117,7 +117,11 @@ export async function runHook(cfg: Config): Promise<void> {
         payload.transcript_path,
         cfg.speakSentences,
         cfg.speakMaxChars,
-        { summarize: cfg.announceSummary, askClaude },
+        {
+          summarize: cfg.announceSummary,
+          askClaude: (prompt, opts) =>
+            askClaude(prompt, { timeoutMs: cfg.haikuTimeoutSecs * 1000, ...opts }),
+        },
       )
       : "";
     turn = {

@@ -32,6 +32,7 @@ export const SETTING_KEYS = [
   "voice-qa",
   "resume-digest",
   "announce-summary",
+  "haiku-timeout",
   "announce-sentences",
   "announce-max-chars",
   "say-rate",
@@ -54,6 +55,7 @@ export type SettingField =
   | "voiceQa"
   | "resumeDigest"
   | "announceSummary"
+  | "haikuTimeoutSecs"
   | "speakSentences"
   | "speakMaxChars"
   | "sayRate";
@@ -130,6 +132,7 @@ const positive = { min: 0, minInclusive: false } satisfies SettingBounds;
 const zeroable = { min: 0, minInclusive: true } satisfies SettingBounds;
 const percentage = { min: 0, max: 100, minInclusive: true, maxInclusive: true } satisfies SettingBounds;
 const micGain = { min: -20, max: 30, minInclusive: true, maxInclusive: true } satisfies SettingBounds;
+const haikuTimeout = { min: 1, max: 60, minInclusive: true, maxInclusive: true } satisfies SettingBounds;
 const positiveInteger = { min: 1, minInclusive: true, integer: true } satisfies SettingBounds;
 const zeroableInteger = { min: 0, minInclusive: true, integer: true } satisfies SettingBounds;
 
@@ -299,6 +302,17 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "hook",
     help: "summarize long replies in one spoken sentence for the next hook announcement",
+  },
+  {
+    key: "haiku-timeout",
+    field: "haikuTimeoutSecs",
+    env: "CONCH_HAIKU_TIMEOUT_SECS",
+    kind: "number",
+    default: 10,
+    parse: numberParser(haikuTimeout, "a number from 1 to 60"),
+    bounds: haikuTimeout,
+    apply: "live",
+    help: "seconds the fast model (Haiku) may take for a spoken summary, voice answer, or resume briefing before falling back",
   },
   {
     key: "announce-sentences",

@@ -32,7 +32,7 @@ import type { RecorderHandle } from "./dictation-controller.ts";
 import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
 import { classify, classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
-import { askClaude } from "./model.ts";
+import { askClaude, type AskClaude } from "./model.ts";
 import { routeVoicePrompt } from "./voice-qa.ts";
 import {
   composeResumeBriefing,
@@ -637,6 +637,11 @@ export function listenHooks(
 }
 
 export async function runDaemon(cfg: Config): Promise<void> {
+  // Read cfg.haikuTimeoutSecs at call time — the config socket mutates cfg in
+  // place for live settings, so a fresh read here honors `conch set haiku-timeout`
+  // without a daemon restart.
+  const askHaiku: AskClaude = (prompt, opts) =>
+    askClaude(prompt, { timeoutMs: cfg.haikuTimeoutSecs * 1000, ...opts });
   const rendererSelection = configureRenderer();
   const rendererLifecycle = installRendererLifecycle(rendererSelection.renderer);
   const theaterMode = rendererSelection.kind === "theater";
@@ -781,7 +786,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       ) {
         return false;
       }
-      const briefing = await composeResumeBriefing(events, askClaude);
+      const briefing = await composeResumeBriefing(events, askHaiku);
       if (
         pause.interrupted(arm.generation)
         || !shouldUseResumeDigest(cfg.resumeDigest, events, pausedSessionIds)
@@ -1797,7 +1802,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     text = addressed.text;
 
     return routeVoicePrompt(cfg.voiceQa, text, event.transcriptPath, {
-      askClaude,
+      askClaude: askHaiku,
       speak: (answer) => speak(cfg, answer, event.label),
       inject: (prompt) => deliverToSession(
         event,
