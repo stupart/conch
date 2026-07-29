@@ -26,6 +26,9 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.micGainDb).toBe(0);
     expect(cfg.sayRate).toBe(210);
     expect(cfg.workingMic).toBe(false);
+    expect(cfg.announceSummary).toBe(false);
+    expect(cfg.voiceQa).toBe(false);
+    expect(cfg.resumeDigest).toBe(false);
     expect(cfg.interruptOnManualReply).toBe(true);
     expect(cfg.handoffOrder).toBe("oldest");
   });
@@ -46,6 +49,9 @@ describe("loadConfig tunable layering", () => {
         "handoff-order": "oldest",
         "reveal-on-turn": false,
         "working-mic": true,
+        "announce-summary": true,
+        "voice-qa": true,
+        "resume-digest": true,
         "announce-sentences": 4,
         "announce-max-chars": 480,
         "say-rate": 0,
@@ -64,6 +70,9 @@ describe("loadConfig tunable layering", () => {
       handoffOrder: "oldest",
       revealOnTurn: false,
       workingMic: true,
+      announceSummary: true,
+      voiceQa: true,
+      resumeDigest: true,
       speakSentences: 4,
       speakMaxChars: 480,
       sayRate: 0,
@@ -87,6 +96,9 @@ describe("loadConfig tunable layering", () => {
       "interrupt-on-manual-reply": false,
       "handoff-order": "oldest",
       "working-mic": false,
+      "announce-summary": true,
+      "voice-qa": false,
+      "resume-digest": false,
     });
     const cfg = loadConfig({
       env: {
@@ -97,6 +109,9 @@ describe("loadConfig tunable layering", () => {
         CONCH_INTERRUPT_ON_MANUAL_REPLY: "true",
         CONCH_HANDOFF_ORDER: "urgency",
         CONCH_WORKING_MIC: "true",
+        CONCH_ANNOUNCE_SUMMARY: "false",
+        CONCH_VOICE_QA: "true",
+        CONCH_RESUME_DIGEST: "true",
       },
       settingsPath: path,
     });
@@ -107,6 +122,9 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.interruptOnManualReply).toBe(true);
     expect(cfg.handoffOrder).toBe("urgency");
     expect(cfg.workingMic).toBe(true);
+    expect(cfg.announceSummary).toBe(false);
+    expect(cfg.voiceQa).toBe(true);
+    expect(cfg.resumeDigest).toBe(true);
   });
 
   test("invalid file values fall through to the registry default", () => {
@@ -119,6 +137,9 @@ describe("loadConfig tunable layering", () => {
         "interrupt-on-manual-reply": "sometimes",
         "handoff-order": "random",
         "working-mic": "sometimes",
+        "announce-summary": "sometimes",
+        "voice-qa": "sometimes",
+        "resume-digest": "sometimes",
       }),
     });
     expect(cfg.bargeThresholdPct).toBe(0);
@@ -127,6 +148,9 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.interruptOnManualReply).toBe(true);
     expect(cfg.handoffOrder).toBe("oldest");
     expect(cfg.workingMic).toBe(false);
+    expect(cfg.announceSummary).toBe(false);
+    expect(cfg.voiceQa).toBe(false);
+    expect(cfg.resumeDigest).toBe(false);
   });
 
   test("zeroable env knobs preserve zero", () => {

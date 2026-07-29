@@ -100,6 +100,12 @@ export interface Config {
   revealOnTurn: boolean;
   /** Bell, announce, and listen when a stopped turn still has live background work. */
   workingMic: boolean;
+  /** answer conch-prefixed questions from the current session without injecting them */
+  voiceQa: boolean;
+  /** on resume, speak one composed briefing instead of replaying each held turn */
+  resumeDigest: boolean;
+  /** summarize long replies in one spoken sentence for hook announcements */
+  announceSummary: boolean;
   socketPath: string;
   claudeDir: string;
   /** TTS engine: auto (server if available, say otherwise) | server | say */
@@ -183,6 +189,9 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     keystrokeFallback: flag(env.CONCH_KEYSTROKE_FALLBACK, false),
     revealOnTurn: settings["reveal-on-turn"].value as boolean,
     workingMic: settings["working-mic"].value as boolean,
+    voiceQa: settings["voice-qa"].value as boolean,
+    resumeDigest: settings["resume-digest"].value as boolean,
+    announceSummary: settings["announce-summary"].value as boolean,
     socketPath: env.CONCH_SOCKET ?? "/tmp/conch.sock",
     claudeDir: env.CLAUDE_CONFIG_DIR ?? join(HOME, ".claude"),
     ttsEngine: parseTtsEngine(env.CONCH_TTS),

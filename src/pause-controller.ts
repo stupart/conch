@@ -28,6 +28,7 @@ export interface PauseResumeResult {
   replayed: number;
   dropped: number;
   cancelled: boolean;
+  digested?: boolean;
 }
 
 export interface PauseControllerOptions {
@@ -48,6 +49,8 @@ export interface PauseControllerOptions {
   speak(text: string): Promise<void>;
   liveSessionIds(): Promise<ReadonlySet<string> | null>;
   userRespondedSince(event: TurnEvent): Promise<boolean>;
+  /** May consume the filtered replay. False or failure preserves normal replay. */
+  replayOverride?(events: TurnEvent[]): Promise<boolean>;
   enqueue(event: TurnEvent): void;
   onHold?(event: TurnEvent): void;
   onInterruptError?(error: unknown): void;
@@ -280,7 +283,7 @@ export class PauseController {
   }
 
   async announceResumed(result: PauseResumeResult): Promise<void> {
-    if (result.cancelled) return;
+    if (result.cancelled || result.digested) return;
     await this.#options.speak(result.replayed
       ? `Back. ${result.replayed} session${result.replayed === 1 ? "" : "s"} finished while you were away.`
       : "Back on.");
@@ -308,28 +311,73 @@ export class PauseController {
     const { held } = resume;
     // Drop entries that went stale while away. A registry read failure is null,
     // not an empty set, so uncertainty keeps the held turn.
-    const liveIds = await this.#options.liveSessionIds();
+    let liveIds: ReadonlySet<string> | null = null;
+    try {
+      liveIds = await this.#options.liveSessionIds();
+    } catch {
+      // Uncertain liveness must preserve work for the full replay fallback.
+    }
     if (resume.cancelled) return { replayed: 0, dropped: 0, cancelled: true };
     const fresh: TurnEvent[] = [];
     for (const event of held) {
       if (resume.forgottenSessionIds.has(event.sessionId)) continue;
       if (liveIds && !liveIds.has(event.sessionId)) continue;
-      const responded = await this.#options.userRespondedSince(event);
+      let responded = false;
+      try {
+        responded = await this.#options.userRespondedSince(event);
+      } catch {
+        // A transcript read failure is uncertainty, not evidence of a reply.
+      }
       if (resume.cancelled) return { replayed: 0, dropped: 0, cancelled: true };
       if (resume.forgottenSessionIds.has(event.sessionId)) continue;
       if (responded) continue;
       fresh.push(event);
     }
 
-    if (this.#resumeInFlight === resume) this.#resumeInFlight = null;
-    const replayable = fresh.filter(
+    let replayable = fresh.filter(
       (event) => !resume.forgottenSessionIds.has(event.sessionId),
     );
+    let digested = false;
+    if (resume.cancelled) return { replayed: 0, dropped: 0, cancelled: true };
+    if (this.#options.replayOverride) {
+      const offered = replayable;
+      try {
+        digested = await this.#options.replayOverride(offered);
+      } catch {
+        // A failed digest must preserve the exact normal replay.
+      }
+      if (resume.cancelled) return { replayed: 0, dropped: 0, cancelled: true };
+      replayable = fresh.filter(
+        (event) => !resume.forgottenSessionIds.has(event.sessionId),
+      );
+      // A scoped mute can forget one session while the async override prepares.
+      // Only accept success if it still owns this exact replay snapshot.
+      if (
+        digested
+        && (
+          offered.length !== replayable.length
+          || offered.some((event, index) => replayable[index] !== event)
+        )
+      ) {
+        digested = false;
+      }
+    }
+
+    if (resume.cancelled) return { replayed: 0, dropped: 0, cancelled: true };
+    if (this.#resumeInFlight === resume) this.#resumeInFlight = null;
     const dropped = held.length - replayable.length;
     this.#options.log(
       `resumed — ${replayable.length} session(s) waited while you were away`
       + (dropped ? ` (${dropped} stale, dropped)` : ""),
     );
+    if (digested) {
+      return {
+        replayed: replayable.length,
+        dropped,
+        cancelled: false,
+        digested: true,
+      };
+    }
     // Replay before the optional summary. This preserves the existing race:
     // a newer same-session event accepted during filtering supersedes this one.
     for (const event of replayable) this.#options.enqueue(event);

@@ -106,6 +106,7 @@ While the mic is open (you'll hear a *tink*), a bare command word talks to conch
 | "no response" / "no response needed" / "cancel" | closes the mic, moves to the next queued session |
 | "continue" / "keep going" / "read the rest" | reads more, then listens again |
 | "repeat" / "say that again" | re-speaks the last thing conch said |
+| "conch, did the tests pass?" | with `voice-qa` enabled, answers from that session's last reply without sending a prompt |
 | anything else | goes to the session as your prompt |
 
 By default conch reads the **whole** final message aloud (`CONCH_READ_FULL=0` for headline-only), pausing briefly between chunks — those pauses are your window to interject: "stop" to cut it short, "no response" to close out, or just start dictating your reply and the rest is skipped.
@@ -117,6 +118,10 @@ Commands only match as the *entire* utterance — "continue working on the login
 **Leaving?** `conch mute` silences announcements and the mic until `conch unmute`; in the dashboard, **m** does the same globally whenever no session is parked. Mute forgets what finishes, so there is no reminder loop, and a closed window costs nothing (no sox, no whisper). `CONCH_AWAY_AFTER_SECS` adds opt-in auto-silence after N seconds of keyboard/mouse idle, but note it's off by default for a reason: idle time doesn't count *voice* activity, so it would mute a fully hands-free session mid-conversation.
 
 **Stepping away for a bit?** `conch pause` (or **p** with no session parked) is mute's patient sibling: it stays quiet *and* **holds** every session that finishes while you're gone, then replays them on `conch resume` or the next **p**. **Joining a meeting, pause first** — otherwise an open mic window could pick up meeting audio and inject it into a session.
+
+With the default-off `resume-digest` setting enabled, two or more held sessions are composed into one short Haiku briefing, followed by one "Who first?" listen. If Haiku is unavailable, conch uses a deterministic label briefing; a failed listen or session match falls back to the normal full replay, so held work is never discarded.
+
+The three default-off fast-model features (`announce-summary`, `voice-qa`, and `resume-digest`) shell out to your installed, authenticated `claude` CLI; conch adds no model SDK or runtime package.
 
 **Want to focus on one thing?** Use **↑↓** to park the cursor on a session. Its latest output follows into the pane and stays there; **esc** releases the cursor back to automatic follow. Press **r** to read that output aloud, or **Enter** for its actions menu: preview/pin a voice, prioritize its next hand-off, rename it, or safely dismiss it from conch while leaving the Claude process running. Recite is immediate and read-only: it cuts any active read or mic, reads the latest reply from the top, then returns to rest. While it is parked, **p** pauses or resumes just that session, holding only its latest turn and replaying that turn from the top on resume; **m** mutes or unmutes just that session, forgetting what finishes with no replay. With no parked cursor, **p** and **m** are global. These controls take effect instantly: an active read stops, the mic closes, and its in-flight capture is dropped.
 
@@ -172,6 +177,9 @@ The full environment-variable surface remains available (put overrides in the ho
 | `CONCH_SAY_RATE` | `210` | macOS `say` rate in words per minute; `0` preserves the system default (~175) |
 | `CONCH_SPEAK_SENTENCES` | `2` | how much of the reply to read aloud |
 | `CONCH_SPEAK_MAX_CHARS` | `350` | hard cap on spoken length |
+| `CONCH_ANNOUNCE_SUMMARY` | `0` | summarize long hook announcements with Haiku; falls back to the literal snippet |
+| `CONCH_VOICE_QA` | `0` | answer "conch, …" from the active session's last reply without injecting it |
+| `CONCH_RESUME_DIGEST` | `0` | brief two or more held sessions once, then ask who should go first |
 | `CONCH_BELL` / `CONCH_SPEAK` | `1` | disable the ding / the voice |
 | `CONCH_BELL_SOUND` | Glass.aiff | any afplay-able file |
 | `CONCH_LISTEN_WINDOW_SECS` | `30` | how long the mic waits for you to *start* talking |
@@ -202,7 +210,6 @@ The full environment-variable surface remains available (put overrides in the ho
 ## Roadmap
 
 - **Name-addressing** — "hey dayloop, ..." routes to any session, not just the last announcer
-- **Haiku summaries** — pipe replies through `claude -p --model haiku` for a natural spoken one-liner instead of first-two-sentences
 - **Phone remote** — hear from and talk back to your sessions over a websocket when you're away from the machine
 - **Always-listening mode** — seashell's concurrent VAD architecture, once extracted from its TUI, replaces the per-window sox capture
 - **Linux** — swap `say`/`afplay` for espeak/paplay, keystroke fallback for xdotool

@@ -120,6 +120,18 @@ export function classify(text: string): VoiceIntent {
   return "prompt";
 }
 
+/**
+ * An explicit question for conch itself, not the active Claude session.
+ * Keep this on the raw transcript: punctuation is part of the address grammar.
+ */
+export function parseQuery(text: string): string | null {
+  const match = text.match(
+    /^\s*(?:(?:okay|ok)\s*,?\s*)?(?:hey\s+)?conch(?:\s*[,.:]\s*|\s+)(.+?)\s*$/i,
+  );
+  const question = match?.[1]?.trim() ?? "";
+  return question || null;
+}
+
 // Permission prompts get a narrow yes/no vocabulary: "yes" presses Enter
 // (accepts the highlighted option), "no" presses Escape. Anything else is
 // deliberately unrecognized — free text near a permission dialog is risky.

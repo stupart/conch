@@ -5,6 +5,7 @@ import {
   lastAssistantText,
   createLastAssistantTextReader,
   countCoveredSentences,
+  spokenSnippet,
   transcriptMark,
   userRespondedSince,
   parseReviewRequest,
@@ -51,6 +52,17 @@ test("recite header covers zero reply sentences so reading starts from sentence 
   const sentences = ["First one.", "Second one!", "Third one?"];
   const label = "conch";
   expect(countCoveredSentences(`${label}:`, sentences)).toBe(0);
+});
+
+test("a generated summary covers zero source sentences so continue starts from the top", () => {
+  const sentences = [
+    "Implemented the queue.",
+    "Added all regression tests.",
+  ];
+  expect(countCoveredSentences(
+    "conch: The queue shipped with complete regression coverage.",
+    sentences,
+  )).toBe(0);
 });
 
 test("countCoveredSentences follows the actual announcement, not a configured sentence count", () => {
@@ -103,6 +115,72 @@ test("parseReviewRequest trims and sanitizes a summary before capping it at 200 
 test("parseReviewRequest matches the marker case-insensitively", () => {
   expect(parseReviewRequest("CONCH:REVIEW Check the uppercase marker | /tmp/review"))
     .toEqual({ summary: "Check the uppercase marker", link: "/tmp/review" });
+});
+
+test("announce summary null falls back to the exact existing spoken snippet", async () => {
+  const path = `/tmp/conch-test-summary-null-${Date.now()}.jsonl`;
+  const reply = [
+    "Implemented the queue with exact ordering guarantees.",
+    "Added regression coverage for every failure branch.",
+    "The remaining details make this deliberately longer than the speech cap.",
+  ].join(" ");
+  await Bun.write(path, JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "text", text: reply }] },
+  }));
+  const asked: string[] = [];
+
+  const summarized = await spokenSnippet(path, 2, 70, {
+    summarize: true,
+    askClaude: async (prompt) => {
+      asked.push(prompt);
+      return null;
+    },
+  });
+
+  expect(summarized).toBe(firstSentences(stripMarkdown(reply), 2, 70));
+  expect(asked).toHaveLength(1);
+});
+
+test("announce summary uses one fast-model result for a long reply", async () => {
+  const path = `/tmp/conch-test-summary-result-${Date.now()}.jsonl`;
+  const reply = "Finished the migration and its tests. ".repeat(12);
+  await Bun.write(path, JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "text", text: reply }] },
+  }));
+
+  expect(await spokenSnippet(path, 2, 80, {
+    summarize: true,
+    askClaude: async (_prompt, options) => {
+      expect(options).toEqual({ timeoutMs: 8_000, maxChars: 160 });
+      return "Migration finished and all tests now pass.";
+    },
+  })).toBe("Migration finished and all tests now pass.");
+});
+
+test("announce summary never calls the model for a short reply or when default-off", async () => {
+  const path = `/tmp/conch-test-summary-short-${Date.now()}.jsonl`;
+  const reply = "Short reply.";
+  await Bun.write(path, JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "text", text: reply }] },
+  }));
+  let calls = 0;
+  const askClaude = async () => {
+    calls++;
+    return "must not run";
+  };
+
+  expect(await spokenSnippet(path, 2, 350, {
+    summarize: true,
+    askClaude,
+  })).toBe(reply);
+  expect(await spokenSnippet(path, 2, 5, {
+    summarize: false,
+    askClaude,
+  })).toBe("Short");
+  expect(calls).toBe(0);
 });
 
 test("lastAssistantText returns the newest assistant text block", async () => {
