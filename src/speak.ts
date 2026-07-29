@@ -21,6 +21,12 @@ import {
 import type { Config } from "./config.ts";
 import { splitSentences } from "./snippet.ts";
 import { TtsHealthMachine, type TtsHealthSnapshot } from "./tts-health.ts";
+import {
+  TtsWorkerInferenceError,
+  TtsWorkerTimeoutError,
+  TtsWorkerUnavailableError,
+  type TtsWorkerBackend,
+} from "./tts-worker.ts";
 import { parseWav, trimWav } from "./tts-wav.ts";
 
 const MIN_BISECT_CHARS = 24;
@@ -45,7 +51,7 @@ interface CancelControl {
   abort: AbortController;
   processes: Set<AudioProcess>;
   tempFiles: Set<string>;
-  runtime: Required<SpeakRuntimeOptions>;
+  runtime: ResolvedSpeakRuntimeOptions;
   kokoroFailureReported: boolean;
   cancel(): void;
 }
@@ -74,16 +80,27 @@ export interface SpeakRuntimeOptions {
   timeoutForText?: (text: string) => number;
   warn?: WatchdogWarning;
   onKokoroFailure?: (reason: "readiness-failed" | "synth-timeout") => void;
+  /** Present only inside the daemon that owns the warm Python child. */
+  worker?: TtsWorkerBackend | null;
 }
 
 const spawnAudio: AudioSpawner = (command) => Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
 
-function runtimeOptions(options: SpeakRuntimeOptions): Required<SpeakRuntimeOptions> {
+interface ResolvedSpeakRuntimeOptions {
+  spawnAudio: AudioSpawner;
+  timeoutForText: (text: string) => number;
+  warn: WatchdogWarning;
+  onKokoroFailure: (reason: "readiness-failed" | "synth-timeout") => void;
+  worker: TtsWorkerBackend | null;
+}
+
+function runtimeOptions(options: SpeakRuntimeOptions): ResolvedSpeakRuntimeOptions {
   return {
     spawnAudio: options.spawnAudio ?? spawnAudio,
     timeoutForText: options.timeoutForText ?? audioTimeoutMs,
     warn: options.warn ?? console.warn,
     onKokoroFailure: options.onKokoroFailure ?? (() => {}),
+    worker: options.worker ?? null,
   };
 }
 
@@ -236,6 +253,73 @@ export async function trySynth(
   }
 }
 
+/** One path-based synthesis request to the daemon-owned Python worker. */
+async function tryWorkerSynth(
+  cfg: Config,
+  input: string,
+  voice: string,
+  control: CancelControl | null,
+  worker: TtsWorkerBackend,
+  options: TrySynthOptions = {},
+): Promise<TrySynthOutcome> {
+  const cancellationSignal = combinedSignal([control?.abort.signal, options.signal]);
+  if (wasCancelled(control, options.signal)) return { kind: "cancelled" };
+  if (!worker.isReady()) {
+    return { kind: "transport-failure", error: "Kokoro worker is not ready", timedOut: false };
+  }
+
+  let path = "";
+  try {
+    const result = await worker.synthesize({
+      text: input,
+      voice,
+      speed: options.speed ?? cfg.ttsSpeed,
+      timeoutMs: options.timeoutMs ?? audioTimeoutMs(input),
+      signal: cancellationSignal,
+    });
+    path = result.path;
+    const audio = new Uint8Array(readFileSync(path));
+    if (!parseWav(audio)) {
+      return {
+        kind: "post-header-inference-failure",
+        status: 500,
+        detail: "worker returned an invalid or empty WAV",
+      };
+    }
+    knownGoodVoice = voice;
+    return { kind: "audio", audio };
+  } catch (error) {
+    if (wasCancelled(control, options.signal)) return { kind: "cancelled" };
+    if (error instanceof TtsWorkerTimeoutError) {
+      return { kind: "transport-failure", error: error.message, timedOut: true };
+    }
+    if (error instanceof TtsWorkerInferenceError) {
+      if (error.kind === "request") {
+        return {
+          kind: "http-config-failure",
+          status: 422,
+          retryable: false,
+          detail: error.message,
+        };
+      }
+      return {
+        kind: "post-header-inference-failure",
+        status: 500,
+        detail: error.message,
+      };
+    }
+    return {
+      kind: "transport-failure",
+      error: errorText(error),
+      timedOut: error instanceof TtsWorkerUnavailableError ? false : /timed?\s*out/i.test(errorText(error)),
+    };
+  } finally {
+    if (path) {
+      try { unlinkSync(path); } catch {}
+    }
+  }
+}
+
 // --- readiness + voices -------------------------------------------------
 
 function voiceOverridePath(options: VoiceOverrideOptions): string {
@@ -308,7 +392,7 @@ export function availableVoiceRing(
   cfg: Config,
   available?: Iterable<string> | null,
 ): string[] {
-  const cacheMatches = voiceCacheKey === `${cfg.ttsPort}|${cfg.ttsModel}`;
+  const cacheMatches = voiceCacheKey === voiceConfigKey(cfg);
   const serverVoices = available === undefined
     ? (cacheMatches ? availableVoices : null)
     : available;
@@ -414,7 +498,7 @@ export function voiceFor(
   const map = voiceOverrides(options);
   const key = voiceOverrideKey(label);
   const override = Object.hasOwn(map, key) ? map[key]! : "";
-  const cacheMatches = voiceCacheKey === `${cfg.ttsPort}|${cfg.ttsModel}`;
+  const cacheMatches = voiceCacheKey === voiceConfigKey(cfg);
   return selectVoice(cfg.ttsVoices, label, override, cacheMatches ? availableVoices : null, knownGoodVoice || "af_heart");
 }
 
@@ -443,6 +527,20 @@ async function queryAvailableVoices(cfg: Config, signal: AbortSignal): Promise<S
 
 function readinessConfigKey(cfg: Config): string {
   return `${cfg.ttsPort}|${cfg.ttsModel}|${cfg.ttsSpeed}`;
+}
+
+function voiceConfigKey(cfg: Config): string {
+  return `${cfg.ttsEngine}|${cfg.ttsPort}|${cfg.ttsModel}`;
+}
+
+function cacheWorkerVoices(cfg: Config, worker: TtsWorkerBackend): void {
+  const discovered = new Set(worker.availableVoices().filter(isValidVoiceName));
+  // The worker handshake echoes the configured ring rather than performing
+  // HTTP-style model discovery. Do not let one daemon/test instance globally
+  // filter persisted pins for a later config instance.
+  availableVoices = null;
+  voiceCacheKey = voiceConfigKey(cfg);
+  knownGoodVoice = discovered.values().next().value ?? "af_heart";
 }
 
 async function abortableSleep(ms: number, signal?: AbortSignal): Promise<boolean> {
@@ -474,7 +572,7 @@ export async function ensureTtsReady(
   signal?: AbortSignal,
   warn?: WatchdogWarning,
 ): Promise<boolean> {
-  if (cfg.ttsEngine === "say" || !cfg.ttsPort || signal?.aborted) return false;
+  if (cfg.ttsEngine !== "server" || !cfg.ttsPort || signal?.aborted) return false;
   const key = readinessConfigKey(cfg);
   if (readinessKey === key && ttsHealth.snapshot().status === "ready") return true;
   if (readinessPromise && readinessKey === key) return readinessPromise;
@@ -507,7 +605,7 @@ export async function ensureTtsReady(
       if (outcome.kind === "audio") {
         if (readinessKey !== key || readinessController !== controller) return false;
         availableVoices = discovered;
-        voiceCacheKey = `${cfg.ttsPort}|${cfg.ttsModel}`;
+        voiceCacheKey = voiceConfigKey(cfg);
         knownGoodVoice = voice;
         return true;
       }
@@ -546,7 +644,7 @@ export function probeTtsServer(
  * HTTP response proves another process owns the configured port.
  */
 export async function probeTtsServerPresence(cfg: Config, timeoutMs: number, signal?: AbortSignal): Promise<boolean> {
-  if (cfg.ttsEngine === "say" || !cfg.ttsPort || signal?.aborted) return false;
+  if (cfg.ttsEngine !== "server" || !cfg.ttsPort || signal?.aborted) return false;
   try {
     const timeout = AbortSignal.timeout(timeoutMs);
     const requestSignal = combinedSignal([signal, timeout]);
@@ -696,18 +794,47 @@ export function speakCancellable(
 
   const done = (async () => {
     try {
-      // Ordinary/standalone calls recover quickly, then use legitimate `say`.
-      // Daemon startup/supervision explicitly owns the longer 30s canary.
-      const wantsKokoro = cfg.ttsEngine !== "say" && Boolean(cfg.ttsPort);
-      const kokoroReady = wantsKokoro && await ensureTtsReady(cfg, 1500, control.abort.signal, control.runtime.warn);
-      if (kokoroReady) {
-        const result = await speakViaServer(cfg, text, label, control);
-        if (result !== "ok" && !control.cancelled) {
+      if (cfg.ttsEngine === "worker") {
+        // Only the daemon injects its owned worker. Standalone hook/CLI calls
+        // have no child to control and therefore fall back to say immediately.
+        const worker = control.runtime.worker;
+        if (worker?.isReady()) {
+          cacheWorkerVoices(cfg, worker);
+          const attempt: typeof trySynth = (attemptCfg, input, voice, attemptControl, attemptOptions) =>
+            tryWorkerSynth(attemptCfg, input, voice, attemptControl ?? null, worker, attemptOptions);
+          const result = await speakViaSynth(cfg, text, label, control, attempt);
+          if (result !== "ok" && !control.cancelled) {
+            const process = spawnSay(cfg, text, control);
+            await awaitAudioProcess(process, "say", control.runtime.timeoutForText(text), control.runtime.warn, control);
+          }
+        } else if (!control.cancelled) {
+          worker?.requestRecovery?.("speech requested while unavailable");
+          reportKokoroFailure(control, "readiness-failed");
           const process = spawnSay(cfg, text, control);
           await awaitAudioProcess(process, "say", control.runtime.timeoutForText(text), control.runtime.warn, control);
         }
-      } else if (!control.cancelled) {
-        if (wantsKokoro) reportKokoroFailure(control, "readiness-failed");
+        return;
+      }
+
+      if (cfg.ttsEngine === "server" && cfg.ttsPort) {
+        // Ordinary/standalone calls recover quickly, then use legitimate say.
+        // Daemon server-mode supervision owns the longer startup canary.
+        const kokoroReady = await ensureTtsReady(cfg, 1500, control.abort.signal, control.runtime.warn);
+        if (kokoroReady) {
+          const result = await speakViaSynth(cfg, text, label, control, trySynth);
+          if (result !== "ok" && !control.cancelled) {
+            const process = spawnSay(cfg, text, control);
+            await awaitAudioProcess(process, "say", control.runtime.timeoutForText(text), control.runtime.warn, control);
+          }
+        } else if (!control.cancelled) {
+          reportKokoroFailure(control, "readiness-failed");
+          const process = spawnSay(cfg, text, control);
+          await awaitAudioProcess(process, "say", control.runtime.timeoutForText(text), control.runtime.warn, control);
+        }
+        return;
+      }
+
+      if (!control.cancelled) {
         const process = spawnSay(cfg, text, control);
         await awaitAudioProcess(process, "say", control.runtime.timeoutForText(text), control.runtime.warn, control);
       }
@@ -725,7 +852,8 @@ export function speakCancellable(
 }
 
 type Playable = { file: string; text: string } | { say: string };
-type SpeakServerResult = "ok" | "synth-failed";
+type SpeakSynthResult = "ok" | "synth-failed";
+type SynthAttempt = typeof trySynth;
 
 interface SynthBatch {
   text: string;
@@ -786,7 +914,13 @@ class AsyncQueue<T> {
   }
 }
 
-async function speakViaServer(cfg: Config, text: string, label: string, control: CancelControl): Promise<SpeakServerResult> {
+async function speakViaSynth(
+  cfg: Config,
+  text: string,
+  label: string,
+  control: CancelControl,
+  attempt: SynthAttempt,
+): Promise<SpeakSynthResult> {
   const selectedVoice = voiceFor(cfg, label);
   const sentences = splitSentences(text);
   if (!sentences.length) sentences.push(text);
@@ -798,7 +932,7 @@ async function speakViaServer(cfg: Config, text: string, label: string, control:
     try {
       for (const batch of batches) {
         if (control.cancelled) break;
-        if (!(await queue.push(await synthBatch(cfg, batch, selectedVoice, control)))) break;
+        if (!(await queue.push(await synthBatch(cfg, batch, selectedVoice, control, attempt)))) break;
       }
     } catch (error) {
       producerError = error;
@@ -852,13 +986,28 @@ async function synthBatch(
   batch: SynthBatch,
   voice: string,
   control: CancelControl,
+  attempt: SynthAttempt,
 ): Promise<Playable[]> {
-  const result = await synthPiece(cfg, batch.text, voice, control, batch.originals.length === 1);
+  const result = await synthPiece(
+    cfg,
+    batch.text,
+    voice,
+    control,
+    batch.originals.length === 1,
+    newSentenceSynthBudget(attempt),
+  );
   if (result.kind !== "inference-failure" || batch.originals.length === 1) return result.playables;
   // A coalesced shape failure first returns to original sentence boundaries.
   const split: Playable[] = [];
   for (const original of batch.originals) {
-    const item = await synthPiece(cfg, original, voice, control);
+    const item = await synthPiece(
+      cfg,
+      original,
+      voice,
+      control,
+      true,
+      newSentenceSynthBudget(attempt),
+    );
     split.push(...item.playables);
   }
   return split;

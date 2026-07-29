@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, chmodSync, unlinkSync, statSync, renameSync } fr
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
 import { CONCH_DATA } from "./config.ts";
+import { resolveMlxAudioPython } from "./tts-worker.ts";
 
 const SERVICE_LABEL = "com.conch.daemon";
 
@@ -93,13 +94,21 @@ export async function runSetup(cfg: Config): Promise<void> {
     console.log(`   → ${dest}`);
   }
 
-  // 3. Kokoro voices (optional). Without mlx-audio, conch falls back to `say`.
+  // 3. Kokoro voices (optional). The server extra is retained solely so
+  // CONCH_TTS=server remains an immediate rollback path.
   if (!Bun.which(cfg.ttsServerBin)) {
     console.log('\nℹ️  Natural per-session voices are optional. For them, install mlx-audio:');
-    console.log('      uv tool install --with "misaki[en]" "mlx-audio[server]"');
+    console.log('      uv tool install --with "misaki[en]" \\');
+    console.log('        --with "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" \\');
+    console.log('        "mlx-audio[server]"');
     console.log("   Without it, conch uses the macOS `say` voice.");
   } else {
-    console.log(`✅ kokoro voices available via ${cfg.ttsServerBin}`);
+    const workerPython = resolveMlxAudioPython(cfg.ttsWorkerPython, cfg.ttsServerBin);
+    console.log(
+      workerPython
+        ? `✅ kokoro worker available via ${workerPython}`
+        : `ℹ️  ${cfg.ttsServerBin} exists but its Python could not be resolved — set CONCH_TTS_WORKER_PYTHON`,
+    );
   }
 
   // 4. Wire the Claude Code hooks, then verify the whole chain.
@@ -196,7 +205,7 @@ export async function runService(cfg: Config, action: "install" | "off"): Promis
   const path = [
     "/opt/homebrew/bin",
     "/usr/local/bin",
-    join(homedir(), ".local/bin"), // mlx_audio.server
+    join(homedir(), ".local/bin"), // mlx_audio.server; its shebang locates the worker Python
     join(homedir(), ".bun/bin"),
     "/usr/bin",
     "/bin",
@@ -321,8 +330,18 @@ export async function runDoctor(cfg: Config): Promise<void> {
   );
 
   const ttsAvailable = binaryExists(cfg.ttsServerBin);
+  const workerPython = resolveMlxAudioPython(cfg.ttsWorkerPython, cfg.ttsServerBin);
+  const ttsSummary = cfg.ttsEngine === "say"
+    ? "say (forced)"
+    : cfg.ttsEngine === "server"
+      ? ttsAvailable
+        ? `legacy kokoro HTTP server via ${cfg.ttsServerBin} on :${cfg.ttsPort}, ${cfg.ttsVoices.length} voices`
+        : `say — ${cfg.ttsServerBin} not found`
+      : workerPython
+        ? `owned kokoro worker via ${workerPython}, ${cfg.ttsVoices.length} voices (no HTTP listener)`
+        : `say — mlx-audio Python not found via ${cfg.ttsServerBin}`;
   console.log(
-    `ℹ️  tts: ${cfg.ttsEngine === "say" ? "say (forced)" : ttsAvailable ? `kokoro via ${cfg.ttsServerBin} on :${cfg.ttsPort}, ${cfg.ttsVoices.length} voices` : `say — ${cfg.ttsServerBin} not found (uv tool install "mlx-audio[server]" for natural per-session voices)`}`,
+    `ℹ️  tts: ${ttsSummary}`,
   );
 
   if (!ok) process.exit(1);

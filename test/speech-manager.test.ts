@@ -5,6 +5,7 @@ import {
   type SpeechAudioGate,
   type SpeechBackend,
 } from "../src/speech-manager.ts";
+import type { TtsWorkerBackend } from "../src/tts-worker.ts";
 
 function loadConfig() {
   return loadRealConfig({ env: {}, settingsPath: `/tmp/conch-speech-manager-test-${process.pid}/settings.json` });
@@ -386,4 +387,30 @@ test("Kokoro failure notifications pass through without blocking the speech lane
 
   await manager.speak(cfg, "fallback now");
   expect(failures).toEqual(["synth-timeout"]);
+});
+
+test("the daemon-owned worker stays inside both normal and interruptible speech lanes", async () => {
+  const cfg = loadConfig();
+  const seen: Array<TtsWorkerBackend | null | undefined> = [];
+  const worker: TtsWorkerBackend = {
+    isReady: () => false,
+    availableVoices: () => [],
+    synthesize: async () => {
+      throw new Error("not exercised by the manager seam");
+    },
+  };
+  const manager = new SpeechManager({
+    speakCancellable: (_cfg, _text, _label, options) => {
+      seen.push(options?.worker);
+      return { done: Promise.resolve(), cancel() {} };
+    },
+    stopSpeaking() {},
+  }, passThroughGate, { worker });
+
+  await manager.speak(cfg, "normal");
+  await manager.runInterruptible(cfg, "barge", "session", async (startSpeech) => {
+    await startSpeech().done;
+  });
+
+  expect(seen).toEqual([worker, worker]);
 });

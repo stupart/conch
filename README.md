@@ -62,14 +62,20 @@ No daemon running at all? The hooks still work standalone: bell + spoken announc
 
 ### Natural voices (optional, recommended)
 
-By default conch speaks through macOS `say`. Install [mlx-audio](https://github.com/Blaizzy/mlx-audio) and the daemon upgrades itself to [Kokoro-82M](https://huggingface.co/mlx-community/Kokoro-82M-bf16) — dramatically more natural, running warm and local on Apple GPU (~340MB model, auto-downloaded on first use):
+Without MLX installed, conch speaks through macOS `say`. Install [mlx-audio](https://github.com/Blaizzy/mlx-audio) and the daemon upgrades itself to [Kokoro-82M](https://huggingface.co/mlx-community/Kokoro-82M-bf16) — dramatically more natural, running warm and local on Apple GPU (~340MB model, auto-downloaded on first use):
 
 ```bash
 brew install uv
-uv tool install --with "misaki[en]" "mlx-audio[server]"
+uv tool install --with "misaki[en]" \
+  --with "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" \
+  "mlx-audio[server]"
 ```
 
-That's it — the daemon finds `mlx_audio.server`, spawns it, and **every session gets its own voice**: labels are hashed onto a ring of 8 Kokoro voices, so dayloop always sounds like dayloop and you can tell sessions apart by ear. Audition the ring with `conch voices` (or press `v` in the dashboard to hear each LIVE session in its assigned voice), pin any session with `conch voice dayloop bm_george` (persisted), customize the ring with `CONCH_TTS_VOICES` (any of Kokoro's 50+ voices), or force `CONCH_TTS=say` to opt out. If the server is down, everything degrades to `say` automatically.
+That's it — the daemon uses the `mlx_audio.server` launcher only to locate its isolated Python, then starts a Conch-owned worker with no HTTP listener. The worker loads Kokoro once, warms the MLX/G2P path, and accepts private JSON lines over stdin/stdout. A request timeout or crash hard-kills that exact child and starts a fresh one; while it is loading or restarting, speech immediately degrades to `say`.
+
+**Every session gets its own voice**: labels are hashed onto a ring of 8 Kokoro voices, so dayloop always sounds like dayloop and you can tell sessions apart by ear. Audition the ring with `conch voices` (or press `v` in the dashboard to hear each LIVE session in its assigned voice), pin any session with `conch voice dayloop bm_george` (persisted), or customize the ring with `CONCH_TTS_VOICES` (any of Kokoro's 50+ voices). Force `CONCH_TTS=say` to opt out, or set `CONCH_TTS=server` to temporarily restore the legacy HTTP backend.
+
+The worker itself adds no package beyond the installed `mlx-audio`, NumPy, `misaki[en]`, and English spaCy model. The `[server]` extra above is kept only for the one-variable rollback path.
 
 ## Commands
 
@@ -201,8 +207,10 @@ The full environment-variable surface remains available (put overrides in the ho
 | `CONCH_SEASHELL_ROOT` | `~/whisper-cli` | first place probed for the whisper.cpp build + models; falls back to a brew `whisper-cpp` install and `~/.cache/conch/models` |
 | `CONCH_WHISPER_PORT` | `8642` | warm whisper-server port; `0` = cold cli only |
 | `CONCH_AWAY_AFTER_SECS` | `0` (off) | opt-in: silence everything after N seconds of keyboard idle |
-| `CONCH_TTS` | `auto` | voices: `auto` (Kokoro server if installed, else say) / `server` / `say` |
-| `CONCH_TTS_PORT` | `8880` | warm Kokoro server port; `0` disables |
+| `CONCH_TTS` | `worker` | `worker` (owned, no HTTP) / `server` (legacy rollback) / `say`; old `auto` aliases to `worker` |
+| `CONCH_TTS_PORT` | `8880` | legacy `server` mode only; `0` disables that backend |
+| `CONCH_TTS_SERVER` | `mlx_audio.server` | legacy server binary and launcher whose shebang locates the uv-tool Python |
+| `CONCH_TTS_WORKER_PYTHON` | derived | optional worker interpreter override; normally read from `mlx_audio.server` |
 | `CONCH_TTS_VOICES` | 8-voice ring | comma-separated Kokoro voices; sessions hash onto the ring |
 | `CONCH_TTS_SPEED` | `1.35` | Kokoro/voice synthesis speed (`conch set voice-speed …`) |
 | `CONCH_TTS_BATCH_CHARS` | `240` | coalesce later short sentences up to this size; `0` disables (sentence one always stays separate) |

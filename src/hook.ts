@@ -160,9 +160,8 @@ export async function runHook(cfg: Config): Promise<void> {
     return; // unknown/unhandled hook event — never treat it as a needs-you nag
   }
 
-  // Daemon owns the voice loop when it's up; otherwise speak standalone
-  // (awaited: the server TTS path dies with the process, and `say` is
-  // spawned either way before we return).
+  // The daemon owns the warm worker and voice loop when up. Otherwise speak
+  // standalone; worker mode intentionally reaches the awaited say fallback.
   const handedOff = await sendToDaemon(cfg.socketPath, turn);
   if (!handedOff) {
     // A reclassified Stop is visual-only by default. The opt-in can still bell
