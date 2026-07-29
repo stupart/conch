@@ -19,6 +19,7 @@ import {
 } from "../src/speak.ts";
 import { loadConfig as loadRealConfig } from "../src/config.ts";
 import { TtsHealthMachine } from "../src/tts-health.ts";
+import { TtsWorkerTimeoutError, type TtsWorkerBackend } from "../src/tts-worker.ts";
 import { parseWav, trimWav } from "../src/tts-wav.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -491,4 +492,67 @@ test("a failed readiness canary reports recovery once before falling back to say
   expect(failures).toEqual(["readiness-failed"]);
   expect(commands).toHaveLength(1);
   expect(commands[0]?.[0]).toBe("say");
+});
+
+test("an unavailable owned worker falls back to say immediately", async () => {
+  const cfg = loadConfig();
+  cfg.ttsEngine = "worker";
+  const commands: string[][] = [];
+  const failures: string[] = [];
+  const recoveries: string[] = [];
+  const worker: TtsWorkerBackend = {
+    isReady: () => false,
+    availableVoices: () => [],
+    synthesize: async () => {
+      throw new Error("must not synthesize while unavailable");
+    },
+    requestRecovery: (reason) => recoveries.push(reason),
+  };
+
+  await speakCancellable(cfg, "fallback while warming", "", {
+    worker,
+    spawnAudio: (command) => {
+      commands.push(command);
+      return { exited: Promise.resolve(0), kill() {} };
+    },
+    onKokoroFailure: (reason) => failures.push(reason),
+    warn: () => {},
+  }).done;
+
+  expect(commands).toHaveLength(1);
+  expect(commands[0]?.[0]).toBe("say");
+  expect(failures).toEqual(["readiness-failed"]);
+  expect(recoveries).toEqual(["speech requested while unavailable"]);
+});
+
+test("a worker synthesis timeout requests recovery and uses say", async () => {
+  const cfg = loadConfig();
+  cfg.ttsEngine = "worker";
+  cfg.ttsBatchChars = 0;
+  const commands: string[][] = [];
+  const failures: string[] = [];
+  let attempts = 0;
+  const worker: TtsWorkerBackend = {
+    isReady: () => true,
+    availableVoices: () => ["af_heart"],
+    synthesize: async () => {
+      attempts++;
+      throw new TtsWorkerTimeoutError();
+    },
+  };
+
+  await speakCancellable(cfg, "fallback after timeout", "", {
+    worker,
+    spawnAudio: (command) => {
+      commands.push(command);
+      return { exited: Promise.resolve(0), kill() {} };
+    },
+    onKokoroFailure: (reason) => failures.push(reason),
+    warn: () => {},
+  }).done;
+
+  expect(attempts).toBe(2);
+  expect(commands).toHaveLength(1);
+  expect(commands[0]?.[0]).toBe("say");
+  expect(failures).toEqual(["synth-timeout"]);
 });

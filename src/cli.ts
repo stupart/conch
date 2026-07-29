@@ -41,7 +41,7 @@ Usage:
   conch mute | unmute   silence announcements + mic (auto-away covers this too)
   conch pause | resume  step away: stay quiet but HOLD finished sessions, replay on resume
   conch listen          capture one utterance, print the transcript (mic test)
-  conch speak <text>    say something (TTS test; uses the warm Kokoro server when up)
+  conch speak <text>    say something (TTS test; uses the daemon's warm Kokoro worker)
   conch voices          audition the voice ring — each voice introduces itself
   conch voice <s> [v]   show or pin a session's voice (persisted)
   conch set <key> <v>   save a curated setting and apply it live when possible
@@ -463,7 +463,7 @@ switch (command) {
       if (!handedOff) {
         localUp ??= await probeTtsServer(cfg, 1500);
         if (!localUp) {
-          console.error("[conch] TTS server not up (start the daemon, or check CONCH_TTS_PORT) — nothing to audition");
+          console.error("[conch] TTS backend not up (start the daemon; server mode also checks CONCH_TTS_PORT) — nothing to audition");
           process.exit(1);
         }
         await speak({ ...cfg, ttsVoices: [v] }, text);

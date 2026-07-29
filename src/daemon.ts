@@ -18,6 +18,7 @@ import {
 import { SpeechManager } from "./speech-manager.ts";
 import { ServerSupervisor } from "./server-supervisor.ts";
 import { TtsSupervisor } from "./tts-supervisor.ts";
+import { ManagedTtsWorker, resolveMlxAudioPython } from "./tts-worker.ts";
 import {
   listenGap,
   armBargeRecorder,
@@ -617,13 +618,26 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const assertNormalMicClosed = (operation: string): void => assertAudioGate(normalMicOpen, operation);
   let whisperSupervisor: ServerSupervisor<WhisperRecoveryReason> | null = null;
   let ttsSupervisor: TtsSupervisor | null = null;
+  const ttsWorkerPython = resolveMlxAudioPython(cfg.ttsWorkerPython, cfg.ttsServerBin);
+  const ttsWorker = new ManagedTtsWorker({
+    enabled: cfg.ttsEngine === "worker" && Boolean(ttsWorkerPython),
+    model: cfg.ttsModel,
+    voices: cfg.ttsVoices,
+    speed: cfg.ttsSpeed,
+    python: ttsWorkerPython,
+    log,
+  });
   whisperServerClient.setRecoveryHandler((reason) => whisperSupervisor?.requestRecovery(reason));
   const speech = new SpeechManager(
     { speakCancellable: backendSpeakCancellable, stopSpeaking: backendStopSpeaking },
     (operation, output) => withNormalMicClosed(normalMicOpen, operation, output),
     {
       warn: log,
-      onKokoroFailure: (reason) => ttsSupervisor?.requestRecovery(reason),
+      worker: cfg.ttsEngine === "worker" ? ttsWorker : null,
+      onKokoroFailure: (reason) => {
+        if (cfg.ttsEngine === "server") ttsSupervisor?.requestRecovery(reason);
+        else if (cfg.ttsEngine === "worker") ttsWorker.requestRecovery(reason);
+      },
     },
   );
   pause = new PauseController({
@@ -679,8 +693,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
     pause,
     (error) => log(`settings pause transition failed: ${error}`),
   );
-  // Hooks may connect while model startup is in flight; drain() holds their
-  // events behind this fully-consumed readiness probe.
+  // Legacy server mode still gates its first event on a full-body canary.
+  // Worker startup is deliberately asynchronous: speech uses say until ready.
   let ttsStartup: Promise<void> = Promise.resolve();
 
   const reserveNormalMic = async (): Promise<boolean> => {
@@ -2817,6 +2831,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     whisperServerClient.cancelWarmRequests();
     whisperSupervisor?.close();
     ttsSupervisor?.close();
+    ttsWorker.close();
     try {
       unlinkSync(cfg.socketPath);
     } catch {}
@@ -2838,31 +2853,44 @@ export async function runDaemon(cfg: Config): Promise<void> {
   process.on("SIGQUIT", () => void shutdown());
 
   const ttsBinaryAvailable = Boolean(Bun.which(cfg.ttsServerBin));
-  const ttsEnabled = cfg.ttsEngine !== "say" && Boolean(cfg.ttsPort) && ttsBinaryAvailable;
+  if (!ttsWorkerPython && cfg.ttsEngine === "worker") {
+    log(
+      `CONCH_TTS=worker but mlx-audio Python was not found via ${cfg.ttsServerBin} `
+      + "or CONCH_TTS_WORKER_PYTHON — voices via say",
+    );
+  }
   if (!ttsBinaryAvailable && cfg.ttsEngine === "server") {
     log(`CONCH_TTS=server but ${cfg.ttsServerBin} not found (uv tool install "mlx-audio[server]") — voices via say`);
   }
-  ttsSupervisor = new TtsSupervisor({
-    enabled: ttsEnabled,
-    probePresence: (signal) => probeTtsServerPresence(cfg, 1_500, signal),
-    probeReady: (signal) => probeTtsServer(cfg, 30_000, signal, log),
-    spawn: () => Bun.spawn([cfg.ttsServerBin, "--port", String(cfg.ttsPort)], {
-      // Separate handles avoid independent offsets clobbering one log file.
-      stdout: Bun.file("/tmp/conch-kokoro.log"),
-      stderr: Bun.file("/tmp/conch-kokoro.err.log"),
-    }),
-    resetReadiness: resetTtsReadiness,
-    exclusive: (task, outerSignal) => speech.runProbe((laneSignal) => {
-      return task(AbortSignal.any([outerSignal, laneSignal]));
-    }),
-    log,
-  });
+  if (cfg.ttsEngine === "worker") {
+    // Loading and the first Metal/G2P warmup may take seconds (or download on a
+    // cold install). Do not hold the turn queue: say is live during startup.
+    void ttsWorker.start().catch((error) => {
+      if (!shuttingDown) log(`tts worker startup failed — voices via say: ${error}`);
+    });
+  } else if (cfg.ttsEngine === "server") {
+    ttsSupervisor = new TtsSupervisor({
+      enabled: Boolean(cfg.ttsPort) && ttsBinaryAvailable,
+      probePresence: (signal) => probeTtsServerPresence(cfg, 1_500, signal),
+      probeReady: (signal) => probeTtsServer(cfg, 30_000, signal, log),
+      spawn: () => Bun.spawn([cfg.ttsServerBin, "--port", String(cfg.ttsPort)], {
+        // Separate handles avoid independent offsets clobbering one log file.
+        stdout: Bun.file("/tmp/conch-kokoro.log"),
+        stderr: Bun.file("/tmp/conch-kokoro.err.log"),
+      }),
+      resetReadiness: resetTtsReadiness,
+      exclusive: (task, outerSignal) => speech.runProbe((laneSignal) => {
+        return task(AbortSignal.any([outerSignal, laneSignal]));
+      }),
+      log,
+    });
 
-  // Assign synchronously before listen: early hook events queue behind this
-  // one full-body capability canary. Every later repair is fire-and-forget.
-  ttsStartup = ttsSupervisor.start().then(() => {}).catch((error) => {
-    if (!shuttingDown) log(`tts startup gate failed — voices via say: ${error}`);
-  });
+    // Assign synchronously before listen: early hook events queue behind this
+    // one full-body compatibility canary. Later repair is fire-and-forget.
+    ttsStartup = ttsSupervisor.start().then(() => {}).catch((error) => {
+      if (!shuttingDown) log(`tts server startup gate failed — voices via say: ${error}`);
+    });
+  }
 
   const whisperBinaryAvailable = existsSync(cfg.whisperServerBin);
   whisperServerClient.resetHealth();

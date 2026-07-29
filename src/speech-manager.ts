@@ -6,6 +6,7 @@ import {
   type AudioSpawner,
   type WatchdogWarning,
 } from "./audio-watchdog.ts";
+import type { TtsWorkerBackend } from "./tts-worker.ts";
 
 export interface CancellableSpeech {
   done: Promise<void>;
@@ -25,6 +26,7 @@ export interface SpeechBackend {
     options?: {
       warn?: WatchdogWarning;
       onKokoroFailure?: (reason: "readiness-failed" | "synth-timeout") => void;
+      worker?: TtsWorkerBackend | null;
     },
   ) => CancellableSpeech;
   /** Legacy/global safety net used to stop anything the backend still owns. */
@@ -57,6 +59,7 @@ export interface SpeechManagerOptions {
   timeoutForText?: (text: string) => number;
   warn?: WatchdogWarning;
   onKokoroFailure?: (reason: "readiness-failed" | "synth-timeout") => void;
+  worker?: TtsWorkerBackend | null;
 }
 
 const defaultSpawnAudio: AudioSpawner = (command) => Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
@@ -79,6 +82,7 @@ export class SpeechManager {
   private readonly timeoutForText: (text: string) => number;
   private readonly warn: WatchdogWarning;
   private readonly onKokoroFailure: (reason: "readiness-failed" | "synth-timeout") => void;
+  private readonly worker: TtsWorkerBackend | null;
 
   constructor(
     private readonly backend: SpeechBackend,
@@ -89,6 +93,7 @@ export class SpeechManager {
     this.timeoutForText = options.timeoutForText ?? audioTimeoutMs;
     this.warn = options.warn ?? console.warn;
     this.onKokoroFailure = options.onKokoroFailure ?? (() => {});
+    this.worker = options.worker ?? null;
   }
 
   speak(cfg: Config, text: string, label = ""): Promise<void> {
@@ -102,6 +107,7 @@ export class SpeechManager {
         active = this.watchSpeech(this.backend.speakCancellable(cfg, text, label, {
           warn: this.warn,
           onKokoroFailure: this.onKokoroFailure,
+          worker: this.worker,
         }), text, "TTS");
         await active.done;
       },
@@ -132,6 +138,7 @@ export class SpeechManager {
             this.backend.speakCancellable(cfg, text, label, {
               warn: this.warn,
               onKokoroFailure: this.onKokoroFailure,
+              worker: this.worker,
             }),
             text,
             "barge-in TTS",

@@ -102,13 +102,15 @@ export interface Config {
   workingMic: boolean;
   socketPath: string;
   claudeDir: string;
-  /** TTS engine: auto (server if available, say otherwise) | server | say */
-  ttsEngine: "auto" | "server" | "say";
-  /** warm Kokoro server port (mlx-audio); 0 disables the server engine */
+  /** TTS engine: owned stdin/stdout worker (default) | legacy HTTP server | say */
+  ttsEngine: "worker" | "server" | "say";
+  /** warm Kokoro server port (legacy server mode only); 0 disables that mode */
   ttsPort: number;
   ttsModel: string;
-  /** binary the daemon spawns for the warm TTS server */
+  /** binary used by server mode and to locate mlx-audio's isolated Python */
   ttsServerBin: string;
+  /** optional Python override for worker mode; empty derives it from ttsServerBin's shebang */
+  ttsWorkerPython: string;
   /** voice ring — sessions are hashed onto it so each speaks consistently */
   ttsVoices: string[];
   ttsSpeed: number;
@@ -189,6 +191,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     ttsPort: zeroable(env.CONCH_TTS_PORT, 8880),
     ttsModel: env.CONCH_TTS_MODEL ?? "mlx-community/Kokoro-82M-bf16",
     ttsServerBin: env.CONCH_TTS_SERVER ?? "mlx_audio.server",
+    ttsWorkerPython: env.CONCH_TTS_WORKER_PYTHON ?? "",
     ttsVoices: (env.CONCH_TTS_VOICES ?? "af_heart,am_michael,bf_emma,am_adam,af_nova,bm_george,af_bella,af_sky")
       .split(",")
       .map((v) => v.trim())
@@ -198,6 +201,8 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
   };
 }
 
-function parseTtsEngine(v: string | undefined): "auto" | "server" | "say" {
-  return v === "server" || v === "say" ? v : "auto";
+function parseTtsEngine(v: string | undefined): "worker" | "server" | "say" {
+  // `auto` was the old default. Preserve it as a compatibility alias for the
+  // new self-owned path rather than reviving HTTP adoption semantics.
+  return v === "server" || v === "say" ? v : "worker";
 }
