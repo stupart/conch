@@ -32,8 +32,9 @@ export async function interruptForManualReply(
 
 /**
  * Poll one turn's transcript while its playback is live. Checks are serialized
- * because each one reads the full transcript, and the scoped playback handle
- * prevents a late result from cancelling another session's speech.
+ * so one metadata/append refresh finishes before the next, and the scoped
+ * playback handle prevents a late result from cancelling another session's
+ * speech. Unchanged polls reuse the transcript reader's parsed count.
  */
 export async function watchManualReplyDuringSpeech(
   event: Pick<TurnEvent, "transcriptPath" | "mark">,

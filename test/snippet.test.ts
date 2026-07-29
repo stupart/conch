@@ -3,12 +3,137 @@ import {
   stripMarkdown,
   firstSentences,
   lastAssistantText,
-  createLastAssistantTextReader,
+  createTranscriptReader,
   countCoveredSentences,
+  TRANSCRIPT_READ_CHUNK_BYTES,
   transcriptMark,
   userRespondedSince,
+  type TranscriptSource,
 } from "../src/snippet.ts";
 import { wavFromRawPcm } from "../src/transcribe.ts";
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+interface TranscriptReadRange {
+  offset: number;
+  length: number;
+  version: string;
+}
+
+class MemoryTranscriptSource implements TranscriptSource {
+  private bytes: Uint8Array;
+  private revision = 1;
+  private inode = 1;
+  readonly reads: TranscriptReadRange[] = [];
+  activeReads = 0;
+  maxActiveReads = 0;
+  readFailures = 0;
+  beforeRead?: (range: TranscriptReadRange) => void | Promise<void>;
+
+  constructor(raw: string) {
+    this.bytes = encoder.encode(raw);
+  }
+
+  get raw(): string {
+    return decoder.decode(this.bytes);
+  }
+
+  get size(): number {
+    return this.bytes.length;
+  }
+
+  append(raw: string): void {
+    const appended = encoder.encode(raw);
+    const next = new Uint8Array(this.bytes.length + appended.length);
+    next.set(this.bytes);
+    next.set(appended, this.bytes.length);
+    this.bytes = next;
+    this.revision++;
+  }
+
+  replace(raw: string, replaceIdentity = false): void {
+    this.bytes = encoder.encode(raw);
+    this.revision++;
+    if (replaceIdentity) this.inode++;
+  }
+
+  async open() {
+    const bytes = this.bytes;
+    const version = String(this.revision);
+    const inode = String(this.inode);
+    return {
+      version: {
+        size: bytes.length,
+        mtimeNs: version,
+        dev: "1",
+        ino: inode,
+      },
+      read: async (offset: number, length: number) => {
+        const range = { offset, length, version };
+        this.reads.push(range);
+        this.activeReads++;
+        this.maxActiveReads = Math.max(this.maxActiveReads, this.activeReads);
+        try {
+          if (this.readFailures > 0) {
+            this.readFailures--;
+            throw new Error("mid-write");
+          }
+          await this.beforeRead?.(range);
+          return bytes.slice(offset, offset + length);
+        } finally {
+          this.activeReads--;
+        }
+      },
+      close() {},
+    };
+  }
+}
+
+function fullReadOracle(raw: string): { assistant: string; prompts: number } {
+  const lines = raw.split("\n");
+  const collected: string[] = [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    if (!line) continue;
+    let entry: any;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (entry.type === "user") break;
+    if (entry.type !== "assistant") continue;
+    const content: Array<{ type: string; text?: string }> = entry.message?.content ?? [];
+    if (content.some((part) => part.type === "tool_use")) break;
+    const texts = content
+      .filter((part) => part.type === "text")
+      .map((part) => part.text ?? "");
+    if (texts.length) collected.unshift(texts.join("\n"));
+  }
+
+  let prompts = 0;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let entry: any;
+    try {
+      entry = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (entry.type !== "user") continue;
+    if (entry.origin?.kind === "task-notification" || entry.promptSource === "system") continue;
+    const content = entry.message?.content;
+    if (typeof content === "string" && content.startsWith("<task-notification>")) continue;
+    const real = typeof content === "string"
+      ? content.trim().length > 0
+      : Array.isArray(content)
+        && content.some((block: any) => block?.type === "text" && block.text?.trim());
+    if (real) prompts++;
+  }
+  return { assistant: collected.join("\n"), prompts };
+}
 
 test("wavFromRawPcm writes a valid 16kHz mono header", () => {
   const pcm = new Uint8Array(32000); // 1s of audio
@@ -93,10 +218,107 @@ test("lastAssistantText invalidates its real file cache when the transcript grow
   expect(await lastAssistantText(path)).toBe("first\na longer second reply");
 });
 
+test("tail and incremental reads stay identical to a full-read oracle, including partial-line growth", async () => {
+  const assistant = (text: string) => JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "text", text }] },
+  });
+  const fillerLine = JSON.stringify({
+    type: "file-history-snapshot",
+    snapshot: "x".repeat(1_000),
+  });
+  const fillerCount = Math.ceil((TRANSCRIPT_READ_CHUNK_BYTES * 3) / (fillerLine.length + 1));
+  const lines = [
+    ...Array.from({ length: fillerCount }, () => fillerLine),
+    JSON.stringify({ type: "user", message: { content: "first real prompt" } }),
+    JSON.stringify({
+      type: "user",
+      origin: { kind: "task-notification" },
+      message: { content: "origin-only synthetic prompt" },
+    }),
+    JSON.stringify({
+      type: "user",
+      promptSource: "system",
+      message: { content: "source-only synthetic prompt" },
+    }),
+    JSON.stringify({
+      type: "user",
+      message: { content: "<task-notification>marker-only synthetic prompt</task-notification>" },
+    }),
+    JSON.stringify({
+      type: "user",
+      message: { content: [{ type: "tool_result" }, { type: "text", text: "array prompt" }] },
+    }),
+    JSON.stringify({
+      type: "user",
+      message: { content: [{ type: "tool_result" }, { type: "text", text: "   " }] },
+    }),
+    assistant("stale work note"),
+    JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "do not collect this interim text" },
+          { type: "tool_use", name: "Bash" },
+        ],
+      },
+    }),
+    JSON.stringify({ type: "user", message: { content: [{ type: "tool_result" }] } }),
+    assistant("final first entry"),
+    JSON.stringify({ type: "file-history-snapshot", messageId: "tail-meta" }),
+    assistant("final second entry 🐚"),
+    "not json at all",
+  ];
+  const partialPrompt = '{"type":"user","message":{"content":"typed';
+  const source = new MemoryTranscriptSource(`${lines.join("\n")}\n${partialPrompt}`);
+  const reader = createTranscriptReader(source);
+
+  const initialOracle = fullReadOracle(source.raw);
+  expect(await reader.lastAssistantText("session.jsonl")).toBe(initialOracle.assistant);
+  expect(source.reads).toHaveLength(1);
+  expect(source.reads[0]!.offset).toBe(source.size - TRANSCRIPT_READ_CHUNK_BYTES);
+  expect(source.reads[0]!.offset).toBeGreaterThan(0); // initial reply read touched only the tail
+
+  const readsAfterTail = source.reads.length;
+  expect(await reader.countUserPrompts("session.jsonl")).toBe(initialOracle.prompts);
+  const initialCountReads = source.reads.slice(readsAfterTail);
+  expect(initialCountReads[0]!.offset).toBe(0);
+  expect(initialCountReads.reduce((sum, read) => sum + read.length, 0)).toBe(source.size);
+
+  const readsAfterInitialParse = source.reads.length;
+  expect(await reader.lastAssistantText("session.jsonl")).toBe(initialOracle.assistant);
+  expect(await reader.countUserPrompts("session.jsonl")).toBe(initialOracle.prompts);
+  expect(source.reads).toHaveLength(readsAfterInitialParse); // unchanged metadata: no data reread
+
+  const oldSize = source.size;
+  const appended = [
+    ' reply"}}',
+    assistant("grown reply first entry"),
+    JSON.stringify({ type: "file-history-snapshot", messageId: "grown-meta" }),
+    assistant("grown reply second entry"),
+  ].join("\n");
+  source.append(appended);
+  const grownOracle = fullReadOracle(source.raw);
+  expect(await reader.lastAssistantText("session.jsonl")).toBe(grownOracle.assistant);
+  expect(await reader.countUserPrompts("session.jsonl")).toBe(grownOracle.prompts);
+  expect(source.reads.slice(readsAfterInitialParse).map(({ offset, length }) => ({ offset, length }))).toEqual([
+    { offset: oldSize, length: source.size - oldSize },
+  ]);
+
+  // A valid final JSON object without LF is provisional. Committing its newline
+  // must neither duplicate its text nor recount any prompt.
+  const beforeNewline = source.size;
+  const readsBeforeNewline = source.reads.length;
+  source.append("\n");
+  const newlineOracle = fullReadOracle(source.raw);
+  expect(await reader.lastAssistantText("session.jsonl")).toBe(newlineOracle.assistant);
+  expect(await reader.countUserPrompts("session.jsonl")).toBe(newlineOracle.prompts);
+  expect(source.reads.slice(readsBeforeNewline).map(({ offset, length }) => ({ offset, length }))).toEqual([
+    { offset: beforeNewline, length: 1 },
+  ]);
+});
+
 test("unchanged navigation and overlay repaints share one transcript read", async () => {
-  let reads = 0;
-  let activeReads = 0;
-  let maxActiveReads = 0;
   let releaseRead!: () => void;
   let markStarted!: () => void;
   const started = new Promise<void>((resolve) => { markStarted = resolve; });
@@ -105,34 +327,30 @@ test("unchanged navigation and overlay repaints share one transcript read", asyn
     type: "assistant",
     message: { content: [{ type: "text", text: "cached reply" }] },
   });
-  const reader = createLastAssistantTextReader({
-    fingerprint: async () => "42:100",
-    read: async () => {
-      reads++;
-      activeReads++;
-      maxActiveReads = Math.max(maxActiveReads, activeReads);
+  const source = new MemoryTranscriptSource(raw);
+  source.beforeRead = async () => {
+    if (source.reads.length === 1) {
       markStarted();
       await gate;
-      activeReads--;
-      return raw;
-    },
-  });
+    }
+  };
+  const reader = createTranscriptReader(source);
 
-  const repaints = [reader("session.jsonl"), reader("session.jsonl"), reader("session.jsonl")];
+  const repaints = [
+    reader.lastAssistantText("session.jsonl"),
+    reader.lastAssistantText("session.jsonl"),
+    reader.lastAssistantText("session.jsonl"),
+  ];
   await started;
-  expect(reads).toBe(1);
-  expect(maxActiveReads).toBe(1);
+  expect(source.reads).toHaveLength(1);
+  expect(source.maxActiveReads).toBe(1);
   releaseRead();
   expect(await Promise.all(repaints)).toEqual(["cached reply", "cached reply", "cached reply"]);
-  expect(await reader("session.jsonl")).toBe("cached reply");
-  expect(reads).toBe(1);
+  expect(await reader.lastAssistantText("session.jsonl")).toBe("cached reply");
+  expect(source.reads).toHaveLength(1);
 });
 
 test("a changed transcript waits for the obsolete read instead of overlapping it", async () => {
-  let version = 1;
-  let reads = 0;
-  let activeReads = 0;
-  let maxActiveReads = 0;
   let releaseFirst!: () => void;
   let markFirstStarted!: () => void;
   const firstStarted = new Promise<void>((resolve) => { markFirstStarted = resolve; });
@@ -141,53 +359,84 @@ test("a changed transcript waits for the obsolete read instead of overlapping it
     type: "assistant",
     message: { content: [{ type: "text", text }] },
   });
-  const reader = createLastAssistantTextReader({
-    fingerprint: async () => `fingerprint-${version}`,
-    read: async () => {
-      const readVersion = version;
-      reads++;
-      activeReads++;
-      maxActiveReads = Math.max(maxActiveReads, activeReads);
-      if (readVersion === 1) {
-        markFirstStarted();
-        await firstGate;
-      }
-      activeReads--;
-      return assistantEntry(`reply ${readVersion}`);
-    },
-  });
+  const source = new MemoryTranscriptSource(assistantEntry("reply 1"));
+  source.beforeRead = async (range) => {
+    if (range.version === "1") {
+      markFirstStarted();
+      await firstGate;
+    }
+  };
+  const reader = createTranscriptReader(source);
 
-  const first = reader("session.jsonl");
+  const first = reader.lastAssistantText("session.jsonl");
   await firstStarted;
-  version = 2;
-  const second = reader("session.jsonl");
+  source.append(`\n${assistantEntry("reply 2")}`);
+  const second = reader.lastAssistantText("session.jsonl");
   await Promise.resolve();
-  expect(reads).toBe(1);
+  expect(source.reads).toHaveLength(1);
   releaseFirst();
 
   expect(await first).toBe("reply 1");
-  expect(await second).toBe("reply 2");
-  expect(reads).toBe(2);
-  expect(maxActiveReads).toBe(1);
+  expect(await second).toBe("reply 1\nreply 2");
+  expect(source.reads).toHaveLength(2);
+  expect(source.maxActiveReads).toBe(1);
 });
 
 test("a failed transcript read is retried instead of cached", async () => {
-  let reads = 0;
-  const reader = createLastAssistantTextReader({
-    fingerprint: async () => "1:1",
-    read: async () => {
-      reads++;
-      if (reads === 1) throw new Error("mid-write");
-      return JSON.stringify({
-        type: "assistant",
-        message: { content: [{ type: "text", text: "retry succeeded" }] },
-      });
-    },
-  });
+  const source = new MemoryTranscriptSource(JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "text", text: "retry succeeded" }] },
+  }));
+  source.readFailures = 1;
+  const reader = createTranscriptReader(source);
 
-  expect(await reader("session.jsonl")).toBe("");
-  expect(await reader("session.jsonl")).toBe("retry succeeded");
-  expect(reads).toBe(2);
+  expect(await reader.lastAssistantText("session.jsonl")).toBe("");
+  expect(await reader.lastAssistantText("session.jsonl")).toBe("retry succeeded");
+  expect(source.reads).toHaveLength(2);
+});
+
+test("parseable schema errors reject exactly like the former full readers", async () => {
+  const nullReader = createTranscriptReader(new MemoryTranscriptSource("null"));
+  await expect(nullReader.lastAssistantText("null.jsonl")).rejects.toThrow();
+  await expect(nullReader.countUserPrompts("null.jsonl")).rejects.toThrow();
+
+  const invalidPrompt = JSON.stringify({
+    type: "user",
+    message: { content: [{ type: "text", text: 1 }] },
+  });
+  const countReader = createTranscriptReader(new MemoryTranscriptSource(invalidPrompt));
+  await expect(countReader.countUserPrompts("invalid-prompt.jsonl")).rejects.toThrow();
+
+  // Reverse assistant parsing stops at the newest user even when that boundary
+  // has no final LF; the older schema error remains visible to full prompt counts.
+  const superseded = `null\n${JSON.stringify({ type: "user", message: { content: "new prompt" } })}`;
+  const supersededReader = createTranscriptReader(new MemoryTranscriptSource(superseded));
+  expect(await supersededReader.lastAssistantText("superseded.jsonl")).toBe("");
+  await expect(supersededReader.countUserPrompts("superseded.jsonl")).rejects.toThrow();
+});
+
+test("same-size mtime changes invalidate both cached parse results", async () => {
+  const first = [
+    JSON.stringify({ type: "user", message: { content: "one" } }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "aaaa" }] } }),
+  ].join("\n");
+  const second = [
+    JSON.stringify({ type: "user", message: { content: "   " } }),
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "bbbb" }] } }),
+  ].join("\n");
+  expect(encoder.encode(second).length).toBe(encoder.encode(first).length);
+  const source = new MemoryTranscriptSource(first);
+  const reader = createTranscriptReader(source);
+
+  expect(await reader.countUserPrompts("session.jsonl")).toBe(fullReadOracle(first).prompts);
+  expect(await reader.lastAssistantText("session.jsonl")).toBe(fullReadOracle(first).assistant);
+  const beforeRewrite = source.reads.length;
+
+  source.replace(second);
+  expect(await reader.lastAssistantText("session.jsonl")).toBe(fullReadOracle(second).assistant);
+  expect(await reader.countUserPrompts("session.jsonl")).toBe(fullReadOracle(second).prompts);
+  expect(source.reads.length).toBeGreaterThan(beforeRewrite);
+  expect(source.reads.slice(beforeRewrite).some((read) => read.offset === 0)).toBe(true);
 });
 
 test("transcriptMark ignores synthetic task-notification wakeups (not your replies)", async () => {
