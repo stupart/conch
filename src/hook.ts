@@ -1,7 +1,14 @@
 import { connect } from "node:net";
 import type { Config } from "./config.ts";
 import { bell, speak } from "./speak.ts";
-import { spokenSnippet, lastAssistantText, stripMarkdown, looksLikeAwaitingReply, transcriptMark } from "./snippet.ts";
+import {
+  spokenSnippet,
+  lastAssistantText,
+  stripMarkdown,
+  looksLikeAwaitingReply,
+  transcriptMark,
+  parseReviewRequest,
+} from "./snippet.ts";
 import { findSession, sessionLabel, isEngageable } from "./sessions.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
 
@@ -33,6 +40,8 @@ export interface TurnEvent {
   eventAt?: number;
   /** This working state came from a Stop reclassified for live background work. */
   backgroundWork?: true;
+  /** Set when the final reply carried a conch:review marker. */
+  review?: { summary: string; link?: string };
 }
 
 // Notification types that actually need a human; everything else stays silent.
@@ -94,7 +103,11 @@ export async function runHook(cfg: Config): Promise<void> {
 
   let turn: TurnEvent;
   if (event === "Stop") {
-    const backgroundWork = payload.transcript_path
+    const finalText = payload.transcript_path
+      ? await lastAssistantText(payload.transcript_path)
+      : "";
+    const review = parseReviewRequest(finalText);
+    const backgroundWork = !review && payload.transcript_path
       ? sessionHasLiveBackgroundWork(payload.transcript_path)
       : false;
     const snippet = payload.transcript_path
@@ -106,11 +119,14 @@ export async function runHook(cfg: Config): Promise<void> {
       label,
       cwd: payload.cwd,
       pid: session?.pid,
-      announce: `${label}: ${snippet || "finished, ready for your next prompt"}`,
+      announce: review
+        ? `${label} has work ready for your review: ${review.summary}`
+        : `${label}: ${snippet || "finished, ready for your next prompt"}`,
       transcriptPath: payload.transcript_path,
       mark: payload.transcript_path ? await transcriptMark(payload.transcript_path) : undefined,
       eventAt,
       ...(backgroundWork ? { backgroundWork: true } : {}),
+      ...(review ? { review } : {}),
     };
   } else if (event === "Notification") {
     const ntype = payload.notification_type ?? "";

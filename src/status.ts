@@ -331,6 +331,7 @@ function wrapPlainText(text: string, width: number): Array<{ text: string; start
 }
 
 const THEATER_STATUS_ICON: Record<string, string> = {
+  review: "\x1b[33m⭐\x1b[39m",
   needs: "\x1b[33m❗\x1b[39m",
   waiting: "\x1b[32m○\x1b[39m",
   working: "\x1b[36m●\x1b[39m",
@@ -357,6 +358,7 @@ function fullStatus(row: PanelRowModel): string {
     case "listening": return "\x1b[32m● mic open\x1b[39m";
     case "recording": return "\x1b[31m● recording\x1b[39m";
     case "transcribing": return "\x1b[36m… transcribing\x1b[39m";
+    case "review": return "\x1b[33m⭐ needs review\x1b[39m";
     case "needs": return "\x1b[33m❗ needs a response\x1b[39m";
     case "waiting": return "\x1b[32m○ waiting for you\x1b[39m";
     case "working": return "\x1b[36m● working…\x1b[39m";
