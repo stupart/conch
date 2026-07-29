@@ -57,15 +57,22 @@ export async function routeVoicePrompt(
   }
 
   let answer: string | null = null;
+  let modelFailed = false;
   if (context) {
     try {
+      // No timeoutMs here — the injected askClaude (askHaiku) carries the
+      // live haiku-timeout; passing one would override the setting.
       answer = await dependencies.askClaude(
         `${QA_PROMPT}\n\nReply excerpt:\n${context}\n\nQuestion: ${question}`,
-        { timeoutMs: 10_000, maxChars: 300 },
+        { maxChars: 300 },
       );
     } catch {
       answer = null;
     }
+    // Had a transcript to read but got nothing back = the fast model failed
+    // (timed out / errored). Say so plainly — a canned generic line is no
+    // answer to a specific question.
+    if (answer === null) modelFailed = true;
   }
 
   try {
@@ -73,6 +80,9 @@ export async function routeVoicePrompt(
   } catch {
     return false;
   }
-  await dependencies.speak(answer ?? "I couldn't check that.");
+  const failureLine = modelFailed
+    ? "Something went wrong — I couldn't get an answer."
+    : "I couldn't check that.";
+  await dependencies.speak(answer ?? failureLine);
   return true;
 }

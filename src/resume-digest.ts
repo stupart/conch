@@ -152,8 +152,9 @@ export async function composeResumeBriefing(
     .join("\n");
   try {
     return await askClaude(
+      // No timeoutMs — the injected askHaiku carries the live haiku-timeout.
       `${DIGEST_PROMPT}\n${facts}`,
-      { timeoutMs: 10_000, maxChars: 400 },
+      { maxChars: 400 },
     ) ?? fallback;
   } catch {
     return fallback;

@@ -84,14 +84,16 @@ describe("voice QA routing", () => {
     expect(h.asked[0]!.prompt).toContain("The migration passed all 42 tests.");
     expect(h.asked[0]!.prompt).not.toContain("bun test");
     expect(h.asked[0]!.prompt).toContain("Question: did the tests pass?");
-    expect(h.asked[0]!.options).toEqual({ timeoutMs: 10_000, maxChars: 300 });
+    expect(h.asked[0]!.options).toEqual({ maxChars: 300 });
   });
 
   test.each([
-    ["null", { answer: null }],
-    ["throw", { askError: new Error("model unavailable") }],
-    ["transcript failure", { readError: new Error("mid-write") }],
-  ] as const)("%s speaks the apology and still never injects", async (_name, options) => {
+    // Had a transcript but the model gave nothing back = an honest failure line.
+    ["null", { answer: null }, "Something went wrong — I couldn't get an answer."],
+    ["throw", { askError: new Error("model unavailable") }, "Something went wrong — I couldn't get an answer."],
+    // No transcript to read at all — the model was never asked, so it's a plain can't-check.
+    ["transcript failure", { readError: new Error("mid-write") }, "I couldn't check that."],
+  ] as const)("%s speaks an honest failure and still never injects", async (_name, options, spoken) => {
     const h = harness(options);
 
     expect(await routeVoicePrompt(
@@ -102,7 +104,7 @@ describe("voice QA routing", () => {
     )).toBeTrue();
 
     expect(h.injected).toEqual([]);
-    expect(h.spoken).toEqual(["I couldn't check that."]);
+    expect(h.spoken).toEqual([spoken]);
   });
 
   test("a cancellation after the model wait consumes the query without speech or injection", async () => {

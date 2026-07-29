@@ -149,7 +149,7 @@ describe("resume digest planning", () => {
     expect(briefing).toBe("Alpha shipped the fix, and day loop passed every test.");
     expect(prompt).toContain("1. alpha: shipped the queue fix");
     expect(prompt).toContain("2. day loop: all tests passed");
-    expect(options).toEqual({ timeoutMs: 10_000, maxChars: 400 });
+    expect(options).toEqual({ maxChars: 400 });
   });
 
   test.each(["null", "throw"] as const)(
