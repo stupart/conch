@@ -57,6 +57,7 @@ test("diagnostics session is private, warns about sensitivity, and emits one com
     bufferCountAfterReduction: 1,
     finalSubmittedPayload: "finish quietly",
   });
+  session.update(record.id, { transcript: "late update" });
   session.emit(record.id, { intent: "duplicate" });
 
   expect(statSync(session.runDir).mode & 0o777).toBe(0o700);

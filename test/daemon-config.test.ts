@@ -393,6 +393,14 @@ describe("daemon config controller", () => {
       daemonSource.indexOf("async function renderSessionPanel"),
       daemonSource.indexOf("function setSessionState"),
     );
+    const completePrune = render.slice(
+      render.indexOf("if (snap?.complete)"),
+      render.indexOf("const live ="),
+    );
+    const closedCleanup = daemonSource.slice(
+      daemonSource.indexOf("&& sessionGoneFromSnapshot("),
+      daemonSource.indexOf("if (shuttingDown || interruptedByPause()"),
+    );
     const dismiss = daemonSource.slice(
       daemonSource.indexOf("dismiss: (target)"),
       daemonSource.indexOf("onOpen:", daemonSource.indexOf("dismiss: (target)")),
@@ -402,6 +410,10 @@ describe("daemon config controller", () => {
     );
     expect(render).toContain("...prioritizedSessionIds");
     expect(render).toContain("...dismissedSessionIds");
+    expect(completePrune).toContain("...pending.keys()");
+    expect(completePrune).toContain("pending.delete(id)");
+    expect(completePrune).toContain("eventOrder.prune(liveIds)");
+    expect(closedCleanup).toContain("pending.delete(event.sessionId)");
     expect(dismiss.indexOf("dismissedSessionIds.add(target.sessionId)")).toBeLessThan(
       dismiss.indexOf("setSessionMutedWithDigest(target.sessionId, true)"),
     );
@@ -743,6 +755,32 @@ describe("daemon config controller", () => {
     const timestamped = { type: "turn-end" as const, sessionId: "session", eventAt: 2_000 };
     expect(order.accept(timestamped)).toBe(true);
     expect(order.accept({ type: "working", sessionId: "session" })).toBe(false);
+  });
+
+  test("event ordering prunes closed sessions while preserving live sessions", () => {
+    const order = new TurnEventOrder();
+    const live = { type: "turn-end" as const, sessionId: "live", eventAt: 2_000 };
+    const closed = { type: "turn-end" as const, sessionId: "closed", eventAt: 2_000 };
+
+    expect(order.accept(live)).toBe(true);
+    expect(order.accept(closed)).toBe(true);
+    order.prune(new Set(["live"]));
+
+    expect(order.isCurrent(live)).toBe(true);
+    expect(order.isCurrent(closed)).toBe(false);
+    expect(order.accept({ ...closed, eventAt: 1_000 })).toBe(true);
+  });
+
+  test("socket data stops buffering after the first message is handled", () => {
+    const dataHandler = daemonSource.slice(
+      daemonSource.indexOf('sock.on("data", (data) => {'),
+      daemonSource.indexOf('sock.on("end", () => {'),
+    );
+
+    expect(dataHandler).toContain("if (handled) return;");
+    expect(dataHandler.indexOf("if (handled) return;")).toBeLessThan(
+      dataHandler.indexOf("buf += data.toString();"),
+    );
   });
 
   test("applies a live set by mutating the shared Config object in place", () => {
