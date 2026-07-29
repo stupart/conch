@@ -208,6 +208,12 @@ describe("conch session-label overrides", () => {
       expect((await findSessionByName(f.claudeDir, "CONCH-NAME", {
         labelsPath: f.labelsPath,
       }))?.sessionId).toBe(session.sessionId);
+      expect((await findSessionByName(f.claudeDir, "SESSION-A", {
+        labelsPath: f.labelsPath,
+      }))?.sessionId).toBe(session.sessionId);
+      expect(await findSessionByName(f.claudeDir, "   ", {
+        labelsPath: f.labelsPath,
+      })).toBeNull();
     } finally {
       rmSync(f.root, { recursive: true, force: true });
     }

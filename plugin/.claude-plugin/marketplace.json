@@ -1,0 +1,14 @@
+{
+  "name": "conch",
+  "description": "The conch voice loop — see and steer your other Claude Code sessions by voice.",
+  "owner": {
+    "name": "Tyler Stupart"
+  },
+  "plugins": [
+    {
+      "name": "conch",
+      "source": "./plugins/conch",
+      "description": "See and steer your other Claude sessions by voice, via conch."
+    }
+  ]
+}

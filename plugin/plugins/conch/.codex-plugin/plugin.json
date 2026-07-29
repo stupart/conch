@@ -1,0 +1,10 @@
+{
+  "name": "conch",
+  "version": "0.1.0",
+  "description": "Voice-loop control: see and steer your other Codex/Claude sessions.",
+  "author": {
+    "name": "Tyler Stupart"
+  },
+  "license": "MIT",
+  "mcpServers": "./.mcp.json"
+}

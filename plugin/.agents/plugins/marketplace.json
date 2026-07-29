@@ -1,0 +1,16 @@
+{
+  "name": "conch-local",
+  "interface": {
+    "displayName": "Conch (local)"
+  },
+  "plugins": [
+    {
+      "name": "conch",
+      "source": {
+        "source": "local",
+        "path": "./plugins/conch"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
