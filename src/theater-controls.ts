@@ -39,7 +39,7 @@ export function dispatchTheaterControlKey(
 }
 
 export const THEATER_KEYBAR =
-  "  \x1b[2m↑↓ park · esc back · wheel scroll · drag copy · \\ pane · , settings · ⏎ actions · r recite · space talk · p pause · m mute · ? help · q quit\x1b[0m";
+  "  \x1b[2m↑↓ park · space talk · p pause · m mute · ⏎ actions · r recite · , settings · ? help · q quit\x1b[0m";
 
 export const FOOTER_KEYBAR =
   "  \x1b[2m↑↓ park · space talk · p pause · m mute · l logs · ? help · q quit\x1b[0m";
