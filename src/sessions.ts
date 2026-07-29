@@ -282,13 +282,14 @@ export async function listSessions(claudeDir: string): Promise<SessionInfo[]> {
   return (await registrySnapshot(claudeDir))?.infos ?? [];
 }
 
-/** Match conch overrides first, then registry names, then project folder names. */
+/** Match an exact id, then conch overrides, registry names, and project folders. */
 export async function findSessionByName(
   claudeDir: string,
   query: string,
   options: LabelOverrideOptions = {},
 ): Promise<SessionInfo | null> {
   const q = query.toLowerCase().trim();
+  if (!q) return null;
   const sessions = await listSessions(claudeDir);
   const overrides = labelOverrides(options);
   const overrideFor = (session: SessionInfo): string | undefined => {
@@ -297,6 +298,7 @@ export async function findSessionByName(
       : undefined;
   };
   return (
+    sessions.find((s) => s.sessionId.toLowerCase() === q) ??
     sessions.find((s) => overrideFor(s)?.toLowerCase() === q) ??
     sessions.find((s) => s.name?.toLowerCase() === q) ??
     sessions.find((s) => s.name?.toLowerCase().includes(q)) ??

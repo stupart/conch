@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.ts";
 import { runHook, sendToDaemon } from "./hook.ts";
 import { runDaemon } from "./daemon.ts";
@@ -34,6 +35,9 @@ Usage:
   conch service [off]   launchd supervision: start at login, self-heal on crash
   conch hook            hook entrypoint (reads payload JSON on stdin)
   conch daemon          run the voice loop: announce -> listen -> inject
+  conch mcp             run the MCP stdio server (Claude Code / Codex entrypoint)
+  conch install-plugin  install the conch plugin for Claude Code and Codex
+  conch uninstall-plugin remove the conch plugin from Claude Code and Codex
   conch wake [name]     reopen the mic — last announced session, or by name
   conch recite [name]   read the latest response — last session, or by name
   conch rename <s> <n>  persist a conch display label for a live session
@@ -190,6 +194,39 @@ async function readDaemonSnapshot(): Promise<ConfigSnapshot | "daemon-down" | "a
 }
 
 switch (command) {
+  case "mcp": {
+    const { runMcpServer } = await import("./mcp.ts");
+    await runMcpServer({ config: cfg });
+    break;
+  }
+  case "install-plugin": {
+    const { runInstallPlugin } = await import("./plugin-install.ts");
+    const absBun = process.execPath;
+    const absCli = fileURLToPath(import.meta.url);
+    try {
+      const ok = await runInstallPlugin(absBun, absCli);
+      if (!ok) process.exitCode = 1;
+    } catch (error) {
+      console.error(
+        `[conch] install-plugin failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      process.exitCode = 1;
+    }
+    break;
+  }
+  case "uninstall-plugin": {
+    const { runUninstallPlugin } = await import("./plugin-install.ts");
+    try {
+      const ok = await runUninstallPlugin();
+      if (!ok) process.exitCode = 1;
+    } catch (error) {
+      console.error(
+        `[conch] uninstall-plugin failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      process.exitCode = 1;
+    }
+    break;
+  }
   case "hook":
     await runHook(cfg);
     break;
