@@ -396,10 +396,14 @@ export function reconcileStatus(
   return latched?.status ?? null;
 }
 
-/** Sort order: review first, then what needs you, then waiting, then working. */
+/**
+ * Sort order: what needs you first, then waiting, then working. A review keeps
+ * its natural (waiting) position — the ⭐ marker flags it without reordering the
+ * dashboard, so conch stays "normal" and a review only changes the row's glyph.
+ */
 export const STATUS_RANK: Record<SessionStatus, number> = {
-  review: 0,
   needs: 1,
+  review: 2,
   waiting: 2,
   working: 3,
 };
