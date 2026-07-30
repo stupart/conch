@@ -2,27 +2,43 @@ import AppKit
 import SwiftUI
 
 struct ReviewInputMonitor: NSViewRepresentable {
-    let onReveal: () -> Void
+    let presentationID: UUID
+    let onDismiss: () -> Void
+    let onMouseActivity: () -> Void
 
     final class Coordinator {
-        var onReveal: () -> Void
-        weak var view: NSView?
+        var presentationID: UUID
+        var onDismiss: () -> Void
+        var onMouseActivity: () -> Void
+        weak var view: PassThroughView?
+        var mouseMovementLeaseID: ObjectIdentifier?
         var keyMonitor: Any?
         var gestureMonitor: Any?
+        var mouseMonitor: Any?
         var scrollDistance: CGFloat = 0
         var lastScrollTimestamp: TimeInterval = 0
+        var lastMouseActivityTimestamp: TimeInterval = 0
         var didTrigger = false
 
-        init(onReveal: @escaping () -> Void) {
-            self.onReveal = onReveal
+        init(
+            presentationID: UUID,
+            onDismiss: @escaping () -> Void,
+            onMouseActivity: @escaping () -> Void
+        ) {
+            self.presentationID = presentationID
+            self.onDismiss = onDismiss
+            self.onMouseActivity = onMouseActivity
         }
 
         deinit {
             removeMonitors()
         }
 
-        func installMonitors(for view: NSView) {
+        func installMonitors(for view: PassThroughView) {
             self.view = view
+            view.onWindowChange = { [weak self] window in
+                self?.configureMouseEvents(for: window)
+            }
 
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
                 [weak self] event in
@@ -33,7 +49,7 @@ struct ReviewInputMonitor: NSViewRepresentable {
                     return event
                 }
 
-                self.revealOnce()
+                self.dismissOnce()
                 return nil
             }
 
@@ -58,7 +74,7 @@ struct ReviewInputMonitor: NSViewRepresentable {
                 }
 
                 if event.type == .swipe {
-                    self.revealOnce()
+                    self.dismissOnce()
                     return event
                 }
 
@@ -70,7 +86,7 @@ struct ReviewInputMonitor: NSViewRepresentable {
                 self.scrollDistance += event.hasPreciseScrollingDeltas ? delta : delta * 12
 
                 if self.scrollDistance > 42 {
-                    self.revealOnce()
+                    self.dismissOnce()
                 }
 
                 if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
@@ -78,6 +94,27 @@ struct ReviewInputMonitor: NSViewRepresentable {
                 }
                 return event
             }
+
+            mouseMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [
+                    .mouseMoved,
+                    .leftMouseDragged,
+                    .rightMouseDragged,
+                    .otherMouseDragged,
+                ]
+            ) { [weak self] event in
+                guard let self, self.belongsToMonitoredWindow(event) else {
+                    return event
+                }
+
+                if event.timestamp - self.lastMouseActivityTimestamp >= 0.08 {
+                    self.lastMouseActivityTimestamp = event.timestamp
+                    self.onMouseActivity()
+                }
+                return event
+            }
+
+            configureMouseEvents(for: view.window)
         }
 
         func removeMonitors() {
@@ -89,11 +126,37 @@ struct ReviewInputMonitor: NSViewRepresentable {
                 NSEvent.removeMonitor(gestureMonitor)
                 self.gestureMonitor = nil
             }
+            if let mouseMonitor {
+                NSEvent.removeMonitor(mouseMonitor)
+                self.mouseMonitor = nil
+            }
+
+            view?.onWindowChange = nil
+            restoreConfiguredWindow()
+        }
+
+        private func configureMouseEvents(for window: NSWindow?) {
+            let windowID = window.map(ObjectIdentifier.init)
+            guard mouseMovementLeaseID != windowID else { return }
+            restoreConfiguredWindow()
+            guard let window else { return }
+
+            mouseMovementLeaseID = WindowMouseMovementLease.acquire(window)
+        }
+
+        private func restoreConfiguredWindow() {
+            if let mouseMovementLeaseID {
+                WindowMouseMovementLease.release(mouseMovementLeaseID)
+            }
+            mouseMovementLeaseID = nil
         }
 
         private func belongsToMonitoredWindow(_ event: NSEvent) -> Bool {
             guard let window = view?.window else { return false }
-            return event.window === window || NSApp.keyWindow === window
+            if let eventWindow = event.window {
+                return eventWindow === window
+            }
+            return NSApp.keyWindow === window
         }
 
         private func isAtTopEdge(_ event: NSEvent) -> Bool {
@@ -110,15 +173,19 @@ struct ReviewInputMonitor: NSViewRepresentable {
             lastScrollTimestamp = 0
         }
 
-        private func revealOnce() {
+        private func dismissOnce() {
             guard !didTrigger else { return }
             didTrigger = true
-            onReveal()
+            onDismiss()
         }
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onReveal: onReveal)
+        Coordinator(
+            presentationID: presentationID,
+            onDismiss: onDismiss,
+            onMouseActivity: onMouseActivity
+        )
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -128,7 +195,12 @@ struct ReviewInputMonitor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.onReveal = onReveal
+        if context.coordinator.presentationID != presentationID {
+            context.coordinator.presentationID = presentationID
+            context.coordinator.didTrigger = false
+        }
+        context.coordinator.onDismiss = onDismiss
+        context.coordinator.onMouseActivity = onMouseActivity
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
@@ -136,8 +208,52 @@ struct ReviewInputMonitor: NSViewRepresentable {
     }
 }
 
-private final class PassThroughView: NSView {
+final class PassThroughView: NSView {
+    var onWindowChange: ((NSWindow?) -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindowChange?(window)
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         nil
+    }
+}
+
+private enum WindowMouseMovementLease {
+    private final class Entry {
+        weak var window: NSWindow?
+        let originallyAcceptedMouseMovedEvents: Bool
+        var leaseCount: Int
+
+        init(window: NSWindow) {
+            self.window = window
+            originallyAcceptedMouseMovedEvents = window.acceptsMouseMovedEvents
+            leaseCount = 1
+        }
+    }
+
+    private static var entries: [ObjectIdentifier: Entry] = [:]
+
+    static func acquire(_ window: NSWindow) -> ObjectIdentifier {
+        let id = ObjectIdentifier(window)
+        if let entry = entries[id], entry.window === window {
+            entry.leaseCount += 1
+        } else {
+            entries[id] = Entry(window: window)
+        }
+        window.acceptsMouseMovedEvents = true
+        return id
+    }
+
+    static func release(_ id: ObjectIdentifier) {
+        guard let entry = entries[id] else { return }
+        entry.leaseCount -= 1
+        guard entry.leaseCount == 0 else { return }
+
+        entry.window?.acceptsMouseMovedEvents =
+            entry.originallyAcceptedMouseMovedEvents
+        entries[id] = nil
     }
 }

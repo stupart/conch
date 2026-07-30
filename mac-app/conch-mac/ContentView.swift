@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var store: StateStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var selectedReviewID: ReviewItem.ID?
     @State private var suppressedReviewIDs: Set<ReviewItem.ID> = []
@@ -37,11 +38,39 @@ struct ContentView: View {
         Set(reviewItems.map(\.id))
     }
 
+    private var reviewTransition: AnyTransition {
+        if reduceMotion {
+            return .asymmetric(
+                insertion: .opacity.animation(.easeOut(duration: 0.18)),
+                removal: .opacity.animation(.easeOut(duration: 0.15))
+            )
+        }
+
+        return .asymmetric(
+            insertion: .opacity
+                .combined(with: .scale(scale: 0.98))
+                .animation(.easeOut(duration: 0.28)),
+            removal: .opacity
+                .animation(.easeOut(duration: 0.20))
+        )
+    }
+
     var body: some View {
         ZStack {
             DashboardView(
                 state: store.state,
                 onOpenReview: openReview
+            )
+            .opacity(activeReview == nil ? 1 : 0.72)
+            .allowsHitTesting(activeReview == nil)
+            .accessibilityHidden(activeReview != nil)
+            .animation(
+                .easeOut(
+                    duration: reduceMotion
+                        ? 0.16
+                        : activeReview == nil ? 0.20 : 0.28
+                ),
+                value: activeReview != nil
             )
 
             if let activeReview {
@@ -51,16 +80,11 @@ struct ContentView: View {
                     onSelect: selectReview,
                     onClose: returnToDashboard
                 )
-                .transition(
-                    .asymmetric(
-                        insertion: .opacity.combined(with: .scale(scale: 0.995, anchor: .top)),
-                        removal: .opacity.combined(with: .offset(y: -12))
-                    )
-                )
+                .transition(reviewTransition)
+                .zIndex(1)
             }
         }
-        .background(ConchPalette.background)
-        .animation(.easeOut(duration: 0.18), value: activeReview != nil)
+        .background(ConchPalette.bg)
         .onChange(of: reviewIDs) { previousIDs, currentIDs in
             suppressedReviewIDs.formIntersection(currentIDs)
 

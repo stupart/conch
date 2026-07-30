@@ -4,9 +4,45 @@ import WebKit
 
 struct DeliverableWebView: NSViewRepresentable {
     let link: String
+    @Binding var isLoading: Bool
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+        var parent: DeliverableWebView
         var loadedLink: String?
+        var loadingObservation: NSKeyValueObservation?
+        var isObservingLoadingState = false
+
+        init(parent: DeliverableWebView) {
+            self.parent = parent
+        }
+
+        deinit {
+            loadingObservation?.invalidate()
+        }
+
+        func observeLoadingState(of webView: WKWebView) {
+            isObservingLoadingState = true
+            loadingObservation = webView.observe(
+                \.isLoading,
+                options: [.initial, .new]
+            ) { [weak self] _, change in
+                let isLoading = change.newValue ?? false
+                DispatchQueue.main.async { [weak self] in
+                    guard let self,
+                          self.isObservingLoadingState,
+                          self.parent.isLoading != isLoading else {
+                        return
+                    }
+                    self.parent.isLoading = isLoading
+                }
+            }
+        }
+
+        func stopObservingLoadingState() {
+            isObservingLoadingState = false
+            loadingObservation?.invalidate()
+            loadingObservation = nil
+        }
 
         func webView(
             _ webView: WKWebView,
@@ -22,7 +58,7 @@ struct DeliverableWebView: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(parent: self)
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -35,19 +71,27 @@ struct DeliverableWebView: NSViewRepresentable {
         webView.uiDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
         webView.allowsMagnification = true
-        webView.underPageBackgroundColor = NSColor(
-            red: 0.035,
-            green: 0.043,
-            blue: 0.041,
-            alpha: 1
-        )
+        webView.underPageBackgroundColor = NSColor(ConchPalette.bg)
+        // Don't paint the webview's own (white) background — let the dark app
+        // background show through until the page renders, so the takeover has no
+        // white flash.
+        webView.setValue(false, forKey: "drawsBackground")
+        context.coordinator.observeLoadingState(of: webView)
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.parent = self
         guard context.coordinator.loadedLink != link else { return }
         context.coordinator.loadedLink = link
         load(link, in: webView)
+    }
+
+    static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
+        coordinator.stopObservingLoadingState()
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+        webView.stopLoading()
     }
 
     private func load(_ link: String, in webView: WKWebView) {

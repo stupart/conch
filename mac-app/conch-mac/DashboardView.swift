@@ -1,25 +1,70 @@
+import AppKit
 import SwiftUI
 
 enum ConchPalette {
-    static let background = Color(
-        red: 0.035,
-        green: 0.043,
-        blue: 0.041
+    static let bg = Color(
+        red: 0.043,
+        green: 0.051,
+        blue: 0.047
     )
     static let raised = Color(
-        red: 0.052,
-        green: 0.063,
-        blue: 0.059
+        red: 0.082,
+        green: 0.093,
+        blue: 0.088
     )
-    static let hover = Color.white.opacity(0.035)
-    static let divider = Color.white.opacity(0.075)
-    static let primary = Color.white.opacity(0.86)
-    static let secondary = Color.white.opacity(0.47)
-    static let faint = Color.white.opacity(0.27)
-    static let green = Color(red: 0.39, green: 0.73, blue: 0.52)
-    static let cyan = Color(red: 0.42, green: 0.72, blue: 0.76)
-    static let amber = Color(red: 0.91, green: 0.66, blue: 0.31)
-    static let gold = Color(red: 0.95, green: 0.75, blue: 0.32)
+    static let hover = Color(
+        red: 0.11,
+        green: 0.123,
+        blue: 0.117
+    )
+    static let textPrimary = Color(
+        red: 0.91,
+        green: 0.93,
+        blue: 0.91
+    )
+    static let textDim = Color(
+        red: 0.48,
+        green: 0.52,
+        blue: 0.50
+    )
+    static let accent = Color(
+        red: 0.957,
+        green: 0.44,
+        blue: 0.0
+    )
+    static let statusWorking = Color(
+        red: 0.44,
+        green: 0.75,
+        blue: 0.37
+    )
+    static let statusWaiting = Color(
+        red: 0.42,
+        green: 0.46,
+        blue: 0.44
+    )
+    static let statusNeeds = Color(
+        red: 0.95,
+        green: 0.69,
+        blue: 0.20
+    )
+    static let statusReview = Color(
+        red: 0.96,
+        green: 0.77,
+        blue: 0.19
+    )
+
+    static let textFaint = textDim.opacity(0.62)
+}
+
+enum ConchTypography {
+    private static let family = "Helvetica Neue"
+
+    static func font(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        guard NSFont(name: family, size: size) != nil else {
+            return .system(size: size, weight: weight)
+        }
+        return .custom(family, size: size).weight(weight)
+    }
 }
 
 struct DashboardView: View {
@@ -28,28 +73,21 @@ struct DashboardView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            DashboardHeader(state: state)
-
-            Rectangle()
-                .fill(ConchPalette.divider)
-                .frame(height: 1)
+            DashboardHeader(mode: state?.mode)
 
             Group {
                 if let state, !state.rows.isEmpty {
                     ScrollView {
-                        LazyVStack(spacing: 0) {
+                        LazyVStack(spacing: 2) {
                             ForEach(state.rows) { row in
                                 DashboardRow(
                                     row: row,
                                     onOpenReview: onOpenReview
                                 )
-
-                                Rectangle()
-                                    .fill(ConchPalette.divider)
-                                    .frame(height: 1)
-                                    .padding(.leading, 48)
                             }
                         }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 8)
                     }
                     .scrollIndicators(.visible)
                 } else {
@@ -57,113 +95,55 @@ struct DashboardView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            Rectangle()
-                .fill(ConchPalette.divider)
-                .frame(height: 1)
-
-            DashboardFooter(state: state)
         }
-        .background(ConchPalette.background)
-        .font(.system(size: 12, weight: .regular, design: .monospaced))
+        .background(ConchPalette.bg)
+        .font(ConchTypography.font(size: 12.5))
+        .tracking(-0.3)
     }
 }
 
 private struct DashboardHeader: View {
-    let state: PublishedState?
+    let mode: ModeState?
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             Text("CONCH")
-                .fontWeight(.semibold)
-                .tracking(1.4)
-                .foregroundStyle(ConchPalette.primary)
-
-            Rectangle()
-                .fill(ConchPalette.divider)
-                .frame(width: 1, height: 14)
-
-            LiveStateView(live: state?.live)
+                .font(ConchTypography.font(size: 11, weight: .medium))
+                .tracking(1.6)
+                .foregroundStyle(ConchPalette.textDim)
 
             Spacer(minLength: 16)
 
-            if let mode = state?.mode {
-                if mode.muted {
-                    ModeFlag(glyph: "M", label: "muted", color: ConchPalette.amber)
-                }
-                if mode.paused {
-                    ModeFlag(glyph: "Ⅱ", label: "paused", color: ConchPalette.secondary)
-                }
-                if mode.holding > 0 {
-                    ModeFlag(
-                        glyph: "↳",
-                        label: "holding \(mode.holding)",
-                        color: ConchPalette.secondary
-                    )
-                    .monospacedDigit()
-                }
-                if !mode.muted && !mode.paused && mode.holding == 0 {
-                    Text("ready")
-                        .foregroundStyle(ConchPalette.faint)
-                }
+            if mode?.muted == true {
+                ModeFlag(symbol: "speaker.slash.fill", label: "muted")
+            }
+
+            if mode?.paused == true {
+                ModeFlag(symbol: "pause.fill", label: "paused")
             }
         }
         .lineLimit(1)
-        .padding(.horizontal, 14)
-        .frame(height: 38)
-        .background(ConchPalette.raised)
-    }
-}
-
-private struct LiveStateView: View {
-    let live: LiveState?
-
-    private var color: Color {
-        switch live?.state {
-        case "speaking":
-            return ConchPalette.amber
-        case "listening", "recording":
-            return ConchPalette.green
-        case "transcribing":
-            return ConchPalette.cyan
-        case "paused", "muted":
-            return ConchPalette.secondary
-        default:
-            return ConchPalette.faint
-        }
-    }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(color)
-                .frame(width: 6, height: 6)
-
-            Text(live?.state ?? "offline")
-                .foregroundStyle(ConchPalette.secondary)
-
-            if let label = live?.label, !label.isEmpty {
-                Text("·")
-                    .foregroundStyle(ConchPalette.faint)
-                Text(label)
-                    .foregroundStyle(ConchPalette.primary)
-            }
-        }
+        .padding(.horizontal, 16)
+        .frame(height: 42)
+        .background(ConchPalette.bg)
     }
 }
 
 private struct ModeFlag: View {
-    let glyph: String
+    let symbol: String
     let label: String
-    let color: Color
 
     var body: some View {
-        HStack(spacing: 4) {
-            Text(glyph)
-                .foregroundStyle(color)
+        HStack(spacing: 5) {
+            Image(systemName: symbol)
+                .font(.system(size: 8.5, weight: .medium))
+
             Text(label)
-                .foregroundStyle(ConchPalette.secondary)
+                .font(ConchTypography.font(size: 10.5))
+                .tracking(-0.3)
         }
+        .foregroundStyle(ConchPalette.textDim)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -171,10 +151,21 @@ private struct DashboardRow: View {
     let row: SessionRow
     let onOpenReview: (SessionRow) -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
+    @State private var reviewPulseOpacity = 0.0
+    @State private var pulseTask: Task<Void, Never>?
 
     private var canOpenReview: Bool {
         ReviewItem(row: row) != nil
+    }
+
+    private var isDimmed: Bool {
+        row.paused || row.muted
+    }
+
+    private var isLiveSession: Bool {
+        row.active || !(row.live?.isEmpty ?? true)
     }
 
     var body: some View {
@@ -191,65 +182,216 @@ private struct DashboardRow: View {
                 rowContent
             }
         }
-        .background(isHovered && canOpenReview ? ConchPalette.hover : .clear)
-        .contentShape(Rectangle())
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isHovered ? ConchPalette.hover : .clear)
+
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(ConchPalette.raised)
+                    .opacity(reviewPulseOpacity)
+            }
+        }
+        .overlay(alignment: .leading) {
+            if isLiveSession {
+                RoundedRectangle(cornerRadius: 1, style: .continuous)
+                    .fill(ConchPalette.accent)
+                    .frame(width: 2)
+                    .padding(.vertical, 8)
+            }
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onHover { hovering in
             isHovered = hovering
+        }
+        .animation(
+            reduceMotion ? nil : .easeOut(duration: 0.14),
+            value: isHovered
+        )
+        .onChange(of: row.status) { previousStatus, currentStatus in
+            guard previousStatus != .review, currentStatus == .review else {
+                return
+            }
+            pulseForReview()
+        }
+        .onDisappear {
+            pulseTask?.cancel()
         }
     }
 
     private var rowContent: some View {
         HStack(spacing: 10) {
-            Text(row.status.dashboardGlyph)
-                .font(.system(size: 13, weight: .medium, design: .monospaced))
-                .foregroundStyle(row.status.dashboardColor)
-                .frame(width: 22, alignment: .center)
-                .accessibilityLabel(row.status.accessibilityLabel)
+            DashboardStatusGlyph(status: row.status)
+                .frame(width: 22)
 
             Text(row.label)
-                .fontWeight(row.active ? .semibold : .medium)
-                .foregroundStyle(ConchPalette.primary)
+                .font(ConchTypography.font(size: 15, weight: .medium))
+                .tracking(-0.3)
+                .foregroundStyle(ConchPalette.textPrimary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(width: 164, alignment: .leading)
+                .contentTransition(.opacity)
+                .frame(width: 174, alignment: .leading)
 
-            HStack(spacing: 6) {
+            HStack(spacing: 7) {
                 if let live = row.live, !live.isEmpty {
-                    Text(live == "speaking" ? "▶" : "●")
-                        .foregroundStyle(ConchPalette.cyan)
+                    Image(systemName: live == "speaking" ? "waveform" : "circle.fill")
+                        .font(.system(size: live == "speaking" ? 10 : 6, weight: .medium))
+                        .foregroundStyle(ConchPalette.statusWorking)
                         .accessibilityLabel(live)
                 }
 
                 Text(row.snippet ?? row.detail ?? "")
-                    .foregroundStyle(ConchPalette.secondary)
+                    .font(ConchTypography.font(size: 12.5))
+                    .tracking(-0.3)
+                    .foregroundStyle(ConchPalette.textDim)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .contentTransition(.opacity)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             if row.paused {
                 Image(systemName: "pause.fill")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(ConchPalette.faint)
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .foregroundStyle(ConchPalette.textDim)
                     .help("Session paused")
             }
 
             if row.muted {
                 Image(systemName: "speaker.slash.fill")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(ConchPalette.faint)
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(ConchPalette.textDim)
                     .help("Session muted")
             }
 
             if canOpenReview {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(isHovered ? ConchPalette.secondary : ConchPalette.faint)
+                    .foregroundStyle(
+                        isHovered ? ConchPalette.textDim : ConchPalette.textFaint
+                    )
             }
         }
-        .padding(.horizontal, 14)
-        .frame(minHeight: 42)
-        .opacity(row.paused || row.muted ? 0.55 : 1)
+        .padding(.horizontal, 13)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .opacity(isDimmed ? 0.58 : 1)
+        .animation(
+            reduceMotion ? nil : .easeOut(duration: 0.25),
+            value: row.status
+        )
+    }
+
+    private func pulseForReview() {
+        pulseTask?.cancel()
+        guard !reduceMotion else { return }
+
+        reviewPulseOpacity = 0
+        withAnimation(.easeOut(duration: 0.12)) {
+            reviewPulseOpacity = 1
+        }
+
+        pulseTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 180_000_000)
+            } catch {
+                return
+            }
+
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.34)) {
+                reviewPulseOpacity = 0
+            }
+        }
+    }
+}
+
+private struct DashboardStatusGlyph: View {
+    let status: RowStatus?
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        ZStack {
+            ForEach(DashboardStatusVisual.allCases) { visual in
+                Image(systemName: visual.symbol)
+                    .font(.system(size: visual.symbolSize, weight: .medium))
+                    .foregroundStyle(visual.color)
+                    .opacity(visual.matches(status) ? 1 : 0)
+            }
+        }
+        .frame(height: 16)
+        .animation(
+            reduceMotion ? nil : .easeOut(duration: 0.25),
+            value: status
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(status.accessibilityLabel)
+    }
+}
+
+private enum DashboardStatusVisual: String, CaseIterable, Identifiable {
+    case working
+    case waiting
+    case needs
+    case review
+    case unknown
+
+    var id: String { rawValue }
+
+    var symbol: String {
+        switch self {
+        case .working:
+            return "circle.fill"
+        case .waiting:
+            return "circle"
+        case .needs:
+            return "exclamationmark.triangle.fill"
+        case .review:
+            return "star.fill"
+        case .unknown:
+            return "circle.dotted"
+        }
+    }
+
+    var symbolSize: CGFloat {
+        switch self {
+        case .needs, .review:
+            return 11.5
+        case .working, .waiting, .unknown:
+            return 9
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .working:
+            return ConchPalette.statusWorking
+        case .waiting:
+            return ConchPalette.statusWaiting
+        case .needs:
+            return ConchPalette.statusNeeds
+        case .review:
+            return ConchPalette.statusReview
+        case .unknown:
+            return ConchPalette.textFaint
+        }
+    }
+
+    func matches(_ status: RowStatus?) -> Bool {
+        switch (self, status) {
+        case (.working, .working),
+             (.waiting, .waiting),
+             (.needs, .needs),
+             (.review, .review):
+            return true
+        case (.unknown, .none),
+             (.unknown, .unknown):
+            return true
+        default:
+            return false
+        }
     }
 }
 
@@ -257,75 +399,20 @@ private struct DashboardEmptyState: View {
     let hasSnapshot: Bool
 
     var body: some View {
-        VStack(spacing: 9) {
-            Text("·")
-                .font(.system(size: 18, design: .monospaced))
-                .foregroundStyle(ConchPalette.faint)
-            Text(hasSnapshot ? "no sessions" : "waiting for conch daemon")
-                .foregroundStyle(ConchPalette.secondary)
-            if !hasSnapshot {
-                Text("/tmp/conch-sessions.json")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(ConchPalette.faint)
-            }
-        }
-    }
-}
+        VStack(spacing: 8) {
+            Image(systemName: hasSnapshot ? "circle" : "ellipsis")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(ConchPalette.statusWaiting)
 
-private struct DashboardFooter: View {
-    let state: PublishedState?
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text("read only")
-                .foregroundStyle(ConchPalette.faint)
-            Text("·")
-                .foregroundStyle(ConchPalette.faint)
-            Text("/tmp/conch-sessions.json")
-                .foregroundStyle(ConchPalette.secondary)
-            Spacer()
-            Text("\(state?.rows.count ?? 0) sessions")
-                .foregroundStyle(ConchPalette.faint)
-                .monospacedDigit()
+            Text(hasSnapshot ? "No sessions" : "Waiting for Conch")
+                .font(ConchTypography.font(size: 12.5))
+                .tracking(-0.3)
+                .foregroundStyle(ConchPalette.textDim)
         }
-        .font(.system(size: 10, weight: .regular, design: .monospaced))
-        .padding(.horizontal, 14)
-        .frame(height: 26)
-        .background(ConchPalette.raised.opacity(0.72))
     }
 }
 
 private extension Optional where Wrapped == RowStatus {
-    var dashboardGlyph: String {
-        switch self {
-        case .working:
-            return "●"
-        case .waiting:
-            return "○"
-        case .needs:
-            return "⚠"
-        case .review:
-            return "⭐"
-        case .none, .unknown:
-            return "·"
-        }
-    }
-
-    var dashboardColor: Color {
-        switch self {
-        case .working:
-            return ConchPalette.green
-        case .waiting:
-            return ConchPalette.secondary
-        case .needs:
-            return ConchPalette.amber
-        case .review:
-            return ConchPalette.gold
-        case .none, .unknown:
-            return ConchPalette.faint
-        }
-    }
-
     var accessibilityLabel: String {
         switch self {
         case .working:
