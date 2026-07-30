@@ -257,6 +257,80 @@ interface HookEntry {
   hooks: HookCommand[];
 }
 
+export interface CodexHooksBuildResult {
+  settings: Record<string, any>;
+  changed: boolean;
+  addedEvents: string[];
+}
+
+/**
+ * Build the Codex hooks.json merge without touching disk. Keeping this pure
+ * makes the opt-in installer fully testable without ever probing ~/.codex.
+ */
+export function buildCodexHooksSettings(
+  existing: Record<string, any>,
+  command: string,
+): CodexHooksBuildResult {
+  const settings = structuredClone(existing);
+  settings.hooks ??= {};
+  let changed = false;
+  const addedEvents: string[] = [];
+  for (const event of ["Stop", "UserPromptSubmit", "SessionStart"]) {
+    const entries: HookEntry[] = (settings.hooks[event] ??= []);
+    const already = entries.some((entry) =>
+      entry.hooks?.some((hook) =>
+        hook.command === command
+        || (hook.command?.includes("conch") && hook.command?.includes("codex-hook"))
+      )
+    );
+    if (already) continue;
+    entries.push({ hooks: [{ type: "command", command, timeout: 15 }] });
+    changed = true;
+    addedEvents.push(event);
+  }
+  return { settings, changed, addedEvents };
+}
+
+/**
+ * Explicit Codex opt-in: merge command hooks into ~/.codex/hooks/hooks.json.
+ * Existing hooks are preserved; a timestamped backup is written only when the
+ * file is actually changing.
+ */
+export async function runCodexInstall(
+  codexDir = join(homedir(), ".codex"),
+): Promise<void> {
+  const hooksPath = join(codexDir, "hooks", "hooks.json");
+  const command = `${conchInvocation()} codex-hook`;
+
+  let existing: Record<string, any> = {};
+  if (existsSync(hooksPath)) {
+    existing = await Bun.file(hooksPath).json();
+  }
+
+  const result = buildCodexHooksSettings(existing, command);
+  for (const event of ["Stop", "UserPromptSubmit", "SessionStart"]) {
+    if (result.addedEvents.includes(event)) {
+      console.log(`${event}: wired -> ${command}`);
+    } else {
+      console.log(`${event}: conch codex-hook already wired, skipping`);
+    }
+  }
+
+  if (result.changed) {
+    mkdirSync(dirname(hooksPath), { recursive: true });
+    if (existsSync(hooksPath)) {
+      const backup = `${hooksPath}.conch-backup-${Date.now()}`;
+      await Bun.write(backup, await Bun.file(hooksPath).text());
+      console.log(`backed up hooks to ${backup}`);
+    }
+    await Bun.write(hooksPath, JSON.stringify(result.settings, null, 2) + "\n");
+    console.log("\nDone. Codex hook integration is activated by explicitly running `conch install --codex`.");
+  } else {
+    console.log("\nNothing to do.");
+  }
+  console.log("On the next `codex`, review and trust conch's hooks on Codex's hook trust-review screen.");
+}
+
 /**
  * Merge conch's Stop + Notification hooks into ~/.claude/settings.json.
  * Existing hooks are preserved; a timestamped backup is written first.

@@ -15,6 +15,11 @@ import {
   migrateVoiceOverride,
   type VoiceOverrideOptions,
 } from "./speak.ts";
+import {
+  findCodexTranscript,
+  readCodexSessions,
+  type CodexSessionRegistryOptions,
+} from "./codex-sessions.ts";
 
 const LABELS_FILE = join(homedir(), ".config/conch/labels.json");
 const MAX_SESSION_LABEL_LENGTH = 40;
@@ -26,9 +31,12 @@ export interface LabelOverrideOptions {
 }
 
 export interface RenameSessionLabelOptions extends LabelOverrideOptions, VoiceOverrideOptions {}
+export interface SessionLookupOptions extends LabelOverrideOptions, CodexSessionRegistryOptions {}
 
 export interface SessionInfo {
   sessionId: string;
+  /** Session implementation; absent on legacy Claude registry projections. */
+  backend?: "claude" | "codex";
   name?: string;
   cwd?: string;
   pid?: number;
@@ -81,14 +89,19 @@ export async function findSession(claudeDir: string, sessionId: string): Promise
 }
 
 /** Project a raw registry JSON entry onto SessionInfo (keeps the fields conch actually uses). */
-function toInfo(entry: any): SessionInfo {
+function toInfo(entry: any, backend?: SessionInfo["backend"]): SessionInfo {
   return {
     sessionId: entry.sessionId,
+    ...(backend ? { backend } : {}),
     name: entry.name,
     cwd: entry.cwd,
     pid: entry.pid,
     status: entry.status,
-    statusUpdatedAt: typeof entry.statusUpdatedAt === "number" ? entry.statusUpdatedAt : undefined,
+    statusUpdatedAt: typeof entry.statusUpdatedAt === "number"
+      ? entry.statusUpdatedAt
+      : backend === "codex" && typeof entry.updatedAt === "number"
+        ? entry.updatedAt
+        : undefined,
     kind: entry.kind,
     entrypoint: entry.entrypoint,
   };
@@ -236,22 +249,28 @@ export function sessionGoneFromSnapshot(
 }
 
 /**
- * Read the whole registry once. Returns `null` only when the registry directory
- * itself is unreadable (total uncertainty). A torn/unparseable individual file
- * sets `complete = false` but the snapshot is still returned, with that session's
- * id salvaged into `liveIds` so it is never mistaken for a closed session.
+ * Read both live-session registries once. Returns `null` only when neither
+ * source can be enumerated (total uncertainty). A torn/unparseable individual
+ * file sets `complete = false`; Claude ids are salvaged from torn files so a
+ * live session is never mistaken for closed.
  */
-export async function registrySnapshot(claudeDir: string): Promise<RegistrySnapshot | null> {
+export async function registrySnapshot(
+  claudeDir: string,
+  options: CodexSessionRegistryOptions = {},
+): Promise<RegistrySnapshot | null> {
   const dir = join(claudeDir, "sessions");
-  let files: string[];
+  let files: string[] = [];
+  let claudeAvailable = true;
+  let claudeMissing = false;
   try {
     files = readdirSync(dir).filter((f) => f.endsWith(".json"));
-  } catch {
-    return null; // registry dir unreadable → uncertain; callers keep everything
+  } catch (error) {
+    claudeAvailable = false;
+    claudeMissing = (error as NodeJS.ErrnoException).code === "ENOENT";
   }
   const infos: SessionInfo[] = [];
   const liveIds = new Set<string>();
-  let complete = true;
+  let complete = claudeAvailable || claudeMissing;
   for (const f of files) {
     const raw = await Bun.file(join(dir, f)).text().catch(() => null);
     if (raw == null) {
@@ -274,23 +293,39 @@ export async function registrySnapshot(claudeDir: string): Promise<RegistrySnaps
     liveIds.add(entry.sessionId);
     if (isEngageable(entry)) infos.push(toInfo(entry));
   }
+
+  const codex = readCodexSessions(options);
+  for (const entry of codex.entries) {
+    liveIds.add(entry.sessionId);
+    infos.push(toInfo(entry, "codex"));
+  }
+  if (!codex.complete) complete = false;
+
+  // No readable source at all retains the legacy "total uncertainty" result.
+  // A readable Codex registry can still supply useful sessions when Claude's
+  // directory is absent. ENOENT is known-empty; other Claude read failures
+  // make the combined liveness view incomplete.
+  if (!claudeAvailable && !codex.available) return null;
   return { infos, liveIds, complete };
 }
 
 /** All engageable (top-level interactive CLI) live sessions from the registry. */
-export async function listSessions(claudeDir: string): Promise<SessionInfo[]> {
-  return (await registrySnapshot(claudeDir))?.infos ?? [];
+export async function listSessions(
+  claudeDir: string,
+  options: CodexSessionRegistryOptions = {},
+): Promise<SessionInfo[]> {
+  return (await registrySnapshot(claudeDir, options))?.infos ?? [];
 }
 
 /** Match an exact id, then conch overrides, registry names, and project folders. */
 export async function findSessionByName(
   claudeDir: string,
   query: string,
-  options: LabelOverrideOptions = {},
+  options: SessionLookupOptions = {},
 ): Promise<SessionInfo | null> {
   const q = query.toLowerCase().trim();
   if (!q) return null;
-  const sessions = await listSessions(claudeDir);
+  const sessions = await listSessions(claudeDir, options);
   const overrides = labelOverrides(options);
   const overrideFor = (session: SessionInfo): string | undefined => {
     return Object.hasOwn(overrides, session.sessionId)
@@ -311,7 +346,7 @@ export async function findSessionByName(
 export async function findSessionBySpokenName(
   claudeDir: string,
   query: string,
-  options: LabelOverrideOptions = {},
+  options: SessionLookupOptions = {},
 ): Promise<SessionInfo | null> {
   const direct = await findSessionByName(claudeDir, query, options);
   if (direct) return direct;
@@ -321,8 +356,12 @@ export async function findSessionBySpokenName(
     : findSessionByName(claudeDir, collapsed, options);
 }
 
-/** Locate a session's transcript by id — project dirs encode the cwd, so search them all. */
-export function findTranscript(claudeDir: string, sessionId: string): string | undefined {
+/** Locate a Claude project transcript, then fall back to Codex's owned registry path. */
+export function findTranscript(
+  claudeDir: string,
+  sessionId: string,
+  options: CodexSessionRegistryOptions = {},
+): string | undefined {
   const projects = join(claudeDir, "projects");
   try {
     for (const dir of readdirSync(projects)) {
@@ -333,5 +372,5 @@ export function findTranscript(claudeDir: string, sessionId: string): string | u
       } catch {}
     }
   } catch {}
-  return undefined;
+  return findCodexTranscript(sessionId, options);
 }

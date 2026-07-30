@@ -53,7 +53,7 @@ describe("registrySnapshot — torn-file salvage + completeness (FEATURE C safet
 
   test("engageable sessions land in infos; headless are excluded but stay in liveIds", () => {
     const root = makeRegistry({ "1.json": engageable("aaa"), "2.json": headless("bbb") });
-    return registrySnapshot(root).then((snap) => {
+    return registrySnapshot(root, { configDir: join(root, "conch-config") }).then((snap) => {
       expect(snap).not.toBeNull();
       expect(snap!.infos.map((s) => s.sessionId)).toEqual(["aaa"]);
       expect(snap!.liveIds.has("aaa")).toBe(true);
@@ -65,7 +65,7 @@ describe("registrySnapshot — torn-file salvage + completeness (FEATURE C safet
 
   test("a torn mid-write file → complete=false, but its id is SALVAGED into liveIds (not treated as closed)", () => {
     const root = makeRegistry({ "1.json": engageable("aaa"), "2.json": '{"sessionId":"ccc","kind":"inter' /* truncated */ });
-    return registrySnapshot(root).then((snap) => {
+    return registrySnapshot(root, { configDir: join(root, "conch-config") }).then((snap) => {
       expect(snap!.complete).toBe(false);
       expect(snap!.liveIds.has("ccc")).toBe(true); // salvaged — a held reply for ccc survives resume
       expect(snap!.infos.map((s) => s.sessionId)).toEqual(["aaa"]); // unparseable → not rendered
@@ -84,7 +84,7 @@ describe("registrySnapshot — torn-file salvage + completeness (FEATURE C safet
       }),
       "2.json": '{"sessionId":"reciting","name":"duplicate","kind":"inter',
     });
-    const snap = await registrySnapshot(root);
+    const snap = await registrySnapshot(root, { configDir: join(root, "conch-config") });
     const live = { state: "speaking" as const, label: "duplicate", partial: "" };
     const rows = buildPanelRows({
       sessions: snap!.infos,
@@ -111,7 +111,8 @@ describe("registrySnapshot — torn-file salvage + completeness (FEATURE C safet
   });
 
   test("unreadable registry dir → null (total uncertainty; callers keep everything)", () => {
-    return registrySnapshot(join(tmpdir(), "conch-does-not-exist-xyz")).then((snap) => {
+    const root = join(tmpdir(), "conch-does-not-exist-xyz");
+    return registrySnapshot(root, { configDir: `${root}-config` }).then((snap) => {
       expect(snap).toBeNull();
     });
   });
@@ -207,12 +208,15 @@ describe("conch session-label overrides", () => {
       expect(sessionLabel(session, session.cwd, { labelsPath: f.labelsPath })).toBe("conch-name");
       expect((await findSessionByName(f.claudeDir, "CONCH-NAME", {
         labelsPath: f.labelsPath,
+        configDir: join(f.root, "config"),
       }))?.sessionId).toBe(session.sessionId);
       expect((await findSessionByName(f.claudeDir, "SESSION-A", {
         labelsPath: f.labelsPath,
+        configDir: join(f.root, "config"),
       }))?.sessionId).toBe(session.sessionId);
       expect(await findSessionByName(f.claudeDir, "   ", {
         labelsPath: f.labelsPath,
+        configDir: join(f.root, "config"),
       })).toBeNull();
     } finally {
       rmSync(f.root, { recursive: true, force: true });
@@ -247,12 +251,15 @@ describe("conch session-label overrides", () => {
 
       expect((await findSessionBySpokenName(f.claudeDir, "SPOKEN TARGET", {
         labelsPath: f.labelsPath,
+        configDir: join(f.root, "config"),
       }))?.sessionId).toBe("override");
       expect((await findSessionBySpokenName(f.claudeDir, "day loop", {
         labelsPath: f.labelsPath,
+        configDir: join(f.root, "config"),
       }))?.sessionId).toBe("collapsed");
       expect(await findSessionBySpokenName(f.claudeDir, "missing", {
         labelsPath: f.labelsPath,
+        configDir: join(f.root, "config"),
       })).toBeNull();
     } finally {
       rmSync(f.root, { recursive: true, force: true });

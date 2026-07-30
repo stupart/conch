@@ -1,6 +1,7 @@
 /** Turn a markdown reply into something worth hearing. */
 
 import { open as openFile, type FileHandle } from "node:fs/promises";
+import { basename } from "node:path";
 
 export function stripMarkdown(md: string): string {
   const kept: string[] = [];
@@ -527,7 +528,7 @@ export function createTranscriptReader(
   };
 }
 
-const transcriptReader = createTranscriptReader({
+const claudeTranscriptReader = createTranscriptReader({
   async open(transcriptPath) {
     let handle: FileHandle | undefined;
     try {
@@ -570,6 +571,89 @@ const transcriptReader = createTranscriptReader({
   },
 });
 
+export interface CodexTranscriptTextSource {
+  read(transcriptPath: string): Promise<string | null>;
+}
+
+/**
+ * Codex rollout JSONL is intentionally parsed independently from Claude Code's
+ * cached schema. A completed turn's task_complete message is authoritative;
+ * older rollouts without that event fall back to the latest non-commentary
+ * agent_message.
+ */
+export function createCodexTranscriptReader(
+  source: CodexTranscriptTextSource,
+): TranscriptReader {
+  const read = async (
+    transcriptPath: string,
+  ): Promise<{ assistant: string; userPrompts: number }> => {
+    const raw = await source.read(transcriptPath).catch(() => null);
+    if (raw == null) return { assistant: "", userPrompts: 0 };
+
+    let taskComplete: string | undefined;
+    let finalAgentMessage = "";
+    let userPrompts = 0;
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue;
+      let entry: any;
+      try {
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (entry?.type !== "event_msg") continue;
+      const payload = entry.payload;
+      if (payload?.type === "user_message") {
+        userPrompts++;
+      } else if (
+        payload?.type === "task_complete"
+        && typeof payload.last_agent_message === "string"
+      ) {
+        taskComplete = payload.last_agent_message;
+      } else if (
+        payload?.type === "agent_message"
+        && payload.phase !== "commentary"
+        && typeof payload.message === "string"
+      ) {
+        finalAgentMessage = payload.message;
+      }
+    }
+    return {
+      assistant: taskComplete ?? finalAgentMessage,
+      userPrompts,
+    };
+  };
+
+  return {
+    async lastAssistantText(transcriptPath) {
+      return (await read(transcriptPath)).assistant;
+    },
+    async countUserPrompts(transcriptPath) {
+      return (await read(transcriptPath)).userPrompts;
+    },
+  };
+}
+
+const codexTranscriptReader = createCodexTranscriptReader({
+  async read(transcriptPath) {
+    try {
+      return await Bun.file(transcriptPath).text();
+    } catch {
+      return null;
+    }
+  },
+});
+
+export function isCodexTranscriptPath(transcriptPath: string): boolean {
+  return /^rollout-.*\.jsonl$/.test(basename(transcriptPath));
+}
+
+function readerForPath(transcriptPath: string): TranscriptReader {
+  return isCodexTranscriptPath(transcriptPath)
+    ? codexTranscriptReader
+    : claudeTranscriptReader;
+}
+
 /**
  * The FINAL message of the last turn, not just any trailing text block.
  *
@@ -582,12 +666,12 @@ const transcriptReader = createTranscriptReader({
  * by construction is where the final message begins.
  */
 export function lastAssistantText(transcriptPath: string): Promise<string> {
-  return transcriptReader.lastAssistantText(transcriptPath);
+  return readerForPath(transcriptPath).lastAssistantText(transcriptPath);
 }
 
 /** How many times you'd prompted this session when a turn fired — the "where we were" mark. */
 export async function transcriptMark(transcriptPath: string): Promise<number> {
-  return transcriptReader.countUserPrompts(transcriptPath);
+  return readerForPath(transcriptPath).countUserPrompts(transcriptPath);
 }
 
 /**
@@ -601,7 +685,7 @@ export async function userRespondedSince(
   mark: number | undefined,
 ): Promise<boolean> {
   if (!transcriptPath || mark == null) return false;
-  return (await transcriptReader.countUserPrompts(transcriptPath)) > mark;
+  return (await readerForPath(transcriptPath).countUserPrompts(transcriptPath)) > mark;
 }
 
 /**
