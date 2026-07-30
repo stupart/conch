@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
@@ -8,6 +8,7 @@ import {
   createDictationSession,
   hasActiveRecorders,
   soxCaptureArgs,
+  stopSoxProcess,
 } from "../src/listen.ts";
 
 describe("sox capture arguments", () => {
@@ -48,18 +49,35 @@ describe("sox capture arguments", () => {
   });
 });
 
+test("stopSoxProcess sends SIGINT so SoX flushes its capture tail", () => {
+  let signal: unknown;
+  stopSoxProcess({
+    kill(received) {
+      signal = received;
+    },
+  });
+  expect(signal).toBe("SIGINT");
+});
+
 test("runtime session abort closes its recorder through a manual-reply barrier", async () => {
   const root = mkdtempSync(join(tmpdir(), "conch-listen-abort-test-"));
   const fakeSox = join(root, "sox");
+  const fakeSoxReady = join(root, "sox-ready");
   writeFileSync(fakeSox, `#!/usr/bin/env bun
 import { writeFileSync } from "node:fs";
 const raw = process.argv[process.argv.indexOf("raw") + 1];
+process.on("SIGINT", () => process.exit(0));
 writeFileSync(raw, new Uint8Array());
+writeFileSync(${JSON.stringify(fakeSoxReady)}, new Uint8Array());
 await new Promise(() => {});
 `);
   chmodSync(fakeSox, 0o755);
-  const previousPath = process.env.PATH;
-  process.env.PATH = `${root}:${previousPath ?? ""}`;
+  const bun = Bun as any;
+  const originalSpawn = bun.spawn;
+  bun.spawn = (command: string[], options: any) => originalSpawn(
+    [fakeSox, ...command.slice(1)],
+    options,
+  );
 
   try {
     const cfg = loadConfig({ env: {}, settingsPath: join(root, "settings.json") });
@@ -67,7 +85,11 @@ await new Promise(() => {});
     session.start();
     expect(session.micOpen).toBe(true);
     expect(hasActiveRecorders()).toBeTrue();
-    await Bun.sleep(50); // let the fake recorder create its raw output
+    // Deterministically wait for the fake recorder's raw output instead of a fixed sleep.
+    for (let attempt = 0; attempt < 400 && !existsSync(fakeSoxReady); attempt++) {
+      await Bun.sleep(5);
+    }
+    expect(existsSync(fakeSoxReady)).toBe(true);
 
     const aborting = session.abort();
     expect(session.abort()).toBe(aborting); // scoped abort is idempotent
@@ -91,8 +113,7 @@ await new Promise(() => {});
     await barge.abort();
     expect(hasActiveRecorders()).toBeFalse();
   } finally {
-    if (previousPath === undefined) delete process.env.PATH;
-    else process.env.PATH = previousPath;
+    bun.spawn = originalSpawn;
     rmSync(root, { recursive: true, force: true });
   }
 });

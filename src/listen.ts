@@ -94,6 +94,13 @@ export function soxCaptureArgs(
   ];
 }
 
+/** SoX flushes its buffered capture tail on SIGINT; SIGTERM can drop it. */
+export function stopSoxProcess(
+  proc: Pick<ReturnType<typeof Bun.spawn>, "kill">,
+): void {
+  proc.kill("SIGINT");
+}
+
 function spawnCapture(
   cfg: Config,
   tag: string,
@@ -161,7 +168,7 @@ export function killActiveRecorders(): Promise<void> | undefined {
         }),
       );
     }
-    proc.kill();
+    stopSoxProcess(proc);
   }
   activeRecorders.clear();
   return diagnosticExits.length ? Promise.all(diagnosticExits).then(() => {}) : undefined;
@@ -446,7 +453,7 @@ export function armBargeRecorder(cfg: Config, traceParent?: string, traceSequenc
         ? "shutdown"
         : "abort";
     markKill(capture, cause);
-    proc.kill();
+    stopSoxProcess(proc);
   };
   const hardStop = setTimeout(() => stopCapture("max"), cfg.maxUtteranceSecs * 1000);
   const finished = proc.exited.then((exitCode): CapturedAudio => {
@@ -613,7 +620,7 @@ function armContinuousRecorder(
     if (speechStartedAt !== null && (Date.now() - speechStartedAt) / 1000 >= cfg.maxUtteranceSecs) {
       stopReason = "max";
       markKill(capture, "max");
-      proc.kill();
+      stopSoxProcess(proc);
     }
 
     if (speechStartedAt !== null && hooks.onPartial && serverUp() && !partialBusy) {
@@ -657,7 +664,7 @@ function armContinuousRecorder(
           ? "shutdown"
           : "abort";
       markKill(capture, cause);
-      proc.kill();
+      stopSoxProcess(proc);
     },
   };
 }
