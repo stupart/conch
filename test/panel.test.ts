@@ -294,7 +294,7 @@ describe("reconcileStatus — BUG A: newer signal wins, so the panel never stick
   });
 });
 
-test("review rows sort ahead of needs, waiting, and working", () => {
+test("a review keeps its natural waiting position — the marker doesn't reorder the dashboard", () => {
   const rows = buildPanelRows({
     sessions: [
       { sessionId: "working", name: "Working", status: "busy", statusUpdatedAt: 10 },
@@ -318,9 +318,11 @@ test("review rows sort ahead of needs, waiting, and working", () => {
     navSelectedId: null,
   });
 
+  // "needs" still leads (it's blocking you); the review sits among waiting rows
+  // exactly where an idle session would, ordered by label — no jump to the top.
   expect(rows.map((row) => row.sessionId)).toEqual([
-    "review",
     "needs",
+    "review",
     "waiting",
     "working",
   ]);
