@@ -12,6 +12,7 @@ You can see and steer the user's other Claude Code / Codex sessions through conc
 - **Bring one forward** — `conch_recite {session}` reads a session's latest reply aloud again; `conch_wake {session}` reopens the mic pointed at it so the user can talk to it. `session` is a label or id — "dayloop", "the one that needs me".
 - **Speak** — `conch_speak {text}` says something aloud in conch's voice. Use it to confirm an action or read a short answer, not to narrate.
 - **Answer from a transcript** — `conch_transcript_tail {session}` gives you the tail of a session's last reply, so you can answer "did the tests pass?" without switching to it.
+- **Surface a worker's finished deliverable** — Call `review_to_front {summary, link?, session?}` when another worker has work ready for the user to review; `session` must name that worker. A session surfacing its own finished turn must keep using the `conch:review` end-of-reply marker instead, or its own Stop hook can overwrite the review state by re-latching plain waiting.
 - **Quiet / hold** — `conch_mode {action}` mutes, unmutes, pauses (holds finished turns to replay on resume), or resumes everything.
 - **Rename** — `conch_rename {session, label}` gives a session a name the user actually uses ("call that one 'the api work'").
 - **Tune** — `conch_config {key, value}` reads or changes a conch setting live (e.g. `end-silence`, `voice-speed`, `haiku-timeout`). Only touch a setting the user named.

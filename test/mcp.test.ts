@@ -18,6 +18,10 @@ import {
   type ConfigControlMessage,
   type ConfigSnapshot,
 } from "../src/settings.ts";
+import {
+  downgradeTurnWithLiveBackgroundWork,
+  TurnEventOrder,
+} from "../src/daemon.ts";
 import type { TurnEvent } from "../src/hook.ts";
 import type { RegistrySnapshot, SessionInfo } from "../src/sessions.ts";
 
@@ -30,12 +34,12 @@ const TOOL_NAMES = [
   "conch_rename",
   "conch_config",
   "conch_transcript_tail",
+  "review_to_front",
 ] as const satisfies readonly McpToolName[];
 
 const DEFERRED_TOOL_NAMES = [
   "conch_prioritize",
   "conch_dismiss",
-  "review_to_front",
   "conch_spawn",
   "conch_close",
 ] as const;
@@ -135,6 +139,7 @@ interface FakeCalls {
   marks: string[];
   assistantReads: string[];
   sentenceSplits: string[];
+  opened: string[];
 }
 
 interface FakeOptions {
@@ -192,6 +197,7 @@ function fakeHarness(options: FakeOptions = {}): {
     marks: [],
     assistantReads: [],
     sentenceSplits: [],
+    opened: [],
   };
 
   const dependencies: McpDependencies = {
@@ -260,6 +266,9 @@ function fakeHarness(options: FakeOptions = {}): {
       calls.sentenceSplits.push(text);
       return ["First.", "Second!", "Third?", "Fourth."];
     },
+    openLink(link) {
+      calls.opened.push(link);
+    },
     now: () => 1_234_567,
   };
 
@@ -282,6 +291,7 @@ function recordingHandlers(
     conch_rename: handler("conch_rename"),
     conch_config: handler("conch_config"),
     conch_transcript_tail: handler("conch_transcript_tail"),
+    review_to_front: handler("review_to_front"),
   };
 }
 
@@ -306,7 +316,7 @@ describe("MCP JSON-RPC framing", () => {
 });
 
 describe("MCP tool discovery", () => {
-  test("tools/list returns exactly the eight safe tools with valid closed schemas", async () => {
+  test("tools/list returns exactly the nine safe tools with valid closed schemas", async () => {
     const handlers = recordingHandlers([]);
     const response = await dispatchJsonRpc({
       jsonrpc: "2.0",
@@ -320,8 +330,8 @@ describe("MCP tool discovery", () => {
 
     expect(response?.id).toBe(11);
     expect(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).toEqual([...TOOL_NAMES]);
-    expect(result.tools).toHaveLength(8);
-    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(8);
+    expect(result.tools).toHaveLength(9);
+    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(9);
     for (const deferred of DEFERRED_TOOL_NAMES) {
       expect(result.tools.some((tool: unknown) => isRecord(tool) && tool.name === deferred)).toBe(false);
     }
@@ -335,6 +345,7 @@ describe("MCP tool discovery", () => {
       conch_rename: ["session", "label"],
       conch_config: ["key", "value", "unset"],
       conch_transcript_tail: ["session", "sentences"],
+      review_to_front: ["summary", "link", "session"],
     };
     const expectedRequired: Record<McpToolName, string[]> = {
       conch_sessions: [],
@@ -345,6 +356,7 @@ describe("MCP tool discovery", () => {
       conch_rename: ["session", "label"],
       conch_config: [],
       conch_transcript_tail: ["session"],
+      review_to_front: ["summary"],
     };
 
     for (const tool of result.tools) {
@@ -636,6 +648,182 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(h.calls.assistantReads).toEqual(["/virtual/session-123.jsonl"]);
     expect(h.calls.sentenceSplits).toEqual(["First. Second! Third? Fourth."]);
     expect(h.calls.daemon).toEqual([]);
+  });
+
+  test("review_to_front sends the exact review turn before opening its link", async () => {
+    const h = fakeHarness();
+    const handlers = createMcpToolHandlers({
+      claudeDir: "/virtual/claude",
+      socketPath: "/virtual/conch.sock",
+    }, h.dependencies);
+    const summary = "Inspect the finished dashboard";
+    const link = "https://example.com/review";
+
+    await callTool(handlers, "review_to_front", {
+      summary,
+      link,
+      session: "Build",
+    });
+
+    expect(h.calls.daemon[0]?.event).toEqual({
+      type: "turn-end",
+      sessionId: "session-123",
+      label: "Build label",
+      cwd: "/work/build",
+      pid: 4321,
+      announce: "Build label has work ready for your review: Inspect the finished dashboard",
+      transcriptPath: "/virtual/session-123.jsonl",
+      mark: 7,
+      eventAt: 1_234_567,
+      review: {
+        summary,
+        link,
+      },
+    });
+    expect(h.calls.opened).toEqual([link]);
+  });
+
+  test("review_to_front without a session targets the sole working session and omits its link", async () => {
+    const workingSession: SessionInfo = {
+      sessionId: "session-123",
+      name: "Build",
+      cwd: "/work/build",
+      pid: 4321,
+      status: "busy",
+    };
+    const h = fakeHarness({ session: workingSession });
+    const handlers = createMcpToolHandlers({
+      claudeDir: "/virtual/claude",
+      socketPath: "/virtual/conch.sock",
+    }, h.dependencies);
+
+    await callTool(handlers, "review_to_front", {
+      summary: "Review the worker output",
+    });
+
+    expect(h.calls.registries).toEqual(["/virtual/claude"]);
+    expect(h.calls.sessionLookups).toEqual([]);
+    expect(h.calls.daemon[0]?.event).toEqual({
+      type: "turn-end",
+      sessionId: "session-123",
+      label: "Build label",
+      cwd: "/work/build",
+      pid: 4321,
+      announce: "Build label has work ready for your review: Review the worker output",
+      transcriptPath: "/virtual/session-123.jsonl",
+      mark: 7,
+      eventAt: 1_234_567,
+      review: {
+        summary: "Review the worker output",
+      },
+    });
+    expect(Object.hasOwn(h.calls.daemon[0]?.event.review ?? {}, "link")).toBe(false);
+    expect(h.calls.opened).toEqual([]);
+  });
+
+  test("review_to_front requires an explicit session unless exactly one session is working", async () => {
+    const zero = fakeHarness({
+      registry: {
+        infos: [],
+        liveIds: new Set(),
+        complete: true,
+      },
+    });
+    const zeroHandlers = createMcpToolHandlers({
+      claudeDir: "/virtual/claude",
+      socketPath: "/virtual/conch.sock",
+    }, zero.dependencies);
+    const zeroResponse = await callTool(zeroHandlers, "review_to_front", {
+      summary: "Review this",
+    });
+
+    expect(rpcResult(zeroResponse)).toMatchObject({ isError: true });
+    expect(toolText(zeroResponse)).toBe(
+      "no working session to attribute this review to — pass session",
+    );
+    expect(zero.calls.daemon).toEqual([]);
+
+    const multiple = fakeHarness({
+      registry: {
+        infos: [
+          {
+            sessionId: "session-a",
+            name: "Alpha",
+            cwd: "/work/alpha",
+            status: "busy",
+          },
+          {
+            sessionId: "session-b",
+            name: "Beta",
+            cwd: "/work/beta",
+            status: "busy",
+          },
+        ],
+        liveIds: new Set(["session-a", "session-b"]),
+        complete: true,
+      },
+    });
+    const multipleHandlers = createMcpToolHandlers({
+      claudeDir: "/virtual/claude",
+      socketPath: "/virtual/conch.sock",
+    }, multiple.dependencies);
+    const multipleResponse = await callTool(multipleHandlers, "review_to_front", {
+      summary: "Review this",
+    });
+
+    expect(rpcResult(multipleResponse)).toMatchObject({ isError: true });
+    expect(toolText(multipleResponse)).toStartWith(
+      "multiple working sessions — pass session (",
+    );
+    expect(multiple.calls.daemon).toEqual([]);
+  });
+
+  test("review_to_front does not open its link when the daemon rejects the turn", async () => {
+    const h = fakeHarness({ daemonAccepts: false });
+    const handlers = createMcpToolHandlers({
+      claudeDir: "/virtual/claude",
+      socketPath: "/virtual/conch.sock",
+    }, h.dependencies);
+
+    const response = await callTool(handlers, "review_to_front", {
+      summary: "Inspect the finished dashboard",
+      link: "https://example.com/review",
+      session: "Build",
+    });
+
+    expect(rpcResult(response)).toEqual({
+      content: [{ type: "text", text: "conch daemon is not running" }],
+      isError: true,
+    });
+    expect(h.calls.daemon).toHaveLength(1);
+    expect(h.calls.opened).toEqual([]);
+  });
+
+  test("a review_to_front turn survives event ordering and live-work downgrade intact", async () => {
+    const h = fakeHarness();
+    const handlers = createMcpToolHandlers({
+      claudeDir: "/virtual/claude",
+      socketPath: "/virtual/conch.sock",
+    }, h.dependencies);
+
+    await callTool(handlers, "review_to_front", {
+      summary: "Inspect the finished dashboard",
+      link: "https://example.com/review",
+      session: "Build",
+    });
+    const event = h.calls.daemon[0]?.event;
+    if (!event) throw new Error("expected review_to_front to build a TurnEvent");
+    const review = event.review;
+    const order = new TurnEventOrder();
+
+    expect(order.accept(event)).toBe(true);
+    expect(downgradeTurnWithLiveBackgroundWork(event, true)).toBe(event);
+    expect(event.type).toBe("turn-end");
+    expect(event.review).toBe(review);
+    expect(event.review).toEqual({
+      summary: "Inspect the finished dashboard",
+      link: "https://example.com/review",
+    });
   });
 
   test("a real daemon-send failure is contained as an MCP isError result", async () => {
