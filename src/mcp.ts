@@ -22,6 +22,7 @@ import {
 } from "./settings.ts";
 import {
   lastAssistantText,
+  sanitizeReviewSummary,
   splitSentences,
   transcriptMark,
 } from "./snippet.ts";
@@ -221,6 +222,20 @@ export const MCP_TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "review_to_front",
+    description: "Surface a session's finished deliverable for the user's review: latches the session as needs-review in conch's dashboard, announces it, and opens an optional link.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        summary: { type: "string", minLength: 1 },
+        link: { type: "string", minLength: 1 },
+        session: { type: "string", minLength: 1 },
+      },
+      required: ["summary"],
+      additionalProperties: false,
+    },
+  },
 ] as const satisfies readonly McpToolDefinition[];
 
 export type McpToolName = (typeof MCP_TOOLS)[number]["name"];
@@ -251,6 +266,7 @@ export interface McpDependencies {
   transcriptMark(transcriptPath: string): Promise<number>;
   lastAssistantText(transcriptPath: string): Promise<string>;
   splitSentences(text: string): string[];
+  openLink(link: string): void;
   now(): number;
 }
 
@@ -271,6 +287,9 @@ export const defaultMcpDependencies: McpDependencies = {
   transcriptMark,
   lastAssistantText,
   splitSentences,
+  openLink(link) {
+    Bun.spawn(["open", link], { stdout: "ignore", stderr: "ignore" });
+  },
   now: Date.now,
 };
 
@@ -369,6 +388,22 @@ async function resolveSession(
   const session = await dependencies.findSessionByName(config.claudeDir, query.trim());
   if (!session) throw new Error(`no live session matching "${query.trim()}"`);
   return session;
+}
+
+async function resolveWorkingSession(
+  config: McpRuntimeConfig,
+  dependencies: McpDependencies,
+): Promise<SessionInfo> {
+  const infos = (await dependencies.registrySnapshot(config.claudeDir))?.infos ?? [];
+  const busy = infos.filter((session) => registryToPanel(session.status) === "working");
+  if (busy.length === 1) return busy[0]!;
+  throw new Error(
+    busy.length === 0
+      ? "no working session to attribute this review to — pass session"
+      : `multiple working sessions — pass session (${
+        busy.map((session) => dependencies.sessionLabel(session, session.cwd)).join(", ")
+      })`,
+  );
 }
 
 function unwrapControlResult(result: ConfigControlResult): ConfigControlResponse {
@@ -632,6 +667,45 @@ export function createMcpToolHandlers(
       }
       const text = await dependencies.lastAssistantText(transcriptPath);
       return dependencies.splitSentences(text).slice(-countValue).join(" ");
+    },
+
+    async review_to_front(argumentsValue) {
+      const argumentsObject = toolArguments(argumentsValue);
+      allowOnly(argumentsObject, ["summary", "link", "session"]);
+      const summary = sanitizeReviewSummary(
+        requiredString(argumentsObject, "summary"),
+      );
+      if (!summary) {
+        throw new ToolInputError("summary must be a non-empty string");
+      }
+      const link = optionalString(argumentsObject, "link");
+      const query = optionalString(argumentsObject, "session");
+      const session = query
+        ? await resolveSession(query, config, dependencies)
+        : await resolveWorkingSession(config, dependencies);
+      const label = dependencies.sessionLabel(session, session.cwd);
+      const transcriptPath = dependencies.findTranscript(
+        config.claudeDir,
+        session.sessionId,
+      );
+      const result = await sendTurn(config, dependencies, {
+        type: "turn-end",
+        sessionId: session.sessionId,
+        label,
+        cwd: session.cwd,
+        pid: session.pid,
+        announce: `${label} has work ready for your review: ${summary}`,
+        ...(transcriptPath
+          ? {
+            transcriptPath,
+            mark: await dependencies.transcriptMark(transcriptPath),
+          }
+          : {}),
+        eventAt: dependencies.now(),
+        review: { summary, ...(link ? { link } : {}) },
+      });
+      if (link) dependencies.openLink(link);
+      return result;
     },
   };
 }

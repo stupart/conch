@@ -701,15 +701,19 @@ export function looksLikeAwaitingReply(text: string): boolean {
 
 const REVIEW_MARKER = /^conch:review[^\S\r\n]+([^|\r\n]+?)(?:[^\S\r\n]*\|[^\S\r\n]*(\S+))?[^\S\r\n]*$/gim;
 
+export function sanitizeReviewSummary(raw: string): string {
+  return raw
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
+    .trim()
+    .slice(0, 200);
+}
+
 /** Last `conch:review …` marker line in a reply, or null. */
 export function parseReviewRequest(text: string): { summary: string; link?: string } | null {
   let match: RegExpExecArray | null = null;
   for (const candidate of text.matchAll(REVIEW_MARKER)) match = candidate;
   if (!match) return null;
-  const summary = match[1]!
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
-    .trim()
-    .slice(0, 200);
+  const summary = sanitizeReviewSummary(match[1]!);
   if (!summary) return null;
   return { summary, ...(match[2] ? { link: match[2] } : {}) };
 }
