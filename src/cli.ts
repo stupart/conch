@@ -2,8 +2,15 @@
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.ts";
 import { runHook, sendToDaemon } from "./hook.ts";
+import { runCodexHook } from "./codex-hook.ts";
 import { runDaemon } from "./daemon.ts";
-import { runInstall, runDoctor, runService, runSetup } from "./install.ts";
+import {
+  runCodexInstall,
+  runInstall,
+  runDoctor,
+  runService,
+  runSetup,
+} from "./install.ts";
 import { listenOnce } from "./listen.ts";
 import { speak, probeTtsServer, voiceFor, setVoiceOverride } from "./speak.ts";
 import { emitRecorderTraces } from "./diagnostics.ts";
@@ -25,15 +32,17 @@ import {
   type SettingValue,
 } from "./settings.ts";
 
-const HELP = `conch — a voice loop for Claude Code
+const HELP = `conch — a voice loop for Claude Code and Codex
 
 Usage:
   conch                 open the dashboard: watch the live daemon (ctrl-b d detaches)
   conch dashboard       alias for bare 'conch'
   conch setup           one-command install: deps, models, hooks (run this first)
   conch install         wire Stop/Notification hooks into ~/.claude/settings.json
+  conch install --codex opt in to Codex hooks; next codex shows its trust-review screen
   conch service [off]   launchd supervision: start at login, self-heal on crash
   conch hook            hook entrypoint (reads payload JSON on stdin)
+  conch codex-hook      Codex hook entrypoint (reads payload JSON on stdin)
   conch daemon          run the voice loop: announce -> listen -> inject
   conch mcp             run the MCP stdio server (Claude Code / Codex entrypoint)
   conch install-plugin  install the conch plugin for Claude Code and Codex
@@ -41,7 +50,7 @@ Usage:
   conch wake [name]     reopen the mic — last announced session, or by name
   conch recite [name]   read the latest response — last session, or by name
   conch rename <s> <n>  persist a conch display label for a live session
-  conch sessions        list live Claude Code sessions
+  conch sessions        list live Claude Code and Codex sessions
   conch mute | unmute   silence announcements + mic (auto-away covers this too)
   conch pause | resume  step away: stay quiet but HOLD finished sessions, replay on resume
   conch listen          capture one utterance, print the transcript (mic test)
@@ -231,6 +240,9 @@ switch (command) {
   case "hook":
     await runHook(cfg);
     break;
+  case "codex-hook":
+    await runCodexHook(cfg);
+    break;
   case "daemon":
     await runDaemon(cfg);
     break;
@@ -349,7 +361,11 @@ switch (command) {
     await runSetup(cfg);
     break;
   case "install":
-    await runInstall(cfg);
+    if (rest.includes("--codex")) {
+      await runCodexInstall();
+    } else {
+      await runInstall(cfg);
+    }
     break;
   case "service":
     await runService(cfg, rest[0] === "off" ? "off" : "install");
