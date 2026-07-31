@@ -28,10 +28,10 @@ macOS. Two commands:
 
 ```bash
 brew install stupart/tap/conch     # binary + sox/tmux/whisper-cpp
-conch setup                        # download models + wire hooks
+conch setup                        # models, hooks, service, and app plugins
 ```
 
-`brew install` pulls the system dependencies (`sox`, `tmux`, `whisper-cpp`) automatically. `conch setup` then downloads the two speech models into `~/.cache/conch/models` (whisper large-v3-turbo ~1.6 GB, silero VAD ~900 KB), wires the Claude Code hooks, and runs `doctor` to verify the chain. It's idempotent — re-run it any time; it skips whatever's already there. Already have a whisper.cpp build and models (e.g. a [seashell](https://github.com/stupart/seashell) checkout)? Point `CONCH_WHISPER_CLI` / `CONCH_WHISPER_MODEL` / `CONCH_VAD_MODEL` (or `CONCH_SEASHELL_ROOT`) at them and setup leaves them untouched.
+`brew install` pulls the system dependencies (`sox`, `tmux`, `whisper-cpp`) automatically. `conch setup` then downloads the two speech models into `~/.cache/conch/models` (whisper large-v3-turbo ~1.6 GB, silero VAD ~900 KB), wires the Claude Code hooks, verifies the chain, starts the launchd service, and installs the conch plugin for whichever of Claude Code and Codex are present. It's idempotent — re-run it any time; it skips or safely refreshes managed pieces. Already have a whisper.cpp build and models (e.g. a [seashell](https://github.com/stupart/seashell) checkout)? Point `CONCH_WHISPER_CLI` / `CONCH_WHISPER_MODEL` / `CONCH_VAD_MODEL` (or `CONCH_SEASHELL_ROOT`) at them and setup leaves them untouched.
 
 <details>
 <summary><b>From source</b> (for hacking on conch)</summary>
@@ -40,19 +40,23 @@ conch setup                        # download models + wire hooks
 git clone https://github.com/stupart/conch.git && cd conch
 bun install
 bun link           # puts `conch` on your PATH, running from source
-conch setup        # brew-installs deps, downloads models, wires hooks
+conch setup        # installs/configures everything and starts the service
 ```
 
 Requires [Bun](https://bun.sh). Running from source means edits take effect immediately; the brew binary is a frozen `bun build --compile` build.
 </details>
 
-Then start it as a background service that launches at login and self-heals within ~15s of a crash:
+Setup leaves conch running as a background service that launches at login and self-heals within ~15s of a crash. Finish a turn in any Claude Code session and conch will speak it; open `conch` and press **space** to talk back.
+
+Want manual granularity? The two integrations can be skipped independently, and their standalone commands remain idempotent:
 
 ```bash
-conch service install     # view anytime: tmux attach -t conch
+conch setup --no-service --no-plugin
+conch service install     # install/refresh the launchd service later
+conch install-plugin      # install for whichever supported apps are present
 ```
 
-Prefer to watch it live? Run the loop in the foreground in any pane instead — you get the full dashboard (session panel + status line):
+Prefer to run the loop in the foreground? Use `--no-service`, then start it in any pane — you get the full dashboard (session panel + status line):
 
 ```bash
 conch daemon
@@ -81,9 +85,10 @@ The worker itself adds no package beyond the installed `mlx-audio`, NumPy, `misa
 
 | Command | What it does |
 |---|---|
-| `conch setup` | One-command install: brew deps, model downloads, hooks, doctor (run this first) |
-| `conch service [off]` | launchd supervision: start at login, self-heal on crash |
-| `conch install` | Merge hooks into `~/.claude/settings.json` (backs up first) |
+| `conch setup [--no-service] [--no-plugin]` | Run once: deps, models, hooks, doctor, service, and available-app plugins |
+| `conch service [install\|off]` | Optionally install/refresh or remove launchd supervision |
+| `conch install-plugin` / `uninstall-plugin` | Optionally manage the Claude Code and Codex plugin separately |
+| `conch install [--codex]` | Optionally wire Claude Code or Codex hooks separately |
 | `conch daemon` | Run the voice loop: announce → listen → inject |
 | `conch wake [name]` | Reopen the mic — last announced session, or by name (bind it to a hotkey) |
 | `conch recite [name]` | Read the latest response aloud — last announced session, or by name |

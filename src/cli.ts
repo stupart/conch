@@ -10,6 +10,7 @@ import {
   runDoctor,
   runService,
   runSetup,
+  parseSetupArgs,
 } from "./install.ts";
 import { listenOnce } from "./listen.ts";
 import { speak, probeTtsServer, voiceFor, setVoiceOverride } from "./speak.ts";
@@ -34,40 +35,29 @@ import {
 
 const HELP = `conch — a voice loop for Claude Code and Codex
 
-Usage:
-  conch                 open the dashboard: watch the live daemon (ctrl-b d detaches)
-  conch dashboard       alias for bare 'conch'
-  conch setup           one-command install: deps, models, hooks (run this first)
-  conch install         wire Stop/Notification hooks into ~/.claude/settings.json
-  conch install --codex opt in to Codex hooks; next codex shows its trust-review screen
-  conch service [off]   launchd supervision: start at login, self-heal on crash
-  conch hook            hook entrypoint (reads payload JSON on stdin)
-  conch codex-hook      Codex hook entrypoint (reads payload JSON on stdin)
-  conch daemon          run the voice loop: announce -> listen -> inject
-  conch mcp             run the MCP stdio server (Claude Code / Codex entrypoint)
-  conch install-plugin  install the conch plugin for Claude Code and Codex
-  conch uninstall-plugin remove the conch plugin from Claude Code and Codex
-  conch wake [name]     reopen the mic — last announced session, or by name
-  conch recite [name]   read the latest response — last session, or by name
-  conch rename <s> <n>  persist a conch display label for a live session
-  conch sessions        list live Claude Code and Codex sessions
-  conch mute | unmute   silence announcements + mic (auto-away covers this too)
-  conch pause | resume  step away: stay quiet but HOLD finished sessions, replay on resume
-  conch listen          capture one utterance, print the transcript (mic test)
-  conch speak <text>    say something (TTS test; uses the daemon's warm Kokoro worker)
-  conch voices          audition the voice ring — each voice introduces itself
-  conch voice <s> [v]   show or pin a session's voice (persisted)
-  conch set <key> <v>   save a curated setting and apply it live when possible
-  conch get <key>       show one effective setting and its source
-  conch unset <key>     remove a saved setting (revert to env/default)
-  conch settings        show all curated settings and their sources
-  conch doctor          check external dependencies
+Getting started:
+  conch setup                    run this once — installs everything
+  conch setup [--no-service] [--no-plugin]  opt out of automatic integrations
+  conch | conch dashboard        open the live dashboard (ctrl-b d detaches)
 
-Config via env: CONCH_VOICE, CONCH_SPEAK_SENTENCES, CONCH_SPEAK_MAX_CHARS,
-CONCH_ANNOUNCE_SUMMARY, CONCH_VOICE_QA, CONCH_RESUME_DIGEST,
-CONCH_BELL, CONCH_BELL_SOUND, CONCH_SPEAK, CONCH_LISTEN_WINDOW_SECS,
-CONCH_MIC_GAIN_DB, CONCH_AUTO_SUBMIT, CONCH_KEYSTROKE_FALLBACK, CONCH_SEASHELL_ROOT, CONCH_SOCKET,
-CONCH_TUI (set to "footer" to force the classic single-line UI)
+Everyday:
+  conch wake [name] | recite [name]       talk again | reread the latest reply
+  conch sessions | rename <session> <name> list sessions | save a display name
+  conch mute | unmute | pause | resume     silence or hold/replay finished turns
+
+Voice and settings:
+  conch voice <session> [voice] | voices   show/pin or audition voices
+  conch set <key> <value>                   save and apply a setting
+  conch get <key> | unset <key> | settings inspect, revert, or list settings
+  conch listen | speak <text>               microphone and speech tests
+
+Optional / manual setup:
+  conch service [install|off]      install/refresh or remove launchd supervision
+  conch install-plugin | uninstall-plugin  manage the Claude Code / Codex plugin
+  conch install [--codex]          wire hooks separately
+  conch doctor                     check external dependencies
+
+Internal entrypoints: conch hook | codex-hook | daemon | mcp
 `;
 
 /**
@@ -373,9 +363,22 @@ switch (command) {
     }
     break;
   }
-  case "setup":
-    await runSetup(cfg);
+  case "setup": {
+    let selection;
+    try {
+      selection = parseSetupArgs(rest);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+      break;
+    }
+    await runSetup(cfg, {
+      ...selection,
+      absBun: process.execPath,
+      absCli: fileURLToPath(import.meta.url),
+    });
     break;
+  }
   case "install":
     if (rest.includes("--codex")) {
       await runCodexInstall();

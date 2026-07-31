@@ -8,8 +8,10 @@ import {
 import { join } from "node:path";
 import {
   buildInstallCommands,
+  buildMcpInvocation,
   buildMcpJson,
   buildUninstallCommands,
+  materializeEmbeddedPlugin,
   materializePlugin,
 } from "../src/plugin-install.ts";
 
@@ -22,6 +24,21 @@ afterEach(() => {
 });
 
 describe("plugin installer helpers", () => {
+  test("buildMcpInvocation distinguishes source and compiled runtimes", () => {
+    const absBun = "/opt/homebrew/bin/bun";
+    const absCli = "/Users/example/conch/src/cli.ts";
+
+    expect(buildMcpInvocation(absBun, absCli)).toEqual({
+      command: absBun,
+      args: ["run", absCli, "mcp"],
+    });
+    expect(buildMcpInvocation("/opt/homebrew/bin/conch", "/$bunfs/root/src/cli.ts", true))
+      .toEqual({
+        command: "/opt/homebrew/bin/conch",
+        args: ["mcp"],
+      });
+  });
+
   test("buildMcpJson uses the exact absolute Bun and CLI paths", () => {
     const absBun = "/opt/homebrew/bin/bun";
     const absCli = "/Users/example/conch/src/cli.ts";
@@ -34,6 +51,16 @@ describe("plugin installer helpers", () => {
         },
       },
     });
+
+    expect(buildMcpJson("/opt/homebrew/bin/conch", "/$bunfs/root/src/cli.ts", true))
+      .toEqual({
+        mcpServers: {
+          conch: {
+            command: "/opt/homebrew/bin/conch",
+            args: ["mcp"],
+          },
+        },
+      });
   });
 
   test("buildInstallCommands returns the marketplace and install argv", () => {
@@ -111,4 +138,103 @@ ${prose}`);
     expect(existsSync(join(repoRoot, "plugin", "plugins", "conch", ".mcp.json")))
       .toBe(false);
   });
+
+  test("embedded materialization reconstructs every compiled-release plugin asset", async () => {
+    const root = mkdtempSync("/tmp/conch-embedded-plugin-test-");
+    roots.push(root);
+    const repoRoot = join(import.meta.dir, "..");
+    const distDir = join(root, "plugin-dist");
+    const binary = "/opt/homebrew/bin/conch";
+
+    await materializeEmbeddedPlugin({
+      distDir,
+      absBun: binary,
+      absCli: "/$bunfs/root/src/cli.ts",
+    });
+
+    for (const relativePath of [
+      ".claude-plugin/marketplace.json",
+      ".agents/plugins/marketplace.json",
+      "README.md",
+      "plugins/conch/.claude-plugin/plugin.json",
+      "plugins/conch/.codex-plugin/plugin.json",
+    ]) {
+      expect(readFileSync(join(distDir, relativePath), "utf8")).toBe(
+        readFileSync(join(repoRoot, "plugin", relativePath), "utf8"),
+      );
+    }
+
+    const prose = readFileSync(
+      join(repoRoot, "docs", "conch-control-skill.md"),
+      "utf8",
+    );
+    expect(readFileSync(join(distDir, "plugins", "conch", "AGENTS.md"), "utf8"))
+      .toBe(prose);
+    expect(
+      readFileSync(
+        join(distDir, "plugins", "conch", "skills", "conch-control", "SKILL.md"),
+        "utf8",
+      ),
+    ).toBe(`---
+name: conch-control
+description: Control conch — see and steer your other sessions by voice.
+---
+
+${prose}`);
+
+    expect(
+      JSON.parse(
+        readFileSync(join(distDir, "plugins", "conch", ".mcp.json"), "utf8"),
+      ),
+    ).toEqual({
+      mcpServers: {
+        conch: {
+          command: binary,
+          args: ["mcp"],
+        },
+      },
+    });
+  });
+
+  test("compiled CLI installs its embedded plugin and smoke-tests itself directly", () => {
+    const root = mkdtempSync("/tmp/conch-compiled-plugin-test-");
+    roots.push(root);
+    const repoRoot = join(import.meta.dir, "..");
+    const binary = join(root, "conch");
+    const configDir = join(root, "config");
+
+    const build = Bun.spawnSync([
+      process.execPath,
+      "build",
+      "--compile",
+      join(repoRoot, "src", "cli.ts"),
+      "--outfile",
+      binary,
+    ]);
+    expect(build.exitCode).toBe(0);
+
+    const install = Bun.spawnSync([binary, "install-plugin"], {
+      env: {
+        ...process.env,
+        PATH: "/usr/bin:/bin",
+        CONCH_CONFIG_DIR: configDir,
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const output = `${install.stdout.toString()}\n${install.stderr.toString()}`;
+    expect(install.exitCode).toBe(0);
+    expect(output).toContain("Claude Code: not-found");
+    expect(output).toContain("Codex: not-found");
+    expect(output).toContain("MCP smoke test: passed — 9 tools");
+
+    const mcp = JSON.parse(
+      readFileSync(
+        join(configDir, "plugin-dist", "plugins", "conch", ".mcp.json"),
+        "utf8",
+      ),
+    );
+    expect(mcp.mcpServers.conch.command).toEndWith("/conch");
+    expect(mcp.mcpServers.conch.args).toEqual(["mcp"]);
+  }, 15_000);
 });

@@ -136,6 +136,29 @@ export interface PublishedState {
   dismissed: string[];
 }
 
+const MAX_PUBLISHED_CONVERSATION_CHARS = 4_000;
+
+/**
+ * The snapshot is rewritten on every panel render. Keep reply-sized fields
+ * bounded to the final 4,000 characters (the part being read next), and rebase
+ * spoken progress so it remains meaningful within the published suffix.
+ */
+function publishedReply<T extends { text: string; spokenChars: number }>(
+  reply: T,
+): T {
+  if (reply.text.length <= MAX_PUBLISHED_CONVERSATION_CHARS) return { ...reply };
+
+  const removedChars = reply.text.length - MAX_PUBLISHED_CONVERSATION_CHARS;
+  return {
+    ...reply,
+    text: reply.text.slice(removedChars),
+    spokenChars: Math.max(
+      0,
+      Math.min(MAX_PUBLISHED_CONVERSATION_CHARS, reply.spokenChars - removedChars),
+    ),
+  };
+}
+
 function publishedLiveState(live: PanelLiveState): PublishedState["live"] {
   return {
     state: live.state,
@@ -145,7 +168,7 @@ function publishedLiveState(live: PanelLiveState): PublishedState["live"] {
       ? { transcriptPrefix: live.transcriptPrefix }
       : {}),
     ...(live.reading
-      ? { reading: { ...live.reading } }
+      ? { reading: publishedReply(live.reading) }
       : {}),
   };
 }
@@ -163,11 +186,11 @@ export function refreshPublishedConversationState(
 ): PublishedState {
   const { reply: previousReply, ...withoutReply } = current;
   const reply = contentSessionId && live.reading?.text
-    ? {
+    ? publishedReply({
       sessionId: contentSessionId,
       text: live.reading.text,
       spokenChars: live.reading.spokenChars,
-    }
+    })
     : contentSessionId && previousReply?.sessionId === contentSessionId
       ? { ...previousReply }
       : undefined;
@@ -192,8 +215,8 @@ export function buildPublishedState(
     ts: now,
     mode: { ...model.mode },
     live: publishedLiveState(model.live),
-    ...(model.reply ? { reply: { ...model.reply } } : {}),
-    ...(model.preview ? { preview: { ...model.preview } } : {}),
+    ...(model.reply ? { reply: publishedReply(model.reply) } : {}),
+    ...(model.preview ? { preview: publishedReply(model.preview) } : {}),
     rows: model.rows.map((row) => ({
       id: row.sessionId,
       label: row.label,

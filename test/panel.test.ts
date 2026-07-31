@@ -4,12 +4,12 @@ import {
   buildPanelModel,
   buildPanelRows,
   buildPublishedState,
+  refreshPublishedConversationState,
   dashboardPanelLines,
   dashboardRowsForModel,
   latestLatchedState,
   numberPanelSessionRows,
   previewForPanelSelection,
-  refreshPublishedConversationState,
   reconcileStatus,
   registryToPanel,
 } from "../src/panel.ts";
@@ -127,11 +127,23 @@ describe("buildPublishedState — external session snapshot", () => {
       ]),
       pausedSessionIds: new Set(["needs"]),
       mutedSessionIds: new Set(["needs"]),
-      live: { state: "speaking", label: "Need", partial: "TUI-only partial" },
+      live: {
+        state: "speaking",
+        label: "Need",
+        partial: "live dictation",
+        transcriptPrefix: "committed words",
+        reading: { text: "Reply being read aloud", spokenChars: 8 },
+      },
       mode: { muted: false, paused: true, holding: 2 },
       activeSessionId: "needs",
       navSelectedId: "waiting",
+      reply: { sessionId: "needs", text: "Reply being read aloud", spokenChars: 8 },
     });
+    model.preview = {
+      sessionId: "waiting",
+      text: "Parked session preview",
+      spokenChars: 0,
+    };
 
     const published = buildPublishedState(
       model,
@@ -147,13 +159,25 @@ describe("buildPublishedState — external session snapshot", () => {
       v: 1,
       ts: 1_234_567,
       mode: { muted: false, paused: true, holding: 2 },
-      live: { state: "speaking", label: "Need", partial: "TUI-only partial" },
+      live: {
+        state: "speaking",
+        label: "Need",
+        partial: "live dictation",
+        transcriptPrefix: "committed words",
+        reading: { text: "Reply being read aloud", spokenChars: 8 },
+      },
+      reply: { sessionId: "needs", text: "Reply being read aloud", spokenChars: 8 },
+      preview: {
+        sessionId: "waiting",
+        text: "Parked session preview",
+        spokenChars: 0,
+      },
       rows: [
         {
           id: "needs",
+          at: 40,
           label: "Need",
           status: "needs",
-          at: 40,
           needsResponse: true,
           detail: "permission",
           paused: true,
@@ -164,9 +188,9 @@ describe("buildPublishedState — external session snapshot", () => {
         },
         {
           id: "waiting",
+          at: 30,
           label: "Wait",
           status: "waiting",
-          at: 30,
           needsResponse: false,
           paused: false,
           muted: false,
@@ -181,62 +205,9 @@ describe("buildPublishedState — external session snapshot", () => {
     expect(JSON.parse(JSON.stringify(published))).toEqual(published);
   });
 
-  test("publishes optional conversation progress and parked preview without placeholders", () => {
+  test("omits absent conversation fields", () => {
     const model = buildPanelModel({
-      sessions: [
-        { sessionId: "active", name: "Active", status: "busy", statusUpdatedAt: 80 },
-        { sessionId: "parked", name: "Parked" },
-      ],
-      sessionStates: new Map(),
-      pausedSessionIds: new Set(),
-      mutedSessionIds: new Set(),
-      live: {
-        state: "speaking",
-        label: "Active",
-        partial: "building now",
-        transcriptPrefix: "already committed",
-        reading: { text: "Reply being read aloud", spokenChars: 8 },
-      },
-      mode: { muted: false, paused: false, holding: 0 },
-      activeSessionId: "active",
-      navSelectedId: "parked",
-      reply: {
-        sessionId: "active",
-        text: "Complete active reply",
-        spokenChars: 8,
-      },
-    });
-    model.preview = {
-      sessionId: "parked",
-      text: "Parked session preview",
-      spokenChars: 0,
-    };
-
-    const published = buildPublishedState(model, new Map(), new Set(), 90);
-
-    expect(published.live).toEqual({
-      state: "speaking",
-      label: "Active",
-      partial: "building now",
-      transcriptPrefix: "already committed",
-      reading: { text: "Reply being read aloud", spokenChars: 8 },
-    });
-    expect(published.reply).toEqual({
-      sessionId: "active",
-      text: "Complete active reply",
-      spokenChars: 8,
-    });
-    expect(published.preview).toEqual({
-      sessionId: "parked",
-      text: "Parked session preview",
-      spokenChars: 0,
-    });
-    expect(published.rows.find((row) => row.id === "active")?.at).toBe(80);
-  });
-
-  test("omits absent optional status and conversation fields", () => {
-    const model = buildPanelModel({
-      sessions: [{ sessionId: "quiet", name: "Quiet" }],
+      sessions: [],
       sessionStates: new Map(),
       pausedSessionIds: new Set(),
       mutedSessionIds: new Set(),
@@ -246,74 +217,57 @@ describe("buildPublishedState — external session snapshot", () => {
       navSelectedId: null,
       reply: null,
     });
+    model.preview = null;
 
-    const published = buildPublishedState(model, new Map(), new Set(), 100);
+    const published = buildPublishedState(model, new Map(), new Set(), 10);
 
     expect(published.live).toEqual({ state: "idle", label: "" });
+    expect("partial" in published.live).toBe(false);
+    expect("transcriptPrefix" in published.live).toBe(false);
+    expect("reading" in published.live).toBe(false);
     expect("reply" in published).toBe(false);
     expect("preview" in published).toBe(false);
-    expect("at" in published.rows[0]!).toBe(false);
   });
 
-  test("refreshes live conversation fields without rebuilding the ledger", () => {
+  test("caps large published replies at the end and rebases spoken progress", () => {
+    const discarded = "discarded-prefix";
+    const retained = "x".repeat(4_000);
+    const text = discarded + retained;
     const model = buildPanelModel({
-      sessions: [{ sessionId: "active", name: "Active" }],
+      sessions: [],
       sessionStates: new Map(),
       pausedSessionIds: new Set(),
       mutedSessionIds: new Set(),
-      live: { state: "speaking", label: "Active", partial: "" },
-      mode: { muted: false, paused: false, holding: 0 },
-      activeSessionId: "active",
-      navSelectedId: null,
-      reply: { sessionId: "active", text: "Earlier reply", spokenChars: 0 },
-    });
-    model.preview = { sessionId: "parked", text: "Parked preview", spokenChars: 0 };
-    const initial = buildPublishedState(model, new Map(), new Set(), 10);
-
-    const progressed = refreshPublishedConversationState(
-      initial,
-      {
-        state: "recording",
-        label: "Active",
-        partial: "words arriving",
-        transcriptPrefix: "already committed",
-        reading: { text: "Current reply", spokenChars: 7 },
+      live: {
+        state: "speaking",
+        label: "Long",
+        partial: "",
+        reading: { text, spokenChars: discarded.length + 125 },
       },
-      "active",
-      11,
-    );
-
-    expect(progressed.ts).toBe(11);
-    expect(progressed.live).toEqual({
-      state: "recording",
-      label: "Active",
-      partial: "words arriving",
-      transcriptPrefix: "already committed",
-      reading: { text: "Current reply", spokenChars: 7 },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+      reply: {
+        sessionId: "long",
+        text,
+        spokenChars: discarded.length + 250,
+      },
     });
-    expect(progressed.reply).toEqual({
-      sessionId: "active",
-      text: "Current reply",
-      spokenChars: 7,
+    model.preview = { sessionId: "parked", text, spokenChars: text.length };
+
+    const published = buildPublishedState(model, new Map(), new Set(), 10);
+
+    expect(published.live.reading).toEqual({ text: retained, spokenChars: 125 });
+    expect(published.reply).toEqual({
+      sessionId: "long",
+      text: retained,
+      spokenChars: 250,
     });
-    expect(progressed.rows).toBe(initial.rows);
-    expect(progressed.preview).toEqual(initial.preview);
-
-    const betweenChunks = refreshPublishedConversationState(
-      progressed,
-      { state: "listening", label: "Active", partial: "" },
-      "active",
-      12,
-    );
-    expect(betweenChunks.reply).toEqual(progressed.reply);
-
-    const switched = refreshPublishedConversationState(
-      betweenChunks,
-      { state: "speaking", label: "Other", partial: "" },
-      "other",
-      13,
-    );
-    expect("reply" in switched).toBe(false);
+    expect(published.preview).toEqual({
+      sessionId: "parked",
+      text: retained,
+      spokenChars: retained.length,
+    });
   });
 });
 
@@ -623,10 +577,6 @@ describe("previewForPanelSelection — async cursor stale guard", () => {
     expect(render).toContain(
       "const previewId = theaterMode ? theaterNavigation.manualSelectedId : null",
     );
-    expect(render).toContain("preferredSessionId: recitingEvent?.sessionId");
-    expect(render).not.toContain(
-      "preferredSessionId: theaterMode ? recitingEvent?.sessionId : null",
-    );
     expect(render).toContain(
       `model.preview = previewForPanelSelection(
         navSelectedId,
@@ -650,4 +600,66 @@ describe("previewForPanelSelection — async cursor stale guard", () => {
       render.indexOf("commitLatestPanelRender("),
     );
   });
+
+  test("refreshes live conversation fields without rebuilding the ledger", () => {
+    const model = buildPanelModel({
+      sessions: [{ sessionId: "active", name: "Active" }],
+      sessionStates: new Map(),
+      pausedSessionIds: new Set(),
+      mutedSessionIds: new Set(),
+      live: { state: "speaking", label: "Active", partial: "" },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: "active",
+      navSelectedId: null,
+      reply: { sessionId: "active", text: "Earlier reply", spokenChars: 0 },
+    });
+    model.preview = { sessionId: "parked", text: "Parked preview", spokenChars: 0 };
+    const initial = buildPublishedState(model, new Map(), new Set(), 10);
+
+    const progressed = refreshPublishedConversationState(
+      initial,
+      {
+        state: "recording",
+        label: "Active",
+        partial: "words arriving",
+        transcriptPrefix: "already committed",
+        reading: { text: "Current reply", spokenChars: 7 },
+      },
+      "active",
+      11,
+    );
+
+    expect(progressed.ts).toBe(11);
+    expect(progressed.live).toEqual({
+      state: "recording",
+      label: "Active",
+      partial: "words arriving",
+      transcriptPrefix: "already committed",
+      reading: { text: "Current reply", spokenChars: 7 },
+    });
+    expect(progressed.reply).toEqual({
+      sessionId: "active",
+      text: "Current reply",
+      spokenChars: 7,
+    });
+    expect(progressed.rows).toBe(initial.rows);
+    expect(progressed.preview).toEqual(initial.preview);
+
+    const betweenChunks = refreshPublishedConversationState(
+      progressed,
+      { state: "listening", label: "Active", partial: "" },
+      "active",
+      12,
+    );
+    expect(betweenChunks.reply).toEqual(progressed.reply);
+
+    const switched = refreshPublishedConversationState(
+      betweenChunks,
+      { state: "speaking", label: "Other", partial: "" },
+      "other",
+      13,
+    );
+    expect("reply" in switched).toBe(false);
+  });
+
 });

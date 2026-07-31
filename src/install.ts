@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, chmodSync, unlinkSync, statSync, renameSync } fr
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
 import { CONCH_DATA } from "./config.ts";
+import { runInstallPlugin } from "./plugin-install.ts";
 import { resolveMlxAudioPython } from "./tts-worker.ts";
 
 const SERVICE_LABEL = "com.conch.daemon";
@@ -37,13 +38,123 @@ function conchInvocation(): string {
   return IS_COMPILED ? `"${process.execPath}"` : `"${process.execPath}" "${CLI_ENTRY}"`;
 }
 
+export interface SetupSelection {
+  service: boolean;
+  plugin: boolean;
+}
+
+export interface SetupOptions extends SetupSelection {
+  absBun: string;
+  absCli: string;
+}
+
+export interface SetupCompletion {
+  service: "installed" | "skipped";
+  plugin: "installed" | "skipped" | "failed";
+}
+
+export interface SetupInstallers {
+  service: (cfg: Config, action: "install") => Promise<void>;
+  plugin: (absBun: string, absCli: string) => Promise<boolean>;
+}
+
+/** Parse setup's two independent opt-outs without making their order significant. */
+export function parseSetupArgs(args: readonly string[]): SetupSelection {
+  const allowed = new Set(["--no-service", "--no-plugin"]);
+  const unknown = args.find((arg) => !allowed.has(arg));
+  if (unknown) {
+    throw new Error(
+      `unknown setup option: ${unknown}\nusage: conch setup [--no-service] [--no-plugin]`,
+    );
+  }
+  return {
+    service: !args.includes("--no-service"),
+    plugin: !args.includes("--no-plugin"),
+  };
+}
+
+/**
+ * Run setup's final integrations through the exact same installers exposed as
+ * standalone commands. The small injection seam keeps option handling and call
+ * order testable without installing a real launch agent in the test process.
+ */
+export async function runSetupIntegrations(
+  cfg: Config,
+  options: SetupOptions,
+  installers: SetupInstallers = {
+    service: runService,
+    plugin: runInstallPlugin,
+  },
+): Promise<SetupCompletion> {
+  let service: SetupCompletion["service"] = "skipped";
+  let plugin: SetupCompletion["plugin"] = "skipped";
+
+  if (options.service) {
+    console.log("\nInstalling the background service…");
+    await installers.service(cfg, "install");
+    service = "installed";
+  }
+
+  if (options.plugin) {
+    console.log("\nInstalling the conch plugin for available apps…");
+    try {
+      plugin = await installers.plugin(options.absBun, options.absCli)
+        ? "installed"
+        : "failed";
+    } catch (error) {
+      console.error(
+        `[conch] install-plugin failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      plugin = "failed";
+    }
+  }
+
+  return { service, plugin };
+}
+
+/** Final setup output; nothing actionable is printed after this block. */
+export function renderSetupReady(completion: SetupCompletion): string {
+  const service = completion.service === "installed"
+    ? "✓ background service (running now + starts at login)"
+    : "○ background service skipped (--no-service)";
+  const plugin = completion.plugin === "installed"
+    ? "✓ plugin for available Claude Code / Codex apps"
+    : completion.plugin === "failed"
+      ? "✗ app plugin installation failed"
+      : "○ app plugin skipped (--no-plugin)";
+  const manualStart = completion.service === "skipped"
+    ? "\n│   Start the daemon your way before trying this."
+    : "";
+
+  return `╭─ 🐚 YOU'RE READY
+│
+│ Installed and configured:
+│   ✓ dependencies + speech models
+│   ✓ Claude Code hooks
+│   ${service}
+│   ${plugin}
+│
+│ FIRST THING TO TRY${manualStart}
+│   Finish a turn in any Claude Code session; conch will speak it.
+│   Open \`conch\` and press space to talk back.
+╰─`;
+}
+
 /**
  * One-command bootstrap for a fresh machine: installs the binaries conch shells
  * out to (via Homebrew), downloads the whisper + VAD models, wires the Claude
- * Code hooks, and runs doctor. Idempotent — re-running skips anything already
- * present, so it's safe on a box that already has a seashell checkout.
+ * Code hooks, installs the launchd service + app plugin, and runs doctor.
+ * Idempotent — re-running skips or safely refreshes managed pieces.
  */
-export async function runSetup(cfg: Config): Promise<void> {
+export async function runSetup(
+  cfg: Config,
+  options: SetupOptions = {
+    service: true,
+    plugin: true,
+    absBun: process.execPath,
+    absCli: CLI_ENTRY,
+  },
+): Promise<void> {
   console.log("🐚 conch setup — getting your machine ready for voice\n");
 
   // 1. Binaries. sox + tmux come from Homebrew; whisper-cli/-server ship in the
@@ -116,7 +227,14 @@ export async function runSetup(cfg: Config): Promise<void> {
   await runInstall(cfg);
   console.log("\nRunning doctor…\n");
   await runDoctor(cfg);
-  console.log("\n🐚 Setup complete. Start the background service with:  conch service install");
+  const completion = await runSetupIntegrations(cfg, options);
+  if (completion.plugin === "failed") {
+    console.error("\n❌ Setup incomplete — plugin installation failed; review the errors above.");
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log(`\n${renderSetupReady(completion)}`);
 }
 
 /** curl a model to a temp path, size-check it, then atomically move into place. */
@@ -372,6 +490,9 @@ export async function runInstall(cfg: Config): Promise<void> {
       await Bun.write(backup, await Bun.file(settingsPath).text());
       console.log(`backed up settings to ${backup}`);
     }
+    // A Codex-only fresh machine may not have ~/.claude yet. Setup still wires
+    // the hooks so Claude Code will pick them up whenever it is installed.
+    mkdirSync(dirname(settingsPath), { recursive: true });
     await Bun.write(settingsPath, JSON.stringify(settings, null, 2) + "\n");
     console.log("\nDone. Open /hooks in Claude Code (or restart sessions) to reload config.");
   } else {
