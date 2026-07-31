@@ -2,13 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { DictationReducer } from "../src/dictation-reducer.ts";
 import {
+  clearReadingProgress,
   configureRenderer,
   createFooterRenderer,
   createTheaterRenderer,
   getLiveState,
   installRendererLifecycle,
+  onLiveDataChange,
   relativeAge,
   scrollTheaterPane,
+  setReadingProgress,
   setLogsVisible,
   setState,
   setTranscriptPrefix,
@@ -1199,6 +1202,55 @@ test("setState preserves the transcript prefix across partials and transitions",
     transcriptPrefix: "prior kept segment",
   });
 
+  setTranscriptPrefix("");
+  setState("idle");
+});
+
+test("live-data observers receive same-state partial, prefix, and reading progress", () => {
+  setTranscriptPrefix("");
+  clearReadingProgress();
+  setState("recording", "project-live", "first");
+  const seen: LiveState[] = [];
+  onLiveDataChange(() => {
+    const current = getLiveState();
+    seen.push({
+      ...current,
+      ...(current.reading ? { reading: { ...current.reading } } : {}),
+    });
+  });
+
+  try {
+    // State and label are unchanged: this is the path that used to skip panel
+    // publication even though the theater renderer updated live.
+    setState("recording", "project-live", "second");
+    setTranscriptPrefix("committed");
+    setReadingProgress("Assistant reply", 9);
+    clearReadingProgress();
+
+    expect(seen).toHaveLength(4);
+    expect(seen[0]?.partial).toBe("second");
+    expect(seen[1]?.transcriptPrefix).toBe("committed");
+    expect(seen[2]?.reading).toEqual({ text: "Assistant reply", spokenChars: 9 });
+    expect(seen[3]?.reading).toBeUndefined();
+  } finally {
+    onLiveDataChange(null);
+    setTranscriptPrefix("");
+    clearReadingProgress();
+    setState("idle");
+  }
+});
+
+test("renderer-independent conversation capture does not repaint the footer", () => {
+  const { io, writes } = recordingIO();
+  configureRenderer({ CONCH_TUI: "footer" }, io);
+  setState("speaking", "project-footer");
+  writes.length = 0;
+
+  setTranscriptPrefix("committed words");
+  setReadingProgress("Assistant reply", 4);
+  clearReadingProgress();
+
+  expect(writes).toEqual([]);
   setTranscriptPrefix("");
   setState("idle");
 });

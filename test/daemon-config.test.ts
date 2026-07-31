@@ -124,6 +124,20 @@ describe("daemon listen status hooks", () => {
       "state:recording:permission:yes",
     ]);
   });
+
+  test("daemon supplies committed-prefix providers independently of terminal renderer", () => {
+    const conversationWiring = daemonSource.slice(
+      daemonSource.indexOf("const reducer = new DictationReducer"),
+      daemonSource.indexOf("const barrierRequests", daemonSource.indexOf("const reducer = new DictationReducer")),
+    );
+
+    expect(conversationWiring).toContain(
+      "() => reducer.snapshot.buffer.map((segment) => segment.text).join(\" \")",
+    );
+    expect(conversationWiring).not.toContain("theaterMode");
+    expect(daemonSource).toContain('listenHooks("who first", () => "")');
+    expect(daemonSource).toContain('listenHooks(event.label, () => "")');
+  });
 });
 
 describe("daemon config controller", () => {

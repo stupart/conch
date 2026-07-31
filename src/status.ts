@@ -1305,6 +1305,7 @@ export function installRendererLifecycle(
 
 let live: LiveState = { state: "idle", label: "", partial: "" };
 let onLive: (() => void) | null = null;
+let onLiveData: (() => void) | null = null;
 export function getLiveState(): LiveState {
   return live;
 }
@@ -1312,25 +1313,35 @@ export function onLiveChange(cb: () => void): void {
   onLive = cb;
 }
 
+/** Observe every live-data mutation, including same-state partial/progress updates. */
+export function onLiveDataChange(cb: (() => void) | null): void {
+  onLiveData = cb;
+}
+
 export function setReadingProgress(text: string, spokenChars: number): void {
   live = {
     ...live,
     reading: { text, spokenChars: Math.max(0, Math.min(spokenChars, text.length)) },
   };
-  activeRenderer.live(live);
+  // Daemon capture is renderer-independent. Preserve footer's established byte
+  // output while the theater continues repainting its read-along pane.
+  if (activeRendererKind === "theater") activeRenderer.live(live);
+  onLiveData?.();
 }
 
 export function clearReadingProgress(): void {
   if (!live.reading) return;
   const { reading: _reading, ...rest } = live;
   live = rest;
-  activeRenderer.live(live);
+  if (activeRendererKind === "theater") activeRenderer.live(live);
+  onLiveData?.();
 }
 
 /** Set the committed transcript rendered before the current theater partial. */
 export function setTranscriptPrefix(prefix: string): void {
   live = { ...live, transcriptPrefix: prefix };
-  activeRenderer.live(live);
+  if (activeRendererKind === "theater") activeRenderer.live(live);
+  onLiveData?.();
 }
 
 export function setState(state: ConchState, label = "", partial = ""): void {
@@ -1347,6 +1358,7 @@ export function setState(state: ConchState, label = "", partial = ""): void {
   void Bun.write(STATE_FILE, JSON.stringify({ state, label, partial, ts: Date.now() }) + "\n");
   activeRenderer.live(live);
   if (transition) onLive?.(); // repaint the panel so the active row shows the new live state
+  onLiveData?.();
 }
 
 /** The static key hints, pinned at the very bottom under everything. */

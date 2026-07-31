@@ -54,6 +54,7 @@ import {
   logAbove,
   logsShown,
   onLiveChange,
+  onLiveDataChange,
   publishSessionsFile,
   renderPanel,
   resizeRenderer,
@@ -86,7 +87,9 @@ import {
   latestLatchedState,
   numberPanelSessionRows,
   previewForPanelSelection,
+  refreshPublishedConversationState,
   type NumberedPanelSessionRow,
+  type PublishedState,
   type SessionStatus,
 } from "./panel.ts";
 import { TheaterNavigation } from "./theater-navigation.ts";
@@ -105,6 +108,7 @@ import {
   markQueuedWakesForControl,
   muteAcknowledgement,
   shouldForgetMutedArrival,
+  type InstantAudioCommand,
 } from "./instant-controls.ts";
 import {
   emitRecorderTrace,
@@ -328,6 +332,95 @@ export function dispatchControlMessage(value: unknown, controller: ConfigControl
   return { handled: true, response: controller.handle(validated.value) };
 }
 
+const TURN_EVENT_TYPES = new Set<TurnEvent["type"]>([
+  "turn-end",
+  "needs-you",
+  "wake",
+  "recite",
+  "spacebar",
+  "mute",
+  "unmute",
+  "pause",
+  "resume",
+  "speak",
+  "working",
+]);
+
+const SPARSE_TURN_EVENT_TYPES = new Set<TurnEvent["type"]>([
+  "wake",
+  "recite",
+  "spacebar",
+  "mute",
+  "unmute",
+  "pause",
+  "resume",
+]);
+
+export type SocketTurnEventValidation =
+  | { ok: true; value: TurnEvent }
+  | { ok: false; err: string };
+
+function socketRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Validate and normalize the newline-delimited TurnEvent wire shape. */
+export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidation {
+  if (!socketRecord(value)) return { ok: false, err: "turn event must be a JSON object" };
+  if (typeof value.type !== "string" || !TURN_EVENT_TYPES.has(value.type as TurnEvent["type"])) {
+    return { ok: false, err: "turn event type is missing or unknown" };
+  }
+  const type = value.type as TurnEvent["type"];
+
+  for (const field of ["sessionId", "label", "cwd", "announce", "transcriptPath", "ntype", "voice"] as const) {
+    if (value[field] !== undefined && typeof value[field] !== "string") {
+      return { ok: false, err: `${field} must be a string` };
+    }
+  }
+  for (const field of ["pid", "mark", "eventAt"] as const) {
+    if (
+      value[field] !== undefined
+      && (typeof value[field] !== "number" || !Number.isFinite(value[field]))
+    ) {
+      return { ok: false, err: `${field} must be a finite number` };
+    }
+  }
+  if (value.backgroundWork !== undefined && value.backgroundWork !== true) {
+    return { ok: false, err: "backgroundWork must be true when present" };
+  }
+  if (value.review !== undefined) {
+    if (!socketRecord(value.review) || typeof value.review.summary !== "string") {
+      return { ok: false, err: "review must contain a string summary" };
+    }
+    if (value.review.link !== undefined && typeof value.review.link !== "string") {
+      return { ok: false, err: "review link must be a string" };
+    }
+  }
+
+  // Hook/state traffic and explicit speech retain the original complete shape.
+  // Dashboard controls are intentionally sparse and normalized for the daemon.
+  if (!SPARSE_TURN_EVENT_TYPES.has(type)) {
+    for (const field of ["sessionId", "label", "announce"] as const) {
+      if (typeof value[field] !== "string") {
+        return { ok: false, err: `${field} is required for ${type}` };
+      }
+    }
+  } else if ((type === "wake" || type === "recite") && typeof value.sessionId !== "string") {
+    return { ok: false, err: `sessionId is required for ${type}` };
+  }
+
+  return {
+    ok: true,
+    value: {
+      ...value,
+      type,
+      sessionId: typeof value.sessionId === "string" ? value.sessionId : "",
+      label: typeof value.label === "string" ? value.label : "",
+      announce: typeof value.announce === "string" ? value.announce : "",
+    } as TurnEvent,
+  };
+}
+
 /** Only a genuine turn end, or an explicitly opted-in reclassified Stop, owns audio. */
 export function shouldHandleTurnAudibly(
   event: Pick<TurnEvent, "type" | "backgroundWork">,
@@ -362,6 +455,86 @@ export function resolveWakeTarget(wake: TurnEvent, lastTurn: TurnEvent | null): 
 /** Wake/adopted exchanges listen first; ordinary turns read the remaining response first. */
 export function startsConversationByListening(event: Pick<TurnEvent, "type">, announcedCapture = false): boolean {
   return event.type === "wake" || announcedCapture;
+}
+
+export interface TargetedAudioCommandContext {
+  session?: Pick<SessionInfo, "cwd" | "pid"> | null;
+  known?: TurnEvent | null;
+  label?: string;
+  transcriptPath?: string;
+}
+
+/** Fill the daemon-owned routing metadata omitted by lightweight dashboard clients. */
+export function enrichTargetedAudioCommand(
+  event: InstantAudioCommand,
+  context: TargetedAudioCommandContext,
+): InstantAudioCommand {
+  const known = context.known ?? undefined;
+  const session = context.session ?? undefined;
+  const transcriptPath = event.transcriptPath
+    || known?.transcriptPath
+    || context.transcriptPath;
+  return {
+    ...known,
+    ...event,
+    label: event.label || context.label || known?.label || event.sessionId.slice(0, 8),
+    announce: event.announce ?? "",
+    cwd: event.cwd ?? session?.cwd ?? known?.cwd,
+    pid: event.pid ?? session?.pid ?? known?.pid,
+    ...(transcriptPath ? { transcriptPath } : {}),
+    ...(event.type === "recite" ? { mark: undefined } : {}),
+  };
+}
+
+export interface SocketTurnEventCallbacks {
+  busy(): boolean;
+  stopSpacebar(): void;
+  setSessionPaused(sessionId: string, paused: boolean): void;
+  setSessionMuted(sessionId: string, muted: boolean): void;
+  enrichAudioCommand(event: InstantAudioCommand): InstantAudioCommand;
+  enqueueInstant(event: InstantAudioCommand): void;
+  enqueue(event: TurnEvent): void;
+}
+
+/** Sparse dashboard commands carry only identity; CLI/MCP commands pre-resolve routing. */
+export function isLightweightTargetedAudioCommand(event: InstantAudioCommand): boolean {
+  return event.cwd === undefined
+    && event.pid === undefined
+    && event.transcriptPath === undefined
+    && event.mark === undefined;
+}
+
+/** Route dashboard/CLI socket commands through the same instant seams as terminal keys. */
+export function dispatchSocketTurnEvent(
+  event: TurnEvent,
+  callbacks: SocketTurnEventCallbacks,
+): void {
+  if (event.type === "spacebar") {
+    if (callbacks.busy()) callbacks.stopSpacebar();
+    return;
+  }
+
+  if (event.sessionId) {
+    if (event.type === "pause" || event.type === "resume") {
+      callbacks.setSessionPaused(event.sessionId, event.type === "pause");
+      return;
+    }
+    if (event.type === "mute" || event.type === "unmute") {
+      callbacks.setSessionMuted(event.sessionId, event.type === "mute");
+      return;
+    }
+    if (event.type === "wake" || event.type === "recite") {
+      const command = event as InstantAudioCommand;
+      if (isLightweightTargetedAudioCommand(command)) {
+        callbacks.enqueueInstant(callbacks.enrichAudioCommand(command));
+      } else {
+        callbacks.enqueue(command);
+      }
+      return;
+    }
+  }
+
+  callbacks.enqueue(event);
 }
 
 export type NameAddressRoute =
@@ -650,14 +823,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const rendererSelection = configureRenderer();
   const rendererLifecycle = installRendererLifecycle(rendererSelection.renderer);
   const theaterMode = rendererSelection.kind === "theater";
-  const resetTheaterTranscriptPrefix = (): void => {
-    if (theaterMode) setTranscriptPrefix("");
-  };
-  const resetReadingProgress = (): void => {
-    if (theaterMode) clearReadingProgress();
-  };
+  const resetConversationTranscriptPrefix = (): void => setTranscriptPrefix("");
+  const resetReadingProgress = (): void => clearReadingProgress();
   const updateReadingProgress = (text: string, spokenChars: number): void => {
-    if (theaterMode) setReadingProgress(text, spokenChars);
+    setReadingProgress(text, spokenChars);
   };
   const diagnosticsEnabled = recorderDiagnosticsEnabled();
   const queue: TurnEvent[] = [];
@@ -1067,6 +1236,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const restState = (): ConchState => (muted ? "muted" : pause.paused ? "paused" : "idle");
 
   let panelRenderVersion = 0;
+  let lastPublishedPanelState: PublishedState | null = null;
+
+  /** Publish progress against the last reconciled ledger without another registry scan. */
+  function publishLiveConversationState(): void {
+    if (!lastPublishedPanelState) return;
+    lastPublishedPanelState = refreshPublishedConversationState(
+      lastPublishedPanelState,
+      getLiveState(),
+      (recitingEvent ?? lastTurn)?.sessionId ?? null,
+      Date.now(),
+    );
+    publishSessionsFile(lastPublishedPanelState);
+  }
+
   async function renderSessionPanel(): Promise<void> {
     const version = ++panelRenderVersion;
     let snap: Awaited<ReturnType<typeof registrySnapshot>> = null;
@@ -1116,7 +1299,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       navSelectedId: null,
     });
     const nextActiveSessionId = activeSessionIdForRows(orderedRows, liveState, {
-      preferredSessionId: theaterMode ? recitingEvent?.sessionId : null,
+      preferredSessionId: recitingEvent?.sessionId,
       liveSessionIds: snap?.liveIds,
     });
 
@@ -1125,19 +1308,22 @@ export async function runDaemon(cfg: Config): Promise<void> {
       ? findTranscript(cfg.claudeDir, previewId)
       : undefined;
     const contentEvent = recitingEvent ?? lastTurn;
-    const liveReplyText = liveState.reading?.text ?? "";
     const [transcriptReplyText, previewText] = await Promise.all([
-      theaterMode && !liveReplyText && contentEvent?.transcriptPath
+      contentEvent?.transcriptPath
         ? lastAssistantText(contentEvent.transcriptPath).then(stripMarkdown)
         : Promise.resolve(""),
       previewPath
         ? lastAssistantText(previewPath).then(stripMarkdown)
         : Promise.resolve(""),
     ]);
-    const replyText = liveReplyText || transcriptReplyText;
     // Registry and transcript reads can overlap; only the newest complete model
     // may reach the renderer.
     commitLatestPanelRender(version, panelRenderVersion, () => {
+      // Partial transcription and reading progress can change while the registry
+      // or transcript is being read. Sample at commit so an older full render
+      // cannot overwrite the lightweight publisher with stale conversation data.
+      const committedLiveState = getLiveState();
+      const replyText = committedLiveState.reading?.text || transcriptReplyText;
       let navSelectedId: string | null;
       if (theaterMode) {
         // Absence is authoritative only for a complete registry read. A torn
@@ -1162,7 +1348,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         sessionStates,
         pausedSessionIds,
         mutedSessionIds,
-        live: liveState,
+        live: committedLiveState,
         mode: { muted, paused: pause.paused, holding: pending.size },
         activeSessionId: nextActiveSessionId,
         navSelectedId,
@@ -1170,7 +1356,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           ? {
             sessionId: contentEvent.sessionId,
             text: replyText,
-            spokenChars: liveState.reading?.spokenChars ?? 0,
+            spokenChars: committedLiveState.reading?.spokenChars ?? 0,
           }
           : null,
         panelOpen,
@@ -1191,14 +1377,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // cannot repaint a stale pause/mute banner over a newer toggle.
       model.mode = { muted, paused: pause.paused, holding: pending.size };
       renderPanel(model);
-      publishSessionsFile(buildPublishedState(
+      lastPublishedPanelState = buildPublishedState(
         model,
         new Map(
           [...latestTurnBySession].map(([sessionId, event]) => [sessionId, event.announce]),
         ),
         dismissedSessionIds,
         Date.now(),
-      ));
+      );
+      publishSessionsFile(lastPublishedPanelState);
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
     });
   }
@@ -1285,7 +1472,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       return { text: "", error: "resume was interrupted" };
     }
 
-    resetTheaterTranscriptPrefix();
+    resetConversationTranscriptPrefix();
     setState("listening", "who first");
     micOpen = true;
     try {
@@ -1294,7 +1481,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           ...cfg,
           listenWindowSecs: Math.min(cfg.listenWindowSecs, 10),
         },
-        listenHooks("who first", theaterMode ? () => "" : undefined),
+        listenHooks("who first", () => ""),
         {
           tag: "digest",
           onSessionStarted(session) {
@@ -1796,7 +1983,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         }
         // This fresh barge capture becomes a new reducer session below. Clear
         // any completed turn's theater-only prefix before recording is visible.
-        resetTheaterTranscriptPrefix();
+        resetConversationTranscriptPrefix();
         setState("recording", event.label);
         const initialCapture = barge.adopt();
         disposed = Boolean(initialCapture);
@@ -2095,7 +2282,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         if (gapSecs > 0) {
           // A read gap precedes the conversation reducer/hooks, so it must not
           // briefly expose the previous completed turn's transcript prefix.
-          resetTheaterTranscriptPrefix();
+          resetConversationTranscriptPrefix();
           setState("listening", event.label);
           let gapExternal: ExternalDictationAction | undefined;
           let resolveGapDone!: () => void;
@@ -2309,9 +2496,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const reducer = new DictationReducer({ holdSubmit: cfg.holdSubmit });
     const session = createDictationSession(cfg, listenHooks(
       event.label,
-      theaterMode
-        ? () => reducer.snapshot.buffer.map((segment) => segment.text).join(" ")
-        : undefined,
+      () => reducer.snapshot.buffer.map((segment) => segment.text).join(" "),
     ), {
       parent: traceParent ?? initialCaptureParent,
       traceSequence: nextTraceSequence,
@@ -2999,7 +3184,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     log("listening for yes or no...");
     const session = createDictationSession(
       cfg,
-      listenHooks(event.label, theaterMode ? () => "" : undefined),
+      listenHooks(event.label, () => ""),
       { tag: "permission" },
     );
     const texts: string[] = [];
@@ -3236,6 +3421,31 @@ export async function runDaemon(cfg: Config): Promise<void> {
       onChange: () => void renderSessionPanel(),
     });
   }
+  const enrichSocketAudioCommand = (event: InstantAudioCommand): InstantAudioCommand => {
+    const session = panelSessions.get(event.sessionId);
+    const known = latestTurnBySession.get(event.sessionId)
+      ?? (recitingEvent?.sessionId === event.sessionId ? recitingEvent : null)
+      ?? (lastTurn?.sessionId === event.sessionId ? lastTurn : null);
+    const label = panelLabels.get(event.sessionId)
+      ?? sessionStates.get(event.sessionId)?.label
+      ?? known?.label
+      ?? sessionLabel(session ?? null, session?.cwd);
+    return enrichTargetedAudioCommand(event, {
+      session,
+      known,
+      label,
+      transcriptPath: findTranscript(cfg.claudeDir, event.sessionId),
+    });
+  };
+  const socketTurnCallbacks: SocketTurnEventCallbacks = {
+    busy: () => busy,
+    stopSpacebar: () => stopReciting("spacebar"),
+    setSessionPaused: setSessionPausedWithDigest,
+    setSessionMuted: setSessionMutedWithDigest,
+    enrichAudioCommand: enrichSocketAudioCommand,
+    enqueueInstant: (event) => instantControls.enqueueInstant(event),
+    enqueue,
+  };
   const server = createServer({ allowHalfOpen: true }, (sock) => {
     let buf = "";
     let handled = false;
@@ -3248,7 +3458,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
         const value: unknown = JSON.parse(line);
         const control = dispatchControlMessage(value, configController);
         if (control.handled) response = control.response;
-        else enqueue(value as TurnEvent);
+        else {
+          const turn = validateSocketTurnEvent(value);
+          if (turn.ok) dispatchSocketTurnEvent(turn.value, socketTurnCallbacks);
+          else log(`ignoring malformed event: ${turn.err}`);
+        }
       } catch {
         log("ignoring malformed event");
       }
@@ -3416,6 +3630,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   void renderSessionPanel(); // show the dashboard immediately
   setKeybar(theaterMode ? THEATER_KEYBAR : FOOTER_KEYBAR);
   onLiveChange(() => void renderSessionPanel()); // repaint when speaking/recording/… flips
+  onLiveDataChange(publishLiveConversationState); // partials/progress reuse the reconciled ledger
   process.stdout.on("resize", () => {
     resizeRenderer();
     void renderSessionPanel(); // refresh the model and re-fit to the new width
@@ -3572,7 +3787,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   // Space remains the guaranteed stop while reciting or mid-exchange. Unlike
   // mode controls, it intentionally drains/submits every already-captured tail.
-  const stopReciting = (src: string) => {
+  function stopReciting(src: string): void {
     stopKey = true;
     speech.cancelCurrent();
     speech.cancelPendingAudio();
@@ -3581,7 +3796,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     markQueuedWakesForControl(queue, forgetQueuedAudioCommand);
     activeDictation?.requestExternal("spacebar");
     log(activeDictation?.session.micOpen || micOpen ? `⏹ ${src} — closing mic` : `⏹ ${src} — stopped`);
-  };
+  }
 
   const theaterControls: TheaterControlCallbacks = {
     manualSessionId: () => theaterMode

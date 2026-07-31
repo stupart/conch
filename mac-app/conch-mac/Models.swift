@@ -5,6 +5,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
     let ts: TimeInterval
     let mode: ModeState
     let live: LiveState
+    let reply: ConversationReply?
+    let preview: ConversationReply?
     let rows: [SessionRow]
     let dismissed: [String]
 
@@ -13,6 +15,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case ts
         case mode
         case live
+        case reply
+        case preview
         case rows
         case dismissed
     }
@@ -34,6 +38,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         ts = (try? container.decodeIfPresent(TimeInterval.self, forKey: .ts)) ?? 0
         mode = (try? container.decodeIfPresent(ModeState.self, forKey: .mode)) ?? ModeState()
         live = (try? container.decodeIfPresent(LiveState.self, forKey: .live)) ?? LiveState()
+        reply = try? container.decodeIfPresent(ConversationReply.self, forKey: .reply)
+        preview = try? container.decodeIfPresent(ConversationReply.self, forKey: .preview)
         dismissed = (try? container.decodeIfPresent([String].self, forKey: .dismissed)) ?? []
     }
 }
@@ -66,21 +72,117 @@ struct ModeState: Decodable, Equatable, Sendable {
 struct LiveState: Decodable, Equatable, Sendable {
     let state: String
     let label: String
+    let partial: String
+    let transcriptPrefix: String
+    let reading: ReadingProgress?
 
-    init(state: String = "idle", label: String = "") {
+    init(
+        state: String = "idle",
+        label: String = "",
+        partial: String = "",
+        transcriptPrefix: String = "",
+        reading: ReadingProgress? = nil
+    ) {
         self.state = state
         self.label = label
+        self.partial = partial
+        self.transcriptPrefix = transcriptPrefix
+        self.reading = reading
     }
 
     private enum CodingKeys: String, CodingKey {
         case state
         case label
+        case partial
+        case transcriptPrefix
+        case reading
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         state = (try? container.decodeIfPresent(String.self, forKey: .state)) ?? "idle"
         label = (try? container.decodeIfPresent(String.self, forKey: .label)) ?? ""
+        partial = (try? container.decodeIfPresent(String.self, forKey: .partial)) ?? ""
+        transcriptPrefix =
+            (try? container.decodeIfPresent(String.self, forKey: .transcriptPrefix)) ?? ""
+        reading = try? container.decodeIfPresent(ReadingProgress.self, forKey: .reading)
+    }
+
+    var isCapturing: Bool {
+        state == "listening" || state == "recording"
+    }
+
+    var isExchangeActive: Bool {
+        isCapturing || state == "speaking" || state == "transcribing"
+    }
+}
+
+struct ReadingProgress: Decodable, Equatable, Sendable {
+    let text: String
+    let spokenChars: Int
+
+    init(text: String = "", spokenChars: Int = 0) {
+        self.text = text
+        self.spokenChars = spokenChars
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case text
+        case spokenChars
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        text = (try? container.decodeIfPresent(String.self, forKey: .text)) ?? ""
+        spokenChars = Self.decodeCharacterCount(from: container)
+    }
+
+    fileprivate static func decodeCharacterCount<Key: CodingKey>(
+        from container: KeyedDecodingContainer<Key>,
+        forKey key: Key
+    ) -> Int {
+        if let count = try? container.decodeIfPresent(Int.self, forKey: key) {
+            return max(0, count)
+        }
+        if let number = try? container.decodeIfPresent(Double.self, forKey: key),
+           number.isFinite {
+            if number <= 0 { return 0 }
+            if number >= Double(Int.max) { return Int.max }
+            return Int(number)
+        }
+        if let text = try? container.decodeIfPresent(String.self, forKey: key),
+           let count = Int(text) {
+            return max(0, count)
+        }
+        return 0
+    }
+
+    private static func decodeCharacterCount(
+        from container: KeyedDecodingContainer<CodingKeys>
+    ) -> Int {
+        decodeCharacterCount(from: container, forKey: .spokenChars)
+    }
+}
+
+struct ConversationReply: Decodable, Equatable, Sendable {
+    let sessionId: String
+    let text: String
+    let spokenChars: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionId
+        case text
+        case spokenChars
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = (try? container.decodeIfPresent(String.self, forKey: .sessionId)) ?? ""
+        text = (try? container.decodeIfPresent(String.self, forKey: .text)) ?? ""
+        spokenChars = ReadingProgress.decodeCharacterCount(
+            from: container,
+            forKey: .spokenChars
+        )
     }
 }
 
@@ -154,6 +256,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     let id: String
     let label: String
     let status: RowStatus?
+    /// Epoch milliseconds for the status currently visible on this row.
+    let at: Double?
     let needsResponse: Bool
     let detail: String?
     let review: ReviewInfo?
@@ -167,6 +271,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case id
         case label
         case status
+        case at
         case needsResponse
         case detail
         case review
@@ -183,6 +288,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         id = try container.decode(String.self, forKey: .id)
         label = (try? container.decodeIfPresent(String.self, forKey: .label)) ?? id
         status = try? container.decodeIfPresent(RowStatus.self, forKey: .status)
+        at = Timestamp.decode(from: container, forKey: .at)
         needsResponse =
             (try? container.decodeIfPresent(Bool.self, forKey: .needsResponse)) ?? false
         detail = try? container.decodeIfPresent(String.self, forKey: .detail)
@@ -192,5 +298,23 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         live = try? container.decodeIfPresent(String.self, forKey: .live)
         active = (try? container.decodeIfPresent(Bool.self, forKey: .active)) ?? false
         snippet = try? container.decodeIfPresent(String.self, forKey: .snippet)
+    }
+}
+
+private enum Timestamp {
+    static func decode<Key: CodingKey>(
+        from container: KeyedDecodingContainer<Key>,
+        forKey key: Key
+    ) -> Double? {
+        if let number = try? container.decodeIfPresent(Double.self, forKey: key),
+           number.isFinite {
+            return number
+        }
+        if let text = try? container.decodeIfPresent(String.self, forKey: key),
+           let number = Double(text),
+           number.isFinite {
+            return number
+        }
+        return nil
     }
 }
