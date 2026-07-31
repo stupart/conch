@@ -639,3 +639,13 @@ test("lastAssistantText keeps a code fence line-anchored across entry boundaries
   expect(text).toContain("That fixed the build. Ship it.");
   expect(text).not.toContain("rm -rf");
 });
+
+test("speakable drops decorative glyphs a voice would announce literally", () => {
+  // an arrow used to be read aloud as "right arrow", a star as "star", emoji by name
+  expect(speakable("Fixed daemon.ts \u2192 tests pass \u2705")).toBe("Fixed daemon.ts tests pass");
+  expect(speakable("\u2b50 Review ready")).toBe("Review ready");
+  expect(speakable("Steps: \u25cf one \u25cb two")).toBe("Steps: one two");
+  expect(speakable("Done \ud83c\udf89 shipped it!")).toBe("Done shipped it!");
+  // real prosody must survive: em dash + ellipsis are how a sentence breathes
+  expect(speakable("It works \u2014 really well\u2026 yes.")).toBe("It works \u2014 really well\u2026 yes.");
+});

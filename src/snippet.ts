@@ -8,6 +8,24 @@ const FILESYSTEM_PATH = /(^|[\s([{'":=])((?:(?:~?|\.\.?)\/|[A-Za-z0-9_.-]+\/)[^\
 const LONG_CLI_FLAG =
   /(^|[\s([{'"])(--[A-Za-z0-9][A-Za-z0-9_-]*(?:=(?:"[^"]*"|'[^']*'|[^\s)\]}]*))?)/g;
 
+// Glyphs a screen reads fine but a voice announces literally — an arrow becomes
+// "right arrow", a ⭐ becomes "star", an emoji gets a whole spoken name. Dropped
+// rather than translated: they are decoration in a reply, and the sentence still
+// reads correctly without them. Deliberately EXCLUDES General Punctuation
+// (em dash, ellipsis) — those are real prosody and should survive.
+const DECORATIVE_GLYPH = new RegExp(
+  [
+    "\\p{Extended_Pictographic}", // emoji
+    "[\\u2190-\\u21FF]", // arrows  → ← ↑ ↓ ⇒
+    "[\\u2600-\\u27BF]", // misc symbols + dingbats  ✅ ✗ ★ ➜ ⚠
+    "[\\u2B00-\\u2BFF]", // misc symbols and arrows  ⭐
+    "[\\u25A0-\\u25FF]", // geometric shapes  ● ○ ▶ (conch's own status glyphs)
+    "[\\u2022\\u2023\\u25E6]", // bullets
+    "[\\uFE00-\\uFE0F\\u200D]", // variation selectors + ZWJ (emoji sequence glue)
+  ].join("|"),
+  "gu",
+);
+
 function retainTrailingPunctuation(replacement: string, matched: string): string {
   const trailing = matched.match(/[)\]}.,;:!?]+$/)?.[0] ?? "";
   return replacement + trailing;
@@ -27,6 +45,7 @@ export function speakable(text: string): string {
       return name ? `${prefix}${name}${trailing}` : matched;
     })
     .replace(LONG_CLI_FLAG, "$1")
+    .replace(DECORATIVE_GLYPH, " ")
     .replace(/\(\s*\)|\[\s*\]|\{\s*\}/g, "")
     .replace(/\s+([,.;:!?])/g, "$1")
     .replace(/\s+/g, " ")
