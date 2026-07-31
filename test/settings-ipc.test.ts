@@ -2,7 +2,14 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
-import { SETTING_DESCRIPTORS, sendControlMessage, validateControlMessage, type SettingValue } from "../src/settings.ts";
+import {
+  SETTING_DESCRIPTORS,
+  configSnapshotEntry,
+  sendControlMessage,
+  validateControlMessage,
+  type ConfigSnapshotEntry,
+  type SettingValue,
+} from "../src/settings.ts";
 
 interface Fixture {
   root: string;
@@ -25,10 +32,13 @@ const roots: string[] = [];
 
 type SnapshotEntry = { value: SettingValue; source: "env" | "file" | "default"; diagnostic?: string };
 
-function configSnapshot(overrides: Partial<Record<string, SnapshotEntry>> = {}): Record<string, SnapshotEntry> {
+function configSnapshot(overrides: Partial<Record<string, SnapshotEntry>> = {}): Record<string, ConfigSnapshotEntry> {
   return Object.fromEntries(SETTING_DESCRIPTORS.map((descriptor) => [
     descriptor.key,
-    overrides[descriptor.key] ?? { value: descriptor.default, source: "default" },
+    configSnapshotEntry(
+      descriptor,
+      overrides[descriptor.key] ?? { value: descriptor.default, source: "default" },
+    ),
   ]));
 }
 

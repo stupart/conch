@@ -3,6 +3,7 @@ import { SettingsPauseLifecycle } from "../src/pause-controller.ts";
 import { SettingsOverlay, type SettingsOverlayConfigController } from "../src/settings-overlay.ts";
 import {
   SETTING_DESCRIPTORS,
+  configSnapshotEntry,
   type ConfigAck,
   type ConfigControlMessage,
   type ConfigControlResponse,
@@ -13,7 +14,10 @@ import {
 function snapshot(): ConfigSnapshot {
   const value = Object.create(null) as ConfigSnapshot;
   for (const descriptor of SETTING_DESCRIPTORS) {
-    value[descriptor.key] = { value: descriptor.default, source: "default" };
+    value[descriptor.key] = configSnapshotEntry(descriptor, {
+      value: descriptor.default,
+      source: "default",
+    });
   }
   return value;
 }

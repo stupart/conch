@@ -17,6 +17,7 @@ import { speak, probeTtsServer, voiceFor, setVoiceOverride } from "./speak.ts";
 import { emitRecorderTraces } from "./diagnostics.ts";
 import {
   SETTING_DESCRIPTORS,
+  configSnapshotEntry,
   getSettingDescriptor,
   loadSettingResolutions,
   loadSettingsFile,
@@ -121,16 +122,20 @@ function freshResolution(descriptor: SettingDescriptor): SettingResolution {
 }
 
 function localSnapshot(): ConfigSnapshot {
-  const snapshot = loadSettingResolutions({ env: process.env, settingsPath });
+  const resolutions = loadSettingResolutions({ env: process.env, settingsPath });
+  const snapshot = Object.create(null) as ConfigSnapshot;
   const loaded = loadSettingsFile(settingsPath);
   for (const descriptor of SETTING_DESCRIPTORS) {
-    if (descriptor.apply !== "hook") continue;
-    const resolution = resolveSettingFromLoaded(descriptor, process.env, loaded, false, true);
-    const caveat = hookCaveat(descriptor);
-    snapshot[descriptor.key] = {
-      ...resolution,
-      diagnostic: resolution.diagnostic ? `${resolution.diagnostic}; ${caveat}` : caveat,
-    };
+    let resolution = resolutions[descriptor.key];
+    if (descriptor.apply === "hook") {
+      resolution = resolveSettingFromLoaded(descriptor, process.env, loaded, false, true);
+      const caveat = hookCaveat(descriptor);
+      resolution = {
+        ...resolution,
+        diagnostic: resolution.diagnostic ? `${resolution.diagnostic}; ${caveat}` : caveat,
+      };
+    }
+    snapshot[descriptor.key] = configSnapshotEntry(descriptor, resolution);
   }
   return snapshot;
 }

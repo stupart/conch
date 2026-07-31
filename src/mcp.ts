@@ -52,6 +52,11 @@ export interface PublishedSessionRow {
   label: string;
   cwd?: string;
   status: PublishedSessionStatus | null;
+  /** Epoch-ms for the status currently visible on this row. */
+  at?: number;
+  voice?: string;
+  prioritized?: boolean;
+  navSelected?: boolean;
   needsResponse: boolean;
   detail?: string;
   review?: ReviewRequest;
@@ -679,10 +684,12 @@ export function createMcpToolHandlers(
       );
       const snapshot = snapshotControlResult(result);
       if (!hasKey) return { kind: "config-snapshot", snapshot };
+      const { kind: settingKind, ...entry } = snapshot[canonicalKey!];
       return {
         kind: "config-value",
         key: canonicalKey!,
-        ...snapshot[canonicalKey!],
+        settingKind,
+        ...entry,
       };
     },
 

@@ -606,8 +606,29 @@ export type ConfigControlMessage =
   | { kind: "get-config" }
   | { kind: "unset-config"; key: SettingKey };
 
-export interface ConfigSnapshotEntry extends SettingResolution {}
+export interface ConfigSnapshotEntry extends SettingResolution {
+  kind: SettingDescriptor["kind"];
+  bounds: SettingBounds | null;
+  choices?: readonly SettingValue[];
+  default: SettingValue;
+  help: string;
+}
 export type ConfigSnapshot = Record<SettingKey, ConfigSnapshotEntry>;
+
+/** Attach presentation metadata from the registry to one resolved wire value. */
+export function configSnapshotEntry(
+  descriptor: SettingDescriptor,
+  resolution: SettingResolution,
+): ConfigSnapshotEntry {
+  return {
+    ...resolution,
+    kind: descriptor.kind,
+    bounds: descriptor.bounds,
+    ...(descriptor.choices === undefined ? {} : { choices: descriptor.choices }),
+    default: descriptor.default,
+    help: descriptor.help,
+  };
+}
 
 export type ConfigAck = {
   kind: "config-ack";
@@ -627,6 +648,35 @@ export type ConfigControlResponse =
 
 function record(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function validSettingKind(value: unknown): value is SettingDescriptor["kind"] {
+  return value === "number" || value === "integer" || value === "boolean" || value === "enum";
+}
+
+function validateSnapshotBounds(value: unknown): ParseResult<SettingBounds | null> {
+  if (value === null) return { ok: true, value: null };
+  if (!record(value)) return { ok: false, err: "bounds must be an object or null" };
+  for (const key of ["min", "max"] as const) {
+    if (value[key] !== undefined && (typeof value[key] !== "number" || !Number.isFinite(value[key]))) {
+      return { ok: false, err: `${key} bound must be a finite number` };
+    }
+  }
+  for (const key of ["minInclusive", "maxInclusive", "integer"] as const) {
+    if (value[key] !== undefined && typeof value[key] !== "boolean") {
+      return { ok: false, err: `${key} bound must be boolean` };
+    }
+  }
+  return {
+    ok: true,
+    value: {
+      ...(value.min === undefined ? {} : { min: value.min as number }),
+      ...(value.max === undefined ? {} : { max: value.max as number }),
+      ...(value.minInclusive === undefined ? {} : { minInclusive: value.minInclusive as boolean }),
+      ...(value.maxInclusive === undefined ? {} : { maxInclusive: value.maxInclusive as boolean }),
+      ...(value.integer === undefined ? {} : { integer: value.integer as boolean }),
+    },
+  };
 }
 
 export function isControlMessageCandidate(value: unknown): boolean {
@@ -708,10 +758,45 @@ export function validateControlResponse(value: unknown): ParseResult<ConfigContr
     if (entry.diagnostic !== undefined && typeof entry.diagnostic !== "string") {
       return { ok: false, err: `invalid config snapshot diagnostic for ${descriptor.key}` };
     }
+    const kind = entry.kind === undefined ? descriptor.kind : entry.kind;
+    if (!validSettingKind(kind)) {
+      return { ok: false, err: `invalid config snapshot kind for ${descriptor.key}` };
+    }
+    const bounds = entry.bounds === undefined
+      ? { ok: true, value: descriptor.bounds } as const
+      : validateSnapshotBounds(entry.bounds);
+    if (!bounds.ok) return { ok: false, err: `invalid config snapshot bounds for ${descriptor.key}: ${bounds.err}` };
+    const parsedDefault = descriptor.parse(entry.default === undefined ? descriptor.default : entry.default);
+    if (!parsedDefault.ok) return { ok: false, err: `invalid config snapshot default for ${descriptor.key}` };
+    const help = entry.help === undefined ? descriptor.help : entry.help;
+    if (typeof help !== "string") {
+      return { ok: false, err: `invalid config snapshot help for ${descriptor.key}` };
+    }
+    let choices: SettingValue[] | undefined = "choices" in descriptor
+      ? [...descriptor.choices]
+      : undefined;
+    if (entry.choices !== undefined) {
+      if (!Array.isArray(entry.choices)) {
+        return { ok: false, err: `invalid config snapshot choices for ${descriptor.key}` };
+      }
+      choices = [];
+      for (const choice of entry.choices) {
+        const parsedChoice = descriptor.parse(choice);
+        if (!parsedChoice.ok) {
+          return { ok: false, err: `invalid config snapshot choice for ${descriptor.key}` };
+        }
+        choices.push(parsedChoice.value);
+      }
+    }
     snapshot[descriptor.key] = {
       value: parsed.value,
       source: entry.source,
       ...(entry.diagnostic === undefined ? {} : { diagnostic: entry.diagnostic }),
+      kind,
+      bounds: bounds.value,
+      ...(choices === undefined ? {} : { choices }),
+      default: parsedDefault.value,
+      help,
     };
   }
   return { ok: true, value: { kind: "config-snapshot", snapshot } };

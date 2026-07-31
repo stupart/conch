@@ -6,7 +6,7 @@ export interface PanelLiveState {
   state: PanelConchState;
   label: string;
   partial: string;
-  /** Theater-only committed transcript shown before the current live partial. */
+  /** Published committed transcript; theater draws it before the current live partial. */
   transcriptPrefix?: string;
   /** Chunk-level reading progress. The audio backend does not expose word timing. */
   reading?: { text: string; spokenChars: number };
@@ -107,6 +107,12 @@ export interface PublishedSessionRow {
   status: SessionStatus | null;
   /** Epoch-ms for the status currently visible on this row. */
   at?: number;
+  /** Resolved effective voice, whether pinned or automatically assigned. */
+  voice?: string;
+  /** Present only for sessions explicitly promoted in the hand-off order. */
+  prioritized?: boolean;
+  /** Present only for the row currently selected by external navigation. */
+  navSelected?: boolean;
   needsResponse: boolean;
   detail?: string;
   paused: boolean;
@@ -209,6 +215,11 @@ export function buildPublishedState(
   snippets: ReadonlyMap<string, string>,
   dismissed: ReadonlySet<string>,
   now: number,
+  options: {
+    /** Resolve the effective voice, including stable automatic assignment. */
+    voiceForLabel?(label: string): string | undefined;
+    prioritizedSessionIds?: ReadonlySet<string>;
+  } = {},
 ): PublishedState {
   return {
     v: 1,
@@ -217,32 +228,40 @@ export function buildPublishedState(
     live: publishedLiveState(model.live),
     ...(model.reply ? { reply: publishedReply(model.reply) } : {}),
     ...(model.preview ? { preview: publishedReply(model.preview) } : {}),
-    rows: model.rows.map((row) => ({
-      id: row.sessionId,
-      label: row.label,
-      status: row.status,
-      ...(row.at !== undefined ? { at: row.at } : {}),
-      needsResponse: row.status === "needs",
-      ...(row.detail !== undefined ? { detail: row.detail } : {}),
-      paused: row.paused,
-      muted: row.muted,
-      live: row.liveGlyph,
-      active: row.active,
-      ...(snippets.has(row.sessionId)
-        ? { snippet: snippets.get(row.sessionId)! }
-        : {}),
-      ...(row.review
-        ? {
-          review: {
-            summary: row.review.summary,
-            ...(row.review.link ? { link: row.review.link } : {}),
-            // Latch time — external viewers need it to pick the NEWEST review
-            // when more than one is pending, instead of guessing.
-            ...(row.review.at !== undefined ? { at: row.review.at } : {}),
-          },
-        }
-        : {}),
-    })),
+    rows: model.rows.map((row) => {
+      const voice = options.voiceForLabel?.(row.label)?.trim();
+      return {
+        id: row.sessionId,
+        label: row.label,
+        status: row.status,
+        ...(row.at !== undefined ? { at: row.at } : {}),
+        ...(voice ? { voice } : {}),
+        ...(options.prioritizedSessionIds?.has(row.sessionId)
+          ? { prioritized: true as const }
+          : {}),
+        ...(row.navSelected ? { navSelected: true as const } : {}),
+        needsResponse: row.status === "needs",
+        ...(row.detail !== undefined ? { detail: row.detail } : {}),
+        paused: row.paused,
+        muted: row.muted,
+        live: row.liveGlyph,
+        active: row.active,
+        ...(snippets.has(row.sessionId)
+          ? { snippet: snippets.get(row.sessionId)! }
+          : {}),
+        ...(row.review
+          ? {
+            review: {
+              summary: row.review.summary,
+              ...(row.review.link ? { link: row.review.link } : {}),
+              // Latch time — external viewers need it to pick the NEWEST review
+              // when more than one is pending, instead of guessing.
+              ...(row.review.at !== undefined ? { at: row.review.at } : {}),
+            },
+          }
+          : {}),
+      };
+    }),
     dismissed: [...dismissed],
   };
 }
