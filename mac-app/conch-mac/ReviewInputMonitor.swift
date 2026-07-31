@@ -4,30 +4,28 @@ import SwiftUI
 struct ReviewInputMonitor: NSViewRepresentable {
     let presentationID: UUID
     let onDismiss: () -> Void
-    let onMouseActivity: () -> Void
+    let onUserActivity: () -> Void
 
     final class Coordinator {
         var presentationID: UUID
         var onDismiss: () -> Void
-        var onMouseActivity: () -> Void
+        var onUserActivity: () -> Void
         weak var view: PassThroughView?
         var mouseMovementLeaseID: ObjectIdentifier?
         var keyMonitor: Any?
-        var gestureMonitor: Any?
+        var swipeMonitor: Any?
         var mouseMonitor: Any?
-        var scrollDistance: CGFloat = 0
-        var lastScrollTimestamp: TimeInterval = 0
         var lastMouseActivityTimestamp: TimeInterval = 0
         var didTrigger = false
 
         init(
             presentationID: UUID,
             onDismiss: @escaping () -> Void,
-            onMouseActivity: @escaping () -> Void
+            onUserActivity: @escaping () -> Void
         ) {
             self.presentationID = presentationID
             self.onDismiss = onDismiss
-            self.onMouseActivity = onMouseActivity
+            self.onUserActivity = onUserActivity
         }
 
         deinit {
@@ -45,6 +43,7 @@ struct ReviewInputMonitor: NSViewRepresentable {
                 guard let self, self.belongsToMonitoredWindow(event) else {
                     return event
                 }
+                self.onUserActivity()
                 guard event.keyCode == 53 else {
                     return event
                 }
@@ -53,45 +52,22 @@ struct ReviewInputMonitor: NSViewRepresentable {
                 return nil
             }
 
-            gestureMonitor = NSEvent.addLocalMonitorForEvents(
-                matching: [.scrollWheel, .swipe]
+            swipeMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: .swipe
             ) { [weak self] event in
                 guard let self, self.belongsToMonitoredWindow(event) else {
                     return event
                 }
 
                 guard self.isAtTopEdge(event) else {
-                    self.resetScroll()
                     return event
                 }
 
-                let delta = event.scrollingDeltaY != 0
-                    ? event.scrollingDeltaY
-                    : event.deltaY
-                guard delta > 0 else {
-                    self.resetScroll()
+                guard event.deltaY > 0 else {
                     return event
                 }
 
-                if event.type == .swipe {
-                    self.dismissOnce()
-                    return event
-                }
-
-                if event.phase.contains(.began)
-                    || event.timestamp - self.lastScrollTimestamp > 0.3 {
-                    self.scrollDistance = 0
-                }
-                self.lastScrollTimestamp = event.timestamp
-                self.scrollDistance += event.hasPreciseScrollingDeltas ? delta : delta * 12
-
-                if self.scrollDistance > 42 {
-                    self.dismissOnce()
-                }
-
-                if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
-                    self.resetScroll()
-                }
+                self.dismissOnce()
                 return event
             }
 
@@ -109,7 +85,7 @@ struct ReviewInputMonitor: NSViewRepresentable {
 
                 if event.timestamp - self.lastMouseActivityTimestamp >= 0.08 {
                     self.lastMouseActivityTimestamp = event.timestamp
-                    self.onMouseActivity()
+                    self.onUserActivity()
                 }
                 return event
             }
@@ -122,9 +98,9 @@ struct ReviewInputMonitor: NSViewRepresentable {
                 NSEvent.removeMonitor(keyMonitor)
                 self.keyMonitor = nil
             }
-            if let gestureMonitor {
-                NSEvent.removeMonitor(gestureMonitor)
-                self.gestureMonitor = nil
+            if let swipeMonitor {
+                NSEvent.removeMonitor(swipeMonitor)
+                self.swipeMonitor = nil
             }
             if let mouseMonitor {
                 NSEvent.removeMonitor(mouseMonitor)
@@ -168,11 +144,6 @@ struct ReviewInputMonitor: NSViewRepresentable {
             return distanceFromTop >= 0 && distanceFromTop <= 52
         }
 
-        private func resetScroll() {
-            scrollDistance = 0
-            lastScrollTimestamp = 0
-        }
-
         private func dismissOnce() {
             guard !didTrigger else { return }
             didTrigger = true
@@ -184,7 +155,7 @@ struct ReviewInputMonitor: NSViewRepresentable {
         Coordinator(
             presentationID: presentationID,
             onDismiss: onDismiss,
-            onMouseActivity: onMouseActivity
+            onUserActivity: onUserActivity
         )
     }
 
@@ -198,9 +169,10 @@ struct ReviewInputMonitor: NSViewRepresentable {
         if context.coordinator.presentationID != presentationID {
             context.coordinator.presentationID = presentationID
             context.coordinator.didTrigger = false
+            context.coordinator.lastMouseActivityTimestamp = 0
         }
         context.coordinator.onDismiss = onDismiss
-        context.coordinator.onMouseActivity = onMouseActivity
+        context.coordinator.onUserActivity = onUserActivity
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
