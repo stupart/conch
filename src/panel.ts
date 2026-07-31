@@ -112,7 +112,7 @@ export interface PublishedSessionRow {
   snippet?: string;
   /** The deliverable to surface, when this row is in review. Carries the link so
    * external consumers (the Mac/mobile app) can render it, not just the summary. */
-  review?: { summary: string; link?: string };
+  review?: { summary: string; link?: string; at?: number };
 }
 
 export interface PublishedState {
@@ -160,6 +160,9 @@ export function buildPublishedState(
           review: {
             summary: row.review.summary,
             ...(row.review.link ? { link: row.review.link } : {}),
+            // Latch time — external viewers need it to pick the NEWEST review
+            // when more than one is pending, instead of guessing.
+            ...(row.review.at !== undefined ? { at: row.review.at } : {}),
           },
         }
         : {}),

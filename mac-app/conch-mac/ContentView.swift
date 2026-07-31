@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
@@ -13,11 +14,16 @@ struct ContentView: View {
         } ?? []
 
         return indexedItems.sorted { left, right in
-            if left.item.reviewedAt != nil || right.item.reviewedAt != nil {
-                return (left.item.reviewedAt ?? -.greatestFiniteMagnitude)
-                    < (right.item.reviewedAt ?? -.greatestFiniteMagnitude)
+            switch (left.item.reviewedAt, right.item.reviewedAt) {
+            case let (leftDate?, rightDate?) where leftDate != rightDate:
+                return leftDate < rightDate
+            case (nil, _?):
+                return true
+            case (_?, nil):
+                return false
+            default:
+                return left.index < right.index
             }
-            return left.index < right.index
         }
         .map(\.item)
     }
@@ -76,9 +82,9 @@ struct ContentView: View {
             if let activeReview {
                 ReviewTakeover(
                     item: activeReview,
-                    items: reviewItems,
+                    items: visibleReviewItems,
                     onSelect: selectReview,
-                    onClose: returnToDashboard
+                    onClose: { dismissReview(activeReview) }
                 )
                 .transition(reviewTransition)
                 .zIndex(1)
@@ -89,9 +95,15 @@ struct ContentView: View {
             suppressedReviewIDs.formIntersection(currentIDs)
 
             let addedIDs = currentIDs.subtracting(previousIDs)
-            if let newest = reviewItems.last(where: { addedIDs.contains($0.id) }) {
+            let addedReviews = reviewItems.filter { addedIDs.contains($0.id) }
+            for review in addedReviews {
+                ReviewNotifications.shared.postOnce(for: review)
+            }
+
+            if let newest = addedReviews.last {
                 suppressedReviewIDs.remove(newest.id)
                 selectedReviewID = newest.id
+                bringReviewToFront()
                 return
             }
 
@@ -112,8 +124,22 @@ struct ContentView: View {
         selectedReviewID = item.id
     }
 
-    private func returnToDashboard() {
-        suppressedReviewIDs.formUnion(reviewIDs)
+    private func dismissReview(_ item: ReviewItem) {
+        suppressedReviewIDs.insert(item.id)
         selectedReviewID = nil
+    }
+
+    private func bringReviewToFront() {
+        let window = NSApp.keyWindow
+            ?? NSApp.mainWindow
+            ?? NSApp.windows.first(where: { $0.isVisible && $0.canBecomeKey })
+            ?? NSApp.windows.first(where: \.canBecomeKey)
+
+        NSApp.activate(ignoringOtherApps: true)
+        if window?.isMiniaturized == true {
+            window?.deminiaturize(nil)
+        }
+        window?.orderFrontRegardless()
+        window?.makeKey()
     }
 }

@@ -119,7 +119,8 @@ extension RowStatus: Decodable {
 struct ReviewInfo: Decodable, Equatable, Sendable {
     let summary: String
     let link: String?
-    let at: TimeInterval?
+    /// Epoch milliseconds supplied by newer daemon snapshots.
+    let at: Double?
 
     private enum CodingKeys: String, CodingKey {
         case summary
@@ -136,12 +137,14 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
 
     private static func decodeTimestamp(
         from container: KeyedDecodingContainer<CodingKeys>
-    ) -> TimeInterval? {
-        if let number = try? container.decodeIfPresent(TimeInterval.self, forKey: .at) {
+    ) -> Double? {
+        if let number = try? container.decodeIfPresent(Double.self, forKey: .at),
+           number.isFinite {
             return number
         }
         if let text = try? container.decodeIfPresent(String.self, forKey: .at) {
-            return TimeInterval(text)
+            let number = Double(text)
+            return number?.isFinite == true ? number : nil
         }
         return nil
     }

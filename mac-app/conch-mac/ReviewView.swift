@@ -46,12 +46,25 @@ struct ReviewTakeover: View {
         items.firstIndex(of: item) ?? 0
     }
 
+    private var closeHelp: String {
+        items.count > 1
+            ? "Close review and show next (Esc)"
+            : "Return to dashboard (Esc)"
+    }
+
+    private var closeAccessibilityLabel: String {
+        items.count > 1
+            ? "Close review and show next"
+            : "Return to dashboard"
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             ReviewContent(
                 link: item.link,
                 isWebLoading: $isWebLoading
             )
+            .id(item.id)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             captionBar
@@ -68,17 +81,16 @@ struct ReviewTakeover: View {
             ReviewInputMonitor(
                 presentationID: inputPresentationID,
                 onDismiss: onClose,
-                onMouseActivity: revealChrome
+                onUserActivity: handleUserActivity
             )
         )
         .onAppear {
             inputPresentationID = UUID()
-            isChromeVisible = true
-            scheduleChromeHide()
+            showChromeUntilUserActivity()
         }
         .onChange(of: item.id) { _, _ in
             inputPresentationID = UUID()
-            revealChrome()
+            showChromeUntilUserActivity()
         }
         .onDisappear {
             chromeHideTask?.cancel()
@@ -95,8 +107,8 @@ struct ReviewTakeover: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(ReviewPressButtonStyle())
-            .help("Return to dashboard (Esc)")
-            .accessibilityLabel("Return to dashboard")
+            .help(closeHelp)
+            .accessibilityLabel(closeAccessibilityLabel)
 
             Image(systemName: "star.fill")
                 .font(.system(size: 11, weight: .medium))
@@ -159,9 +171,9 @@ struct ReviewTakeover: View {
                 reduceMotion ? nil : .easeOut(duration: 0.15),
                 value: isCloseHovered
             )
-            .help("Return to dashboard (Esc)")
+            .help(closeHelp)
             .keyboardShortcut(.cancelAction)
-            .accessibilityLabel("Return to dashboard")
+            .accessibilityLabel(closeAccessibilityLabel)
         }
         .padding(.leading, 2)
         .padding(.trailing, 2)
@@ -196,7 +208,7 @@ struct ReviewTakeover: View {
         onSelect(items[(selectedIndex + 1) % items.count])
     }
 
-    private func revealChrome() {
+    private func handleUserActivity() {
         chromeHideTask?.cancel()
 
         if !isChromeVisible {
@@ -206,6 +218,17 @@ struct ReviewTakeover: View {
         }
 
         scheduleChromeHide()
+    }
+
+    private func showChromeUntilUserActivity() {
+        chromeHideTask?.cancel()
+        chromeHideTask = nil
+        isCloseHovered = false
+
+        guard !isChromeVisible else { return }
+        withAnimation(.easeOut(duration: reduceMotion ? 0.10 : 0.18)) {
+            isChromeVisible = true
+        }
     }
 
     private func scheduleChromeHide() {
@@ -229,6 +252,8 @@ struct ReviewTakeover: View {
 private struct ReviewContent: View {
     let link: String
     @Binding var isWebLoading: Bool
+    @State private var navigationFailure: DeliverableNavigationFailure?
+    @State private var reloadID = UUID()
 
     var body: some View {
         switch DeliverableSource(link: link) {
@@ -240,12 +265,119 @@ private struct ReviewContent: View {
                     isWebLoading = false
                 }
         case .web:
-            DeliverableWebView(
-                link: link,
-                isLoading: $isWebLoading
-            )
+            ZStack {
+                DeliverableWebView(
+                    link: link,
+                    reloadID: reloadID,
+                    isLoading: $isWebLoading,
+                    onNavigationFailure: { failure in
+                        navigationFailure = failure
+                    }
+                )
+
+                if let navigationFailure {
+                    DeliverableFailureView(
+                        failure: navigationFailure,
+                        onRetry: retryNavigation,
+                        onOpenInBrowser: {
+                            NSWorkspace.shared.open(navigationFailure.url)
+                        }
+                    )
+                }
+            }
             .background(ConchPalette.bg)
         }
+    }
+
+    private func retryNavigation() {
+        navigationFailure = nil
+        isWebLoading = true
+        reloadID = UUID()
+    }
+}
+
+private struct DeliverableFailureView: View {
+    let failure: DeliverableNavigationFailure
+    let onRetry: () -> Void
+    let onOpenInBrowser: () -> Void
+
+    var body: some View {
+        VStack {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(ConchPalette.statusNeeds)
+                        .accessibilityHidden(true)
+
+                    Text("Couldn’t load deliverable")
+                        .font(ConchTypography.font(size: 16, weight: .medium))
+                        .foregroundStyle(ConchPalette.textPrimary)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(failure.link)
+                        .font(ConchTypography.font(size: 11.5))
+                        .tracking(-0.2)
+                        .foregroundStyle(ConchPalette.accent)
+                        .lineLimit(4)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                        .help(failure.link)
+
+                    Text(failure.message)
+                        .font(ConchTypography.font(size: 12))
+                        .tracking(-0.2)
+                        .foregroundStyle(ConchPalette.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: 10) {
+                    Button(action: onRetry) {
+                        Label("Retry", systemImage: "arrow.clockwise")
+                            .font(ConchTypography.font(size: 12, weight: .medium))
+                            .foregroundStyle(ConchPalette.textPrimary)
+                            .padding(.horizontal, 14)
+                            .frame(minHeight: 40)
+                            .background(
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .fill(ConchPalette.accent.opacity(0.20))
+                            )
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(ReviewPressButtonStyle())
+
+                    Button(action: onOpenInBrowser) {
+                        Label("Open in Browser", systemImage: "safari")
+                            .font(ConchTypography.font(size: 12, weight: .medium))
+                            .foregroundStyle(ConchPalette.textPrimary)
+                            .padding(.horizontal, 14)
+                            .frame(minHeight: 40)
+                            .background(
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .fill(ConchPalette.hover)
+                            )
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(ReviewPressButtonStyle())
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: 560, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(ConchPalette.raised)
+                    .shadow(
+                        color: .black.opacity(0.35),
+                        radius: 24,
+                        y: 10
+                    )
+            )
+        }
+        .padding(32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ConchPalette.bg)
+        .accessibilityElement(children: .contain)
     }
 }
 
