@@ -3,10 +3,57 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  createCodexTranscriptReader,
   lastAssistantText,
+  TRANSCRIPT_READ_CHUNK_BYTES,
   transcriptMark,
   userRespondedSince,
+  type TranscriptSource,
 } from "../src/snippet.ts";
+
+const encoder = new TextEncoder();
+
+interface TranscriptReadRange {
+  offset: number;
+  length: number;
+}
+
+class RangeTrackedTranscriptSource implements TranscriptSource {
+  readonly reads: TranscriptReadRange[] = [];
+  private raw: string;
+  private revision = 1;
+
+  constructor(raw: string) {
+    this.raw = raw;
+  }
+
+  get bytes(): Uint8Array {
+    return encoder.encode(this.raw);
+  }
+
+  append(raw: string): void {
+    this.raw += raw;
+    this.revision++;
+  }
+
+  async open() {
+    const bytes = this.bytes;
+    const revision = this.revision;
+    return {
+      version: {
+        size: bytes.length,
+        mtimeNs: String(revision),
+        dev: "1",
+        ino: "1",
+      },
+      read: async (offset: number, length: number) => {
+        this.reads.push({ offset, length });
+        return bytes.slice(offset, offset + length);
+      },
+      close() {},
+    };
+  }
+}
 
 function withTranscript(
   filename: string,
@@ -148,6 +195,101 @@ test("Codex rollout fallback ignores commentary and returns the last final agent
   } finally {
     fixture.cleanup();
   }
+});
+
+test("Codex rollout preview reads only the tail while prompt counting streams bounded chunks", async () => {
+  const filler = JSON.stringify({
+    timestamp: "2026-07-29T12:00:02Z",
+    type: "response_item",
+    payload: { type: "reasoning", text: "x".repeat(1_000) },
+  });
+  const fillerCount = Math.ceil(
+    (TRANSCRIPT_READ_CHUNK_BYTES * 4) / (encoder.encode(filler).length + 1),
+  );
+  const raw = [
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "user_message", message: "build it" },
+    }),
+    ...Array.from({ length: fillerCount }, () => filler),
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "agent_message",
+        phase: "final",
+        message: "Fallback reply.",
+      },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        last_agent_message: "Tail-selected reply.",
+      },
+    }),
+  ].join("\n");
+  const source = new RangeTrackedTranscriptSource(raw);
+  const reader = createCodexTranscriptReader(source);
+
+  expect(await reader.lastAssistantText("rollout-large.jsonl")).toBe("Tail-selected reply.");
+  expect(source.reads).toHaveLength(1);
+  expect(source.reads[0]).toEqual({
+    offset: source.bytes.length - TRANSCRIPT_READ_CHUNK_BYTES,
+    length: TRANSCRIPT_READ_CHUNK_BYTES,
+  });
+  expect(source.reads[0]!.offset).toBeGreaterThan(0);
+  expect(source.reads[0]!.length).toBeLessThan(source.bytes.length);
+
+  const readsAfterPreview = source.reads.length;
+  expect(await reader.countUserPrompts("rollout-large.jsonl")).toBe(1);
+  const promptReads = source.reads.slice(readsAfterPreview);
+  expect(promptReads[0]!.offset).toBe(0);
+  expect(promptReads.every((read) => read.length <= TRANSCRIPT_READ_CHUNK_BYTES)).toBe(true);
+  expect(promptReads.reduce((sum, read) => sum + read.length, 0)).toBe(source.bytes.length);
+});
+
+test("Codex rollout tail cache consumes only appended bytes after a provisional final line", async () => {
+  const source = new RangeTrackedTranscriptSource([
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "user_message", message: "first prompt" },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        last_agent_message: "First completed reply.",
+      },
+    }),
+  ].join("\n"));
+  const reader = createCodexTranscriptReader(source);
+
+  expect(await reader.lastAssistantText("rollout-growing.jsonl"))
+    .toBe("First completed reply.");
+  const oldSize = source.bytes.length;
+  const readsBeforeAppend = source.reads.length;
+
+  source.append(`\n${[
+    JSON.stringify({
+      type: "event_msg",
+      payload: { type: "user_message", message: "follow-up prompt" },
+    }),
+    JSON.stringify({
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        last_agent_message: "Second completed reply.",
+      },
+    }),
+  ].join("\n")}`);
+
+  expect(await reader.lastAssistantText("rollout-growing.jsonl"))
+    .toBe("Second completed reply.");
+  expect(source.reads.slice(readsBeforeAppend)).toEqual([{
+    offset: oldSize,
+    length: source.bytes.length - oldSize,
+  }]);
+  expect(await reader.countUserPrompts("rollout-growing.jsonl")).toBe(2);
 });
 
 test("a flat UUID transcript keeps the existing Claude Code reader behavior", async () => {

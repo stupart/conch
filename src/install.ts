@@ -292,14 +292,14 @@ export function buildCodexHooksSettings(
 }
 
 /**
- * Explicit Codex opt-in: merge command hooks into ~/.codex/hooks/hooks.json.
+ * Explicit Codex opt-in: merge command hooks into ~/.codex/hooks.json.
  * Existing hooks are preserved; a timestamped backup is written only when the
  * file is actually changing.
  */
 export async function runCodexInstall(
   codexDir = join(homedir(), ".codex"),
 ): Promise<void> {
-  const hooksPath = join(codexDir, "hooks", "hooks.json");
+  const hooksPath = join(codexDir, "hooks.json");
   const command = `${conchInvocation()} codex-hook`;
 
   let existing: Record<string, any> = {};
@@ -324,11 +324,15 @@ export async function runCodexInstall(
       console.log(`backed up hooks to ${backup}`);
     }
     await Bun.write(hooksPath, JSON.stringify(result.settings, null, 2) + "\n");
-    console.log("\nDone. Codex hook integration is activated by explicitly running `conch install --codex`.");
+    console.log("\nDone. Codex hooks installed.");
   } else {
     console.log("\nNothing to do.");
   }
-  console.log("On the next `codex`, review and trust conch's hooks on Codex's hook trust-review screen.");
+  console.log(`
+Verify Codex hook activation:
+  hooks file: ${hooksPath}
+  first run: The first \`codex\` run shows Codex's hook trust-review screen; the conch hooks must be approved there.
+  confirm: After Codex starts, run \`conch sessions\` and check that the Codex session is listed.`);
 }
 
 /**
