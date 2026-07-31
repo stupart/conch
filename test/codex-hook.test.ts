@@ -1,25 +1,29 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   handleCodexHookPayload,
   hasCodexDesktopAncestor,
+  hasNonInteractiveCodexAncestor,
   isCodexDesktopProcess,
+  isCodexHeadlessProcess,
   type CodexHookDependencies,
   type CodexHookPayload,
 } from "../src/codex-hook.ts";
 import { loadConfig } from "../src/config.ts";
 import type { TurnEvent } from "../src/hook.ts";
+import { spokenSnippet } from "../src/snippet.ts";
 
 const roots: string[] = [];
 
 interface HarnessOptions {
   parentPid?: number;
   now?: number;
-  desktopOrigin?: boolean;
+  dropOrigin?: boolean;
   daemonAccepts?: boolean;
   mark?: number;
+  snippet?: string;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -40,7 +44,13 @@ function harness(options: HarnessOptions = {}) {
   });
   const writes: Array<Parameters<CodexHookDependencies["writeSession"]>[0]> = [];
   const sends: Array<{ socketPath: string; event: TurnEvent }> = [];
-  const desktopChecks: number[] = [];
+  const originChecks: number[] = [];
+  const snippets: Array<{
+    transcriptPath: string;
+    sentences: number;
+    maxChars: number;
+    summarize?: boolean;
+  }> = [];
   const marks: string[] = [];
   const bells: string[] = [];
   const speeches: Array<{ text: string; label?: string }> = [];
@@ -49,9 +59,9 @@ function harness(options: HarnessOptions = {}) {
   const dependencies: CodexHookDependencies = {
     parentPid: () => options.parentPid ?? 4242,
     now: () => options.now ?? 1_700_000_000_123,
-    async isDesktopOrigin(pid) {
-      desktopChecks.push(pid);
-      return options.desktopOrigin ?? false;
+    async shouldDropOrigin(pid) {
+      originChecks.push(pid);
+      return options.dropOrigin ?? false;
     },
     writeSession(entry) {
       writes.push(entry);
@@ -59,6 +69,17 @@ function harness(options: HarnessOptions = {}) {
     async sendToDaemon(socketPath, event) {
       sends.push({ socketPath, event });
       return options.daemonAccepts ?? true;
+    },
+    async spokenSnippet(transcriptPath, sentences, maxChars, snippetOptions) {
+      snippets.push({
+        transcriptPath,
+        sentences,
+        maxChars,
+        ...(snippetOptions?.summarize === undefined
+          ? {}
+          : { summarize: snippetOptions.summarize }),
+      });
+      return options.snippet ?? "finished";
     },
     async transcriptMark(path) {
       marks.push(path);
@@ -77,9 +98,19 @@ function harness(options: HarnessOptions = {}) {
   };
 
   return {
+    root,
     cfg,
     dependencies,
-    calls: { writes, sends, desktopChecks, marks, bells, speeches, labels },
+    calls: {
+      writes,
+      sends,
+      originChecks,
+      snippets,
+      marks,
+      bells,
+      speeches,
+      labels,
+    },
   };
 }
 
@@ -131,13 +162,22 @@ describe("handleCodexHookPayload", () => {
       transcriptPath: "/virtual/rollout-2026-07-29-session-123.jsonl",
     }]);
     expect(h.calls.sends).toEqual([{ socketPath: h.cfg.socketPath, event: expected }]);
+    expect(h.calls.snippets).toEqual([{
+      transcriptPath: "/virtual/rollout-2026-07-29-session-123.jsonl",
+      sentences: 2,
+      maxChars: 350,
+      summarize: false,
+    }]);
     expect(h.calls.marks).toEqual(["/virtual/rollout-2026-07-29-session-123.jsonl"]);
     expect(h.calls.bells).toEqual([]);
     expect(h.calls.speeches).toEqual([]);
   });
 
-  test("Stop strips markdown and announces the configured first sentences", async () => {
-    const h = harness({ mark: 3 });
+  test("Stop announces the result from the shared spokenSnippet path", async () => {
+    const h = harness({
+      mark: 3,
+      snippet: "First complete sentence. Second complete sentence!",
+    });
     const payload: CodexHookPayload = {
       hook_event_name: "Stop",
       session_id: "plain-stop",
@@ -161,6 +201,48 @@ describe("handleCodexHookPayload", () => {
       mark: 3,
       eventAt: 1_700_000_000_123,
     });
+    expect(h.calls.snippets).toEqual([{
+      transcriptPath: "/virtual/rollout-plain-stop.jsonl",
+      sentences: 2,
+      maxChars: 350,
+      summarize: false,
+    }]);
+  });
+
+  test("the shared snippet path applies markdown and speakable cleanup", async () => {
+    const h = harness({ mark: 1 });
+    const transcriptPath = join(
+      h.root,
+      "rollout-2026-07-30T12-00-00-shared-snippet.jsonl",
+    );
+    writeFileSync(
+      transcriptPath,
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "task_complete",
+          last_agent_message: [
+            "**Updated** /Users/tyler/conch/src/snippet.ts.",
+            "See https://example.com/a/long/resource.",
+            "This third sentence is not announced.",
+          ].join(" "),
+        },
+      }),
+    );
+    h.dependencies.spokenSnippet = spokenSnippet;
+
+    const event = await handleCodexHookPayload({
+      hook_event_name: "Stop",
+      session_id: "shared-snippet",
+      transcript_path: transcriptPath,
+      cwd: "/work/codex-project",
+      last_assistant_message: "Raw payload text must not be announced.",
+      agent_type: null,
+    }, h.cfg, h.dependencies);
+
+    expect(event?.announce).toBe(
+      "codex-project: Updated snippet.ts. See a link.",
+    );
   });
 
   test("UserPromptSubmit writes busy and sends the same visual working signal as Claude Code", async () => {
@@ -245,7 +327,7 @@ describe("handleCodexHookPayload", () => {
   });
 
   test("a desktop-app ancestor filters the hook before registry or daemon effects", async () => {
-    const h = harness({ desktopOrigin: true });
+    const h = harness({ dropOrigin: true });
     const payload: CodexHookPayload = {
       hook_event_name: "Stop",
       session_id: "desktop-session",
@@ -256,7 +338,7 @@ describe("handleCodexHookPayload", () => {
     };
 
     expect(await handleCodexHookPayload(payload, h.cfg, h.dependencies)).toBeNull();
-    expect(h.calls.desktopChecks).toEqual([4242]);
+    expect(h.calls.originChecks).toEqual([4242]);
     expect(h.calls.writes).toEqual([]);
     expect(h.calls.sends).toEqual([]);
     expect(h.calls.marks).toEqual([]);
@@ -282,4 +364,83 @@ test("desktop ancestry matches the executable/subcommand without false-positive 
 
   tree.set(800, { ppid: 1, command: "/bin/zsh" });
   expect(await hasCodexDesktopAncestor(900, (pid) => tree.get(pid) ?? null)).toBe(false);
+});
+
+describe("non-interactive Codex ancestry", () => {
+  test("keeps the interactive TUI", async () => {
+    const tree = new Map([
+      [900, { ppid: 800, command: "/bin/sh -c conch codex-hook" }],
+      [800, {
+        ppid: 700,
+        command: "/opt/homebrew/bin/codex --model gpt-5",
+      }],
+      [700, { ppid: 1, command: "/bin/zsh" }],
+    ]);
+
+    expect(
+      await hasNonInteractiveCodexAncestor(
+        900,
+        (pid) => tree.get(pid) ?? null,
+      ),
+    ).toBe(false);
+  });
+
+  test("drops codex exec", async () => {
+    const tree = new Map([
+      [900, { ppid: 800, command: "/bin/sh -c conch codex-hook" }],
+      [800, {
+        ppid: 700,
+        command: "/opt/homebrew/bin/codex -C /work/conch exec --json",
+      }],
+    ]);
+
+    expect(
+      await hasNonInteractiveCodexAncestor(
+        900,
+        (pid) => tree.get(pid) ?? null,
+      ),
+    ).toBe(true);
+  });
+
+  test("drops codex review", async () => {
+    const tree = new Map([
+      [900, { ppid: 800, command: "/bin/sh -c conch codex-hook" }],
+      [800, {
+        ppid: 700,
+        command: "/opt/homebrew/bin/codex review --base main",
+      }],
+    ]);
+
+    expect(
+      await hasNonInteractiveCodexAncestor(
+        900,
+        (pid) => tree.get(pid) ?? null,
+      ),
+    ).toBe(true);
+  });
+
+  test("keeps unknown and unreadable process trees", async () => {
+    expect(
+      await hasNonInteractiveCodexAncestor(900, () => null),
+    ).toBe(false);
+    expect(
+      await hasNonInteractiveCodexAncestor(900, () => {
+        throw new Error("ps denied");
+      }),
+    ).toBe(false);
+  });
+});
+
+test("headless matching only recognizes a Codex command-position subcommand", () => {
+  expect(isCodexHeadlessProcess("/opt/homebrew/bin/codex exec --json")).toBe(true);
+  expect(isCodexHeadlessProcess("/opt/homebrew/bin/codex review --base main")).toBe(true);
+  expect(isCodexHeadlessProcess(
+    "node /opt/codex/bin/codex.js --profile ci exec",
+  )).toBe(true);
+  expect(isCodexHeadlessProcess(
+    "/opt/homebrew/bin/codex --add-dir /work/shared exec --json",
+  )).toBe(true);
+  expect(isCodexHeadlessProcess("/opt/homebrew/bin/codex -C /work/review")).toBe(false);
+  expect(isCodexHeadlessProcess("/opt/homebrew/bin/codex --model review exec")).toBe(true);
+  expect(isCodexHeadlessProcess("/opt/homebrew/bin/codex please review this")).toBe(false);
 });

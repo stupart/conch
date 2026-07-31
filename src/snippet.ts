@@ -141,6 +141,9 @@ export interface TranscriptReader {
 interface AssistantAccumulator {
   texts: string[];
   error: unknown | null;
+  /** Codex task_complete is authoritative over every agent_message fallback. */
+  codexTaskComplete?: string;
+  codexAgentMessage?: string;
 }
 
 interface TranscriptAccumulator {
@@ -163,6 +166,7 @@ interface TranscriptCacheEntry extends TranscriptParseState {
 }
 
 type TranscriptRequirement = "assistant" | "prompts";
+type TranscriptFormat = "claude" | "codex";
 
 class TranscriptReadError extends Error {
   constructor(message: string) {
@@ -191,6 +195,8 @@ function cloneAccumulator(accumulator: TranscriptAccumulator): TranscriptAccumul
     assistant: {
       texts: [...accumulator.assistant.texts],
       error: accumulator.assistant.error,
+      codexTaskComplete: accumulator.assistant.codexTaskComplete,
+      codexAgentMessage: accumulator.assistant.codexAgentMessage,
     },
     userPrompts: accumulator.userPrompts,
     userPromptError: accumulator.userPromptError,
@@ -264,14 +270,46 @@ function reduceAssistant(assistant: AssistantAccumulator, entry: any): void {
   }
 }
 
-function reduceLine(accumulator: TranscriptAccumulator, lineBytes: Uint8Array): void {
+function reduceCodexAssistant(assistant: AssistantAccumulator, entry: any): void {
+  if (entry?.type !== "event_msg") return;
+  const payload = entry.payload;
+  if (
+    payload?.type === "task_complete"
+    && typeof payload.last_agent_message === "string"
+  ) {
+    assistant.codexTaskComplete = payload.last_agent_message;
+  } else if (
+    payload?.type === "agent_message"
+    && payload.phase !== "commentary"
+    && typeof payload.message === "string"
+  ) {
+    assistant.codexAgentMessage = payload.message;
+  }
+}
+
+function isCodexUserPrompt(entry: any): boolean {
+  return entry?.type === "event_msg" && entry.payload?.type === "user_message";
+}
+
+function reduceLine(
+  accumulator: TranscriptAccumulator,
+  lineBytes: Uint8Array,
+  format: TranscriptFormat,
+): void {
   const parsed = parsedEntry(lineBytes);
   if (!parsed.parsed) return;
   const entry = parsed.entry;
-  reduceAssistant(accumulator.assistant, entry);
+  if (format === "codex") {
+    reduceCodexAssistant(accumulator.assistant, entry);
+  } else {
+    reduceAssistant(accumulator.assistant, entry);
+  }
   if (accumulator.userPrompts !== undefined && accumulator.userPromptError === null) {
     try {
-      if (entry.type === "user" && isRealUserPrompt(entry)) accumulator.userPrompts++;
+      const isPrompt = format === "codex"
+        ? isCodexUserPrompt(entry)
+        : entry.type === "user" && isRealUserPrompt(entry);
+      if (isPrompt) accumulator.userPrompts++;
     } catch (error) {
       accumulator.userPromptError = error;
     }
@@ -300,32 +338,48 @@ function concatByteParts(parts: Uint8Array[], length: number): Uint8Array {
 }
 
 /** Commit complete lines and retain the final fragment for append reconstruction. */
-function appendBytes(state: TranscriptParseState, bytes: Uint8Array): void {
+function appendBytes(
+  state: TranscriptParseState,
+  bytes: Uint8Array,
+  format: TranscriptFormat,
+): void {
   const combined = concatBytes(state.trailing, bytes);
   let lineStart = 0;
   for (let i = 0; i < combined.length; i++) {
     if (combined[i] !== 0x0a) continue;
-    reduceLine(state.stable, combined.subarray(lineStart, i));
+    reduceLine(state.stable, combined.subarray(lineStart, i), format);
     lineStart = i + 1;
   }
   state.trailing = combined.slice(lineStart);
 }
 
-function materializedAccumulator(state: TranscriptParseState): TranscriptAccumulator {
+function materializedAccumulator(
+  state: TranscriptParseState,
+  format: TranscriptFormat,
+): TranscriptAccumulator {
   const accumulator = cloneAccumulator(state.stable);
-  if (state.trailing.length) reduceLine(accumulator, state.trailing);
+  if (state.trailing.length) reduceLine(accumulator, state.trailing, format);
   return accumulator;
 }
 
-function materializeAssistant(state: TranscriptParseState): string {
-  const assistant = materializedAccumulator(state).assistant;
+function materializeAssistant(
+  state: TranscriptParseState,
+  format: TranscriptFormat,
+): string {
+  const assistant = materializedAccumulator(state, format).assistant;
   if (assistant.error !== null) throw assistant.error;
+  if (format === "codex") {
+    return assistant.codexTaskComplete ?? assistant.codexAgentMessage ?? "";
+  }
   // Newline joins keep an entry-boundary code fence line-anchored.
   return assistant.texts.join("\n");
 }
 
-function materializePromptCount(state: TranscriptParseState): number {
-  const accumulator = materializedAccumulator(state);
+function materializePromptCount(
+  state: TranscriptParseState,
+  format: TranscriptFormat,
+): number {
+  const accumulator = materializedAccumulator(state, format);
   if (accumulator.userPromptError !== null) throw accumulator.userPromptError;
   return accumulator.userPrompts ?? 0;
 }
@@ -354,6 +408,7 @@ async function scanForward(
   start: number,
   end: number,
   state: TranscriptParseState,
+  format: TranscriptFormat,
 ): Promise<void> {
   let lineParts = state.trailing.length ? [state.trailing] : [];
   let linePartsLength = state.trailing.length;
@@ -369,11 +424,15 @@ async function scanForward(
       if (lineParts.length) {
         lineParts.push(lineEnd);
         linePartsLength += lineEnd.length;
-        reduceLine(state.stable, concatByteParts(lineParts, linePartsLength));
+        reduceLine(
+          state.stable,
+          concatByteParts(lineParts, linePartsLength),
+          format,
+        );
         lineParts = [];
         linePartsLength = 0;
       } else {
-        reduceLine(state.stable, lineEnd);
+        reduceLine(state.stable, lineEnd, format);
       }
       lineStart = i + 1;
     }
@@ -427,7 +486,7 @@ function findTailAnchor(bytes: Uint8Array, atStartOfFile: boolean): TailAnchor {
 }
 
 /** Read backward only as far as the boundary that begins the final reply. */
-async function scanAssistantTail(file: OpenTranscriptFile): Promise<TranscriptParseState> {
+async function scanClaudeAssistantTail(file: OpenTranscriptFile): Promise<TranscriptParseState> {
   let position = file.version.size;
   let nextLength = TRANSCRIPT_READ_CHUNK_BYTES;
   let window: Uint8Array = new Uint8Array(0);
@@ -440,13 +499,113 @@ async function scanAssistantTail(file: OpenTranscriptFile): Promise<TranscriptPa
     if (anchor) {
       const state = emptyParseState(false);
       state.stable.assistant.error = anchor.error;
-      appendBytes(state, window.subarray(anchor.start));
+      appendBytes(state, window.subarray(anchor.start), "claude");
       return state;
     }
     nextLength = Math.min(nextLength * 2, Number.MAX_SAFE_INTEGER);
   }
 
   return emptyParseState(false);
+}
+
+interface CodexAssistantEvent {
+  taskComplete?: string;
+  agentMessage?: string;
+}
+
+function codexAssistantEvent(lineBytes: Uint8Array): CodexAssistantEvent {
+  const parsed = parsedEntry(lineBytes);
+  if (!parsed.parsed || parsed.entry?.type !== "event_msg") return {};
+  const payload = parsed.entry.payload;
+  if (
+    payload?.type === "task_complete"
+    && typeof payload.last_agent_message === "string"
+  ) {
+    return { taskComplete: payload.last_agent_message };
+  }
+  if (
+    payload?.type === "agent_message"
+    && payload.phase !== "commentary"
+    && typeof payload.message === "string"
+  ) {
+    return { agentMessage: payload.message };
+  }
+  return {};
+}
+
+/**
+ * Walk a rollout backward in bounded chunks. The first complete task_complete
+ * encountered is the newest authoritative result; absent one, retain only the
+ * newest non-commentary agent_message while continuing the search. `carry`
+ * holds at most one cross-chunk JSONL line instead of the whole rollout.
+ */
+async function scanCodexAssistantTail(file: OpenTranscriptFile): Promise<TranscriptParseState> {
+  const state = emptyParseState(false);
+  let position = file.version.size;
+  let carry: Uint8Array = new Uint8Array(0);
+  let trailingKnown = false;
+  let latestAgentMessage: string | undefined;
+
+  const inspectStableLine = (lineBytes: Uint8Array): boolean => {
+    const event = codexAssistantEvent(lineBytes);
+    if (event.taskComplete !== undefined) {
+      state.stable.assistant.codexTaskComplete = event.taskComplete;
+      state.stable.assistant.codexAgentMessage = latestAgentMessage;
+      return true;
+    }
+    if (latestAgentMessage === undefined && event.agentMessage !== undefined) {
+      latestAgentMessage = event.agentMessage;
+    }
+    return false;
+  };
+
+  while (position > 0) {
+    const length = Math.min(TRANSCRIPT_READ_CHUNK_BYTES, position);
+    position -= length;
+    const window = concatBytes(await readExact(file, position, length), carry);
+    let segmentEnd = window.length;
+    let foundNewline = false;
+
+    for (let i = window.length - 1; i >= 0; i--) {
+      if (window[i] !== 0x0a) continue;
+      foundNewline = true;
+      const lineBytes = window.subarray(i + 1, segmentEnd);
+      if (!trailingKnown) {
+        state.trailing = lineBytes.slice();
+        trailingKnown = true;
+        // A complete task_complete in the provisional final line is already
+        // the newest authoritative event. Keep it raw for append reconstruction,
+        // but do not walk the rest of a multi-gigabyte rollout to rediscover an
+        // older event that cannot win.
+        if (codexAssistantEvent(lineBytes).taskComplete !== undefined) {
+          return state;
+        }
+      } else if (inspectStableLine(lineBytes)) {
+        return state;
+      }
+      segmentEnd = i;
+    }
+
+    carry = foundNewline ? window.slice(0, segmentEnd) : window;
+  }
+
+  if (!trailingKnown) {
+    // A one-line file without LF is provisional until a future append.
+    state.trailing = carry;
+  } else if (inspectStableLine(carry)) {
+    return state;
+  }
+  state.stable.assistant.codexAgentMessage = latestAgentMessage;
+  return state;
+}
+
+function scanAssistantTail(
+  file: OpenTranscriptFile,
+  format: TranscriptFormat,
+): Promise<TranscriptParseState> {
+  return format === "codex"
+    ? scanCodexAssistantTail(file)
+    : scanClaudeAssistantTail(file);
 }
 
 function hasRequirement(entry: TranscriptCacheEntry, requirement: TranscriptRequirement): boolean {
@@ -471,6 +630,7 @@ async function closeQuietly(file: OpenTranscriptFile): Promise<void> {
 export function createTranscriptReader(
   source: TranscriptSource,
   cacheCap = DEFAULT_TRANSCRIPT_CACHE_CAP,
+  format: TranscriptFormat = "claude",
 ): TranscriptReader {
   if (!Number.isSafeInteger(cacheCap) || cacheCap < 1) {
     throw new Error("cacheCap must be a positive safe integer");
@@ -534,12 +694,12 @@ export function createTranscriptReader(
             && (requirement === "assistant" || cached.stable.userPrompts !== undefined)
           ) {
             state = cloneParseState(cached);
-            await scanForward(file!, cached.version.size, version.size, state);
+            await scanForward(file!, cached.version.size, version.size, state, format);
           } else if (requirement === "prompts") {
             state = emptyParseState(true);
-            await scanForward(file!, 0, version.size, state);
+            await scanForward(file!, 0, version.size, state, format);
           } else {
-            state = await scanAssistantTail(file!);
+            state = await scanAssistantTail(file!, format);
           }
           remember(transcriptPath, { ...state, version });
         } finally {
@@ -569,16 +729,16 @@ export function createTranscriptReader(
   return {
     async lastAssistantText(transcriptPath) {
       const entry = await load(transcriptPath, "assistant");
-      return entry ? materializeAssistant(entry) : "";
+      return entry ? materializeAssistant(entry, format) : "";
     },
     async countUserPrompts(transcriptPath) {
       const entry = await load(transcriptPath, "prompts");
-      return entry ? materializePromptCount(entry) : 0;
+      return entry ? materializePromptCount(entry, format) : 0;
     },
   };
 }
 
-const claudeTranscriptReader = createTranscriptReader({
+const fileTranscriptSource: TranscriptSource = {
   async open(transcriptPath) {
     let handle: FileHandle | undefined;
     try {
@@ -619,80 +779,22 @@ const claudeTranscriptReader = createTranscriptReader({
       return null;
     }
   },
-});
-
-export interface CodexTranscriptTextSource {
-  read(transcriptPath: string): Promise<string | null>;
-}
+};
 
 /**
- * Codex rollout JSONL is intentionally parsed independently from Claude Code's
- * cached schema. A completed turn's task_complete message is authoritative;
- * older rollouts without that event fall back to the latest non-commentary
- * agent_message.
+ * Apply Codex's event schema to the same bounded, cached transcript reader used
+ * by Claude Code. A task_complete message is authoritative; older rollouts
+ * without one fall back to the latest non-commentary agent_message.
  */
 export function createCodexTranscriptReader(
-  source: CodexTranscriptTextSource,
+  source: TranscriptSource,
+  cacheCap = DEFAULT_TRANSCRIPT_CACHE_CAP,
 ): TranscriptReader {
-  const read = async (
-    transcriptPath: string,
-  ): Promise<{ assistant: string; userPrompts: number }> => {
-    const raw = await source.read(transcriptPath).catch(() => null);
-    if (raw == null) return { assistant: "", userPrompts: 0 };
-
-    let taskComplete: string | undefined;
-    let finalAgentMessage = "";
-    let userPrompts = 0;
-    for (const line of raw.split("\n")) {
-      if (!line.trim()) continue;
-      let entry: any;
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (entry?.type !== "event_msg") continue;
-      const payload = entry.payload;
-      if (payload?.type === "user_message") {
-        userPrompts++;
-      } else if (
-        payload?.type === "task_complete"
-        && typeof payload.last_agent_message === "string"
-      ) {
-        taskComplete = payload.last_agent_message;
-      } else if (
-        payload?.type === "agent_message"
-        && payload.phase !== "commentary"
-        && typeof payload.message === "string"
-      ) {
-        finalAgentMessage = payload.message;
-      }
-    }
-    return {
-      assistant: taskComplete ?? finalAgentMessage,
-      userPrompts,
-    };
-  };
-
-  return {
-    async lastAssistantText(transcriptPath) {
-      return (await read(transcriptPath)).assistant;
-    },
-    async countUserPrompts(transcriptPath) {
-      return (await read(transcriptPath)).userPrompts;
-    },
-  };
+  return createTranscriptReader(source, cacheCap, "codex");
 }
 
-const codexTranscriptReader = createCodexTranscriptReader({
-  async read(transcriptPath) {
-    try {
-      return await Bun.file(transcriptPath).text();
-    } catch {
-      return null;
-    }
-  },
-});
+const claudeTranscriptReader = createTranscriptReader(fileTranscriptSource);
+const codexTranscriptReader = createCodexTranscriptReader(fileTranscriptSource);
 
 export function isCodexTranscriptPath(transcriptPath: string): boolean {
   return /^rollout-.*\.jsonl$/.test(basename(transcriptPath));
