@@ -1206,10 +1206,10 @@ test("setState preserves the transcript prefix across partials and transitions",
   setState("idle");
 });
 
-test("live-data observers receive same-state partial, prefix, and reading progress", () => {
+test("live-data observers receive every distinct state, partial, prefix, and reading mutation", () => {
   setTranscriptPrefix("");
   clearReadingProgress();
-  setState("recording", "project-live", "first");
+  setState("idle");
   const seen: LiveState[] = [];
   onLiveDataChange(() => {
     const current = getLiveState();
@@ -1220,6 +1220,8 @@ test("live-data observers receive same-state partial, prefix, and reading progre
   });
 
   try {
+    setState("listening", "project-live");
+    setState("recording", "project-live", "first");
     // State and label are unchanged: this is the path that used to skip panel
     // publication even though the theater renderer updated live.
     setState("recording", "project-live", "second");
@@ -1227,11 +1229,45 @@ test("live-data observers receive same-state partial, prefix, and reading progre
     setReadingProgress("Assistant reply", 9);
     clearReadingProgress();
 
-    expect(seen).toHaveLength(4);
-    expect(seen[0]?.partial).toBe("second");
-    expect(seen[1]?.transcriptPrefix).toBe("committed");
-    expect(seen[2]?.reading).toEqual({ text: "Assistant reply", spokenChars: 9 });
-    expect(seen[3]?.reading).toBeUndefined();
+    expect(seen).toHaveLength(6);
+    expect(seen[0]).toMatchObject({
+      state: "listening",
+      label: "project-live",
+      partial: "",
+    });
+    expect(seen[1]).toMatchObject({
+      state: "recording",
+      label: "project-live",
+      partial: "first",
+    });
+    expect(seen[2]?.partial).toBe("second");
+    expect(seen[3]?.transcriptPrefix).toBe("committed");
+    expect(seen[4]?.reading).toEqual({ text: "Assistant reply", spokenChars: 9 });
+    expect(seen[5]?.reading).toBeUndefined();
+  } finally {
+    onLiveDataChange(null);
+    setTranscriptPrefix("");
+    clearReadingProgress();
+    setState("idle");
+  }
+});
+
+test("live-data observers suppress normalized no-op setter calls", () => {
+  setTranscriptPrefix("committed");
+  setState("speaking", "project-live");
+  setReadingProgress("reply", 5);
+  let notifications = 0;
+  onLiveDataChange(() => notifications++);
+
+  try {
+    setState("speaking", "project-live");
+    setTranscriptPrefix("committed");
+    setReadingProgress("reply", 99); // both 5 and 99 clamp to reply.length
+    expect(notifications).toBe(0);
+
+    clearReadingProgress();
+    clearReadingProgress();
+    expect(notifications).toBe(1);
   } finally {
     onLiveDataChange(null);
     setTranscriptPrefix("");

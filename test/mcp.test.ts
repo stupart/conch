@@ -20,9 +20,11 @@ import {
   type McpDependencies,
   type McpToolHandlers,
   type McpToolName,
+  type PublishedState as McpPublishedState,
 } from "../src/mcp.ts";
 import {
   SETTING_DESCRIPTORS,
+  configSnapshotEntry,
   getSettingDescriptor,
   parseSetting,
   type ConfigControlMessage,
@@ -164,10 +166,10 @@ interface FakeOptions {
 function defaultConfigSnapshot(): ConfigSnapshot {
   const snapshot = Object.create(null) as ConfigSnapshot;
   for (const descriptor of SETTING_DESCRIPTORS) {
-    snapshot[descriptor.key] = {
+    snapshot[descriptor.key] = configSnapshotEntry(descriptor, {
       value: descriptor.default,
       source: "default",
-    };
+    });
   }
   return snapshot;
 }
@@ -486,10 +488,23 @@ describe("real MCP tool handlers with injected dependencies", () => {
       },
       reply: { sessionId: "active", text: "reply in progress", spokenChars: 7 },
       preview: { sessionId: "parked", text: "parked reply", spokenChars: 0 },
-      rows: [],
+      rows: [{
+        id: "active",
+        label: "Active",
+        status: "working",
+        at: 123,
+        voice: "af_heart",
+        prioritized: true,
+        navSelected: true,
+        needsResponse: false,
+        paused: false,
+        muted: false,
+        live: "speaking",
+        active: true,
+      }],
       dismissed: [],
       futureField: { preserved: true },
-    };
+    } satisfies McpPublishedState & { futureField: { preserved: boolean } };
     const h = fakeHarness({ sessionsFile: JSON.stringify(published) });
     const handlers = createMcpToolHandlers({
       claudeDir: "/virtual/claude",
@@ -669,8 +684,12 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(JSON.parse(toolText(oneSetting))).toEqual({
       kind: "config-value",
       key: "read-full",
+      settingKind: "boolean",
       value: true,
       source: "default",
+      bounds: null,
+      default: true,
+      help: "read the full final response aloud",
     });
     expect(JSON.parse(toolText(allSettings))).toMatchObject({
       kind: "config-snapshot",

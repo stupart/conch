@@ -5,12 +5,15 @@ import { join } from "node:path";
 import {
   SETTING_DESCRIPTORS,
   SETTING_REGISTRY,
+  configSnapshotEntry,
   loadSettingsFile,
   parseSetting,
   resolveSetting,
   unsetSetting,
   validateControlMessage,
+  validateControlResponse,
   writeSetting,
+  type ConfigSnapshot,
   type SettingKey,
 } from "../src/settings.ts";
 
@@ -368,5 +371,48 @@ describe("control-message validation", () => {
     ]) {
       expect(validateControlMessage(value).ok).toBe(false);
     }
+  });
+
+  test("config snapshot metadata round-trips for number, boolean, and enum settings", () => {
+    const snapshot = Object.create(null) as ConfigSnapshot;
+    for (const descriptor of SETTING_DESCRIPTORS) {
+      snapshot[descriptor.key] = configSnapshotEntry(descriptor, {
+        value: descriptor.default,
+        source: "default",
+      });
+    }
+
+    const result = validateControlResponse(JSON.parse(JSON.stringify({
+      kind: "config-snapshot",
+      snapshot,
+    })));
+    expect(result.ok).toBe(true);
+    if (!result.ok || result.value.kind !== "config-snapshot") throw new Error("expected config snapshot");
+
+    expect(result.value.snapshot["end-silence"]).toEqual({
+      value: 3.5,
+      source: "default",
+      kind: "number",
+      bounds: { min: 0, minInclusive: false },
+      default: 3.5,
+      help: "pause that ends an utterance, in seconds",
+    });
+    expect(result.value.snapshot["read-full"]).toEqual({
+      value: true,
+      source: "default",
+      kind: "boolean",
+      bounds: null,
+      default: true,
+      help: "read the full final response aloud",
+    });
+    expect(result.value.snapshot["handoff-order"]).toEqual({
+      value: "oldest",
+      source: "default",
+      kind: "enum",
+      bounds: null,
+      choices: ["newest", "oldest", "urgency"],
+      default: "oldest",
+      help: "choose queued sessions by newest, oldest, or urgency",
+    });
   });
 });

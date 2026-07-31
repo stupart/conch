@@ -14,6 +14,16 @@ import {
   registryToPanel,
 } from "../src/panel.ts";
 import { TheaterNavigation } from "../src/theater-navigation.ts";
+import { loadConfig } from "../src/config.ts";
+import { buildDaemonPublishedState } from "../src/daemon.ts";
+import {
+  clearReadingProgress,
+  configureRenderer,
+  getLiveState,
+  setReadingProgress,
+  setState,
+  setTranscriptPrefix,
+} from "../src/status.ts";
 
 describe("buildPanelModel — renderer seam", () => {
   test("builds sorted semantic rows with independent active and nav cursors", () => {
@@ -153,6 +163,11 @@ describe("buildPublishedState — external session snapshot", () => {
       ]),
       new Set(["dismissed-session"]),
       1_234_567,
+      {
+        // These are already-resolved effective voices; no explicit pin is needed.
+        voiceForLabel: (label) => label === "Need" ? "af_heart" : "am_adam",
+        prioritizedSessionIds: new Set(["needs"]),
+      },
     );
 
     expect(published).toEqual({
@@ -178,6 +193,8 @@ describe("buildPublishedState — external session snapshot", () => {
           at: 40,
           label: "Need",
           status: "needs",
+          voice: "af_heart",
+          prioritized: true,
           needsResponse: true,
           detail: "permission",
           paused: true,
@@ -191,6 +208,8 @@ describe("buildPublishedState — external session snapshot", () => {
           at: 30,
           label: "Wait",
           status: "waiting",
+          voice: "am_adam",
+          navSelected: true,
           needsResponse: false,
           paused: false,
           muted: false,
@@ -203,6 +222,34 @@ describe("buildPublishedState — external session snapshot", () => {
     expect(published.rows.some((row) => row.id === "dismissed-session")).toBe(false);
     expect("snippet" in published.rows[1]!).toBe(false);
     expect(JSON.parse(JSON.stringify(published))).toEqual(published);
+  });
+
+  test("omits unresolved voices and false priority/navigation flags", () => {
+    const model = buildPanelModel({
+      sessions: [{ sessionId: "plain", name: "Plain", status: "idle" }],
+      sessionStates: new Map(),
+      pausedSessionIds: new Set(),
+      mutedSessionIds: new Set(),
+      live: { state: "idle", label: "", partial: "" },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+    });
+
+    const published = buildPublishedState(
+      model,
+      new Map(),
+      new Set(),
+      10,
+      {
+        voiceForLabel: () => "   ",
+        prioritizedSessionIds: new Set(),
+      },
+    );
+
+    expect(published.rows[0]).not.toHaveProperty("voice");
+    expect(published.rows[0]).not.toHaveProperty("prioritized");
+    expect(published.rows[0]).not.toHaveProperty("navSelected");
   });
 
   test("omits absent conversation fields", () => {
@@ -227,6 +274,87 @@ describe("buildPublishedState — external session snapshot", () => {
     expect("reading" in published.live).toBe(false);
     expect("reply" in published).toBe(false);
     expect("preview" in published).toBe(false);
+  });
+
+  test("a non-theater renderer still produces the complete published conversation", () => {
+    const selection = configureRenderer(
+      { CONCH_TUI: "footer" },
+      {
+        stdoutTTY: false,
+        stdinTTY: false,
+        columns: () => 100,
+        rows: () => 24,
+        write: () => {},
+        print: () => {},
+      },
+    );
+    expect(selection.kind).toBe("footer");
+
+    try {
+      setTranscriptPrefix("committed words");
+      setState("speaking", "Active", "live words");
+      setReadingProgress("Assistant reply", 9);
+      const live = getLiveState();
+      const model = buildPanelModel({
+        sessions: [
+          { sessionId: "active", name: "Active", status: "busy" },
+          { sessionId: "parked", name: "Parked", status: "idle" },
+        ],
+        sessionStates: new Map(),
+        pausedSessionIds: new Set(),
+        mutedSessionIds: new Set(),
+        live,
+        mode: { muted: false, paused: false, holding: 0 },
+        activeSessionId: "active",
+        navSelectedId: "parked",
+        reply: {
+          sessionId: "active",
+          text: live.reading!.text,
+          spokenChars: live.reading!.spokenChars,
+        },
+      });
+      model.preview = previewForPanelSelection(
+        "parked",
+        "parked",
+        "active",
+        "Parked output",
+      );
+
+      const published = buildDaemonPublishedState(
+        loadConfig({ env: {} }),
+        model,
+        new Map(),
+        new Set(),
+        new Set(["parked"]),
+        20,
+      );
+      expect(published.live).toEqual({
+        state: "speaking",
+        label: "Active",
+        partial: "live words",
+        transcriptPrefix: "committed words",
+        reading: { text: "Assistant reply", spokenChars: 9 },
+      });
+      expect(published.reply).toEqual({
+        sessionId: "active",
+        text: "Assistant reply",
+        spokenChars: 9,
+      });
+      expect(published.preview).toEqual({
+        sessionId: "parked",
+        text: "Parked output",
+        spokenChars: 0,
+      });
+      expect(published.rows.find((row) => row.id === "parked")).toMatchObject({
+        voice: expect.any(String),
+        prioritized: true,
+        navSelected: true,
+      });
+    } finally {
+      setTranscriptPrefix("");
+      clearReadingProgress();
+      setState("idle");
+    }
   });
 
   test("caps large published replies at the end and rebases spoken progress", () => {
@@ -575,8 +703,13 @@ describe("previewForPanelSelection — async cursor stale guard", () => {
       source.indexOf("function setSessionState"),
     );
     expect(render).toContain(
-      "const previewId = theaterMode ? theaterNavigation.manualSelectedId : null",
+      `const previewId = theaterNavigation.manualSelectedId
+      ?? (cursorAuto ? null : selectedId)`,
     );
+    expect(render.slice(
+      render.indexOf("const previewId"),
+      render.indexOf("const previewPath"),
+    )).not.toContain("theaterMode");
     expect(render).toContain(
       `model.preview = previewForPanelSelection(
         navSelectedId,
@@ -586,15 +719,13 @@ describe("previewForPanelSelection — async cursor stale guard", () => {
       )`,
     );
     expect(render).toContain(
-      `if (snap?.complete) {
-          theaterNavigation.reconcile(new Set(live.map((session) => session.sessionId)));
-        }`,
+      "theaterNavigation.reconcile(new Set(live.map((session) => session.sessionId)))",
     );
     expect(render.indexOf("const previewId")).toBeLessThan(
       render.indexOf("await Promise.all"),
     );
     expect(render.indexOf("model.preview = previewForPanelSelection(")).toBeGreaterThan(
-      render.indexOf("navSelectedId = theaterNavigation.manualSelectedId"),
+      render.indexOf("const navSelectedId = theaterNavigation.manualSelectedId"),
     );
     expect(render.indexOf("model.preview = previewForPanelSelection(")).toBeGreaterThan(
       render.indexOf("commitLatestPanelRender("),

@@ -138,6 +138,75 @@ describe("daemon listen status hooks", () => {
     expect(daemonSource).toContain('listenHooks("who first", () => "")');
     expect(daemonSource).toContain('listenHooks(event.label, () => "")');
   });
+
+  test("published conversation production and controllers are not theater-gated", () => {
+    const liveProduction = daemonSource.slice(
+      daemonSource.indexOf("const resetConversationTranscriptPrefix"),
+      daemonSource.indexOf("const diagnosticsEnabled"),
+    );
+    const render = daemonSource.slice(
+      daemonSource.indexOf("async function renderSessionPanel"),
+      daemonSource.indexOf("function setSessionState"),
+    );
+    const publishedConversation = render.slice(
+      render.indexOf("const previewId"),
+      render.indexOf("publishedStateWriter.request()") + "publishedStateWriter.request()".length,
+    );
+    const controllers = daemonSource.slice(
+      daemonSource.indexOf("const configController = createConfigController"),
+      daemonSource.indexOf("const enrichSocketAudioCommand"),
+    );
+
+    expect(liveProduction).toContain("setTranscriptPrefix(\"\")");
+    expect(liveProduction).toContain("clearReadingProgress()");
+    expect(liveProduction).toContain("setReadingProgress(text, spokenChars)");
+    expect(liveProduction).not.toContain("theaterMode");
+    expect(publishedConversation).toContain("reply: contentEvent && replyText");
+    expect(publishedConversation).toContain("model.preview = previewForPanelSelection(");
+    expect(publishedConversation).not.toContain("theaterMode");
+    expect(controllers).toContain("settingsOverlay = new SettingsOverlay(");
+    expect(controllers).toContain("sessionActionsOverlay = new SessionActionsOverlay(");
+    expect(controllers).not.toContain("if (theaterMode)");
+  });
+
+  test("lightweight live publication never rebuilds the session panel", () => {
+    const livePublisher = daemonSource.slice(
+      daemonSource.indexOf("function publishLiveConversationState"),
+      daemonSource.indexOf("async function renderSessionPanel"),
+    );
+
+    expect(livePublisher).toContain("refreshPublishedConversationState(");
+    expect(livePublisher).toContain("publishedStateWriter.request()");
+    expect(livePublisher).not.toContain("registrySnapshot(");
+    expect(livePublisher).not.toContain("lastAssistantText(");
+    expect(livePublisher).not.toContain("renderSessionPanel(");
+  });
+
+  test("shutdown prevents an in-flight panel rebuild from committing after the final flush", () => {
+    const render = daemonSource.slice(
+      daemonSource.indexOf("async function renderSessionPanel"),
+      daemonSource.indexOf("function setSessionState"),
+    );
+    const shutdown = daemonSource.slice(
+      daemonSource.indexOf("const shutdown = async"),
+      daemonSource.indexOf("process.on(\"SIGINT\""),
+    );
+    const firstGuard = render.indexOf("if (shuttingDown) return;");
+    const awaitPoint = render.indexOf("await Promise.all");
+    const postAwaitGuard = render.indexOf("if (shuttingDown) return;", firstGuard + 1);
+    const commit = render.indexOf("commitLatestPanelRender(");
+
+    expect(firstGuard).toBeGreaterThanOrEqual(0);
+    expect(firstGuard).toBeLessThan(render.indexOf("++panelRenderVersion"));
+    expect(postAwaitGuard).toBeGreaterThan(awaitPoint);
+    expect(postAwaitGuard).toBeLessThan(commit);
+    expect(shutdown.indexOf("shuttingDown = true")).toBeLessThan(
+      shutdown.indexOf("publishedStateWriter.flush()"),
+    );
+    expect(shutdown.indexOf("onLiveDataChange(null)")).toBeLessThan(
+      shutdown.indexOf("publishedStateWriter.flush()"),
+    );
+  });
 });
 
 describe("daemon config controller", () => {
@@ -1100,7 +1169,26 @@ describe("daemon config controller", () => {
     const reply = createConfigController(cfg, { env, settingsPath: path }).handle({ kind: "get-config" });
     expect(reply.kind).toBe("config-snapshot");
     if (reply.kind !== "config-snapshot") throw new Error("expected config snapshot");
-    expect(reply.snapshot["end-silence"]).toMatchObject({ value: 6.5 });
+    expect(reply.snapshot["end-silence"]).toMatchObject({
+      value: 6.5,
+      kind: "number",
+      bounds: { min: 0, minInclusive: false },
+      default: 3.5,
+      help: "pause that ends an utterance, in seconds",
+    });
+    expect(reply.snapshot["read-full"]).toMatchObject({
+      kind: "boolean",
+      bounds: null,
+      default: true,
+      help: "read the full final response aloud",
+    });
+    expect(reply.snapshot["handoff-order"]).toMatchObject({
+      kind: "enum",
+      bounds: null,
+      choices: ["newest", "oldest", "urgency"],
+      default: "oldest",
+      help: "choose queued sessions by newest, oldest, or urgency",
+    });
     expect(reply.snapshot["announce-sentences"]).toMatchObject({ value: 4, source: "file" });
     expect(reply.snapshot["announce-sentences"].diagnostic).toContain("next hook");
     expect(reply.snapshot["announce-sentences"].diagnostic).toContain("CONCH_SPEAK_SENTENCES");

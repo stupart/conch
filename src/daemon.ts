@@ -89,6 +89,7 @@ import {
   previewForPanelSelection,
   refreshPublishedConversationState,
   type NumberedPanelSessionRow,
+  type PanelModel,
   type PublishedState,
   type SessionStatus,
 } from "./panel.ts";
@@ -148,6 +149,7 @@ import {
 import {
   SETTING_DESCRIPTORS,
   SETTING_REGISTRY,
+  configSnapshotEntry,
   isControlMessageCandidate,
   loadSettingResolutions,
   loadSettingsFile,
@@ -166,6 +168,7 @@ import {
 } from "./settings.ts";
 import { SettingsOverlay } from "./settings-overlay.ts";
 import { SessionActionsOverlay } from "./session-actions-overlay.ts";
+import { createPublishThrottle } from "./publish-throttle.ts";
 
 /**
  * The turn-based voice loop.
@@ -275,7 +278,7 @@ export function createConfigController(cfg: Config, options: ConfigControllerOpt
           const resolution = descriptor.apply === "hook"
             ? hookResolution(descriptor.key)
             : live.get(descriptor.key)!;
-          snapshot[descriptor.key] = { ...resolution };
+          snapshot[descriptor.key] = configSnapshotEntry(descriptor, resolution);
         }
         return { kind: "config-snapshot", snapshot };
       }
@@ -794,7 +797,7 @@ export function listenHooks(
   };
   // A newly-created conversation may adopt an already-open barge recorder, in
   // which case no initial "armed" transition fires. Reset eagerly so that path
-  // cannot inherit another turn's theater-only prefix.
+  // cannot publish another turn's committed prefix.
   refreshTranscriptPrefix();
   return {
     onState: (state) => {
@@ -812,6 +815,27 @@ export function listenHooks(
       refreshTranscriptPrefix();
     },
   };
+}
+
+/** Build the external document with daemon-owned voice and priority resolution. */
+export function buildDaemonPublishedState(
+  cfg: Config,
+  model: PanelModel,
+  snippets: ReadonlyMap<string, string>,
+  dismissedSessionIds: ReadonlySet<string>,
+  prioritizedSessionIds: ReadonlySet<string>,
+  now: number,
+): PublishedState {
+  return buildPublishedState(
+    model,
+    snippets,
+    dismissedSessionIds,
+    now,
+    {
+      voiceForLabel: (label) => voiceFor(cfg, label),
+      prioritizedSessionIds,
+    },
+  );
 }
 
 export async function runDaemon(cfg: Config): Promise<void> {
@@ -1237,6 +1261,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   let panelRenderVersion = 0;
   let lastPublishedPanelState: PublishedState | null = null;
+  // Publication is always on, independent of the selected terminal renderer.
+  // Full ledger rebuilds and cheap conversation refreshes share this writer so
+  // neither path can bypass the 10 Hz leading/trailing throttle.
+  const publishedStateWriter = createPublishThrottle(() => {
+    if (lastPublishedPanelState) publishSessionsFile(lastPublishedPanelState);
+  });
 
   /** Publish progress against the last reconciled ledger without another registry scan. */
   function publishLiveConversationState(): void {
@@ -1247,10 +1277,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
       (recitingEvent ?? lastTurn)?.sessionId ?? null,
       Date.now(),
     );
-    publishSessionsFile(lastPublishedPanelState);
+    publishedStateWriter.request();
   }
 
   async function renderSessionPanel(): Promise<void> {
+    if (shuttingDown) return;
     const version = ++panelRenderVersion;
     let snap: Awaited<ReturnType<typeof registrySnapshot>> = null;
     try {
@@ -1303,7 +1334,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
       liveSessionIds: snap?.liveIds,
     });
 
-    const previewId = theaterMode ? theaterNavigation.manualSelectedId : null;
+    // Capture either renderer's manual cursor before reading its transcript.
+    // Preview production is part of the published model, not theater drawing.
+    const previewId = theaterNavigation.manualSelectedId
+      ?? (cursorAuto ? null : selectedId);
     const previewPath = previewId && previewId !== nextActiveSessionId
       ? findTranscript(cfg.claudeDir, previewId)
       : undefined;
@@ -1316,6 +1350,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         ? lastAssistantText(previewPath).then(stripMarkdown)
         : Promise.resolve(""),
     ]);
+    if (shuttingDown) return;
     // Registry and transcript reads can overlap; only the newest complete model
     // may reach the renderer.
     commitLatestPanelRender(version, panelRenderVersion, () => {
@@ -1324,24 +1359,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // cannot overwrite the lightweight publisher with stale conversation data.
       const committedLiveState = getLiveState();
       const replyText = committedLiveState.reading?.text || transcriptReplyText;
-      let navSelectedId: string | null;
-      if (theaterMode) {
-        // Absence is authoritative only for a complete registry read. A torn
-        // per-session file must not release a cursor that was meant to stay put.
-        if (snap?.complete) {
-          theaterNavigation.reconcile(new Set(live.map((session) => session.sessionId)));
-        }
-        navSelectedId = theaterNavigation.manualSelectedId;
-      } else {
-        // Legacy auto-follow: selectedId also owns the action target, but its cursor
-        // is hidden until arrowing explicitly turns cursorAuto off.
-        if (cursorAuto) {
-          selectedId = nextActiveSessionId;
-        } else if (selectedId && !live.some((session) => session.sessionId === selectedId)) {
-          selectedId = null;
-        }
-        navSelectedId = cursorAuto ? null : selectedId;
+      // Absence is authoritative only for a complete registry read. A torn
+      // per-session file must not release a cursor that was meant to stay put.
+      if (snap?.complete) {
+        theaterNavigation.reconcile(new Set(live.map((session) => session.sessionId)));
       }
+      // Footer auto-follow state is maintained even when it is not the selected
+      // renderer; it is harmless there and keeps model production ungated.
+      if (cursorAuto) {
+        selectedId = nextActiveSessionId;
+      } else if (selectedId && !live.some((session) => session.sessionId === selectedId)) {
+        selectedId = null;
+      }
+      const navSelectedId = theaterNavigation.manualSelectedId
+        ?? (cursorAuto ? null : selectedId);
 
       const model = buildPanelModel({
         sessions: live,
@@ -1377,15 +1408,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // cannot repaint a stale pause/mute banner over a newer toggle.
       model.mode = { muted, paused: pause.paused, holding: pending.size };
       renderPanel(model);
-      lastPublishedPanelState = buildPublishedState(
+      lastPublishedPanelState = buildDaemonPublishedState(
+        cfg,
         model,
         new Map(
           [...latestTurnBySession].map(([sessionId, event]) => [sessionId, event.announce]),
         ),
         dismissedSessionIds,
+        prioritizedSessionIds,
         Date.now(),
       );
-      publishSessionsFile(lastPublishedPanelState);
+      publishedStateWriter.request();
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
     });
   }
@@ -1982,7 +2015,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           return { heard: "", cut: false };
         }
         // This fresh barge capture becomes a new reducer session below. Clear
-        // any completed turn's theater-only prefix before recording is visible.
+        // any completed turn's committed prefix before recording is visible.
         resetConversationTranscriptPrefix();
         setState("recording", event.label);
         const initialCapture = barge.adopt();
@@ -3345,82 +3378,83 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (key === "meeting-autopause") meetingMic?.setEnabled(value === true);
     },
   });
-  if (theaterMode) {
-    settingsOverlay = new SettingsOverlay({
-      controller: configController,
-      settingsPath: settingsPathFor(),
-      persist: writeSetting,
-      onOpen: () => settingsPause.open(),
-      onClose: () => settingsPause.close(),
-      onChange: () => void renderSessionPanel(),
-    });
-    sessionActionsOverlay = new SessionActionsOverlay({
-      controller: {
-        voiceCandidates: () => availableVoiceRing(cfg),
-        effectiveVoice: (target) => voiceFor(cfg, target.label),
-        previewVoice: (target, voice) => {
-          speech.cancelCurrent();
-          enqueue({
-            type: "speak",
-            sessionId: target.sessionId,
-            label: "",
-            announce: `${target.label} sounds like this.`,
-            voice,
-          });
-        },
-        setVoice: (target, voice) => {
-          setVoiceOverride(target.label, voice);
-          log(`voice pinned for "${target.label}" -> ${voice}`);
-        },
-        resetVoice: (target) => {
-          clearVoiceOverride(target.label);
-          log(`voice reset to auto for "${target.label}"`);
-        },
-        isPrioritized: (sessionId) => prioritizedSessionIds.has(sessionId),
-        setPrioritized: (sessionId, prioritized) => {
-          if (prioritized) prioritizedSessionIds.add(sessionId);
-          else prioritizedSessionIds.delete(sessionId);
-          log(`${prioritized ? "★ prioritized" : "normal hand-off for"} "${
-            panelLabels.get(sessionId) ?? sessionId.slice(0, 8)
-          }"`);
-          void renderSessionPanel();
-        },
-        rename: (target, label) => {
-          const renamed = renameSessionLabel(
-            target.sessionId,
-            target.label,
-            label,
-          );
-          relabelRuntimeSession(target.sessionId, target.label, renamed.label);
-          log(`renamed "${target.label}" -> "${renamed.label}"${
-            renamed.voiceMigrated ? " (voice pin migrated)" : ""
-          }`);
-          void renderSessionPanel();
-          return renamed.label;
-        },
-        dismiss: (target) => {
-          // Hide before the mute helper repaints, so no intermediate
-          // muted-but-visible row flashes behind the closing modal.
-          dismissedSessionIds.add(target.sessionId);
-          panelOrder = panelOrder.filter((sessionId) => sessionId !== target.sessionId);
-          panelLabels.delete(target.sessionId);
-          speech.cancelCurrent();
-          for (let index = queue.length - 1; index >= 0; index--) {
-            const queued = queue[index]!;
-            if (queued.type === "speak" && queued.sessionId === target.sessionId) {
-              queue.splice(index, 1);
-            }
-          }
-          theaterNavigation.release();
-          setSessionMutedWithDigest(target.sessionId, true);
-          log(`dismissed "${target.label}" — announcements stopped; session keeps running`);
-        },
+  // These controllers own settings/session-action data and side effects for
+  // every external viewer. Theater mode only decides whether terminal keys can
+  // open and draw their overlays.
+  settingsOverlay = new SettingsOverlay({
+    controller: configController,
+    settingsPath: settingsPathFor(),
+    persist: writeSetting,
+    onOpen: () => settingsPause.open(),
+    onClose: () => settingsPause.close(),
+    onChange: () => void renderSessionPanel(),
+  });
+  sessionActionsOverlay = new SessionActionsOverlay({
+    controller: {
+      voiceCandidates: () => availableVoiceRing(cfg),
+      effectiveVoice: (target) => voiceFor(cfg, target.label),
+      previewVoice: (target, voice) => {
+        speech.cancelCurrent();
+        enqueue({
+          type: "speak",
+          sessionId: target.sessionId,
+          label: "",
+          announce: `${target.label} sounds like this.`,
+          voice,
+        });
       },
-      onOpen: () => settingsPause.open(),
-      onClose: () => settingsPause.close(),
-      onChange: () => void renderSessionPanel(),
-    });
-  }
+      setVoice: (target, voice) => {
+        setVoiceOverride(target.label, voice);
+        log(`voice pinned for "${target.label}" -> ${voice}`);
+      },
+      resetVoice: (target) => {
+        clearVoiceOverride(target.label);
+        log(`voice reset to auto for "${target.label}"`);
+      },
+      isPrioritized: (sessionId) => prioritizedSessionIds.has(sessionId),
+      setPrioritized: (sessionId, prioritized) => {
+        if (prioritized) prioritizedSessionIds.add(sessionId);
+        else prioritizedSessionIds.delete(sessionId);
+        log(`${prioritized ? "★ prioritized" : "normal hand-off for"} "${
+          panelLabels.get(sessionId) ?? sessionId.slice(0, 8)
+        }"`);
+        void renderSessionPanel();
+      },
+      rename: (target, label) => {
+        const renamed = renameSessionLabel(
+          target.sessionId,
+          target.label,
+          label,
+        );
+        relabelRuntimeSession(target.sessionId, target.label, renamed.label);
+        log(`renamed "${target.label}" -> "${renamed.label}"${
+          renamed.voiceMigrated ? " (voice pin migrated)" : ""
+        }`);
+        void renderSessionPanel();
+        return renamed.label;
+      },
+      dismiss: (target) => {
+        // Hide before the mute helper repaints, so no intermediate
+        // muted-but-visible row flashes behind the closing modal.
+        dismissedSessionIds.add(target.sessionId);
+        panelOrder = panelOrder.filter((sessionId) => sessionId !== target.sessionId);
+        panelLabels.delete(target.sessionId);
+        speech.cancelCurrent();
+        for (let index = queue.length - 1; index >= 0; index--) {
+          const queued = queue[index]!;
+          if (queued.type === "speak" && queued.sessionId === target.sessionId) {
+            queue.splice(index, 1);
+          }
+        }
+        theaterNavigation.release();
+        setSessionMutedWithDigest(target.sessionId, true);
+        log(`dismissed "${target.label}" — announcements stopped; session keeps running`);
+      },
+    },
+    onOpen: () => settingsPause.open(),
+    onClose: () => settingsPause.close(),
+    onChange: () => void renderSessionPanel(),
+  });
   const enrichSocketAudioCommand = (event: InstantAudioCommand): InstantAudioCommand => {
     const session = panelSessions.get(event.sessionId);
     const known = latestTurnBySession.get(event.sessionId)
@@ -3492,6 +3526,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
     rendererLifecycle.restore();
     theaterNavigation.dispose();
     shuttingDown = true;
+    onLiveDataChange(null);
+    publishedStateWriter.flush();
     meetingMic?.close();
     queue.length = 0;
     speech.close(); // cancel and seal speech, cues, and in-flight/future canaries

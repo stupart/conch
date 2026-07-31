@@ -1306,6 +1306,23 @@ export function installRendererLifecycle(
 let live: LiveState = { state: "idle", label: "", partial: "" };
 let onLive: (() => void) | null = null;
 let onLiveData: (() => void) | null = null;
+
+function sameLiveData(left: LiveState, right: LiveState): boolean {
+  return left.state === right.state
+    && left.label === right.label
+    && left.partial === right.partial
+    && left.transcriptPrefix === right.transcriptPrefix
+    && (
+      left.reading === right.reading
+      || (
+        left.reading !== undefined
+        && right.reading !== undefined
+        && left.reading.text === right.reading.text
+        && Object.is(left.reading.spokenChars, right.reading.spokenChars)
+      )
+    );
+}
+
 export function getLiveState(): LiveState {
   return live;
 }
@@ -1319,10 +1336,12 @@ export function onLiveDataChange(cb: (() => void) | null): void {
 }
 
 export function setReadingProgress(text: string, spokenChars: number): void {
-  live = {
+  const next: LiveState = {
     ...live,
     reading: { text, spokenChars: Math.max(0, Math.min(spokenChars, text.length)) },
   };
+  if (sameLiveData(live, next)) return;
+  live = next;
   // Daemon capture is renderer-independent. Preserve footer's established byte
   // output while the theater continues repainting its read-along pane.
   if (activeRendererKind === "theater") activeRenderer.live(live);
@@ -1337,28 +1356,34 @@ export function clearReadingProgress(): void {
   onLiveData?.();
 }
 
-/** Set the committed transcript rendered before the current theater partial. */
+/** Set the committed transcript published alongside the current live partial. */
 export function setTranscriptPrefix(prefix: string): void {
-  live = { ...live, transcriptPrefix: prefix };
+  const next: LiveState = { ...live, transcriptPrefix: prefix };
+  if (sameLiveData(live, next)) return;
+  live = next;
   if (activeRendererKind === "theater") activeRenderer.live(live);
   onLiveData?.();
 }
 
 export function setState(state: ConchState, label = "", partial = ""): void {
-  const transition = state !== live.state || label !== live.label; // ignore partial-only updates
+  // Full panel reconstruction is transition-only; onLiveData below still sees
+  // every meaningful same-state partial update.
+  const transition = state !== live.state || label !== live.label;
   const reading = label && label === live.label ? live.reading : undefined;
   const transcriptPrefix = live.transcriptPrefix;
-  live = {
+  const next: LiveState = {
     state,
     label,
     partial,
     ...(transcriptPrefix !== undefined ? { transcriptPrefix } : {}),
     ...(reading ? { reading } : {}),
   };
+  const dataChanged = !sameLiveData(live, next);
+  live = next;
   void Bun.write(STATE_FILE, JSON.stringify({ state, label, partial, ts: Date.now() }) + "\n");
   activeRenderer.live(live);
   if (transition) onLive?.(); // repaint the panel so the active row shows the new live state
-  onLiveData?.();
+  if (dataChanged) onLiveData?.();
 }
 
 /** The static key hints, pinned at the very bottom under everything. */
