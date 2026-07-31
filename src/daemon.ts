@@ -919,6 +919,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
     await speech.speak(speechCfg, text, label);
   };
 
+  /**
+   * Raise a session window unless you're actively typing right now. Read at call
+   * time so `conch set reveal-typing-grace` applies live. An unreadable idle
+   * time reveals (the raise is the normal behavior; the gate is the exception).
+   */
+  const revealUnlessTyping = async (pid: number): Promise<void> => {
+    if (cfg.revealTypingGraceSecs > 0) {
+      const idle = await idleSeconds();
+      if (idle !== null && idle < cfg.revealTypingGraceSecs) return;
+    }
+    await revealSessionWindow(pid);
+  };
+
   const micCue = async (cueCfg: Config, kind: "open" | "close" | "sent"): Promise<void> => {
     if (!cueCfg.micCues) return;
     await speech.playCue(CUE_SOUND[kind], `${kind} mic cue`);
@@ -1656,8 +1669,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (interruptedByPause()) return;
 
       // Surface the session's window as conch starts talking to it — raised so
-      // you can watch, but WITHOUT stealing focus (AXRaise).
-      if (event.type === "turn-end" && cfg.revealOnTurn && event.pid) void revealSessionWindow(event.pid);
+      // you can watch, but WITHOUT stealing focus (AXRaise). Suppressed while
+      // you're mid-keystroke: yanking a window forward as you type is the one
+      // way a no-focus-steal raise still interrupts you. Explicit wake/recite
+      // is never gated — you asked for those.
+      if (event.type === "turn-end" && cfg.revealOnTurn && event.pid) {
+        void revealUnlessTyping(event.pid);
+      }
 
       const announce = await speakInterruptible(
         event,
