@@ -7,6 +7,7 @@ import {
   dashboardPanelLines,
   dashboardRowsForModel,
   latestLatchedState,
+  numberPanelSessionRows,
   previewForPanelSelection,
   reconcileStatus,
   registryToPanel,
@@ -36,11 +37,13 @@ describe("buildPanelModel — renderer seam", () => {
     expect(model.rows.map((row) => row.sessionId)).toEqual(["needs", "waiting", "working"]);
     expect(model.rows[0]).toMatchObject({
       status: "needs",
+      at: 40,
       detail: "permission",
       paused: false,
       muted: true,
     });
     expect(model.rows[1]).toMatchObject({
+      at: 30,
       paused: true,
       muted: false,
       active: false,
@@ -48,6 +51,7 @@ describe("buildPanelModel — renderer seam", () => {
     });
     expect(model.rows[2]).toMatchObject({
       status: "working",
+      at: 30,
       paused: false,
       muted: false,
       liveGlyph: "speaking",
@@ -328,6 +332,61 @@ test("a review keeps its natural waiting position — the marker doesn't reorder
   ]);
 });
 
+test("number shortcuts map to the same status-sorted positions the ledger renders", () => {
+  const sessions = [
+    {
+      sessionId: "alpha-working",
+      name: "Alpha",
+      status: "busy",
+      statusUpdatedAt: 30,
+      cwd: "/alpha",
+      pid: 101,
+    },
+    {
+      sessionId: "bravo-waiting",
+      name: "Bravo",
+      status: "idle",
+      statusUpdatedAt: 30,
+      cwd: "/bravo",
+      pid: 102,
+    },
+    {
+      sessionId: "zulu-needs",
+      name: "Zulu",
+      status: "waiting",
+      statusUpdatedAt: 30,
+      cwd: "/zulu",
+      pid: 103,
+    },
+  ];
+  const rows = buildPanelRows({
+    sessions,
+    sessionStates: new Map(),
+    pausedSessionIds: new Set(),
+    mutedSessionIds: new Set(),
+    live: { state: "idle", label: "", partial: "" },
+    mode: { muted: false, paused: false, holding: 0 },
+    activeSessionId: null,
+    navSelectedId: null,
+  });
+
+  expect(rows.map((row) => row.sessionId)).toEqual([
+    "zulu-needs",
+    "bravo-waiting",
+    "alpha-working",
+  ]);
+  expect(numberPanelSessionRows(rows, sessions).map((row) => [
+    row.n,
+    row.s.sessionId,
+    row.s.cwd,
+    row.s.pid,
+  ])).toEqual([
+    [1, "zulu-needs", "/zulu", 103],
+    [2, "bravo-waiting", "/bravo", 102],
+    [3, "alpha-working", "/alpha", 101],
+  ]);
+});
+
 test("buildPanelRows carries review detail and timestamped metadata", () => {
   const [row] = buildPanelRows({
     sessions: [{ sessionId: "review", name: "Review", status: "idle", statusUpdatedAt: 10 }],
@@ -350,6 +409,7 @@ test("buildPanelRows carries review detail and timestamped metadata", () => {
 
   expect(row).toMatchObject({
     status: "review",
+    at: 20,
     detail: "PR ready to inspect",
     review: {
       summary: "PR ready to inspect",

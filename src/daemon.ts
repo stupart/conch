@@ -67,7 +67,6 @@ import {
   type ConchState,
 } from "./status.ts";
 import {
-  listSessions,
   registrySnapshot,
   sessionGoneFromSnapshot,
   sessionLabel,
@@ -85,7 +84,9 @@ import {
   buildPublishedState,
   commitLatestPanelRender,
   latestLatchedState,
+  numberPanelSessionRows,
   previewForPanelSelection,
+  type NumberedPanelSessionRow,
   type SessionStatus,
 } from "./panel.ts";
 import { TheaterNavigation } from "./theater-navigation.ts";
@@ -442,11 +443,6 @@ export async function resolveNameAddressRoute(
 }
 
 type OrderedTurnEvent = Pick<TurnEvent, "type" | "sessionId" | "eventAt">;
-interface NumberedSessionRow {
-  n: number;
-  s: SessionInfo;
-  label: string;
-}
 const STATE_EVENT_TYPES = new Set<TurnEvent["type"]>(["working", "turn-end", "needs-you"]);
 const HANDOFF_URGENCY: Partial<Record<TurnEvent["type"], number>> = {
   working: 1,
@@ -709,7 +705,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let panelOrder: string[] = [];
   let panelLabels = new Map<string, string>();
   let panelSessions = new Map<string, SessionInfo>();
-  let numberedSessionRows: NumberedSessionRow[] = [];
+  let numberedSessionRows: NumberedPanelSessionRow[] = [];
   let selectedId: string | null = null;
   let cursorAuto = true;
   let panelOpen = true;
@@ -1190,7 +1186,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       panelOrder = model.rows.map((row) => row.sessionId);
       panelLabels = new Map(model.rows.map((row) => [row.sessionId, row.label]));
       panelSessions = new Map(live.map((session) => [session.sessionId, session]));
-      numberedSessionRows = numberSessionRows(live);
+      numberedSessionRows = numberPanelSessionRows(model.rows, live);
       // Read mode state after the async registry snapshot so a slow older redraw
       // cannot repaint a stale pause/mute banner over a newer toggle.
       model.mode = { muted, paused: pause.paused, holding: pending.size };
@@ -1253,7 +1249,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const latched = sessionStates.get(sessionId);
     if (latched) sessionStates.set(sessionId, { ...latched, label: newLabel });
     if (panelLabels.has(sessionId)) panelLabels.set(sessionId, newLabel);
-    numberedSessionRows = numberSessionRows([...panelSessions.values()]);
+    numberedSessionRows = numberedSessionRows.map((row) =>
+      row.s.sessionId === sessionId ? { ...row, label: newLabel } : row
+    );
   }
 
   function setMuted(next: boolean): void {
@@ -3221,7 +3219,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
           dismissedSessionIds.add(target.sessionId);
           panelOrder = panelOrder.filter((sessionId) => sessionId !== target.sessionId);
           panelLabels.delete(target.sessionId);
-          numberedSessionRows = numberSessionRows([...panelSessions.values()]);
           speech.cancelCurrent();
           for (let index = queue.length - 1; index >= 0; index--) {
             const queued = queue[index]!;
@@ -3439,23 +3436,22 @@ export async function runDaemon(cfg: Config): Promise<void> {
     });
   }
 
-  /** Live sessions in a stable order so number keys mean the same thing between glances. */
-  function numberSessionRows(sessions: readonly SessionInfo[]): NumberedSessionRow[] {
-    return sessions
-      .filter((session) => !dismissedSessionIds.has(session.sessionId))
-      .map((s) => ({ s, label: sessionLabel(s, s.cwd) }))
-      .sort((a, b) => a.label.localeCompare(b.label))
-      .slice(0, 9)
-      .map((x, i) => ({ n: i + 1, ...x }));
+  /** Make log-backed controls visible even after the content pane was collapsed. */
+  function revealLogPane(): void {
+    panelOpen = true;
+    setLogsVisible(true);
+    void renderSessionPanel();
   }
 
-  async function numberedSessions(): Promise<NumberedSessionRow[]> {
-    return numberSessionRows(await listSessions(cfg.claudeDir));
+  /** Refresh, then reuse the exact numbered order committed to the visible panel. */
+  async function numberedSessions(): Promise<NumberedPanelSessionRow[]> {
+    await renderSessionPanel();
+    return numberedSessionRows;
   }
 
   async function printSessions(): Promise<void> {
+    revealLogPane();
     const rows = await numberedSessions();
-    numberedSessionRows = rows;
     if (!rows.length) return log("no live sessions");
     logAbove(rows.map((r) => `  \x1b[36m${r.n}\x1b[0m ${r.label}${lastTurn?.sessionId === r.s.sessionId ? " \x1b[2m(space wakes this one)\x1b[0m" : ""}`).join("\n"));
   }
@@ -3642,7 +3638,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         return;
       }
       if (theaterMode && c === "\r") {
-        const sessionId = theaterNavigation.manualControlTarget();
+        const sessionId = theaterActionTarget();
         if (sessionId) {
           sessionActionsOverlay?.open({
             sessionId,
@@ -3681,10 +3677,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
       else if (c === "v") void auditionVoices();
       else if (theaterMode && c === "r") reciteBySessionId(theaterActionTarget());
       else if (dispatchTheaterControlKey(c, theaterControls)) {}
-      else if (c === "?" || c === "h") printHelp();
+      else if (c === "?" || c === "h") {
+        revealLogPane();
+        printHelp();
+      }
       else if (c === "q" || c === "\u0003") void shutdown();
     });
-    printHelp();
   }
 }
 

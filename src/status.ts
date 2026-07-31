@@ -344,6 +344,53 @@ const THEATER_STATUS_ICON: Record<string, string> = {
   transcribing: "\x1b[36m…\x1b[39m",
 };
 
+const THEATER_STATUS_COPY = {
+  needs: "need you",
+  review: "review",
+  waiting: "waiting",
+  working: "working",
+} as const;
+
+/** One quiet, live summary for the theater's top status line. */
+export function theaterStatusHeader(model: PanelModel): string {
+  const counts: Record<keyof typeof THEATER_STATUS_COPY, number> = {
+    needs: 0,
+    review: 0,
+    waiting: 0,
+    working: 0,
+  };
+  for (const row of model.rows) {
+    if (row.status) counts[row.status]++;
+  }
+
+  const parts = ["conch"];
+  for (const status of ["needs", "review", "waiting", "working"] as const) {
+    const count = counts[status];
+    if (!count) continue;
+    parts.push(`${THEATER_STATUS_ICON[status]} ${count} ${THEATER_STATUS_COPY[status]}`);
+  }
+  if (model.live.state !== "idle") {
+    parts.push(
+      `${model.live.state}${model.live.label ? ` ‹${model.live.label}›` : ""}`,
+    );
+  }
+  return `  ${parts.join(" · ")}`;
+}
+
+/** Compact age for a latched epoch-ms timestamp. */
+export function relativeAge(at: number, now: number): string {
+  const elapsed = Number.isFinite(at) && Number.isFinite(now)
+    ? Math.max(0, now - at)
+    : 0;
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (elapsed < minute) return "<1m";
+  if (elapsed < hour) return `${Math.floor(elapsed / minute)}m`;
+  if (elapsed < day) return `${Math.floor(elapsed / hour)}h`;
+  return `${Math.floor(elapsed / day)}d`;
+}
+
 function rowState(row: PanelRowModel): string {
   if (row.muted) return "muted";
   if (row.paused) return "paused";
@@ -366,24 +413,89 @@ function fullStatus(row: PanelRowModel): string {
   }
 }
 
-function theaterLedgerRow(row: PanelRowModel, width: number, compact: boolean): string {
+function inlineRowDetail(row: PanelRowModel): string {
+  if (row.status === "review") return row.review?.summary ?? row.detail ?? "";
+  if (row.status === "needs") return row.detail ?? "";
+  return "";
+}
+
+function indexedRowLead(row: PanelRowModel, visiblePosition: number): string {
+  const number = visiblePosition >= 1 && visiblePosition <= 9
+    ? `\x1b[2m${visiblePosition}\x1b[22m`
+    : " ";
+  const cursor = row.navSelected
+    ? "\x1b[38;2;88;201;212m▸\x1b[39m"
+    : " ";
+  return `${number} ${cursor} `;
+}
+
+function appendRelativeAge(
+  left: string,
+  age: string,
+  width: number,
+): string {
+  if (!age) return padVisible(left, width);
+  const ageWidth = visibleLength(age);
+  const leftWidth = Math.max(0, width - ageWidth - 1);
+  if (leftWidth < 1) return padVisible(`\x1b[2m${age}\x1b[22m`, width);
+  return `${padVisible(left, leftWidth)} \x1b[2m${age}\x1b[22m`;
+}
+
+function compactLedgerLeft(
+  row: PanelRowModel,
+  width: number,
+  lead: string,
+): string {
+  const icon = THEATER_STATUS_ICON[rowState(row)] ?? THEATER_STATUS_ICON.idle!;
+  const detail = inlineRowDetail(row);
+  const leadWidth = visibleLength(lead);
+  const iconWidth = visibleLength(icon);
+  if (!detail) {
+    const labelWidth = Math.max(1, width - leadWidth - iconWidth - 1);
+    return `${lead}${padVisible(row.label, labelWidth)} ${icon}`;
+  }
+
+  const fieldsWidth = Math.max(2, width - leadWidth - iconWidth - 2);
+  const labelWidth = Math.max(1, Math.min(12, Math.floor(fieldsWidth / 2)));
+  const detailWidth = Math.max(1, fieldsWidth - labelWidth);
+  return `${lead}${padVisible(row.label, labelWidth)} ${icon} ${fitTheaterLine(detail, detailWidth)}`;
+}
+
+function fullLedgerLeft(
+  row: PanelRowModel,
+  width: number,
+  lead: string,
+): string {
+  const status = fullStatus(row);
+  const detail = inlineRowDetail(row);
+  const labelWidth = Math.max(
+    1,
+    Math.min(30, width - visibleLength(lead) - visibleLength(status) - 2),
+  );
+  return `${lead}${padVisible(row.label, labelWidth)} ${status}${
+    detail ? ` \x1b[2m(${detail})\x1b[22m` : ""
+  }`;
+}
+
+function theaterLedgerRow(
+  row: PanelRowModel,
+  width: number,
+  compact: boolean,
+  visiblePosition: number,
+  now: number,
+): string {
   // Reserve a 1-col gutter on EVERY row (accent bar when active, blank space
   // otherwise) so a row's text never shifts as it gains or loses the highlight.
   const bodyWidth = Math.max(1, width - 1);
-  const cursor = row.navSelected ? "\x1b[38;2;88;201;212m▸\x1b[39m " : "  ";
-  let body: string;
-  if (compact) {
-    const icon = THEATER_STATUS_ICON[rowState(row)] ?? THEATER_STATUS_ICON.idle!;
-    const labelWidth = Math.max(1, bodyWidth - visibleLength(cursor) - visibleLength(icon) - 2);
-    const label = padVisible(row.label, labelWidth);
-    body = `${cursor}${label} ${icon}`;
-  } else {
-    const status = fullStatus(row);
-    const labelWidth = Math.max(1, Math.min(30, bodyWidth - visibleLength(cursor) - visibleLength(status) - 2));
-    body = `${cursor}${padVisible(row.label, labelWidth)} ${status}`;
-    if (row.detail) body += ` \x1b[2m(${row.detail})\x1b[22m`;
-  }
-  body = padVisible(body, bodyWidth);
+  const age = row.status && row.at !== undefined && row.at > 0
+    ? relativeAge(row.at, now)
+    : "";
+  const leftWidth = Math.max(1, bodyWidth - (age ? visibleLength(age) + 1 : 0));
+  const lead = indexedRowLead(row, visiblePosition);
+  const left = compact
+    ? compactLedgerLeft(row, leftWidth, lead)
+    : fullLedgerLeft(row, leftWidth, lead);
+  let body = appendRelativeAge(left, age, bodyWidth);
   if (row.muted || row.paused) body = `\x1b[2m${body}\x1b[22m`;
   if (!row.active) return ` ${body}`; // blank gutter — keeps text aligned with the active ▎
   // A steady brand accent + neutral fill anchors the live session. State color
@@ -552,6 +664,9 @@ function theaterContentLines(
       : transcribing
         ? "transcribing…"
         : "";
+  if (note && model.live.label) {
+    note = `‹${model.live.label}› · ${note}`;
+  }
 
   if (capturing || transcribing) {
     // Dictation deliberately outranks a parked preview: never hide the words
@@ -802,20 +917,23 @@ export function createTheaterRenderer(
     const frameWidth = Math.max(1, columns - 1); // never arm the terminal's wrap column
     const frame: string[] = [];
     const overlayOpen = Boolean(model?.settingsOverlay || model?.sessionActionsOverlay);
-    const overlayOnly = overlayOpen && columns < 36;
-    const paneOpen = overlayOpen || ((model?.panelOpen ?? true) && columns >= 52);
+    // Forced logs/help must remain visible on narrow terminals; below the normal
+    // split threshold they temporarily own the body, like a narrow modal.
+    const contentOnly = (overlayOpen && columns < 36) || (logsVisible && columns < 52);
+    const paneOpen =
+      overlayOpen || logsVisible || ((model?.panelOpen ?? true) && columns >= 52);
     let ledgerWidth = frameWidth;
-    if (overlayOnly) ledgerWidth = 0;
+    if (contentOnly) ledgerWidth = 0;
     else if (paneOpen && overlayOpen) {
       ledgerWidth = Math.min(28, Math.max(16, Math.floor(columns * 0.28)));
     } else if (paneOpen) {
       ledgerWidth = Math.min(34, Math.max(22, Math.floor(columns * 0.3)));
     }
     const contentWidth = paneOpen
-      ? Math.max(1, frameWidth - ledgerWidth - (overlayOnly ? 0 : 3))
+      ? Math.max(1, frameWidth - ledgerWidth - (contentOnly ? 0 : 3))
       : 0;
 
-    frame.push("  \x1b[1m🐚 conch\x1b[0m");
+    frame.push(model ? theaterStatusHeader(model) : "  conch");
     if (rows > 1) {
       frame.push(`\x1b[2m${"─".repeat(Math.max(1, columns - 1))}\x1b[0m`);
     }
@@ -847,7 +965,7 @@ export function createTheaterRenderer(
       selection.clearIfFingerprintChanged(view.fingerprint);
       content = view.lines;
       paneLayout = {
-        left: overlayOnly ? 0 : ledgerWidth + 3,
+        left: contentOnly ? 0 : ledgerWidth + 3,
         top: 2,
         width: contentWidth,
         height: view.viewportHeight,
@@ -881,12 +999,19 @@ export function createTheaterRenderer(
       ledgerFocus - Math.floor(bodyHeight / 2),
     ));
     const ledgerRows = allLedgerRows.slice(ledgerStart, ledgerStart + bodyHeight);
+    const now = Date.now();
 
     for (let index = 0; index < bodyHeight; index++) {
-      const ledger = ledgerRows[index]
-        ? theaterLedgerRow(ledgerRows[index]!, ledgerWidth, paneOpen)
+      const ledger = !contentOnly && ledgerRows[index]
+        ? theaterLedgerRow(
+          ledgerRows[index]!,
+          ledgerWidth,
+          paneOpen,
+          ledgerStart + index + 1,
+          now,
+        )
         : " ".repeat(ledgerWidth);
-      frame.push(overlayOnly
+      frame.push(contentOnly
         ? content[index] ?? ""
         : paneOpen
         ? `${ledger} \x1b[2m│\x1b[0m ${content[index] ?? ""}`
