@@ -4,13 +4,18 @@ import Foundation
 @MainActor
 final class StateStore: ObservableObject {
     @Published private(set) var state: PublishedState?
+    @Published private(set) var daemonMessage: String?
 
     private let reader: StateSnapshotReader
+    private let socketClient: ConchSocketClient
     private var pollingTask: Task<Void, Never>?
+    private var deliveryTask: Task<Void, Never>?
+    private var controlSequence = 0
 
     init() {
         let reader = StateSnapshotReader()
         self.reader = reader
+        socketClient = ConchSocketClient()
         state = StateSnapshotFile.read()
 
         pollingTask = Task { @MainActor [weak self, reader] in
@@ -30,6 +35,22 @@ final class StateStore: ObservableObject {
 
     deinit {
         pollingTask?.cancel()
+        deliveryTask?.cancel()
+    }
+
+    func send(_ event: ConchDaemonEvent) {
+        controlSequence &+= 1
+        let sequence = controlSequence
+        let socketClient = socketClient
+        let previousDelivery = deliveryTask
+
+        deliveryTask = Task { @MainActor [weak self] in
+            await previousDelivery?.value
+            guard !Task.isCancelled else { return }
+            let delivered = await socketClient.send(event)
+            guard let self, controlSequence == sequence else { return }
+            daemonMessage = delivered ? nil : "conch daemon not running"
+        }
     }
 
     private func accept(_ snapshot: PublishedState) {

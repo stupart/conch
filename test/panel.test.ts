@@ -4,6 +4,7 @@ import {
   buildPanelModel,
   buildPanelRows,
   buildPublishedState,
+  refreshPublishedConversationState,
   dashboardPanelLines,
   dashboardRowsForModel,
   latestLatchedState,
@@ -174,6 +175,7 @@ describe("buildPublishedState — external session snapshot", () => {
       rows: [
         {
           id: "needs",
+          at: 40,
           label: "Need",
           status: "needs",
           needsResponse: true,
@@ -186,6 +188,7 @@ describe("buildPublishedState — external session snapshot", () => {
         },
         {
           id: "waiting",
+          at: 30,
           label: "Wait",
           status: "waiting",
           needsResponse: false,
@@ -597,4 +600,66 @@ describe("previewForPanelSelection — async cursor stale guard", () => {
       render.indexOf("commitLatestPanelRender("),
     );
   });
+
+  test("refreshes live conversation fields without rebuilding the ledger", () => {
+    const model = buildPanelModel({
+      sessions: [{ sessionId: "active", name: "Active" }],
+      sessionStates: new Map(),
+      pausedSessionIds: new Set(),
+      mutedSessionIds: new Set(),
+      live: { state: "speaking", label: "Active", partial: "" },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: "active",
+      navSelectedId: null,
+      reply: { sessionId: "active", text: "Earlier reply", spokenChars: 0 },
+    });
+    model.preview = { sessionId: "parked", text: "Parked preview", spokenChars: 0 };
+    const initial = buildPublishedState(model, new Map(), new Set(), 10);
+
+    const progressed = refreshPublishedConversationState(
+      initial,
+      {
+        state: "recording",
+        label: "Active",
+        partial: "words arriving",
+        transcriptPrefix: "already committed",
+        reading: { text: "Current reply", spokenChars: 7 },
+      },
+      "active",
+      11,
+    );
+
+    expect(progressed.ts).toBe(11);
+    expect(progressed.live).toEqual({
+      state: "recording",
+      label: "Active",
+      partial: "words arriving",
+      transcriptPrefix: "already committed",
+      reading: { text: "Current reply", spokenChars: 7 },
+    });
+    expect(progressed.reply).toEqual({
+      sessionId: "active",
+      text: "Current reply",
+      spokenChars: 7,
+    });
+    expect(progressed.rows).toBe(initial.rows);
+    expect(progressed.preview).toEqual(initial.preview);
+
+    const betweenChunks = refreshPublishedConversationState(
+      progressed,
+      { state: "listening", label: "Active", partial: "" },
+      "active",
+      12,
+    );
+    expect(betweenChunks.reply).toEqual(progressed.reply);
+
+    const switched = refreshPublishedConversationState(
+      betweenChunks,
+      { state: "speaking", label: "Other", partial: "" },
+      "other",
+      13,
+    );
+    expect("reply" in switched).toBe(false);
+  });
+
 });

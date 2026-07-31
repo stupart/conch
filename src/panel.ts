@@ -105,6 +105,8 @@ export interface PublishedSessionRow {
   id: string;
   label: string;
   status: SessionStatus | null;
+  /** Epoch-ms for the status currently visible on this row. */
+  at?: number;
   needsResponse: boolean;
   detail?: string;
   paused: boolean;
@@ -128,8 +130,8 @@ export interface PublishedState {
     transcriptPrefix?: string;
     reading?: { text: string; spokenChars: number };
   };
-  reply?: { sessionId: string; text: string; spokenChars: number } | null;
-  preview?: { sessionId: string; text: string; spokenChars: number } | null;
+  reply?: PanelReplyModel;
+  preview?: PanelReplyModel;
   rows: PublishedSessionRow[];
   dismissed: string[];
 }
@@ -157,6 +159,50 @@ function publishedReply<T extends { text: string; spokenChars: number }>(
   };
 }
 
+function publishedLiveState(live: PanelLiveState): PublishedState["live"] {
+  return {
+    state: live.state,
+    label: live.label,
+    ...(live.partial ? { partial: live.partial } : {}),
+    ...(live.transcriptPrefix
+      ? { transcriptPrefix: live.transcriptPrefix }
+      : {}),
+    ...(live.reading
+      ? { reading: publishedReply(live.reading) }
+      : {}),
+  };
+}
+
+/**
+ * Patch conversation-only progress onto the last complete panel snapshot.
+ * Registry/session reconciliation stays on the full render path; live partials
+ * and chunk progress can therefore publish without rescanning every session.
+ */
+export function refreshPublishedConversationState(
+  current: PublishedState,
+  live: PanelLiveState,
+  contentSessionId: string | null,
+  now: number,
+): PublishedState {
+  const { reply: previousReply, ...withoutReply } = current;
+  const reply = contentSessionId && live.reading?.text
+    ? publishedReply({
+      sessionId: contentSessionId,
+      text: live.reading.text,
+      spokenChars: live.reading.spokenChars,
+    })
+    : contentSessionId && previousReply?.sessionId === contentSessionId
+      ? { ...previousReply }
+      : undefined;
+
+  return {
+    ...withoutReply,
+    ts: now,
+    live: publishedLiveState(live),
+    ...(reply ? { reply } : {}),
+  };
+}
+
 /** Build the versioned, renderer-independent state exposed to external consumers. */
 export function buildPublishedState(
   model: PanelModel,
@@ -168,23 +214,14 @@ export function buildPublishedState(
     v: 1,
     ts: now,
     mode: { ...model.mode },
-    live: {
-      state: model.live.state,
-      label: model.live.label,
-      ...(model.live.partial ? { partial: model.live.partial } : {}),
-      ...(model.live.transcriptPrefix
-        ? { transcriptPrefix: model.live.transcriptPrefix }
-        : {}),
-      ...(model.live.reading
-        ? { reading: publishedReply(model.live.reading) }
-        : {}),
-    },
+    live: publishedLiveState(model.live),
     ...(model.reply ? { reply: publishedReply(model.reply) } : {}),
     ...(model.preview ? { preview: publishedReply(model.preview) } : {}),
     rows: model.rows.map((row) => ({
       id: row.sessionId,
       label: row.label,
       status: row.status,
+      ...(row.at !== undefined ? { at: row.at } : {}),
       needsResponse: row.status === "needs",
       ...(row.detail !== undefined ? { detail: row.detail } : {}),
       paused: row.paused,
