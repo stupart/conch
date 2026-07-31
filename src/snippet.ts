@@ -3,6 +3,36 @@
 import { open as openFile, type FileHandle } from "node:fs/promises";
 import { basename } from "node:path";
 
+const BARE_URL = /(?:<)?\bhttps?:\/\/[^\s<>"'`]+(?:>)?/gi;
+const FILESYSTEM_PATH = /(^|[\s([{'":=])((?:(?:~?|\.\.?)\/|[A-Za-z0-9_.-]+\/)[^\s)\]}>,"'`]+)/g;
+const LONG_CLI_FLAG =
+  /(^|[\s([{'"])(--[A-Za-z0-9][A-Za-z0-9_-]*(?:=(?:"[^"]*"|'[^']*'|[^\s)\]}]*))?)/g;
+
+function retainTrailingPunctuation(replacement: string, matched: string): string {
+  const trailing = matched.match(/[)\]}.,;:!?]+$/)?.[0] ?? "";
+  return replacement + trailing;
+}
+
+/** Turn implementation details into words that are useful when spoken aloud. */
+export function speakable(text: string): string {
+  return text
+    .replace(BARE_URL, (url) => {
+      const wrapped = url.startsWith("<") && url.endsWith(">");
+      return wrapped ? "a link" : retainTrailingPunctuation("a link", url);
+    })
+    .replace(FILESYSTEM_PATH, (matched, prefix: string, path: string) => {
+      const trailing = path.match(/[.,;:!?]+$/)?.[0] ?? "";
+      const unpunctuated = trailing ? path.slice(0, -trailing.length) : path;
+      const name = basename(unpunctuated.replace(/\/+$/, ""));
+      return name ? `${prefix}${name}${trailing}` : matched;
+    })
+    .replace(LONG_CLI_FLAG, "$1")
+    .replace(/\(\s*\)|\[\s*\]|\{\s*\}/g, "")
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function stripMarkdown(md: string): string {
   const kept: string[] = [];
   let inFence = false;
@@ -13,16 +43,17 @@ export function stripMarkdown(md: string): string {
     }
     if (!inFence) kept.push(line);
   }
-  return kept
+  const plain = kept
     .join(" ")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1") // links/images -> their text
-    .replace(/[`*_#>|]/g, "")
+    .replace(/[`*#>|]/g, "")
     .replace(/\s+/g, " ")
     .trim();
+  return speakable(plain);
 }
 
 export function splitSentences(text: string): string[] {
-  return text.split(/(?<=[.!?])\s+/).filter(Boolean);
+  return text.split(/(?<=[.!?])(?<!\d\.)\s+/).filter(Boolean);
 }
 
 /**

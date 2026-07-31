@@ -27,6 +27,16 @@ export const MIN_PCM_BYTES = 16_000; // ~0.5s
 // silently discarded interruptions (took the user 10 tries, live).
 export const BARGE_MIN_PCM_BYTES = 5_000; // ~0.16s
 
+/** Recorder speech-start is a file-growth signal; MIN only gates transcription. */
+export function rawCaptureFileGrew(previousBytes: number, currentBytes: number): boolean {
+  return currentBytes > previousBytes;
+}
+
+// This must stay comfortably below the 600ms fallback read gap so its first
+// growth check can cancel the idle deadline before that gap drains the capture.
+export const CAPTURE_WATCHDOG_INTERVAL_MS = 100;
+const PARTIAL_TRANSCRIPTION_INTERVAL_MS = 700;
+
 export interface ListenHooks {
   /** armed = mic open & waiting; capturing = speech detected; transcribing = whisper running */
   onState?: (state: "armed" | "capturing" | "transcribing") => void;
@@ -53,7 +63,11 @@ export interface RuntimeDictationSession {
   acknowledge(event: DictationEvent): void;
   requestBarrier(reason: string): BarrierTicket;
   requestTimeout(): BarrierTicket;
-  setIdleWindowSecs(seconds: number): void;
+  /**
+   * Change the idle window. When supplied, `finalizedAt` anchors the deadline
+   * to recorder finalization rather than delayed transcript delivery.
+   */
+  setIdleWindowSecs(seconds: number, finalizedAt?: number): void;
   /** Stop this scoped exchange without submitting its captured tail. */
   abort(): Promise<void>;
 }
@@ -197,13 +211,14 @@ export function createDictationSession(
   let idleWindowSecs = options.idleWindowSecs ?? cfg.listenWindowSecs;
   let idleDeadline = Date.now() + idleWindowSecs * 1000;
   let nextOpenBeginsNewWindow = false;
+  let latestCaptureFinalizedAt: number | undefined;
   let controller!: DictationController;
   let abortDone: Promise<void> | null = null;
   const transcriptionGate = new TranscriptionGate(() => controller.finalWorkerIdle);
 
   const backend = {
     open(context: { sequence: number; generation: number }): RecorderHandle {
-      const handle = armContinuousRecorder(
+      const recorder = armContinuousRecorder(
         cfg,
         tag,
         startPct,
@@ -219,10 +234,17 @@ export function createDictationSession(
         },
         (text) => controller.publishPartial({ ...context, text }),
       );
+      const handle: RecorderHandle = {
+        ...recorder,
+        finished: recorder.finished.then((capture) => {
+          latestCaptureFinalizedAt = capture.finalizedAt;
+          return capture;
+        }),
+      };
       queueMicrotask(() => {
         if (controller.state === "running" && controller.activeSequence === context.sequence) {
           if (nextOpenBeginsNewWindow) {
-            idleDeadline = Date.now() + idleWindowSecs * 1000;
+            idleDeadline = (latestCaptureFinalizedAt ?? Date.now()) + idleWindowSecs * 1000;
             nextOpenBeginsNewWindow = false;
           }
           controller.scheduleTimeout(Math.max(0, idleDeadline - Date.now()));
@@ -304,10 +326,18 @@ export function createDictationSession(
       }
       return abortDone;
     },
-    setIdleWindowSecs(seconds) {
+    setIdleWindowSecs(seconds, finalizedAt) {
       idleWindowSecs = seconds;
-      idleDeadline = Date.now() + seconds * 1000;
-      if (controller.micOpen) controller.scheduleTimeout(seconds * 1000);
+      const deadlineBase = finalizedAt === undefined
+        ? Date.now()
+        : Math.max(finalizedAt, latestCaptureFinalizedAt ?? finalizedAt);
+      idleDeadline = deadlineBase + seconds * 1000;
+      // A successor may already be recording while Whisper handles the prior
+      // capture. Its first byte cancelled the old deadline; a late transcript
+      // must not put that deadline back over live speech.
+      if (controller.micOpen && !nextOpenBeginsNewWindow) {
+        controller.scheduleTimeout(Math.max(0, idleDeadline - Date.now()));
+      }
     },
   };
 }
@@ -458,12 +488,14 @@ export function armBargeRecorder(cfg: Config, traceParent?: string, traceSequenc
   const hardStop = setTimeout(() => stopCapture("max"), cfg.maxUtteranceSecs * 1000);
   const finished = proc.exited.then((exitCode): CapturedAudio => {
     clearTimeout(hardStop);
+    const finalizedAt = Date.now();
     const final = finalFileSize(raw);
     const error = final.error ?? (!capture.killCause && exitCode !== 0 ? `sox exited with code ${exitCode}` : null);
     finalizeCaptureTrace(capture, exitCode, final.size, error);
     return {
       rawPath: raw,
       finalBytes: final.size,
+      finalizedAt,
       minimumBytes: BARGE_MIN_PCM_BYTES,
       ...(capture.trace ? { diagnosticId: capture.trace.id } : {}),
       ...(stopReason ? { cause: stopReason } : {}),
@@ -604,29 +636,46 @@ function armContinuousRecorder(
   const capture = spawnCapture(cfg, tag, startPct, minimumBytes, parent, diagnosticSequence);
   capture.controllerOwned = true;
   const { raw, proc } = capture;
-  const opened = Date.now();
   let speechStartedAt: number | null = null;
+  let observedRawBytes = 0;
   let partialBusy = false;
+  let lastPartialAt = 0;
   let stopReason: string | undefined;
   hooks.onState?.("armed");
 
-  const watchdog = setInterval(() => {
+  const observeSpeechStart = (now: number): boolean => {
     const size = fileSize(raw);
-    if (speechStartedAt === null && size >= minimumBytes) {
-      speechStartedAt = Date.now();
+    const grew = rawCaptureFileGrew(observedRawBytes, size);
+    observedRawBytes = size;
+    if (speechStartedAt === null && grew) {
+      speechStartedAt = now;
+      lastPartialAt = now;
       onSpeechStarted();
       hooks.onState?.("capturing");
     }
-    if (speechStartedAt !== null && (Date.now() - speechStartedAt) / 1000 >= cfg.maxUtteranceSecs) {
+    return speechStartedAt !== null;
+  };
+
+  const watchdog = setInterval(() => {
+    const now = Date.now();
+    observeSpeechStart(now);
+    if (speechStartedAt !== null && (now - speechStartedAt) / 1000 >= cfg.maxUtteranceSecs) {
       stopReason = "max";
       markKill(capture, "max");
       stopSoxProcess(proc);
     }
 
-    if (speechStartedAt !== null && hooks.onPartial && serverUp() && !partialBusy) {
+    if (
+      speechStartedAt !== null
+      && hooks.onPartial
+      && serverUp()
+      && !partialBusy
+      && now - lastPartialAt >= PARTIAL_TRANSCRIPTION_INTERVAL_MS
+    ) {
       const partial = transcribePartial(readPcm(raw));
       if (!partial) return;
       partialBusy = true;
+      lastPartialAt = now;
       partial
         .then((result) => {
           if (result.text) onPartial(result.text);
@@ -636,16 +685,18 @@ function armContinuousRecorder(
           partialBusy = false;
         });
     }
-  }, 700);
+  }, CAPTURE_WATCHDOG_INTERVAL_MS);
 
   const finished = proc.exited.then((exitCode): CapturedAudio => {
     clearInterval(watchdog);
+    const finalizedAt = Date.now();
     const final = finalFileSize(raw);
     const error = final.error ?? (!capture.killCause && exitCode !== 0 ? `sox exited with code ${exitCode}` : null);
     finalizeCaptureTrace(capture, exitCode, final.size, error);
     return {
       rawPath: raw,
       finalBytes: final.size,
+      finalizedAt,
       minimumBytes,
       ...(capture.trace ? { diagnosticId: capture.trace.id } : {}),
       ...(stopReason ? { cause: stopReason } : {}),
@@ -655,6 +706,7 @@ function armContinuousRecorder(
 
   return {
     finished,
+    hasSpeechStarted: () => observeSpeechStart(Date.now()),
     stop(reason) {
       if (stopReason) return;
       stopReason = reason;

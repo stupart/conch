@@ -2088,10 +2088,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
         await interruptReadForManualReply();
         if (interruptedByPause()) return;
         // gap between chunks: with barging available it's just a beat; with
-        // barging off (echo/noise) it's the only voice interrupt, so keep it real
+        // barging off (echo/noise) or disabled, it's the only voice interrupt,
+        // so keep it real
+        const noVoiceInterrupt = bargeOff || !cfg.bargeThresholdPct;
         const gapSecs = reciteOnly
           ? 0
-          : bargeOff ? Math.max(cfg.gapSecs, 0.6) : cfg.gapSecs;
+          : noVoiceInterrupt ? Math.max(cfg.gapSecs, 0.6) : cfg.gapSecs;
         if (gapSecs > 0) {
           // A read gap precedes the conversation reducer/hooks, so it must not
           // briefly expose the previous completed turn's transcript prefix.
@@ -2689,7 +2691,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
           const trace = effects.find((effect) => effect.type === "trace");
           if (trace?.type === "trace") {
             log(`heard: "${controllerEvent.text}" -> ${trace.intent}${reducer.snapshot.buffer.length ? " (holding)" : ""}`);
-            if (trace.intent === "prompt") session.setIdleWindowSecs(cfg.holdSubmitSecs);
+            if (trace.intent === "prompt") {
+              session.setIdleWindowSecs(cfg.holdSubmitSecs, controllerEvent.finalizedAt);
+            }
           }
           if (initialBargeResult && !controllerEvent.text) {
             emptyBargeBarrierId = session.requestBarrier("barge-empty").id;

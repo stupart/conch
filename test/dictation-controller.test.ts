@@ -28,11 +28,16 @@ class ManualRecorder implements RecorderHandle {
   readonly finished = this.completion.promise;
   readonly stopReasons: string[] = [];
   attachedCount = 0;
+  speechStarted = false;
 
   constructor(readonly context: CaptureContext) {}
 
   stop(reason: string): void {
     this.stopReasons.push(reason);
+  }
+
+  hasSpeechStarted(): boolean {
+    return this.speechStarted;
   }
 
   attached(): void {
@@ -169,6 +174,32 @@ test("serial worker preserves sequence despite later captures completing during 
   const events = [await next(controller), await next(controller), await next(controller), await next(controller)];
   expect(events.slice(0, 3).map((event) => event.kind === "transcript" && event.sequence)).toEqual([1, 2, 3]);
   controller.acknowledge(events[3]!);
+  await ticket.done;
+});
+
+test("transcript carries the capture-finalized timestamp through slow transcription", async () => {
+  const transcriber = new ManualTranscriber();
+  const blocked = deferred<void>();
+  transcriber.blockers.set("timed", blocked);
+  const { backend, controller } = fixture({ transcriber });
+
+  controller.start();
+  backend.recorders[0]!.finish("timed", 32_000, { finalizedAt: 12_345 });
+  await turns();
+  const ticket = controller.requestBarrier("done");
+  backend.recorders[1]!.finish("quiet", 0);
+  blocked.resolve();
+
+  const transcript = await next(controller);
+  expect(transcript).toMatchObject({
+    kind: "transcript",
+    text: "timed",
+    finalizedAt: 12_345,
+  });
+  const short = await next(controller);
+  const barrier = await next(controller);
+  expect(short.kind).toBe("short");
+  controller.acknowledge(barrier);
   await ticket.done;
 });
 
@@ -392,6 +423,33 @@ test("injected clock timeout drains the active recorder before its FIFO sentinel
   expect(events.map((event) => event.kind)).toEqual(["short", "timeout", "barrier"]);
   controller.acknowledge(events[2]!);
   expect(controller.state).toBe("idle");
+});
+
+test("idle deadline rechecks raw growth before it stops the active recorder", async () => {
+  let scheduled: (() => void) | undefined;
+  const clock: DictationClock = {
+    setTimeout(callback) {
+      scheduled = callback;
+      return 9;
+    },
+    clearTimeout() {},
+  };
+  const { backend, controller } = fixture({ clock });
+  controller.start();
+  controller.scheduleTimeout(600);
+  backend.recorders[0]!.speechStarted = true;
+
+  scheduled!();
+  expect(backend.recorders[0]!.stopReasons).toEqual([]);
+  expect(controller.state).toBe("running");
+
+  const ticket = controller.requestBarrier("manual-reply");
+  backend.recorders[0]!.finish("speech", 1, { cause: "manual-reply" });
+  const short = await next(controller);
+  const barrier = await next(controller);
+  expect(short.kind).toBe("short");
+  controller.acknowledge(barrier);
+  await ticket.done;
 });
 
 test("adopted barge capture gets a sequence and opens its normal successor before transcription", async () => {

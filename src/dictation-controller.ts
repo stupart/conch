@@ -16,6 +16,8 @@ export interface CaptureContext {
 export interface CapturedAudio {
   rawPath: string;
   finalBytes: number;
+  /** Wall-clock time when the recorder exited and its capture became final. */
+  finalizedAt?: number;
   /** Optional per-capture eligibility override (for example the 5KB barge floor). */
   minimumBytes?: number;
   diagnosticId?: string;
@@ -29,6 +31,8 @@ export interface RecorderHandle {
   finished: Promise<CapturedAudio>;
   /** Must synchronously initiate stop; completion is reported by `finished`. */
   stop(reason: string): void;
+  /** Recheck capture growth at an idle deadline before stopping live speech. */
+  hasSpeechStarted?(): boolean;
   /** Optional synchronous ownership handshake for an adopted live capture. */
   attached?(): void;
 }
@@ -74,6 +78,7 @@ export interface TranscriptEvent extends EventBase {
   kind: "transcript";
   rawPath: string;
   finalBytes: number;
+  finalizedAt?: number;
   cause?: string;
   text: string;
   engine?: "warm" | "cold";
@@ -83,6 +88,7 @@ export interface ShortEvent extends EventBase {
   kind: "short";
   rawPath: string;
   finalBytes: number;
+  finalizedAt?: number;
   cause?: string;
 }
 
@@ -250,6 +256,10 @@ export class DictationController {
     this.timeoutHandle = this.clock.setTimeout(() => {
       this.timeoutHandle = undefined;
       if (this.currentState === "running" && this.currentGeneration === epoch) {
+        // The file can grow after the most recent watchdog tick. Give the
+        // recorder one synchronous boundary check so a deadline never wins
+        // over speech that has already started.
+        if (this.active?.handle.hasSpeechStarted?.()) return;
         this.requestTimeout(epoch);
       }
     }, ms);
@@ -454,6 +464,7 @@ export class DictationController {
         diagnosticId: capture.diagnosticId,
         rawPath: capture.rawPath,
         finalBytes: capture.finalBytes,
+        ...(capture.finalizedAt !== undefined ? { finalizedAt: capture.finalizedAt } : {}),
         cause: capture.cause,
       };
     } else if (
@@ -466,6 +477,7 @@ export class DictationController {
         diagnosticId: capture.diagnosticId,
         rawPath: capture.rawPath,
         finalBytes: capture.finalBytes,
+        ...(capture.finalizedAt !== undefined ? { finalizedAt: capture.finalizedAt } : {}),
         cause: capture.cause,
       };
     } else {
@@ -481,6 +493,7 @@ export class DictationController {
                 diagnosticId: capture.diagnosticId,
                 rawPath: capture.rawPath,
                 finalBytes: capture.finalBytes,
+                ...(capture.finalizedAt !== undefined ? { finalizedAt: capture.finalizedAt } : {}),
                 cause: capture.cause,
                 text: transcript.text,
                 engine: transcript.engine,

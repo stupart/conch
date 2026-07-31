@@ -151,6 +151,22 @@ function printSetting(descriptor: SettingDescriptor, resolution: SettingResoluti
   console.log(`${descriptor.key.padEnd(22)} ${settingValue(resolution.value).padEnd(8)} ${source}${diagnostic}`);
 }
 
+function dim(text: string): string {
+  return process.env.NO_COLOR !== undefined || !process.stdout.isTTY
+    ? text
+    : `\x1b[2m${text}\x1b[22m`;
+}
+
+function holdSubmitTimingAdvisory(snapshot: ConfigSnapshot): string | undefined {
+  const hold = snapshot["hold-submit-delay"].value;
+  const end = snapshot["end-silence"].value;
+  if (typeof hold !== "number" || typeof end !== "number" || hold > end) return undefined;
+  return dim(
+    `  advisory: hold-submit-delay (${hold}s) <= end-silence (${end}s); `
+      + "the submit timer can fire before the utterance is considered ended",
+  );
+}
+
 function printMutation(
   descriptor: SettingDescriptor,
   action: "set" | "unset",
@@ -499,7 +515,13 @@ switch (command) {
     }
     if (remote === "daemon-down") console.log("[conch] daemon-down — showing local settings resolution");
     const snapshot = remote === "daemon-down" ? localSnapshot() : remote;
-    for (const descriptor of SETTING_DESCRIPTORS) printSetting(descriptor, snapshot[descriptor.key]);
+    for (const descriptor of SETTING_DESCRIPTORS) {
+      printSetting(descriptor, snapshot[descriptor.key]);
+      if (descriptor.key === "hold-submit-delay") {
+        const advisory = holdSubmitTimingAdvisory(snapshot);
+        if (advisory) console.log(advisory);
+      }
+    }
     break;
   }
   case "voices": {

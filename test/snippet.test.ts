@@ -1,6 +1,8 @@
 import { test, expect } from "bun:test";
 import {
   stripMarkdown,
+  speakable,
+  splitSentences,
   firstSentences,
   lastAssistantText,
   createTranscriptReader,
@@ -157,6 +159,31 @@ test("stripMarkdown drops code fences and keeps prose", () => {
 test("stripMarkdown flattens links, bold, and headers", () => {
   const md = "## Result\n\n**All good** — see [the docs](https://example.com) for more.";
   expect(stripMarkdown(md)).toBe("Result All good — see the docs for more.");
+});
+
+test("speakable replaces a bare http(s) URL with a short phrase", () => {
+  expect(speakable("See https://example.com/a/long/resource?view=full.")).toBe("See a link.");
+  expect(speakable("Open (http://localhost:3000/status).")).toBe("Open (a link).");
+  expect(stripMarkdown("Open <https://example.com/status>.")).toBe("Open a link.");
+});
+
+test("speakable reduces a filesystem path to its basename", () => {
+  expect(speakable("Updated /Users/tyler/conch/src/snippet.ts.")).toBe("Updated snippet.ts.");
+});
+
+test("speakable drops long CLI flags", () => {
+  expect(speakable("Run conch --foo-bar-baz now.")).toBe("Run conch now.");
+  expect(speakable("Run conch (--foo-bar-baz=value) now.")).toBe("Run conch now.");
+});
+
+test("stripMarkdown keeps underscores in identifiers and applies speakable cleanup", () => {
+  expect(stripMarkdown("Use `foo_bar` from /tmp/conch/foo_bar.ts at https://example.com."))
+    .toBe("Use foo_bar from foo_bar.ts at a link.");
+});
+
+test("splitSentences keeps a numbered-list marker with its sentence", () => {
+  expect(splitSentences("Done. 1. Fixed the leak. 2. Added a test."))
+    .toEqual(["Done.", "1. Fixed the leak.", "2. Added a test."]);
 });
 
 test("firstSentences takes N whole sentences under the cap — no mid-sentence chops", () => {

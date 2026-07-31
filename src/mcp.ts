@@ -1,3 +1,4 @@
+import { stat } from "node:fs/promises";
 import { loadConfig, type Config } from "./config.ts";
 import { sendToDaemon, type TurnEvent } from "./hook.ts";
 import { registryToPanel } from "./panel.ts";
@@ -224,15 +225,19 @@ export const MCP_TOOLS = [
   },
   {
     name: "review_to_front",
-    description: "Surface a session's finished deliverable for the user's review: latches the session as needs-review in conch's dashboard, announces it, and opens an optional link.",
+    description: "Surface a worker session's finished deliverable for the user's review: session is required and must name the worker whose deliverable this is. Latches that session as needs-review in conch's dashboard, announces it, and opens an optional safe link.",
     inputSchema: {
       type: "object",
       properties: {
         summary: { type: "string", minLength: 1 },
         link: { type: "string", minLength: 1 },
-        session: { type: "string", minLength: 1 },
+        session: {
+          type: "string",
+          minLength: 1,
+          description: "Required live session id or label of the worker whose deliverable this is.",
+        },
       },
-      required: ["summary"],
+      required: ["summary", "session"],
       additionalProperties: false,
     },
   },
@@ -288,7 +293,7 @@ export const defaultMcpDependencies: McpDependencies = {
   lastAssistantText,
   splitSentences,
   openLink(link) {
-    Bun.spawn(["open", link], { stdout: "ignore", stderr: "ignore" });
+    Bun.spawn(["open", "--", link], { stdout: "ignore", stderr: "ignore" });
   },
   now: Date.now,
 };
@@ -390,20 +395,53 @@ async function resolveSession(
   return session;
 }
 
-async function resolveWorkingSession(
+async function requiredReviewSession(
+  argumentsValue: Readonly<Record<string, unknown>>,
   config: McpRuntimeConfig,
   dependencies: McpDependencies,
-): Promise<SessionInfo> {
+): Promise<string> {
+  const value = argumentsValue.session;
+  if (typeof value === "string" && value.trim()) return value;
+
   const infos = (await dependencies.registrySnapshot(config.claudeDir))?.infos ?? [];
-  const busy = infos.filter((session) => registryToPanel(session.status) === "working");
-  if (busy.length === 1) return busy[0]!;
-  throw new Error(
-    busy.length === 0
-      ? "no working session to attribute this review to — pass session"
-      : `multiple working sessions — pass session (${
-        busy.map((session) => dependencies.sessionLabel(session, session.cwd)).join(", ")
-      })`,
+  const labels = Array.from(new Set(
+    infos.map((session) => dependencies.sessionLabel(session, session.cwd)),
+  ));
+  throw new ToolInputError(
+    "session is required and must name the worker whose deliverable this is"
+      + `; live sessions: ${labels.length ? labels.join(", ") : "(none)"}`,
   );
+}
+
+const SAFE_REVIEW_LINK =
+  "link must be an http(s) URL or an existing, non-executable regular file";
+
+async function validateReviewLink(link: string): Promise<void> {
+  let url: URL | undefined;
+  try {
+    url = new URL(link);
+  } catch {
+    // A non-URL may still be a filesystem path.
+  }
+  if (url) {
+    if (
+      (url.protocol === "http:" || url.protocol === "https:")
+      && Boolean(url.hostname)
+    ) {
+      return;
+    }
+    throw new ToolInputError(SAFE_REVIEW_LINK);
+  }
+
+  let file;
+  try {
+    file = await stat(link);
+  } catch {
+    throw new ToolInputError(SAFE_REVIEW_LINK);
+  }
+  if (!file.isFile() || (file.mode & 0o111) !== 0) {
+    throw new ToolInputError(SAFE_REVIEW_LINK);
+  }
 }
 
 function unwrapControlResult(result: ConfigControlResult): ConfigControlResponse {
@@ -678,11 +716,15 @@ export function createMcpToolHandlers(
       if (!summary) {
         throw new ToolInputError("summary must be a non-empty string");
       }
-      const link = optionalString(argumentsObject, "link");
-      const query = optionalString(argumentsObject, "session");
-      const session = query
-        ? await resolveSession(query, config, dependencies)
-        : await resolveWorkingSession(config, dependencies);
+      const query = await requiredReviewSession(
+        argumentsObject,
+        config,
+        dependencies,
+      );
+      const rawLink = optionalString(argumentsObject, "link");
+      const link = rawLink?.trim();
+      if (link) await validateReviewLink(link);
+      const session = await resolveSession(query, config, dependencies);
       const label = dependencies.sessionLabel(session, session.cwd);
       const transcriptPath = dependencies.findTranscript(
         config.claudeDir,
