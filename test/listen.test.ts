@@ -5,11 +5,20 @@ import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import {
   armBargeRecorder,
+  CAPTURE_WATCHDOG_INTERVAL_MS,
   createDictationSession,
   hasActiveRecorders,
+  rawCaptureFileGrew,
   soxCaptureArgs,
   stopSoxProcess,
 } from "../src/listen.ts";
+
+test("any raw capture growth starts speech independently of transcription MIN", () => {
+  expect(rawCaptureFileGrew(0, 1)).toBeTrue();
+  expect(rawCaptureFileGrew(8_000, 8_001)).toBeTrue();
+  expect(rawCaptureFileGrew(16_000, 16_000)).toBeFalse();
+  expect(rawCaptureFileGrew(16_000, 8_000)).toBeFalse();
+});
 
 describe("sox capture arguments", () => {
   test("puts configured mic gain immediately before silence", () => {
@@ -113,6 +122,64 @@ await new Promise(() => {});
     await barge.abort();
     expect(hasActiveRecorders()).toBeFalse();
   } finally {
+    bun.spawn = originalSpawn;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("raw growth cancels a 600ms idle deadline before the fallback read gap drains", async () => {
+  const root = mkdtempSync(join(tmpdir(), "conch-listen-growth-test-"));
+  const fakeSox = join(root, "sox");
+  const fakeSoxReady = join(root, "sox-ready");
+  writeFileSync(fakeSox, `#!/usr/bin/env bun
+import { writeFileSync } from "node:fs";
+const raw = process.argv[process.argv.indexOf("raw") + 1];
+process.on("SIGINT", () => process.exit(0));
+writeFileSync(raw, new Uint8Array([1]));
+writeFileSync(${JSON.stringify(fakeSoxReady)}, new Uint8Array());
+await new Promise(() => {});
+`);
+  chmodSync(fakeSox, 0o755);
+  const bun = Bun as any;
+  const originalSpawn = bun.spawn;
+  bun.spawn = (command: string[], options: any) => originalSpawn(
+    [fakeSox, ...command.slice(1)],
+    options,
+  );
+  let session: ReturnType<typeof createDictationSession> | undefined;
+
+  try {
+    expect(CAPTURE_WATCHDOG_INTERVAL_MS).toBeLessThan(600);
+    const cfg = loadConfig({ env: {}, settingsPath: join(root, "settings.json") });
+    const states: string[] = [];
+    session = createDictationSession(
+      cfg,
+      { onState: (state) => states.push(state) },
+      { idleWindowSecs: 0.6 },
+    );
+    session.start();
+    for (let attempt = 0; attempt < 400 && !existsSync(fakeSoxReady); attempt++) {
+      await Bun.sleep(5);
+    }
+    expect(existsSync(fakeSoxReady)).toBe(true);
+
+    // This crosses the exact minimum fallback gap from daemon.ts. The former
+    // 700ms watchdog lost this race before it could observe the first byte.
+    await Bun.sleep(650);
+    expect(states).toContain("capturing");
+    expect(session.state).toBe("running");
+    expect(session.micOpen).toBe(true);
+  } finally {
+    if (session && (session.state === "running" || session.state === "draining")) {
+      const aborting = session.abort();
+      while (true) {
+        const event = await session.nextEvent();
+        if (event.kind !== "barrier") continue;
+        session.acknowledge(event);
+        if (event.reason === "manual-reply") break;
+      }
+      await aborting;
+    }
     bun.spawn = originalSpawn;
     rmSync(root, { recursive: true, force: true });
   }

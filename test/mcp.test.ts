@@ -1,8 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
   MCP_PROTOCOL_VERSION,
   MCP_TOOLS,
   createMcpToolHandlers,
+  defaultMcpDependencies,
   dispatchJsonRpc,
   parseJsonRpcLine,
   serializeJsonRpcLine,
@@ -356,7 +366,7 @@ describe("MCP tool discovery", () => {
       conch_rename: ["session", "label"],
       conch_config: [],
       conch_transcript_tail: ["session"],
-      review_to_front: ["summary"],
+      review_to_front: ["summary", "session"],
     };
 
     for (const tool of result.tools) {
@@ -446,6 +456,22 @@ describe("MCP dispatch", () => {
 });
 
 describe("real MCP tool handlers with injected dependencies", () => {
+  test("the production review launcher terminates open options before the link", () => {
+    const bun = Bun as any;
+    const originalSpawn = bun.spawn;
+    const calls: unknown[][] = [];
+    bun.spawn = (args: unknown[]) => {
+      calls.push(args);
+      return {};
+    };
+    try {
+      defaultMcpDependencies.openLink("--looks-like-an-option");
+      expect(calls).toEqual([["open", "--", "--looks-like-an-option"]]);
+    } finally {
+      bun.spawn = originalSpawn;
+    }
+  });
+
   test("sessions uses the published file unchanged and does not touch the registry", async () => {
     const published = {
       v: 1,
@@ -683,67 +709,8 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(h.calls.opened).toEqual([link]);
   });
 
-  test("review_to_front without a session targets the sole working session and omits its link", async () => {
-    const workingSession: SessionInfo = {
-      sessionId: "session-123",
-      name: "Build",
-      cwd: "/work/build",
-      pid: 4321,
-      status: "busy",
-    };
-    const h = fakeHarness({ session: workingSession });
-    const handlers = createMcpToolHandlers({
-      claudeDir: "/virtual/claude",
-      socketPath: "/virtual/conch.sock",
-    }, h.dependencies);
-
-    await callTool(handlers, "review_to_front", {
-      summary: "Review the worker output",
-    });
-
-    expect(h.calls.registries).toEqual(["/virtual/claude"]);
-    expect(h.calls.sessionLookups).toEqual([]);
-    expect(h.calls.daemon[0]?.event).toEqual({
-      type: "turn-end",
-      sessionId: "session-123",
-      label: "Build label",
-      cwd: "/work/build",
-      pid: 4321,
-      announce: "Build label has work ready for your review: Review the worker output",
-      transcriptPath: "/virtual/session-123.jsonl",
-      mark: 7,
-      eventAt: 1_234_567,
-      review: {
-        summary: "Review the worker output",
-      },
-    });
-    expect(Object.hasOwn(h.calls.daemon[0]?.event.review ?? {}, "link")).toBe(false);
-    expect(h.calls.opened).toEqual([]);
-  });
-
-  test("review_to_front requires an explicit session unless exactly one session is working", async () => {
-    const zero = fakeHarness({
-      registry: {
-        infos: [],
-        liveIds: new Set(),
-        complete: true,
-      },
-    });
-    const zeroHandlers = createMcpToolHandlers({
-      claudeDir: "/virtual/claude",
-      socketPath: "/virtual/conch.sock",
-    }, zero.dependencies);
-    const zeroResponse = await callTool(zeroHandlers, "review_to_front", {
-      summary: "Review this",
-    });
-
-    expect(rpcResult(zeroResponse)).toMatchObject({ isError: true });
-    expect(toolText(zeroResponse)).toBe(
-      "no working session to attribute this review to — pass session",
-    );
-    expect(zero.calls.daemon).toEqual([]);
-
-    const multiple = fakeHarness({
+  test("review_to_front requires the worker session and lists live session labels", async () => {
+    const h = fakeHarness({
       registry: {
         infos: [
           {
@@ -763,19 +730,100 @@ describe("real MCP tool handlers with injected dependencies", () => {
         complete: true,
       },
     });
-    const multipleHandlers = createMcpToolHandlers({
+    h.dependencies.sessionLabel = (session) => session?.name ?? "unnamed";
+    const handlers = createMcpToolHandlers({
       claudeDir: "/virtual/claude",
       socketPath: "/virtual/conch.sock",
-    }, multiple.dependencies);
-    const multipleResponse = await callTool(multipleHandlers, "review_to_front", {
-      summary: "Review this",
-    });
+    }, h.dependencies);
 
-    expect(rpcResult(multipleResponse)).toMatchObject({ isError: true });
-    expect(toolText(multipleResponse)).toStartWith(
-      "multiple working sessions — pass session (",
+    let thrown: unknown;
+    try {
+      await handlers.review_to_front({ summary: "Review this" });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).name).toBe("ToolInputError");
+    expect((thrown as Error).message).toBe(
+      "session is required and must name the worker whose deliverable this is"
+        + "; live sessions: Alpha, Beta",
     );
-    expect(multiple.calls.daemon).toEqual([]);
+    expect(h.calls.registries).toEqual(["/virtual/claude"]);
+    expect(h.calls.sessionLookups).toEqual([]);
+    expect(h.calls.daemon).toEqual([]);
+    expect(h.calls.opened).toEqual([]);
+  });
+
+  test("review_to_front accepts an existing non-executable file link", async () => {
+    const root = await mkdtemp(join(tmpdir(), "conch-mcp-review-"));
+    const link = join(root, "review.html");
+    try {
+      await writeFile(link, "<h1>Review</h1>", { mode: 0o600 });
+      const h = fakeHarness();
+      const handlers = createMcpToolHandlers({
+        claudeDir: "/virtual/claude",
+        socketPath: "/virtual/conch.sock",
+      }, h.dependencies);
+
+      const response = await callTool(handlers, "review_to_front", {
+        summary: "Inspect the finished dashboard",
+        link,
+        session: "Build",
+      });
+
+      expect(rpcResult(response)).not.toMatchObject({ isError: true });
+      expect(h.calls.daemon).toHaveLength(1);
+      expect(h.calls.opened).toEqual([link]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("review_to_front rejects unsafe schemes and non-launchable file links", async () => {
+    const root = await mkdtemp(join(tmpdir(), "conch-mcp-review-"));
+    const regularFile = join(root, "review.html");
+    const missingFile = join(root, "missing.html");
+    const directory = join(root, "directory");
+    const executableFile = join(root, "review.sh");
+    try {
+      await writeFile(regularFile, "<h1>Review</h1>", { mode: 0o600 });
+      await mkdir(directory);
+      await writeFile(executableFile, "#!/bin/sh\n", { mode: 0o700 });
+      await chmod(executableFile, 0o700);
+
+      const h = fakeHarness();
+      const handlers = createMcpToolHandlers({
+        claudeDir: "/virtual/claude",
+        socketPath: "/virtual/conch.sock",
+      }, h.dependencies);
+      const rejectedLinks = [
+        "ftp://example.com/review",
+        "javascript:alert(1)",
+        `file://${regularFile}`,
+        missingFile,
+        directory,
+        executableFile,
+      ];
+
+      for (const link of rejectedLinks) {
+        const response = await callTool(handlers, "review_to_front", {
+          summary: "Inspect the finished dashboard",
+          link,
+          session: "Build",
+        });
+        expect(rpcResult(response)).toMatchObject({ isError: true });
+        expect(toolText(response)).toBe(
+          "link must be an http(s) URL or an existing, non-executable regular file",
+        );
+      }
+
+      expect(h.calls.sessionLookups).toEqual([]);
+      expect(h.calls.daemon).toEqual([]);
+      expect(h.calls.opened).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("review_to_front does not open its link when the daemon rejects the turn", async () => {

@@ -122,6 +122,25 @@ describe("settings CLI without a daemon", () => {
     expect(settings.stdout).toContain("announce-max-chars");
   });
 
+  test("settings advises when the hold timer is no longer than utterance endpointing", async () => {
+    const risky = fixture({
+      "end-silence": 1,
+      "hold-submit-delay": 1,
+    });
+    const warning = await runCli(risky, ["settings"]);
+    expect(warning.exitCode).toBe(0);
+    expect(warning.stdout).toContain("advisory: hold-submit-delay (1s) <= end-silence (1s)");
+    expect(warning.stdout).toContain("can fire before the utterance is considered ended");
+
+    const safe = fixture({
+      "end-silence": 1,
+      "hold-submit-delay": 1.01,
+    });
+    const noWarning = await runCli(safe, ["settings"]);
+    expect(noWarning.exitCode).toBe(0);
+    expect(noWarning.stdout).not.toContain("advisory:");
+  });
+
   test("unset removes only the requested key and reports the fallback", async () => {
     const f = fixture({
       "end-silence": 4.75,

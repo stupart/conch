@@ -439,6 +439,7 @@ describe("daemon config controller", () => {
     );
     expect(conversation).toContain('const reciteOnly = event.type === "recite"');
     expect(conversation).toContain("&& (cfg.readFull || reciteOnly)");
+    expect(conversation).toContain("const noVoiceInterrupt = bargeOff || !cfg.bargeThresholdPct");
     expect(conversation).toContain("const gapSecs = reciteOnly");
     expect(conversation.indexOf("if (reciteOnly) return")).toBeLessThan(
       conversation.indexOf("const reducer = new DictationReducer"),
