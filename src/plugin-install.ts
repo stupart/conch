@@ -9,6 +9,12 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import claudeMarketplaceSource from "../plugin/.claude-plugin/marketplace.json" with { type: "text" };
+import agentsMarketplaceSource from "../plugin/.agents/plugins/marketplace.json" with { type: "text" };
+import pluginReadmeSource from "../plugin/README.md" with { type: "text" };
+import claudePluginManifestSource from "../plugin/plugins/conch/.claude-plugin/plugin.json" with { type: "text" };
+import codexPluginManifestSource from "../plugin/plugins/conch/.codex-plugin/plugin.json" with { type: "text" };
+import conchControlProseSource from "../docs/conch-control-skill.md" with { type: "text" };
 
 export interface PluginCommands {
   claude: string[][];
@@ -21,6 +27,19 @@ export interface MaterializePluginOptions {
   distDir: string;
   absBun: string;
   absCli: string;
+  compiled?: boolean;
+}
+
+export interface MaterializeEmbeddedPluginOptions {
+  distDir: string;
+  absBun: string;
+  absCli: string;
+  compiled?: boolean;
+}
+
+export interface McpInvocation {
+  command: string;
+  args: string[];
 }
 
 type CommandMode = "install" | "uninstall";
@@ -47,6 +66,8 @@ interface SmokeResult {
   error?: string;
 }
 
+const EXPECTED_MCP_TOOL_COUNT = 9;
+
 const SKILL_FRONTMATTER = `---
 name: conch-control
 description: Control conch — see and steer your other sessions by voice.
@@ -54,17 +75,54 @@ description: Control conch — see and steer your other sessions by voice.
 
 `;
 
+// These static text imports are bundled into `bun build --compile` releases.
+// A Homebrew install has no source checkout to copy from, so the installer
+// reconstructs the same plugin template from this small embedded file set.
+const EMBEDDED_PLUGIN_FILES: ReadonlyArray<readonly [string, string]> = [
+  [".claude-plugin/marketplace.json", claudeMarketplaceSource as unknown as string],
+  [".agents/plugins/marketplace.json", agentsMarketplaceSource as unknown as string],
+  ["README.md", pluginReadmeSource],
+  [
+    "plugins/conch/.claude-plugin/plugin.json",
+    claudePluginManifestSource as unknown as string,
+  ],
+  [
+    "plugins/conch/.codex-plugin/plugin.json",
+    codexPluginManifestSource as unknown as string,
+  ],
+];
+
 const ALREADY_PRESENT =
   /\balready(?:[\s_-]+been)?[\s_-]+(?:exists?|installed|added|present|configured|registered)\b|\bduplicate(?:[\s_-]+(?:plugin|marketplace|entry|registration))?\b/i;
 const ALREADY_ABSENT =
   /\bnot[\s_-]+(?:found|installed|present|configured|registered)\b|\bdoes[\s_-]+not[\s_-]+exist\b|\bunknown[\s_-]+(?:plugin|marketplace)\b|\bno[\s_-]+(?:installed[\s_-]+)?(?:plugin|marketplace)\b|\balready(?:[\s_-]+been)?[\s_-]+(?:removed|uninstalled|absent)\b/i;
 
-export function buildMcpJson(absBun: string, absCli: string) {
+/**
+ * Build the command a plugin uses to start conch's MCP server. Source installs
+ * run cli.ts through Bun; a compiled release binary is already the CLI and must
+ * be invoked directly. Kept pure so release-mode argv cannot silently regress.
+ */
+export function buildMcpInvocation(
+  absBun: string,
+  absCli: string,
+  compiled = false,
+): McpInvocation {
+  return compiled
+    ? { command: absBun, args: ["mcp"] }
+    : { command: absBun, args: ["run", absCli, "mcp"] };
+}
+
+export function buildMcpJson(
+  absBun: string,
+  absCli: string,
+  compiled = false,
+) {
+  const invocation = buildMcpInvocation(absBun, absCli, compiled);
   return {
     mcpServers: {
       conch: {
-        command: absBun,
-        args: ["run", absCli, "mcp"],
+        command: invocation.command,
+        args: invocation.args,
       },
     },
   };
@@ -103,6 +161,48 @@ export function pluginDistDir(
   return resolve(configDir, "plugin-dist");
 }
 
+async function writeFileWithParents(path: string, contents: string): Promise<void> {
+  mkdirSync(dirname(path), { recursive: true });
+  await Bun.write(path, contents);
+}
+
+async function writeGeneratedPluginFiles(
+  root: string,
+  prose: string,
+  absBun: string,
+  absCli: string,
+  compiled: boolean,
+): Promise<void> {
+  const pluginRoot = join(root, "plugins", "conch");
+  await writeFileWithParents(
+    join(pluginRoot, ".mcp.json"),
+    `${JSON.stringify(buildMcpJson(absBun, absCli, compiled), null, 2)}\n`,
+  );
+  await writeFileWithParents(join(pluginRoot, "AGENTS.md"), prose);
+  await writeFileWithParents(
+    join(pluginRoot, "skills", "conch-control", "SKILL.md"),
+    `${SKILL_FRONTMATTER}${prose}`,
+  );
+}
+
+async function materializeAtomically(
+  distDir: string,
+  populate: (stagingDir: string) => Promise<void>,
+): Promise<void> {
+  const parentDir = dirname(distDir);
+  mkdirSync(parentDir, { recursive: true });
+  const stagingDir = mkdtempSync(join(parentDir, ".plugin-dist-"));
+  let committed = false;
+  try {
+    await populate(stagingDir);
+    rmSync(distDir, { recursive: true, force: true });
+    renameSync(stagingDir, distDir);
+    committed = true;
+  } finally {
+    if (!committed) rmSync(stagingDir, { recursive: true, force: true });
+  }
+}
+
 /**
  * Copy the checked-in template through a staging directory so every rerun
  * replaces stale plugin files as one managed unit.
@@ -110,7 +210,14 @@ export function pluginDistDir(
 export async function materializePlugin(
   options: MaterializePluginOptions,
 ): Promise<void> {
-  const { templateDir, prosePath, distDir, absBun, absCli } = options;
+  const {
+    templateDir,
+    prosePath,
+    distDir,
+    absBun,
+    absCli,
+    compiled = false,
+  } = options;
   if (!existsSync(templateDir) || !statSync(templateDir).isDirectory()) {
     throw new Error(`plugin template not found at ${templateDir}`);
   }
@@ -118,31 +225,36 @@ export async function materializePlugin(
     throw new Error(`conch control prose not found at ${prosePath}`);
   }
 
-  const parentDir = dirname(distDir);
-  mkdirSync(parentDir, { recursive: true });
-  const stagingDir = mkdtempSync(join(parentDir, ".plugin-dist-"));
-  let committed = false;
-  try {
+  await materializeAtomically(distDir, async (stagingDir) => {
     cpSync(templateDir, stagingDir, { recursive: true });
     const prose = await Bun.file(prosePath).text();
-    const pluginRoot = join(stagingDir, "plugins", "conch");
-
-    await Bun.write(
-      join(pluginRoot, ".mcp.json"),
-      `${JSON.stringify(buildMcpJson(absBun, absCli), null, 2)}\n`,
+    await writeGeneratedPluginFiles(
+      stagingDir,
+      prose,
+      absBun,
+      absCli,
+      compiled,
     );
-    await Bun.write(join(pluginRoot, "AGENTS.md"), prose);
-    await Bun.write(
-      join(pluginRoot, "skills", "conch-control", "SKILL.md"),
-      `${SKILL_FRONTMATTER}${prose}`,
-    );
+  });
+}
 
-    rmSync(distDir, { recursive: true, force: true });
-    renameSync(stagingDir, distDir);
-    committed = true;
-  } finally {
-    if (!committed) rmSync(stagingDir, { recursive: true, force: true });
-  }
+/** Materialize the complete plugin from assets embedded in a compiled binary. */
+export async function materializeEmbeddedPlugin(
+  options: MaterializeEmbeddedPluginOptions,
+): Promise<void> {
+  const { distDir, absBun, absCli, compiled = true } = options;
+  await materializeAtomically(distDir, async (stagingDir) => {
+    for (const [relativePath, contents] of EMBEDDED_PLUGIN_FILES) {
+      await writeFileWithParents(join(stagingDir, relativePath), contents);
+    }
+    await writeGeneratedPluginFiles(
+      stagingDir,
+      conchControlProseSource,
+      absBun,
+      absCli,
+      compiled,
+    );
+  });
 }
 
 function errorCode(error: unknown): string | undefined {
@@ -406,10 +518,10 @@ async function stopProcess(proc: Bun.PipedSubprocess): Promise<void> {
   }
 }
 
-async function smokeTest(absBun: string, absCli: string): Promise<SmokeResult> {
+async function smokeTest(invocation: McpInvocation): Promise<SmokeResult> {
   let proc: Bun.PipedSubprocess;
   try {
-    proc = Bun.spawn([absBun, "run", absCli, "mcp"], {
+    proc = Bun.spawn([invocation.command, ...invocation.args], {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -450,9 +562,12 @@ async function smokeTest(absBun: string, absCli: string): Promise<SmokeResult> {
     );
     await proc.stdin.flush();
     const result = parseResultLine(await lines.readLine(5_000), 2);
-    if (!Array.isArray(result.tools) || result.tools.length !== 8) {
+    if (
+      !Array.isArray(result.tools)
+      || result.tools.length !== EXPECTED_MCP_TOOL_COUNT
+    ) {
       throw new Error(
-        `tools/list returned ${Array.isArray(result.tools) ? result.tools.length : "no"} tools; expected 8`,
+        `tools/list returned ${Array.isArray(result.tools) ? result.tools.length : "no"} tools; expected ${EXPECTED_MCP_TOOL_COUNT}`,
       );
     }
   } catch (caught) {
@@ -474,15 +589,27 @@ export async function runInstallPlugin(
   absCli: string,
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): Promise<boolean> {
+  // Bun exposes bundled module URLs under /$bunfs in a compiled executable,
+  // but they are not ordinary files that cpSync can walk. The existence check
+  // also covers future Bun URL layouts without coupling to that prefix alone.
+  const compiled = absCli.startsWith("/$bunfs/") || !existsSync(absCli);
   const repoRoot = dirname(dirname(absCli));
   const distDir = pluginDistDir(env);
-  await materializePlugin({
-    templateDir: join(repoRoot, "plugin"),
-    prosePath: join(repoRoot, "docs", "conch-control-skill.md"),
-    distDir,
-    absBun,
-    absCli,
-  });
+  if (compiled) {
+    await materializeEmbeddedPlugin({
+      distDir,
+      absBun,
+      absCli,
+    });
+  } else {
+    await materializePlugin({
+      templateDir: join(repoRoot, "plugin"),
+      prosePath: join(repoRoot, "docs", "conch-control-skill.md"),
+      distDir,
+      absBun,
+      absCli,
+    });
+  }
   console.log(`Plugin dist: materialized — ${distDir}`);
 
   const commands = buildInstallCommands(distDir);
@@ -498,15 +625,16 @@ export async function runInstallPlugin(
     uninstallCommands.codex,
   );
 
-  const smoke = await smokeTest(absBun, absCli);
+  const invocation = buildMcpInvocation(absBun, absCli, compiled);
+  const smoke = await smokeTest(invocation);
   if (smoke.ok) {
-    console.log("MCP smoke test: passed — 8 tools");
+    console.log(`MCP smoke test: passed — ${EXPECTED_MCP_TOOL_COUNT} tools`);
   } else {
     console.error(
       `⚠️  WARNING: MCP smoke test failed — ${smoke.error ?? "unknown error"}`,
     );
     console.error(
-      `Check: ${formatCommand([absBun, "run", absCli, "mcp"])}`,
+      `Check: ${formatCommand([invocation.command, ...invocation.args])}`,
     );
   }
 

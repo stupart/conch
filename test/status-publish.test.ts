@@ -45,6 +45,14 @@ test("publishSessionsFile atomically replaces a complete JSON snapshot", () => {
     writeFileSync(path, `{"stale":true,"padding":"${"x".repeat(8_192)}"}\n`);
 
     const first = publishedState(1, "first");
+    first.live = {
+      ...first.live,
+      partial: "live words",
+      transcriptPrefix: "committed words",
+      reading: { text: "reply in progress", spokenChars: 7 },
+    };
+    first.reply = { sessionId: "session", text: "reply in progress", spokenChars: 7 };
+    first.preview = { sessionId: "parked", text: "parked reply", spokenChars: 0 };
     publishSessionsFile(first, path);
     expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(first);
     expect(readdirSync(directory)).toEqual(["sessions.json"]);

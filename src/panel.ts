@@ -124,9 +124,37 @@ export interface PublishedState {
   live: {
     state: PanelConchState;
     label: string;
+    partial?: string;
+    transcriptPrefix?: string;
+    reading?: { text: string; spokenChars: number };
   };
+  reply?: { sessionId: string; text: string; spokenChars: number } | null;
+  preview?: { sessionId: string; text: string; spokenChars: number } | null;
   rows: PublishedSessionRow[];
   dismissed: string[];
+}
+
+const MAX_PUBLISHED_CONVERSATION_CHARS = 4_000;
+
+/**
+ * The snapshot is rewritten on every panel render. Keep reply-sized fields
+ * bounded to the final 4,000 characters (the part being read next), and rebase
+ * spoken progress so it remains meaningful within the published suffix.
+ */
+function publishedReply<T extends { text: string; spokenChars: number }>(
+  reply: T,
+): T {
+  if (reply.text.length <= MAX_PUBLISHED_CONVERSATION_CHARS) return { ...reply };
+
+  const removedChars = reply.text.length - MAX_PUBLISHED_CONVERSATION_CHARS;
+  return {
+    ...reply,
+    text: reply.text.slice(removedChars),
+    spokenChars: Math.max(
+      0,
+      Math.min(MAX_PUBLISHED_CONVERSATION_CHARS, reply.spokenChars - removedChars),
+    ),
+  };
 }
 
 /** Build the versioned, renderer-independent state exposed to external consumers. */
@@ -143,7 +171,16 @@ export function buildPublishedState(
     live: {
       state: model.live.state,
       label: model.live.label,
+      ...(model.live.partial ? { partial: model.live.partial } : {}),
+      ...(model.live.transcriptPrefix
+        ? { transcriptPrefix: model.live.transcriptPrefix }
+        : {}),
+      ...(model.live.reading
+        ? { reading: publishedReply(model.live.reading) }
+        : {}),
     },
+    ...(model.reply ? { reply: publishedReply(model.reply) } : {}),
+    ...(model.preview ? { preview: publishedReply(model.preview) } : {}),
     rows: model.rows.map((row) => ({
       id: row.sessionId,
       label: row.label,
