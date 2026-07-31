@@ -98,6 +98,8 @@ export interface Config {
   keystrokeFallback: boolean;
   /** Reveal a session's window (raise-without-focus-steal) when conch starts talking to it. */
   revealOnTurn: boolean;
+  /** suppress a window raise if keys/mouse were touched within this many seconds (0 = always raise) */
+  revealTypingGraceSecs: number;
   /** Bell, announce, and listen when a stopped turn still has live background work. */
   workingMic: boolean;
   /** answer conch-prefixed questions from the current session without injecting them */
@@ -194,6 +196,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     recentInjectSuppressMs: num(env.CONCH_INJECT_SUPPRESS_MS, 30_000),
     keystrokeFallback: flag(env.CONCH_KEYSTROKE_FALLBACK, false),
     revealOnTurn: settings["reveal-on-turn"].value as boolean,
+    revealTypingGraceSecs: settings["reveal-typing-grace"].value as number,
     workingMic: settings["working-mic"].value as boolean,
     voiceQa: settings["voice-qa"].value as boolean,
     resumeDigest: settings["resume-digest"].value as boolean,

@@ -28,6 +28,7 @@ export const SETTING_KEYS = [
   "interrupt-on-manual-reply",
   "handoff-order",
   "reveal-on-turn",
+  "reveal-typing-grace",
   "working-mic",
   "voice-qa",
   "resume-digest",
@@ -52,6 +53,7 @@ export type SettingField =
   | "interruptOnManualReply"
   | "handoffOrder"
   | "revealOnTurn"
+  | "revealTypingGraceSecs"
   | "workingMic"
   | "voiceQa"
   | "resumeDigest"
@@ -260,6 +262,17 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "raise a session window when conch starts talking to it",
+  },
+  {
+    key: "reveal-typing-grace",
+    field: "revealTypingGraceSecs",
+    env: "CONCH_REVEAL_TYPING_GRACE_SECS",
+    kind: "number",
+    default: 2,
+    parse: numberParser(zeroable, "a number at least 0"),
+    bounds: zeroable,
+    apply: "live",
+    help: "don't raise a window if you touched the keyboard/mouse within this many seconds — never yank a window to the front mid-keystroke; 0 = always raise",
   },
   {
     key: "working-mic",
