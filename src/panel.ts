@@ -110,6 +110,9 @@ export interface PublishedSessionRow {
   live: PanelConchState | null;
   active: boolean;
   snippet?: string;
+  /** The deliverable to surface, when this row is in review. Carries the link so
+   * external consumers (the Mac/mobile app) can render it, not just the summary. */
+  review?: { summary: string; link?: string };
 }
 
 export interface PublishedState {
@@ -151,6 +154,14 @@ export function buildPublishedState(
       active: row.active,
       ...(snippets.has(row.sessionId)
         ? { snippet: snippets.get(row.sessionId)! }
+        : {}),
+      ...(row.review
+        ? {
+          review: {
+            summary: row.review.summary,
+            ...(row.review.link ? { link: row.review.link } : {}),
+          },
+        }
         : {}),
     })),
     dismissed: [...dismissed],
