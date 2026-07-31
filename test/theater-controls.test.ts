@@ -8,6 +8,7 @@ import {
   dispatchTheaterControlKey,
   type TheaterControlCallbacks,
 } from "../src/theater-controls.ts";
+import { terminalCellWidth } from "../src/status.ts";
 
 function harness() {
   let manualSessionId: string | null = null;
@@ -143,7 +144,11 @@ describe("dashboard control copy", () => {
 
     const theater = plain(THEATER_KEYBAR);
     expect(theater).toContain("⏎ actions · r recite");
-    expect(theater).not.toContain("l logs");
+    expect(theater).toContain("esc release");
+    expect(theater).toContain("\\ pane");
+    expect(theater).toContain("l logs");
+    expect(THEATER_KEYBAR).not.toContain("\n");
+    expect(terminalCellWidth(THEATER_KEYBAR)).toBeLessThanOrEqual(119);
     expect(plain(FOOTER_KEYBAR)).not.toContain("actions");
     expect(plain(FOOTER_KEYBAR)).not.toContain("recite");
 
@@ -214,6 +219,22 @@ describe("dashboard control copy", () => {
       source.indexOf("function reciteBySessionId"),
       source.indexOf("function moveSelection"),
     );
+    const panelRender = source.slice(
+      source.indexOf("async function renderSessionPanel"),
+      source.indexOf("function setSessionState"),
+    );
+    const revealLogs = source.slice(
+      source.indexOf("function revealLogPane"),
+      source.indexOf("async function numberedSessions"),
+    );
+    const sessionsList = source.slice(
+      source.indexOf("async function printSessions"),
+      source.indexOf("/** Audition every live session"),
+    );
+    const dismissAction = source.slice(
+      source.indexOf("dismiss: (target) => {"),
+      source.indexOf("onOpen: () => settingsPause.open()", source.indexOf("dismiss: (target) => {")),
+    );
 
     expect(rawKeys).toContain("dispatchTheaterControlKey(c, theaterControls)");
     expect(rawKeys).toContain("mouseParser.feed(d.toString())");
@@ -249,9 +270,21 @@ describe("dashboard control copy", () => {
     expect(rawKeys).toContain('c === "\\r"');
     expect(rawKeys).not.toContain('c === "\\n"');
     expect(rawKeys).toContain("sessionActionsOverlay?.open(");
-    expect(rawKeys).toContain("theaterNavigation.manualControlTarget()");
+    expect(rawKeys).toContain("const sessionId = theaterActionTarget()");
+    expect(rawKeys).not.toContain(
+      "const sessionId = theaterNavigation.manualControlTarget()",
+    );
     expect(rawKeys).toContain('c === "r"');
     expect(rawKeys).toContain("reciteBySessionId(theaterActionTarget())");
+    const helpBranch = rawKeys.slice(
+      rawKeys.indexOf('c === "?"'),
+      rawKeys.indexOf('c === "q"'),
+    );
+    expect(helpBranch).toContain("revealLogPane();");
+    expect(helpBranch.indexOf("revealLogPane();")).toBeLessThan(
+      helpBranch.indexOf("printHelp();"),
+    );
+    expect(rawKeys.match(/printHelp\(\);/g)).toHaveLength(1);
     expect(numberedWake).toContain("instantControls.enqueueInstant({");
     expect(numberedWake).toContain("numberedSessionRows.find(");
     expect(numberedWake).not.toContain("await ");
@@ -261,6 +294,18 @@ describe("dashboard control copy", () => {
     expect(recite).not.toContain("await ");
     expect(callbacks).toContain("theaterNavigation.manualControlTarget()");
     expect(callbacks).not.toContain("theaterActionTarget()");
+    expect(panelRender).toContain("numberPanelSessionRows(model.rows, live)");
+    expect(panelRender).not.toContain("numberSessionRows(live)");
+    expect(dismissAction).not.toContain("numberedSessionRows");
+    expect(revealLogs).toContain("panelOpen = true");
+    expect(revealLogs).toContain("setLogsVisible(true)");
+    expect(revealLogs.indexOf("panelOpen = true")).toBeLessThan(
+      revealLogs.indexOf("setLogsVisible(true)"),
+    );
+    expect(sessionsList).toContain("revealLogPane();");
+    expect(sessionsList.indexOf("revealLogPane();")).toBeLessThan(
+      sessionsList.indexOf("logAbove("),
+    );
     expect(enqueue).toContain("instantControls.applyGlobal(event.type)");
     expect(enqueue).toContain("if (forgetOnArrival)");
     expect(enqueue).toContain("else if (shouldHandleTurnAudibly(event, cfg.workingMic))");

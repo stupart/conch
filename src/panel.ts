@@ -31,6 +31,8 @@ export interface PanelRowModel {
   sessionId: string;
   label: string;
   status: SessionStatus | null;
+  /** Epoch-ms for the status currently visible on this row. */
+  at?: number;
   detail?: string;
   review?: { summary: string; link?: string; at: number };
   paused: boolean;
@@ -197,12 +199,14 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
   return options.sessions
     .map((session): PanelRowModel => {
       const latched = options.sessionStates.get(session.sessionId);
-      const status = reconcileStatus(session, latched);
+      const visibleState = reconcilePanelState(session, latched);
+      const status = visibleState?.status ?? null;
       const active = session.sessionId === options.activeSessionId;
       return {
         sessionId: session.sessionId,
         label: sessionLabel(session, session.cwd),
         status,
+        ...(visibleState?.at !== undefined ? { at: visibleState.at } : {}),
         ...(
           (status === "needs" || status === "review") && latched?.detail
             ? { detail: latched.detail }
@@ -224,6 +228,29 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
       STATUS_RANK[a.status ?? "working"] - STATUS_RANK[b.status ?? "working"]
       || a.label.localeCompare(b.label)
     ));
+}
+
+export interface NumberedPanelSessionRow {
+  n: number;
+  s: SessionInfo;
+  label: string;
+}
+
+/**
+ * Pair number shortcuts with the exact status-sorted rows the panel paints.
+ * Missing session metadata leaves a hole instead of shifting later shortcuts.
+ */
+export function numberPanelSessionRows(
+  rows: readonly Pick<PanelRowModel, "sessionId" | "label">[],
+  sessions: readonly SessionInfo[],
+): NumberedPanelSessionRow[] {
+  const sessionsById = new Map(sessions.map((session) => [session.sessionId, session]));
+  return rows.slice(0, 9).flatMap((row, index) => {
+    const session = sessionsById.get(row.sessionId);
+    return session
+      ? [{ n: index + 1, s: session, label: row.label }]
+      : [];
+  });
 }
 
 /** Resolve label-based auto-follow against the exact order visible in the panel. */
@@ -402,12 +429,24 @@ export function reconcileStatus(
   session: Pick<SessionInfo, "status" | "statusUpdatedAt">,
   latched: LatchedState | undefined,
 ): SessionStatus | null {
+  return reconcilePanelState(session, latched)?.status ?? null;
+}
+
+function reconcilePanelState(
+  session: Pick<SessionInfo, "status" | "statusUpdatedAt">,
+  latched: LatchedState | undefined,
+): { status: SessionStatus; at?: number } | null {
   const reg = registryToPanel(session.status);
   const regAt = session.statusUpdatedAt ?? 0;
-  if (latched && latched.at >= regAt) return latched.status;
-  if (reg === "waiting" && latched?.status === "review") return "review";
-  if (reg) return reg;
-  return latched?.status ?? null;
+  if (latched && latched.at >= regAt) return latched;
+  if (reg === "waiting" && latched?.status === "review") return latched;
+  if (reg) {
+    return {
+      status: reg,
+      ...(session.statusUpdatedAt !== undefined ? { at: session.statusUpdatedAt } : {}),
+    };
+  }
+  return latched ?? null;
 }
 
 /**

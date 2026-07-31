@@ -7,12 +7,14 @@ import {
   createTheaterRenderer,
   getLiveState,
   installRendererLifecycle,
+  relativeAge,
   scrollTheaterPane,
   setLogsVisible,
   setState,
   setTranscriptPrefix,
   shouldUseTheater,
   terminalCellWidth,
+  theaterStatusHeader,
   theaterPointerEvent,
   type LiveState,
   type RendererIO,
@@ -74,6 +76,71 @@ function recordingIO(options: { columns?: number; rows?: number; tty?: boolean }
   };
   return { io, writes, prints, copies };
 }
+
+describe("theater status formatting", () => {
+  test("relativeAge formats minute, hour, and day boundaries", () => {
+    const now = 10 * 24 * 60 * 60 * 1_000;
+    const cases: Array<[number, string]> = [
+      [now + 1_000, "<1m"],
+      [now, "<1m"],
+      [now - 59_999, "<1m"],
+      [now - 60_000, "1m"],
+      [now - (59 * 60_000 + 59_999), "59m"],
+      [now - 60 * 60_000, "1h"],
+      [now - (23 * 60 * 60_000 + 59 * 60_000), "23h"],
+      [now - 24 * 60 * 60_000, "1d"],
+      [now - 49 * 60 * 60_000, "2d"],
+    ];
+
+    for (const [at, expected] of cases) {
+      expect(relativeAge(at, now)).toBe(expected);
+    }
+  });
+
+  test("builds one live header from existing status glyphs and omits zeroes", () => {
+    const statuses = [
+      "needs",
+      "needs",
+      "review",
+      "waiting",
+      "waiting",
+      "waiting",
+      "working",
+    ] as const;
+    const rows = statuses.map((status, index) => ({
+      sessionId: `session-${index}`,
+      label: `session-${index}`,
+      status,
+      paused: false,
+      muted: false,
+      liveGlyph: null,
+      active: false,
+      navSelected: false,
+    }));
+    const header = theaterStatusHeader(sampleModel({
+      rows,
+      live: { state: "speaking", label: "dayloop", partial: "" },
+    }));
+    const plain = header.replace(/\x1b\[[0-9;]*m/g, "");
+
+    expect(plain).toBe(
+      "  conch · ❗ 2 need you · ⭐ 1 review · ○ 3 waiting · ● 1 working · speaking ‹dayloop›",
+    );
+    expect(header).toContain("\x1b[33m❗\x1b[39m");
+    expect(header).toContain("\x1b[33m⭐\x1b[39m");
+    expect(header).toContain("\x1b[32m○\x1b[39m");
+    expect(header).toContain("\x1b[36m●\x1b[39m");
+    expect(header).not.toContain("\n");
+
+    const idle = theaterStatusHeader(sampleModel({
+      rows: [rows[2]!],
+      live: { state: "idle", label: "", partial: "" },
+    })).replace(/\x1b\[[0-9;]*m/g, "");
+    expect(idle).toBe("  conch · ⭐ 1 review");
+    expect(idle).not.toContain("0 ");
+    expect(idle).not.toContain("‹");
+  });
+});
 
 describe("footer renderer seam", () => {
   test("matches the frozen active footer bytes", () => {
@@ -290,6 +357,98 @@ describe("theater renderer lifecycle", () => {
     expect(frame).toContain("(PR ready to inspect)");
     expect(frame).not.toContain("│");
     expect(frame).not.toContain("…");
+  });
+
+  test("default ledger shows visible shortcut indices, review text, and right-aligned ages", () => {
+    const now = Date.now();
+    const { io, writes } = recordingIO({ columns: 120, rows: 8 });
+    const renderer = createTheaterRenderer(io);
+    renderer.enter();
+    renderer.panel(sampleModel({
+      panelOpen: true,
+      live: { state: "idle", label: "", partial: "" },
+      reply: null,
+      rows: [
+        {
+          sessionId: "needs",
+          label: "zulu-needs",
+          status: "needs",
+          at: now - 17 * 60_000 - 5_000,
+          detail: "permission prompt",
+          paused: false,
+          muted: false,
+          liveGlyph: null,
+          active: false,
+          navSelected: false,
+        },
+        {
+          sessionId: "review",
+          label: "beta-review",
+          status: "review",
+          at: now - 2 * 60_000 - 5_000,
+          review: {
+            summary: "Review the terminal dashboard deliverable",
+            at: now - 2 * 60_000 - 5_000,
+          },
+          paused: false,
+          muted: false,
+          liveGlyph: null,
+          active: false,
+          navSelected: false,
+        },
+        {
+          sessionId: "waiting",
+          label: "alpha-waiting",
+          status: "waiting",
+          at: now - 65 * 60_000,
+          paused: false,
+          muted: false,
+          liveGlyph: null,
+          active: false,
+          navSelected: false,
+        },
+        {
+          sessionId: "working",
+          label: "delta-working",
+          status: "working",
+          at: now - 49 * 60 * 60_000,
+          paused: false,
+          muted: false,
+          liveGlyph: null,
+          active: false,
+          navSelected: false,
+        },
+      ],
+    }));
+
+    const frame = writes.at(-1)!;
+    const plainLines = frame
+      .replace(/^\x1b\[H/, "")
+      .split("\n")
+      .map((line) => line.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ""));
+    const needs = plainLines.find((line) => line.includes("zulu"))!;
+    const review = plainLines.find((line) => line.includes("beta"))!;
+    const waiting = plainLines.find((line) => line.includes("alpha"))!;
+    const working = plainLines.find((line) => line.includes("delta"))!;
+
+    expect(needs).toMatch(/\b1\s+zulu/);
+    expect(review).toMatch(/\b2\s+beta/);
+    expect(waiting).toMatch(/\b3\s+alpha/);
+    expect(working).toMatch(/\b4\s+delta/);
+    expect(review).toContain("⭐");
+    expect(review).toContain("Review the");
+    expect(review).toContain("…");
+    expect(review).not.toContain("Review the terminal dashboard deliverable");
+    expect(needs).toMatch(/17m\s+│/);
+    expect(review).toMatch(/2m\s+│/);
+    expect(waiting).toMatch(/1h\s+│/);
+    expect(working).toMatch(/2d\s+│/);
+    expect(frame).toContain("\x1b[2m2m\x1b[22m");
+    expect(plainLines[0]).toContain(
+      "conch · ❗ 1 need you · ⭐ 1 review · ○ 1 waiting · ● 1 working",
+    );
+    expect(plainLines[0]).not.toContain("🐚");
+    expect(plainLines.every((line) => terminalCellWidth(line) <= 119)).toBe(true);
   });
 
   test("quiet session rows show mute ahead of pause without legacy snooze wording", () => {
@@ -511,7 +670,10 @@ describe("theater renderer lifecycle", () => {
     }));
 
     const frame = writes.at(-1)!;
+    const plain = frame.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+    const manualLine = plain.split("\n").find((line) => line.includes("manual-eight"))!;
     expect(frame).toContain("manual-eight");
+    expect(manualLine).toMatch(/\b9\s+▸\s+manual-eight/);
     expect(frame).toContain("latest-tail");
     expect(frame).toContain("▌");
   });
@@ -603,6 +765,30 @@ describe("theater renderer lifecycle", () => {
       expect(writes.at(-1)).not.toContain("oldest-log-token");
     } finally {
       setLogsVisible(false);
+    }
+  });
+
+  test("forced logs own a narrow collapsed body so help-style output stays visible", () => {
+    const { io, writes } = recordingIO({ columns: 40, rows: 6 });
+    const renderer = createTheaterRenderer(io);
+    renderer.enter();
+    renderer.panel(sampleModel({
+      panelOpen: false,
+      live: { state: "idle", label: "", partial: "" },
+      reply: null,
+    }));
+    expect(writes.at(-1)).not.toContain("narrow-help-token");
+
+    try {
+      setLogsVisible(true);
+      renderer.log("narrow-help-token");
+      const frame = writes.at(-1)!;
+      expect(frame).toContain("narrow-help-token");
+      expect(frame).not.toContain("│");
+      expect(frame.match(/\n/g)).toHaveLength(5);
+    } finally {
+      setLogsVisible(false);
+      renderer.resize();
     }
   });
 
@@ -838,6 +1024,11 @@ describe("theater renderer lifecycle", () => {
       expect(frame).toContain(partial);
       if (state === "transcribing") expect(frame).not.toContain(`${partial}▌`);
       else expect(frame).toContain(`${partial}▌`);
+      expect(frame).toContain(
+        state === "transcribing"
+          ? "‹project-one› · transcribing…"
+          : "‹project-one› · pause to send · space to stop · say send to submit now",
+      );
       expect(frame.indexOf(reply)).toBeLessThan(frame.indexOf(partial));
     }
   });
@@ -932,6 +1123,7 @@ describe("theater renderer lifecycle", () => {
       },
     }));
     expect(writes.at(-1)?.replace(/\x1b\[[0-9;]*m/g, "")).toContain("frontier-word");
+    expect(writes.at(-1)).toContain("‹project-one› · space to cut in");
   });
 
   test("fatal-process and explicit restore paths share one idempotent cleanup", () => {
