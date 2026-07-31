@@ -126,11 +126,23 @@ describe("buildPublishedState — external session snapshot", () => {
       ]),
       pausedSessionIds: new Set(["needs"]),
       mutedSessionIds: new Set(["needs"]),
-      live: { state: "speaking", label: "Need", partial: "TUI-only partial" },
+      live: {
+        state: "speaking",
+        label: "Need",
+        partial: "live dictation",
+        transcriptPrefix: "committed words",
+        reading: { text: "Reply being read aloud", spokenChars: 8 },
+      },
       mode: { muted: false, paused: true, holding: 2 },
       activeSessionId: "needs",
       navSelectedId: "waiting",
+      reply: { sessionId: "needs", text: "Reply being read aloud", spokenChars: 8 },
     });
+    model.preview = {
+      sessionId: "waiting",
+      text: "Parked session preview",
+      spokenChars: 0,
+    };
 
     const published = buildPublishedState(
       model,
@@ -146,7 +158,19 @@ describe("buildPublishedState — external session snapshot", () => {
       v: 1,
       ts: 1_234_567,
       mode: { muted: false, paused: true, holding: 2 },
-      live: { state: "speaking", label: "Need" },
+      live: {
+        state: "speaking",
+        label: "Need",
+        partial: "live dictation",
+        transcriptPrefix: "committed words",
+        reading: { text: "Reply being read aloud", spokenChars: 8 },
+      },
+      reply: { sessionId: "needs", text: "Reply being read aloud", spokenChars: 8 },
+      preview: {
+        sessionId: "waiting",
+        text: "Parked session preview",
+        spokenChars: 0,
+      },
       rows: [
         {
           id: "needs",
@@ -176,6 +200,71 @@ describe("buildPublishedState — external session snapshot", () => {
     expect(published.rows.some((row) => row.id === "dismissed-session")).toBe(false);
     expect("snippet" in published.rows[1]!).toBe(false);
     expect(JSON.parse(JSON.stringify(published))).toEqual(published);
+  });
+
+  test("omits absent conversation fields", () => {
+    const model = buildPanelModel({
+      sessions: [],
+      sessionStates: new Map(),
+      pausedSessionIds: new Set(),
+      mutedSessionIds: new Set(),
+      live: { state: "idle", label: "", partial: "" },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+      reply: null,
+    });
+    model.preview = null;
+
+    const published = buildPublishedState(model, new Map(), new Set(), 10);
+
+    expect(published.live).toEqual({ state: "idle", label: "" });
+    expect("partial" in published.live).toBe(false);
+    expect("transcriptPrefix" in published.live).toBe(false);
+    expect("reading" in published.live).toBe(false);
+    expect("reply" in published).toBe(false);
+    expect("preview" in published).toBe(false);
+  });
+
+  test("caps large published replies at the end and rebases spoken progress", () => {
+    const discarded = "discarded-prefix";
+    const retained = "x".repeat(4_000);
+    const text = discarded + retained;
+    const model = buildPanelModel({
+      sessions: [],
+      sessionStates: new Map(),
+      pausedSessionIds: new Set(),
+      mutedSessionIds: new Set(),
+      live: {
+        state: "speaking",
+        label: "Long",
+        partial: "",
+        reading: { text, spokenChars: discarded.length + 125 },
+      },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+      reply: {
+        sessionId: "long",
+        text,
+        spokenChars: discarded.length + 250,
+      },
+    });
+    model.preview = { sessionId: "parked", text, spokenChars: text.length };
+
+    const published = buildPublishedState(model, new Map(), new Set(), 10);
+
+    expect(published.live.reading).toEqual({ text: retained, spokenChars: 125 });
+    expect(published.reply).toEqual({
+      sessionId: "long",
+      text: retained,
+      spokenChars: 250,
+    });
+    expect(published.preview).toEqual({
+      sessionId: "parked",
+      text: retained,
+      spokenChars: retained.length,
+    });
   });
 });
 

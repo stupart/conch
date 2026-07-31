@@ -78,7 +78,12 @@ export interface PublishedState {
   live: {
     state: PublishedLiveState;
     label: string;
+    partial?: string;
+    transcriptPrefix?: string;
+    reading?: { text: string; spokenChars: number };
   };
+  reply?: { sessionId: string; text: string; spokenChars: number } | null;
+  preview?: { sessionId: string; text: string; spokenChars: number } | null;
   rows: PublishedSessionRow[];
   dismissed: string[];
 }
