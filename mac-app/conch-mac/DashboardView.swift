@@ -32,6 +32,11 @@ enum ConchPalette {
         green: 0.44,
         blue: 0.0
     )
+    static let brandCyan = Color(
+        red: 88.0 / 255.0,
+        green: 201.0 / 255.0,
+        blue: 212.0 / 255.0
+    )
     static let statusWorking = Color(
         red: 0.44,
         green: 0.75,
@@ -76,9 +81,20 @@ enum ConchTypography {
     }
 }
 
+private extension SessionRow {
+    var hasPublishedLiveState: Bool {
+        switch live {
+        case "listening", "recording", "speaking", "transcribing":
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 struct DashboardActions {
     let onSelectSession: (SessionRow) -> Void
-    let onOpenReview: (SessionRow) -> Void
+    let onExpandReview: (SessionRow) -> Void
     let onTalkOrStop: () -> Void
     let onPauseOrResume: () -> Void
     let onMuteOrUnmute: () -> Void
@@ -119,7 +135,8 @@ struct DashboardView: View {
 
                     ConversationPane(
                         state: state,
-                        selectedSessionID: selectedSessionID
+                        selectedSessionID: selectedSessionID,
+                        onExpandReview: actions.onExpandReview
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -267,19 +284,15 @@ private struct SessionLedger: View {
                         ScrollView {
                             LazyVStack(spacing: 2) {
                                 ForEach(
-                                    Array(state.rows.enumerated()),
-                                    id: \.element.id
-                                ) { index, row in
+                                    state.rows,
+                                    id: \.id
+                                ) { row in
                                     DashboardRow(
                                         row: row,
-                                        visiblePosition: index + 1,
                                         now: timeline.date,
                                         isSelected: selectedSessionID == row.id,
                                         onSelect: { actions.onSelectSession(row) },
-                                        onWakeNumber: index < 9
-                                            ? { actions.onWakeNumber(index + 1) }
-                                            : nil,
-                                        onOpenReview: { actions.onOpenReview(row) }
+                                        onShowReview: { actions.onSelectSession(row) }
                                     )
                                     .id(row.id)
                                 }
@@ -321,19 +334,17 @@ private struct SessionLedger: View {
 
 private struct DashboardRow: View {
     let row: SessionRow
-    let visiblePosition: Int
     let now: Date
     let isSelected: Bool
     let onSelect: () -> Void
-    let onWakeNumber: (() -> Void)?
-    let onOpenReview: () -> Void
+    let onShowReview: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
     @State private var reviewPulseOpacity = 0.0
     @State private var pulseTask: Task<Void, Never>?
 
-    private var canOpenReview: Bool {
+    private var canShowReview: Bool {
         ReviewItem(row: row) != nil
     }
 
@@ -342,7 +353,7 @@ private struct DashboardRow: View {
     }
 
     private var isLiveSession: Bool {
-        row.active || !(row.live?.isEmpty ?? true)
+        row.hasPublishedLiveState
     }
 
     private var inlineDetail: String {
@@ -362,29 +373,14 @@ private struct DashboardRow: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            if let onWakeNumber {
-                Button(action: onWakeNumber) {
-                    Text(String(visiblePosition))
-                        .font(ConchTypography.font(size: 10.5))
-                        .foregroundStyle(ConchPalette.textFaint)
-                        .monospacedDigit()
-                        .frame(width: 40, height: 40)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Wake session \(visiblePosition)")
-            } else {
-                Color.clear
-                    .frame(width: 40, height: 40)
-            }
-
             Button(action: onSelect) {
                 HStack(spacing: 8) {
-                    Text("›")
-                        .font(ConchTypography.font(size: 14, weight: .medium))
-                        .foregroundStyle(ConchPalette.accent)
-                        .opacity(isSelected ? 1 : 0)
-                        .frame(width: 8)
+                    Text("▸")
+                        .font(ConchTypography.font(size: 12, weight: .medium))
+                        .foregroundStyle(ConchPalette.brandCyan)
+                        .opacity(isLiveSession ? 1 : 0)
+                        .frame(width: 10)
+                        .accessibilityHidden(true)
 
                     Text(row.label)
                         .font(ConchTypography.font(size: 13.5, weight: .medium))
@@ -419,7 +415,7 @@ private struct DashboardRow: View {
                             .layoutPriority(1)
                     }
                 }
-                .padding(.trailing, canOpenReview ? 2 : 10)
+                .padding(.trailing, canShowReview ? 2 : 10)
                 .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
                 .contentShape(Rectangle())
                 .opacity(isDimmed ? 0.58 : 1)
@@ -427,8 +423,8 @@ private struct DashboardRow: View {
             .buttonStyle(.plain)
             .help("Select \(row.label)")
 
-            if canOpenReview {
-                Button(action: onOpenReview) {
+            if canShowReview {
+                Button(action: onShowReview) {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(
@@ -438,8 +434,8 @@ private struct DashboardRow: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Open review")
-                .accessibilityLabel("Open review for \(row.label)")
+                .help("Show review")
+                .accessibilityLabel("Show review for \(row.label)")
             }
         }
         .frame(maxWidth: .infinity, minHeight: 42)
@@ -455,14 +451,6 @@ private struct DashboardRow: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(ConchPalette.raised)
                     .opacity(reviewPulseOpacity)
-            }
-        }
-        .overlay(alignment: .leading) {
-            if isLiveSession {
-                RoundedRectangle(cornerRadius: 1, style: .continuous)
-                    .fill(ConchPalette.accent)
-                    .frame(width: 2)
-                    .padding(.vertical, 7)
             }
         }
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -568,6 +556,10 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
     }
 
     init(row: SessionRow) {
+        if row.status == .review {
+            self = .review
+            return
+        }
         if row.muted {
             self = .muted
             return
@@ -678,13 +670,73 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
 private struct ConversationPane: View {
     let state: PublishedState?
     let selectedSessionID: SessionRow.ID?
+    let onExpandReview: (SessionRow) -> Void
+
+    @StateObject private var transcriptContent = TranscriptContentModel()
+
+    private var selectedRow: SessionRow? {
+        guard let selectedSessionID else { return nil }
+        return state?.rows.first { $0.id == selectedSessionID }
+    }
+
+    private var liveRow: SessionRow? {
+        guard let state, state.live.isExchangeActive else { return nil }
+        if let publishedLive = state.rows.first(where: \.hasPublishedLiveState) {
+            return publishedLive
+        }
+        if let replyID = state.reply?.sessionId,
+           !replyID.isEmpty,
+           let replied = state.rows.first(where: { $0.id == replyID }) {
+            return replied
+        }
+        if !state.live.label.isEmpty,
+           let labelled = state.rows.first(where: { $0.label == state.live.label }) {
+            return labelled
+        }
+        return state.rows.first(where: \.active)
+    }
+
+    private var focusedRow: SessionRow? {
+        guard let state else { return nil }
+        return selectedRow
+            ?? liveRow
+            ?? state.rows.first(where: \.active)
+            ?? state.reply.flatMap { reply in
+                state.rows.first(where: { $0.id == reply.sessionId })
+            }
+            ?? state.rows.first
+    }
+
+    private var selectedReview: ReviewItem? {
+        guard let selectedRow else { return nil }
+        return ReviewItem(row: selectedRow)
+    }
+
+    private var watchesTranscriptForRow: SessionRow? {
+        selectedReview == nil && !isFocusedSessionLive ? focusedRow : nil
+    }
+
+    private var isFocusedSessionLive: Bool {
+        guard let state,
+              state.live.isExchangeActive,
+              let focusedRow,
+              let liveRow else {
+            return false
+        }
+        return focusedRow.id == liveRow.id
+    }
 
     private var document: ConversationDocument {
-        ConversationDocument(state: state, selectedSessionID: selectedSessionID)
+        ConversationDocument(
+            state: state,
+            targetRow: focusedRow,
+            isTargetLive: isFocusedSessionLive,
+            staticContent: transcriptContent.content(for: focusedRow)
+        )
     }
 
     private var note: String? {
-        guard let live = state?.live else { return nil }
+        guard isFocusedSessionLive, let live = state?.live else { return nil }
         let instruction: String
         switch live.state {
         case "speaking":
@@ -700,30 +752,65 @@ private struct ConversationPane: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ConversationTextView(
-                attributedText: document.text,
-                scrollTarget: document.scrollTarget
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        Group {
+            if let selectedReview, let selectedRow {
+                VStack(spacing: 0) {
+                    InlineReviewView(
+                        item: selectedReview,
+                        onExpand: { onExpandReview(selectedRow) }
+                    )
 
-            if let note {
-                Rectangle()
-                    .fill(ConchPalette.divider)
-                    .frame(height: 1)
+                    if isFocusedSessionLive {
+                        Rectangle()
+                            .fill(ConchPalette.divider)
+                            .frame(height: 1)
 
-                Text(note)
-                    .font(ConchTypography.font(size: 10.5))
-                    .foregroundStyle(ConchPalette.textFaint)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .frame(height: 32)
-                    .accessibilityLabel(note)
+                        ConversationTextView(
+                            attributedText: document.text,
+                            scrollTarget: document.scrollTarget
+                        )
+                        .textSelection(.enabled)
+                        .frame(minHeight: 96, idealHeight: 150, maxHeight: 190)
+
+                        noteBar
+                    }
+                }
+            } else {
+                VStack(spacing: 0) {
+                    ConversationTextView(
+                        attributedText: document.text,
+                        scrollTarget: document.scrollTarget
+                    )
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                    noteBar
+                }
             }
         }
         .background(ConchPalette.bg)
+        .task(id: TranscriptWatchID(row: watchesTranscriptForRow)) {
+            await transcriptContent.monitor(row: watchesTranscriptForRow)
+        }
+    }
+
+    @ViewBuilder
+    private var noteBar: some View {
+        if let note {
+            Rectangle()
+                .fill(ConchPalette.divider)
+                .frame(height: 1)
+
+            Text(note)
+                .font(ConchTypography.font(size: 10.5))
+                .foregroundStyle(ConchPalette.textFaint)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .frame(height: 32)
+                .accessibilityLabel(note)
+        }
     }
 }
 
@@ -731,22 +818,50 @@ private struct ConversationDocument {
     let text: NSAttributedString
     let scrollTarget: ConversationScrollTarget
 
-    init(state: PublishedState?, selectedSessionID: SessionRow.ID?) {
+    init(
+        state: PublishedState?,
+        targetRow: SessionRow?,
+        isTargetLive: Bool,
+        staticContent: SessionStaticContent
+    ) {
         guard let state else {
-            text = NSAttributedString(string: "")
+            text = NSAttributedString(
+                string: "Waiting for Conch…",
+                attributes: ConversationDocument.attributes(
+                    color: NSColor(ConchPalette.textDim)
+                )
+            )
+            scrollTarget = .none
+            return
+        }
+
+        guard isTargetLive else {
+            let content: SessionStaticContent
+            if targetRow == nil, state.rows.isEmpty {
+                content = SessionStaticContent(
+                    rowID: nil,
+                    text: "No sessions yet.",
+                    isPlaceholder: true
+                )
+            } else {
+                content = staticContent
+            }
+            text = NSAttributedString(
+                string: content.text,
+                attributes: ConversationDocument.attributes(
+                    color: NSColor(
+                        content.isPlaceholder
+                            ? ConchPalette.textDim
+                            : ConchPalette.textPrimary
+                    )
+                )
+            )
             scrollTarget = .none
             return
         }
 
         let live = state.live
         let isDictating = live.isCapturing || live.state == "transcribing"
-        let activeSessionID = state.rows.first(where: \.active)?.id
-            ?? state.reply.flatMap { reply in
-                reply.sessionId.isEmpty ? nil : reply.sessionId
-            }
-            ?? state.rows.first(where: {
-                !$0.label.isEmpty && $0.label == live.label
-            })?.id
 
         var replyText = ""
         var spokenChars = 0
@@ -762,13 +877,6 @@ private struct ConversationDocument {
                 spokenChars = reply.spokenChars
             }
             isQuotedReply = true
-        } else if let selectedSessionID,
-                  selectedSessionID != activeSessionID,
-                  let preview = state.preview,
-                  preview.sessionId == selectedSessionID,
-                  !preview.text.isEmpty {
-            replyText = preview.text
-            spokenChars = preview.spokenChars
         } else if let reading = live.reading, !reading.text.isEmpty {
             replyText = reading.text
             spokenChars = reading.spokenChars
@@ -816,6 +924,19 @@ private struct ConversationDocument {
             if live.isCapturing {
                 output.append(NSAttributedString(string: "▌", attributes: accent))
             }
+        }
+
+        if output.length == 0 {
+            let label: String
+            if let targetRow, !targetRow.label.isEmpty {
+                label = " from ‹\(targetRow.label)›"
+            } else {
+                label = ""
+            }
+            let placeholder = live.state == "transcribing"
+                ? "Transcribing…"
+                : "Waiting for a reply\(label)…"
+            output.append(NSAttributedString(string: placeholder, attributes: dim))
         }
 
         text = output

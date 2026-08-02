@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import WebKit
 
 enum DashboardKey: Equatable {
     case talkOrStop
@@ -43,6 +44,15 @@ struct DashboardInputMonitor: NSViewRepresentable {
                     return event
                 }
 
+                // A clicked deliverable owns ordinary navigation and typing keys,
+                // but the dashboard's safety controls stay global: Esc must always
+                // release selection, Space must always cut in, and the documented
+                // 1-9 wake shortcuts must keep working even after WebKit takes focus.
+                if firstResponderConsumesDashboardKeys(),
+                   !key.isGlobalDashboardControl {
+                    return event
+                }
+
                 if event.isARepeat && key != .moveUp && key != .moveDown {
                     return nil
                 }
@@ -63,6 +73,28 @@ struct DashboardInputMonitor: NSViewRepresentable {
                 return eventWindow === window
             }
             return NSApp.keyWindow === window
+        }
+
+        private func firstResponderConsumesDashboardKeys() -> Bool {
+            guard let responder = view?.window?.firstResponder else { return false }
+            if let textView = responder as? NSTextView, textView.isEditable {
+                return true
+            }
+            if responder is WKWebView {
+                return true
+            }
+
+            var candidate = (responder as? NSView)?.superview
+            while let view = candidate {
+                if view is WKWebView {
+                    return true
+                }
+                if let textView = view as? NSTextView, textView.isEditable {
+                    return true
+                }
+                candidate = view.superview
+            }
+            return false
         }
 
         private static func dashboardKey(for event: NSEvent) -> DashboardKey? {
@@ -126,6 +158,17 @@ struct DashboardInputMonitor: NSViewRepresentable {
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
         coordinator.removeMonitor()
+    }
+}
+
+private extension DashboardKey {
+    var isGlobalDashboardControl: Bool {
+        switch self {
+        case .talkOrStop, .releaseSelection, .wakeNumber:
+            return true
+        case .pauseOrResume, .muteOrUnmute, .recite, .moveUp, .moveDown, .quit:
+            return false
+        }
     }
 }
 

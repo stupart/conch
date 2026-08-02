@@ -266,6 +266,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     let live: String?
     let active: Bool
     let snippet: String?
+    let transcriptPath: String?
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -280,6 +281,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case live
         case active
         case snippet
+        case transcriptPath
     }
 
     init(from decoder: Decoder) throws {
@@ -298,6 +300,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         live = try? container.decodeIfPresent(String.self, forKey: .live)
         active = (try? container.decodeIfPresent(Bool.self, forKey: .active)) ?? false
         snippet = try? container.decodeIfPresent(String.self, forKey: .snippet)
+        transcriptPath = try? container.decodeIfPresent(String.self, forKey: .transcriptPath)
     }
 }
 
