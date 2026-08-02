@@ -6,7 +6,10 @@
  */
 import {
   appendFileSync,
+  chmodSync,
   closeSync,
+  existsSync,
+  statSync,
   openSync,
   renameSync,
   unlinkSync,
@@ -1395,6 +1398,27 @@ export function setKeybar(line: string): void {
 /** Render the semantic session panel through the selected view. */
 export function renderPanel(model: PanelModel): void {
   activeRenderer.panel(model);
+}
+
+const MAX_LOG_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Own the log file before the first write: it records dictated utterances
+ * verbatim ("heard → ..."), so it must be 0600 like every other conch artifact
+ * — it was world-readable in /tmp. Also roll it over once at startup so a
+ * daemon that runs for weeks cannot grow it without bound. Single-writer, so
+ * the rename needs no locking.
+ */
+export function prepareLogFile(): void {
+  try {
+    if (existsSync(LOG_FILE) && statSync(LOG_FILE).size > MAX_LOG_BYTES) {
+      renameSync(LOG_FILE, `${LOG_FILE}.1`);
+    }
+  } catch {}
+  try {
+    appendFileSync(LOG_FILE, "");
+    chmodSync(LOG_FILE, 0o600);
+  } catch {}
 }
 
 /** Print a log line without clobbering (or being clobbered by) terminal chrome.
