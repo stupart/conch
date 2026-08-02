@@ -493,6 +493,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
         label: "Active",
         status: "working",
         at: 123,
+        transcriptPath: "/virtual/active.jsonl",
         voice: "af_heart",
         prioritized: true,
         navSelected: true,

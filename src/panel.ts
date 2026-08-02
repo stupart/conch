@@ -107,6 +107,8 @@ export interface PublishedSessionRow {
   status: SessionStatus | null;
   /** Epoch-ms for the status currently visible on this row. */
   at?: number;
+  /** Resolved transcript file for on-demand history viewers. */
+  transcriptPath?: string;
   /** Resolved effective voice, whether pinned or automatically assigned. */
   voice?: string;
   /** Present only for sessions explicitly promoted in the hand-off order. */
@@ -216,6 +218,7 @@ export function buildPublishedState(
   dismissed: ReadonlySet<string>,
   now: number,
   options: {
+    transcriptPathForSessionId?(sessionId: string): string | undefined;
     /** Resolve the effective voice, including stable automatic assignment. */
     voiceForLabel?(label: string): string | undefined;
     prioritizedSessionIds?: ReadonlySet<string>;
@@ -229,12 +232,14 @@ export function buildPublishedState(
     ...(model.reply ? { reply: publishedReply(model.reply) } : {}),
     ...(model.preview ? { preview: publishedReply(model.preview) } : {}),
     rows: model.rows.map((row) => {
+      const transcriptPath = options.transcriptPathForSessionId?.(row.sessionId);
       const voice = options.voiceForLabel?.(row.label)?.trim();
       return {
         id: row.sessionId,
         label: row.label,
         status: row.status,
         ...(row.at !== undefined ? { at: row.at } : {}),
+        ...(transcriptPath ? { transcriptPath } : {}),
         ...(voice ? { voice } : {}),
         ...(options.prioritizedSessionIds?.has(row.sessionId)
           ? { prioritized: true as const }
@@ -375,20 +380,18 @@ export function commitLatestPanelRender(
 
 /**
  * Attach transcript text only when it still belongs to the cursor that will be
- * painted. The daemon captures `requestedSessionId` before its async read; a
- * later cursor move must never put that stale text under a different row.
+ * painted. Empty output is still a real selected view: it must not fall through
+ * to another session's live content. The daemon captures `requestedSessionId`
+ * before its async read, so a later cursor move cannot mislabel stale text.
  */
 export function previewForPanelSelection(
   navSelectedId: string | null,
   requestedSessionId: string | null,
-  activeSessionId: string | null,
   text: string,
 ): PanelReplyModel | null {
   if (
-    !text
-    || !navSelectedId
+    !navSelectedId
     || navSelectedId !== requestedSessionId
-    || navSelectedId === activeSessionId
   ) return null;
   return { sessionId: navSelectedId, text, spokenChars: 0 };
 }

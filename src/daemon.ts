@@ -832,6 +832,7 @@ export function buildDaemonPublishedState(
     dismissedSessionIds,
     now,
     {
+      transcriptPathForSessionId: (sessionId) => findTranscript(cfg.claudeDir, sessionId),
       voiceForLabel: (label) => voiceFor(cfg, label),
       prioritizedSessionIds,
     },
@@ -1338,7 +1339,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // Preview production is part of the published model, not theater drawing.
     const previewId = theaterNavigation.manualSelectedId
       ?? (cursorAuto ? null : selectedId);
-    const previewPath = previewId && previewId !== nextActiveSessionId
+    const previewPath = previewId
       ? findTranscript(cfg.claudeDir, previewId)
       : undefined;
     const contentEvent = recitingEvent ?? lastTurn;
@@ -1395,7 +1396,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
       model.preview = previewForPanelSelection(
         navSelectedId,
         previewId,
-        nextActiveSessionId,
         previewText,
       );
       model.settingsOverlay = settingsOverlay?.model() ?? null;
