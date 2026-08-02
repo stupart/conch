@@ -148,8 +148,8 @@ struct DeliverableWebView: NSViewRepresentable {
         webView.allowsMagnification = true
         webView.underPageBackgroundColor = NSColor(ConchPalette.bg)
         // Don't paint the webview's own (white) background — let the dark app
-        // background show through until the page renders, so the takeover has no
-        // white flash.
+        // background show through until the page renders, so the deliverable has
+        // no white flash in either inline or expanded presentation.
         webView.setValue(false, forKey: "drawsBackground")
         context.coordinator.observeLoadingState(of: webView)
         return webView

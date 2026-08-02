@@ -3,10 +3,8 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var store: StateStore
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var selectedReviewID: ReviewItem.ID?
-    @State private var suppressedReviewIDs: Set<ReviewItem.ID> = []
+    @State private var expandedReviewID: ReviewItem.ID?
     @State private var selectedSessionID: SessionRow.ID?
 
     private var reviewItems: [ReviewItem] {
@@ -29,16 +27,9 @@ struct ContentView: View {
         .map(\.item)
     }
 
-    private var visibleReviewItems: [ReviewItem] {
-        reviewItems.filter { !suppressedReviewIDs.contains($0.id) }
-    }
-
-    private var activeReview: ReviewItem? {
-        if let selectedReviewID,
-           let selected = visibleReviewItems.first(where: { $0.id == selectedReviewID }) {
-            return selected
-        }
-        return visibleReviewItems.last
+    private var expandedReview: ReviewItem? {
+        guard let expandedReviewID else { return nil }
+        return reviewItems.first { $0.id == expandedReviewID }
     }
 
     private var reviewIDs: Set<ReviewItem.ID> {
@@ -71,23 +62,6 @@ struct ContentView: View {
         selectedRow ?? activeRow
     }
 
-    private var reviewTransition: AnyTransition {
-        if reduceMotion {
-            return .asymmetric(
-                insertion: .opacity.animation(.easeOut(duration: 0.18)),
-                removal: .opacity.animation(.easeOut(duration: 0.15))
-            )
-        }
-
-        return .asymmetric(
-            insertion: .opacity
-                .combined(with: .scale(scale: 0.98))
-                .animation(.easeOut(duration: 0.28)),
-            removal: .opacity
-                .animation(.easeOut(duration: 0.20))
-        )
-    }
-
     var body: some View {
         ZStack {
             DashboardView(
@@ -96,7 +70,7 @@ struct ContentView: View {
                 daemonMessage: store.daemonMessage,
                 actions: DashboardActions(
                     onSelectSession: selectSession,
-                    onOpenReview: openReview,
+                    onExpandReview: expandReview,
                     onTalkOrStop: talkOrStop,
                     onPauseOrResume: pauseOrResume,
                     onMuteOrUnmute: muteOrUnmute,
@@ -108,33 +82,23 @@ struct ContentView: View {
                     onQuit: quit
                 )
             )
-            .opacity(activeReview == nil ? 1 : 0.72)
-            .allowsHitTesting(activeReview == nil)
-            .accessibilityHidden(activeReview != nil)
-            .animation(
-                .easeOut(
-                    duration: reduceMotion
-                        ? 0.16
-                        : activeReview == nil ? 0.20 : 0.28
-                ),
-                value: activeReview != nil
-            )
+            // Review arrival never changes dashboard interactivity. Only an
+            // explicit full-window expansion isolates focus from covered controls.
+            .allowsHitTesting(expandedReview == nil)
+            .accessibilityHidden(expandedReview != nil)
 
-            if let activeReview {
-                ReviewTakeover(
-                    item: activeReview,
-                    items: visibleReviewItems,
-                    onSelect: selectReview,
-                    onClose: { dismissReview(activeReview) }
+            if let expandedReview {
+                ExpandedReviewView(
+                    item: expandedReview,
+                    onCollapse: { expandedReviewID = nil }
                 )
-                .transition(reviewTransition)
                 .zIndex(1)
             }
         }
         .background(ConchPalette.bg)
         .background(
             DashboardInputMonitor(
-                isEnabled: activeReview == nil,
+                isEnabled: expandedReview == nil,
                 onKey: handleDashboardKey
             )
         )
@@ -144,31 +108,22 @@ struct ContentView: View {
             }
         }
         .onChange(of: reviewIDs) { previousIDs, currentIDs in
-            suppressedReviewIDs.formIntersection(currentIDs)
-
             let addedIDs = currentIDs.subtracting(previousIDs)
             let addedReviews = reviewItems.filter { addedIDs.contains($0.id) }
             for review in addedReviews {
                 ReviewNotifications.shared.postOnce(for: review)
             }
 
-            if let newest = addedReviews.last {
-                suppressedReviewIDs.remove(newest.id)
-                selectedReviewID = newest.id
-                bringReviewToFront()
-                return
-            }
-
-            if let selectedReviewID, !currentIDs.contains(selectedReviewID) {
-                self.selectedReviewID = nil
+            if let expandedReviewID, !currentIDs.contains(expandedReviewID) {
+                self.expandedReviewID = nil
             }
         }
     }
 
-    private func openReview(_ row: SessionRow) {
+    private func expandReview(_ row: SessionRow) {
         guard let item = ReviewItem(row: row) else { return }
-        suppressedReviewIDs.remove(item.id)
-        selectedReviewID = item.id
+        selectedSessionID = row.id
+        expandedReviewID = item.id
     }
 
     private func selectSession(_ row: SessionRow) {
@@ -270,10 +225,6 @@ struct ContentView: View {
     }
 
     private func handleDashboardKey(_ key: DashboardKey) -> Bool {
-        if activeReview != nil {
-            return false
-        }
-
         switch key {
         case .talkOrStop:
             talkOrStop()
@@ -295,29 +246,5 @@ struct ContentView: View {
             quit()
         }
         return true
-    }
-
-    private func selectReview(_ item: ReviewItem) {
-        suppressedReviewIDs.remove(item.id)
-        selectedReviewID = item.id
-    }
-
-    private func dismissReview(_ item: ReviewItem) {
-        suppressedReviewIDs.insert(item.id)
-        selectedReviewID = nil
-    }
-
-    private func bringReviewToFront() {
-        let window = NSApp.keyWindow
-            ?? NSApp.mainWindow
-            ?? NSApp.windows.first(where: { $0.isVisible && $0.canBecomeKey })
-            ?? NSApp.windows.first(where: \.canBecomeKey)
-
-        NSApp.activate(ignoringOtherApps: true)
-        if window?.isMiniaturized == true {
-            window?.deminiaturize(nil)
-        }
-        window?.orderFrontRegardless()
-        window?.makeKey()
     }
 }
