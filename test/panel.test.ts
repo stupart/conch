@@ -1,4 +1,7 @@
 import { expect, test, describe } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   activeSessionIdForRows,
   buildPanelModel,
@@ -164,6 +167,9 @@ describe("buildPublishedState — external session snapshot", () => {
       new Set(["dismissed-session"]),
       1_234_567,
       {
+        transcriptPathForSessionId: (sessionId) => sessionId === "needs"
+          ? "/transcripts/needs.jsonl"
+          : undefined,
         // These are already-resolved effective voices; no explicit pin is needed.
         voiceForLabel: (label) => label === "Need" ? "af_heart" : "am_adam",
         prioritizedSessionIds: new Set(["needs"]),
@@ -193,6 +199,7 @@ describe("buildPublishedState — external session snapshot", () => {
           at: 40,
           label: "Need",
           status: "needs",
+          transcriptPath: "/transcripts/needs.jsonl",
           voice: "af_heart",
           prioritized: true,
           needsResponse: true,
@@ -248,6 +255,7 @@ describe("buildPublishedState — external session snapshot", () => {
     );
 
     expect(published.rows[0]).not.toHaveProperty("voice");
+    expect(published.rows[0]).not.toHaveProperty("transcriptPath");
     expect(published.rows[0]).not.toHaveProperty("prioritized");
     expect(published.rows[0]).not.toHaveProperty("navSelected");
   });
@@ -277,6 +285,13 @@ describe("buildPublishedState — external session snapshot", () => {
   });
 
   test("a non-theater renderer still produces the complete published conversation", () => {
+    const claudeDir = mkdtempSync(join(tmpdir(), "conch-published-transcripts-"));
+    const projectDir = join(claudeDir, "projects", "fixture");
+    mkdirSync(projectDir, { recursive: true });
+    const activeTranscriptPath = join(projectDir, "active.jsonl");
+    const parkedTranscriptPath = join(projectDir, "parked.jsonl");
+    writeFileSync(activeTranscriptPath, "");
+    writeFileSync(parkedTranscriptPath, "");
     const selection = configureRenderer(
       { CONCH_TUI: "footer" },
       {
@@ -316,12 +331,11 @@ describe("buildPublishedState — external session snapshot", () => {
       model.preview = previewForPanelSelection(
         "parked",
         "parked",
-        "active",
         "Parked output",
       );
 
       const published = buildDaemonPublishedState(
-        loadConfig({ env: {} }),
+        loadConfig({ env: { CLAUDE_CONFIG_DIR: claudeDir } }),
         model,
         new Map(),
         new Set(),
@@ -346,11 +360,16 @@ describe("buildPublishedState — external session snapshot", () => {
         spokenChars: 0,
       });
       expect(published.rows.find((row) => row.id === "parked")).toMatchObject({
+        transcriptPath: parkedTranscriptPath,
         voice: expect.any(String),
         prioritized: true,
         navSelected: true,
       });
+      expect(published.rows.find((row) => row.id === "active")).toMatchObject({
+        transcriptPath: activeTranscriptPath,
+      });
     } finally {
+      rmSync(claudeDir, { recursive: true, force: true });
       setTranscriptPrefix("");
       clearReadingProgress();
       setState("idle");
@@ -682,18 +701,26 @@ describe("latestLatchedState — event-time ordering", () => {
 
 describe("previewForPanelSelection — async cursor stale guard", () => {
   test("never attaches A's completed read beneath a cursor that moved to B", () => {
-    expect(previewForPanelSelection("b", "a", null, "A's latest output")).toBeNull();
-    expect(previewForPanelSelection("b", "b", null, "B's latest output")).toEqual({
+    expect(previewForPanelSelection("b", "a", "A's latest output")).toBeNull();
+    expect(previewForPanelSelection("b", "b", "B's latest output")).toEqual({
       sessionId: "b",
       text: "B's latest output",
       spokenChars: 0,
     });
   });
 
-  test("suppresses empty and active-session previews", () => {
-    expect(previewForPanelSelection("b", "b", "b", "live output")).toBeNull();
-    expect(previewForPanelSelection("b", "b", null, "")).toBeNull();
-    expect(previewForPanelSelection(null, "b", null, "output")).toBeNull();
+  test("selection owns the pane even for the active session or an empty reply", () => {
+    expect(previewForPanelSelection("b", "b", "live output")).toEqual({
+      sessionId: "b",
+      text: "live output",
+      spokenChars: 0,
+    });
+    expect(previewForPanelSelection("b", "b", "")).toEqual({
+      sessionId: "b",
+      text: "",
+      spokenChars: 0,
+    });
+    expect(previewForPanelSelection(null, "b", "output")).toBeNull();
   });
 
   test("daemon captures the requested id before await and commits through the guard", async () => {
@@ -711,10 +738,14 @@ describe("previewForPanelSelection — async cursor stale guard", () => {
       render.indexOf("const previewPath"),
     )).not.toContain("theaterMode");
     expect(render).toContain(
+      `const previewPath = previewId
+      ? findTranscript(cfg.claudeDir, previewId)
+      : undefined`,
+    );
+    expect(render).toContain(
       `model.preview = previewForPanelSelection(
         navSelectedId,
         previewId,
-        nextActiveSessionId,
         previewText,
       )`,
     );

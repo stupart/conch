@@ -142,6 +142,16 @@ describe("theater status formatting", () => {
     expect(idle).toBe("  conch · ⭐ 1 review");
     expect(idle).not.toContain("0 ");
     expect(idle).not.toContain("‹");
+
+    const quiet = theaterStatusHeader(sampleModel({
+      rows: [],
+      mode: { muted: true, paused: true, holding: 2 },
+      live: { state: "muted", label: "", partial: "" },
+    })).replace(/\x1b\[[0-9;]*m/g, "");
+    expect(quiet).toBe("  conch · muted · paused · holding 2");
+    expect(quiet.match(/muted/g)).toHaveLength(1);
+    expect(quiet.match(/paused/g)).toHaveLength(1);
+    expect(quiet.match(/holding 2/g)).toHaveLength(1);
   });
 });
 
@@ -318,10 +328,42 @@ describe("theater renderer lifecycle", () => {
 
     const frame = writes.at(-1)!;
     expect(frame.startsWith("\x1b[H")).toBe(true);
-    expect(frame).toContain("▶");
+    expect(frame).not.toContain("▶");
+    expect(frame.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").match(/recording/g)).toHaveLength(1);
     expect(frame.match(/\x1b\[K/g)).toHaveLength(7);
     expect(frame.match(/\n/g)).toHaveLength(6);
     expect(frame.endsWith("\n")).toBe(false);
+  });
+
+  test("global quiet mode appears once in the top line, never beside the keybar", () => {
+    const { io, writes } = recordingIO({ columns: 80, rows: 7 });
+    const renderer = createTheaterRenderer(io);
+    renderer.enter();
+    renderer.keybar("  keys");
+    renderer.panel(sampleModel({
+      rows: [],
+      mode: { muted: false, paused: true, holding: 3 },
+      live: { state: "paused", label: "", partial: "" },
+      reply: null,
+    }));
+
+    const plain = writes.at(-1)!.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+    expect(plain.match(/paused/g)).toHaveLength(1);
+    expect(plain.match(/holding 3/g)).toHaveLength(1);
+    expect(plain).not.toContain("⏸");
+    expect(plain.split("\n").at(-1)).toContain("keys");
+  });
+
+  test("the top line is the only live-activity indicator", () => {
+    const { io, writes } = recordingIO({ columns: 80, rows: 7 });
+    const renderer = createTheaterRenderer(io);
+    renderer.enter();
+    renderer.panel(sampleModel({ panelOpen: false }));
+
+    const plain = writes.at(-1)!.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+    expect(plain.match(/speaking/g)).toHaveLength(1);
+    expect(plain).toContain("waiting for you");
+    expect(plain).not.toContain("▶");
   });
 
   test("collapsed frames use the full-width status-word ledger", () => {
@@ -362,7 +404,7 @@ describe("theater renderer lifecycle", () => {
     expect(frame).not.toContain("…");
   });
 
-  test("default ledger shows visible shortcut indices, review text, and right-aligned ages", () => {
+  test("default ledger omits shortcut indices while keeping review text and right-aligned ages", () => {
     const now = Date.now();
     const { io, writes } = recordingIO({ columns: 120, rows: 8 });
     const renderer = createTheaterRenderer(io);
@@ -434,10 +476,10 @@ describe("theater renderer lifecycle", () => {
     const waiting = plainLines.find((line) => line.includes("alpha"))!;
     const working = plainLines.find((line) => line.includes("delta"))!;
 
-    expect(needs).toMatch(/\b1\s+zulu/);
-    expect(review).toMatch(/\b2\s+beta/);
-    expect(waiting).toMatch(/\b3\s+alpha/);
-    expect(working).toMatch(/\b4\s+delta/);
+    expect(needs).not.toMatch(/\b1\s+zulu/);
+    expect(review).not.toMatch(/\b2\s+beta/);
+    expect(waiting).not.toMatch(/\b3\s+alpha/);
+    expect(working).not.toMatch(/\b4\s+delta/);
     expect(review).toContain("⭐");
     expect(review).toContain("Review the");
     expect(review).toContain("…");
@@ -649,7 +691,7 @@ describe("theater renderer lifecycle", () => {
     expect(frame).toContain("●");
   });
 
-  test("ledger and live content viewports follow the manual cursor and latest speech", () => {
+  test("ledger and content viewports follow the manual cursor and its latest reply", () => {
     const { io, writes } = recordingIO({ columns: 72, rows: 7 });
     const renderer = createTheaterRenderer(io);
     renderer.enter();
@@ -665,6 +707,11 @@ describe("theater renderer lifecycle", () => {
     }));
     renderer.panel(sampleModel({
       rows,
+      preview: {
+        sessionId: "row-8",
+        text: "selected-session-latest-reply",
+        spokenChars: 0,
+      },
       live: {
         state: "recording",
         label: "row-0",
@@ -676,9 +723,11 @@ describe("theater renderer lifecycle", () => {
     const plain = frame.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
     const manualLine = plain.split("\n").find((line) => line.includes("manual-eight"))!;
     expect(frame).toContain("manual-eight");
-    expect(manualLine).toMatch(/\b9\s+▸\s+manual-eight/);
-    expect(frame).toContain("latest-tail");
-    expect(frame).toContain("▌");
+    expect(manualLine).toMatch(/▸\s+manual-eight/);
+    expect(manualLine).not.toMatch(/\b9\s+▸/);
+    expect(frame).toContain("selected-session-latest-reply");
+    expect(frame).not.toContain("latest-tail");
+    expect(frame).not.toContain("▌");
   });
 
   test("wheel offset clamps on resize and resets when the pane source changes", () => {
@@ -726,6 +775,14 @@ describe("theater renderer lifecycle", () => {
     const preview = (sessionId: string, head: string, tail: string): PanelModel =>
       sampleModel({
         live: { state: "idle", label: "", partial: "" },
+        rows: sampleModel().rows.map((row) => ({
+          ...row,
+          sessionId,
+          label: sessionId,
+          liveGlyph: null,
+          active: false,
+          navSelected: true,
+        })),
         preview: {
           sessionId,
           text: `${head} ${"preview ".repeat(90)}${tail}`,
@@ -795,7 +852,7 @@ describe("theater renderer lifecycle", () => {
     }
   });
 
-  test("parked preview renders its own note, but live dictation keeps priority", () => {
+  test("parked selection owns the pane across other live activity", () => {
     const { io, writes } = recordingIO({ columns: 100, rows: 8 });
     const renderer = createTheaterRenderer(io);
     renderer.enter();
@@ -822,6 +879,27 @@ describe("theater renderer lifecycle", () => {
     }));
     expect(writes.at(-1)).toContain("parked-only-output");
     expect(writes.at(-1)).toContain("‹parked-project› · esc back · space talk");
+
+    renderer.panel(sampleModel({
+      live: { state: "idle", label: "", partial: "" },
+      preview: { sessionId: "parked", text: "", spokenChars: 0 },
+      reply: {
+        sessionId: "parked",
+        text: "same-session-hook-path-reply",
+        spokenChars: 0,
+      },
+      rows: [{
+        sessionId: "parked",
+        label: "parked-project",
+        status: "waiting",
+        paused: false,
+        muted: false,
+        liveGlyph: null,
+        active: false,
+        navSelected: true,
+      }],
+    }));
+    expect(writes.at(-1)).toContain("same-session-hook-path-reply");
 
     renderer.panel(sampleModel({
       live: {
@@ -891,12 +969,25 @@ describe("theater renderer lifecycle", () => {
       },
       preview: {
         sessionId: "parked",
-        text: "parked-must-wait",
+        text: "parked-wins-during-dictation",
         spokenChars: 0,
       },
+      rows: [
+        ...sampleModel().rows,
+        {
+          sessionId: "parked",
+          label: "parked-project",
+          status: "waiting",
+          paused: false,
+          muted: false,
+          liveGlyph: null,
+          active: false,
+          navSelected: true,
+        },
+      ],
     }));
-    expect(writes.at(-1)).toContain("live-dictation-wins▌");
-    expect(writes.at(-1)).not.toContain("parked-must-wait");
+    expect(writes.at(-1)).toContain("parked-wins-during-dictation");
+    expect(writes.at(-1)).not.toContain("live-dictation-wins");
   });
 
   test("selection plus non-zero offset preserves frame bounds and copies highlighted text", () => {
@@ -1027,11 +1118,14 @@ describe("theater renderer lifecycle", () => {
       expect(frame).toContain(partial);
       if (state === "transcribing") expect(frame).not.toContain(`${partial}▌`);
       else expect(frame).toContain(`${partial}▌`);
-      expect(frame).toContain(
-        state === "transcribing"
-          ? "‹project-one› · transcribing…"
-          : "‹project-one› · pause to send · space to stop · say send to submit now",
-      );
+      if (state === "transcribing") {
+        const plain = frame.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+        expect(plain.match(/transcribing/g)).toHaveLength(1);
+        expect(frame).not.toContain("transcribing…");
+      } else {
+        expect(frame).toContain("pause to send · space to stop · say send to submit now");
+      }
+      expect(frame).not.toContain("‹project-one› · pause to send");
       expect(frame.indexOf(reply)).toBeLessThan(frame.indexOf(partial));
     }
   });
@@ -1126,7 +1220,8 @@ describe("theater renderer lifecycle", () => {
       },
     }));
     expect(writes.at(-1)?.replace(/\x1b\[[0-9;]*m/g, "")).toContain("frontier-word");
-    expect(writes.at(-1)).toContain("‹project-one› · space to cut in");
+    expect(writes.at(-1)).toContain("space to cut in");
+    expect(writes.at(-1)).not.toContain("‹project-one› · space to cut in");
   });
 
   test("fatal-process and explicit restore paths share one idempotent cleanup", () => {

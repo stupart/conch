@@ -54,6 +54,7 @@ export interface PublishedSessionRow {
   status: PublishedSessionStatus | null;
   /** Epoch-ms for the status currently visible on this row. */
   at?: number;
+  transcriptPath?: string;
   voice?: string;
   prioritized?: boolean;
   navSelected?: boolean;
