@@ -342,7 +342,6 @@ const THEATER_STATUS_ICON: Record<string, string> = {
 
 const THEATER_STATUS_COPY = {
   needs: "need you",
-  review: "review",
   waiting: "waiting",
   working: "working",
 } as const;
@@ -351,19 +350,24 @@ const THEATER_STATUS_COPY = {
 export function theaterStatusHeader(model: PanelModel): string {
   const counts: Record<keyof typeof THEATER_STATUS_COPY, number> = {
     needs: 0,
-    review: 0,
     waiting: 0,
     working: 0,
   };
+  let reviewCount = 0;
   for (const row of model.rows) {
     if (row.status) counts[row.status]++;
+    if (row.review) reviewCount++;
   }
 
   const parts = ["conch"];
-  for (const status of ["needs", "review", "waiting", "working"] as const) {
+  for (const status of ["needs", "waiting", "working"] as const) {
     const count = counts[status];
-    if (!count) continue;
-    parts.push(`${THEATER_STATUS_ICON[status]} ${count} ${THEATER_STATUS_COPY[status]}`);
+    if (count) {
+      parts.push(`${THEATER_STATUS_ICON[status]} ${count} ${THEATER_STATUS_COPY[status]}`);
+    }
+    if (status === "waiting" && reviewCount) {
+      parts.push(`${THEATER_STATUS_ICON.review}${reviewCount} to look at`);
+    }
   }
   const liveStateIsMuted = model.live.state === "muted";
   const liveStateIsPaused = model.live.state === "paused";
@@ -399,6 +403,7 @@ export function relativeAge(at: number, now: number): string {
 function rowState(row: PanelRowModel): string {
   if (row.muted) return "muted";
   if (row.paused) return "paused";
+  if (row.review) return "review";
   // The top line owns conch's live activity; the ledger keeps each session's
   // underlying status so speaking/recording is never announced twice.
   return row.status ?? "idle";
@@ -407,8 +412,8 @@ function rowState(row: PanelRowModel): string {
 function fullStatus(row: PanelRowModel): string {
   if (row.muted) return "\x1b[2m🔇 muted\x1b[22m";
   if (row.paused) return "\x1b[2m⏸ paused\x1b[22m";
+  if (row.review) return "\x1b[33m⭐ needs review\x1b[39m";
   switch (row.status) {
-    case "review": return "\x1b[33m⭐ needs review\x1b[39m";
     case "needs": return "\x1b[33m❗ needs a response\x1b[39m";
     case "waiting": return "\x1b[32m○ waiting for you\x1b[39m";
     case "working": return "\x1b[36m● working…\x1b[39m";
@@ -417,7 +422,7 @@ function fullStatus(row: PanelRowModel): string {
 }
 
 function inlineRowDetail(row: PanelRowModel): string {
-  if (row.status === "review") return row.review?.summary ?? row.detail ?? "";
+  if (row.review) return row.review.summary;
   if (row.status === "needs") return row.detail ?? "";
   return "";
 }
@@ -486,8 +491,9 @@ function theaterLedgerRow(
   // Reserve a 1-col gutter on EVERY row (accent bar when active, blank space
   // otherwise) so a row's text never shifts as it gains or loses the highlight.
   const bodyWidth = Math.max(1, width - 1);
-  const age = row.status && row.at !== undefined && row.at > 0
-    ? relativeAge(row.at, now)
+  const rowAt = row.review?.at ?? row.at;
+  const age = row.status && rowAt !== undefined && rowAt > 0
+    ? relativeAge(rowAt, now)
     : "";
   const leftWidth = Math.max(1, bodyWidth - (age ? visibleLength(age) + 1 : 0));
   const lead = rowLead(row);

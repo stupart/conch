@@ -8,6 +8,109 @@ import { resolveMlxAudioPython } from "./tts-worker.ts";
 
 const SERVICE_LABEL = "com.conch.daemon";
 
+const REVIEW_INSTRUCTIONS_BEGIN = "<!-- conch:begin -->";
+const REVIEW_INSTRUCTIONS_END = "<!-- conch:end -->";
+
+/** The small, user-removable contract installed into each agent's global instructions. */
+export const REVIEW_INSTRUCTIONS_BLOCK = `${REVIEW_INSTRUCTIONS_BEGIN}
+## Conch review handoff
+
+When a deliverable is DONE, self-critiqued, and ready for the user's final look, end the final reply with its own line:
+\`conch:review <one-line spoken summary> | <link-or-path>\`
+
+Use this only as a final approval gate—not for routine "I finished" messages or every iteration. Conch already announces finished turns. If there is no useful link or path, omit the \` | …\` suffix.
+${REVIEW_INSTRUCTIONS_END}`;
+
+const REVIEW_INSTRUCTIONS_PATTERN =
+  /<!-- conch:begin -->[\s\S]*?<!-- conch:end -->/g;
+
+/**
+ * Replace conch's managed block without disturbing any user-authored text.
+ * Extra complete blocks are removed so this also heals an older duplicated install.
+ */
+export function spliceReviewInstructions(existing: string): string {
+  const beginCount = existing.split(REVIEW_INSTRUCTIONS_BEGIN).length - 1;
+  const endCount = existing.split(REVIEW_INSTRUCTIONS_END).length - 1;
+  const matches = [...existing.matchAll(REVIEW_INSTRUCTIONS_PATTERN)];
+  if (beginCount !== matches.length || endCount !== matches.length) {
+    throw new Error("managed conch markers are incomplete or out of order");
+  }
+
+  if (matches.length > 0) {
+    let replaced = false;
+    return existing.replace(REVIEW_INSTRUCTIONS_PATTERN, () => {
+      if (replaced) return "";
+      replaced = true;
+      return REVIEW_INSTRUCTIONS_BLOCK;
+    });
+  }
+
+  if (!existing) return `${REVIEW_INSTRUCTIONS_BLOCK}\n`;
+  const separator = existing.endsWith("\n\n")
+    ? ""
+    : existing.endsWith("\n")
+      ? "\n"
+      : "\n\n";
+  return `${existing}${separator}${REVIEW_INSTRUCTIONS_BLOCK}\n`;
+}
+
+export type ReviewInstructionsInstallResult =
+  | "created"
+  | "updated"
+  | "unchanged"
+  | "skipped";
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Safely install one global instruction block and report the outcome for this file. */
+export async function installReviewInstructions(
+  instructionsPath: string,
+  fileLabel: "CLAUDE.md" | "AGENTS.md",
+): Promise<ReviewInstructionsInstallResult> {
+  const existed = existsSync(instructionsPath);
+  let existing = "";
+  if (existed) {
+    try {
+      existing = await Bun.file(instructionsPath).text();
+    } catch (error) {
+      console.warn(
+        `${fileLabel}: warning — could not read ${instructionsPath}; conch review contract skipped (${errorMessage(error)})`,
+      );
+      return "skipped";
+    }
+  }
+
+  let updated: string;
+  try {
+    updated = spliceReviewInstructions(existing);
+  } catch (error) {
+    console.warn(
+      `${fileLabel}: warning — could not safely update ${instructionsPath}; conch review contract skipped (${errorMessage(error)})`,
+    );
+    return "skipped";
+  }
+
+  if (updated === existing) {
+    console.log(
+      `${fileLabel}: conch review contract already wired, skipping -> ${instructionsPath}`,
+    );
+    return "unchanged";
+  }
+
+  mkdirSync(dirname(instructionsPath), { recursive: true });
+  if (existed) {
+    const backup = `${instructionsPath}.conch-backup-${Date.now()}`;
+    await Bun.write(backup, existing);
+    console.log(`backed up ${fileLabel} to ${backup}`);
+  }
+  await Bun.write(instructionsPath, updated);
+  const result = existed ? "updated" : "created";
+  console.log(`${fileLabel}: conch review contract ${result} -> ${instructionsPath}`);
+  return result;
+}
+
 // The two models conch downloads on a fresh machine. Both live under
 // ~/.cache/conch/models (where config.ts probes as its second candidate), so an
 // install with no seashell checkout resolves them automatically.
@@ -222,9 +325,14 @@ export async function runSetup(
     );
   }
 
-  // 4. Wire the Claude Code hooks, then verify the whole chain.
-  console.log("\nWiring Claude Code hooks…");
+  // 4. Wire Claude Code and give both supported agents the global review
+  //    contract. Codex hooks remain an explicit `conch install --codex` opt-in.
+  console.log("\nWiring Claude Code hooks and global review instructions…");
   await runInstall(cfg);
+  await installReviewInstructions(
+    join(homedir(), ".codex", "AGENTS.md"),
+    "AGENTS.md",
+  );
   console.log("\nRunning doctor…\n");
   await runDoctor(cfg);
   const completion = await runSetupIntegrations(cfg, options);
@@ -410,14 +518,15 @@ export function buildCodexHooksSettings(
 }
 
 /**
- * Explicit Codex opt-in: merge command hooks into ~/.codex/hooks.json.
- * Existing hooks are preserved; a timestamped backup is written only when the
- * file is actually changing.
+ * Explicit Codex opt-in: merge command hooks into ~/.codex/hooks.json and put
+ * the review handoff contract in ~/.codex/AGENTS.md. Existing content in both
+ * files is preserved; backups are written only for files that actually change.
  */
 export async function runCodexInstall(
   codexDir = join(homedir(), ".codex"),
 ): Promise<void> {
   const hooksPath = join(codexDir, "hooks.json");
+  const instructionsPath = join(codexDir, "AGENTS.md");
   const command = `${conchInvocation()} codex-hook`;
 
   let existing: Record<string, any> = {};
@@ -426,6 +535,10 @@ export async function runCodexInstall(
   }
 
   const result = buildCodexHooksSettings(existing, command);
+  const instructionsResult = await installReviewInstructions(
+    instructionsPath,
+    "AGENTS.md",
+  );
   for (const event of ["Stop", "UserPromptSubmit", "SessionStart"]) {
     if (result.addedEvents.includes(event)) {
       console.log(`${event}: wired -> ${command}`);
@@ -442,7 +555,15 @@ export async function runCodexInstall(
       console.log(`backed up hooks to ${backup}`);
     }
     await Bun.write(hooksPath, JSON.stringify(result.settings, null, 2) + "\n");
+  }
+  const instructionsChanged =
+    instructionsResult === "created" || instructionsResult === "updated";
+  if (result.changed) {
     console.log("\nDone. Codex hooks installed.");
+  } else if (instructionsChanged) {
+    console.log("\nDone. Global Codex review instructions installed; hooks were already wired.");
+  } else if (instructionsResult === "skipped") {
+    console.log("\nCodex hooks were already wired; global review instructions were skipped (see warning above).");
   } else {
     console.log("\nNothing to do.");
   }
@@ -454,11 +575,13 @@ Verify Codex hook activation:
 }
 
 /**
- * Merge conch's Stop + Notification hooks into ~/.claude/settings.json.
- * Existing hooks are preserved; a timestamped backup is written first.
+ * Merge conch's hooks into ~/.claude/settings.json and put the review handoff
+ * contract in global CLAUDE.md. Existing content in both files is preserved;
+ * backups are written only for files that actually change.
  */
 export async function runInstall(cfg: Config): Promise<void> {
   const settingsPath = join(cfg.claudeDir, "settings.json");
+  const instructionsPath = join(cfg.claudeDir, "CLAUDE.md");
   // Paths are quoted so an install dir containing spaces still yields a runnable
   // hook command. Resolves to `"conch" hook` (compiled) or `"bun" "…/cli.ts" hook`.
   const command = `${conchInvocation()} hook`;
@@ -482,6 +605,11 @@ export async function runInstall(cfg: Config): Promise<void> {
     console.log(`${event}: wired -> ${command}`);
   }
 
+  const instructionsResult = await installReviewInstructions(
+    instructionsPath,
+    "CLAUDE.md",
+  );
+
   if (changed) {
     // Back up only when we're actually about to modify — the old code wrote a
     // fresh timestamped backup on every run, even "Nothing to do", piling up.
@@ -494,7 +622,15 @@ export async function runInstall(cfg: Config): Promise<void> {
     // the hooks so Claude Code will pick them up whenever it is installed.
     mkdirSync(dirname(settingsPath), { recursive: true });
     await Bun.write(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+  }
+  const instructionsChanged =
+    instructionsResult === "created" || instructionsResult === "updated";
+  if (changed) {
     console.log("\nDone. Open /hooks in Claude Code (or restart sessions) to reload config.");
+  } else if (instructionsChanged) {
+    console.log("\nDone. Global Claude Code review instructions installed; hooks were already wired.");
+  } else if (instructionsResult === "skipped") {
+    console.log("\nClaude Code hooks were already wired; global review instructions were skipped (see warning above).");
   } else {
     console.log("\nNothing to do.");
   }

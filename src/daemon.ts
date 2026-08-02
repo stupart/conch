@@ -1715,7 +1715,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (event.type === "turn-end" && !setSessionState(
       event.sessionId,
       event.label,
-      event.review ? "review" : "waiting",
+      "waiting",
       event.review?.summary,
       event.eventAt,
       event.review,
