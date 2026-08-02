@@ -1,7 +1,10 @@
 import Foundation
 
 struct PublishedState: Decodable, Equatable, Sendable {
+    static let knownVersion = 1
+
     let v: Int
+    let newerDaemon: Bool
     let ts: TimeInterval
     let mode: ModeState
     let live: LiveState
@@ -9,6 +12,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
     let preview: ConversationReply?
     let rows: [SessionRow]
     let dismissed: [String]
+    let dismissedRows: [DismissedSessionRow]
 
     private enum CodingKeys: String, CodingKey {
         case v
@@ -19,13 +23,37 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case preview
         case rows
         case dismissed
+        case dismissedRows
+    }
+
+    init(
+        v: Int,
+        ts: TimeInterval,
+        mode: ModeState,
+        live: LiveState,
+        reply: ConversationReply?,
+        preview: ConversationReply?,
+        rows: [SessionRow],
+        dismissed: [String],
+        dismissedRows: [DismissedSessionRow]
+    ) {
+        self.v = v
+        newerDaemon = v > Self.knownVersion
+        self.ts = ts
+        self.mode = mode
+        self.live = live
+        self.reply = reply
+        self.preview = preview
+        self.rows = rows
+        self.dismissed = dismissed
+        self.dismissedRows = dismissedRows
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let version = try container.decode(Int.self, forKey: .v)
 
-        guard version == 1 else {
+        guard version >= Self.knownVersion else {
             throw DecodingError.dataCorruptedError(
                 forKey: .v,
                 in: container,
@@ -34,13 +62,56 @@ struct PublishedState: Decodable, Equatable, Sendable {
         }
 
         v = version
-        rows = try container.decode([SessionRow].self, forKey: .rows)
+        newerDaemon = version > Self.knownVersion
+        rows = Self.decodeLossyArray(
+            SessionRow.self,
+            from: container,
+            forKey: .rows
+        )
         ts = (try? container.decodeIfPresent(TimeInterval.self, forKey: .ts)) ?? 0
         mode = (try? container.decodeIfPresent(ModeState.self, forKey: .mode)) ?? ModeState()
         live = (try? container.decodeIfPresent(LiveState.self, forKey: .live)) ?? LiveState()
         reply = try? container.decodeIfPresent(ConversationReply.self, forKey: .reply)
         preview = try? container.decodeIfPresent(ConversationReply.self, forKey: .preview)
         dismissed = (try? container.decodeIfPresent([String].self, forKey: .dismissed)) ?? []
+        dismissedRows = Self.decodeLossyArray(
+            DismissedSessionRow.self,
+            from: container,
+            forKey: .dismissedRows
+        )
+    }
+
+    private static func decodeLossyArray<Element: Decodable>(
+        _ type: Element.Type,
+        from container: KeyedDecodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) -> [Element] {
+        let elements = try? container.decodeIfPresent(
+            [LossyDecodable<Element>].self,
+            forKey: key
+        )
+        return elements?.compactMap(\.value) ?? []
+    }
+}
+
+struct DismissedSessionRow: Decodable, Equatable, Identifiable, Sendable {
+    let id: String
+    let label: String
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case label
+    }
+
+    init(id: String, label: String) {
+        self.id = id
+        self.label = label
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        label = (try? container.decodeIfPresent(String.self, forKey: .label)) ?? id
     }
 }
 
@@ -267,6 +338,9 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     let active: Bool
     let snippet: String?
     let transcriptPath: String?
+    let voice: String?
+    let prioritized: Bool
+    let navSelected: Bool
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -282,6 +356,45 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case active
         case snippet
         case transcriptPath
+        case voice
+        case prioritized
+        case navSelected
+    }
+
+    init(
+        id: String,
+        label: String,
+        status: RowStatus?,
+        at: Double?,
+        needsResponse: Bool,
+        detail: String?,
+        review: ReviewInfo?,
+        paused: Bool,
+        muted: Bool,
+        live: String?,
+        active: Bool,
+        snippet: String?,
+        transcriptPath: String?,
+        voice: String?,
+        prioritized: Bool,
+        navSelected: Bool
+    ) {
+        self.id = id
+        self.label = label
+        self.status = status
+        self.at = at
+        self.needsResponse = needsResponse
+        self.detail = detail
+        self.review = review
+        self.paused = paused
+        self.muted = muted
+        self.live = live
+        self.active = active
+        self.snippet = snippet
+        self.transcriptPath = transcriptPath
+        self.voice = voice
+        self.prioritized = prioritized
+        self.navSelected = navSelected
     }
 
     init(from decoder: Decoder) throws {
@@ -301,6 +414,40 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         active = (try? container.decodeIfPresent(Bool.self, forKey: .active)) ?? false
         snippet = try? container.decodeIfPresent(String.self, forKey: .snippet)
         transcriptPath = try? container.decodeIfPresent(String.self, forKey: .transcriptPath)
+        voice = try? container.decodeIfPresent(String.self, forKey: .voice)
+        prioritized =
+            (try? container.decodeIfPresent(Bool.self, forKey: .prioritized)) ?? false
+        navSelected =
+            (try? container.decodeIfPresent(Bool.self, forKey: .navSelected)) ?? false
+    }
+
+    func replacingLabel(with label: String) -> SessionRow {
+        SessionRow(
+            id: id,
+            label: label,
+            status: status,
+            at: at,
+            needsResponse: needsResponse,
+            detail: detail,
+            review: review,
+            paused: paused,
+            muted: muted,
+            live: live,
+            active: active,
+            snippet: snippet,
+            transcriptPath: transcriptPath,
+            voice: voice,
+            prioritized: prioritized,
+            navSelected: navSelected
+        )
+    }
+}
+
+private struct LossyDecodable<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: Decoder) throws {
+        value = try? Value(from: decoder)
     }
 }
 

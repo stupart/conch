@@ -42,12 +42,14 @@ struct DashboardInputMonitor: NSViewRepresentable {
                     return event
                 }
 
-                // A clicked deliverable owns ordinary navigation and typing keys,
-                // but the dashboard's safety controls stay global: Esc must always
-                // release selection, and Space must always cut in even after WebKit
-                // takes focus.
-                if firstResponderConsumesDashboardKeys(),
-                   !key.isGlobalDashboardControl {
+                // Inline editing owns the full text-input contract, including spaces
+                // and Escape. Web content owns ordinary navigation and typing keys,
+                // while the dashboard's safety controls remain global there: Escape
+                // releases selection and Space cuts into a read.
+                if firstResponderIsEditableText() {
+                    return event
+                }
+                if firstResponderIsWebContent(), !key.isGlobalDashboardControl {
                     return event
                 }
 
@@ -73,11 +75,24 @@ struct DashboardInputMonitor: NSViewRepresentable {
             return NSApp.keyWindow === window
         }
 
-        private func firstResponderConsumesDashboardKeys() -> Bool {
+        private func firstResponderIsEditableText() -> Bool {
             guard let responder = view?.window?.firstResponder else { return false }
             if let textView = responder as? NSTextView, textView.isEditable {
                 return true
             }
+
+            var candidate = (responder as? NSView)?.superview
+            while let view = candidate {
+                if let textView = view as? NSTextView, textView.isEditable {
+                    return true
+                }
+                candidate = view.superview
+            }
+            return false
+        }
+
+        private func firstResponderIsWebContent() -> Bool {
+            guard let responder = view?.window?.firstResponder else { return false }
             if responder is WKWebView {
                 return true
             }
@@ -85,9 +100,6 @@ struct DashboardInputMonitor: NSViewRepresentable {
             var candidate = (responder as? NSView)?.superview
             while let view = candidate {
                 if view is WKWebView {
-                    return true
-                }
-                if let textView = view as? NSTextView, textView.isEditable {
                     return true
                 }
                 candidate = view.superview
