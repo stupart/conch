@@ -5,6 +5,8 @@ import type { Config } from "./config.ts";
 import { CONCH_DATA } from "./config.ts";
 import { runInstallPlugin } from "./plugin-install.ts";
 import { resolveMlxAudioPython } from "./tts-worker.ts";
+import { checkMicrophone, checkTts, formatDoctorProbe } from "./doctor-checks.ts";
+import { CONCH_VERSION } from "./version.ts";
 
 const SERVICE_LABEL = "com.conch.daemon";
 
@@ -156,9 +158,71 @@ export interface SetupCompletion {
   plugin: "installed" | "skipped" | "failed";
 }
 
+export interface SetupReadyOptions {
+  /** A pre-existing Codex install has not opted into conch's lifecycle hooks. */
+  codexNeedsInstall?: boolean;
+  /** Injectable for stable string tests; defaults to terminal color support. */
+  color?: boolean;
+}
+
+export interface HardDependency {
+  binary: string;
+  formula: string;
+  why: string;
+  path?: string;
+}
+
 export interface SetupInstallers {
   service: (cfg: Config, action: "install") => Promise<void>;
   plugin: (absBun: string, absCli: string) => Promise<boolean>;
+}
+
+const HARD_DEPENDENCIES = [
+  { binary: "sox", formula: "sox", why: "microphone capture" },
+  { binary: "tmux", formula: "tmux", why: "daemon hosting + pane injection" },
+] as const;
+
+/** Resolve setup's hard, Homebrew-provided dependencies without doing any work. */
+export function missingHardDependencies(
+  cfg: Pick<Config, "whisperCli">,
+  which: (binary: string) => string | null = Bun.which,
+  pathExists: (path: string) => boolean = existsSync,
+): HardDependency[] {
+  const missing: HardDependency[] = [];
+  for (const dependency of HARD_DEPENDENCIES) {
+    if (!which(dependency.binary)) missing.push({ ...dependency });
+  }
+  if (!pathExists(cfg.whisperCli)) {
+    missing.push({
+      binary: "whisper-cli",
+      formula: "whisper-cpp",
+      why: "speech-to-text",
+      path: cfg.whisperCli,
+    });
+  }
+  return missing;
+}
+
+export function hardDependencyInstallCommand(
+  missing: readonly Pick<HardDependency, "formula">[],
+): string {
+  const formulas = [...new Set(missing.map((dependency) => dependency.formula))];
+  return `brew install ${formulas.join(" ")}`;
+}
+
+/** Copyable failure shown before setup is allowed to create/download model files. */
+export function renderHardDependencyFailure(
+  missing: readonly HardDependency[],
+  brewAvailable: boolean,
+): string {
+  const lines = [
+    "❌ conch setup stopped before downloading speech models: required dependencies are missing.",
+    `Missing: ${missing.map((dependency) => `${dependency.binary} (${dependency.why})`).join(", ")}`,
+  ];
+  if (!brewAvailable) lines.push("Install Homebrew: https://brew.sh");
+  lines.push(hardDependencyInstallCommand(missing));
+  lines.push("Then re-run `conch setup`.");
+  return lines.join("\n");
 }
 
 /** Parse setup's two independent opt-outs without making their order significant. */
@@ -215,31 +279,46 @@ export async function runSetupIntegrations(
   return { service, plugin };
 }
 
-/** Final setup output; nothing actionable is printed after this block. */
-export function renderSetupReady(completion: SetupCompletion): string {
-  const service = completion.service === "installed"
-    ? "✓ background service (running now + starts at login)"
-    : "○ background service skipped (--no-service)";
-  const plugin = completion.plugin === "installed"
-    ? "✓ plugin for available Claude Code / Codex apps"
-    : completion.plugin === "failed"
-      ? "✗ app plugin installation failed"
-      : "○ app plugin skipped (--no-plugin)";
-  const manualStart = completion.service === "skipped"
-    ? "\n│   Start the daemon your way before trying this."
-    : "";
+/** Final setup output; its first line is the one action a skimming user needs. */
+export function renderSetupReady(
+  completion: SetupCompletion,
+  options: SetupReadyOptions = {},
+): string {
+  const first = options.codexNeedsInstall
+    ? "╭─ 🐚 DO THIS FIRST — Run `conch install --codex`."
+    : "╭─ 🐚 DO THIS FIRST — Type /hooks in any Claude Code session you already have open.";
+  const pickup = options.codexNeedsInstall
+    ? "│ Codex is present, but its lifecycle hooks are not wired yet."
+    : "│ Sessions opened from now on pick conch up automatically.";
+  const then = completion.service === "skipped"
+    ? "│ THEN — Run `conch daemon` to start the voice loop; leave it open, then\n│ finish a turn. conch reads it aloud, plays a tink, and opens the mic."
+    : "│ THEN — Just finish a turn. conch reads it aloud, plays a tink, and opens\n│ the mic; talk, pause, and your words go back into that session.";
+  const installed = [
+    "hooks",
+    ...(completion.plugin === "installed" ? ["plugin"] : []),
+    ...(completion.service === "installed"
+      ? ["background service (starts at login)"]
+      : []),
+    "speech models",
+  ].join(" · ");
+  const useColor = options.color
+    ?? (process.env.NO_COLOR === undefined && Boolean(process.stdout.isTTY));
+  const footer = useColor
+    ? `\x1b[2minstalled: ${installed}\x1b[22m`
+    : `installed: ${installed}`;
 
-  return `╭─ 🐚 YOU'RE READY
+  return `${first}
+${pickup}
 │
-│ Installed and configured:
-│   ✓ dependencies + speech models
-│   ✓ Claude Code hooks
-│   ${service}
-│   ${plugin}
+${then}
 │
-│ FIRST THING TO TRY${manualStart}
-│   Finish a turn in any Claude Code session; conch will speak it.
-│   Open \`conch\` and press space to talk back.
+│ macOS will ask for microphone access the first time something speaks. Allow it.
+│ If you miss the prompt, run \`conch doctor\`.
+│
+│ WHERE TO LOOK — \`conch\` (the terminal dashboard, also what to use over ssh)
+│ IF IT'S QUIET — \`conch doctor\`
+│
+│ ${footer}
 ╰─`;
 }
 
@@ -263,32 +342,34 @@ export async function runSetup(
   // 1. Binaries. sox + tmux come from Homebrew; whisper-cli/-server ship in the
   //    whisper-cpp formula. `say`/`afplay` are macOS built-ins (checked by doctor).
   const brew = Bun.which("brew");
-  const missing: Array<{ formula: string; why: string }> = [];
-  if (!Bun.which("sox")) missing.push({ formula: "sox", why: "microphone capture" });
-  if (!Bun.which("tmux")) missing.push({ formula: "tmux", why: "daemon hosting + pane injection" });
-  // Gate on whisper-cli only — the brew whisper-cpp formula ships it but builds
-  // with WHISPER_BUILD_SERVER=OFF, so whisper-server is never present on a brew
-  // box. It's an optional speed/partials upgrade, not a requirement.
-  if (!existsSync(cfg.whisperCli)) {
-    missing.push({ formula: "whisper-cpp", why: "speech-to-text" });
-  }
+  let missing = missingHardDependencies(cfg);
   if (missing.length) {
     if (!brew) {
-      console.log("⚠️  Missing dependencies and Homebrew isn't installed. Install brew from https://brew.sh, then:");
-      console.log(`      brew install ${missing.map((m) => m.formula).join(" ")}\n`);
+      console.error(renderHardDependencyFailure(missing, false));
+      process.exitCode = 1;
+      return;
     } else {
       console.log(`Installing via Homebrew: ${missing.map((m) => `${m.formula} (${m.why})`).join(", ")}`);
       const proc = Bun.spawn(["brew", "install", ...missing.map((m) => m.formula)], { stdout: "inherit", stderr: "inherit" });
       const code = await proc.exited;
       if (code !== 0) {
-        console.error("\n❌ brew install failed — resolve the error above and re-run `conch setup`.");
-        process.exit(1);
+        console.error(`\n${renderHardDependencyFailure(missing, true)}`);
+        process.exitCode = 1;
+        return;
       }
       console.log("");
     }
-  } else {
-    console.log("✅ binaries present (sox, tmux, whisper-cpp)");
   }
+
+  // Never cross the large-download boundary until the dependencies actually
+  // resolve. A successful package-manager exit is not enough evidence by itself.
+  missing = missingHardDependencies(cfg);
+  if (missing.length) {
+    console.error(renderHardDependencyFailure(missing, true));
+    process.exitCode = 1;
+    return;
+  }
+  console.log("✅ binaries present (sox, tmux, whisper-cpp)");
 
   // 2. Models. Skip any that config already resolves (a seashell box has them).
   const wanted = [
@@ -327,10 +408,14 @@ export async function runSetup(
 
   // 4. Wire Claude Code and give both supported agents the global review
   //    contract. Codex hooks remain an explicit `conch install --codex` opt-in.
+  const codexDir = join(homedir(), ".codex");
+  // Capture this before writing the cross-agent review contract: setup itself
+  // must not make every Claude-only machine look like an existing Codex install.
+  const codexWasPresent = existsSync(codexDir);
   console.log("\nWiring Claude Code hooks and global review instructions…");
   await runInstall(cfg);
   await installReviewInstructions(
-    join(homedir(), ".codex", "AGENTS.md"),
+    join(codexDir, "AGENTS.md"),
     "AGENTS.md",
   );
   console.log("\nRunning doctor…\n");
@@ -342,7 +427,9 @@ export async function runSetup(
     return;
   }
 
-  console.log(`\n${renderSetupReady(completion)}`);
+  const codexNeedsInstall = codexWasPresent
+    && !(await codexHooksAreWiredAt(codexDir));
+  console.log(`\n${renderSetupReady(completion, { codexNeedsInstall })}`);
 }
 
 /** curl a model to a temp path, size-check it, then atomically move into place. */
@@ -487,6 +574,41 @@ export interface CodexHooksBuildResult {
   settings: Record<string, any>;
   changed: boolean;
   addedEvents: string[];
+}
+
+function isConchCodexHook(command: unknown): boolean {
+  return typeof command === "string"
+    && command.includes("conch")
+    && command.includes("codex-hook");
+}
+
+/** True only when all Codex lifecycle events have a conch hook command. */
+export function codexHooksAreWired(settings: Record<string, any>): boolean {
+  return ["Stop", "UserPromptSubmit", "SessionStart"].every((event) => {
+    const entries = settings.hooks?.[event];
+    return Array.isArray(entries) && entries.some((entry: unknown) => {
+      if (!entry || typeof entry !== "object") return false;
+      const hooks = (entry as { hooks?: unknown }).hooks;
+      return Array.isArray(hooks)
+        && hooks.some((hook: unknown) =>
+          Boolean(hook && typeof hook === "object"
+            && isConchCodexHook((hook as { command?: unknown }).command))
+        );
+    });
+  });
+}
+
+/** Safely inspect a pre-existing Codex install for setup's final instruction. */
+export async function codexHooksAreWiredAt(codexDir: string): Promise<boolean> {
+  const hooksPath = join(codexDir, "hooks.json");
+  if (!existsSync(hooksPath)) return false;
+  try {
+    const settings = await Bun.file(hooksPath).json();
+    return Boolean(settings && typeof settings === "object"
+      && codexHooksAreWired(settings as Record<string, any>));
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -638,6 +760,7 @@ export async function runInstall(cfg: Config): Promise<void> {
 
 /** Sanity-check every external dependency conch shells out to. */
 export async function runDoctor(cfg: Config): Promise<void> {
+  console.log(`🐚 conch ${CONCH_VERSION}`);
   const checks: Array<[string, () => boolean | Promise<boolean>]> = [
     ["say (TTS)", () => binaryExists("say")],
     ["afplay (bell)", () => binaryExists("afplay")],
@@ -678,6 +801,13 @@ export async function runDoctor(cfg: Config): Promise<void> {
   console.log(
     `ℹ️  tts: ${ttsSummary}`,
   );
+
+  // These exercise the live paths rather than merely checking executables.
+  // They are advisory: an ambiently silent input or an unavailable output
+  // should produce a concrete recovery action without masking otherwise sound
+  // installation state behind a hard doctor failure.
+  console.log(formatDoctorProbe(await checkMicrophone()));
+  console.log(formatDoctorProbe(await checkTts(cfg)));
 
   if (!ok) process.exit(1);
 }

@@ -22,6 +22,12 @@ Because the loop is turn-based — speak, *then* listen, never both — the mic 
 
 Prompts are injected via `tmux send-keys` targeted at the exact pane running that session, so it works even when the pane isn't focused. Not a tmux user? With `CONCH_KEYSTROKE_FALLBACK=1`, conch finds the Terminal window hosting the session (matched by tty), focuses it, and types there. If the window can't be found, your words go to the **clipboard** instead of being typed into the void — you'll hear "just paste."
 
+## The macOS app
+
+The native macOS app is conch's primary UI. It shows the live session ledger and conversation while conch speaks and listens, and renders a finished deliverable inline when a session publishes one for review.
+
+The app is currently built from source. Open `mac-app/conch-mac.xcodeproj` in Xcode, select the `conch-mac` scheme, and press Run. Keep using the terminal dashboard (`conch`) as the SSH/remote fallback.
+
 ## Install
 
 macOS. Two commands:
@@ -46,7 +52,7 @@ conch setup        # installs/configures everything and starts the service
 Requires [Bun](https://bun.sh). Running from source means edits take effect immediately; the brew binary is a frozen `bun build --compile` build.
 </details>
 
-Setup leaves conch running as a background service that launches at login and self-heals within ~15s of a crash. Finish a turn in any Claude Code session and conch will speak it; open `conch` and press **space** to talk back.
+Setup leaves conch running as a background service that launches at login and self-heals within ~15s of a crash. In any Claude Code session that was already open during setup, type `/hooks` once to reload its configuration; sessions opened afterward pick conch up automatically. Finish a turn and conch will speak it, play a tink, and open the mic. Allow macOS microphone access when prompted; if the prompt was missed or the loop stays quiet, run `conch doctor`.
 
 Want manual granularity? The two integrations can be skipped independently, and their standalone commands remain idempotent:
 
@@ -86,6 +92,8 @@ The worker itself adds no package beyond the installed `mlx-audio`, NumPy, `misa
 | Command | What it does |
 |---|---|
 | `conch setup [--no-service] [--no-plugin]` | Run once: deps, models, hooks, doctor, service, and available-app plugins |
+| `conch uninstall [--models]` | Remove managed hooks, instructions, service, tmux session, and plugin; also remove downloaded models only with `--models` |
+| `conch version` / `--version` | Print the installed package version |
 | `conch service [install\|off]` | Optionally install/refresh or remove launchd supervision |
 | `conch install-plugin` / `uninstall-plugin` | Optionally manage the Claude Code and Codex plugin separately |
 | `conch install [--codex]` | Optionally wire Claude Code or Codex hooks separately |
@@ -105,7 +113,7 @@ The worker itself adds no package beyond the installed `mlx-audio`, NumPy, `misa
 | `conch get <key>` | Show one effective setting and its source |
 | `conch unset <key>` | Remove a saved value and revert to env/default |
 | `conch settings` | List all curated settings, effective values, and sources |
-| `conch doctor` | Verify external dependencies |
+| `conch doctor` | Verify dependencies, live microphone input, and the configured TTS path |
 
 ## Voice commands
 

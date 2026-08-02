@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../src/config.ts";
 import {
+  hardDependencyInstallCommand,
+  missingHardDependencies,
   parseSetupArgs,
+  renderHardDependencyFailure,
   REVIEW_INSTRUCTIONS_BLOCK,
   renderSetupReady,
   runInstall,
@@ -121,24 +124,76 @@ describe("one-command setup", () => {
     }
   });
 
-  test("ready output lists completed or skipped work and ends with the first try", () => {
-    const ready = renderSetupReady({ service: "installed", plugin: "installed" });
-    expect(ready).toContain("YOU'RE READY");
-    expect(ready).toContain("dependencies + speech models");
-    expect(ready).toContain("Claude Code hooks");
-    expect(ready).toContain("background service (running now + starts at login)");
-    expect(ready).toContain("plugin for available Claude Code / Codex apps");
-    expect(ready).toContain(
-      "Finish a turn in any Claude Code session; conch will speak it.",
+  test("ready output puts the already-open-session fix first and preempts mic failure", () => {
+    const ready = renderSetupReady(
+      { service: "installed", plugin: "installed" },
+      { color: false },
     );
-    expect(ready).toContain("Open `conch` and press space to talk back.");
-    expect(ready).not.toContain("conch service install");
+    expect(ready.split("\n")[0]).toBe(
+      "╭─ 🐚 DO THIS FIRST — Type /hooks in any Claude Code session you already have open.",
+    );
+    expect(ready).toContain("Sessions opened from now on pick conch up automatically.");
+    expect(ready).toContain("THEN — Just finish a turn.");
+    expect(ready).toContain("plays a tink, and opens");
+    expect(ready).toContain("talk, pause, and your words go back into that session.");
+    expect(ready).toContain("macOS will ask for microphone access");
+    expect(ready).not.toContain("System Settings");
+    expect(ready).toContain("If you miss the prompt, run `conch doctor`.");
+    expect(ready).toContain(
+      "WHERE TO LOOK — `conch` (the terminal dashboard, also what to use over ssh)",
+    );
+    expect(ready).not.toContain("Mac app");
+    expect(ready).toContain("IF IT'S QUIET — `conch doctor`");
+    expect(ready).toContain(
+      "installed: hooks · plugin · background service (starts at login) · speech models",
+    );
+    expect(ready.match(/^│ installed:/gm)).toHaveLength(1);
+    expect(ready).not.toMatch(/[✓○✗]/);
     expect(ready.trimEnd().endsWith("╰─")).toBe(true);
 
-    const skipped = renderSetupReady({ service: "skipped", plugin: "skipped" });
-    expect(skipped).toContain("background service skipped (--no-service)");
-    expect(skipped).toContain("app plugin skipped (--no-plugin)");
-    expect(skipped).toContain("Start the daemon your way before trying this.");
+    const skipped = renderSetupReady(
+      { service: "skipped", plugin: "skipped" },
+      { color: false },
+    );
+    expect(skipped).toContain(
+      "THEN — Run `conch daemon` to start the voice loop; leave it open, then",
+    );
+    expect(skipped).not.toContain("THEN — Just finish a turn.");
+    expect(skipped).toContain("installed: hooks · speech models");
+    expect(skipped).not.toContain("background service (starts at login)");
+    expect(skipped).not.toContain("installed: hooks · plugin");
+  });
+
+  test("ready output sends an unwired existing Codex install to its hook installer", () => {
+    const ready = renderSetupReady(
+      { service: "installed", plugin: "installed" },
+      { codexNeedsInstall: true, color: false },
+    );
+    expect(ready.split("\n")[0]).toBe(
+      "╭─ 🐚 DO THIS FIRST — Run `conch install --codex`.",
+    );
+    expect(ready).not.toContain("Type /hooks");
+    expect(ready).toContain("Codex is present, but its lifecycle hooks are not wired yet.");
+  });
+
+  test("hard-dependency guidance is copyable and includes Homebrew when absent", () => {
+    const missing = missingHardDependencies(
+      { whisperCli: "/missing/whisper-cli" },
+      () => null,
+      () => false,
+    );
+    expect(missing.map(({ formula }) => formula)).toEqual([
+      "sox",
+      "tmux",
+      "whisper-cpp",
+    ]);
+    expect(hardDependencyInstallCommand(missing)).toBe(
+      "brew install sox tmux whisper-cpp",
+    );
+    const failure = renderHardDependencyFailure(missing, false);
+    expect(failure).toContain("stopped before downloading speech models");
+    expect(failure).toContain("https://brew.sh");
+    expect(failure.split("\n")).toContain("brew install sox tmux whisper-cpp");
   });
 
   test("help presents setup as the single entry point in one grouped screen", () => {

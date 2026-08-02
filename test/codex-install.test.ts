@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildCodexHooksSettings,
+  codexHooksAreWired,
   REVIEW_INSTRUCTIONS_BLOCK,
   runCodexInstall,
 } from "../src/install.ts";
@@ -94,6 +95,8 @@ describe("Codex hook installer settings", () => {
     expect(second.settings).toEqual(first.settings);
     expect(second.changed).toBe(false);
     expect(second.addedEvents).toEqual([]);
+    expect(codexHooksAreWired(first.settings)).toBeTrue();
+    expect(codexHooksAreWired(existing)).toBeFalse();
   });
 
   test("writes the flat Codex hooks path with backup, idempotence, and verification instructions", async () => {
