@@ -196,12 +196,15 @@ private struct ReviewContent: View {
                     }
                 )
 
-                if let navigationFailure {
+                if let failure = navigationFailure {
                     DeliverableFailureView(
-                        failure: navigationFailure,
+                        failure: failure,
                         onRetry: retryNavigation,
+                        onDismiss: {
+                            navigationFailure = nil
+                        },
                         onOpenInBrowser: {
-                            NSWorkspace.shared.open(navigationFailure.url)
+                            NSWorkspace.shared.open(failure.url)
                         }
                     )
                 }
@@ -220,6 +223,7 @@ private struct ReviewContent: View {
 private struct DeliverableFailureView: View {
     let failure: DeliverableNavigationFailure
     let onRetry: () -> Void
+    let onDismiss: () -> Void
     let onOpenInBrowser: () -> Void
 
     var body: some View {
@@ -231,7 +235,7 @@ private struct DeliverableFailureView: View {
                         .foregroundStyle(ConchPalette.statusNeeds)
                         .accessibilityHidden(true)
 
-                    Text("Couldn’t load deliverable")
+                    Text(failure.title)
                         .font(ConchTypography.font(size: 16, weight: .medium))
                         .foregroundStyle(ConchPalette.textPrimary)
                 }
@@ -254,33 +258,51 @@ private struct DeliverableFailureView: View {
                 }
 
                 HStack(spacing: 10) {
-                    Button(action: onRetry) {
-                        Label("Retry", systemImage: "arrow.clockwise")
-                            .font(ConchTypography.font(size: 12, weight: .medium))
-                            .foregroundStyle(ConchPalette.textPrimary)
-                            .padding(.horizontal, 14)
-                            .frame(minHeight: 40)
-                            .background(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .fill(ConchPalette.accent.opacity(0.20))
-                            )
-                            .contentShape(Rectangle())
+                    if failure.canRetry {
+                        Button(action: onRetry) {
+                            Label("Retry", systemImage: "arrow.clockwise")
+                                .font(ConchTypography.font(size: 12, weight: .medium))
+                                .foregroundStyle(ConchPalette.textPrimary)
+                                .padding(.horizontal, 14)
+                                .frame(minHeight: 40)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .fill(ConchPalette.accent.opacity(0.20))
+                                )
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(ReviewPressButtonStyle())
+                    } else {
+                        Button(action: onDismiss) {
+                            Text("Back to Review")
+                                .font(ConchTypography.font(size: 12, weight: .medium))
+                                .foregroundStyle(ConchPalette.textPrimary)
+                                .padding(.horizontal, 14)
+                                .frame(minHeight: 40)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .fill(ConchPalette.hover)
+                                )
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(ReviewPressButtonStyle())
                     }
-                    .buttonStyle(ReviewPressButtonStyle())
 
-                    Button(action: onOpenInBrowser) {
-                        Label("Open in Browser", systemImage: "safari")
-                            .font(ConchTypography.font(size: 12, weight: .medium))
-                            .foregroundStyle(ConchPalette.textPrimary)
-                            .padding(.horizontal, 14)
-                            .frame(minHeight: 40)
-                            .background(
-                                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .fill(ConchPalette.hover)
-                            )
-                            .contentShape(Rectangle())
+                    if failure.canOpenInBrowser {
+                        Button(action: onOpenInBrowser) {
+                            Label("Open in Browser", systemImage: "safari")
+                                .font(ConchTypography.font(size: 12, weight: .medium))
+                                .foregroundStyle(ConchPalette.textPrimary)
+                                .padding(.horizontal, 14)
+                                .frame(minHeight: 40)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .fill(ConchPalette.hover)
+                                )
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(ReviewPressButtonStyle())
                     }
-                    .buttonStyle(ReviewPressButtonStyle())
                 }
             }
             .padding(24)

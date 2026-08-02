@@ -3,9 +3,12 @@ import SwiftUI
 import WebKit
 
 struct DeliverableNavigationFailure: Equatable {
+    let title: String
     let link: String
     let url: URL
     let message: String
+    let canRetry: Bool
+    let canOpenInBrowser: Bool
 }
 
 struct DeliverableWebView: NSViewRepresentable {
@@ -21,6 +24,7 @@ struct DeliverableWebView: NSViewRepresentable {
         var activeNavigation: WKNavigation?
         var loadingObservation: NSKeyValueObservation?
         var isObservingLoadingState = false
+        var surfacedURL: URL?
 
         init(parent: DeliverableWebView) {
             self.parent = parent
@@ -89,6 +93,35 @@ struct DeliverableWebView: NSViewRepresentable {
 
         func webView(
             _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            guard let destination = navigationAction.request.url else {
+                refuseNavigation(
+                    to: nil,
+                    message: "The page requested a destination with no valid URL."
+                )
+                decisionHandler(.cancel)
+                return
+            }
+
+            switch navigationPolicy(
+                for: destination,
+                isTopLevel: navigationAction.targetFrame?.isMainFrame != false
+            ) {
+            case .allow:
+                decisionHandler(.allow)
+            case .openExternally:
+                offerExternalNavigation(to: destination)
+                decisionHandler(.cancel)
+            case let .refuse(message):
+                refuseNavigation(to: destination, message: message)
+                decisionHandler(.cancel)
+            }
+        }
+
+        func webView(
+            _ webView: WKWebView,
             createWebViewWith configuration: WKWebViewConfiguration,
             for navigationAction: WKNavigationAction,
             windowFeatures: WKWindowFeatures
@@ -124,11 +157,99 @@ struct DeliverableWebView: NSViewRepresentable {
             parent.isLoading = false
             parent.onNavigationFailure(
                 DeliverableNavigationFailure(
+                    title: "Couldn’t load deliverable",
                     link: failingLink,
                     url: failingURL ?? DeliverableLink.url(for: failingLink),
-                    message: error.localizedDescription
+                    message: error.localizedDescription,
+                    canRetry: true,
+                    canOpenInBrowser: true
                 )
             )
+        }
+
+        private func navigationPolicy(
+            for destination: URL,
+            isTopLevel: Bool
+        ) -> NavigationPolicy {
+            guard let scheme = destination.scheme?.lowercased() else {
+                return .refuse("Only HTTP, HTTPS, and the surfaced local file can be opened in the review.")
+            }
+
+            switch scheme {
+            case "http", "https":
+                guard isTopLevel else { return .allow }
+                guard let surfacedURL,
+                      let surfacedOrigin = WebOrigin(url: surfacedURL),
+                      let destinationOrigin = WebOrigin(url: destination) else {
+                    return .refuse("The destination does not have a valid web origin.")
+                }
+                guard surfacedOrigin == destinationOrigin else {
+                    return .openExternally
+                }
+                return .allow
+            case "file":
+                guard let surfacedURL,
+                      surfacedURL.isFileURL,
+                      destination.standardizedFileURL.path
+                        == surfacedURL.standardizedFileURL.path else {
+                    return .refuse("Local file navigation is limited to the exact file published for review.")
+                }
+                return .allow
+            default:
+                return .refuse("The \(scheme) URL scheme is not allowed in the review.")
+            }
+        }
+
+        private func offerExternalNavigation(to destination: URL) {
+            parent.isLoading = false
+            parent.onNavigationFailure(
+                DeliverableNavigationFailure(
+                    title: "Open link in browser?",
+                    link: destination.absoluteString,
+                    url: destination,
+                    message: "This link leaves the review’s original website, so it wasn’t opened inside Conch.",
+                    canRetry: false,
+                    canOpenInBrowser: true
+                )
+            )
+        }
+
+        private func refuseNavigation(to destination: URL?, message: String) {
+            parent.isLoading = false
+            let link = destination?.absoluteString ?? parent.link
+            parent.onNavigationFailure(
+                DeliverableNavigationFailure(
+                    title: "Link blocked",
+                    link: link,
+                    url: destination ?? DeliverableLink.url(for: parent.link),
+                    message: message,
+                    canRetry: false,
+                    canOpenInBrowser: false
+                )
+            )
+        }
+
+        private enum NavigationPolicy {
+            case allow
+            case openExternally
+            case refuse(String)
+        }
+
+        private struct WebOrigin: Equatable {
+            let scheme: String
+            let host: String
+            let port: Int
+
+            init?(url: URL) {
+                guard let scheme = url.scheme?.lowercased(),
+                      scheme == "http" || scheme == "https",
+                      let host = url.host?.lowercased() else {
+                    return nil
+                }
+                self.scheme = scheme
+                self.host = host
+                port = url.port ?? (scheme == "https" ? 443 : 80)
+            }
         }
     }
 
@@ -147,10 +268,8 @@ struct DeliverableWebView: NSViewRepresentable {
         webView.allowsBackForwardNavigationGestures = true
         webView.allowsMagnification = true
         webView.underPageBackgroundColor = NSColor(ConchPalette.bg)
-        // Don't paint the webview's own (white) background — let the dark app
-        // background show through until the page renders, so the deliverable has
-        // no white flash in either inline or expanded presentation.
-        webView.setValue(false, forKey: "drawsBackground")
+        webView.wantsLayer = true
+        webView.layer?.backgroundColor = NSColor(ConchPalette.bg).cgColor
         context.coordinator.observeLoadingState(of: webView)
         return webView
     }
@@ -163,6 +282,7 @@ struct DeliverableWebView: NSViewRepresentable {
         }
         context.coordinator.loadedLink = link
         context.coordinator.loadedReloadID = reloadID
+        context.coordinator.surfacedURL = DeliverableLink.url(for: link)
         context.coordinator.activeNavigation = load(link, in: webView)
     }
 
