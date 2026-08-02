@@ -685,7 +685,7 @@ describe("daemon config controller", () => {
     expect(ordinary.backgroundWork).toBe(true);
   });
 
-  test("review status and automatic cursor skip stay wired without changing recite", () => {
+  test("review attribute and automatic cursor skip stay wired without changing recite", () => {
     const conversation = daemonSource.slice(
       daemonSource.indexOf("async function conversationLoop"),
       daemonSource.indexOf("async function permissionLoop"),
@@ -706,7 +706,8 @@ describe("daemon config controller", () => {
       daemonSource.indexOf('if (event.type === "turn-end" && !setSessionState('),
       daemonSource.indexOf("// Mute stamps", daemonSource.indexOf('if (event.type === "turn-end" && !setSessionState(')),
     );
-    expect(turnEndStatus).toContain('event.review ? "review" : "waiting"');
+    expect(turnEndStatus).toContain('"waiting"');
+    expect(turnEndStatus).not.toContain('"review" : "waiting"');
     expect(turnEndStatus).toContain("event.review?.summary");
     expect(turnEndStatus).toContain("event.eventAt");
     expect(turnEndStatus).toContain("event.review");

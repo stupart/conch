@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Config } from "../src/config.ts";
 import {
   parseSetupArgs,
+  REVIEW_INSTRUCTIONS_BLOCK,
   renderSetupReady,
   runInstall,
   runSetupIntegrations,
@@ -113,6 +114,8 @@ describe("one-command setup", () => {
       expect(settings.hooks.Stop).toHaveLength(1);
       expect(settings.hooks.Notification).toHaveLength(1);
       expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
+      expect(readFileSync(join(claudeDir, "CLAUDE.md"), "utf8"))
+        .toBe(`${REVIEW_INSTRUCTIONS_BLOCK}\n`);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildCodexHooksSettings,
+  REVIEW_INSTRUCTIONS_BLOCK,
   runCodexInstall,
 } from "../src/install.ts";
 
@@ -98,6 +99,7 @@ describe("Codex hook installer settings", () => {
   test("writes the flat Codex hooks path with backup, idempotence, and verification instructions", async () => {
     const codexDir = mkdtempSync(join(tmpdir(), "conch-codex-install-"));
     const hooksPath = join(codexDir, "hooks.json");
+    const instructionsPath = join(codexDir, "AGENTS.md");
     const obsoleteNestedPath = join(codexDir, "hooks", "hooks.json");
     const originalSettings = JSON.stringify({
       model: "gpt-existing",
@@ -138,6 +140,8 @@ describe("Codex hook installer settings", () => {
         expect(installed.hooks[event][0].hooks[0].command).toContain("codex-hook");
       }
       expect(readFileSync(obsoleteNestedPath, "utf8")).toBe(obsoleteNestedSettings);
+      expect(readFileSync(instructionsPath, "utf8"))
+        .toBe(`${REVIEW_INSTRUCTIONS_BLOCK}\n`);
 
       const backupsAfterFirstInstall = readdirSync(codexDir)
         .filter((name) => name.startsWith("hooks.json.conch-backup-"));
@@ -151,8 +155,16 @@ describe("Codex hook installer settings", () => {
         readdirSync(codexDir)
           .filter((name) => name.startsWith("hooks.json.conch-backup-")),
       ).toEqual(backupsAfterFirstInstall);
+      expect(
+        readdirSync(codexDir)
+          .filter((name) => name.startsWith("AGENTS.md.conch-backup-")),
+      ).toEqual([]);
+      expect(readFileSync(instructionsPath, "utf8").split("<!-- conch:begin -->"))
+        .toHaveLength(2);
 
       const output = logs.join("\n");
+      expect(output).toContain(`AGENTS.md: conch review contract created -> ${instructionsPath}`);
+      expect(output).toContain("AGENTS.md: conch review contract already wired, skipping");
       expect(output).toContain(`hooks file: ${hooksPath}`);
       expect(output).toContain(
         "The first `codex` run shows Codex's hook trust-review screen",

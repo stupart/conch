@@ -514,26 +514,55 @@ describe("reconcileStatus — BUG A: newer signal wins, so the panel never stick
   test("no registry status and no latch → null (dim idle)", () => {
     expect(reconcileStatus({}, undefined)).toBeNull();
   });
+});
 
-  test("a review latch survives a newer idle registry refresh", () => {
-    expect(reconcileStatus(
-      { status: "idle", statusUpdatedAt: 3_000 },
-      { status: "review", at: 2_000 },
-    )).toBe("review");
+describe("review attribute reconciliation", () => {
+  function reviewRow(registryStatus: string, statusUpdatedAt: number) {
+    return buildPanelRows({
+      sessions: [{
+        sessionId: "review",
+        name: "Review",
+        status: registryStatus,
+        statusUpdatedAt,
+      }],
+      sessionStates: new Map([
+        ["review", {
+          label: "Review",
+          status: "waiting" as const,
+          at: 2_000,
+          review: { summary: "Ready to inspect" },
+        }],
+      ]),
+      pausedSessionIds: new Set(),
+      mutedSessionIds: new Set(),
+      live: { state: "idle", label: "", partial: "" },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+    })[0]!;
+  }
+
+  test("a review attribute survives a newer idle registry refresh", () => {
+    expect(reviewRow("idle", 3_000)).toMatchObject({
+      status: "waiting",
+      at: 3_000,
+      detail: "Ready to inspect",
+      review: { summary: "Ready to inspect", at: 2_000 },
+    });
   });
 
-  test("the review exception is waiting-only, so newer busy clears it", () => {
-    expect(reconcileStatus(
-      { status: "busy", statusUpdatedAt: 3_000 },
-      { status: "review", at: 2_000 },
-    )).toBe("working");
+  test("a newer busy registry suppresses the stale review attribute", () => {
+    const row = reviewRow("busy", 3_000);
+    expect(row.status).toBe("working");
+    expect(row.review).toBeUndefined();
   });
 
   test("an equal-timestamp review latch wins the boundary tie", () => {
-    expect(reconcileStatus(
-      { status: "busy", statusUpdatedAt: 2_000 },
-      { status: "review", at: 2_000 },
-    )).toBe("review");
+    expect(reviewRow("busy", 2_000)).toMatchObject({
+      status: "waiting",
+      at: 2_000,
+      review: { summary: "Ready to inspect", at: 2_000 },
+    });
   });
 });
 
@@ -541,14 +570,14 @@ test("a review keeps its natural waiting position — the marker doesn't reorder
   const rows = buildPanelRows({
     sessions: [
       { sessionId: "working", name: "Working", status: "busy", statusUpdatedAt: 10 },
-      { sessionId: "waiting", name: "Waiting", status: "idle", statusUpdatedAt: 10 },
+      { sessionId: "waiting", name: "Alpha waiting", status: "idle", statusUpdatedAt: 10 },
       { sessionId: "needs", name: "Needs", status: "waiting", statusUpdatedAt: 10 },
-      { sessionId: "review", name: "Review", status: "idle", statusUpdatedAt: 10 },
+      { sessionId: "review", name: "Zulu review", status: "idle", statusUpdatedAt: 10 },
     ],
     sessionStates: new Map([
       ["review", {
-        label: "Review",
-        status: "review",
+        label: "Zulu review",
+        status: "waiting",
         at: 20,
         review: { summary: "Ready to inspect" },
       }],
@@ -565,10 +594,14 @@ test("a review keeps its natural waiting position — the marker doesn't reorder
   // exactly where an idle session would, ordered by label — no jump to the top.
   expect(rows.map((row) => row.sessionId)).toEqual([
     "needs",
-    "review",
     "waiting",
+    "review",
     "working",
   ]);
+  expect(rows.find((row) => row.sessionId === "review")).toMatchObject({
+    status: "waiting",
+    review: { summary: "Ready to inspect", at: 20 },
+  });
 });
 
 test("number shortcuts map to the same status-sorted positions the ledger renders", () => {
@@ -632,7 +665,7 @@ test("buildPanelRows carries review detail and timestamped metadata", () => {
     sessionStates: new Map([
       ["review", {
         label: "Review",
-        status: "review",
+        status: "waiting",
         detail: "PR ready to inspect",
         at: 20,
         review: { summary: "PR ready to inspect", link: "https://example.com/pr/1" },
@@ -647,7 +680,7 @@ test("buildPanelRows carries review detail and timestamped metadata", () => {
   });
 
   expect(row).toMatchObject({
-    status: "review",
+    status: "waiting",
     at: 20,
     detail: "PR ready to inspect",
     review: {
@@ -664,7 +697,7 @@ test("dashboardRowsForModel renders the review star and dimmed summary detail", 
     sessionStates: new Map([
       ["review", {
         label: "Review",
-        status: "review",
+        status: "waiting",
         detail: "PR ready to inspect",
         at: 20,
         review: { summary: "PR ready to inspect" },

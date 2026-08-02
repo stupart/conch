@@ -104,13 +104,12 @@ describe("theater status formatting", () => {
     const statuses = [
       "needs",
       "needs",
-      "review",
       "waiting",
       "waiting",
       "waiting",
       "working",
     ] as const;
-    const rows = statuses.map((status, index) => ({
+    const rows: PanelModel["rows"] = statuses.map((status, index) => ({
       sessionId: `session-${index}`,
       label: `session-${index}`,
       status,
@@ -120,6 +119,17 @@ describe("theater status formatting", () => {
       active: false,
       navSelected: false,
     }));
+    rows.splice(2, 0, {
+      sessionId: "review",
+      label: "review",
+      status: "waiting",
+      review: { summary: "Ready to inspect", at: 1 },
+      paused: false,
+      muted: false,
+      liveGlyph: null,
+      active: false,
+      navSelected: false,
+    });
     const header = theaterStatusHeader(sampleModel({
       rows,
       live: { state: "speaking", label: "dayloop", partial: "" },
@@ -127,7 +137,7 @@ describe("theater status formatting", () => {
     const plain = header.replace(/\x1b\[[0-9;]*m/g, "");
 
     expect(plain).toBe(
-      "  conch · ❗ 2 need you · ⭐ 1 review · ○ 3 waiting · ● 1 working · speaking ‹dayloop›",
+      "  conch · ❗ 2 need you · ○ 4 waiting · ⭐1 to look at · ● 1 working · speaking ‹dayloop›",
     );
     expect(header).toContain("\x1b[33m❗\x1b[39m");
     expect(header).toContain("\x1b[33m⭐\x1b[39m");
@@ -139,7 +149,7 @@ describe("theater status formatting", () => {
       rows: [rows[2]!],
       live: { state: "idle", label: "", partial: "" },
     })).replace(/\x1b\[[0-9;]*m/g, "");
-    expect(idle).toBe("  conch · ⭐ 1 review");
+    expect(idle).toBe("  conch · ○ 1 waiting · ⭐1 to look at");
     expect(idle).not.toContain("0 ");
     expect(idle).not.toContain("‹");
 
@@ -385,8 +395,7 @@ describe("theater renderer lifecycle", () => {
       }, {
         sessionId: "review",
         label: "review-project",
-        status: "review",
-        detail: "PR ready to inspect",
+        status: "waiting",
         review: { summary: "PR ready to inspect", at: 20 },
         paused: false,
         muted: false,
@@ -429,8 +438,8 @@ describe("theater renderer lifecycle", () => {
         {
           sessionId: "review",
           label: "beta-review",
-          status: "review",
-          at: now - 2 * 60_000 - 5_000,
+          status: "waiting",
+          at: now - 30_000,
           review: {
             summary: "Review the terminal dashboard deliverable",
             at: now - 2 * 60_000 - 5_000,
@@ -490,7 +499,7 @@ describe("theater renderer lifecycle", () => {
     expect(working).toMatch(/2d\s+│/);
     expect(frame).toContain("\x1b[2m2m\x1b[22m");
     expect(plainLines[0]).toContain(
-      "conch · ❗ 1 need you · ⭐ 1 review · ○ 1 waiting · ● 1 working",
+      "conch · ❗ 1 need you · ○ 2 waiting · ⭐1 to look at · ● 1 working",
     );
     expect(plainLines[0]).not.toContain("🐚");
     expect(plainLines.every((line) => terminalCellWidth(line) <= 119)).toBe(true);

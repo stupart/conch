@@ -31,7 +31,7 @@ import {
 export const MCP_PROTOCOL_VERSION = "2024-11-05";
 export const MCP_SESSIONS_FILE = "/tmp/conch-sessions.json";
 
-type PublishedSessionStatus = "working" | "waiting" | "needs" | "review";
+type PublishedSessionStatus = "working" | "waiting" | "needs";
 type PublishedLiveState =
   | "idle"
   | "muted"

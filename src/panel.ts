@@ -13,7 +13,7 @@ export interface PanelLiveState {
 }
 
 /** The states a session row can show in the dashboard panel. */
-export type SessionStatus = "working" | "waiting" | "needs" | "review";
+export type SessionStatus = "working" | "waiting" | "needs";
 
 /** A panel state latched from a hook event, with the epoch-ms it was latched. */
 export interface LatchedState {
@@ -122,8 +122,8 @@ export interface PublishedSessionRow {
   live: PanelConchState | null;
   active: boolean;
   snippet?: string;
-  /** The deliverable to surface, when this row is in review. Carries the link so
-   * external consumers (the Mac/mobile app) can render it, not just the summary. */
+  /** A finished deliverable attached to this waiting row. Carries the link so
+   * external consumers can render it, not just the summary. */
   review?: { summary: string; link?: string; at?: number };
 }
 
@@ -299,22 +299,24 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
       const latched = options.sessionStates.get(session.sessionId);
       const visibleState = reconcilePanelState(session, latched);
       const status = visibleState?.status ?? null;
+      // A finished deliverable is an attribute of a naturally waiting row, not
+      // a fourth status. Suppress a stale review while a newer signal says the
+      // session is working or needs input; an idle registry refresh may keep it.
+      const review = status === "waiting" && latched?.review
+        ? { ...latched.review, at: latched.at }
+        : undefined;
       const active = session.sessionId === options.activeSessionId;
       return {
         sessionId: session.sessionId,
         label: sessionLabel(session, session.cwd),
         status,
         ...(visibleState?.at !== undefined ? { at: visibleState.at } : {}),
-        ...(
-          (status === "needs" || status === "review") && latched?.detail
-            ? { detail: latched.detail }
-            : {}
-        ),
-        ...(
-          status === "review" && latched?.review
-            ? { review: { ...latched.review, at: latched.at } }
-            : {}
-        ),
+        ...(status === "needs" && latched?.detail
+          ? { detail: latched.detail }
+          : review
+            ? { detail: review.summary }
+            : {}),
+        ...(review ? { review } : {}),
         paused: options.pausedSessionIds.has(session.sessionId),
         muted: options.mutedSessionIds.has(session.sessionId),
         liveGlyph: active && ROW_LIVE_STATES.has(options.live.state) ? options.live.state : null,
@@ -413,11 +415,12 @@ export function buildPanelModel(options: BuildPanelModelOptions): PanelModel {
 }
 
 const STATUS_GLYPH: Record<SessionStatus, string> = {
-  review: "\x1b[33m⭐ needs review\x1b[0m",
   needs: "\x1b[33m❗ needs a response\x1b[0m",
   waiting: "\x1b[32m○ waiting for you\x1b[0m",
   working: "\x1b[36m● working…\x1b[0m",
 };
+
+const REVIEW_GLYPH = "\x1b[33m⭐ needs review\x1b[0m";
 
 const LIVE_GLYPH: Partial<Record<PanelConchState, string>> = {
   listening: "\x1b[32m● mic open\x1b[0m",
@@ -440,8 +443,13 @@ export function dashboardRowsForModel(model: PanelModel): string[] {
     // behavior here; theater uses the unambiguous active/liveGlyph model fields.
     const legacyLiveGlyph = row.label === model.live.label ? LIVE_GLYPH[model.live.state] : undefined;
     const glyph = legacyLiveGlyph
-      ?? (row.status ? STATUS_GLYPH[row.status] : "\x1b[2m· idle\x1b[0m");
-    return `${cursor}${row.label.slice(0, 26).padEnd(27)}${glyph}${row.detail ? ` \x1b[2m(${row.detail})\x1b[0m` : ""}`;
+      ?? (row.review
+        ? REVIEW_GLYPH
+        : row.status
+          ? STATUS_GLYPH[row.status]
+          : "\x1b[2m· idle\x1b[0m");
+    const detail = row.review?.summary ?? row.detail;
+    return `${cursor}${row.label.slice(0, 26).padEnd(27)}${glyph}${detail ? ` \x1b[2m(${detail})\x1b[0m` : ""}`;
   });
 }
 
@@ -535,7 +543,6 @@ function reconcilePanelState(
   const reg = registryToPanel(session.status);
   const regAt = session.statusUpdatedAt ?? 0;
   if (latched && latched.at >= regAt) return latched;
-  if (reg === "waiting" && latched?.status === "review") return latched;
   if (reg) {
     return {
       status: reg,
@@ -546,13 +553,11 @@ function reconcilePanelState(
 }
 
 /**
- * Sort order: what needs you first, then waiting, then working. A review keeps
- * its natural (waiting) position — the ⭐ marker flags it without reordering the
- * dashboard, so conch stays "normal" and a review only changes the row's glyph.
+ * Sort order: what needs you first, then waiting, then working. A deliverable is
+ * an attribute of a waiting row, so its ⭐ never changes the natural order.
  */
 export const STATUS_RANK: Record<SessionStatus, number> = {
   needs: 1,
-  review: 2,
   waiting: 2,
   working: 3,
 };
