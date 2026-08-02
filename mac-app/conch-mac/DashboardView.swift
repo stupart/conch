@@ -37,20 +37,20 @@ enum ConchPalette {
         green: 201.0 / 255.0,
         blue: 212.0 / 255.0
     )
-    static let statusWorking = Color(
-        red: 0.44,
-        green: 0.75,
-        blue: 0.37
-    )
+    // A calm -> act-now ladder, matching the terminal. "working" is the only
+    // restful state; "waiting" means a finished turn is sitting on YOU, so it
+    // reads as attention rather than inert grey; "needs" is blocking and
+    // outranks it.
+    static let statusWorking = brandCyan
     static let statusWaiting = Color(
-        red: 0.42,
-        green: 0.46,
-        blue: 0.44
-    )
-    static let statusNeeds = Color(
         red: 0.95,
         green: 0.69,
         blue: 0.20
+    )
+    static let statusNeeds = Color(
+        red: 0.94,
+        green: 0.38,
+        blue: 0.24
     )
     static let statusReview = Color(
         red: 0.96,

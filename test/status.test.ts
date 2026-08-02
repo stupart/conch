@@ -139,9 +139,9 @@ describe("theater status formatting", () => {
     expect(plain).toBe(
       "  conch · ❗ 2 need you · ○ 4 waiting · ⭐1 to look at · ● 1 working · speaking ‹dayloop›",
     );
-    expect(header).toContain("\x1b[33m❗\x1b[39m");
+    expect(header).toContain("\x1b[91m❗\x1b[39m"); // needs is now red — it outranks waiting
     expect(header).toContain("\x1b[33m⭐\x1b[39m");
-    expect(header).toContain("\x1b[32m○\x1b[39m");
+    expect(header).toContain("\x1b[33m○\x1b[39m"); // waiting is now yellow — a finished turn is sitting on you
     expect(header).toContain("\x1b[36m●\x1b[39m");
     expect(header).not.toContain("\n");
 
