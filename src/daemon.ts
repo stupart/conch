@@ -1,5 +1,6 @@
 import { createServer } from "node:net";
-import { existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import {
+  chmodSync, existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
@@ -46,6 +47,7 @@ import {
   type WhisperRecoveryReason,
 } from "./transcribe.ts";
 import {
+  prepareLogFile,
   clearReadingProgress,
   clearTheaterSelection,
   configureRenderer,
@@ -840,6 +842,7 @@ export function buildDaemonPublishedState(
 }
 
 export async function runDaemon(cfg: Config): Promise<void> {
+  prepareLogFile();
   // Read cfg.haikuTimeoutSecs at call time — the config socket mutates cfg in
   // place for live settings, so a fresh read here honors `conch set haiku-timeout`
   // without a daemon restart.
@@ -3505,6 +3508,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
     };
     sock.on("data", (data) => {
       if (handled) return;
+      // A peer that never sends a newline would otherwise grow this string
+      // until the daemon OOMs. Cap the frame and drop the connection.
+      if (buf.length > 64_000) {
+        sock.destroy();
+        return;
+      }
       buf += data.toString();
       const newline = buf.indexOf("\n");
       if (newline !== -1) handleLine(buf.slice(0, newline));
@@ -3658,6 +3667,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   if (existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath); // stale socket from a previous run
   server.listen(cfg.socketPath);
+  // The socket accepts mic-opening, speech, and settings mutations, so it must
+  // not be world-writable in /tmp. Darwin enforces socket mode on connect(2).
+  try {
+    chmodSync(cfg.socketPath, 0o600);
+  } catch {}
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);
   if (muted) log("resuming muted (persisted) — m or `conch unmute` to turn on");
   if (pause.paused) log("resuming paused (persisted) — p or `conch resume` to turn on");
