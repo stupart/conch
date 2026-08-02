@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 
@@ -47,6 +48,7 @@ final class StateStore: ObservableObject {
     private var latestEnqueuedCommands: [SessionRow.ID: EnqueuedSessionCommand] = [:]
     private var dismissCompletions: [SessionRow.ID: DismissCommandCompletion] = [:]
     private var transportErrorSessionIDs: Set<SessionRow.ID> = []
+    private var dockBadgeCount = 0
     private var undoGeneration = 0
     private var dismissedNewerDaemonVersion: Int?
 
@@ -592,7 +594,18 @@ final class StateStore: ObservableObject {
         )
         if next != state {
             state = next
+            updateDockBadge(for: next.rows)
         }
+    }
+
+    private func updateDockBadge(for rows: [SessionRow]) {
+        let nextCount = rows.count { row in
+            row.status == .needs || row.status == .review
+        }
+        guard nextCount != dockBadgeCount else { return }
+
+        dockBadgeCount = nextCount
+        NSApp.dockTile.badgeLabel = nextCount == 0 ? nil : String(nextCount)
     }
 
     private func updateNewerDaemonWarning() {
