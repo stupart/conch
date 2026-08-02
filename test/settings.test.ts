@@ -5,15 +5,19 @@ import { join } from "node:path";
 import {
   SETTING_DESCRIPTORS,
   SETTING_REGISTRY,
+  SESSION_COMMANDS,
   configSnapshotEntry,
+  isControlMessageCandidate,
   loadSettingsFile,
   parseSetting,
   resolveSetting,
   unsetSetting,
   validateControlMessage,
   validateControlResponse,
+  validateSessionControlMessage,
   writeSetting,
   type ConfigSnapshot,
+  type SessionControlMessage,
   type SettingKey,
 } from "../src/settings.ts";
 
@@ -370,6 +374,118 @@ describe("control-message validation", () => {
       { kind: "surprise-config" },
     ]) {
       expect(validateControlMessage(value).ok).toBe(false);
+    }
+  });
+
+  test("recognizes and canonicalizes the six closed session-command shapes", () => {
+    expect(SESSION_COMMANDS).toEqual([
+      "rename",
+      "set-voice",
+      "reset-voice",
+      "prioritize",
+      "dismiss",
+      "restore",
+    ]);
+
+    const cases: Array<{ input: unknown; output: SessionControlMessage }> = [
+      {
+        input: { kind: "session-command", sessionId: " session-1 ", command: "rename", label: `  ${"x".repeat(45)}  ` },
+        output: { kind: "session-command", sessionId: "session-1", command: "rename", label: "x".repeat(40) },
+      },
+      {
+        input: { kind: "session-command", sessionId: "session-1", command: "set-voice", voice: " af_heart " },
+        output: { kind: "session-command", sessionId: "session-1", command: "set-voice", voice: "af_heart" },
+      },
+      {
+        input: { kind: "session-command", sessionId: "session-1", command: "reset-voice" },
+        output: { kind: "session-command", sessionId: "session-1", command: "reset-voice" },
+      },
+      {
+        input: { kind: "session-command", sessionId: "session-1", command: "prioritize", value: true },
+        output: { kind: "session-command", sessionId: "session-1", command: "prioritize", value: true },
+      },
+      {
+        input: { kind: "session-command", sessionId: "session-1", command: "dismiss" },
+        output: { kind: "session-command", sessionId: "session-1", command: "dismiss" },
+      },
+      {
+        input: { kind: "session-command", sessionId: "session-1", command: "restore" },
+        output: { kind: "session-command", sessionId: "session-1", command: "restore" },
+      },
+    ];
+
+    for (const { input, output } of cases) {
+      expect(isControlMessageCandidate(input)).toBe(true);
+      expect(validateSessionControlMessage(input)).toEqual({ ok: true, value: output });
+      expect(validateControlMessage(input)).toEqual({ ok: true, value: output });
+    }
+  });
+
+  test("rejects hostile session-command inputs without throwing", () => {
+    const hostile: unknown[] = [
+      null,
+      [],
+      {},
+      { sessionId: "session-1", command: "dismiss" },
+      { kind: "session-command", sessionId: "", command: "dismiss" },
+      { kind: "session-command", sessionId: "__proto__", command: "dismiss" },
+      { kind: "session-command", sessionId: "bad\u0000id", command: "dismiss" },
+      { kind: "session-command", sessionId: "x".repeat(257), command: "dismiss" },
+      { kind: "session-command", sessionId: "session-1", command: "rename", label: "x".repeat(10 * 1024 * 1024) },
+      { kind: "session-command", sessionId: "session-1", command: "rename", label: "bad\u0000label" },
+      { kind: "session-command", sessionId: "session-1", command: "rename", label: "\u0000" },
+      { kind: "session-command", sessionId: "session-1", command: "set-voice", voice: "not a voice!" },
+      { kind: "session-command", sessionId: "session-1", command: "prioritize", value: "true" },
+      { kind: "session-command", sessionId: "session-1", command: "delete-everything" },
+    ];
+
+    for (const input of hostile) {
+      expect(() => validateSessionControlMessage(input)).not.toThrow();
+      expect(validateSessionControlMessage(input).ok).toBe(false);
+    }
+    expect(isControlMessageCandidate({ kind: "session-command" })).toBe(true);
+    expect(isControlMessageCandidate({ sessionId: "session-1", command: "dismiss" })).toBe(false);
+  });
+
+  test("validates session acknowledgements and errors as control responses", () => {
+    expect(validateControlResponse({
+      kind: "session-ack",
+      sessionId: " session-1 ",
+      command: "rename",
+      label: "  Canonical name  ",
+      changed: true,
+    })).toEqual({
+      ok: true,
+      value: {
+        kind: "session-ack",
+        sessionId: "session-1",
+        command: "rename",
+        label: "Canonical name",
+        changed: true,
+      },
+    });
+    expect(validateControlResponse({
+      kind: "session-ack",
+      sessionId: "session-1",
+      command: "dismiss",
+      changed: false,
+    })).toEqual({
+      ok: true,
+      value: { kind: "session-ack", sessionId: "session-1", command: "dismiss", changed: false },
+    });
+    expect(validateControlResponse({ kind: "session-error", error: "invalid voice" })).toEqual({
+      ok: true,
+      value: { kind: "session-error", error: "invalid voice" },
+    });
+
+    for (const response of [
+      { kind: "session-ack", sessionId: "session-1", command: "unknown", changed: true },
+      { kind: "session-ack", sessionId: "__proto__", command: "dismiss", changed: true },
+      { kind: "session-ack", sessionId: "session-1", command: "dismiss", changed: "yes" },
+      { kind: "session-ack", sessionId: "session-1", command: "rename", label: "bad\u0000label", changed: true },
+      { kind: "session-error", error: 123 },
+    ]) {
+      expect(validateControlResponse(response).ok).toBe(false);
     }
   });
 

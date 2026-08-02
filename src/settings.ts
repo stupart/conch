@@ -12,6 +12,8 @@ import {
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
+import { normalizeSessionLabel } from "./sessions.ts";
+import { isValidVoiceName } from "./speak.ts";
 
 export const DEFAULT_CONCH_CONFIG_DIR = join(homedir(), ".config", "conch");
 export const SETTINGS_FILE = "settings.json";
@@ -606,6 +608,27 @@ export type ConfigControlMessage =
   | { kind: "get-config" }
   | { kind: "unset-config"; key: SettingKey };
 
+export const SESSION_COMMANDS = [
+  "rename",
+  "set-voice",
+  "reset-voice",
+  "prioritize",
+  "dismiss",
+  "restore",
+] as const;
+
+export type SessionCommand = typeof SESSION_COMMANDS[number];
+
+export type SessionControlMessage =
+  | { kind: "session-command"; sessionId: string; command: "rename"; label: string }
+  | { kind: "session-command"; sessionId: string; command: "set-voice"; voice: string }
+  | { kind: "session-command"; sessionId: string; command: "reset-voice" }
+  | { kind: "session-command"; sessionId: string; command: "prioritize"; value: boolean }
+  | { kind: "session-command"; sessionId: string; command: "dismiss" }
+  | { kind: "session-command"; sessionId: string; command: "restore" };
+
+export type ControlMessage = ConfigControlMessage | SessionControlMessage;
+
 export interface ConfigSnapshotEntry extends SettingResolution {
   kind: SettingDescriptor["kind"];
   bounds: SettingBounds | null;
@@ -646,6 +669,18 @@ export type ConfigControlResponse =
   | { kind: "config-snapshot"; snapshot: ConfigSnapshot; diagnostic?: undefined }
   | { kind: "config-error"; error: string; diagnostic?: undefined };
 
+export type SessionAck = {
+  kind: "session-ack";
+  sessionId: string;
+  command: SessionCommand;
+  label?: string;
+  changed: boolean;
+};
+
+export type SessionError = { kind: "session-error"; error: string };
+export type SessionControlResponse = SessionAck | SessionError;
+export type ControlResponse = ConfigControlResponse | SessionControlResponse;
+
 function record(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -681,14 +716,95 @@ function validateSnapshotBounds(value: unknown): ParseResult<SettingBounds | nul
 
 export function isControlMessageCandidate(value: unknown): boolean {
   if (!record(value) || !Object.hasOwn(value, "kind")) return false;
-  return value.kind === "set-config" || value.kind === "get-config" || value.kind === "unset-config";
+  return value.kind === "set-config"
+    || value.kind === "get-config"
+    || value.kind === "unset-config"
+    || value.kind === "session-command";
 }
 
-export function validateControlMessage(value: unknown): ParseResult<ConfigControlMessage> {
+const MAX_SESSION_ID_LENGTH = 256;
+const MAX_SESSION_LABEL_INPUT_LENGTH = 4_096;
+const SESSION_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
+
+function validateSessionId(value: unknown): ParseResult<string> {
+  if (typeof value !== "string") return { ok: false, err: "session id must be a string" };
+  const id = value.trim();
+  if (!id) return { ok: false, err: "session id cannot be empty" };
+  if (id.length > MAX_SESSION_ID_LENGTH) {
+    return { ok: false, err: `session id cannot exceed ${MAX_SESSION_ID_LENGTH} characters` };
+  }
+  if (SESSION_CONTROL_CHARS.test(id)) {
+    return { ok: false, err: "session id cannot contain control characters" };
+  }
+  if (FORBIDDEN_KEYS.has(id)) return { ok: false, err: `session id "${id}" is not allowed` };
+  return { ok: true, value: id };
+}
+
+function validateSessionLabel(value: unknown): ParseResult<string> {
+  if (typeof value !== "string") return { ok: false, err: "session label must be a string" };
+  if (value.length > MAX_SESSION_LABEL_INPUT_LENGTH) {
+    return { ok: false, err: `session label cannot exceed ${MAX_SESSION_LABEL_INPUT_LENGTH} characters` };
+  }
+  try {
+    const label = normalizeSessionLabel(value);
+    if (SESSION_CONTROL_CHARS.test(value)) {
+      return { ok: false, err: "session label cannot contain control characters" };
+    }
+    return { ok: true, value: label };
+  } catch (error) {
+    return {
+      ok: false,
+      err: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function validSessionCommand(value: unknown): value is SessionCommand {
+  return SESSION_COMMANDS.some((command) => value === command);
+}
+
+export function validateSessionControlMessage(value: unknown): ParseResult<SessionControlMessage> {
+  if (!record(value)) return { ok: false, err: "session command must be a JSON object" };
+  if (value.kind !== "session-command") return { ok: false, err: "session command kind is required" };
+  const sessionId = validateSessionId(value.sessionId);
+  if (!sessionId.ok) return sessionId;
+  if (!validSessionCommand(value.command)) {
+    return { ok: false, err: `unknown session command "${String(value.command)}"` };
+  }
+
+  switch (value.command) {
+    case "rename": {
+      if (!Object.hasOwn(value, "label")) return { ok: false, err: "rename: label is required" };
+      const label = validateSessionLabel(value.label);
+      if (!label.ok) return label;
+      return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: "rename", label: label.value } };
+    }
+    case "set-voice": {
+      if (!Object.hasOwn(value, "voice") || typeof value.voice !== "string") {
+        return { ok: false, err: "set-voice: voice is required" };
+      }
+      const voice = value.voice.trim();
+      if (!isValidVoiceName(voice)) return { ok: false, err: `invalid TTS voice: ${value.voice}` };
+      return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: "set-voice", voice } };
+    }
+    case "prioritize":
+      if (!Object.hasOwn(value, "value") || typeof value.value !== "boolean") {
+        return { ok: false, err: "prioritize: value must be boolean" };
+      }
+      return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: "prioritize", value: value.value } };
+    case "reset-voice":
+    case "dismiss":
+    case "restore":
+      return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: value.command } };
+  }
+}
+
+export function validateControlMessage(value: unknown): ParseResult<ControlMessage> {
   if (!record(value)) return { ok: false, err: "control message must be a JSON object" };
   if (!Object.hasOwn(value, "kind") || typeof value.kind !== "string") {
     return { ok: false, err: "control message kind is required" };
   }
+  if (value.kind === "session-command") return validateSessionControlMessage(value);
   if (value.kind === "get-config") return { ok: true, value: { kind: "get-config" } };
   if (value.kind !== "set-config" && value.kind !== "unset-config") {
     return { ok: false, err: `unknown control message kind "${value.kind}"` };
@@ -704,8 +820,35 @@ export function validateControlMessage(value: unknown): ParseResult<ConfigContro
   return { ok: true, value: { kind: "set-config", key: found.value.key, value: parsed.value } };
 }
 
-export function validateControlResponse(value: unknown): ParseResult<ConfigControlResponse> {
-  if (!record(value) || typeof value.kind !== "string") return { ok: false, err: "invalid config response" };
+export function validateControlResponse(value: unknown): ParseResult<ControlResponse> {
+  if (!record(value) || typeof value.kind !== "string") return { ok: false, err: "invalid control response" };
+  if (value.kind === "session-error") {
+    return typeof value.error === "string"
+      ? { ok: true, value: { kind: "session-error", error: value.error } }
+      : { ok: false, err: "invalid session error response" };
+  }
+  if (value.kind === "session-ack") {
+    const sessionId = validateSessionId(value.sessionId);
+    if (!sessionId.ok) return { ok: false, err: `invalid session ack: ${sessionId.err}` };
+    if (!validSessionCommand(value.command)) return { ok: false, err: "invalid session ack command" };
+    if (typeof value.changed !== "boolean") return { ok: false, err: "invalid session ack changed" };
+    let label: string | undefined;
+    if (value.label !== undefined) {
+      const validated = validateSessionLabel(value.label);
+      if (!validated.ok) return { ok: false, err: `invalid session ack label: ${validated.err}` };
+      label = validated.value;
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "session-ack",
+        sessionId: sessionId.value,
+        command: value.command,
+        ...(label === undefined ? {} : { label }),
+        changed: value.changed,
+      },
+    };
+  }
   if (value.kind === "config-error") {
     return typeof value.error === "string"
       ? { ok: true, value: { kind: "config-error", error: value.error } }
@@ -806,19 +949,42 @@ export type ConfigControlResult =
   | { ok: true; response: ConfigControlResponse }
   | { ok: false; reason: "daemon-down" | "ack-unknown"; diagnostic?: string };
 
-/** Newline-framed request/reply client for config control messages. */
+export type SessionControlResult =
+  | { ok: true; response: SessionControlResponse }
+  | { ok: false; reason: "daemon-down" | "ack-unknown"; diagnostic?: string };
+
+export type ControlResult =
+  | { ok: true; response: ControlResponse }
+  | { ok: false; reason: "daemon-down" | "ack-unknown"; diagnostic?: string };
+
+/** Newline-framed request/reply client for daemon control messages. */
 export function sendControlMessage(
   socketPath: string,
   message: ConfigControlMessage,
+  timeoutMs?: number,
+): Promise<ConfigControlResult>;
+export function sendControlMessage(
+  socketPath: string,
+  message: SessionControlMessage,
+  timeoutMs?: number,
+): Promise<SessionControlResult>;
+export function sendControlMessage(
+  socketPath: string,
+  message: ControlMessage,
+  timeoutMs?: number,
+): Promise<ControlResult>;
+export function sendControlMessage(
+  socketPath: string,
+  message: ControlMessage,
   timeoutMs = 500,
-): Promise<ConfigControlResult> {
+): Promise<ControlResult> {
   return new Promise((resolve) => {
     const sock = connect({ path: socketPath, allowHalfOpen: true });
     let connected = false;
     let settled = false;
     let buffer = "";
 
-    const finish = (result: ConfigControlResult): void => {
+    const finish = (result: ControlResult): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);

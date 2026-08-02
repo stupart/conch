@@ -31,6 +31,7 @@ function publishedState(ts: number, label: string): PublishedState {
       active: false,
     }],
     dismissed: [],
+    dismissedRows: [],
   };
 }
 

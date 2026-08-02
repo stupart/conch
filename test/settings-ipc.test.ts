@@ -3,11 +3,17 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
 import {
+  dispatchSessionControlMessage,
+  type SessionCommandDispatchOptions,
+} from "../src/daemon.ts";
+import type { SessionActionsController } from "../src/session-actions-overlay.ts";
+import {
   SETTING_DESCRIPTORS,
   configSnapshotEntry,
   sendControlMessage,
   validateControlMessage,
   type ConfigSnapshotEntry,
+  type SessionControlMessage,
   type SettingValue,
 } from "../src/settings.ts";
 
@@ -88,7 +94,10 @@ async function runCli(f: Fixture, args: string[], extraEnv: Record<string, strin
   return { exitCode, stdout, stderr };
 }
 
-async function fakeDaemon(socketPath: string, reply: string): Promise<FakeDaemon> {
+async function fakeDaemon(
+  socketPath: string,
+  reply: string | ((request: unknown) => string),
+): Promise<FakeDaemon> {
   const requests: unknown[] = [];
   const sockets = new Set<Socket>();
   const server: Server = createServer({ allowHalfOpen: true }, (socket) => {
@@ -102,13 +111,15 @@ async function fakeDaemon(socketPath: string, reply: string): Promise<FakeDaemon
       const newline = buffer.indexOf("\n");
       if (newline < 0 || replied) return;
       replied = true;
-      requests.push(JSON.parse(buffer.slice(0, newline)));
+      const request: unknown = JSON.parse(buffer.slice(0, newline));
+      requests.push(request);
+      const response = typeof reply === "function" ? reply(request) : reply;
 
       // Deliberately fragment the response and keep our writable half open.
       // The control client must resolve on a complete newline frame, not EOF.
-      const middle = Math.max(1, Math.floor(reply.length / 2));
-      socket.write(reply.slice(0, middle));
-      setTimeout(() => socket.write(`${reply.slice(middle)}\n`), 5);
+      const middle = Math.max(1, Math.floor(response.length / 2));
+      socket.write(response.slice(0, middle));
+      setTimeout(() => socket.write(`${response.slice(middle)}\n`), 5);
     });
   });
   await new Promise<void>((resolve, reject) => {
@@ -159,6 +170,81 @@ describe("settings control IPC", () => {
     expect(validateControlMessage(JSON.parse('{"kind":"set-config","key":"__proto__","value":1}')).ok).toBe(false);
     expect(validateControlMessage({ kind: "unset-config", key: "constructor" }).ok).toBe(false);
     expect(validateControlMessage(null).ok).toBe(false);
+  });
+
+  test("hostile session-command frames always receive session-error replies", async () => {
+    const controller: SessionActionsController = {
+      voiceCandidates: () => [],
+      effectiveVoice: () => "",
+      previewVoice: () => {},
+      setVoice: () => {
+        throw new Error("hostile input reached a mutation");
+      },
+      resetVoice: () => {
+        throw new Error("hostile input reached a mutation");
+      },
+      isPrioritized: () => false,
+      setPrioritized: () => {
+        throw new Error("hostile input reached a mutation");
+      },
+      rename: () => {
+        throw new Error("hostile input reached a mutation");
+      },
+      dismiss: () => {
+        throw new Error("hostile input reached a mutation");
+      },
+      restore: () => {
+        throw new Error("hostile input reached a mutation");
+      },
+    };
+    const options: SessionCommandDispatchOptions = {
+      controller,
+      pause: { open() {}, close() {} },
+      targetForSessionId: () => null,
+    };
+    const f = fixture();
+    const daemon = await fakeDaemon(f.socketPath, (request) => JSON.stringify(
+      dispatchSessionControlMessage(request, options),
+    ));
+    const hostile: unknown[] = [
+      null,
+      {},
+      { kind: "session-command", sessionId: "__proto__", command: "dismiss" },
+      {
+        kind: "session-command",
+        sessionId: "session-a",
+        command: "rename",
+        label: "x".repeat(10_000_000),
+      },
+      {
+        kind: "session-command",
+        sessionId: "session-a",
+        command: "rename",
+        label: "bad\u0000label",
+      },
+      { kind: "session-command", sessionId: "session-a", command: "unknown" },
+      {
+        kind: "session-command",
+        sessionId: "session-a",
+        command: "set-voice",
+        voice: "garbage voice",
+      },
+    ];
+
+    try {
+      for (const input of hostile) {
+        const result = await sendControlMessage(
+          f.socketPath,
+          input as SessionControlMessage,
+          5_000,
+        );
+        expect(result.ok).toBeTrue();
+        if (!result.ok) throw new Error(result.diagnostic);
+        expect(result.response.kind).toBe("session-error");
+      }
+    } finally {
+      await daemon.close();
+    }
   });
 
   test("an applied ack produces the saved + applied-live status", async () => {

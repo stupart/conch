@@ -172,6 +172,9 @@ describe("buildPublishedState — external session snapshot", () => {
           : undefined,
         // These are already-resolved effective voices; no explicit pin is needed.
         voiceForLabel: (label) => label === "Need" ? "af_heart" : "am_adam",
+        labelForSessionId: (sessionId) => sessionId === "dismissed-session"
+          ? "Dismissed"
+          : undefined,
         prioritizedSessionIds: new Set(["needs"]),
       },
     );
@@ -225,6 +228,7 @@ describe("buildPublishedState — external session snapshot", () => {
         },
       ],
       dismissed: ["dismissed-session"],
+      dismissedRows: [{ id: "dismissed-session", label: "Dismissed" }],
     });
     expect(published.rows.some((row) => row.id === "dismissed-session")).toBe(false);
     expect("snippet" in published.rows[1]!).toBe(false);

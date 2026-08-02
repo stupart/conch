@@ -346,9 +346,39 @@ switch (command) {
       process.exit(1);
     }
     const oldLabel = sessionLabel(session, session.cwd);
-    const renamed = renameSessionLabel(session.sessionId, oldLabel, label);
-    console.log(`[conch] ${oldLabel} -> ${renamed.label} (persisted to ~/.config/conch/labels.json)${
-      renamed.voiceMigrated ? "; voice pin migrated" : ""
+    const result = await sendControlMessage(cfg.socketPath, {
+      kind: "session-command",
+      sessionId: session.sessionId,
+      command: "rename",
+      label,
+    });
+    let renamedLabel: string;
+    let voiceMigrated = false;
+    if (!result.ok) {
+      if (result.reason !== "daemon-down") {
+        const diagnostic = result.diagnostic ? `: ${result.diagnostic}` : "";
+        console.error(`[conch] ${result.reason}${diagnostic}`);
+        process.exit(1);
+      }
+      const renamed = renameSessionLabel(session.sessionId, oldLabel, label);
+      renamedLabel = renamed.label;
+      voiceMigrated = renamed.voiceMigrated;
+    } else if (result.response.kind === "session-error") {
+      console.error(`[conch] ${result.response.error}`);
+      process.exit(1);
+    } else if (
+      result.response.kind !== "session-ack"
+      || result.response.sessionId !== session.sessionId
+      || result.response.command !== "rename"
+      || result.response.label === undefined
+    ) {
+      console.error("[conch] ack-unknown: daemon reply did not match the rename request");
+      process.exit(1);
+    } else {
+      renamedLabel = result.response.label;
+    }
+    console.log(`[conch] ${oldLabel} -> ${renamedLabel} (persisted to ~/.config/conch/labels.json)${
+      voiceMigrated ? "; voice pin migrated" : ""
     }`);
     break;
   }

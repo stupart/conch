@@ -142,6 +142,7 @@ export interface PublishedState {
   preview?: PanelReplyModel;
   rows: PublishedSessionRow[];
   dismissed: string[];
+  dismissedRows: Array<{ id: string; label: string }>;
 }
 
 const MAX_PUBLISHED_CONVERSATION_CHARS = 4_000;
@@ -221,6 +222,8 @@ export function buildPublishedState(
     transcriptPathForSessionId?(sessionId: string): string | undefined;
     /** Resolve the effective voice, including stable automatic assignment. */
     voiceForLabel?(label: string): string | undefined;
+    /** Resolve labels for dismissed sessions, which are intentionally absent from rows. */
+    labelForSessionId?(sessionId: string): string | undefined;
     prioritizedSessionIds?: ReadonlySet<string>;
   } = {},
 ): PublishedState {
@@ -268,6 +271,10 @@ export function buildPublishedState(
       };
     }),
     dismissed: [...dismissed],
+    dismissedRows: [...dismissed].map((id) => ({
+      id,
+      label: options.labelForSessionId?.(id)?.trim() || id.slice(0, 8),
+    })),
   };
 }
 

@@ -61,6 +61,7 @@ function basePublishedState(): PublishedState {
       active: false,
     }],
     dismissed: [],
+    dismissedRows: [],
   };
 }
 
