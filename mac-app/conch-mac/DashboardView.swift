@@ -102,8 +102,6 @@ struct DashboardActions {
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
     let onReleaseSelection: () -> Void
-    let onWakeNumber: (Int) -> Void
-    let onQuit: () -> Void
 }
 
 struct DashboardView: View {
@@ -115,7 +113,10 @@ struct DashboardView: View {
     var body: some View {
         GeometryReader { proxy in
             VStack(spacing: 0) {
-                DashboardHeader(state: state)
+                DashboardHeader(
+                    state: state,
+                    daemonMessage: daemonMessage
+                )
 
                 Rectangle()
                     .fill(ConchPalette.divider)
@@ -149,7 +150,6 @@ struct DashboardView: View {
                 DashboardKeybar(
                     state: state,
                     selectedSessionID: selectedSessionID,
-                    daemonMessage: daemonMessage,
                     actions: actions
                 )
             }
@@ -166,6 +166,7 @@ struct DashboardView: View {
 
 private struct DashboardHeader: View {
     let state: PublishedState?
+    let daemonMessage: String?
 
     private var doingText: String? {
         guard let state else { return nil }
@@ -200,7 +201,7 @@ private struct DashboardHeader: View {
                 )
                 HeaderStatusCount(
                     status: .review,
-                    count: state.rows.count { $0.status == .review },
+                    count: state.rows.count { $0.review != nil || $0.status == .review },
                     label: "review"
                 )
                 HeaderStatusCount(
@@ -217,7 +218,19 @@ private struct DashboardHeader: View {
 
             Spacer(minLength: 12)
 
-            if let doingText {
+            if let daemonMessage {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.circle")
+                        .font(.system(size: 10, weight: .medium))
+                    Text(daemonMessage)
+                        .font(ConchTypography.font(size: 10.5))
+                }
+                .foregroundStyle(ConchPalette.statusNeeds.opacity(0.86))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(2)
+                .accessibilityElement(children: .combine)
+            } else if let doingText {
                 Text(doingText)
                     .font(ConchTypography.font(size: 11.5))
                     .foregroundStyle(ConchPalette.textDim)
@@ -280,7 +293,7 @@ private struct SessionLedger: View {
         Group {
             if let state, !state.rows.isEmpty {
                 ScrollViewReader { proxy in
-                    TimelineView(.periodic(from: .now, by: 30)) { timeline in
+                    TimelineView(.periodic(from: .now, by: 10)) { timeline in
                         ScrollView {
                             LazyVStack(spacing: 2) {
                                 ForEach(
@@ -291,8 +304,7 @@ private struct SessionLedger: View {
                                         row: row,
                                         now: timeline.date,
                                         isSelected: selectedSessionID == row.id,
-                                        onSelect: { actions.onSelectSession(row) },
-                                        onShowReview: { actions.onSelectSession(row) }
+                                        onSelect: { actions.onSelectSession(row) }
                                     )
                                     .id(row.id)
                                 }
@@ -337,15 +349,14 @@ private struct DashboardRow: View {
     let now: Date
     let isSelected: Bool
     let onSelect: () -> Void
-    let onShowReview: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
     @State private var reviewPulseOpacity = 0.0
     @State private var pulseTask: Task<Void, Never>?
 
-    private var canShowReview: Bool {
-        ReviewItem(row: row) != nil
+    private var reviewIdentity: ReviewItem.ID? {
+        ReviewItem(row: row)?.id
     }
 
     private var isDimmed: Bool {
@@ -357,8 +368,8 @@ private struct DashboardRow: View {
     }
 
     private var inlineDetail: String {
-        if row.status == .review {
-            return row.review?.summary ?? row.detail ?? ""
+        if let review = row.review {
+            return review.summary
         }
         if row.status == .needs {
             return row.detail ?? ""
@@ -367,7 +378,7 @@ private struct DashboardRow: View {
     }
 
     private var age: String? {
-        let timestamp = row.at ?? (row.status == .review ? row.review?.at : nil)
+        let timestamp = row.review?.at ?? row.at
         return timestamp.flatMap { relativeAge(epochMilliseconds: $0, now: now) }
     }
 
@@ -375,9 +386,9 @@ private struct DashboardRow: View {
         HStack(spacing: 0) {
             Button(action: onSelect) {
                 HStack(spacing: 8) {
-                    Text("▸")
-                        .font(ConchTypography.font(size: 12, weight: .medium))
-                        .foregroundStyle(ConchPalette.brandCyan)
+                    Capsule(style: .continuous)
+                        .fill(ConchPalette.brandCyan)
+                        .frame(width: 3, height: 22)
                         .opacity(isLiveSession ? 1 : 0)
                         .frame(width: 10)
                         .accessibilityHidden(true)
@@ -415,35 +426,20 @@ private struct DashboardRow: View {
                             .layoutPriority(1)
                     }
                 }
-                .padding(.trailing, canShowReview ? 2 : 10)
+                .padding(.trailing, 10)
                 .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
                 .contentShape(Rectangle())
                 .opacity(isDimmed ? 0.58 : 1)
             }
             .buttonStyle(.plain)
             .help("Select \(row.label)")
-
-            if canShowReview {
-                Button(action: onShowReview) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(
-                            isHovered ? ConchPalette.textDim : ConchPalette.textFaint
-                        )
-                        .frame(width: 40, height: 40)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Show review")
-                .accessibilityLabel("Show review for \(row.label)")
-            }
         }
         .frame(maxWidth: .infinity, minHeight: 42)
         .background {
             ZStack {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(
-                        isSelected || isLiveSession
+                        isSelected
                             ? ConchPalette.raised
                             : isHovered ? ConchPalette.hover : .clear
                     )
@@ -465,8 +461,8 @@ private struct DashboardRow: View {
             reduceMotion ? nil : .easeOut(duration: 0.18),
             value: isSelected
         )
-        .onChange(of: row.status) { previousStatus, currentStatus in
-            guard previousStatus != .review, currentStatus == .review else {
+        .onChange(of: reviewIdentity) { previousIdentity, currentIdentity in
+            guard previousIdentity != currentIdentity, currentIdentity != nil else {
                 return
             }
             pulseForReview()
@@ -556,7 +552,7 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
     }
 
     init(row: SessionRow) {
-        if row.status == .review {
+        if row.review != nil || row.status == .review {
             self = .review
             return
         }
@@ -1113,7 +1109,6 @@ private struct ConversationTextView: NSViewRepresentable {
 private struct DashboardKeybar: View {
     let state: PublishedState?
     let selectedSessionID: SessionRow.ID?
-    let daemonMessage: String?
     let actions: DashboardActions
 
     private var selectedRow: SessionRow? {
@@ -1121,143 +1116,65 @@ private struct DashboardKeybar: View {
         return state?.rows.first { $0.id == selectedSessionID }
     }
 
-    private var activeRow: SessionRow? {
-        guard let state else { return nil }
-        if let active = state.rows.first(where: \.active) {
-            return active
-        }
-        if let replyID = state.reply?.sessionId,
-           !replyID.isEmpty,
-           let replied = state.rows.first(where: { $0.id == replyID }) {
-            return replied
-        }
-        return state.rows.first { $0.label == state.live.label && !state.live.label.isEmpty }
-    }
-
-    private var targetRow: SessionRow? {
-        selectedRow ?? activeRow
-    }
-
     private var talkLabel: String {
-        state?.live.isExchangeActive == true ? "stop" : "talk"
+        state?.live.isExchangeActive == true ? "Stop" : "Talk"
     }
 
     private var pauseLabel: String {
         let paused = selectedRow?.paused ?? state?.mode.paused ?? false
-        return paused ? "resume" : "pause"
+        let action = paused ? "Resume" : "Pause"
+        return "\(action) \(selectedRow?.label ?? "all")"
     }
 
     private var muteLabel: String {
         let muted = selectedRow?.muted ?? state?.mode.muted ?? false
-        return muted ? "unmute" : "mute"
+        let action = muted ? "Unmute" : "Mute"
+        return "\(action) \(selectedRow?.label ?? "all")"
     }
 
     var body: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 5) {
-                KeybarActionButton(
-                    key: "space",
-                    label: talkLabel,
-                    isProminent: true,
-                    action: actions.onTalkOrStop
-                )
-                KeybarActionButton(
-                    key: "p",
-                    label: pauseLabel,
-                    action: actions.onPauseOrResume
-                )
-                KeybarActionButton(
-                    key: "m",
-                    label: muteLabel,
-                    action: actions.onMuteOrUnmute
-                )
-                KeybarActionButton(
-                    key: "r",
-                    label: "recite",
-                    isEnabled: targetRow != nil,
-                    action: actions.onRecite
-                )
+        HStack(spacing: 5) {
+            KeybarActionButton(
+                label: talkLabel,
+                isProminent: true,
+                action: actions.onTalkOrStop
+            )
+            KeybarActionButton(
+                label: pauseLabel,
+                action: actions.onPauseOrResume
+            )
+            KeybarActionButton(
+                label: muteLabel,
+                action: actions.onMuteOrUnmute
+            )
 
-                Rectangle()
-                    .fill(ConchPalette.divider)
-                    .frame(width: 1, height: 18)
-                    .padding(.horizontal, 3)
-
-                KeybarActionButton(
-                    key: "↑",
-                    label: "park",
-                    action: actions.onMoveUp
-                )
-                KeybarActionButton(
-                    key: "↓",
-                    label: "park",
-                    action: actions.onMoveDown
-                )
-                KeybarActionButton(
-                    key: "esc",
-                    label: "release",
-                    isEnabled: selectedSessionID != nil,
-                    action: actions.onReleaseSelection
-                )
-                KeybarHint(key: "1–9", label: "wake")
-                KeybarActionButton(key: "q", label: "quit", action: actions.onQuit)
-
-                if let selectedRow {
-                    Text("‹\(selectedRow.label)›")
-                        .font(ConchTypography.font(size: 10.5))
-                        .foregroundStyle(ConchPalette.textFaint)
-                        .lineLimit(1)
-                        .padding(.leading, 4)
-                } else if state?.mode.paused == true, let holding = state?.mode.holding {
-                    Text("holding \(holding)")
-                        .font(ConchTypography.font(size: 10.5))
-                        .foregroundStyle(ConchPalette.textFaint)
-                        .monospacedDigit()
-                        .padding(.leading, 4)
-                }
-
-                if let daemonMessage {
-                    HStack(spacing: 6) {
-                        Image(systemName: "exclamationmark.circle")
-                            .font(.system(size: 10, weight: .medium))
-                        Text(daemonMessage)
-                            .font(ConchTypography.font(size: 10.5))
-                    }
-                    .foregroundStyle(ConchPalette.statusNeeds.opacity(0.86))
-                    .lineLimit(1)
-                    .padding(.leading, 6)
-                    .accessibilityElement(children: .combine)
-                }
-            }
-            .padding(.horizontal, 10)
-            .frame(minWidth: 0, minHeight: 47, alignment: .leading)
+            Spacer(minLength: 0)
         }
-        .scrollIndicators(.hidden)
+        .padding(.horizontal, 10)
         .frame(height: 47)
         .background(ConchPalette.bg)
     }
 }
 
 private struct KeybarActionButton: View {
-    let key: String
     let label: String
     var isProminent = false
-    var isEnabled = true
     let action: () -> Void
 
     @State private var isHovered = false
 
     var body: some View {
         Button(action: action) {
-            KeybarLabel(key: key, label: label)
+            Text(label)
+                .font(ConchTypography.font(size: 11.5, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
                 .foregroundStyle(
-                    isEnabled
-                        ? isHovered || isProminent
-                            ? ConchPalette.textPrimary
-                            : ConchPalette.textDim
-                        : ConchPalette.textFaint.opacity(0.58)
+                    isHovered || isProminent
+                        ? ConchPalette.textPrimary
+                        : ConchPalette.textDim
                 )
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 14)
                 .frame(minHeight: 40)
                 .background(
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -1270,48 +1187,11 @@ private struct KeybarActionButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(KeybarPressButtonStyle())
-        .disabled(!isEnabled)
         .onHover { hovering in
             isHovered = hovering
         }
         .animation(.easeOut(duration: 0.14), value: isHovered)
-        .accessibilityLabel("\(label), \(key)")
-    }
-}
-
-private struct KeybarHint: View {
-    let key: String
-    let label: String
-
-    var body: some View {
-        KeybarLabel(key: key, label: label)
-            .foregroundStyle(ConchPalette.textDim)
-            .padding(.horizontal, 8)
-            .frame(minHeight: 40)
-            .accessibilityElement(children: .combine)
-    }
-}
-
-private struct KeybarLabel: View {
-    let key: String
-    let label: String
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Text(key)
-                .font(ConchTypography.font(size: 10.5, weight: .medium))
-                .monospacedDigit()
-                .padding(.horizontal, 5)
-                .frame(minHeight: 20)
-                .background(
-                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                        .fill(Color.white.opacity(0.055))
-                )
-
-            Text(label)
-                .font(ConchTypography.font(size: 10.5))
-                .lineLimit(1)
-        }
+        .accessibilityLabel(label)
     }
 }
 

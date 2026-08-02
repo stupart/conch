@@ -10,7 +10,7 @@ struct ReviewItem: Identifiable, Equatable {
     let reviewedAt: TimeInterval?
 
     init?(row: SessionRow) {
-        guard row.status == .review, let review = row.review else {
+        guard let review = row.review else {
             return nil
         }
 
@@ -21,7 +21,7 @@ struct ReviewItem: Identifiable, Equatable {
         self.link = link.isEmpty ? nil : link
         reviewedAt = review.at
         let timestampIdentity = review.at.map { String($0.bitPattern) } ?? "undated"
-        id = [row.id, link, review.summary, timestampIdentity].joined(separator: "\u{1F}")
+        id = [row.id, timestampIdentity].joined(separator: "\u{1F}")
     }
 }
 
@@ -38,6 +38,7 @@ struct InlineReviewView: View {
             actionHelp: "Expand deliverable",
             actionAccessibilityLabel: "Expand deliverable full window",
             action: item.link == nil ? nil : onExpand,
+            actionShortcut: nil,
             isWebLoading: $isWebLoading
         )
     }
@@ -48,7 +49,6 @@ struct ExpandedReviewView: View {
     let onCollapse: () -> Void
 
     @State private var isWebLoading = false
-    @State private var presentationID = UUID()
 
     var body: some View {
         ReviewSurface(
@@ -57,19 +57,10 @@ struct ExpandedReviewView: View {
             actionHelp: "Collapse deliverable (Esc)",
             actionAccessibilityLabel: "Collapse deliverable",
             action: onCollapse,
+            actionShortcut: .cancelAction,
             isWebLoading: $isWebLoading
         )
         .background(ConchPalette.bg)
-        .background(
-            ReviewInputMonitor(
-                presentationID: presentationID,
-                onDismiss: onCollapse,
-                onUserActivity: {}
-            )
-        )
-        .onAppear {
-            presentationID = UUID()
-        }
     }
 }
 
@@ -79,6 +70,7 @@ private struct ReviewSurface: View {
     let actionHelp: String
     let actionAccessibilityLabel: String
     let action: (() -> Void)?
+    let actionShortcut: KeyboardShortcut?
     @Binding var isWebLoading: Bool
 
     var body: some View {
@@ -148,6 +140,7 @@ private struct ReviewSurface: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(ReviewPressButtonStyle())
+                .keyboardShortcut(actionShortcut)
                 .help(actionHelp)
                 .accessibilityLabel(actionAccessibilityLabel)
             }
