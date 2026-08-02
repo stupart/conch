@@ -330,10 +330,13 @@ function wrapPlainText(text: string, width: number): Array<{ text: string; start
   return lines;
 }
 
+// A calm -> act-now ladder. "waiting" means a finished turn is sitting on YOU,
+// so it reads as attention (yellow), not as inert green. "needs" is blocking
+// and outranks it (red). "working" is the only genuinely restful state.
 const THEATER_STATUS_ICON: Record<string, string> = {
   review: "\x1b[33m⭐\x1b[39m",
-  needs: "\x1b[33m❗\x1b[39m",
-  waiting: "\x1b[32m○\x1b[39m",
+  needs: "\x1b[91m❗\x1b[39m",
+  waiting: "\x1b[33m○\x1b[39m",
   working: "\x1b[36m●\x1b[39m",
   idle: "\x1b[2m·\x1b[22m",
   paused: "\x1b[2m⏸\x1b[22m",
