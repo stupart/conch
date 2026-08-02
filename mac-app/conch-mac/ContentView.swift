@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var selectedSessionID: SessionRow.ID?
     @State private var renamingSessionID: SessionRow.ID?
     @State private var renameDraft = ""
+    @State private var isShowingKeyboardShortcuts = false
 
     private var reviewItems: [ReviewItem] {
         let indexedItems = store.state?.rows.enumerated().compactMap { index, row in
@@ -82,6 +83,7 @@ struct ContentView: View {
                     onUndoDismiss: store.undoLastDismissal,
                     onDismissNewerDaemonWarning: store.dismissNewerDaemonWarning,
                     onToggleLogs: store.toggleLogDrawer,
+                    onShowKeyboardShortcuts: showKeyboardShortcuts,
                     onTalkOrStop: talkOrStop,
                     onPauseOrResume: pauseOrResume,
                     onMuteOrUnmute: muteOrUnmute,
@@ -107,10 +109,18 @@ struct ContentView: View {
         .background(ConchPalette.bg)
         .background(
             DashboardInputMonitor(
-                isEnabled: expandedReview == nil,
+                isEnabled: expandedReview == nil && !isShowingKeyboardShortcuts,
                 onKey: handleDashboardKey
             )
         )
+        .sheet(isPresented: $isShowingKeyboardShortcuts) {
+            KeyboardShortcutsSheet()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .showKeyboardShortcuts)
+        ) { _ in
+            showKeyboardShortcuts()
+        }
         .onChange(of: rowIDs) { _, currentIDs in
             if let selectedSessionID, !currentIDs.contains(selectedSessionID) {
                 self.selectedSessionID = nil
@@ -255,6 +265,10 @@ struct ContentView: View {
         selectedSessionID = nil
     }
 
+    private func showKeyboardShortcuts() {
+        isShowingKeyboardShortcuts = true
+    }
+
     private func handleDashboardKey(_ key: DashboardKey) -> Bool {
         switch key {
         case .talkOrStop:
@@ -265,6 +279,8 @@ struct ContentView: View {
             muteOrUnmute()
         case .recite:
             recite()
+        case .showKeyboardShortcuts:
+            showKeyboardShortcuts()
         case .moveUp:
             moveSelection(by: -1)
         case .moveDown:
@@ -273,5 +289,102 @@ struct ContentView: View {
             releaseSelection()
         }
         return true
+    }
+}
+
+extension Notification.Name {
+    static let showKeyboardShortcuts = Notification.Name(
+        "com.conch.mac.show-keyboard-shortcuts"
+    )
+}
+
+private struct KeyboardShortcutsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    private let keyRows = [
+        ShortcutHelpRow(command: "Space", result: "Talk / stop"),
+        ShortcutHelpRow(command: "P", result: "Pause"),
+        ShortcutHelpRow(command: "M", result: "Mute"),
+        ShortcutHelpRow(command: "R", result: "Recite"),
+        ShortcutHelpRow(command: "↑ / ↓", result: "Select"),
+        ShortcutHelpRow(command: "Esc", result: "Release selection / close"),
+        ShortcutHelpRow(command: "Right-click a row", result: "Rename, dismiss"),
+        ShortcutHelpRow(command: "⌘,", result: "Settings"),
+    ]
+
+    private let spokenRows = [
+        ShortcutHelpRow(command: "“send”", result: "Submit now"),
+        ShortcutHelpRow(command: "“continue”", result: "Read more"),
+        ShortcutHelpRow(command: "“stop”", result: "End reading"),
+        ShortcutHelpRow(command: "“no response needed”", result: "Close the mic"),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            Text("Keyboard Shortcuts")
+                .font(ConchTypography.font(size: 19, weight: .medium))
+                .foregroundStyle(ConchPalette.textPrimary)
+                .accessibilityAddTraits(.isHeader)
+
+            ShortcutHelpSection(title: "Keys", rows: keyRows)
+
+            ShortcutHelpSection(title: "Spoken commands", rows: spokenRows)
+
+            Text("Saying a session’s name addresses it.")
+                .font(ConchTypography.font(size: 12.5))
+                .foregroundStyle(ConchPalette.textDim)
+
+            HStack {
+                Spacer()
+                Button("Close") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 440)
+        .background(ConchPalette.bg)
+        .onExitCommand {
+            dismiss()
+        }
+    }
+}
+
+private struct ShortcutHelpRow: Identifiable {
+    let command: String
+    let result: String
+
+    var id: String { command }
+}
+
+private struct ShortcutHelpSection: View {
+    let title: String
+    let rows: [ShortcutHelpRow]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(ConchTypography.font(size: 11.5, weight: .medium))
+                .foregroundStyle(ConchPalette.textDim)
+                .textCase(.uppercase)
+                .tracking(0.7)
+                .accessibilityAddTraits(.isHeader)
+
+            Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 9) {
+                ForEach(rows) { row in
+                    GridRow {
+                        Text(row.command)
+                            .font(ConchTypography.font(size: 12.5, weight: .medium))
+                            .foregroundStyle(ConchPalette.textPrimary)
+                            .frame(width: 144, alignment: .leading)
+
+                        Text(row.result)
+                            .font(ConchTypography.font(size: 12.5))
+                            .foregroundStyle(ConchPalette.textDim)
+                    }
+                }
+            }
+        }
     }
 }

@@ -66,6 +66,7 @@ import {
   setReadingProgress,
   setState,
   setTranscriptPrefix,
+  shouldDispatchTerminalInput,
   theaterPointerEvent,
   type ConchState,
 } from "./status.ts";
@@ -157,6 +158,7 @@ import {
   loadSettingsFile,
   resolveSettingFromLoaded,
   settingsPathFor,
+  unsetSetting,
   validateControlMessage,
   validateSessionControlMessage,
   writeSetting,
@@ -229,6 +231,12 @@ export interface ConfigControllerOptions {
 
 export interface ConfigController {
   handle(message: ConfigControlMessage): ConfigControlResponse;
+}
+
+export interface ConfigControlPersistence {
+  settingsPath: string;
+  set(path: string, key: unknown, value: unknown): unknown;
+  unset(path: string, key: unknown): unknown;
 }
 
 function withHookDiagnostic(resolution: SettingResolution, env: string): SettingResolution {
@@ -478,6 +486,7 @@ export function dispatchControlMessage(
   value: unknown,
   controller: ConfigController,
   sessionOptions?: SessionCommandDispatchOptions,
+  configPersistence?: ConfigControlPersistence,
 ): SocketControlDispatch {
   if (!isControlMessageCandidate(value)) return { handled: false };
   const validated = validateControlMessage(value);
@@ -497,6 +506,31 @@ export function dispatchControlMessage(
         ? dispatchSessionControlMessage(validated.value, sessionOptions)
         : { kind: "session-error", error: "session commands are unavailable" },
     };
+  }
+
+  if (validated.value.kind !== "get-config" && configPersistence) {
+    try {
+      if (validated.value.kind === "set-config") {
+        configPersistence.set(
+          configPersistence.settingsPath,
+          validated.value.key,
+          validated.value.value,
+        );
+      } else {
+        configPersistence.unset(
+          configPersistence.settingsPath,
+          validated.value.key,
+        );
+      }
+    } catch (error) {
+      return {
+        handled: true,
+        response: {
+          kind: "config-error",
+          error: `not saved: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      };
+    }
   }
   return { handled: true, response: controller.handle(validated.value) };
 }
@@ -3598,7 +3632,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     else log(`sent ${verdict === "approve" ? "Enter" : "Escape"} via ${via}`);
   }
 
+  const daemonSettingsPath = settingsPathFor();
   const configController = createConfigController(cfg, {
+    settingsPath: daemonSettingsPath,
     onLiveChange: (key, value) => {
       if (key === "meeting-autopause") meetingMic?.setEnabled(value === true);
     },
@@ -3608,7 +3644,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // open and draw their overlays.
   settingsOverlay = new SettingsOverlay({
     controller: configController,
-    settingsPath: settingsPathFor(),
+    settingsPath: daemonSettingsPath,
     persist: writeSetting,
     onOpen: () => settingsPause.open(),
     onClose: () => settingsPause.close(),
@@ -3724,6 +3760,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
           value,
           configController,
           sessionCommandDispatchOptions,
+          {
+            settingsPath: daemonSettingsPath,
+            set: writeSetting,
+            unset: unsetSetting,
+          },
         );
         if (control.handled) response = control.response;
         else {
@@ -4101,10 +4142,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
   };
 
   // Interactive keys when running in a terminal.
+  const dispatchTerminalInput = shouldDispatchTerminalInput(rendererSelection.kind);
+  // Keep any attached maintenance pane raw so typed Ctrl-C is harmless data,
+  // not SIGINT. Only the chosen theater renderer may dispatch those bytes as
+  // controls; all other renderer panes deliberately drain them read-only.
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
     process.stdin.resume();
     process.stdin.on("data", (d) => {
+      if (!dispatchTerminalInput) return;
       const { events, rest } = mouseParser.feed(d.toString());
       if (
         theaterMode

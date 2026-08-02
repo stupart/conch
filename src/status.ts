@@ -1205,6 +1205,14 @@ export interface RendererSelection {
   renderer: Renderer;
 }
 
+/** Only the full terminal dashboard owns interactive daemon controls. */
+export function shouldDispatchTerminalInput(
+  rendererKind: RendererSelection["kind"],
+  stdinTTY = process.stdin.isTTY ?? false,
+): boolean {
+  return rendererKind === "theater" && stdinTTY;
+}
+
 let activeRenderer: Renderer = createFooterRenderer();
 let activeRendererKind: RendererSelection["kind"] = "footer";
 

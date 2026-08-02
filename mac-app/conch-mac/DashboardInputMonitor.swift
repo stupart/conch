@@ -7,6 +7,7 @@ enum DashboardKey: Equatable {
     case pauseOrResume
     case muteOrUnmute
     case recite
+    case showKeyboardShortcuts
     case moveUp
     case moveDown
     case releaseSelection
@@ -108,13 +109,18 @@ struct DashboardInputMonitor: NSViewRepresentable {
         }
 
         private static func dashboardKey(for event: NSEvent) -> DashboardKey? {
-            let disallowedModifiers = event.modifierFlags.intersection([
+            let commandModifiers = event.modifierFlags.intersection([
                 .command,
                 .control,
                 .option,
-                .shift,
             ])
-            guard disallowedModifiers.isEmpty else { return nil }
+            guard commandModifiers.isEmpty else { return nil }
+
+            if event.characters == "?" {
+                return .showKeyboardShortcuts
+            }
+
+            guard !event.modifierFlags.contains(.shift) else { return nil }
 
             switch event.keyCode {
             case 53:
@@ -167,7 +173,8 @@ private extension DashboardKey {
         switch self {
         case .talkOrStop, .releaseSelection:
             return true
-        case .pauseOrResume, .muteOrUnmute, .recite, .moveUp, .moveDown:
+        case .pauseOrResume, .muteOrUnmute, .recite, .showKeyboardShortcuts,
+             .moveUp, .moveDown:
             return false
         }
     }

@@ -15,6 +15,7 @@ import {
   setLogsVisible,
   setState,
   setTranscriptPrefix,
+  shouldDispatchTerminalInput,
   shouldUseTheater,
   terminalCellWidth,
   theaterStatusHeader,
@@ -1401,4 +1402,10 @@ test("theater is the default on a full TTY; footer is the opt-out", () => {
   expect(shouldUseTheater({ CONCH_TUI: "footer" }, true, true)).toBe(false);
   expect(shouldUseTheater({}, true, false)).toBe(false);
   expect(shouldUseTheater({}, false, true)).toBe(false);
+});
+
+test("only the selected theater renderer dispatches destructive terminal controls", () => {
+  expect(shouldDispatchTerminalInput("theater", true)).toBe(true);
+  expect(shouldDispatchTerminalInput("theater", false)).toBe(false);
+  expect(shouldDispatchTerminalInput("footer", true)).toBe(false);
 });
