@@ -338,10 +338,6 @@ const THEATER_STATUS_ICON: Record<string, string> = {
   idle: "\x1b[2m·\x1b[22m",
   paused: "\x1b[2m⏸\x1b[22m",
   muted: "\x1b[2m🔇\x1b[22m",
-  listening: "\x1b[32m●\x1b[39m",
-  recording: "\x1b[31m●\x1b[39m",
-  speaking: "\x1b[33m▶\x1b[39m",
-  transcribing: "\x1b[36m…\x1b[39m",
 };
 
 const THEATER_STATUS_COPY = {
@@ -369,7 +365,16 @@ export function theaterStatusHeader(model: PanelModel): string {
     if (!count) continue;
     parts.push(`${THEATER_STATUS_ICON[status]} ${count} ${THEATER_STATUS_COPY[status]}`);
   }
-  if (model.live.state !== "idle") {
+  const liveStateIsMuted = model.live.state === "muted";
+  const liveStateIsPaused = model.live.state === "paused";
+  if (model.mode.muted || liveStateIsMuted) parts.push("muted");
+  if (model.mode.paused || liveStateIsPaused) parts.push("paused");
+  if (model.mode.holding > 0) parts.push(`holding ${model.mode.holding}`);
+  if (
+    model.live.state !== "idle"
+    && !liveStateIsMuted
+    && !liveStateIsPaused
+  ) {
     parts.push(
       `${model.live.state}${model.live.label ? ` ‹${model.live.label}›` : ""}`,
     );
@@ -394,17 +399,15 @@ export function relativeAge(at: number, now: number): string {
 function rowState(row: PanelRowModel): string {
   if (row.muted) return "muted";
   if (row.paused) return "paused";
-  return row.liveGlyph ?? row.status ?? "idle";
+  // The top line owns conch's live activity; the ledger keeps each session's
+  // underlying status so speaking/recording is never announced twice.
+  return row.status ?? "idle";
 }
 
 function fullStatus(row: PanelRowModel): string {
   if (row.muted) return "\x1b[2m🔇 muted\x1b[22m";
   if (row.paused) return "\x1b[2m⏸ paused\x1b[22m";
-  switch (row.liveGlyph ?? row.status) {
-    case "speaking": return "\x1b[33m▶ speaking\x1b[39m";
-    case "listening": return "\x1b[32m● mic open\x1b[39m";
-    case "recording": return "\x1b[31m● recording\x1b[39m";
-    case "transcribing": return "\x1b[36m… transcribing\x1b[39m";
+  switch (row.status) {
     case "review": return "\x1b[33m⭐ needs review\x1b[39m";
     case "needs": return "\x1b[33m❗ needs a response\x1b[39m";
     case "waiting": return "\x1b[32m○ waiting for you\x1b[39m";
@@ -419,14 +422,11 @@ function inlineRowDetail(row: PanelRowModel): string {
   return "";
 }
 
-function indexedRowLead(row: PanelRowModel, visiblePosition: number): string {
-  const number = visiblePosition >= 1 && visiblePosition <= 9
-    ? `\x1b[2m${visiblePosition}\x1b[22m`
-    : " ";
+function rowLead(row: PanelRowModel): string {
   const cursor = row.navSelected
     ? "\x1b[38;2;88;201;212m▸\x1b[39m"
     : " ";
-  return `${number} ${cursor} `;
+  return `${cursor} `;
 }
 
 function appendRelativeAge(
@@ -481,7 +481,6 @@ function theaterLedgerRow(
   row: PanelRowModel,
   width: number,
   compact: boolean,
-  visiblePosition: number,
   now: number,
 ): string {
   // Reserve a 1-col gutter on EVERY row (accent bar when active, blank space
@@ -491,7 +490,7 @@ function theaterLedgerRow(
     ? relativeAge(row.at, now)
     : "";
   const leftWidth = Math.max(1, bodyWidth - (age ? visibleLength(age) + 1 : 0));
-  const lead = indexedRowLead(row, visiblePosition);
+  const lead = rowLead(row);
   const left = compact
     ? compactLedgerLeft(row, leftWidth, lead)
     : fullLedgerLeft(row, leftWidth, lead);
@@ -655,22 +654,43 @@ function theaterContentLines(
   }
 
   const state = model.live.state;
+  const selectedRow = model.rows.find((row) => row.navSelected);
+  if (selectedRow) {
+    const selectedPreview = model.preview?.sessionId === selectedRow.sessionId
+      ? model.preview
+      : null;
+    const selectedReply = model.reply?.sessionId === selectedRow.sessionId
+      ? model.reply
+      : null;
+    const selectedText = selectedRow.active && state === "speaking" && selectedReply
+      ? model.live.reading?.text || selectedReply.text
+      : selectedPreview?.text || selectedReply?.text || "";
+    const doc = wrapPlainText(
+      plainTheaterDocumentText(selectedText),
+      width,
+    ).map(({ text }) => ({ text }));
+    return scrollableTheaterContent(
+      doc,
+      `selected:${selectedRow.sessionId}`,
+      width,
+      height,
+      paneOffset,
+      selection,
+      { note: `‹${selectedRow.label}› · esc back · space talk` },
+    );
+  }
+
   const capturing = state === "listening" || state === "recording";
   const transcribing = state === "transcribing";
-  let note = state === "speaking"
+  const note = state === "speaking"
     ? "space to cut in · the mic opens when it finishes"
     : capturing
       ? "pause to send · space to stop · say send to submit now"
-      : transcribing
-        ? "transcribing…"
-        : "";
-  if (note && model.live.label) {
-    note = `‹${model.live.label}› · ${note}`;
-  }
+      : "";
 
   if (capturing || transcribing) {
-    // Dictation deliberately outranks a parked preview: never hide the words
-    // currently headed toward a session while the mic is open/finalizing.
+    // With no parked selection, keep the words currently headed toward the
+    // active session visible while the mic is open or finalizing.
     const prefix = model.live.transcriptPrefix;
     const transcript = `${prefix ? `${prefix} ` : ""}${model.live.partial}${capturing ? "▌" : ""}`;
     const transcriptDoc = wrapPlainText(transcript, width).map(({ text }) => ({ text }));
@@ -710,28 +730,6 @@ function theaterContentLines(
       0,
       available,
       conversationNote,
-    );
-  }
-
-  const previewIsActive = model.preview
-    ? model.rows.some((row) => row.sessionId === model.preview?.sessionId && row.active)
-    : false;
-  if (model.preview && !previewIsActive) {
-    const label = model.rows.find((row) => row.sessionId === model.preview?.sessionId)?.label
-      ?? model.preview.sessionId;
-    note = `‹${label}› · esc back · space talk`;
-    const doc = wrapPlainText(
-      plainTheaterDocumentText(model.preview.text),
-      width,
-    ).map(({ text }) => ({ text }));
-    return scrollableTheaterContent(
-      doc,
-      `preview:${model.preview.sessionId}`,
-      width,
-      height,
-      paneOffset,
-      selection,
-      { note },
     );
   }
 
@@ -1007,7 +1005,6 @@ export function createTheaterRenderer(
           ledgerRows[index]!,
           ledgerWidth,
           paneOpen,
-          ledgerStart + index + 1,
           now,
         )
         : " ".repeat(ledgerWidth);
@@ -1018,17 +1015,12 @@ export function createTheaterRenderer(
         : ledger);
     }
     if (rows > 2) {
-      const modeHint = model?.mode.muted
-        ? "🔇 muted · "
-        : model?.mode.paused
-          ? `⏸ paused · holding ${model.mode.holding} · `
-          : "";
       frame.push(
         model?.settingsOverlay
           ? "  \x1b[2msettings · esc close · ↑↓ choose · ←→ adjust · space toggle · enter commit\x1b[0m"
           : model?.sessionActionsOverlay
             ? "  \x1b[2mactions · esc close · ↑↓ choose · ←→ adjust · enter select\x1b[0m"
-            : `${modeHint}${keybar}`,
+            : keybar,
       );
     }
 
