@@ -6,7 +6,7 @@ struct ReviewItem: Identifiable, Equatable {
     let rowID: String
     let label: String
     let summary: String
-    let link: String
+    let link: String?
     let reviewedAt: TimeInterval?
 
     init?(row: SessionRow) {
@@ -14,102 +14,110 @@ struct ReviewItem: Identifiable, Equatable {
             return nil
         }
 
-        let link = review.link?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !link.isEmpty else {
-            return nil
-        }
-
         rowID = row.id
         label = row.label
         summary = review.summary
-        self.link = link
+        let link = review.link?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.link = link.isEmpty ? nil : link
         reviewedAt = review.at
         let timestampIdentity = review.at.map { String($0.bitPattern) } ?? "undated"
         id = [row.id, link, review.summary, timestampIdentity].joined(separator: "\u{1F}")
     }
 }
 
-struct ReviewTakeover: View {
+struct InlineReviewView: View {
     let item: ReviewItem
-    let items: [ReviewItem]
-    let onSelect: (ReviewItem) -> Void
-    let onClose: () -> Void
+    let onExpand: () -> Void
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isChromeVisible = true
-    @State private var isCloseHovered = false
     @State private var isWebLoading = false
-    @State private var chromeHideTask: Task<Void, Never>?
-    @State private var inputPresentationID = UUID()
-
-    private var selectedIndex: Int {
-        items.firstIndex(of: item) ?? 0
-    }
-
-    private var closeHelp: String {
-        items.count > 1
-            ? "Close review and show next (Esc)"
-            : "Return to dashboard (Esc)"
-    }
-
-    private var closeAccessibilityLabel: String {
-        items.count > 1
-            ? "Close review and show next"
-            : "Return to dashboard"
-    }
 
     var body: some View {
-        ZStack(alignment: .top) {
-            ReviewContent(
-                link: item.link,
-                isWebLoading: $isWebLoading
-            )
-            .id(item.id)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        ReviewSurface(
+            item: item,
+            actionSymbol: "arrow.up.left.and.arrow.down.right",
+            actionHelp: "Expand deliverable",
+            actionAccessibilityLabel: "Expand deliverable full window",
+            action: item.link == nil ? nil : onExpand,
+            isWebLoading: $isWebLoading
+        )
+    }
+}
 
-            captionBar
-                .opacity(isChromeVisible ? 1 : 0)
-                .allowsHitTesting(isChromeVisible)
-                .zIndex(1)
+struct ExpandedReviewView: View {
+    let item: ReviewItem
+    let onCollapse: () -> Void
 
-            loadingIndicator
-                .animation(.easeOut(duration: 0.16), value: isWebLoading)
-                .zIndex(2)
-        }
+    @State private var isWebLoading = false
+    @State private var presentationID = UUID()
+
+    var body: some View {
+        ReviewSurface(
+            item: item,
+            actionSymbol: "arrow.down.right.and.arrow.up.left",
+            actionHelp: "Collapse deliverable (Esc)",
+            actionAccessibilityLabel: "Collapse deliverable",
+            action: onCollapse,
+            isWebLoading: $isWebLoading
+        )
         .background(ConchPalette.bg)
         .background(
             ReviewInputMonitor(
-                presentationID: inputPresentationID,
-                onDismiss: onClose,
-                onUserActivity: handleUserActivity
+                presentationID: presentationID,
+                onDismiss: onCollapse,
+                onUserActivity: {}
             )
         )
         .onAppear {
-            inputPresentationID = UUID()
-            showChromeUntilUserActivity()
-        }
-        .onChange(of: item.id) { _, _ in
-            inputPresentationID = UUID()
-            showChromeUntilUserActivity()
-        }
-        .onDisappear {
-            chromeHideTask?.cancel()
+            presentationID = UUID()
         }
     }
+}
 
-    private var captionBar: some View {
-        HStack(spacing: 9) {
-            Button(action: onClose) {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(ConchPalette.textDim)
-                    .frame(width: 40, height: 40)
-                    .contentShape(Rectangle())
+private struct ReviewSurface: View {
+    let item: ReviewItem
+    let actionSymbol: String
+    let actionHelp: String
+    let actionAccessibilityLabel: String
+    let action: (() -> Void)?
+    @Binding var isWebLoading: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            caption
+
+            Rectangle()
+                .fill(ConchPalette.divider)
+                .frame(height: 1)
+
+            ZStack(alignment: .top) {
+                if let link = item.link {
+                    ReviewContent(
+                        link: link,
+                        isWebLoading: $isWebLoading
+                    )
+                    .id(item.id)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    MissingDeliverableView()
+                        .onAppear {
+                            isWebLoading = false
+                        }
+                }
+
+                if isWebLoading {
+                    DeliverableLoadingLine()
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
+                }
             }
-            .buttonStyle(ReviewPressButtonStyle())
-            .help(closeHelp)
-            .accessibilityLabel(closeAccessibilityLabel)
+            .animation(.easeOut(duration: 0.16), value: isWebLoading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ConchPalette.bg)
+    }
 
+    private var caption: some View {
+        HStack(spacing: 9) {
             Image(systemName: "star.fill")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(ConchPalette.statusReview)
@@ -118,134 +126,54 @@ struct ReviewTakeover: View {
             Text(item.label)
                 .font(ConchTypography.font(size: 12.5, weight: .medium))
                 .tracking(-0.3)
-                .foregroundStyle(ConchPalette.accent)
+                .foregroundStyle(ConchPalette.brandCyan)
                 .lineLimit(1)
 
             Text(item.summary.isEmpty ? "Ready for review" : item.summary)
                 .font(ConchTypography.font(size: 12.5))
                 .tracking(-0.3)
                 .foregroundStyle(ConchPalette.textPrimary)
-                .lineLimit(1)
+                .lineLimit(2)
                 .truncationMode(.tail)
+                .textSelection(.enabled)
 
             Spacer(minLength: 12)
 
-            if items.count > 1 {
-                Button(action: selectNext) {
-                    HStack(spacing: 5) {
-                        Text("\(selectedIndex + 1)/\(items.count)")
-                            .font(ConchTypography.font(size: 10.5))
-                            .tracking(-0.3)
-                            .monospacedDigit()
-
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 8, weight: .semibold))
-                    }
-                    .foregroundStyle(ConchPalette.textDim)
-                    .frame(minWidth: 40, minHeight: 40)
-                    .contentShape(Rectangle())
+            if let action {
+                Button(action: action) {
+                    Image(systemName: actionSymbol)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(ConchPalette.textDim)
+                        .frame(width: 40, height: 40)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(ReviewPressButtonStyle())
-                .help("Next review")
-                .accessibilityLabel(
-                    "Review \(selectedIndex + 1) of \(items.count). Show next review."
-                )
+                .help(actionHelp)
+                .accessibilityLabel(actionAccessibilityLabel)
             }
-
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(
-                        isCloseHovered
-                            ? ConchPalette.textPrimary
-                            : ConchPalette.textDim
-                    )
-                    .frame(width: 40, height: 40)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(ReviewPressButtonStyle())
-            .onHover { hovering in
-                isCloseHovered = hovering
-            }
-            .animation(
-                reduceMotion ? nil : .easeOut(duration: 0.15),
-                value: isCloseHovered
-            )
-            .help(closeHelp)
-            .keyboardShortcut(.cancelAction)
-            .accessibilityLabel(closeAccessibilityLabel)
         }
-        .padding(.leading, 2)
+        .padding(.leading, 14)
         .padding(.trailing, 2)
-        .frame(height: 40)
-        .background(ConchPalette.bg.opacity(0.94))
-        .contentShape(Rectangle())
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 12)
-                .onEnded { value in
-                    let mostlyVertical = abs(value.translation.height) > abs(value.translation.width)
-                    if mostlyVertical && value.translation.height > 44 {
-                        onClose()
-                    }
-                }
-        )
+        .frame(minHeight: 44)
+        .background(ConchPalette.raised.opacity(0.72))
     }
+}
 
-    @ViewBuilder
-    private var loadingIndicator: some View {
-        if isWebLoading {
-            VStack(spacing: 0) {
-                DeliverableLoadingLine()
-                Spacer(minLength: 0)
-            }
-            .transition(.opacity)
-            .allowsHitTesting(false)
+private struct MissingDeliverableView: View {
+    var body: some View {
+        VStack(spacing: 9) {
+            Image(systemName: "doc.badge.ellipsis")
+                .font(.system(size: 18, weight: .regular))
+                .foregroundStyle(ConchPalette.textFaint)
+
+            Text("No deliverable link was published for this review.")
+                .font(ConchTypography.font(size: 12.5))
+                .foregroundStyle(ConchPalette.textDim)
+                .textSelection(.enabled)
         }
-    }
-
-    private func selectNext() {
-        guard items.count > 1 else { return }
-        onSelect(items[(selectedIndex + 1) % items.count])
-    }
-
-    private func handleUserActivity() {
-        chromeHideTask?.cancel()
-
-        if !isChromeVisible {
-            withAnimation(.easeOut(duration: reduceMotion ? 0.10 : 0.18)) {
-                isChromeVisible = true
-            }
-        }
-
-        scheduleChromeHide()
-    }
-
-    private func showChromeUntilUserActivity() {
-        chromeHideTask?.cancel()
-        chromeHideTask = nil
-        isCloseHovered = false
-
-        guard !isChromeVisible else { return }
-        withAnimation(.easeOut(duration: reduceMotion ? 0.10 : 0.18)) {
-            isChromeVisible = true
-        }
-    }
-
-    private func scheduleChromeHide() {
-        chromeHideTask?.cancel()
-        chromeHideTask = Task { @MainActor in
-            do {
-                try await Task.sleep(nanoseconds: 2_500_000_000)
-            } catch {
-                return
-            }
-
-            guard !Task.isCancelled else { return }
-            isCloseHovered = false
-            withAnimation(.easeOut(duration: reduceMotion ? 0.10 : 0.20)) {
-                isChromeVisible = false
-            }
-        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ConchPalette.bg)
     }
 }
 
