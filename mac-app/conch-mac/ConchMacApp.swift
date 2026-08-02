@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ServiceManagement
 import UserNotifications
 
 @main
@@ -44,7 +45,21 @@ private final class ConchAppDelegate: NSObject,
     func applicationDidFinishLaunching(_ notification: Notification) {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
+        registerLoginItemIfNeeded()
         ReviewNotifications.shared.requestAuthorizationAtLaunch()
+    }
+
+    private func registerLoginItemIfNeeded() {
+        guard Bundle.main.bundlePath.hasPrefix("/Applications/") else { return }
+
+        let loginItem = SMAppService.mainApp
+        guard loginItem.status == .notRegistered else { return }
+
+        do {
+            try loginItem.register()
+        } catch {
+            NSLog("Conch login item registration failed: %@", error.localizedDescription)
+        }
     }
 
     func userNotificationCenter(
