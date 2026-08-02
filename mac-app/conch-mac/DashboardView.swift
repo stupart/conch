@@ -95,6 +95,14 @@ private extension SessionRow {
 struct DashboardActions {
     let onSelectSession: (SessionRow) -> Void
     let onExpandReview: (SessionRow) -> Void
+    let onBeginRename: (SessionRow) -> Void
+    let onCommitRename: (SessionRow) -> Void
+    let onCancelRename: () -> Void
+    let onDismiss: (SessionRow) -> Void
+    let onRestore: (DismissedSessionRow) -> Void
+    let onUndoDismiss: () -> Void
+    let onDismissNewerDaemonWarning: () -> Void
+    let onToggleLogs: () -> Void
     let onTalkOrStop: () -> Void
     let onPauseOrResume: () -> Void
     let onMuteOrUnmute: () -> Void
@@ -105,9 +113,13 @@ struct DashboardActions {
 }
 
 struct DashboardView: View {
+    @EnvironmentObject private var store: StateStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     let state: PublishedState?
     let selectedSessionID: SessionRow.ID?
-    let daemonMessage: String?
+    let renamingSessionID: SessionRow.ID?
+    @Binding var renameDraft: String
     let actions: DashboardActions
 
     var body: some View {
@@ -115,7 +127,9 @@ struct DashboardView: View {
             VStack(spacing: 0) {
                 DashboardHeader(
                     state: state,
-                    daemonMessage: daemonMessage
+                    daemonMessage: store.daemonMessage,
+                    newerDaemonWarningVisible: store.newerDaemonWarningVisible,
+                    onDismissNewerDaemonWarning: actions.onDismissNewerDaemonWarning
                 )
 
                 Rectangle()
@@ -126,9 +140,19 @@ struct DashboardView: View {
                     SessionLedger(
                         state: state,
                         selectedSessionID: selectedSessionID,
+                        renamingSessionID: renamingSessionID,
+                        renameDraft: $renameDraft,
+                        rowMessages: store.rowMessages,
+                        undoDismissal: store.undoDismissal,
                         actions: actions
                     )
                     .frame(width: ledgerWidth(for: proxy.size.width))
+                    .opacity(store.isLedgerFrozen ? 0.82 : 1)
+                    .grayscale(store.isLedgerFrozen ? 1 : 0)
+                    .animation(
+                        reduceMotion ? nil : .easeOut(duration: 0.18),
+                        value: store.isLedgerFrozen
+                    )
 
                     Rectangle()
                         .fill(ConchPalette.divider)
@@ -143,6 +167,15 @@ struct DashboardView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
+                if store.isLogDrawerOpen {
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(height: 1)
+
+                    DaemonLogDrawer(lines: store.logLines)
+                        .frame(height: min(220, max(132, proxy.size.height * 0.27)))
+                }
+
                 Rectangle()
                     .fill(ConchPalette.divider)
                     .frame(height: 1)
@@ -150,6 +183,7 @@ struct DashboardView: View {
                 DashboardKeybar(
                     state: state,
                     selectedSessionID: selectedSessionID,
+                    isLogDrawerOpen: store.isLogDrawerOpen,
                     actions: actions
                 )
             }
@@ -167,6 +201,8 @@ struct DashboardView: View {
 private struct DashboardHeader: View {
     let state: PublishedState?
     let daemonMessage: String?
+    let newerDaemonWarningVisible: Bool
+    let onDismissNewerDaemonWarning: () -> Void
 
     private var doingText: String? {
         guard let state else { return nil }
@@ -230,6 +266,26 @@ private struct DashboardHeader: View {
                 .truncationMode(.tail)
                 .layoutPriority(2)
                 .accessibilityElement(children: .combine)
+            } else if newerDaemonWarningVisible {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: 10, weight: .medium))
+                    Text("app is out of date")
+                        .font(ConchTypography.font(size: 10.5))
+
+                    Button(action: onDismissNewerDaemonWarning) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8.5, weight: .semibold))
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Dismiss")
+                    .accessibilityLabel("Dismiss app out of date notice")
+                }
+                .foregroundStyle(ConchPalette.statusWaiting.opacity(0.88))
+                .lineLimit(1)
+                .layoutPriority(2)
             } else if let doingText {
                 Text(doingText)
                     .font(ConchTypography.font(size: 11.5))
@@ -269,13 +325,20 @@ private struct HeaderStatusCount: View {
 }
 
 private struct SessionLedger: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     let state: PublishedState?
     let selectedSessionID: SessionRow.ID?
+    let renamingSessionID: SessionRow.ID?
+    @Binding var renameDraft: String
+    let rowMessages: [SessionRow.ID: String]
+    let undoDismissal: SessionDismissUndo?
     let actions: DashboardActions
 
     private var focusID: SessionRow.ID? {
         guard let state else { return selectedSessionID }
         return selectedSessionID
+            ?? state.rows.first(where: \.navSelected)?.id
             ?? state.rows.first(where: \.active)?.id
             ?? state.reply.flatMap { reply in
                 state.rows.first(where: { $0.id == reply.sessionId })?.id
@@ -286,12 +349,13 @@ private struct SessionLedger: View {
     }
 
     private var rowOrder: [SessionRow.ID] {
-        state?.rows.map(\.id) ?? []
+        guard let state else { return [] }
+        return state.rows.map(\.id) + state.dismissedRows.map { "dismissed:\($0.id)" }
     }
 
     var body: some View {
         Group {
-            if let state, !state.rows.isEmpty {
+            if let state, !state.rows.isEmpty || !state.dismissedRows.isEmpty {
                 ScrollViewReader { proxy in
                     TimelineView(.periodic(from: .now, by: 10)) { timeline in
                         ScrollView {
@@ -304,9 +368,31 @@ private struct SessionLedger: View {
                                         row: row,
                                         now: timeline.date,
                                         isSelected: selectedSessionID == row.id,
-                                        onSelect: { actions.onSelectSession(row) }
+                                        isRenaming: renamingSessionID == row.id,
+                                        renameDraft: $renameDraft,
+                                        rowMessage: rowMessages[row.id],
+                                        onSelect: { actions.onSelectSession(row) },
+                                        onBeginRename: { actions.onBeginRename(row) },
+                                        onCommitRename: { actions.onCommitRename(row) },
+                                        onCancelRename: actions.onCancelRename,
+                                        onDismiss: { actions.onDismiss(row) }
                                     )
                                     .id(row.id)
+                                }
+
+                                if !state.dismissedRows.isEmpty {
+                                    DismissedRowsDivider()
+
+                                    ForEach(state.dismissedRows, id: \.id) { row in
+                                        DismissedDashboardRow(
+                                            row: row,
+                                            rowMessage: rowMessages[row.id],
+                                            showsUndo: undoDismissal?.id == row.id,
+                                            onUndo: actions.onUndoDismiss,
+                                            onRestore: { actions.onRestore(row) }
+                                        )
+                                        .id("dismissed:\(row.id)")
+                                    }
                                 }
                             }
                             .padding(.horizontal, 8)
@@ -314,13 +400,30 @@ private struct SessionLedger: View {
                         }
                         .scrollIndicators(.visible)
                         .onAppear {
-                            scrollToFocus(proxy, animated: false)
+                            scrollToUndoOrFocus(proxy, animated: false)
                         }
                         .onChange(of: focusID) { _, _ in
-                            scrollToFocus(proxy, animated: true)
+                            scrollToUndoOrFocus(proxy, animated: true)
                         }
                         .onChange(of: rowOrder) { _, _ in
-                            scrollToFocus(proxy, animated: true)
+                            scrollToUndoOrFocus(proxy, animated: true)
+                        }
+                        .onChange(of: undoDismissal?.id) { _, _ in
+                            scrollToUndoOrFocus(proxy, animated: true)
+                        }
+                        .onChange(of: rowMessages) { previous, current in
+                            if undoDismissal != nil {
+                                scrollToUndoOrFocus(proxy, animated: true)
+                                return
+                            }
+                            let changedID = current.keys.sorted().first { id in
+                                current[id] != previous[id] && current[id] != nil
+                            }
+                            guard let changedID,
+                                  let targetID = rowTargetID(for: changedID) else {
+                                return
+                            }
+                            scroll(proxy, to: targetID, animated: true)
                         }
                     }
                 }
@@ -334,12 +437,46 @@ private struct SessionLedger: View {
 
     private func scrollToFocus(_ proxy: ScrollViewProxy, animated: Bool) {
         guard let focusID else { return }
-        if animated {
+        scroll(proxy, to: focusID, animated: animated)
+    }
+
+    private func scrollToUndoOrFocus(
+        _ proxy: ScrollViewProxy,
+        animated: Bool
+    ) {
+        if let undoDismissal {
+            scroll(
+                proxy,
+                to: "dismissed:\(undoDismissal.id)",
+                animated: animated
+            )
+        } else {
+            scrollToFocus(proxy, animated: animated)
+        }
+    }
+
+    private func rowTargetID(for sessionID: SessionRow.ID) -> String? {
+        guard let state else { return nil }
+        if state.rows.contains(where: { $0.id == sessionID }) {
+            return sessionID
+        }
+        if state.dismissedRows.contains(where: { $0.id == sessionID }) {
+            return "dismissed:\(sessionID)"
+        }
+        return nil
+    }
+
+    private func scroll(
+        _ proxy: ScrollViewProxy,
+        to targetID: String,
+        animated: Bool
+    ) {
+        if animated && !reduceMotion {
             withAnimation(.easeOut(duration: 0.18)) {
-                proxy.scrollTo(focusID, anchor: .center)
+                proxy.scrollTo(targetID, anchor: .center)
             }
         } else {
-            proxy.scrollTo(focusID, anchor: .center)
+            proxy.scrollTo(targetID, anchor: .center)
         }
     }
 }
@@ -348,12 +485,20 @@ private struct DashboardRow: View {
     let row: SessionRow
     let now: Date
     let isSelected: Bool
+    let isRenaming: Bool
+    @Binding var renameDraft: String
+    let rowMessage: String?
     let onSelect: () -> Void
+    let onBeginRename: () -> Void
+    let onCommitRename: () -> Void
+    let onCancelRename: () -> Void
+    let onDismiss: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
     @State private var reviewPulseOpacity = 0.0
     @State private var pulseTask: Task<Void, Never>?
+    @FocusState private var renameFocused: Bool
 
     private var reviewIdentity: ReviewItem.ID? {
         ReviewItem(row: row)?.id
@@ -368,6 +513,9 @@ private struct DashboardRow: View {
     }
 
     private var inlineDetail: String {
+        if let rowMessage, !rowMessage.isEmpty {
+            return rowMessage
+        }
         if let review = row.review {
             return review.summary
         }
@@ -377,62 +525,27 @@ private struct DashboardRow: View {
         return ""
     }
 
+    private var voice: String? {
+        let value = row.voice?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? nil : value
+    }
+
     private var age: String? {
         let timestamp = row.review?.at ?? row.at
         return timestamp.flatMap { relativeAge(epochMilliseconds: $0, now: now) }
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            Button(action: onSelect) {
-                HStack(spacing: 8) {
-                    Capsule(style: .continuous)
-                        .fill(ConchPalette.brandCyan)
-                        .frame(width: 3, height: 22)
-                        .opacity(isLiveSession ? 1 : 0)
-                        .frame(width: 10)
-                        .accessibilityHidden(true)
-
-                    Text(row.label)
-                        .font(ConchTypography.font(size: 13.5, weight: .medium))
-                        .foregroundStyle(ConchPalette.textPrimary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .contentTransition(.opacity)
-                        .frame(minWidth: 54, idealWidth: 104, maxWidth: 126, alignment: .leading)
-                        .layoutPriority(2)
-
-                    DashboardStatusGlyph(visual: LedgerVisual(row: row))
-                        .frame(width: 18)
-
-                    if !inlineDetail.isEmpty {
-                        Text(inlineDetail)
-                            .font(ConchTypography.font(size: 11.5))
-                            .foregroundStyle(ConchPalette.textDim)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .contentTransition(.opacity)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        Spacer(minLength: 0)
-                    }
-
-                    if let age {
-                        Text(age)
-                            .font(ConchTypography.font(size: 10.5))
-                            .foregroundStyle(ConchPalette.textFaint)
-                            .monospacedDigit()
-                            .lineLimit(1)
-                            .layoutPriority(1)
-                    }
+        Group {
+            if isRenaming {
+                rowContent
+            } else {
+                Button(action: onSelect) {
+                    rowContent
                 }
-                .padding(.trailing, 10)
-                .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
-                .contentShape(Rectangle())
-                .opacity(isDimmed ? 0.58 : 1)
+                .buttonStyle(.plain)
+                .help("Select \(row.label)")
             }
-            .buttonStyle(.plain)
-            .help("Select \(row.label)")
         }
         .frame(maxWidth: .infinity, minHeight: 42)
         .background {
@@ -450,6 +563,10 @@ private struct DashboardRow: View {
             }
         }
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contextMenu {
+            Button("Rename", action: onBeginRename)
+            Button("Dismiss", action: onDismiss)
+        }
         .onHover { hovering in
             isHovered = hovering
         }
@@ -470,6 +587,98 @@ private struct DashboardRow: View {
         .onDisappear {
             pulseTask?.cancel()
         }
+    }
+
+    private var rowContent: some View {
+        HStack(spacing: 7) {
+            Capsule(style: .continuous)
+                .fill(ConchPalette.brandCyan)
+                .frame(width: 3, height: 22)
+                .opacity(isLiveSession ? 1 : 0)
+                .frame(width: 10)
+                .accessibilityHidden(true)
+
+            if isRenaming {
+                TextField("Session name", text: $renameDraft)
+                    .textFieldStyle(.plain)
+                    .font(ConchTypography.font(size: 13.5, weight: .medium))
+                    .foregroundStyle(ConchPalette.textPrimary)
+                    .focused($renameFocused)
+                    .onSubmit(onCommitRename)
+                    .onExitCommand(perform: onCancelRename)
+                    .frame(minWidth: 72, idealWidth: 104, maxWidth: 132)
+                    .layoutPriority(4)
+                    .accessibilityLabel("Rename \(row.label)")
+                    .onAppear {
+                        DispatchQueue.main.async {
+                            renameFocused = true
+                        }
+                    }
+            } else {
+                Text(row.label)
+                    .font(ConchTypography.font(size: 13.5, weight: .medium))
+                    .foregroundStyle(ConchPalette.textPrimary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .contentTransition(.opacity)
+                    .frame(minWidth: 54, idealWidth: 92, maxWidth: 116, alignment: .leading)
+                    .layoutPriority(3)
+            }
+
+            if row.prioritized {
+                Image(systemName: "diamond.fill")
+                    .font(.system(size: 5.5, weight: .medium))
+                    .foregroundStyle(ConchPalette.textDim.opacity(0.82))
+                    .accessibilityLabel("Prioritized")
+                    .help("Prioritized")
+            }
+
+            if let voice {
+                Text(voice)
+                    .font(ConchTypography.font(size: 9.5))
+                    .foregroundStyle(ConchPalette.textFaint)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(minWidth: 28, maxWidth: 54, alignment: .leading)
+                    .layoutPriority(2)
+                    .accessibilityLabel("Voice \(voice)")
+            }
+
+            DashboardStatusGlyph(visual: LedgerVisual(row: row))
+                .frame(width: 16)
+
+            if !inlineDetail.isEmpty {
+                Text(inlineDetail)
+                    .font(ConchTypography.font(size: 11.5))
+                    .foregroundStyle(
+                        rowMessage == nil
+                            ? ConchPalette.textDim
+                            : ConchPalette.statusNeeds.opacity(0.90)
+                    )
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .contentTransition(.opacity)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(rowMessage == nil ? 0 : 5)
+                    .accessibilityLabel(inlineDetail)
+                    .help(inlineDetail)
+            } else {
+                Spacer(minLength: 0)
+            }
+
+            if let age {
+                Text(age)
+                    .font(ConchTypography.font(size: 10.5))
+                    .foregroundStyle(ConchPalette.textFaint)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .layoutPriority(1)
+            }
+        }
+        .padding(.trailing, 10)
+        .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+        .contentShape(Rectangle())
+        .opacity(isDimmed ? 0.58 : 1)
     }
 
     private func pulseForReview() {
@@ -493,6 +702,93 @@ private struct DashboardRow: View {
                 reviewPulseOpacity = 0
             }
         }
+    }
+}
+
+private struct DismissedRowsDivider: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Rectangle()
+                .fill(ConchPalette.divider)
+                .frame(height: 1)
+
+            Text("DISMISSED")
+                .font(ConchTypography.font(size: 9.5, weight: .medium))
+                .tracking(1.1)
+                .foregroundStyle(ConchPalette.textFaint)
+
+            Rectangle()
+                .fill(ConchPalette.divider)
+                .frame(height: 1)
+        }
+        .padding(.horizontal, 7)
+        .padding(.top, 7)
+        .padding(.bottom, 3)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct DismissedDashboardRow: View {
+    let row: DismissedSessionRow
+    let rowMessage: String?
+    let showsUndo: Bool
+    let onUndo: () -> Void
+    let onRestore: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "minus")
+                .font(.system(size: 8, weight: .medium))
+                .frame(width: 10)
+                .accessibilityHidden(true)
+
+            Text(row.label)
+                .font(ConchTypography.font(size: 12.5, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: 126, alignment: .leading)
+
+            if let rowMessage, !rowMessage.isEmpty {
+                Text(rowMessage)
+                    .font(ConchTypography.font(size: 10.5))
+                    .foregroundStyle(ConchPalette.statusNeeds)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel(rowMessage)
+            } else {
+                Spacer(minLength: 0)
+            }
+
+            if showsUndo {
+                Button("Undo", action: onUndo)
+                    .buttonStyle(.plain)
+                    .font(ConchTypography.font(size: 10.5, weight: .medium))
+                    .foregroundStyle(ConchPalette.statusWaiting)
+                    .padding(.horizontal, 8)
+                    .frame(minHeight: 28)
+                    .contentShape(Rectangle())
+                    .accessibilityHint("Restores the dismissed session")
+            }
+        }
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity, minHeight: 34)
+        .foregroundStyle(ConchPalette.textDim)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(isHovered ? ConchPalette.hover.opacity(0.62) : .clear)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .opacity(0.62)
+        .grayscale(1)
+        .contextMenu {
+            Button("Restore", action: onRestore)
+        }
+        .onHover { isHovered = $0 }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Dismissed session \(row.label)")
     }
 }
 
@@ -1106,9 +1402,107 @@ private struct ConversationTextView: NSViewRepresentable {
     }
 }
 
+private struct DaemonLogDrawer: View {
+    let lines: [String]
+
+    var body: some View {
+        DaemonLogTextView(text: lines.joined(separator: "\n"))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(ConchPalette.raised.opacity(0.42))
+    }
+}
+
+private struct DaemonLogTextView: NSViewRepresentable {
+    let text: String
+
+    final class Coordinator {
+        var previousText = ""
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
+        scrollView.borderType = .noBorder
+
+        let textView = NSTextView()
+        textView.drawsBackground = false
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.allowsUndo = false
+        textView.usesFindBar = false
+        textView.focusRingType = .none
+        textView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        textView.textColor = NSColor(ConchPalette.textDim)
+        textView.textContainerInset = NSSize(width: 12, height: 10)
+        textView.minSize = .zero
+        textView.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.isHorizontallyResizable = true
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = false
+        textView.textContainer?.containerSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.setAccessibilityLabel("Conch daemon log")
+        scrollView.documentView = textView
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard context.coordinator.previousText != text,
+              let textView = scrollView.documentView as? NSTextView else {
+            return
+        }
+        let previousString = textView.string as NSString
+        let selectedStrings = textView.selectedRanges.compactMap { value -> String? in
+            let range = value.rangeValue
+            guard range.length > 0,
+                  NSMaxRange(range) <= previousString.length else {
+                return nil
+            }
+            return previousString.substring(with: range)
+        }
+
+        context.coordinator.previousText = text
+        textView.string = text
+        let updatedString = textView.string as NSString
+        let restoredRanges = selectedStrings.compactMap { selection -> NSValue? in
+            let range = updatedString.range(of: selection)
+            guard range.location != NSNotFound else { return nil }
+            return NSValue(range: range)
+        }
+        if !restoredRanges.isEmpty {
+            textView.selectedRanges = restoredRanges
+        }
+
+        guard restoredRanges.isEmpty else { return }
+        DispatchQueue.main.async { [weak textView] in
+            guard let textView else { return }
+            textView.scrollRangeToVisible(
+                NSRange(location: textView.string.utf16.count, length: 0)
+            )
+        }
+    }
+}
+
 private struct DashboardKeybar: View {
     let state: PublishedState?
     let selectedSessionID: SessionRow.ID?
+    let isLogDrawerOpen: Bool
     let actions: DashboardActions
 
     private var selectedRow: SessionRow? {
@@ -1149,6 +1543,13 @@ private struct DashboardKeybar: View {
             )
 
             Spacer(minLength: 0)
+
+            KeybarActionButton(
+                label: "Logs",
+                isSelected: isLogDrawerOpen,
+                action: actions.onToggleLogs
+            )
+            .accessibilityValue(isLogDrawerOpen ? "shown" : "hidden")
         }
         .padding(.horizontal, 10)
         .frame(height: 47)
@@ -1159,6 +1560,7 @@ private struct DashboardKeybar: View {
 private struct KeybarActionButton: View {
     let label: String
     var isProminent = false
+    var isSelected = false
     let action: () -> Void
 
     @State private var isHovered = false
@@ -1170,7 +1572,7 @@ private struct KeybarActionButton: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .foregroundStyle(
-                    isHovered || isProminent
+                    isHovered || isProminent || isSelected
                         ? ConchPalette.textPrimary
                         : ConchPalette.textDim
                 )
@@ -1181,7 +1583,7 @@ private struct KeybarActionButton: View {
                         .fill(
                             isProminent
                                 ? ConchPalette.accent.opacity(isHovered ? 0.20 : 0.13)
-                                : isHovered ? ConchPalette.hover : .clear
+                                : isHovered || isSelected ? ConchPalette.hover : .clear
                         )
                 )
                 .contentShape(Rectangle())

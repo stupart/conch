@@ -6,6 +6,8 @@ struct ContentView: View {
 
     @State private var expandedReviewID: ReviewItem.ID?
     @State private var selectedSessionID: SessionRow.ID?
+    @State private var renamingSessionID: SessionRow.ID?
+    @State private var renameDraft = ""
 
     private var reviewItems: [ReviewItem] {
         let indexedItems = store.state?.rows.enumerated().compactMap { index, row in
@@ -67,10 +69,19 @@ struct ContentView: View {
             DashboardView(
                 state: store.state,
                 selectedSessionID: selectedSessionID,
-                daemonMessage: store.daemonMessage,
+                renamingSessionID: renamingSessionID,
+                renameDraft: $renameDraft,
                 actions: DashboardActions(
                     onSelectSession: selectSession,
                     onExpandReview: expandReview,
+                    onBeginRename: beginRename,
+                    onCommitRename: commitRename,
+                    onCancelRename: cancelRename,
+                    onDismiss: dismissSession,
+                    onRestore: restoreSession,
+                    onUndoDismiss: store.undoLastDismissal,
+                    onDismissNewerDaemonWarning: store.dismissNewerDaemonWarning,
+                    onToggleLogs: store.toggleLogDrawer,
                     onTalkOrStop: talkOrStop,
                     onPauseOrResume: pauseOrResume,
                     onMuteOrUnmute: muteOrUnmute,
@@ -104,6 +115,9 @@ struct ContentView: View {
             if let selectedSessionID, !currentIDs.contains(selectedSessionID) {
                 self.selectedSessionID = nil
             }
+            if let renamingSessionID, !currentIDs.contains(renamingSessionID) {
+                cancelRename()
+            }
         }
         .onChange(of: reviewIDs) { previousIDs, currentIDs in
             let addedIDs = currentIDs.subtracting(previousIDs)
@@ -126,6 +140,35 @@ struct ContentView: View {
 
     private func selectSession(_ row: SessionRow) {
         selectedSessionID = row.id
+    }
+
+    private func beginRename(_ row: SessionRow) {
+        selectedSessionID = row.id
+        renamingSessionID = row.id
+        renameDraft = row.label
+    }
+
+    private func commitRename(_ row: SessionRow) {
+        guard renamingSessionID == row.id else { return }
+        let requestedLabel = renameDraft
+        cancelRename()
+        store.renameSession(id: row.id, label: requestedLabel)
+    }
+
+    private func cancelRename() {
+        renamingSessionID = nil
+        renameDraft = ""
+    }
+
+    private func dismissSession(_ row: SessionRow) {
+        if renamingSessionID == row.id {
+            cancelRename()
+        }
+        store.dismissSession(row)
+    }
+
+    private func restoreSession(_ row: DismissedSessionRow) {
+        store.restoreSession(id: row.id, label: row.label)
     }
 
     private func talkOrStop() {
@@ -205,6 +248,10 @@ struct ContentView: View {
     }
 
     private func releaseSelection() {
+        if renamingSessionID != nil {
+            cancelRename()
+            return
+        }
         selectedSessionID = nil
     }
 

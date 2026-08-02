@@ -14,6 +14,20 @@ struct ConchMacApp: App {
                 .frame(minWidth: 640, minHeight: 400)
                 .preferredColorScheme(.dark)
                 .background(WindowBackgroundConfigurator())
+                .onReceive(
+                    NotificationCenter.default.publisher(
+                        for: NSApplication.didBecomeActiveNotification
+                    )
+                ) { _ in
+                    store.forceLivenessProbe()
+                }
+                .onReceive(
+                    NSWorkspace.shared.notificationCenter.publisher(
+                        for: NSWorkspace.didWakeNotification
+                    )
+                ) { _ in
+                    store.forceLivenessProbe()
+                }
         }
         .defaultSize(width: 1_040, height: 720)
         .windowStyle(.hiddenTitleBar)
