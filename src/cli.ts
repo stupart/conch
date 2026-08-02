@@ -15,6 +15,7 @@ import {
 import { listenOnce } from "./listen.ts";
 import { speak, probeTtsServer, voiceFor, setVoiceOverride } from "./speak.ts";
 import { emitRecorderTraces } from "./diagnostics.ts";
+import { CONCH_VERSION } from "./version.ts";
 import {
   SETTING_DESCRIPTORS,
   configSnapshotEntry,
@@ -53,10 +54,10 @@ Voice and settings:
   conch listen | speak <text>               microphone and speech tests
 
 Optional / manual setup:
-  conch service [install|off]      install/refresh or remove launchd supervision
+  conch service [install|off] | uninstall [--models]  manage or remove the install
   conch install-plugin | uninstall-plugin  manage the Claude Code / Codex plugin
   conch install [--codex]          wire hooks separately
-  conch doctor                     check external dependencies
+  conch doctor | version           run live checks | print the package version
 
 Internal entrypoints: conch hook | codex-hook | daemon | mcp
 `;
@@ -215,6 +216,10 @@ async function readDaemonSnapshot(): Promise<ConfigSnapshot | "daemon-down" | "a
 }
 
 switch (command) {
+  case "version":
+  case "--version":
+    console.log(`conch ${CONCH_VERSION}`);
+    break;
   case "mcp": {
     const { runMcpServer } = await import("./mcp.ts");
     await runMcpServer({ config: cfg });
@@ -246,6 +251,20 @@ switch (command) {
       );
       process.exitCode = 1;
     }
+    break;
+  }
+  case "uninstall": {
+    const { parseUninstallArgs, runUninstall } = await import("./uninstall.ts");
+    let selection;
+    try {
+      selection = parseUninstallArgs(rest);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+      break;
+    }
+    const result = await runUninstall(cfg, selection);
+    if (!result.ok) process.exitCode = 1;
     break;
   }
   case "hook":

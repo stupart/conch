@@ -1,6 +1,8 @@
-# conch macOS viewer
+# conch for macOS
 
-A minimal, read-only SwiftUI viewer for the live conch daemon state. The app polls `/tmp/conch-sessions.json`; start the conch daemon before running the viewer.
+The native macOS app is conch's primary window. It shows the daemon's live session ledger and conversation, follows speech and dictation as they happen, and renders finished deliverables inline for review. Deliverables can also be expanded to fill the window.
+
+The app polls `/tmp/conch-sessions.json` for state and sends talk/stop, recite, pause/resume, and mute/unmute controls to the running daemon over `/tmp/conch.sock`. The daemon still owns microphone capture, transcription, and speech synthesis, so start conch before opening the app.
 
 Requirements: macOS 14 or later and Xcode 16 or later.
 
@@ -9,5 +11,3 @@ Open `conch-mac.xcodeproj` in Xcode, select the `conch-mac` scheme, and press Ru
 ```sh
 xcodebuild -project mac-app/conch-mac.xcodeproj -scheme conch-mac build
 ```
-
-The viewer contains no microphone, voice, or TTS functionality and does not write to the daemon state file.
