@@ -77,9 +77,7 @@ struct ContentView: View {
                     onRecite: recite,
                     onMoveUp: { moveSelection(by: -1) },
                     onMoveDown: { moveSelection(by: 1) },
-                    onReleaseSelection: releaseSelection,
-                    onWakeNumber: wakeSession,
-                    onQuit: quit
+                    onReleaseSelection: releaseSelection
                 )
             )
             // Review arrival never changes dashboard interactivity. Only an
@@ -186,16 +184,6 @@ struct ContentView: View {
         )
     }
 
-    private func wakeSession(at visiblePosition: Int) {
-        guard visiblePosition >= 1,
-              let rows = store.state?.rows,
-              visiblePosition <= rows.count else {
-            return
-        }
-        let row = rows[visiblePosition - 1]
-        store.send(.wake(sessionId: row.id, label: row.label))
-    }
-
     private func moveSelection(by delta: Int) {
         guard delta == -1 || delta == 1,
               let rows = store.state?.rows,
@@ -220,10 +208,6 @@ struct ContentView: View {
         selectedSessionID = nil
     }
 
-    private func quit() {
-        NSApp.terminate(nil)
-    }
-
     private func handleDashboardKey(_ key: DashboardKey) -> Bool {
         switch key {
         case .talkOrStop:
@@ -240,10 +224,6 @@ struct ContentView: View {
             moveSelection(by: 1)
         case .releaseSelection:
             releaseSelection()
-        case let .wakeNumber(number):
-            wakeSession(at: number)
-        case .quit:
-            quit()
         }
         return true
     }

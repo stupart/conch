@@ -57,6 +57,8 @@ final class ReviewNotifications {
     private var didStartAuthorization = false
     private var seenReviewIDs: Set<ReviewItem.ID> = []
     private var queuedRequests: [UNNotificationRequest] = []
+    private weak var reviewWindow: NSWindow?
+    private var hasPendingWindowAttention = false
 
     private init() {}
 
@@ -72,9 +74,22 @@ final class ReviewNotifications {
         }
     }
 
+    func register(window: NSWindow) {
+        precondition(Thread.isMainThread)
+        reviewWindow = window
+
+        guard hasPendingWindowAttention else { return }
+        hasPendingWindowAttention = false
+        surfaceReviewWindow()
+    }
+
     func postOnce(for item: ReviewItem) {
         precondition(Thread.isMainThread)
         guard seenReviewIDs.insert(item.id).inserted else { return }
+
+        // Window attention is independent of notification authorization: the
+        // deliverable must still be up when notifications are denied.
+        surfaceReviewWindow()
 
         let content = UNMutableNotificationContent()
         content.title = "Review ready"
@@ -131,6 +146,82 @@ final class ReviewNotifications {
             center.add(request)
         }
     }
+
+    private func surfaceReviewWindow() {
+        guard let reviewWindow else {
+            hasPendingWindowAttention = true
+            return
+        }
+
+        let grace = RevealTypingGrace.currentSeconds()
+        let idle = HIDIdleTime.currentSeconds()
+        let recentlyActive = grace > 0 && idle.map { $0 < grace } == true
+
+        if !recentlyActive {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+        reviewWindow.orderFrontRegardless()
+    }
+}
+
+private enum RevealTypingGrace {
+    private static let defaultSeconds: TimeInterval = 2
+
+    static func currentSeconds(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> TimeInterval {
+        if let value = parse(environment["CONCH_REVEAL_TYPING_GRACE_SECS"]) {
+            return value
+        }
+
+        let configDirectory: URL
+        if let configuredPath = environment["CONCH_CONFIG_DIR"] {
+            configDirectory = URL(fileURLWithPath: configuredPath, isDirectory: true)
+        } else {
+            configDirectory = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".config/conch", isDirectory: true)
+        }
+
+        let settingsURL = configDirectory.appendingPathComponent("settings.json")
+        guard let data = try? Data(contentsOf: settingsURL),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let settings = object as? [String: Any],
+              let value = parse(settings["reveal-typing-grace"]) else {
+            return defaultSeconds
+        }
+        return value
+    }
+
+    private static func parse(_ rawValue: Any?) -> TimeInterval? {
+        let value: Double
+        switch rawValue {
+        case let string as String:
+            let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, let parsed = Double(trimmed) else { return nil }
+            value = parsed
+        case let number as NSNumber:
+            guard CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+            value = number.doubleValue
+        default:
+            return nil
+        }
+
+        guard value.isFinite, value >= 0 else { return nil }
+        return value
+    }
+}
+
+private enum HIDIdleTime {
+    private static let anyInputEventType = CGEventType(rawValue: UInt32.max)!
+
+    static func currentSeconds() -> TimeInterval? {
+        let seconds = CGEventSource.secondsSinceLastEventType(
+            .hidSystemState,
+            eventType: anyInputEventType
+        )
+        guard seconds.isFinite, seconds >= 0 else { return nil }
+        return seconds
+    }
 }
 
 /// Paints the host NSWindow's background dark so it never flashes white for a
@@ -142,6 +233,7 @@ private struct WindowBackgroundConfigurator: NSViewRepresentable {
             guard let window = view?.window else { return }
             window.backgroundColor = NSColor(ConchPalette.bg)
             window.isOpaque = true
+            ReviewNotifications.shared.register(window: window)
         }
         return view
     }

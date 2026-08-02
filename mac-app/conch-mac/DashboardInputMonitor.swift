@@ -10,8 +10,6 @@ enum DashboardKey: Equatable {
     case moveUp
     case moveDown
     case releaseSelection
-    case wakeNumber(Int)
-    case quit
 }
 
 struct DashboardInputMonitor: NSViewRepresentable {
@@ -46,8 +44,8 @@ struct DashboardInputMonitor: NSViewRepresentable {
 
                 // A clicked deliverable owns ordinary navigation and typing keys,
                 // but the dashboard's safety controls stay global: Esc must always
-                // release selection, Space must always cut in, and the documented
-                // 1-9 wake shortcuts must keep working even after WebKit takes focus.
+                // release selection, and Space must always cut in even after WebKit
+                // takes focus.
                 if firstResponderConsumesDashboardKeys(),
                    !key.isGlobalDashboardControl {
                     return event
@@ -126,16 +124,7 @@ struct DashboardInputMonitor: NSViewRepresentable {
                 return .muteOrUnmute
             case "r":
                 return .recite
-            case "q":
-                return .quit
-            case let character?:
-                guard character.count == 1,
-                      let number = Int(character),
-                      (1...9).contains(number) else {
-                    return nil
-                }
-                return .wakeNumber(number)
-            case nil:
+            default:
                 return nil
             }
         }
@@ -164,9 +153,9 @@ struct DashboardInputMonitor: NSViewRepresentable {
 private extension DashboardKey {
     var isGlobalDashboardControl: Bool {
         switch self {
-        case .talkOrStop, .releaseSelection, .wakeNumber:
+        case .talkOrStop, .releaseSelection:
             return true
-        case .pauseOrResume, .muteOrUnmute, .recite, .moveUp, .moveDown, .quit:
+        case .pauseOrResume, .muteOrUnmute, .recite, .moveUp, .moveDown:
             return false
         }
     }
