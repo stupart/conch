@@ -6,6 +6,16 @@ The app polls `/tmp/conch-sessions.json` for state and sends talk/stop, recite, 
 
 Requirements: macOS 14 or later and Xcode 16 or later.
 
+## Install
+
+From the repository root, build the Release configuration and install it at `/Applications/conch.app`:
+
+```sh
+./scripts/build-app.sh
+```
+
+The app is signed with a Developer ID identity so macOS permission grants, including notifications, persist across rebuilds. It is intentionally not notarized because a locally built app does not carry the quarantine attribute and does not need notarization.
+
 Open `conch-mac.xcodeproj` in Xcode, select the `conch-mac` scheme, and press Run. To build from the repository root:
 
 ```sh
