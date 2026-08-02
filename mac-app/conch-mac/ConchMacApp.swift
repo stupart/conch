@@ -34,6 +34,18 @@ struct ConchMacApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .help) {
+                Button("Keyboard Shortcuts") {
+                    NotificationCenter.default.post(
+                        name: .showKeyboardShortcuts,
+                        object: nil
+                    )
+                }
+            }
+        }
+
+        Settings {
+            ConchSettingsView()
         }
     }
 }

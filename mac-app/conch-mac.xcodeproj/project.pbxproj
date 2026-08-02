@@ -18,6 +18,8 @@
 		A1000000000000000000000A /* ConchSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000C /* ConchSocketClient.swift */; };
 		A1000000000000000000000B /* DashboardInputMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000D /* DashboardInputMonitor.swift */; };
 		A1000000000000000000000C /* TranscriptContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* TranscriptContent.swift */; };
+		B10000000000000000000001 /* SettingsProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* SettingsProtocol.swift */; };
+		B10000000000000000000002 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* SettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -34,6 +36,8 @@
 		A2000000000000000000000C /* ConchSocketClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConchSocketClient.swift; sourceTree = "<group>"; };
 		A2000000000000000000000D /* DashboardInputMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardInputMonitor.swift; sourceTree = "<group>"; };
 		A2000000000000000000000E /* TranscriptContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptContent.swift; sourceTree = "<group>"; };
+		B20000000000000000000001 /* SettingsProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsProtocol.swift; sourceTree = "<group>"; };
+		B20000000000000000000002 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -70,6 +74,8 @@
 				A2000000000000000000000C /* ConchSocketClient.swift */,
 				A2000000000000000000000D /* DashboardInputMonitor.swift */,
 				A2000000000000000000000E /* TranscriptContent.swift */,
+				B20000000000000000000001 /* SettingsProtocol.swift */,
+				B20000000000000000000002 /* SettingsView.swift */,
 				A20000000000000000000009 /* Info.plist */,
 			);
 			path = "conch-mac";
@@ -169,6 +175,8 @@
 				A1000000000000000000000A /* ConchSocketClient.swift in Sources */,
 				A1000000000000000000000B /* DashboardInputMonitor.swift in Sources */,
 				A1000000000000000000000C /* TranscriptContent.swift in Sources */,
+				B10000000000000000000001 /* SettingsProtocol.swift in Sources */,
+				B10000000000000000000002 /* SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

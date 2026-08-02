@@ -103,6 +103,7 @@ struct DashboardActions {
     let onUndoDismiss: () -> Void
     let onDismissNewerDaemonWarning: () -> Void
     let onToggleLogs: () -> Void
+    let onShowKeyboardShortcuts: () -> Void
     let onTalkOrStop: () -> Void
     let onPauseOrResume: () -> Void
     let onMuteOrUnmute: () -> Void
@@ -1028,19 +1029,16 @@ private struct ConversationPane: View {
     }
 
     private var note: String? {
-        guard isFocusedSessionLive, let live = state?.live else { return nil }
-        let instruction: String
-        switch live.state {
+        switch state?.live.state {
         case "speaking":
-            instruction = "space to cut in · the mic opens when it finishes"
+            return "space to cut in · the mic opens when it finishes"
         case "listening", "recording":
-            instruction = "pause to send · space to stop · say send to submit now"
+            return "pause to send · space to stop · say \"send\" to submit now"
         case "transcribing":
-            instruction = "transcribing…"
+            return "transcribing…"
         default:
             return nil
         }
-        return live.label.isEmpty ? instruction : "‹\(live.label)› · \(instruction)"
     }
 
     var body: some View {
@@ -1063,9 +1061,9 @@ private struct ConversationPane: View {
                         )
                         .textSelection(.enabled)
                         .frame(minHeight: 96, idealHeight: 150, maxHeight: 190)
-
-                        noteBar
                     }
+
+                    noteBar
                 }
             } else {
                 VStack(spacing: 0) {
@@ -1089,10 +1087,6 @@ private struct ConversationPane: View {
     @ViewBuilder
     private var noteBar: some View {
         if let note {
-            Rectangle()
-                .fill(ConchPalette.divider)
-                .frame(height: 1)
-
             Text(note)
                 .font(ConchTypography.font(size: 10.5))
                 .foregroundStyle(ConchPalette.textFaint)
@@ -1550,6 +1544,13 @@ private struct DashboardKeybar: View {
                 action: actions.onToggleLogs
             )
             .accessibilityValue(isLogDrawerOpen ? "shown" : "hidden")
+
+            KeybarActionButton(
+                label: "?",
+                action: actions.onShowKeyboardShortcuts
+            )
+            .help("Keyboard Shortcuts")
+            .accessibilityLabel("Keyboard Shortcuts")
         }
         .padding(.horizontal, 10)
         .frame(height: 47)

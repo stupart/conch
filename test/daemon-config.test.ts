@@ -1215,4 +1215,79 @@ describe("daemon config controller", () => {
       response: { kind: "config-error" },
     });
   });
+
+  test("socket-boundary config mutations persist set and unset before applying live", () => {
+    const { path } = fixture({ "end-silence": 4 });
+    const cfg = loadConfig({ env: {}, settingsPath: path });
+    const controller = createConfigController(cfg, { env: {}, settingsPath: path });
+    const persistence = {
+      settingsPath: path,
+      set: writeSetting,
+      unset: unsetSetting,
+    };
+
+    expect(dispatchControlMessage({
+      kind: "set-config",
+      key: "end-silence",
+      value: 5.25,
+    }, controller, undefined, persistence)).toMatchObject({
+      handled: true,
+      response: {
+        kind: "config-ack",
+        action: "set",
+        status: "applied",
+        effective: 5.25,
+        source: "file",
+      },
+    });
+    expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({
+      "end-silence": 5.25,
+    });
+    expect(cfg.endSilenceSecs).toBe(5.25);
+
+    expect(dispatchControlMessage({
+      kind: "unset-config",
+      key: "end-silence",
+    }, controller, undefined, persistence)).toMatchObject({
+      handled: true,
+      response: {
+        kind: "config-ack",
+        action: "unset",
+        status: "applied",
+        effective: 3.5,
+        source: "default",
+      },
+    });
+    expect(JSON.parse(readFileSync(path, "utf8"))).not.toHaveProperty("end-silence");
+    expect(cfg.endSilenceSecs).toBe(3.5);
+  });
+
+  test("socket-boundary persistence failure returns an error without changing live config", () => {
+    const { path } = fixture({ "end-silence": 4 });
+    const cfg = loadConfig({ env: {}, settingsPath: path });
+    const controller = createConfigController(cfg, { env: {}, settingsPath: path });
+    const response = dispatchControlMessage({
+      kind: "set-config",
+      key: "end-silence",
+      value: 6,
+    }, controller, undefined, {
+      settingsPath: path,
+      set: () => {
+        throw new Error("disk is read-only");
+      },
+      unset: unsetSetting,
+    });
+
+    expect(response).toEqual({
+      handled: true,
+      response: {
+        kind: "config-error",
+        error: "not saved: disk is read-only",
+      },
+    });
+    expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({
+      "end-silence": 4,
+    });
+    expect(cfg.endSilenceSecs).toBe(4);
+  });
 });
