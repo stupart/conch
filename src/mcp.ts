@@ -16,9 +16,10 @@ import {
   parseSetting,
   sendControlMessage,
   type ConfigAck,
-  type ConfigControlResponse,
-  type ConfigControlResult,
   type ConfigSnapshot,
+  type ControlMessage,
+  type ControlResponse,
+  type ControlResult,
   type SettingKey,
 } from "./settings.ts";
 import {
@@ -92,6 +93,8 @@ export interface PublishedState {
   preview?: { sessionId: string; text: string; spokenChars: number } | null;
   rows: PublishedSessionRow[];
   dismissed: string[];
+  /** Added in v1 without removing the legacy id-only list. */
+  dismissedRows?: Array<{ id: string; label: string }>;
 }
 
 interface JsonSchema {
@@ -276,7 +279,11 @@ export interface McpDependencies {
     newLabel: string,
   ): { label: string; voiceMigrated: boolean };
   sendToDaemon(socketPath: string, event: TurnEvent): Promise<boolean>;
-  sendControlMessage: typeof sendControlMessage;
+  sendControlMessage(
+    socketPath: string,
+    message: ControlMessage,
+    timeoutMs?: number,
+  ): Promise<ControlResult>;
   getSettingDescriptor: typeof getSettingDescriptor;
   parseSetting: typeof parseSetting;
   transcriptMark(transcriptPath: string): Promise<number>;
@@ -382,6 +389,7 @@ function publishedStateFromRegistry(
       };
     }),
     dismissed: [],
+    dismissedRows: [],
   };
 }
 
@@ -455,17 +463,22 @@ async function validateReviewLink(link: string): Promise<void> {
   }
 }
 
-function unwrapControlResult(result: ConfigControlResult): ConfigControlResponse {
+function unwrapControlResult(result: ControlResult): ControlResponse {
   if (!result.ok) {
     const diagnostic = result.diagnostic ? `: ${result.diagnostic}` : "";
     throw new Error(`${result.reason}${diagnostic}`);
   }
-  if (result.response.kind === "config-error") throw new Error(result.response.error);
+  if (
+    result.response.kind === "config-error"
+    || result.response.kind === "session-error"
+  ) {
+    throw new Error(result.response.error);
+  }
   return result.response;
 }
 
 function mutationControlResult(
-  result: ConfigControlResult,
+  result: ControlResult,
   key: SettingKey,
   action: "set" | "unset",
 ): ConfigAck {
@@ -480,7 +493,7 @@ function mutationControlResult(
   return response;
 }
 
-function snapshotControlResult(result: ConfigControlResult): ConfigSnapshot {
+function snapshotControlResult(result: ControlResult): ConfigSnapshot {
   const response = unwrapControlResult(result);
   if (response.kind !== "config-snapshot") {
     throw new Error("ack-unknown: daemon did not return a config snapshot");
@@ -617,12 +630,39 @@ export function createMcpToolHandlers(
       const newLabel = requiredString(argumentsObject, "label");
       const session = await resolveSession(query, config, dependencies);
       const oldLabel = dependencies.sessionLabel(session, session.cwd);
-      const renamed = dependencies.renameSessionLabel(
-        session.sessionId,
-        oldLabel,
-        newLabel,
+      const result = await dependencies.sendControlMessage(
+        config.socketPath,
+        {
+          kind: "session-command",
+          sessionId: session.sessionId,
+          command: "rename",
+          label: newLabel,
+        },
       );
-      return { sessionId: session.sessionId, ...renamed };
+      if (!result.ok && result.reason === "daemon-down") {
+        const renamed = dependencies.renameSessionLabel(
+          session.sessionId,
+          oldLabel,
+          newLabel,
+        );
+        return {
+          kind: "session-ack",
+          sessionId: session.sessionId,
+          command: "rename",
+          label: renamed.label,
+          changed: renamed.label !== oldLabel,
+        };
+      }
+      const response = unwrapControlResult(result);
+      if (
+        response.kind !== "session-ack"
+        || response.sessionId !== session.sessionId
+        || response.command !== "rename"
+        || response.label === undefined
+      ) {
+        throw new Error("ack-unknown: daemon reply did not match the rename request");
+      }
+      return response;
     },
 
     async conch_config(argumentsValue) {

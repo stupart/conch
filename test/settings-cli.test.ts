@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { join } from "node:path";
 
 interface CliFixture {
@@ -43,6 +44,50 @@ function cleanEnv(f: CliFixture, extra: Record<string, string> = {}): Record<str
     CONCH_SOCKET: f.socketPath,
     NO_COLOR: "1",
     ...extra,
+  };
+}
+
+function writeLiveSession(f: CliFixture): void {
+  const sessionsDir = join(f.root, "claude", "sessions");
+  mkdirSync(sessionsDir, { recursive: true });
+  writeFileSync(join(sessionsDir, "4321.json"), JSON.stringify({
+    sessionId: "session-123",
+    name: "Build",
+    cwd: "/work/build",
+    pid: 4321,
+    status: "idle",
+    kind: "interactive",
+    entrypoint: "cli",
+  }));
+}
+
+async function controlServer(
+  socketPath: string,
+  response: unknown,
+): Promise<{
+  messages: unknown[];
+  close(): Promise<void>;
+}> {
+  const messages: unknown[] = [];
+  const server = createServer((socket) => {
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk.toString();
+      const newline = buffer.indexOf("\n");
+      if (newline === -1) return;
+      messages.push(JSON.parse(buffer.slice(0, newline)));
+      socket.end(`${JSON.stringify(response)}\n`);
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, resolve);
+  });
+  return {
+    messages,
+    close: () => new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    }),
   };
 }
 
@@ -174,5 +219,66 @@ describe("settings CLI without a daemon", () => {
     expect(prototypeResult.exitCode).not.toBe(0);
     expect(existsSync(invalid.settingsPath)).toBe(false);
     expect(existsSync(prototype.settingsPath)).toBe(false);
+  });
+});
+
+describe("rename CLI daemon hand-off", () => {
+  test("uses the daemon's canonical rename reply without writing from the CLI process", async () => {
+    const f = fixture();
+    writeLiveSession(f);
+    const daemon = await controlServer(f.socketPath, {
+      kind: "session-ack",
+      sessionId: "session-123",
+      command: "rename",
+      label: "Canonical Release",
+      changed: true,
+    });
+    try {
+      const result = await runCli(f, ["rename", "Build", "  Release  "]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("Build -> Canonical Release");
+      expect(daemon.messages).toEqual([{
+        kind: "session-command",
+        sessionId: "session-123",
+        command: "rename",
+        label: "Release",
+      }]);
+      expect(existsSync(join(f.root, ".config", "conch", "labels.json"))).toBe(false);
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  test("falls back to direct persistence when the daemon is down", async () => {
+    const f = fixture();
+    writeLiveSession(f);
+
+    const result = await runCli(f, ["rename", "Build", "Release"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("Build -> Release");
+    expect(JSON.parse(readFileSync(
+      join(f.root, ".config", "conch", "labels.json"),
+      "utf8",
+    ))).toEqual({ "session-123": "Release" });
+  });
+
+  test("does not write directly when a running daemon rejects the rename", async () => {
+    const f = fixture();
+    writeLiveSession(f);
+    const daemon = await controlServer(f.socketPath, {
+      kind: "session-error",
+      error: "session was pruned",
+    });
+    try {
+      const result = await runCli(f, ["rename", "Build", "Release"]);
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain("session was pruned");
+      expect(existsSync(join(f.root, ".config", "conch", "labels.json"))).toBe(false);
+    } finally {
+      await daemon.close();
+    }
   });
 });

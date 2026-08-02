@@ -158,7 +158,9 @@ import {
   resolveSettingFromLoaded,
   settingsPathFor,
   validateControlMessage,
+  validateSessionControlMessage,
   writeSetting,
+  type ControlResponse,
   type ConfigAck,
   type ConfigControlMessage,
   type ConfigControlResponse,
@@ -167,9 +169,16 @@ import {
   type SettingResolution,
   type SettingValue,
   type HandoffOrder,
+  type SessionControlMessage,
+  type SessionControlResponse,
 } from "./settings.ts";
 import { SettingsOverlay } from "./settings-overlay.ts";
-import { SessionActionsOverlay } from "./session-actions-overlay.ts";
+import {
+  invokeSessionAction,
+  SessionActionsOverlay,
+  type SessionActionsController,
+  type SessionActionsTarget,
+} from "./session-actions-overlay.ts";
 import { createPublishThrottle } from "./publish-throttle.ts";
 
 /**
@@ -327,13 +336,168 @@ export function createConfigController(cfg: Config, options: ConfigControllerOpt
 
 export type SocketControlDispatch =
   | { handled: false }
-  | { handled: true; response: ConfigControlResponse };
+  | { handled: true; response: ControlResponse };
+
+export interface SessionCommandPauseLifecycle {
+  open(): void;
+  close(): void;
+}
+
+export interface SessionCommandDispatchOptions {
+  controller: SessionActionsController;
+  pause: SessionCommandPauseLifecycle;
+  targetForSessionId(sessionId: string): SessionActionsTarget | null;
+  isDismissed?(sessionId: string): boolean;
+}
+
+function sessionCommandError(error: unknown): SessionControlResponse {
+  return {
+    kind: "session-error",
+    error: error instanceof Error ? error.message : String(error),
+  };
+}
+
+function sessionCommandAck(
+  message: SessionControlMessage,
+  changed: boolean,
+  label?: string,
+): SessionControlResponse {
+  return {
+    kind: "session-ack",
+    sessionId: message.sessionId,
+    command: message.command,
+    ...(label ? { label } : {}),
+    changed,
+  };
+}
+
+/** Closed, synchronous routing through the same controller used by the terminal overlay. */
+function applySessionControlMessage(
+  message: SessionControlMessage,
+  options: SessionCommandDispatchOptions,
+): SessionControlResponse {
+  const { controller } = options;
+  const target = options.targetForSessionId(message.sessionId);
+
+  if (message.command === "restore") {
+    const result = invokeSessionAction(
+      controller,
+      target ?? { sessionId: message.sessionId, label: "" },
+      { command: "restore" },
+    );
+    const restored = options.targetForSessionId(message.sessionId) ?? target;
+    return sessionCommandAck(message, result === true, restored?.label);
+  }
+  if (!target) return sessionCommandAck(message, false);
+
+  switch (message.command) {
+    case "rename": {
+      const stored = invokeSessionAction(
+        controller,
+        target,
+        { command: "rename", label: message.label },
+      );
+      const current = options.targetForSessionId(message.sessionId);
+      const label = current?.label
+        ?? (typeof stored === "string" && stored.trim() ? stored : message.label);
+      return sessionCommandAck(message, label !== target.label, label);
+    }
+    case "set-voice": {
+      const result = invokeSessionAction(
+        controller,
+        target,
+        { command: "set-voice", voice: message.voice },
+      );
+      const current = options.targetForSessionId(message.sessionId) ?? target;
+      return sessionCommandAck(message, result !== false, current.label);
+    }
+    case "reset-voice": {
+      const result = invokeSessionAction(
+        controller,
+        target,
+        { command: "reset-voice" },
+      );
+      const current = options.targetForSessionId(message.sessionId) ?? target;
+      return sessionCommandAck(message, result !== false, current.label);
+    }
+    case "prioritize": {
+      const before = controller.isPrioritized(message.sessionId);
+      const result = invokeSessionAction(
+        controller,
+        target,
+        { command: "prioritize", value: message.value },
+      );
+      const after = controller.isPrioritized(message.sessionId);
+      const current = options.targetForSessionId(message.sessionId) ?? target;
+      return sessionCommandAck(
+        message,
+        typeof result === "boolean" ? result : before !== after,
+        current.label,
+      );
+    }
+    case "dismiss": {
+      if (options.isDismissed?.(message.sessionId)) {
+        return sessionCommandAck(message, false, target.label);
+      }
+      const result = invokeSessionAction(
+        controller,
+        target,
+        { command: "dismiss" },
+      );
+      const current = options.targetForSessionId(message.sessionId) ?? target;
+      return sessionCommandAck(message, result !== false, current.label);
+    }
+  }
+}
+
+/**
+ * Validate hostile input and guarantee the owner-keyed silent pause is released,
+ * including when a controller mutation throws.
+ */
+export function dispatchSessionControlMessage(
+  value: unknown,
+  options: SessionCommandDispatchOptions,
+): SessionControlResponse {
+  const validated = validateSessionControlMessage(value);
+  if (!validated.ok) return { kind: "session-error", error: validated.err };
+
+  try {
+    options.pause.open();
+    try {
+      return applySessionControlMessage(validated.value, options);
+    } finally {
+      options.pause.close();
+    }
+  } catch (error) {
+    return sessionCommandError(error);
+  }
+}
 
 /** Distinguish config control before any value can be cast into TurnEvent. */
-export function dispatchControlMessage(value: unknown, controller: ConfigController): SocketControlDispatch {
+export function dispatchControlMessage(
+  value: unknown,
+  controller: ConfigController,
+  sessionOptions?: SessionCommandDispatchOptions,
+): SocketControlDispatch {
   if (!isControlMessageCandidate(value)) return { handled: false };
   const validated = validateControlMessage(value);
-  if (!validated.ok) return { handled: true, response: { kind: "config-error", error: validated.err } };
+  if (!validated.ok) {
+    const sessionCandidate = socketRecord(value) && value.kind === "session-command";
+    return {
+      handled: true,
+      response: sessionCandidate
+        ? { kind: "session-error", error: validated.err }
+        : { kind: "config-error", error: validated.err },
+    };
+  }
+  if (validated.value.kind === "session-command") {
+    return {
+      handled: true,
+      response: sessionOptions
+        ? dispatchSessionControlMessage(validated.value, sessionOptions)
+        : { kind: "session-error", error: "session commands are unavailable" },
+    };
+  }
   return { handled: true, response: controller.handle(validated.value) };
 }
 
@@ -765,6 +929,17 @@ export function withoutDismissedSessions<T extends Pick<SessionInfo, "sessionId"
   return sessions.filter((session) => !dismissedSessionIds.has(session.sessionId));
 }
 
+/** The dismiss operation couples mute; restoration must always clear both sets. */
+export function restoreDismissedSessionState(
+  sessionId: string,
+  dismissedSessionIds: Set<string>,
+  mutedSessionIds: Set<string>,
+): boolean {
+  if (!dismissedSessionIds.delete(sessionId)) return false;
+  mutedSessionIds.delete(sessionId);
+  return true;
+}
+
 /** Transient command state dies only when a complete registry proves the session exited. */
 export function pruneSessionCommandSets(
   snapshot: Pick<RegistrySnapshot, "complete" | "liveIds"> | null,
@@ -827,6 +1002,7 @@ export function buildDaemonPublishedState(
   dismissedSessionIds: ReadonlySet<string>,
   prioritizedSessionIds: ReadonlySet<string>,
   now: number,
+  labelForSessionId?: (sessionId: string) => string | undefined,
 ): PublishedState {
   return buildPublishedState(
     model,
@@ -836,6 +1012,7 @@ export function buildDaemonPublishedState(
     {
       transcriptPathForSessionId: (sessionId) => findTranscript(cfg.claudeDir, sessionId),
       voiceForLabel: (label) => voiceFor(cfg, label),
+      labelForSessionId,
       prioritizedSessionIds,
     },
   );
@@ -929,6 +1106,35 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let recitingEvent: TurnEvent | null = null;
   let handlingEvent: TurnEvent | null = null;
   let handlingPauseGeneration: number | null = null;
+  function labelForSessionId(id: string): string {
+    const session = panelSessions.get(id);
+    const known = latestTurnBySession.get(id)
+      ?? (recitingEvent?.sessionId === id ? recitingEvent : null)
+      ?? (handlingEvent?.sessionId === id ? handlingEvent : null)
+      ?? (lastTurn?.sessionId === id ? lastTurn : null);
+    return panelLabels.get(id)
+      ?? sessionStates.get(id)?.label
+      ?? known?.label
+      ?? (session ? sessionLabel(session, session.cwd) : id.slice(0, 8));
+  }
+  function isKnownSessionId(id: string): boolean {
+    return panelSessions.has(id)
+      || sessionStates.has(id)
+      || latestTurnBySession.has(id)
+      || dismissedSessionIds.has(id)
+      || pausedSessionIds.has(id)
+      || mutedSessionIds.has(id)
+      || prioritizedSessionIds.has(id)
+      || sessionHeldTurns.has(id)
+      || pending.has(id)
+      || recitingEvent?.sessionId === id
+      || handlingEvent?.sessionId === id;
+  }
+  function sessionActionTarget(sessionId: string): SessionActionsTarget | null {
+    return isKnownSessionId(sessionId)
+      ? { sessionId, label: labelForSessionId(sessionId) }
+      : null;
+  }
   const sessionModalOpen = (): boolean =>
     Boolean(settingsOverlay?.isOpen() || sessionActionsOverlay?.isOpen());
   const explicitQuietOverrideBlocked = (): boolean =>
@@ -1032,7 +1238,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         forgetQueuedAudioCommand,
         sessionId,
       ),
-    labelFor: (id) => sessionStates.get(id)?.label ?? id.slice(0, 8),
+    labelFor: labelForSessionId,
     log,
     render: () => void renderSessionPanel(),
   });
@@ -1093,6 +1299,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   );
   const settingsPause = new SettingsPauseLifecycle(silentPause);
   const meetingPause = new SettingsPauseLifecycle(silentPause);
+  const sessionCommandPause = new SettingsPauseLifecycle(silentPause);
   // Legacy server mode still gates its first event on a full-body canary.
   // Worker startup is deliberately asynchronous: speech uses say until ready.
   let ttsStartup: Promise<void> = Promise.resolve();
@@ -1154,19 +1361,25 @@ export async function runDaemon(cfg: Config): Promise<void> {
     return s;
   };
 
+  function restoreDismissedSession(sessionId: string): boolean {
+    const label = labelForSessionId(sessionId);
+    if (!restoreDismissedSessionState(
+      sessionId,
+      dismissedSessionIds,
+      mutedSessionIds,
+    )) return false;
+    log(`▶ restored "${label}" after dismiss`);
+    void renderSessionPanel();
+    return true;
+  }
+
   function enqueue(event: TurnEvent): void {
     if (shuttingDown) return;
     // A named wake is the deliberate escape hatch from safe dismiss. Clear the
     // hidden/muted state before arrival stamping so the wake and future turns
     // are both usable again; an unnamed wake cannot identify a dismissed owner.
-    if (
-      event.type === "wake"
-      && event.sessionId
-      && dismissedSessionIds.delete(event.sessionId)
-    ) {
-      mutedSessionIds.delete(event.sessionId);
-      log(`▶ restored "${event.label}" after dismiss`);
-      void renderSessionPanel();
+    if (event.type === "wake" && event.sessionId) {
+      restoreDismissedSession(event.sessionId);
     }
     if (!eventOrder.accept(event)) return;
     const forgetOnArrival = shouldForgetMutedArrival(
@@ -1405,7 +1618,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
       model.sessionActionsOverlay = sessionActionsOverlay?.model() ?? null;
       panelOrder = model.rows.map((row) => row.sessionId);
       panelLabels = new Map(model.rows.map((row) => [row.sessionId, row.label]));
-      panelSessions = new Map(live.map((session) => [session.sessionId, session]));
+      // Keep dismissed metadata available for restore clients; visible rows and
+      // numbered terminal actions remain derived from the filtered `live` list.
+      // An incomplete registry is uncertainty, so merge what it proved instead
+      // of discarding labels that only a later complete snapshot may prune.
+      if (snap?.complete) {
+        panelSessions = new Map(registryLive.map((session) => [session.sessionId, session]));
+      } else {
+        for (const session of registryLive) panelSessions.set(session.sessionId, session);
+      }
       numberedSessionRows = numberPanelSessionRows(model.rows, live);
       // Read mode state after the async registry snapshot so a slow older redraw
       // cannot repaint a stale pause/mute banner over a newer toggle.
@@ -1420,6 +1641,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         dismissedSessionIds,
         prioritizedSessionIds,
         Date.now(),
+        labelForSessionId,
       );
       publishedStateWriter.request();
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
@@ -3392,68 +3614,71 @@ export async function runDaemon(cfg: Config): Promise<void> {
     onClose: () => settingsPause.close(),
     onChange: () => void renderSessionPanel(),
   });
-  sessionActionsOverlay = new SessionActionsOverlay({
-    controller: {
-      voiceCandidates: () => availableVoiceRing(cfg),
-      effectiveVoice: (target) => voiceFor(cfg, target.label),
-      previewVoice: (target, voice) => {
-        speech.cancelCurrent();
-        enqueue({
-          type: "speak",
-          sessionId: target.sessionId,
-          label: "",
-          announce: `${target.label} sounds like this.`,
-          voice,
-        });
-      },
-      setVoice: (target, voice) => {
-        setVoiceOverride(target.label, voice);
-        log(`voice pinned for "${target.label}" -> ${voice}`);
-      },
-      resetVoice: (target) => {
-        clearVoiceOverride(target.label);
-        log(`voice reset to auto for "${target.label}"`);
-      },
-      isPrioritized: (sessionId) => prioritizedSessionIds.has(sessionId),
-      setPrioritized: (sessionId, prioritized) => {
-        if (prioritized) prioritizedSessionIds.add(sessionId);
-        else prioritizedSessionIds.delete(sessionId);
-        log(`${prioritized ? "★ prioritized" : "normal hand-off for"} "${
-          panelLabels.get(sessionId) ?? sessionId.slice(0, 8)
-        }"`);
-        void renderSessionPanel();
-      },
-      rename: (target, label) => {
-        const renamed = renameSessionLabel(
-          target.sessionId,
-          target.label,
-          label,
-        );
-        relabelRuntimeSession(target.sessionId, target.label, renamed.label);
-        log(`renamed "${target.label}" -> "${renamed.label}"${
-          renamed.voiceMigrated ? " (voice pin migrated)" : ""
-        }`);
-        void renderSessionPanel();
-        return renamed.label;
-      },
-      dismiss: (target) => {
-        // Hide before the mute helper repaints, so no intermediate
-        // muted-but-visible row flashes behind the closing modal.
-        dismissedSessionIds.add(target.sessionId);
-        panelOrder = panelOrder.filter((sessionId) => sessionId !== target.sessionId);
-        panelLabels.delete(target.sessionId);
-        speech.cancelCurrent();
-        for (let index = queue.length - 1; index >= 0; index--) {
-          const queued = queue[index]!;
-          if (queued.type === "speak" && queued.sessionId === target.sessionId) {
-            queue.splice(index, 1);
-          }
-        }
-        theaterNavigation.release();
-        setSessionMutedWithDigest(target.sessionId, true);
-        log(`dismissed "${target.label}" — announcements stopped; session keeps running`);
-      },
+  const sessionActions: SessionActionsController = {
+    voiceCandidates: () => availableVoiceRing(cfg),
+    effectiveVoice: (target) => voiceFor(cfg, target.label),
+    previewVoice: (target, voice) => {
+      speech.cancelCurrent();
+      enqueue({
+        type: "speak",
+        sessionId: target.sessionId,
+        label: "",
+        announce: `${target.label} sounds like this.`,
+        voice,
+      });
     },
+    setVoice: (target, voice) => {
+      setVoiceOverride(target.label, voice);
+      log(`voice pinned for "${target.label}" -> ${voice}`);
+    },
+    resetVoice: (target) => {
+      const changed = clearVoiceOverride(target.label);
+      log(`voice reset to auto for "${target.label}"`);
+      return changed;
+    },
+    isPrioritized: (sessionId) => prioritizedSessionIds.has(sessionId),
+    setPrioritized: (sessionId, prioritized) => {
+      if (prioritized) prioritizedSessionIds.add(sessionId);
+      else prioritizedSessionIds.delete(sessionId);
+      log(`${prioritized ? "★ prioritized" : "normal hand-off for"} "${
+        labelForSessionId(sessionId)
+      }"`);
+      void renderSessionPanel();
+    },
+    rename: (target, label) => {
+      const renamed = renameSessionLabel(
+        target.sessionId,
+        target.label,
+        label,
+      );
+      relabelRuntimeSession(target.sessionId, target.label, renamed.label);
+      log(`renamed "${target.label}" -> "${renamed.label}"${
+        renamed.voiceMigrated ? " (voice pin migrated)" : ""
+      }`);
+      void renderSessionPanel();
+      return renamed.label;
+    },
+    dismiss: (target) => {
+      // Hide before the mute helper repaints, so no intermediate
+      // muted-but-visible row flashes behind the closing modal.
+      dismissedSessionIds.add(target.sessionId);
+      panelOrder = panelOrder.filter((sessionId) => sessionId !== target.sessionId);
+      panelLabels.delete(target.sessionId);
+      speech.cancelCurrent();
+      for (let index = queue.length - 1; index >= 0; index--) {
+        const queued = queue[index]!;
+        if (queued.type === "speak" && queued.sessionId === target.sessionId) {
+          queue.splice(index, 1);
+        }
+      }
+      theaterNavigation.release();
+      setSessionMutedWithDigest(target.sessionId, true);
+      log(`dismissed "${target.label}" — announcements stopped; session keeps running`);
+    },
+    restore: restoreDismissedSession,
+  };
+  sessionActionsOverlay = new SessionActionsOverlay({
+    controller: sessionActions,
     onOpen: () => settingsPause.open(),
     onClose: () => settingsPause.close(),
     onChange: () => void renderSessionPanel(),
@@ -3463,14 +3688,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const known = latestTurnBySession.get(event.sessionId)
       ?? (recitingEvent?.sessionId === event.sessionId ? recitingEvent : null)
       ?? (lastTurn?.sessionId === event.sessionId ? lastTurn : null);
-    const label = panelLabels.get(event.sessionId)
-      ?? sessionStates.get(event.sessionId)?.label
-      ?? known?.label
-      ?? sessionLabel(session ?? null, session?.cwd);
     return enrichTargetedAudioCommand(event, {
       session,
       known,
-      label,
+      label: labelForSessionId(event.sessionId),
       transcriptPath: findTranscript(cfg.claudeDir, event.sessionId),
     });
   };
@@ -3483,6 +3704,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
     enqueueInstant: (event) => instantControls.enqueueInstant(event),
     enqueue,
   };
+  const sessionCommandDispatchOptions: SessionCommandDispatchOptions = {
+    controller: sessionActions,
+    pause: sessionCommandPause,
+    targetForSessionId: sessionActionTarget,
+    isDismissed: (sessionId) => dismissedSessionIds.has(sessionId),
+  };
   const server = createServer({ allowHalfOpen: true }, (sock) => {
     let buf = "";
     let handled = false;
@@ -3490,10 +3717,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
     const handleLine = (line: string): void => {
       if (handled) return;
       handled = true;
-      let response: ConfigControlResponse | undefined;
+      let response: ControlResponse | undefined;
       try {
         const value: unknown = JSON.parse(line);
-        const control = dispatchControlMessage(value, configController);
+        const control = dispatchControlMessage(
+          value,
+          configController,
+          sessionCommandDispatchOptions,
+        );
         if (control.handled) response = control.response;
         else {
           const turn = validateSocketTurnEvent(value);
@@ -3767,7 +3998,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   function wakeBySessionId(id: string): void {
     const s = panelSessions.get(id);
     if (!s) return log("that session is gone — press s to list");
-    const label = sessionLabel(s, s.cwd);
+    const label = labelForSessionId(id);
     log(`▸ talking to ${label}`);
     enqueue({
       type: "wake",
@@ -3787,10 +4018,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       ?? (recitingEvent?.sessionId === id ? recitingEvent : null)
       ?? (lastTurn?.sessionId === id ? lastTurn : null);
     const session = panelSessions.get(id);
-    const label = panelLabels.get(id)
-      ?? sessionStates.get(id)?.label
-      ?? known?.label
-      ?? sessionLabel(session ?? null, session?.cwd);
+    const label = labelForSessionId(id);
     const transcriptPath = known?.transcriptPath ?? findTranscript(cfg.claudeDir, id);
     if (!transcriptPath) return log(`nothing to recite for "${label}" — transcript not found`);
     instantControls.enqueueInstant({
@@ -3907,9 +4135,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         if (sessionId) {
           sessionActionsOverlay?.open({
             sessionId,
-            label: panelLabels.get(sessionId)
-              ?? sessionStates.get(sessionId)?.label
-              ?? sessionId.slice(0, 8),
+            label: labelForSessionId(sessionId),
           });
           return;
         }

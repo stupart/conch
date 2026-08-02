@@ -16,16 +16,48 @@ export interface SessionActionsController {
   voiceCandidates(target: Readonly<SessionActionsTarget>): readonly string[];
   effectiveVoice(target: Readonly<SessionActionsTarget>): string;
   previewVoice(target: Readonly<SessionActionsTarget>, voice: string): void;
-  setVoice(target: Readonly<SessionActionsTarget>, voice: string): void;
-  resetVoice(target: Readonly<SessionActionsTarget>): void;
+  setVoice(target: Readonly<SessionActionsTarget>, voice: string): boolean | void;
+  resetVoice(target: Readonly<SessionActionsTarget>): boolean | void;
   isPrioritized(sessionId: string): boolean;
-  setPrioritized(sessionId: string, prioritized: boolean): void;
+  setPrioritized(sessionId: string, prioritized: boolean): boolean | void;
   /**
    * Return the canonical stored label when persistence normalizes the input.
    * A void return means the submitted (trimmed) label was stored unchanged.
    */
   rename(target: Readonly<SessionActionsTarget>, label: string): string | void;
-  dismiss(target: Readonly<SessionActionsTarget>): void;
+  dismiss(target: Readonly<SessionActionsTarget>): boolean | void;
+  /** Restore a previously dismissed session, including dismiss-coupled mute. */
+  restore(sessionId: string): boolean | void;
+}
+
+export type SessionActionMutation =
+  | { command: "rename"; label: string }
+  | { command: "set-voice"; voice: string }
+  | { command: "reset-voice" }
+  | { command: "prioritize"; value: boolean }
+  | { command: "dismiss" }
+  | { command: "restore" };
+
+/** One closed command-to-controller adapter shared by terminal UI and socket IPC. */
+export function invokeSessionAction(
+  controller: SessionActionsController,
+  target: Readonly<SessionActionsTarget>,
+  mutation: SessionActionMutation,
+): string | boolean | void {
+  switch (mutation.command) {
+    case "rename":
+      return controller.rename({ ...target }, mutation.label);
+    case "set-voice":
+      return controller.setVoice({ ...target }, mutation.voice);
+    case "reset-voice":
+      return controller.resetVoice({ ...target });
+    case "prioritize":
+      return controller.setPrioritized(target.sessionId, mutation.value);
+    case "dismiss":
+      return controller.dismiss({ ...target });
+    case "restore":
+      return controller.restore(target.sessionId);
+  }
 }
 
 export interface SessionActionsOverlayOptions {
@@ -317,7 +349,11 @@ export class SessionActionsOverlay {
       return;
     }
     try {
-      this.#controller.setVoice({ ...this.#capturedTarget() }, voice);
+      invokeSessionAction(
+        this.#controller,
+        this.#capturedTarget(),
+        { command: "set-voice", voice },
+      );
       this.#acks.voice = "pinned";
       this.#error = undefined;
     } catch (error) {
@@ -328,7 +364,11 @@ export class SessionActionsOverlay {
 
   #resetVoice(): void {
     try {
-      this.#controller.resetVoice({ ...this.#capturedTarget() });
+      invokeSessionAction(
+        this.#controller,
+        this.#capturedTarget(),
+        { command: "reset-voice" },
+      );
       this.#loadVoice();
       this.#acks.voice = "auto";
       this.#error = undefined;
@@ -341,7 +381,11 @@ export class SessionActionsOverlay {
   #setPriority(prioritized: boolean): void {
     try {
       const sessionId = this.#capturedTarget().sessionId;
-      this.#controller.setPrioritized(sessionId, prioritized);
+      invokeSessionAction(
+        this.#controller,
+        this.#capturedTarget(),
+        { command: "prioritize", value: prioritized },
+      );
       this.#prioritized = this.#controller.isPrioritized(sessionId);
       this.#acks.prioritize = this.#prioritized ? "prioritized" : "normal order";
       this.#error = undefined;
@@ -360,7 +404,11 @@ export class SessionActionsOverlay {
     }
     try {
       const target = this.#capturedTarget();
-      const stored = this.#controller.rename({ ...target }, submitted);
+      const stored = invokeSessionAction(
+        this.#controller,
+        target,
+        { command: "rename", label: submitted },
+      );
       target.label = typeof stored === "string" && stored.trim() ? stored : submitted;
       this.#renameBuffer = null;
       this.#acks.rename = "renamed";
@@ -376,7 +424,11 @@ export class SessionActionsOverlay {
 
   #commitDismiss(): void {
     try {
-      this.#controller.dismiss({ ...this.#capturedTarget() });
+      invokeSessionAction(
+        this.#controller,
+        this.#capturedTarget(),
+        { command: "dismiss" },
+      );
       this.close();
     } catch (error) {
       this.#dismissArmed = false;

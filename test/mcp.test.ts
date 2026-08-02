@@ -27,8 +27,9 @@ import {
   configSnapshotEntry,
   getSettingDescriptor,
   parseSetting,
-  type ConfigControlMessage,
   type ConfigSnapshot,
+  type ControlMessage,
+  type ControlResult,
 } from "../src/settings.ts";
 import {
   downgradeTurnWithLiveBackgroundWork,
@@ -147,7 +148,7 @@ interface FakeCalls {
   labels: Array<{ sessionId: string | null; cwd: string | undefined }>;
   renames: Array<{ sessionId: string; oldLabel: string; newLabel: string }>;
   daemon: Array<{ socketPath: string; event: TurnEvent }>;
-  control: Array<{ socketPath: string; message: ConfigControlMessage }>;
+  control: Array<{ socketPath: string; message: ControlMessage }>;
   marks: string[];
   assistantReads: string[];
   sentenceSplits: string[];
@@ -161,6 +162,8 @@ interface FakeOptions {
   transcriptPath?: string;
   assistantText?: string;
   daemonAccepts?: boolean;
+  controlResult?: ControlResult;
+  renameAckLabel?: string;
 }
 
 function defaultConfigSnapshot(): ConfigSnapshot {
@@ -243,6 +246,22 @@ function fakeHarness(options: FakeOptions = {}): {
     },
     async sendControlMessage(socketPath, message) {
       calls.control.push({ socketPath, message });
+      if (options.controlResult) return options.controlResult;
+      if (message.kind === "session-command") {
+        return {
+          ok: true,
+          response: {
+            kind: "session-ack",
+            sessionId: message.sessionId,
+            command: message.command,
+            ...(message.command === "rename"
+              ? { label: options.renameAckLabel ?? message.label }
+              : {}),
+            changed: message.command === "rename"
+              && (options.renameAckLabel ?? message.label) !== "Build label",
+          },
+        };
+      }
       if (message.kind === "get-config") {
         return {
           ok: true,
@@ -547,6 +566,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
         active: false,
       }],
       dismissed: [],
+      dismissedRows: [],
     });
     expect(h.calls.registries).toEqual(["/virtual/claude"]);
   });
@@ -644,16 +664,23 @@ describe("real MCP tool handlers with injected dependencies", () => {
     });
 
     expect(JSON.parse(toolText(renamed))).toEqual({
+      kind: "session-ack",
       sessionId: "session-123",
+      command: "rename",
       label: "Release",
-      voiceMigrated: true,
+      changed: true,
     });
-    expect(h.calls.renames).toEqual([{
-      sessionId: "session-123",
-      oldLabel: "Build label",
-      newLabel: "Release",
-    }]);
+    expect(h.calls.renames).toEqual([]);
     expect(h.calls.control).toEqual([
+      {
+        socketPath: "/virtual/conch.sock",
+        message: {
+          kind: "session-command",
+          sessionId: "session-123",
+          command: "rename",
+          label: "Release",
+        },
+      },
       {
         socketPath: "/virtual/conch.sock",
         message: { kind: "set-config", key: "read-full", value: false },
@@ -702,6 +729,93 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(h.calls.assistantReads).toEqual(["/virtual/session-123.jsonl"]);
     expect(h.calls.sentenceSplits).toEqual(["First. Second! Third? Fourth."]);
     expect(h.calls.daemon).toEqual([]);
+  });
+
+  test("rename falls back to direct persistence only when the daemon is down", async () => {
+    const h = fakeHarness({
+      controlResult: { ok: false, reason: "daemon-down" },
+    });
+    const handlers = createMcpToolHandlers({
+      claudeDir: "/virtual/claude",
+      socketPath: "/virtual/conch.sock",
+    }, h.dependencies);
+
+    const renamed = await callTool(handlers, "conch_rename", {
+      session: "Build",
+      label: "Release",
+    });
+
+    expect(JSON.parse(toolText(renamed))).toEqual({
+      kind: "session-ack",
+      sessionId: "session-123",
+      command: "rename",
+      label: "Release",
+      changed: true,
+    });
+    expect(h.calls.control).toEqual([{
+      socketPath: "/virtual/conch.sock",
+      message: {
+        kind: "session-command",
+        sessionId: "session-123",
+        command: "rename",
+        label: "Release",
+      },
+    }]);
+    expect(h.calls.renames).toEqual([{
+      sessionId: "session-123",
+      oldLabel: "Build label",
+      newLabel: "Release",
+    }]);
+  });
+
+  test("rename returns the daemon's canonical post-mutation label", async () => {
+    const h = fakeHarness({ renameAckLabel: "Canonical Release" });
+    const handlers = createMcpToolHandlers({
+      claudeDir: "/virtual/claude",
+      socketPath: "/virtual/conch.sock",
+    }, h.dependencies);
+
+    const renamed = await callTool(handlers, "conch_rename", {
+      session: "Build",
+      label: "  Canonical Release\n",
+    });
+
+    expect(JSON.parse(toolText(renamed))).toMatchObject({
+      kind: "session-ack",
+      sessionId: "session-123",
+      command: "rename",
+      label: "Canonical Release",
+      changed: true,
+    });
+    expect(h.calls.renames).toEqual([]);
+  });
+
+  test("rename does not bypass an indeterminate daemon reply", async () => {
+    const h = fakeHarness({
+      controlResult: {
+        ok: false,
+        reason: "ack-unknown",
+        diagnostic: "daemon closed without a reply",
+      },
+    });
+    const handlers = createMcpToolHandlers({
+      claudeDir: "/virtual/claude",
+      socketPath: "/virtual/conch.sock",
+    }, h.dependencies);
+
+    const response = await callTool(handlers, "conch_rename", {
+      session: "Build",
+      label: "Release",
+    });
+
+    expect(rpcResult(response)).toEqual({
+      content: [{
+        type: "text",
+        text: "ack-unknown: daemon closed without a reply",
+      }],
+      isError: true,
+    });
+    expect(h.calls.renames).toEqual([]);
   });
 
   test("review_to_front sends the exact review turn before opening its link", async () => {

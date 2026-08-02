@@ -58,6 +58,8 @@ class FakeController implements SessionActionsController {
   dismiss(target: Readonly<SessionActionsTarget>): void {
     this.dismissals.push({ ...target });
   }
+
+  restore(): void {}
 }
 
 function moveTo(overlay: SessionActionsOverlay, key: SessionActionKey): void {
