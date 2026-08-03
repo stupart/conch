@@ -1256,13 +1256,14 @@ private struct ConversationDocument {
         let baseFont = (base[.font] as? NSFont) ?? ConchTypography.nsFont(size: 16)
         let output = NSMutableAttributedString()
         var previousBlock: Int?
+        var previousWasListItem = false
 
         for run in parsed.runs {
             let piece = NSMutableAttributedString(
                 attributedString: NSAttributedString(AttributedString(parsed[run.range]))
             )
             guard piece.length > 0 else { continue }
-            let whole = NSRange(location: 0, length: piece.length)
+            var whole = NSRange(location: 0, length: piece.length)
             piece.addAttributes(base, range: whole)
 
             let intent = run.presentationIntent
@@ -1278,6 +1279,7 @@ private struct ConversationDocument {
             var isTableCell = false
             var startsTableRow = false
             var isHeaderRow = false
+            var isListItem = false
             if let components = intent?.components {
                 // Nesting depth drives the indent: a list inside a list carries
                 // two listItem components, so count them rather than assuming one.
@@ -1293,6 +1295,7 @@ private struct ConversationDocument {
                         blockFont = NSFont(descriptor: descriptor, size: size)
                             ?? NSFont.boldSystemFont(ofSize: size)
                     case .listItem(let ordinal):
+                        isListItem = true
                         let ordered = components.contains {
                             if case .orderedList = $0.kind { return true }
                             return false
@@ -1340,6 +1343,32 @@ private struct ConversationDocument {
             }
             piece.addAttribute(.font, value: blockFont, range: whole)
 
+            // We own the newlines, so a newline the parser did leave in (code
+            // blocks keep theirs) would double up against our own separator.
+            while piece.length > 0, piece.string.hasSuffix("\n") {
+                piece.deleteCharacters(in: NSRange(location: piece.length - 1, length: 1))
+            }
+            guard piece.length > 0 else { continue }
+            whole = NSRange(location: 0, length: piece.length)
+
+            // The indent has to be on the WHOLE LINE, not just the text: AppKit
+            // takes a paragraph's style from its FIRST character, which for a
+            // list item is the bullet. Styling only the text left it dead.
+            var lineAttributes = base
+            if indent > 0, let paragraph = (base[.paragraphStyle] as? NSParagraphStyle)?
+                .mutableCopy() as? NSMutableParagraphStyle {
+                paragraph.firstLineHeadIndent = indent
+                // Hanging indent so a wrapped item lines up under its own text
+                // rather than sliding back under the bullet.
+                paragraph.headIndent = indent + (prefix.isEmpty ? 0 : 14)
+                lineAttributes[.paragraphStyle] = paragraph
+                piece.addAttribute(
+                    .paragraphStyle,
+                    value: paragraph,
+                    range: NSRange(location: 0, length: piece.length)
+                )
+            }
+
             if isTableCell {
                 // Row breaks come from the first cell; cells within a row are
                 // separated inline so the row reads as a row.
@@ -1353,10 +1382,16 @@ private struct ConversationDocument {
                 }
             } else {
                 if isNewBlock, output.length > 0 {
-                    output.append(NSAttributedString(string: "\n", attributes: base))
+                    // Blocks only read as blocks with air between them. The
+                    // exception is a run of list items, which is visually ONE
+                    // block — a blank line between bullets looks broken.
+                    let tight = isListItem && previousWasListItem
+                    output.append(
+                        NSAttributedString(string: tight ? "\n" : "\n\n", attributes: base)
+                    )
                 }
                 if !prefix.isEmpty {
-                    output.append(NSAttributedString(string: prefix, attributes: base))
+                    output.append(NSAttributedString(string: prefix, attributes: lineAttributes))
                 }
             }
 
@@ -1392,15 +1427,9 @@ private struct ConversationDocument {
                 }
             }
 
-            if indent > 0, let paragraph = (base[.paragraphStyle] as? NSParagraphStyle)?
-                .mutableCopy() as? NSMutableParagraphStyle {
-                paragraph.firstLineHeadIndent = indent
-                paragraph.headIndent = indent
-                piece.addAttribute(.paragraphStyle, value: paragraph, range: whole)
-            }
-
             output.append(piece)
             previousBlock = blockID
+            previousWasListItem = isListItem
         }
 
         guard output.length > 0 else { return NSAttributedString(string: text, attributes: base) }
