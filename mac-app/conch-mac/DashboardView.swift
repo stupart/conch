@@ -1080,16 +1080,20 @@ private struct ConversationDocument {
             } else {
                 content = staticContent
             }
-            text = NSAttributedString(
-                string: content.text,
-                attributes: ConversationDocument.attributes(
-                    color: NSColor(
-                        content.isPlaceholder
-                            ? ConchPalette.textDim
-                            : ConchPalette.textPrimary
-                    )
+            let staticAttributes = ConversationDocument.attributes(
+                color: NSColor(
+                    content.isPlaceholder
+                        ? ConchPalette.textDim
+                        : ConchPalette.textPrimary
                 )
             )
+            // A placeholder is our own prose, never markdown; a real reply is an
+            // agent's markdown and must render as prose, not as source. This is
+            // the path a session spends MOST of its life in — only the live
+            // reading path was being rendered before.
+            text = content.isPlaceholder
+                ? NSAttributedString(string: content.text, attributes: staticAttributes)
+                : ConversationDocument.markdown(content.text, attributes: staticAttributes)
             scrollTarget = .none
             return
         }
