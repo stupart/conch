@@ -1302,7 +1302,16 @@ private struct ConversationDocument {
             var prefix = ""
             var indent: CGFloat = 0
             var blockFont = baseFont
+            var isTableCell = false
+            var startsTableRow = false
+            var isHeaderRow = false
             if let components = intent?.components {
+                // Nesting depth drives the indent: a list inside a list carries
+                // two listItem components, so count them rather than assuming one.
+                let listDepth = components.filter {
+                    if case .listItem = $0.kind { return true }
+                    return false
+                }.count
                 for component in components {
                     switch component.kind {
                     case .header(let level):
@@ -1315,8 +1324,12 @@ private struct ConversationDocument {
                             if case .orderedList = $0.kind { return true }
                             return false
                         }
-                        if isNewBlock { prefix = ordered ? "\(ordinal). " : "• " }
-                        indent = 16
+                        // Only the OUTERMOST listItem marks this line; the inner
+                        // components describe ancestors, whose bullets already ran.
+                        if isNewBlock, prefix.isEmpty {
+                            prefix = ordered ? "\(ordinal). " : (listDepth > 1 ? "◦ " : "• ")
+                        }
+                        indent = CGFloat(listDepth) * 16
                     case .blockQuote:
                         indent = 16
                         piece.addAttribute(
@@ -1330,18 +1343,48 @@ private struct ConversationDocument {
                             weight: .regular
                         )
                         indent = 16
+                    // A table arrives as one run PER CELL. Without this every
+                    // cell became its own line, so a 2x2 table rendered as four
+                    // stacked fragments. Keep a row on one line, separated, and
+                    // bold the header row.
+                    case .tableCell(let column):
+                        isTableCell = true
+                        if column == 0 { startsTableRow = true }
+                        blockFont = NSFont.monospacedSystemFont(
+                            ofSize: baseFont.pointSize - 1,
+                            weight: .regular
+                        )
+                    case .tableHeaderRow:
+                        isHeaderRow = true
                     default:
                         break
                     }
                 }
             }
+            if isTableCell, isHeaderRow {
+                let descriptor = blockFont.fontDescriptor.withSymbolicTraits(.bold)
+                blockFont = NSFont(descriptor: descriptor, size: blockFont.pointSize) ?? blockFont
+            }
             piece.addAttribute(.font, value: blockFont, range: whole)
 
-            if isNewBlock, output.length > 0 {
-                output.append(NSAttributedString(string: "\n", attributes: base))
-            }
-            if !prefix.isEmpty {
-                output.append(NSAttributedString(string: prefix, attributes: base))
+            if isTableCell {
+                // Row breaks come from the first cell; cells within a row are
+                // separated inline so the row reads as a row.
+                if output.length > 0 {
+                    output.append(
+                        NSAttributedString(
+                            string: startsTableRow ? "\n" : "   ",
+                            attributes: base
+                        )
+                    )
+                }
+            } else {
+                if isNewBlock, output.length > 0 {
+                    output.append(NSAttributedString(string: "\n", attributes: base))
+                }
+                if !prefix.isEmpty {
+                    output.append(NSAttributedString(string: prefix, attributes: base))
+                }
             }
 
             // Inline emphasis within the block.
@@ -1358,6 +1401,13 @@ private struct ConversationDocument {
                         range: range
                     )
                     return
+                }
+                if inline.contains(.strikethrough) {
+                    piece.addAttribute(
+                        .strikethroughStyle,
+                        value: NSUnderlineStyle.single.rawValue,
+                        range: range
+                    )
                 }
                 var traits: NSFontDescriptor.SymbolicTraits = []
                 if inline.contains(.stronglyEmphasized) { traits.insert(.bold) }
