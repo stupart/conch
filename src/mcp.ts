@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
 import { loadConfig, type Config } from "./config.ts";
+import { CONCH_VERSION } from "./version.ts";
 import { sendToDaemon, type TurnEvent } from "./hook.ts";
 import { registryToPanel } from "./panel.ts";
 import {
@@ -904,7 +905,7 @@ export async function dispatchJsonRpc(
           ? jsonRpcResult(requestId, {
             protocolVersion: MCP_PROTOCOL_VERSION,
             capabilities: { tools: {} },
-            serverInfo: { name: "conch", version: "0.1.0" },
+            serverInfo: { name: "conch", version: CONCH_VERSION },
           })
           : null;
       }
