@@ -1,4 +1,4 @@
-import { classify, classifyApproval, isSendCommand, splitTrailingSend } from "./commands.ts";
+import { classify, classifyApproval, isSendCommand, splitTrailingDiscard, splitTrailingSend } from "./commands.ts";
 
 /**
  * The ordered, side-effect-free half of a dictation session. The capture
@@ -191,6 +191,18 @@ export class DictationReducer {
       return [
         ...trace(input.diagnosticId, "send", this.#buffer.length),
         this.#beginAction("send", diagnostics),
+      ];
+    }
+
+    // "Looks great, no response needed." — same one-breath problem as send, but
+    // injecting it is worse than a stray word: the agent answers, which is the
+    // exact opposite of what was asked, and it costs a turn. Drop the lot.
+    if (splitTrailingDiscard(text) !== null) {
+      const discarded = diagnosticRefsFromSegments(this.#buffer);
+      this.#buffer = [];
+      return [
+        ...trace(input.diagnosticId, "discard", 0),
+        this.#beginAction("discard", diagnosticRefs(input), discarded),
       ];
     }
 

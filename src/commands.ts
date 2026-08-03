@@ -93,13 +93,32 @@ const TRAILING_SEND = new Set([
   "okay send", "ok send", "okay send it", "that's it", "thats it", "go ahead",
 ]);
 
-/** The prompt with a trailing spoken send-phrase removed, or null if absent. */
-export function splitTrailingSend(text: string): string | null {
+// Said at the tail, these mean "and don't reply to any of that". Injected as a
+// prompt they produce the exact OPPOSITE — the agent answers, and burns a turn.
+// Only the explicit no-response family is here: unlike "cancel" or "never mind",
+// these are never something you'd dictate as content, and a false positive here
+// throws away what you just said.
+const TRAILING_DISCARD = new Set([
+  "no response", "no response needed", "no response necessary",
+  "no reply", "no reply needed", "no reply necessary",
+]);
+
+function splitTrailingCommand(text: string, phrases: Set<string>): string | null {
   const match = /^([\s\S]*[.!?,])\s*([a-z' ]+?)\s*[.!?]*\s*$/i.exec(text);
   if (!match) return null;
   const body = match[1]!.trim().replace(/,$/, "");
-  if (!body || !TRAILING_SEND.has(normalize(match[2]!))) return null;
+  if (!body || !phrases.has(normalize(match[2]!))) return null;
   return body;
+}
+
+/** The prompt with a trailing spoken send-phrase removed, or null if absent. */
+export function splitTrailingSend(text: string): string | null {
+  return splitTrailingCommand(text, TRAILING_SEND);
+}
+
+/** The prompt preceding a trailing "no response needed", or null if absent. */
+export function splitTrailingDiscard(text: string): string | null {
+  return splitTrailingCommand(text, TRAILING_DISCARD);
 }
 
 /** Classifier for the short listen-gaps between read-aloud chunks. */
