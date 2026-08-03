@@ -1,0 +1,42 @@
+# Homebrew cask for conch.app — copy into stupart/homebrew-tap as Casks/conch.rb
+# once `scripts/release-app.sh` has produced a NOTARIZED zip and it is attached
+# to the matching GitHub release.
+#
+# Publishing checklist:
+#   1. xcrun notarytool store-credentials conch \
+#        --apple-id "<apple id>" --team-id 5DRS8F56M2 --password "<app-specific password>"
+#      (one time only — an app-specific password from appleid.apple.com)
+#   2. scripts/release-app.sh            # builds, signs, notarizes, staples, zips
+#   3. gh release upload vX.Y.Z dist/conch-mac-X.Y.Z.zip
+#   4. paste the printed sha256 below, drop this file into the tap as Casks/conch.rb
+#
+# Do NOT publish this before step 2 succeeds: a cask download carries
+# com.apple.quarantine, so Gatekeeper assesses it and an unnotarized app is
+# refused with "cannot be opened because the developer cannot be verified".
+cask "conch" do
+  version "0.2.0"
+  sha256 "REPLACE_WITH_SHA256_FROM_release-app.sh"
+
+  url "https://github.com/stupart/conch/releases/download/v#{version}/conch-mac-#{version}.zip"
+  name "conch"
+  desc "Voice loop for Claude Code: see and steer your sessions, and hear them speak"
+  homepage "https://github.com/stupart/conch"
+
+  depends_on formula: "stupart/tap/conch"
+  depends_on macos: ">= :sonoma"
+
+  app "conch-mac.app", target: "conch.app"
+
+  caveats <<~EOS
+    conch.app is the window onto the conch daemon. If you have not set it up yet:
+      conch setup
+
+    The daemon does the talking and listening; the app shows you every session,
+    renders finished work inline, and lets you talk back.
+  EOS
+
+  zap trash: [
+    "~/Library/Preferences/ai.blueprintstudio.conch.plist",
+    "~/Library/Saved Application State/ai.blueprintstudio.conch.savedState",
+  ]
+end
