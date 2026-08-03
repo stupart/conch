@@ -206,3 +206,14 @@ describe("a send phrase in the same breath as the prompt", () => {
     expect(effects.find((e) => e.type === "request-barrier")).toBeUndefined();
   });
 });
+
+test("a trailing no-response discards the buffer rather than prompting", () => {
+  const reducer = new DictationReducer({ holdSubmit: true });
+  reducer.consume(transcript(1, "Here is the context.", "rec-0001"));
+  const effects = reducer.consume(
+    transcript(2, "That covers it, no response needed.", "rec-0002"),
+  );
+  const done = ready(reducer.consume(barrier(3, requested(effects))));
+  expect(done.action).toBe("discard");
+  expect(done.payload).toBeNull();
+});

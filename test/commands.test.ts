@@ -6,6 +6,7 @@ import {
   isSendCommand,
   parseNameAddress,
   parseQuery,
+  splitTrailingDiscard,
   splitTrailingSend,
   wordOverlapRatio,
 } from "../src/commands.ts";
@@ -196,4 +197,16 @@ test("trailing-send never eats real content", () => {
   // A bare command has no body, and is the existing whole-utterance path.
   expect(splitTrailingSend("Send.")).toBeNull();
   expect(splitTrailingSend("No trailing command here")).toBeNull();
+});
+
+test("a trailing no-response closes the loop instead of asking for a reply", () => {
+  expect(splitTrailingDiscard("Looks great, no response needed.")).toBe("Looks great");
+  expect(splitTrailingDiscard("That's the whole list. No reply needed.")).toBe(
+    "That's the whole list.",
+  );
+  // "cancel" and "never mind" stay solo-only: they're plausible content, and a
+  // false positive here throws away what you just dictated.
+  expect(splitTrailingDiscard("That is fine, never mind.")).toBeNull();
+  expect(splitTrailingDiscard("Fix the billing page. Cancel.")).toBeNull();
+  expect(splitTrailingDiscard("Explain why no reply came back")).toBeNull();
 });
