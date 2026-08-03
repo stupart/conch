@@ -6,6 +6,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { CONCH_VERSION } from "../src/version.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -425,7 +426,7 @@ describe("MCP dispatch", () => {
     expect(rpcResult(response)).toEqual({
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: { tools: {} },
-      serverInfo: { name: "conch", version: "0.1.0" },
+      serverInfo: { name: "conch", version: CONCH_VERSION },
     });
   });
 

@@ -183,3 +183,26 @@ describe("permission decision", () => {
     expect(classifyPermissionDecision(["", "  "])).toBeNull();
   });
 });
+
+describe("a send phrase in the same breath as the prompt", () => {
+  // From the daemon log: one long dictation ended "...Next part that is. Send."
+  // Whisper only splits on a real pause, and nobody pauses before "send", so
+  // isSendCommand — which only ever sees a whole transcript — never matched and
+  // the word was injected as content. The turn never went anywhere.
+  test("submits the prompt and drops the command", () => {
+    const reducer = new DictationReducer({ holdSubmit: true });
+    const effects = reducer.consume(
+      transcript(1, "Fix the layout. Next part that is. Send.", "rec-0001"),
+    );
+    const request = requested(effects);
+    const done = ready(reducer.consume(barrier(2, request)));
+    expect(done.action).toBe("send");
+    expect(done.payload).toBe("Fix the layout. Next part that is.");
+  });
+
+  test("keeps accumulating when no send phrase is present", () => {
+    const reducer = new DictationReducer({ holdSubmit: true });
+    const effects = reducer.consume(transcript(1, "Fix the layout.", "rec-0001"));
+    expect(effects.find((e) => e.type === "request-barrier")).toBeUndefined();
+  });
+});

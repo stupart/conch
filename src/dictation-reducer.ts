@@ -1,4 +1,4 @@
-import { classify, classifyApproval, isSendCommand } from "./commands.ts";
+import { classify, classifyApproval, isSendCommand, splitTrailingSend } from "./commands.ts";
 
 /**
  * The ordered, side-effect-free half of a dictation session. The capture
@@ -191,6 +191,19 @@ export class DictationReducer {
       return [
         ...trace(input.diagnosticId, "send", this.#buffer.length),
         this.#beginAction("send", diagnostics),
+      ];
+    }
+
+    // "…that is. Send." — one breath, so one transcript. Keep the prompt, drop
+    // the command, submit. Without this the word is injected as content and the
+    // turn never goes anywhere, which is exactly what it looks like from the
+    // outside: you said send, and it typed "send".
+    const body = splitTrailingSend(text);
+    if (body !== null && classify(body) === "prompt") {
+      this.#append(input, body);
+      return [
+        ...trace(input.diagnosticId, "send", this.#buffer.length),
+        this.#beginAction("send", diagnosticRefs(input)),
       ];
     }
 

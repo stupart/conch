@@ -79,6 +79,29 @@ export function isSendCommand(text: string): boolean {
   return SEND.has(normalize(text));
 }
 
+// Said at the tail of the same breath ("...next part that is. Send.") the word
+// never reached isSendCommand, which only ever sees a WHOLE transcript — so it
+// landed in the prompt as content. Whisper only starts a new chunk on a real
+// pause, and nobody pauses before saying "send".
+//
+// The sentence boundary is what makes this safe to strip: "tell him to send it"
+// has no full stop before the phrase, so it stays content. Phrases that read as
+// plausible instructions after a full stop ("go", "run it", "fire away") are
+// deliberately NOT here — losing a real instruction is worse than a stray word.
+const TRAILING_SEND = new Set([
+  "send", "send it", "send that", "send message", "submit", "submit it",
+  "okay send", "ok send", "okay send it", "that's it", "thats it", "go ahead",
+]);
+
+/** The prompt with a trailing spoken send-phrase removed, or null if absent. */
+export function splitTrailingSend(text: string): string | null {
+  const match = /^([\s\S]*[.!?,])\s*([a-z' ]+?)\s*[.!?]*\s*$/i.exec(text);
+  if (!match) return null;
+  const body = match[1]!.trim().replace(/,$/, "");
+  if (!body || !TRAILING_SEND.has(normalize(match[2]!))) return null;
+  return body;
+}
+
 /** Classifier for the short listen-gaps between read-aloud chunks. */
 export function classifyReadingGap(text: string): "stop" | VoiceIntent {
   const norm = normalize(text);
