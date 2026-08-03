@@ -1,0 +1,35 @@
+#!/bin/sh
+# Launch conch's MCP server for a plugin install.
+#
+# The plugin is distributed to machines we know nothing about, so it cannot bake
+# in an absolute path. It also cannot rely on PATH alone: a GUI-launched Claude
+# Code does not inherit a login shell's PATH, so a bare `conch` fails there even
+# though it works in a terminal. Resolve the binary explicitly, preferring PATH
+# and then the standard install locations.
+set -eu
+
+if command -v conch >/dev/null 2>&1; then
+  exec conch mcp "$@"
+fi
+
+for candidate in \
+  /opt/homebrew/bin/conch \
+  /usr/local/bin/conch \
+  "$HOME/.bun/bin/conch" \
+  "$HOME/.local/bin/conch"
+do
+  if [ -x "$candidate" ]; then
+    exec "$candidate" mcp "$@"
+  fi
+done
+
+# A source checkout, for people running conch without installing it.
+for checkout in "$HOME/conch" "${CONCH_ROOT:-}"; do
+  if [ -n "$checkout" ] && [ -f "$checkout/src/cli.ts" ] && command -v bun >/dev/null 2>&1; then
+    exec bun run "$checkout/src/cli.ts" mcp "$@"
+  fi
+done
+
+echo "conch: could not find the conch binary. Install it with:" >&2
+echo "  brew install stupart/tap/conch && conch setup" >&2
+exit 127
