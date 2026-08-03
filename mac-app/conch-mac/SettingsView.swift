@@ -92,11 +92,71 @@ struct ConchSettingsView: View {
                                 .frame(height: 1)
                                 .padding(.horizontal, 22)
                         }
+
+                        SessionVoicesSection()
                     }
                     .padding(.bottom, 12)
                 }
             }
         }
+    }
+}
+
+/// Per-session voices, moved off the ledger — they are reference information,
+/// not something you act on while triaging. Read straight from the daemon's
+/// published snapshot; voices are session state, not a curated setting.
+private struct SessionVoicesSection: View {
+    @State private var rows: [(label: String, voice: String)] = []
+
+    var body: some View {
+        Group {
+            if rows.isEmpty {
+                EmptyView()
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Session voices")
+                        .font(ConchTypography.font(size: 13, weight: .semibold))
+                        .foregroundStyle(ConchPalette.textPrimary)
+                    Text("Change one with `conch voice <session> <voice>`, or just say it.")
+                        .font(ConchTypography.font(size: 11))
+                        .foregroundStyle(ConchPalette.textDim)
+
+                    ForEach(rows, id: \.label) { row in
+                        HStack(spacing: 10) {
+                            Text(row.label)
+                                .font(ConchTypography.font(size: 12.5))
+                                .foregroundStyle(ConchPalette.textPrimary)
+                                .lineLimit(1)
+                            Spacer(minLength: 12)
+                            Text(row.voice)
+                                .font(ConchTypography.font(size: 11.5))
+                                .foregroundStyle(ConchPalette.textDim)
+                                .monospacedDigit()
+                                .lineLimit(1)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 22)
+                .padding(.top, 18)
+            }
+        }
+        .task { await load() }
+    }
+
+    private func load() async {
+        let path = ProcessInfo.processInfo.environment["CONCH_SESSIONS_FILE"]
+            ?? "/tmp/conch-sessions.json"
+        let parsed: [(String, String)] = await Task.detached(priority: .utility) {
+            guard let data = FileManager.default.contents(atPath: path),
+                  let state = try? JSONDecoder().decode(PublishedState.self, from: data)
+            else { return [] }
+            return state.rows.compactMap { row in
+                let voice = row.voice?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return voice.isEmpty ? nil : (row.label, voice)
+            }
+        }.value
+        rows = parsed.map { (label: $0.0, voice: $0.1) }
     }
 }
 
