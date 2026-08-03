@@ -1,7 +1,8 @@
 {
   "mcpServers": {
     "conch": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/conch-mcp"
+      "command": "sh",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/conch-mcp"]
     }
   }
 }
