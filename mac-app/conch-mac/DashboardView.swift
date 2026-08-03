@@ -1191,14 +1191,17 @@ private struct ConversationDocument {
             }
 
             if isQuotedReply {
-                output.append(NSAttributedString(string: replyText, attributes: dim))
+                output.append(ConversationDocument.markdown(replyText, attributes: dim))
             } else if live.state == "speaking", showsReadingProgress {
+                // Split the RAW text first, then render each half: the spoken
+                // boundary is an offset into the reply as written, and markdown
+                // parsing changes the length by removing syntax.
                 let parts = splitAtUTF16Offset(replyText, spokenChars)
-                output.append(NSAttributedString(string: parts.prefix, attributes: body))
+                output.append(ConversationDocument.markdown(parts.prefix, attributes: body))
                 spokenLocation = output.length
-                output.append(NSAttributedString(string: parts.remainder, attributes: dim))
+                output.append(ConversationDocument.markdown(parts.remainder, attributes: dim))
             } else {
-                output.append(NSAttributedString(string: replyText, attributes: body))
+                output.append(ConversationDocument.markdown(replyText, attributes: body))
             }
         }
 
@@ -1246,6 +1249,60 @@ private struct ConversationDocument {
             .kern: -0.25,
             .paragraphStyle: paragraph,
         ]
+    }
+
+    /// Render an agent reply as markdown rather than showing its syntax.
+    ///
+    /// Inline-only and whitespace-preserving: replies are prose with **bold**,
+    /// `code` and links, and the pane's own line breaks must survive. Anything
+    /// unparseable falls back to the literal string, so a malformed reply can
+    /// never blank the pane. The caller styles spoken vs unspoken by passing
+    /// different base attributes for each half, which is why this applies the
+    /// base attributes first and only then re-applies the parsed emphasis —
+    /// bold must stay bold in both the read and unread halves.
+    static func markdown(
+        _ text: String,
+        attributes base: [NSAttributedString.Key: Any]
+    ) -> NSAttributedString {
+        guard !text.isEmpty else { return NSAttributedString(string: "", attributes: base) }
+        guard let parsed = try? AttributedString(
+            markdown: text,
+            options: AttributedString.MarkdownParsingOptions(
+                allowsExtendedAttributes: true,
+                interpretedSyntax: .inlineOnlyPreservingWhitespace,
+                failurePolicy: .returnPartiallyParsedIfPossible
+            )
+        ) else {
+            return NSAttributedString(string: text, attributes: base)
+        }
+
+        let output = NSMutableAttributedString(attributedString: NSAttributedString(parsed))
+        let whole = NSRange(location: 0, length: output.length)
+        guard output.length > 0 else { return NSAttributedString(string: text, attributes: base) }
+        output.addAttributes(base, range: whole)
+
+        let baseFont = (base[.font] as? NSFont) ?? ConchTypography.nsFont(size: 16)
+        output.enumerateAttribute(.inlinePresentationIntent, in: whole) { value, range, _ in
+            guard let raw = value as? UInt else { return }
+            let intent = InlinePresentationIntent(rawValue: raw)
+            if intent.contains(.code) {
+                let mono = NSFont.monospacedSystemFont(
+                    ofSize: baseFont.pointSize - 1,
+                    weight: .regular
+                )
+                output.addAttribute(.font, value: mono, range: range)
+                return
+            }
+            var traits: NSFontDescriptor.SymbolicTraits = []
+            if intent.contains(.stronglyEmphasized) { traits.insert(.bold) }
+            if intent.contains(.emphasized) { traits.insert(.italic) }
+            guard !traits.isEmpty else { return }
+            let descriptor = baseFont.fontDescriptor.withSymbolicTraits(traits)
+            if let styled = NSFont(descriptor: descriptor, size: baseFont.pointSize) {
+                output.addAttribute(.font, value: styled, range: range)
+            }
+        }
+        return output
     }
 }
 
