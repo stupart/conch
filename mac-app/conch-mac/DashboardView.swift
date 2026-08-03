@@ -1145,13 +1145,34 @@ private struct ConversationDocument {
             if isQuotedReply {
                 output.append(ConversationDocument.markdown(replyText, attributes: dim))
             } else if live.state == "speaking", showsReadingProgress {
-                // Split the RAW text first, then render each half: the spoken
-                // boundary is an offset into the reply as written, and markdown
-                // parsing changes the length by removing syntax.
+                // Parse the WHOLE reply once, then dim the unspoken tail.
+                //
+                // Rendering the two halves separately corrupts block structure:
+                // a list straddling the boundary is parsed twice, so one half
+                // loses its bullets and the other injects one mid-sentence.
+                // Instead render once, and locate the boundary by rendering the
+                // raw prefix alone and taking its RENDERED length — markdown
+                // removes syntax, so a raw offset does not survive parsing.
+                let rendered = NSMutableAttributedString(
+                    attributedString: ConversationDocument.markdown(replyText, attributes: body)
+                )
                 let parts = splitAtUTF16Offset(replyText, spokenChars)
-                output.append(ConversationDocument.markdown(parts.prefix, attributes: body))
-                spokenLocation = output.length
-                output.append(ConversationDocument.markdown(parts.remainder, attributes: dim))
+                let spokenLength = min(
+                    ConversationDocument.markdown(parts.prefix, attributes: body).length,
+                    rendered.length
+                )
+                if spokenLength < rendered.length {
+                    rendered.addAttribute(
+                        .foregroundColor,
+                        value: NSColor(ConchPalette.textDim),
+                        range: NSRange(
+                            location: spokenLength,
+                            length: rendered.length - spokenLength
+                        )
+                    )
+                }
+                spokenLocation = output.length + spokenLength
+                output.append(rendered)
             } else {
                 output.append(ConversationDocument.markdown(replyText, attributes: body))
             }
