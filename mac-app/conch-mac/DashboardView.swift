@@ -1253,13 +1253,17 @@ private struct ConversationDocument {
 
     /// Render an agent reply as markdown rather than showing its syntax.
     ///
-    /// Inline-only and whitespace-preserving: replies are prose with **bold**,
-    /// `code` and links, and the pane's own line breaks must survive. Anything
-    /// unparseable falls back to the literal string, so a malformed reply can
-    /// never blank the pane. The caller styles spoken vs unspoken by passing
-    /// different base attributes for each half, which is why this applies the
-    /// base attributes first and only then re-applies the parsed emphasis —
-    /// bold must stay bold in both the read and unread halves.
+    /// Foundation gives us a parse tree, not a layout: `.inlineOnly` leaves
+    /// `## `, `- ` and `> ` markers visible, while `.full` strips them but drops
+    /// every newline (a three-item list arrives as "onetwothree"). So we parse
+    /// with `.full` and rebuild the block layout ourselves — separators between
+    /// blocks, bullets and ordinals for list items, an indent for quotes and
+    /// code, and heading weight — then apply inline emphasis within each run.
+    ///
+    /// Unparseable input falls back to the literal string, so a malformed reply
+    /// can never blank the pane. The caller styles spoken vs unspoken by passing
+    /// different base attributes per half, so base is applied FIRST and the
+    /// parsed emphasis re-applied over it — bold must survive in both halves.
     static func markdown(
         _ text: String,
         attributes base: [NSAttributedString.Key: Any]
@@ -1269,39 +1273,114 @@ private struct ConversationDocument {
             markdown: text,
             options: AttributedString.MarkdownParsingOptions(
                 allowsExtendedAttributes: true,
-                interpretedSyntax: .inlineOnlyPreservingWhitespace,
+                interpretedSyntax: .full,
                 failurePolicy: .returnPartiallyParsedIfPossible
             )
-        ) else {
+        ), !parsed.characters.isEmpty else {
             return NSAttributedString(string: text, attributes: base)
         }
 
-        let output = NSMutableAttributedString(attributedString: NSAttributedString(parsed))
-        let whole = NSRange(location: 0, length: output.length)
-        guard output.length > 0 else { return NSAttributedString(string: text, attributes: base) }
-        output.addAttributes(base, range: whole)
-
         let baseFont = (base[.font] as? NSFont) ?? ConchTypography.nsFont(size: 16)
-        output.enumerateAttribute(.inlinePresentationIntent, in: whole) { value, range, _ in
-            guard let raw = value as? UInt else { return }
-            let intent = InlinePresentationIntent(rawValue: raw)
-            if intent.contains(.code) {
-                let mono = NSFont.monospacedSystemFont(
-                    ofSize: baseFont.pointSize - 1,
-                    weight: .regular
-                )
-                output.addAttribute(.font, value: mono, range: range)
-                return
+        let output = NSMutableAttributedString()
+        var previousBlock: Int?
+
+        for run in parsed.runs {
+            let piece = NSMutableAttributedString(
+                attributedString: NSAttributedString(AttributedString(parsed[run.range]))
+            )
+            guard piece.length > 0 else { continue }
+            let whole = NSRange(location: 0, length: piece.length)
+            piece.addAttributes(base, range: whole)
+
+            let intent = run.presentationIntent
+            let blockID = intent?.components.first?.identity
+            let isNewBlock = blockID != previousBlock
+
+            // Block styling: heading weight, monospace for code, indent for
+            // quotes/code. `.full` erases the source newlines, so reinsert one
+            // blank line between blocks and a single break between list items.
+            var prefix = ""
+            var indent: CGFloat = 0
+            var blockFont = baseFont
+            if let components = intent?.components {
+                for component in components {
+                    switch component.kind {
+                    case .header(let level):
+                        let size = baseFont.pointSize + (level <= 1 ? 5 : level == 2 ? 3 : 1)
+                        let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.bold)
+                        blockFont = NSFont(descriptor: descriptor, size: size)
+                            ?? NSFont.boldSystemFont(ofSize: size)
+                    case .listItem(let ordinal):
+                        let ordered = components.contains {
+                            if case .orderedList = $0.kind { return true }
+                            return false
+                        }
+                        if isNewBlock { prefix = ordered ? "\(ordinal). " : "• " }
+                        indent = 16
+                    case .blockQuote:
+                        indent = 16
+                        piece.addAttribute(
+                            .foregroundColor,
+                            value: NSColor(ConchPalette.textDim),
+                            range: whole
+                        )
+                    case .codeBlock:
+                        blockFont = NSFont.monospacedSystemFont(
+                            ofSize: baseFont.pointSize - 1,
+                            weight: .regular
+                        )
+                        indent = 16
+                    default:
+                        break
+                    }
+                }
             }
-            var traits: NSFontDescriptor.SymbolicTraits = []
-            if intent.contains(.stronglyEmphasized) { traits.insert(.bold) }
-            if intent.contains(.emphasized) { traits.insert(.italic) }
-            guard !traits.isEmpty else { return }
-            let descriptor = baseFont.fontDescriptor.withSymbolicTraits(traits)
-            if let styled = NSFont(descriptor: descriptor, size: baseFont.pointSize) {
-                output.addAttribute(.font, value: styled, range: range)
+            piece.addAttribute(.font, value: blockFont, range: whole)
+
+            if isNewBlock, output.length > 0 {
+                output.append(NSAttributedString(string: "\n", attributes: base))
             }
+            if !prefix.isEmpty {
+                output.append(NSAttributedString(string: prefix, attributes: base))
+            }
+
+            // Inline emphasis within the block.
+            piece.enumerateAttribute(.inlinePresentationIntent, in: whole) { value, range, _ in
+                guard let raw = value as? UInt else { return }
+                let inline = InlinePresentationIntent(rawValue: raw)
+                if inline.contains(.code) {
+                    piece.addAttribute(
+                        .font,
+                        value: NSFont.monospacedSystemFont(
+                            ofSize: blockFont.pointSize - 1,
+                            weight: .regular
+                        ),
+                        range: range
+                    )
+                    return
+                }
+                var traits: NSFontDescriptor.SymbolicTraits = []
+                if inline.contains(.stronglyEmphasized) { traits.insert(.bold) }
+                if inline.contains(.emphasized) { traits.insert(.italic) }
+                guard !traits.isEmpty else { return }
+                let descriptor = blockFont.fontDescriptor.withSymbolicTraits(traits)
+                if let styled = NSFont(descriptor: descriptor, size: blockFont.pointSize) {
+                    piece.addAttribute(.font, value: styled, range: range)
+                }
+            }
+
+            if indent > 0, let paragraph = (base[.paragraphStyle] as? NSParagraphStyle)?
+                .mutableCopy() as? NSMutableParagraphStyle {
+                paragraph.firstLineHeadIndent = indent
+                paragraph.headIndent = indent
+                piece.addAttribute(.paragraphStyle, value: paragraph, range: whole)
+            }
+
+            output.append(piece)
+            previousBlock = blockID
         }
+
+        guard output.length > 0 else { return NSAttributedString(string: text, attributes: base) }
         return output
     }
 }
