@@ -135,8 +135,10 @@ description: Control conch — see and steer your other sessions by voice.
 ---
 
 ${prose}`);
+    // The plugin MUST ship its own .mcp.json — that file is the only thing
+    // that registers conch's MCP server when a stranger installs the plugin.
     expect(existsSync(join(repoRoot, "plugin", "plugins", "conch", ".mcp.json")))
-      .toBe(false);
+      .toBe(true);
   });
 
   test("embedded materialization reconstructs every compiled-release plugin asset", async () => {

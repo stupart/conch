@@ -6,6 +6,7 @@ import {
   isSendCommand,
   parseNameAddress,
   parseQuery,
+  splitTrailingSend,
   wordOverlapRatio,
 } from "../src/commands.ts";
 import { looksLikeAwaitingReply } from "../src/snippet.ts";
@@ -167,4 +168,32 @@ test("idle nag filter: only announce when the reply solicits the user", () => {
     ),
   ).toBe(false);
   expect(looksLikeAwaitingReply("Done. All tests pass and the branch is merged.")).toBe(false);
+});
+
+test("a send phrase riding the tail of one breath submits instead of injecting", () => {
+  // The utterance that exposed this, verbatim from the daemon log: one long
+  // dictation ending "Next part that is. Send." — isSendCommand only ever sees
+  // a whole transcript, so the word was injected as prompt content.
+  expect(splitTrailingSend("Fix the layout. Next part that is. Send.")).toBe(
+    "Fix the layout. Next part that is.",
+  );
+  expect(splitTrailingSend("Do the thing. Submit it.")).toBe("Do the thing.");
+  expect(splitTrailingSend("Looks right, okay send")).toBe("Looks right");
+  expect(splitTrailingSend("Ship the branch. Go ahead.")).toBe("Ship the branch.");
+});
+
+test("trailing-send never eats real content", () => {
+  // No sentence boundary before the phrase: it is part of what you're saying.
+  expect(splitTrailingSend("tell him to send it")).toBeNull();
+  // With punctuation present the regex CAN reach back past it, so the phrase
+  // set is what refuses here — the tail is a whole clause, not a command.
+  expect(splitTrailingSend("Okay, tell him to send it.")).toBeNull();
+  expect(splitTrailingSend("The retry will submit it")).toBeNull();
+  // Phrases that read as genuine instructions after a full stop stay content —
+  // losing an instruction is worse than injecting a stray word.
+  expect(splitTrailingSend("Fix the test. Run it.")).toBeNull();
+  expect(splitTrailingSend("Build it. Go.")).toBeNull();
+  // A bare command has no body, and is the existing whole-utterance path.
+  expect(splitTrailingSend("Send.")).toBeNull();
+  expect(splitTrailingSend("No trailing command here")).toBeNull();
 });
