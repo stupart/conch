@@ -225,32 +225,14 @@ private struct DashboardHeader: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Text("CONCH")
-                .font(ConchTypography.font(size: 11, weight: .medium))
-                .tracking(1.6)
-                .foregroundStyle(ConchPalette.textDim)
-
-            if let state {
-                HeaderStatusCount(
-                    status: .needs,
-                    count: state.rows.count { $0.status == .needs },
-                    label: "need you"
-                )
-                HeaderStatusCount(
-                    status: .review,
-                    count: state.rows.count { $0.review != nil || $0.status == .review },
-                    label: "review"
-                )
-                HeaderStatusCount(
-                    status: .waiting,
-                    count: state.rows.count { $0.status == .waiting },
-                    label: "waiting"
-                )
-                HeaderStatusCount(
-                    status: .working,
-                    count: state.rows.count { $0.status == .working },
-                    label: "working"
-                )
+            HStack(spacing: 5) {
+                Text("\u{1F41A}")
+                    .font(.system(size: 11))
+                    .accessibilityHidden(true)
+                Text("conch")
+                    .font(ConchTypography.font(size: 12, weight: .medium))
+                    .tracking(-0.2)
+                    .foregroundStyle(ConchPalette.textDim)
             }
 
             Spacer(minLength: 12)
@@ -303,27 +285,6 @@ private struct DashboardHeader: View {
     }
 }
 
-private struct HeaderStatusCount: View {
-    let status: RowStatus
-    let count: Int
-    let label: String
-
-    var body: some View {
-        if count > 0 {
-            HStack(spacing: 5) {
-                Image(systemName: LedgerVisual(status: status).symbol)
-                    .font(.system(size: 7.5, weight: .semibold))
-                    .foregroundStyle(LedgerVisual(status: status).color)
-
-                Text("\(count) \(label)")
-                    .font(ConchTypography.font(size: 11))
-                    .foregroundStyle(ConchPalette.textDim)
-                    .monospacedDigit()
-            }
-            .accessibilityElement(children: .combine)
-        }
-    }
-}
 
 private struct SessionLedger: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -526,10 +487,6 @@ private struct DashboardRow: View {
         return ""
     }
 
-    private var voice: String? {
-        let value = row.voice?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return value.isEmpty ? nil : value
-    }
 
     private var age: String? {
         let timestamp = row.review?.at ?? row.at
@@ -634,20 +591,6 @@ private struct DashboardRow: View {
                     .help("Prioritized")
             }
 
-            if let voice {
-                Text(voice)
-                    .font(ConchTypography.font(size: 9.5))
-                    .foregroundStyle(ConchPalette.textFaint)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(minWidth: 28, maxWidth: 54, alignment: .leading)
-                    .layoutPriority(2)
-                    .accessibilityLabel("Voice \(voice)")
-            }
-
-            DashboardStatusGlyph(visual: LedgerVisual(row: row))
-                .frame(width: 16)
-
             if !inlineDetail.isEmpty {
                 Text(inlineDetail)
                     .font(ConchTypography.font(size: 11.5))
@@ -675,6 +618,11 @@ private struct DashboardRow: View {
                     .lineLimit(1)
                     .layoutPriority(1)
             }
+
+            // The status glyph reads as the row's verdict, so it sits at the end
+            // of the line where the eye lands last — after the age, hard right.
+            DashboardStatusGlyph(visual: LedgerVisual(row: row))
+                .frame(width: 16)
         }
         .padding(.trailing, 10)
         .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
@@ -924,7 +872,7 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
         case .review, .speaking:
             return ConchPalette.statusReview
         case .recording:
-            return ConchPalette.accent
+            return ConchPalette.brandCyan
         case .transcribing:
             return ConchPalette.statusWorking.opacity(0.78)
         case .idle, .muted, .paused:
@@ -1182,7 +1130,7 @@ private struct ConversationDocument {
         let output = NSMutableAttributedString()
         let body = ConversationDocument.attributes(color: NSColor(ConchPalette.textPrimary))
         let dim = ConversationDocument.attributes(color: NSColor(ConchPalette.textDim))
-        let accent = ConversationDocument.attributes(color: NSColor(ConchPalette.accent))
+        let accent = ConversationDocument.attributes(color: NSColor(ConchPalette.brandCyan))
         var spokenLocation: Int?
 
         if !replyText.isEmpty {
