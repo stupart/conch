@@ -26,6 +26,7 @@ export const SETTING_KEYS = [
   "typing-grace",
   "barge-threshold",
   "voice-speed",
+  "keystroke-fallback",
   "read-full",
   "interrupt-on-manual-reply",
   "handoff-order",
@@ -51,6 +52,7 @@ export type SettingField =
   | "typingGraceSecs"
   | "bargeThresholdPct"
   | "ttsSpeed"
+  | "keystrokeFallback"
   | "readFull"
   | "interruptOnManualReply"
   | "handoffOrder"
@@ -219,6 +221,17 @@ export const SETTING_DESCRIPTORS = [
     bounds: positive,
     apply: "live",
     help: "Kokoro/voice synthesis speed",
+  },
+  {
+    key: "keystroke-fallback",
+    field: "keystrokeFallback",
+    env: "CONCH_KEYSTROKE_FALLBACK",
+    kind: "boolean",
+    default: false,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "type into the session's window when it isn't in a tmux pane",
   },
   {
     key: "read-full",

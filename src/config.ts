@@ -194,7 +194,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     holdSubmit: flag(env.CONCH_HOLD_SUBMIT, true),
     holdSubmitSecs: settings["hold-submit-delay"].value as number,
     recentInjectSuppressMs: num(env.CONCH_INJECT_SUPPRESS_MS, 30_000),
-    keystrokeFallback: flag(env.CONCH_KEYSTROKE_FALLBACK, false),
+    keystrokeFallback: settings["keystroke-fallback"].value as boolean,
     revealOnTurn: settings["reveal-on-turn"].value as boolean,
     revealTypingGraceSecs: settings["reveal-typing-grace"].value as number,
     workingMic: settings["working-mic"].value as boolean,
