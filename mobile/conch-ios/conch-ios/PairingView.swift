@@ -12,8 +12,18 @@ struct PairingView: View {
 
     private enum Field { case host, code }
 
+    private var trimmedCode: String {
+        code.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Six digits is the short code; anything long is a pasted token. One field
+    /// that accepts either beats making the user choose a mode.
+    private var looksLikeShortCode: Bool {
+        trimmedCode.count == 6 && trimmedCode.allSatisfy(\.isNumber)
+    }
+
     private var canPair: Bool {
-        host.contains(":") && code.trimmingCharacters(in: .whitespaces).count >= 24
+        host.contains(":") && (looksLikeShortCode || trimmedCode.count >= 24)
     }
 
     var body: some View {
@@ -36,7 +46,8 @@ struct PairingView: View {
             VStack(spacing: 14) {
                 field("Host", text: $host, placeholder: "192.168.1.20:8674", field: .host)
                     .keyboardType(.numbersAndPunctuation)
-                field("Code", text: $code, placeholder: "the pairing code", field: .code)
+                field("Code", text: $code, placeholder: "6-digit code", field: .code)
+                    .keyboardType(.numbersAndPunctuation)
             }
             .padding(.horizontal, 28)
 
@@ -77,22 +88,34 @@ struct PairingView: View {
     }
 
     private func connect() {
-        let candidate = BridgeClient.Pairing(
-            host: host.trimmingCharacters(in: .whitespaces),
-            token: code.trimmingCharacters(in: .whitespaces)
-        )
+        let trimmedHost = host.trimmingCharacters(in: .whitespaces)
         checking = true
         problem = nil
         Task { @MainActor in
+            defer { checking = false }
+
+            // Six digits: redeem them for the token the user never has to see.
+            if looksLikeShortCode {
+                switch await redeemPairingCode(host: trimmedHost, code: trimmedCode) {
+                case let .token(token):
+                    onPaired(BridgeClient.Pairing(host: trimmedHost, token: token))
+                case let .failed(reason):
+                    problem = reason
+                }
+                return
+            }
+
+            // A pasted token still works — and still gets probed before it is
+            // trusted, so a bad paste says which half was wrong.
+            let candidate = BridgeClient.Pairing(host: trimmedHost, token: trimmedCode)
             switch await probePairing(candidate) {
             case .ok:
                 onPaired(candidate)
             case .badCode:
-                problem = "That code didn't match — copy it fresh from conch pair on the Mac."
+                problem = "That code didn't match — run conch pair on the Mac for a new one."
             case let .unreachable(reason):
                 problem = reason
             }
-            checking = false
         }
     }
 
