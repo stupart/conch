@@ -62,11 +62,17 @@ struct DeliverableSheet: View {
         case let .web(url):
             BridgedWebView(url: url)
         case let .image(url):
-            ScrollView([.vertical, .horizontal]) {
+            // Fit to WIDTH, scroll vertically, start at the top. Two-axis
+            // panning at native pixel scale made a tall screenshot — the single
+            // most likely deliverable — unreadable.
+            ScrollView(.vertical) {
                 AsyncImage(url: url) { phase in
                     switch phase {
                     case let .success(image):
-                        image.resizable().scaledToFit()
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .containerRelativeFrame(.horizontal)
                     case .failure:
                         unavailableView("Couldn't load the image from your Mac.")
                     default:
@@ -115,9 +121,13 @@ private struct RemoteDocumentView: View {
                         if renderMarkdown {
                             MarkdownView(text: content)
                         } else {
-                            Text(content)
-                                .font(Type.mono)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            // Logs and tables keep their columns: wrap breaks
+                            // "712 pass, 0 fail" across lines.
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                Text(content)
+                                    .font(Type.mono)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
                     }
                     .foregroundStyle(Palette.textPrimary)
@@ -168,7 +178,15 @@ private struct BridgedPDFView: UIViewRepresentable {
         view.backgroundColor = UIColor(Palette.bg)
         Task {
             if let (data, _) = try? await URLSession.shared.data(from: url) {
-                await MainActor.run { view.document = PDFDocument(data: data) }
+                await MainActor.run {
+                    view.document = PDFDocument(data: data)
+                    // Scale and position are computed against an EMPTY document
+                    // otherwise, which opened with a dead gap above the page.
+                    view.autoScales = true
+                    if let first = view.document?.page(at: 0) {
+                        view.go(to: PDFDestination(page: first, at: CGPoint(x: 0, y: first.bounds(for: .mediaBox).height)))
+                    }
+                }
             }
         }
         return view

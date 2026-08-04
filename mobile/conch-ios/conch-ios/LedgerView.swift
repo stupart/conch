@@ -5,18 +5,33 @@ import SwiftUI
 struct LedgerView: View {
     @ObservedObject var bridge: BridgeClient
     let onUnpair: () -> Void
+    @State private var confirmingUnpair = false
 
     var body: some View {
         NavigationStack {
             Group {
                 if let state = bridge.state, !state.rows.isEmpty {
                     List {
+                        // A dead connection must be LEGIBLE, not a private 8px
+                        // dot: these rows are a snapshot, and their ages keep
+                        // counting as if live. Say so, and dim what's stale.
+                        if !bridge.isConnected {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text("Reconnecting to your Mac — showing the last known state.")
+                                    .font(Type.caption)
+                                    .foregroundStyle(Palette.waiting)
+                            }
+                            .listRowBackground(Palette.bg)
+                            .listRowSeparator(.hidden)
+                        }
                         ForEach(state.rows) { row in
                             NavigationLink(value: row.id) {
                                 SessionRowView(row: row)
                             }
                             .listRowBackground(Palette.bg)
                             .listRowSeparatorTint(Palette.divider)
+                            .opacity(bridge.isConnected ? 1 : 0.55)
                         }
                     }
                     .listStyle(.plain)
@@ -36,7 +51,12 @@ struct LedgerView: View {
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Menu {
-                        Button("Unpair from this Mac", role: .destructive, action: onUnpair)
+                        // The app's only destructive action: one stray tap
+                        // otherwise discards the pairing and demands the Mac's
+                        // code again.
+                        Button("Unpair from this Mac…", role: .destructive) {
+                            confirmingUnpair = true
+                        }
                     } label: {
                         Image(systemName: "ellipsis.circle")
                             .foregroundStyle(Palette.textDim)
@@ -46,12 +66,23 @@ struct LedgerView: View {
         }
         .tint(Palette.micOpen)
         .preferredColorScheme(.dark)
+        .confirmationDialog(
+            "Unpair from this Mac?",
+            isPresented: $confirmingUnpair,
+            titleVisibility: .visible
+        ) {
+            Button("Unpair", role: .destructive, action: onUnpair)
+        } message: {
+            Text("You'll need to run `conch pair` on the Mac again to reconnect.")
+        }
     }
 
     /// Liveness, stated without words: the same cyan/dim vocabulary as rows.
     private var connectionDot: some View {
+        // Deliberately NOT the working-cyan: that hue means "machine busy" one
+        // point away in the rows, and liveness is a different statement.
         Circle()
-            .fill(bridge.isConnected ? Palette.working : Palette.needs)
+            .fill(bridge.isConnected ? Palette.textDim : Palette.needs)
             .frame(width: 8, height: 8)
             .accessibilityLabel(bridge.isConnected ? "Connected" : "Disconnected")
     }
@@ -75,6 +106,8 @@ struct LedgerView: View {
             .frame(maxWidth: 260)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // Geometric centre reads low; optical centre sits a little above it.
+        .offset(y: -28)
     }
 }
 
@@ -84,7 +117,7 @@ struct SessionRowView: View {
     private var mark: StatusMark { StatusMark(row: row) }
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
             Image(systemName: mark.symbol)
                 .font(.system(size: 15))
                 .foregroundStyle(mark.color)

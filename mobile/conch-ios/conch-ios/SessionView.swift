@@ -60,12 +60,22 @@ struct SessionView: View {
             if let mark {
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 6) {
+                        if !bridge.isConnected {
+                            Circle().fill(Palette.needs).frame(width: 7, height: 7)
+                                .accessibilityLabel("Disconnected")
+                        }
                         Image(systemName: mark.symbol)
                             .font(.system(size: 12))
-                        Text(mark.meaning)
-                            .font(Type.caption)
+                            .foregroundStyle(mark.color)
+                        // The word earns its place only when nothing else on
+                        // screen explains the glyph — a review card directly
+                        // beneath saying the same thing is clutter.
+                        if row?.review == nil {
+                            Text(mark.meaning)
+                                .font(Type.caption)
+                                .foregroundStyle(mark.color)
+                        }
                     }
-                    .foregroundStyle(mark.color)
                 }
             }
         }
@@ -82,11 +92,21 @@ struct SessionView: View {
     private var talkSurface: some View {
         VStack(spacing: 12) {
             if case let .denied(reason) = talk.phase {
-                Text(reason)
-                    .font(Type.caption)
-                    .foregroundStyle(Palette.needs)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 20)
+                VStack(spacing: 6) {
+                    Text(reason)
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.needs)
+                        .multilineTextAlignment(.center)
+                    // Mid-workout, nobody navigates Settings by hand.
+                    Button("Open Settings") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    }
+                    .font(Type.caption.weight(.medium))
+                    .foregroundStyle(Palette.micOpen)
+                }
+                .padding(.horizontal, 20)
             }
 
             if talk.phase == .listening {

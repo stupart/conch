@@ -128,6 +128,7 @@ struct MarkdownView: View {
                 Text("\(ordinal).")
                     .font(Type.body.monospacedDigit())
                     .foregroundStyle(Palette.textDim)
+                    .frame(minWidth: 26, alignment: .trailing)
                 inline(text).font(Type.body)
             }
             .padding(.leading, 16)

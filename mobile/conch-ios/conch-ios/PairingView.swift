@@ -6,6 +6,8 @@ struct PairingView: View {
 
     @State private var host = ""
     @State private var code = ""
+    @State private var checking = false
+    @State private var problem: String?
     @FocusState private var focused: Field?
 
     private enum Field { case host, code }
@@ -38,13 +40,19 @@ struct PairingView: View {
             }
             .padding(.horizontal, 28)
 
+            if let problem {
+                Text(problem)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.needs)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 28)
+                    .padding(.top, 12)
+            }
+
             Button {
-                onPaired(BridgeClient.Pairing(
-                    host: host.trimmingCharacters(in: .whitespaces),
-                    token: code.trimmingCharacters(in: .whitespaces)
-                ))
+                connect()
             } label: {
-                Text("Connect")
+                Text(checking ? "Checking…" : "Connect")
                     .font(Type.label(17, weight: .semibold))
                     .frame(maxWidth: .infinity)
                     .frame(height: 54)
@@ -55,7 +63,7 @@ struct PairingView: View {
                     .foregroundStyle(canPair ? Palette.bg : Palette.textFaint)
             }
             .buttonStyle(.plain)
-            .disabled(!canPair)
+            .disabled(!canPair || checking)
             .padding(.horizontal, 28)
             .padding(.top, 22)
             .animation(.easeOut(duration: 0.15), value: canPair)
@@ -66,6 +74,26 @@ struct PairingView: View {
         .background(Palette.bg)
         .preferredColorScheme(.dark)
         .onAppear { focused = .host }
+    }
+
+    private func connect() {
+        let candidate = BridgeClient.Pairing(
+            host: host.trimmingCharacters(in: .whitespaces),
+            token: code.trimmingCharacters(in: .whitespaces)
+        )
+        checking = true
+        problem = nil
+        Task { @MainActor in
+            switch await probePairing(candidate) {
+            case .ok:
+                onPaired(candidate)
+            case .badCode:
+                problem = "That code didn't match — copy it fresh from `conch pair`."
+            case let .unreachable(reason):
+                problem = reason
+            }
+            checking = false
+        }
     }
 
     private func field(
