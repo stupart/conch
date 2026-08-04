@@ -700,6 +700,16 @@ private struct DashboardRow: View {
                     .help("Prioritized")
             }
 
+            // NEITHER of these two may carry a maxWidth frame. A frame with a
+            // maxWidth — 190 or .infinity alike — is GREEDY: it expands to
+            // whatever it is offered and then may not use it. Capping the label
+            // starved the summary to "R…"; giving the summary .infinity and a
+            // higher priority simply inverted it, pinning every label to its
+            // 54pt floor so two different sessions both read "daylo…".
+            //
+            // With equal priority and no greedy frame, HStack sizes the less
+            // flexible child (the label, small ideal) to its ideal and passes
+            // the remainder to the summary; under real pressure they split.
             if !inlineDetail.isEmpty {
                 Text(inlineDetail)
                     .font(ConchTypography.font(size: 11.5))
@@ -711,17 +721,15 @@ private struct DashboardRow: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .contentTransition(.opacity)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    // The summary answers "what did it make for me / what is it
-                    // blocked on" — the ledger's whole reason to exist. It
-                    // outranks the label.
-                    .layoutPriority(rowMessage == nil ? 2 : 5)
+                    .layoutPriority(rowMessage == nil ? 1 : 5)
                     .accessibilityLabel(inlineDetail)
                     .help(inlineDetail)
                     .opacity(isDimmed ? 0.58 : 1)
-            } else {
-                Spacer(minLength: 0)
             }
+
+            // Always trails, so the age and glyph stay hard right whether or not
+            // this row has a summary.
+            Spacer(minLength: 0)
 
             if let age {
                 Text(age)
