@@ -152,6 +152,10 @@ final class TalkController: NSObject, ObservableObject {
     // callback from the old task inert before the replacement can be mutated.
     private var generation = 0
     private var replayAfterSequence = 0
+    /// Why recognition last died. Shown when finalisation fails, because "it
+    /// couldn't finish" is undiagnosable from a treadmill — the underlying
+    /// error is what distinguishes an audio-session collision from a stall.
+    private var lastRecognitionError: String?
 
     // Send waits for recognition to flush its final result. A stalled/erroring
     // task gets one recovery pass fed entirely from the retained audio relay.
@@ -208,6 +212,7 @@ final class TalkController: NSObject, ObservableObject {
 
         committed = ""
         partial = ""
+        lastRecognitionError = nil
         audioRelay.reset()
         let request = makeRequest(for: recognizer)
         self.request = request
@@ -280,6 +285,7 @@ final class TalkController: NSObject, ObservableObject {
         callbackCursor: Int
     ) {
         guard callbackGeneration == generation else { return }
+        if let error { lastRecognitionError = error.localizedDescription }
 
         if let result {
             let text = result.bestTranscription.formattedString
@@ -404,7 +410,9 @@ final class TalkController: NSObject, ObservableObject {
 
             let text = self.committed.trimmingCharacters(in: .whitespacesAndNewlines)
             guard self.finalizationSucceeded else {
-                self.failure = "Speech recognition couldn't finish — your recognized words are kept above."
+                let why = self.lastRecognitionError.map { " (\($0))" } ?? ""
+                self.failure =
+                    "Speech recognition couldn't finish\(why) — your recognized words are kept above."
                 self.phase = .idle
                 return
             }

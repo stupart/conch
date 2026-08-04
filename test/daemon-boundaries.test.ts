@@ -270,3 +270,25 @@ describe("every Mac speech path is gated on the audio lease", () => {
     expect(reserved).toBe(false);
   });
 });
+
+describe("the phone owns the ear, not just the voice", () => {
+  const daemonSource = readFileSync(
+    new URL("../src/daemon.ts", import.meta.url),
+    "utf8",
+  );
+
+  test("the main listen path checks the lease before opening the mic", () => {
+    // The log caught this in production: the claim landed and the Mac opened
+    // its mic in the SAME SECOND, then both machines transcribed Tyler and both
+    // injected. Only the reading-gap branch of conversationLoop had ever called
+    // reserveNormalMic; the main path went straight to micCue.
+    const loop = daemonSource.slice(
+      daemonSource.indexOf("async function conversationLoop"),
+      daemonSource.indexOf('log(`listening → '),
+    );
+    const openIndex = loop.indexOf('await micCue(cfg, "open")');
+    const gateIndex = loop.indexOf("audioLease.isPhone()");
+    expect(gateIndex).toBeGreaterThan(-1);
+    expect(gateIndex).toBeLessThan(openIndex);
+  });
+});

@@ -15,6 +15,15 @@ final class SpeechController: NSObject, ObservableObject {
     var onFinishedReading: (() -> Void)?
     /// Which session was just read, so the mic opens pointed at the right one.
     private(set) var lastSpokenSessionId: String?
+    /// Whether THIS phone's microphone is open right now.
+    ///
+    /// Speaking and recording share one AVAudioSession singleton. Speaking
+    /// flips it to `.playback` and reactivates it; doing that while the mic is
+    /// open tears down the recording route mid-utterance, and the recognition
+    /// task errors out — you watch your words appear and then get thrown away.
+    /// The Mac has refused to open the mic while TTS speaks since day one; the
+    /// phone grew a second audio owner and never inherited the invariant.
+    var micIsOpen: () -> Bool = { false }
     private let synthesizer = AVSpeechSynthesizer()
     /// What has already been read, per session, so a re-published state — which
     /// arrives at 10Hz — cannot make it read the same reply over and over.
@@ -47,6 +56,9 @@ final class SpeechController: NSObject, ObservableObject {
             return
         }
         guard spoken[reply.sessionId] != text else { return }
+        // Defer rather than drop, and deliberately do NOT mark it spoken: this
+        // same state republishes, so the reply is read the moment you send.
+        guard !micIsOpen() else { return }
         spoken[reply.sessionId] = text
         guard !passive else { return }
 
@@ -56,6 +68,9 @@ final class SpeechController: NSObject, ObservableObject {
     }
 
     func speak(_ markdown: String, from label: String?) {
+        // Backstop for every caller, not just `consider`: touching the audio
+        // session while recording is what destroys the utterance.
+        guard !micIsOpen() else { return }
         configureSession()
         let spokenText = Self.speakable(markdown)
         guard !spokenText.isEmpty else { return }
@@ -111,16 +126,20 @@ extension SpeechController: AVSpeechSynthesizerDelegate {
     ) {
         Task { @MainActor in
             self.isSpeaking = false
+            // Hand audio back FIRST, so music returns to full volume and the
+            // session is free. Opening the mic before releasing it meant this
+            // deactivation could land on the recording session that
+            // `onFinishedReading` had just started — killing the utterance on
+            // the auto-open path, the one the whole loop rests on.
+            try? AVAudioSession.sharedInstance().setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
             // The loop's whole shape: it finishes reading, then listens. Making
             // you tap Talk after every reply is the difference between a voice
             // loop and a dictation box — and on a treadmill it is the
             // difference between usable and not.
             self.onFinishedReading?()
-            // Hand audio back so music returns to full volume.
-            try? AVAudioSession.sharedInstance().setActive(
-                false,
-                options: .notifyOthersOnDeactivation
-            )
         }
     }
 

@@ -3364,6 +3364,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
     }
 
+    // The phone owns the EAR as well as the voice. This is the main listen
+    // path and it never consulted the lease: the log shows the claim landing
+    // and the Mac opening its mic in the same second anyway, then both machines
+    // transcribing Tyler and both injecting. The gap was that only the
+    // reading-gap branch of this loop ever called reserveNormalMic.
+    if (audioLease.isPhone()) {
+      log(`mic held — the phone has the ear ("${event.label}")`);
+      emitRecorderTraces(
+        seededSegments.flatMap((segment) => segment.diagnosticIds),
+        { intent: "text-handled", bufferCountAfterReduction: null },
+      );
+      return;
+    }
     if (!initialDictationCapture && !deferredInitialExternal) {
       await micCue(cfg, "open");
       if (shuttingDown || interruptedByPause()) {

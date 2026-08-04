@@ -102,7 +102,7 @@ struct SessionView: View {
                         .foregroundStyle(speech.isSpeaking ? Palette.needs : Palette.textDim)
                         .contentTransition(.symbolEffect(.replace))
                 }
-                .disabled(replyText == nil)
+                .disabled(replyText == nil || talk.phase == .listening)
                 .accessibilityLabel(speech.isSpeaking ? "Stop reading" : "Read this aloud")
             }
 
@@ -143,6 +143,10 @@ struct SessionView: View {
             }
         }
         .onAppear {
+            // The ledger considers every published state for speaking and has
+            // no view of the mic — TalkController lives here. This is the only
+            // place that owns both, so the invariant gets installed here.
+            speech.micIsOpen = { talk.phase == .listening }
             // Auto-open the mic when a reply for THIS session finishes reading.
             // Only while the session is on screen: a phone in your pocket must
             // not silently start recording.
@@ -153,7 +157,10 @@ struct SessionView: View {
                 toggleTalk()
             }
         }
-        .onDisappear { speech.onFinishedReading = nil }
+        .onDisappear {
+            speech.onFinishedReading = nil
+            speech.micIsOpen = { false }
+        }
         .task(id: sessionId) {
             guard fetchedReply == nil else { return }
             loadingReply = true
