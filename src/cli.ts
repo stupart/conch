@@ -518,9 +518,9 @@ switch (command) {
     break;
   }
   case "pair": {
-    // One command: turn the bridge on, mint the token, hand over everything
-    // the phone's pairing screen asks for. Nobody reads a README on a phone.
-    const { ensurePhoneToken, PHONE_BRIDGE_DEFAULT_PORT } = await import("./phone-bridge.ts");
+    // One command: turn the bridge on, open a two-minute window, print a code
+    // a person can actually type on a phone. The 32-char token is never typed.
+    const { PHONE_BRIDGE_DEFAULT_PORT } = await import("./phone-bridge.ts");
     const { networkInterfaces } = await import("node:os");
     const parsed = parseSetting("phone", "true");
     if (!parsed.ok) {
@@ -533,23 +533,33 @@ switch (command) {
       key: parsed.value.descriptor.key,
       value: parsed.value.value,
     });
-    const token = ensurePhoneToken();
-    const port = cfg.phonePort || PHONE_BRIDGE_DEFAULT_PORT;
-    const lanAddresses = Object.values(networkInterfaces())
+    const opened = await sendControlMessage(
+      cfg.socketPath,
+      { kind: "open-pairing" } as never,
+    );
+    const window = opened.ok
+      ? (opened.response as unknown as { code?: string; port?: number })
+      : null;
+    if (!window?.code) {
+      console.error("[conch] couldn't open a pairing window — is the daemon running?");
+      console.error("        start it with `conch service install`, then try again.");
+      process.exit(1);
+    }
+    const port = window.port ?? cfg.phonePort ?? PHONE_BRIDGE_DEFAULT_PORT;
+    const lan = Object.values(networkInterfaces())
       .flat()
       .filter((iface) => iface && iface.family === "IPv4" && !iface.internal)
       .map((iface) => iface!.address);
     console.log("");
-    console.log("conch phone pairing");
-    console.log("───────────────────");
-    for (const address of lanAddresses) {
-      console.log(`  host   ${address}:${port}`);
-    }
-    if (!lanAddresses.length) console.log("  host   (no Wi-Fi address found — is Wi-Fi on?)");
-    console.log(`  code   ${token}`);
+    console.log("  Open conch on your iPhone and enter:");
     console.log("");
-    console.log("Open the conch app on your iPhone (same Wi-Fi) and enter the");
-    console.log("host and code. Turn the bridge off any time: conch set phone false");
+    for (const address of lan) console.log(`    Host   ${address}:${port}`);
+    if (!lan.length) console.log("    Host   (no Wi-Fi address found — is Wi-Fi on?)");
+    console.log(`    Code   ${window.code}`);
+    console.log("");
+    console.log("  The code works once, for two minutes. Run `conch pair` again");
+    console.log("  for a fresh one. Turn the bridge off: conch set phone false");
+    console.log("");
     break;
   }
   case "get": {

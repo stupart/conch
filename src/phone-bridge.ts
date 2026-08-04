@@ -20,6 +20,36 @@ import { homedir } from "node:os";
 
 export const PHONE_BRIDGE_DEFAULT_PORT = 8674;
 
+/**
+ * A short pairing code, exchanged once for the real token.
+ *
+ * The token is 32 hex characters because it guards session transcripts — and
+ * 32 hex characters typed on a phone keyboard is a UX failure, not a security
+ * feature. So the strong secret never gets typed: a 6-digit code, alive for two
+ * minutes, single-use, five attempts, buys it. Entropy lives in the WINDOW, not
+ * the string, which is how every device-pairing flow worth copying works.
+ */
+export interface PairingCode {
+  code: string;
+  expiresAt: number;
+}
+
+const PAIRING_CODE_TTL_MS = 120_000;
+const PAIRING_CODE_ATTEMPTS = 5;
+
+export function mintPairingCode(now = Date.now()): PairingCode {
+  // Rejection-sampled so every code is equally likely; a modulo bias here would
+  // shrink the space a guesser has to cover.
+  let value: number;
+  do {
+    value = randomBytes(4).readUInt32BE(0);
+  } while (value >= 4_294_000_000);
+  return {
+    code: String(value % 1_000_000).padStart(6, "0"),
+    expiresAt: now + PAIRING_CODE_TTL_MS,
+  };
+}
+
 export interface PhoneBridgeDependencies {
   /** Latest published state, exactly as written to the sessions file. */
   getState(): unknown;
@@ -30,6 +60,8 @@ export interface PhoneBridgeDependencies {
 
 export interface PhoneBridgeHandle {
   port: number;
+  /** Open a two-minute window in which this code exchanges for the token. */
+  offerPairingCode(code: PairingCode): void;
   stop(): void;
   /** Push the freshly published state to every connected phone. */
   publish(): void;
@@ -83,15 +115,53 @@ export function createPhoneBridge(
 ): PhoneBridgeHandle {
   const port = options.port ?? PHONE_BRIDGE_DEFAULT_PORT;
   const sockets = new Set<{ send(data: string): void }>();
+  let pairingCode: PairingCode | null = null;
+  let pairingAttempts = 0;
 
   const server = Bun.serve({
     port,
     hostname: options.hostname ?? "0.0.0.0",
     fetch(req, srv) {
+      const url = new URL(req.url);
+
+      // The ONE unauthenticated route, and the only reason it is safe: the code
+      // it accepts expires in two minutes, dies on first success, and dies after
+      // five wrong guesses.
+      if (url.pathname === "/pair" && req.method === "POST") {
+        return (async () => {
+          const offered = pairingCode;
+          if (!offered || Date.now() > offered.expiresAt) {
+            pairingCode = null;
+            return Response.json(
+              { error: "No pairing window open — run `conch pair` on the Mac." },
+              { status: 403 },
+            );
+          }
+          if (pairingAttempts >= PAIRING_CODE_ATTEMPTS) {
+            pairingCode = null;
+            return Response.json(
+              { error: "Too many attempts — run `conch pair` again." },
+              { status: 429 },
+            );
+          }
+          let submitted = "";
+          try {
+            submitted = String(((await req.json()) as { code?: unknown }).code ?? "");
+          } catch {}
+          if (!tokenMatches(submitted, offered.code)) {
+            pairingAttempts += 1;
+            return Response.json({ error: "That code didn't match." }, { status: 401 });
+          }
+          pairingCode = null;
+          pairingAttempts = 0;
+          dependencies.log("phone paired");
+          return Response.json({ token: options.token });
+        })();
+      }
+
       if (!tokenMatches(presentedToken(req), options.token)) {
         return new Response("unauthorized", { status: 401 });
       }
-      const url = new URL(req.url);
 
       if (url.pathname === "/ws") {
         return srv.upgrade(req)
@@ -164,6 +234,10 @@ export function createPhoneBridge(
 
   return {
     port: server.port ?? port,
+    offerPairingCode(code) {
+      pairingCode = code;
+      pairingAttempts = 0;
+    },
     stop() {
       server.stop(true);
       sockets.clear();

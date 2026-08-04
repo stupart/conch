@@ -35,7 +35,7 @@ import { injectText, injectKey, revealSessionWindow, toClipboard } from "./injec
 import { classify, classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
 import { recordTelemetry } from "./telemetry.ts";
-import { createPhoneBridge, ensurePhoneToken, forwardToDaemonSocket, type PhoneBridgeHandle } from "./phone-bridge.ts";
+import { createPhoneBridge, ensurePhoneToken, forwardToDaemonSocket, mintPairingCode, type PhoneBridgeHandle } from "./phone-bridge.ts";
 import { askClaude, type AskClaude } from "./model.ts";
 import { routeVoicePrompt } from "./voice-qa.ts";
 import {
@@ -3840,6 +3840,29 @@ export async function runDaemon(cfg: Config): Promise<void> {
       let response: ControlResponse | undefined;
       try {
         const value: unknown = JSON.parse(line);
+        // `conch pair` asks the RUNNING daemon to open a pairing window: the
+        // bridge lives in that process, so only it can offer a code.
+        if (
+          typeof value === "object" && value !== null
+          && (value as { kind?: unknown }).kind === "open-pairing"
+        ) {
+          syncPhoneBridge();
+          if (!phoneBridge) {
+            response = { kind: "session-error", error: "phone bridge is off" };
+          } else {
+            const code = mintPairingCode();
+            phoneBridge.offerPairingCode(code);
+            log("pairing window open (2 min)");
+            response = {
+              kind: "pairing-open",
+              code: code.code,
+              expiresAt: code.expiresAt,
+              port: phoneBridge.port,
+            } as unknown as ControlResponse;
+          }
+          sock.end(JSON.stringify(response) + "\n");
+          return;
+        }
         const control = dispatchControlMessage(
           value,
           configController,

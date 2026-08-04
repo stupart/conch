@@ -5,6 +5,7 @@ import {
   createPhoneBridge,
   ensurePhoneToken,
   forwardToDaemonSocket,
+  mintPairingCode,
   tokenMatches,
   type PhoneBridgeHandle,
 } from "../src/phone-bridge.ts";
@@ -183,5 +184,75 @@ describe("file serving", () => {
       `http://127.0.0.1:${b.port}/file?path=${encodeURIComponent(served)}`,
     );
     expect(noToken.status).toBe(401);
+  });
+});
+
+describe("short pairing code", () => {
+  test("exchanges once for the token, then is spent", async () => {
+    const b = startBridge();
+    const code = mintPairingCode();
+    b.offerPairingCode(code);
+
+    const first = await fetch(`http://127.0.0.1:${b.port}/pair`, {
+      method: "POST",
+      body: JSON.stringify({ code: code.code }),
+    });
+    expect(first.status).toBe(200);
+    expect(((await first.json()) as { token: string }).token).toBe(TOKEN);
+
+    // Single use: a replayed code is worthless.
+    const replay = await fetch(`http://127.0.0.1:${b.port}/pair`, {
+      method: "POST",
+      body: JSON.stringify({ code: code.code }),
+    });
+    expect(replay.status).toBe(403);
+  });
+
+  test("wrong codes are refused and burn the window after five tries", async () => {
+    const b = startBridge();
+    b.offerPairingCode(mintPairingCode());
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const res = await fetch(`http://127.0.0.1:${b.port}/pair`, {
+        method: "POST",
+        body: JSON.stringify({ code: "000000" }),
+      });
+      expect(res.status).toBe(401);
+    }
+    // Sixth attempt closes the window rather than letting a guesser continue.
+    const exhausted = await fetch(`http://127.0.0.1:${b.port}/pair`, {
+      method: "POST",
+      body: JSON.stringify({ code: "000000" }),
+    });
+    expect(exhausted.status).toBe(429);
+  });
+
+  test("an expired code cannot be redeemed", async () => {
+    const b = startBridge();
+    b.offerPairingCode({ code: "123456", expiresAt: Date.now() - 1 });
+    const res = await fetch(`http://127.0.0.1:${b.port}/pair`, {
+      method: "POST",
+      body: JSON.stringify({ code: "123456" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  test("with no window open, /pair gives nothing away", async () => {
+    const b = startBridge();
+    const res = await fetch(`http://127.0.0.1:${b.port}/pair`, {
+      method: "POST",
+      body: JSON.stringify({ code: "123456" }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.text()).not.toContain(TOKEN);
+  });
+
+  test("codes are six digits and not obviously biased", () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 200; i++) {
+      const { code } = mintPairingCode();
+      expect(code).toMatch(/^\d{6}$/);
+      seen.add(code);
+    }
+    expect(seen.size).toBeGreaterThan(190);
   });
 });

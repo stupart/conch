@@ -142,6 +142,42 @@ enum PairingProbeResult {
     case unreachable(String)
 }
 
+/// Redeem a short pairing code for the real token.
+///
+/// A 32-character token is a fine secret and a terrible thing to type on a
+/// phone. `conch pair` prints six digits instead, alive for two minutes and
+/// good once; this trades them for the long-lived token, which the user never
+/// sees or types.
+enum RedeemResult {
+    case token(String)
+    case failed(String)
+}
+
+func redeemPairingCode(host: String, code: String) async -> RedeemResult {
+    guard let base = URL(string: "http://\(host)") else {
+        return .failed("That host doesn't look right.")
+    }
+    var request = URLRequest(url: base.appendingPathComponent("pair"))
+    request.httpMethod = "POST"
+    request.httpBody = try? JSONSerialization.data(withJSONObject: ["code": code])
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    request.timeoutInterval = 6
+    do {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        if status == 200, let token = body?["token"] as? String {
+            return .token(token)
+        }
+        return .failed(
+            (body?["error"] as? String)
+                ?? "That code didn't work — run conch pair again for a fresh one."
+        )
+    } catch {
+        return .failed("Couldn't reach \(host) — same Wi-Fi as the Mac?")
+    }
+}
+
 /// One authenticated GET /state with the typed credentials, BEFORE anything is
 /// saved. Committing blind meant a typo'd host and a wrong code looked
 /// identical: a keychain write and an endless "Looking for your Mac…".
