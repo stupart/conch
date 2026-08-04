@@ -680,8 +680,15 @@ private struct DashboardRow: View {
                     // draws straight through the status glyph. The higher
                     // layoutPriority already gets the label its ideal width and
                     // lets it truncate only when it genuinely cannot fit.
-                    .frame(minWidth: 54, maxWidth: 190, alignment: .leading)
-                    .layoutPriority(3)
+                    // No maxWidth: a frame with one is GREEDY — it expands to
+                    // whatever it is offered, so the label claimed 190pt no
+                    // matter how short it was and starved the summary down to
+                    // "R…". A bare Text with lineLimit + truncationMode takes
+                    // its ideal width and yields under real pressure, which is
+                    // exactly the behaviour wanted. The age is protected by its
+                    // own fixedSize + priority, not by capping this.
+                    .frame(minWidth: 54, alignment: .leading)
+                    .layoutPriority(1)
                     .opacity(isDimmed ? 0.58 : 1)
             }
 
@@ -705,7 +712,10 @@ private struct DashboardRow: View {
                     .truncationMode(.tail)
                     .contentTransition(.opacity)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .layoutPriority(rowMessage == nil ? 1 : 5)
+                    // The summary answers "what did it make for me / what is it
+                    // blocked on" — the ledger's whole reason to exist. It
+                    // outranks the label.
+                    .layoutPriority(rowMessage == nil ? 2 : 5)
                     .accessibilityLabel(inlineDetail)
                     .help(inlineDetail)
                     .opacity(isDimmed ? 0.58 : 1)
@@ -918,11 +928,18 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             self = .review
             return
         }
-        if row.muted {
+        // Muting silences ANNOUNCEMENTS; it is not a request to stop tracking
+        // the session. These checks used to run before status, so a muted
+        // session that had finished showed only the mute glyph and its waiting
+        // turn became invisible — the worst possible failure in a product whose
+        // failure mode IS silence. The row's dimmed label and age already say
+        // "silenced"; the glyph goes on saying what the session actually needs.
+        let wantsUser = row.status == .waiting || row.status == .needs
+        if row.muted, !wantsUser {
             self = .muted
             return
         }
-        if row.paused {
+        if row.paused, !wantsUser {
             self = .paused
             return
         }
