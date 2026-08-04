@@ -1219,7 +1219,7 @@ private struct ConversationDocument {
             if targetRow == nil, state.rows.isEmpty {
                 content = SessionStaticContent(
                     rowID: nil,
-                    text: "Start a session and its replies appear here.",
+                    text: "",
                     isPlaceholder: true
                 )
             } else {
@@ -1923,10 +1923,12 @@ private struct DashboardKeybar: View {
             .disabled(state?.rows.isEmpty ?? true)
             KeybarActionButton(
                 label: pauseLabel,
+                isDisabled: state?.rows.isEmpty ?? true,
                 action: actions.onPauseOrResume
             )
             KeybarActionButton(
                 label: muteLabel,
+                isDisabled: state?.rows.isEmpty ?? true,
                 action: actions.onMuteOrUnmute
             )
 
@@ -1956,6 +1958,8 @@ private struct KeybarActionButton: View {
     let label: String
     var isProminent = false
     var isSelected = false
+    /// A control with nothing to act on should say so rather than accept a click.
+    var isDisabled = false
     let action: () -> Void
 
     @State private var isHovered = false
@@ -1984,6 +1988,8 @@ private struct KeybarActionButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(KeybarPressButtonStyle())
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.45 : 1)
         .onHover { hovering in
             isHovered = hovering
         }

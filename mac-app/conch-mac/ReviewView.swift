@@ -172,6 +172,14 @@ private struct MissingDeliverableView: View {
 
 private struct ReviewContent: View {
     let link: String
+
+    /// Scheme + host together: on a bar whose job is marking a trust boundary,
+    /// http:// and https:// must not look alike.
+    private var originText: String {
+        guard let url = URL(string: link), let host = url.host else { return link }
+        guard let scheme = url.scheme else { return host }
+        return scheme + "://" + host
+    }
     @Binding var isWebLoading: Bool
     @State private var navigationFailure: DeliverableNavigationFailure?
     @State private var reloadID = UUID()
@@ -194,7 +202,9 @@ private struct ReviewContent: View {
                 HStack(spacing: 6) {
                     Image(systemName: "globe")
                         .font(.system(size: 9.5))
-                    Text(URL(string: link)?.host ?? link)
+                    // Scheme included: on a bar whose stated job is marking a
+                    // trust boundary, http:// and https:// must not look alike.
+                    Text(originText)
                         .font(ConchTypography.font(size: 11))
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -202,7 +212,7 @@ private struct ReviewContent: View {
                     Button("Open in browser") {
                         if let url = URL(string: link) { NSWorkspace.shared.open(url) }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.link)
                     .font(ConchTypography.font(size: 11))
                 }
                 .foregroundStyle(ConchPalette.textDim)
