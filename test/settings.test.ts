@@ -48,6 +48,8 @@ const expected = {
   "barge-threshold": ["bargeThresholdPct", "CONCH_BARGE_THRESHOLD_PCT", "live", 0],
   "voice-speed": ["ttsSpeed", "CONCH_TTS_SPEED", "live", 1.35],
   "keystroke-fallback": ["keystrokeFallback", "CONCH_KEYSTROKE_FALLBACK", "live", false],
+  "phone": ["phoneEnabled", "CONCH_PHONE", "live", false],
+  "phone-port": ["phonePort", "CONCH_PHONE_PORT", "live", 8674],
   "read-full": ["readFull", "CONCH_READ_FULL", "live", true],
   "interrupt-on-manual-reply": ["interruptOnManualReply", "CONCH_INTERRUPT_ON_MANUAL_REPLY", "live", true],
   "handoff-order": ["handoffOrder", "CONCH_HANDOFF_ORDER", "live", "oldest"],
@@ -65,10 +67,10 @@ const expected = {
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 22 curated, default-bearing knobs", () => {
+  test("contains exactly the 24 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(22);
+    expect(SETTING_DESCRIPTORS).toHaveLength(24);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });

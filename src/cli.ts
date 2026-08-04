@@ -56,7 +56,7 @@ Voice and settings:
 Optional / manual setup:
   conch service [install|off] | uninstall [--models]  manage or remove the install
   conch install-plugin | uninstall-plugin  manage the Claude Code / Codex plugin
-  conch install [--codex]          wire hooks separately
+  conch install [--codex] | pair   wire hooks · connect the iPhone app
   conch doctor | version           run live checks | print the package version
 
 Internal entrypoints: conch hook | codex-hook | daemon | mcp
@@ -515,6 +515,41 @@ switch (command) {
       value: parsed.value.value,
     });
     printMutation(parsed.value.descriptor, "set", fresh, result, parsed.value.value);
+    break;
+  }
+  case "pair": {
+    // One command: turn the bridge on, mint the token, hand over everything
+    // the phone's pairing screen asks for. Nobody reads a README on a phone.
+    const { ensurePhoneToken, PHONE_BRIDGE_DEFAULT_PORT } = await import("./phone-bridge.ts");
+    const { networkInterfaces } = await import("node:os");
+    const parsed = parseSetting("phone", "true");
+    if (!parsed.ok) {
+      console.error(`[conch] ${parsed.err}`);
+      process.exit(1);
+    }
+    writeSetting(settingsPath, parsed.value.descriptor.key, parsed.value.value);
+    await sendControlMessage(cfg.socketPath, {
+      kind: "set-config",
+      key: parsed.value.descriptor.key,
+      value: parsed.value.value,
+    });
+    const token = ensurePhoneToken();
+    const port = cfg.phonePort || PHONE_BRIDGE_DEFAULT_PORT;
+    const lanAddresses = Object.values(networkInterfaces())
+      .flat()
+      .filter((iface) => iface && iface.family === "IPv4" && !iface.internal)
+      .map((iface) => iface!.address);
+    console.log("");
+    console.log("conch phone pairing");
+    console.log("───────────────────");
+    for (const address of lanAddresses) {
+      console.log(`  host   ${address}:${port}`);
+    }
+    if (!lanAddresses.length) console.log("  host   (no Wi-Fi address found — is Wi-Fi on?)");
+    console.log(`  code   ${token}`);
+    console.log("");
+    console.log("Open the conch app on your iPhone (same Wi-Fi) and enter the");
+    console.log("host and code. Turn the bridge off any time: conch set phone false");
     break;
   }
   case "get": {
