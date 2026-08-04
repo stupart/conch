@@ -24,6 +24,7 @@ export const SETTING_KEYS = [
   "hold-submit-delay",
   "listen-window",
   "typing-grace",
+  "away-after",
   "barge-threshold",
   "voice-speed",
   "keystroke-fallback",
@@ -52,6 +53,7 @@ export type SettingField =
   | "holdSubmitSecs"
   | "listenWindowSecs"
   | "typingGraceSecs"
+  | "awayAfterSecs"
   | "bargeThresholdPct"
   | "ttsSpeed"
   | "keystrokeFallback"
@@ -236,6 +238,23 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "type into the session's window when it isn't in a tmux pane",
+  },
+  {
+    key: "away-after",
+    field: "awayAfterSecs",
+    env: "CONCH_AWAY_AFTER_SECS",
+    kind: "number",
+    // ON by default. With this at 0 the away check is skipped entirely, and
+    // conch opened the mic and injected what the ROOM said into a live session
+    // while Tyler was not there — a stray conversation became a prompt an agent
+    // then acted on. Five minutes with no keyboard or mouse means you are not
+    // at this machine. `conch wake` and the spacebar are exempt, so deliberately
+    // talking always works, and 0 remains the documented "never".
+    default: 300,
+    parse: numberParser(zeroable, "a number of seconds (0 disables)"),
+    bounds: zeroable,
+    apply: "live",
+    help: "stay quiet after this many seconds away from the Mac (0 never)",
   },
   {
     key: "phone",
