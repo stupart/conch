@@ -23,6 +23,7 @@ function startBridge(overrides: Partial<Parameters<typeof createPhoneBridge>[0]>
     {
       getState: () => ({ v: 1, rows: [{ id: "r1" }] }),
       forwardControl: async (line) => JSON.stringify({ echoed: JSON.parse(line).kind }),
+      replyFor: async () => "",
       log: () => {},
       ...overrides,
     },
@@ -256,3 +257,24 @@ describe("short pairing code", () => {
     expect(seen.size).toBeGreaterThan(190);
   });
 });
+
+describe("on-demand replies", () => {
+  test("serves a known session's reply, refuses an unknown one", async () => {
+    const b = startBridge({
+      getState: () => ({ v: 1, rows: [{ id: "known" }] }),
+      replyFor: async (id) => `reply for ${id}`,
+    });
+    const auth = { authorization: `Bearer ${TOKEN}` };
+
+    const ok = await fetch(`http://127.0.0.1:${b.port}/reply?session=known`, { headers: auth });
+    expect(ok.status).toBe(200);
+    expect(((await ok.json()) as { markdown: string }).markdown).toBe("reply for known");
+
+    // Only sessions the dashboard is actually showing — same scope rule as /file.
+    const unknown = await fetch(`http://127.0.0.1:${b.port}/reply?session=other`, { headers: auth });
+    expect(unknown.status).toBe(404);
+
+    const bare = await fetch(`http://127.0.0.1:${b.port}/reply?session=known`);
+    expect(bare.status).toBe(401);
+  });
+})
