@@ -5,6 +5,9 @@ node_modules
 # release build artifacts
 dist/
 build/
+# Xcode derived data for the iOS device build. `build/` does not match this,
+# which is how 103MB of index junk reached a public repo.
+build-device/
 
 # personal roadmap / plans — local only
 ROADMAP.md
