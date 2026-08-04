@@ -5,8 +5,11 @@ import SwiftUI
 struct LedgerView: View {
     @ObservedObject var bridge: BridgeClient
     let onUnpair: () -> Void
+    @ObservedObject var speech: SpeechController
     @State private var confirmingUnpair = false
     @State private var showingSettings = false
+    /// What the user just asked for, shown until the daemon's own state agrees.
+    @State private var pendingPassive: Bool?
 
     var body: some View {
         NavigationStack {
@@ -75,6 +78,11 @@ struct LedgerView: View {
                         }
                         Button("Reconnect now") { bridge.reconnectNow() }
                         Divider()
+                        Toggle("Speak on this phone", isOn: $speech.isEnabled)
+                        if speech.isSpeaking {
+                            Button("Stop reading") { speech.stop() }
+                        }
+                        Divider()
                         Button("conch settings…") { showingSettings = true }
                         Divider()
                         Button("Unpair from this Mac…", role: .destructive) {
@@ -94,6 +102,9 @@ struct LedgerView: View {
         }
         .tint(Palette.micOpen)
         .preferredColorScheme(.dark)
+        .onChange(of: bridge.state) { _, next in
+            speech.consider(state: next)
+        }
         .sheet(isPresented: $showingSettings) {
             SettingsView(bridge: bridge)
         }
@@ -113,27 +124,42 @@ struct LedgerView: View {
     /// Active is the loop: finished turns announce themselves, get read aloud,
     /// and the mic opens for your reply — the Mac and terminal behaviour.
     /// Passive keeps every session visible and still lets you talk to one on
-    /// purpose; it just stops the machine speaking first. That distinction is
-    /// the one you change constantly and the only one worth a permanent button.
+    /// purpose; it just stops the machine speaking first.
     ///
     /// A dot rather than a glyph: iOS's glass button already reads as pressable,
-    /// so the button chrome carries the affordance and the dot carries only the
-    /// state — live red, or grey when it isn't listening for you.
+    /// so the chrome carries the affordance and the dot carries only the state.
+    ///
+    /// It flips IMMEDIATELY. Waiting for the daemon meant a POST, a 10Hz publish
+    /// and a socket round trip before anything moved — perhaps a fifth of a
+    /// second, which on a control this simple reads as broken. The optimistic
+    /// state is held only until the daemon's own state agrees, so the truth
+    /// still comes from one place; a failed request snaps back.
     private var modeToggle: some View {
-        let passive = bridge.state?.mode.muted ?? false
+        let passive = pendingPassive ?? (bridge.state?.mode.muted ?? false)
         return Button {
-            Task { await bridge.send(mode: passive ? "unmute" : "mute") }
+            let next = !passive
+            pendingPassive = next
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            Task {
+                let sent = await bridge.send(mode: next ? "mute" : "unmute")
+                if !sent { pendingPassive = nil }
+            }
         } label: {
             Circle()
                 .fill(passive ? Palette.textDim : Palette.needs)
                 .frame(width: 10, height: 10)
-                .animation(.easeOut(duration: 0.18), value: passive)
+                .animation(.easeOut(duration: 0.12), value: passive)
         }
         .accessibilityLabel(
             passive
                 ? "Passive — nothing is announced. Activate."
                 : "Active — announcing finished turns. Go passive."
         )
+        .onChange(of: bridge.state?.mode.muted) { _, actual in
+            // The daemon has caught up (or something else changed it); stop
+            // holding the local guess so the two can never disagree for long.
+            if let pendingPassive, pendingPassive == actual { self.pendingPassive = nil }
+        }
     }
 
     private var emptyState: some View {
