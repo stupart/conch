@@ -20,6 +20,10 @@ APP=/Applications/conch.app
 mkdir -p "$OUT"
 rm -f "$OUT"/*.png
 
+# The tall fixture is generated, not committed — 2.6MB of trivially
+# reproducible pixels doesn't belong in git history.
+[ -f "$FIXTURES/tall.png" ] || swift "$FIXTURES/generate-tall-image.swift" "$FIXTURES/tall.png"
+
 write_state() { # $1 = summary, $2 = link
   python3 - "$1" "$2" <<'PY'
 import json, sys, time
