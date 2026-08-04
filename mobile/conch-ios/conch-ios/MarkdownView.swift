@@ -9,6 +9,8 @@ import SwiftUI
 /// else renders as a paragraph rather than vanishing.
 struct MarkdownView: View {
     let text: String
+    /// Scales with text size so "10." keeps fitting at accessibility sizes.
+    @ScaledMetric(relativeTo: .body) private var ordinalWidth: CGFloat = 26
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -128,7 +130,7 @@ struct MarkdownView: View {
                 Text("\(ordinal).")
                     .font(Type.body.monospacedDigit())
                     .foregroundStyle(Palette.textDim)
-                    .frame(minWidth: 26, alignment: .trailing)
+                    .frame(minWidth: ordinalWidth, alignment: .trailing)
                 inline(text).font(Type.body)
             }
             .padding(.leading, 16)

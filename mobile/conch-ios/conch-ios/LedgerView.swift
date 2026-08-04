@@ -73,7 +73,7 @@ struct LedgerView: View {
         ) {
             Button("Unpair", role: .destructive, action: onUnpair)
         } message: {
-            Text("You'll need to run `conch pair` on the Mac again to reconnect.")
+            Text("You'll need to run conch pair on the Mac again to reconnect.")
         }
     }
 
