@@ -239,7 +239,14 @@ private enum TranscriptTailReader {
             let type = entry["type"] as? String
             let role = entry["role"] as? String
 
+            // Claude Code records TOOL RESULTS as type:"user" entries. Treating
+            // any user entry as the turn boundary meant the scan stopped at the
+            // first tool result and collected nothing — so the pane read "No
+            // reply yet" for any session that had used a tool since its last
+            // message, which is nearly always. Only a genuine human turn ends
+            // the reply.
             if type == "user" || role == "user" {
+                if isToolResultEntry(entry) { return false }
                 return true
             }
             guard type == "assistant" || role == "assistant" else {
@@ -255,9 +262,9 @@ private enum TranscriptTailReader {
 
             if let parts = content as? [Any] {
                 let objects = parts.compactMap { $0 as? [String: Any] }
-                if objects.contains(where: { ($0["type"] as? String) == "tool_use" }) {
-                    return true
-                }
+                // A tool call is not the end of the reply either: the narration
+                // an agent writes before calling a tool is still its most recent
+                // words. Keep collecting across it.
                 let texts = objects.compactMap { part -> String? in
                     guard let partType = part["type"] as? String,
                           partType == "text" || partType == "output_text" else {
@@ -280,6 +287,21 @@ private enum TranscriptTailReader {
             .joined(separator: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return reply.isEmpty ? nil : reply
+    }
+
+    /// A user entry whose content is only tool results — Claude Code's record of
+    /// what a tool returned, not something the human said.
+    private static func isToolResultEntry(_ entry: [String: Any]) -> Bool {
+        let content: Any?
+        if let message = entry["message"] as? [String: Any] {
+            content = message["content"]
+        } else {
+            content = entry["content"]
+        }
+        guard let parts = content as? [Any] else { return false }
+        let objects = parts.compactMap { $0 as? [String: Any] }
+        guard !objects.isEmpty else { return false }
+        return objects.allSatisfy { ($0["type"] as? String) == "tool_result" }
     }
 
     private static func lastCodexReply(at path: String, fileSize: Int64) throws -> String? {
