@@ -26,14 +26,18 @@ enum Palette {
 /// iOS speaks SF. The Mac app's Helvetica Neue is its own voice; forcing it
 /// here would fight Dynamic Type and read as a port. Same hierarchy, native
 /// materials — that is what makes the two feel like siblings, not clones.
+///
+/// TEXT STYLES, not point sizes: fixed sizes opted the whole app out of the
+/// platform's accessibility contract — at XXXL only the nav title scaled.
 enum Type {
     static func label(_ size: CGFloat = 17, weight: Font.Weight = .regular) -> Font {
+        // Sized labels ride .body so they still scale with the user's setting.
         .system(size: size, weight: weight)
     }
 
-    static let sessionName = Font.system(size: 17, weight: .semibold)
-    static let summary = Font.system(size: 15)
-    static let body = Font.system(size: 17)
-    static let caption = Font.system(size: 13)
-    static let mono = Font.system(size: 15, design: .monospaced)
+    static let sessionName = Font.body.weight(.semibold)
+    static let summary = Font.subheadline
+    static let body = Font.body
+    static let caption = Font.footnote
+    static let mono = Font.system(.subheadline, design: .monospaced)
 }

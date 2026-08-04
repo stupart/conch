@@ -136,6 +136,32 @@ final class BridgeClient: ObservableObject {
     }
 }
 
+enum PairingProbeResult {
+    case ok
+    case badCode
+    case unreachable(String)
+}
+
+/// One authenticated GET /state with the typed credentials, BEFORE anything is
+/// saved. Committing blind meant a typo'd host and a wrong code looked
+/// identical: a keychain write and an endless "Looking for your Mac…".
+func probePairing(_ pairing: BridgeClient.Pairing) async -> PairingProbeResult {
+    guard let base = pairing.base else { return .unreachable("That host doesn't look right.") }
+    var request = URLRequest(url: base.appendingPathComponent("state"))
+    request.setValue("Bearer \(pairing.token)", forHTTPHeaderField: "Authorization")
+    request.timeoutInterval = 5
+    do {
+        let (_, response) = try await URLSession.shared.data(for: request)
+        switch (response as? HTTPURLResponse)?.statusCode {
+        case 200: return .ok
+        case 401: return .badCode
+        default: return .unreachable("The Mac answered, but not like conch — check the host.")
+        }
+    } catch {
+        return .unreachable("Couldn't reach \(pairing.host) — same Wi-Fi as the Mac?")
+    }
+}
+
 /// The pairing lives in the Keychain: the token reads session transcripts, so
 /// it gets credential storage, not UserDefaults.
 enum PairingStore {
