@@ -16,6 +16,18 @@ struct LedgerView: View {
     /// What the user just asked for, shown until the daemon's own state agrees.
     @State private var pendingPassive: Bool?
 
+    /// The running binary's own build time — the only claim about which
+    /// build this is that cannot be stale.
+    static let buildStamp: String = {
+        guard let path = Bundle.main.executablePath,
+              let date = try? FileManager.default
+                  .attributesOfItem(atPath: path)[.modificationDate] as? Date
+        else { return "unknown" }
+        let format = DateFormatter()
+        format.dateFormat = "d MMM HH:mm"
+        return format.string(from: date)
+    }()
+
     var body: some View {
         NavigationStack {
             Group {
@@ -80,6 +92,12 @@ struct LedgerView: View {
                     Menu {
                         Section(bridge.isConnected ? "Connected" : "Not connected") {
                             Text(bridge.pairedHost)
+                            // Installing over a running app leaves the OLD
+                            // process running, so "is the fix on the phone?"
+                            // was guesswork three separate times. The binary's
+                            // own timestamp cannot lie about which build this
+                            // is — read it out and the question is settled.
+                            Text("Build \(Self.buildStamp)")
                         }
                         Button("Reconnect now") { bridge.reconnectNow() }
                         Divider()

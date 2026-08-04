@@ -136,7 +136,21 @@ final class TalkController: NSObject, ObservableObject {
         [committed, partial].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
-    @Published private(set) var committed = ""
+    /// Everything recognised and not yet successfully sent.
+    ///
+    /// Append-only and written to disk on every change. Exactly ONE thing may
+    /// clear it: a send the Mac confirmed. Not starting a recording, not a
+    /// failed finalisation, not a teardown, not a relaunch, not a crash.
+    ///
+    /// This is a policy, not an optimisation, and it is here because the
+    /// alternative kept failing. Three separate bugs deleted this string —
+    /// a view lifecycle, an audio-session collision, a re-entered start — and
+    /// each fix only closed the path it knew about. Words that cannot be
+    /// deleted cannot be deleted by the next path either.
+    @Published private(set) var committed = "" {
+        didSet { UserDefaults.standard.set(committed, forKey: Self.draftKey) }
+    }
+    private static let draftKey = "conch.draft.committed"
     @Published private(set) var partial = ""
     @Published private(set) var failure: String?
     /// Which session this draft is being spoken to.
@@ -146,6 +160,14 @@ final class TalkController: NSObject, ObservableObject {
     /// could surface under a conversation you did not say it to — so it is
     /// stamped once, at the moment you start talking, and shown nowhere else.
     @Published private(set) var targetSessionId: String?
+
+    override init() {
+        super.init()
+        // A relaunch or a crash mid-utterance is not a decision to discard
+        // what you said. Whatever was unsent when the process died is still
+        // unsent now, and it is still yours.
+        committed = UserDefaults.standard.string(forKey: Self.draftKey) ?? ""
+    }
 
     private let engine = AVAudioEngine()
     private let audioRelay = RecognitionAudioRelay()
@@ -218,7 +240,10 @@ final class TalkController: NSObject, ObservableObject {
         }
         self.recognizer = recognizer
 
-        committed = ""
+        // Deliberately NOT clearing `committed`: a start that lands on top of
+        // unsent words is a continuation, not a reset. Re-entering start was
+        // one of the three paths that ate the transcript — you tap what you
+        // believe is Send, phase has fallen back to idle, and it begins afresh.
         partial = ""
         lastRecognitionError = nil
         audioRelay.reset()
@@ -417,16 +442,22 @@ final class TalkController: NSObject, ObservableObject {
             self.audioRelay.reset()
 
             let text = self.committed.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard self.finalizationSucceeded else {
-                let why = self.lastRecognitionError.map { " (\($0))" } ?? ""
-                self.failure =
-                    "Speech recognition couldn't finish\(why) — your recognized words are kept above."
+            // Words in hand get sent, whether or not recognition signed off.
+            // Refusing to send text we already have because the recogniser
+            // failed to say "done" punishes you for its problem: you asked to
+            // send, the words exist, send them. The only thing a failed
+            // finalisation costs is the tail it never reported, and that is
+            // worth saying out loud rather than swallowing the whole message.
+            guard !text.isEmpty else {
+                if !self.finalizationSucceeded {
+                    let why = self.lastRecognitionError.map { " (\($0))" } ?? ""
+                    self.failure = "Speech recognition couldn't finish\(why) — nothing was captured."
+                }
                 self.phase = .idle
                 return
             }
-            guard !text.isEmpty else {
-                self.phase = .idle
-                return
+            if !self.finalizationSucceeded {
+                self.failure = "Recognition cut out at the end — sending what it caught."
             }
             let delivered = await deliver(text)
             // Keep failed text intact; a subsequent Talk starts only after the
@@ -529,7 +560,6 @@ final class TalkController: NSObject, ObservableObject {
         stopCaptureHardware()
         invalidateRecognition()
         audioRelay.reset()
-        committed = ""
         partial = ""
         failure = nil
         phase = .idle

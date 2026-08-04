@@ -64,6 +64,41 @@ describe("only one side of the phone owns the audio route", () => {
     expect(app("ConchApp.swift")).toMatch(/@StateObject private var talk = TalkController\(\)/);
   });
 
+  test("only a confirmed send may clear the transcript", () => {
+    // Three separate bugs deleted this string, each fix closing only the path
+    // it knew about. The policy replaces the whack-a-mole: exactly one write
+    // clears it, and it is the one that follows `deliver`.
+    const talk = app("TalkController.swift");
+    const clears = [...talk.matchAll(/committed = ""/g)].map((m) => m.index ?? 0);
+    // One is the property's own initialiser; the other must be the send.
+    expect(clears.length).toBe(2);
+    const send = talk.lastIndexOf("let delivered = await deliver(text)");
+    expect(send).toBeGreaterThan(-1);
+    expect(clears[1]).toBeGreaterThan(send);
+    // Starting a recording continues an unsent draft rather than wiping it.
+    const begin = talk.indexOf("private func beginCapture()");
+    const beginBody = talk.slice(begin, talk.indexOf("private func makeRequest", begin));
+    expect(beginBody).not.toMatch(/committed = ""/);
+  });
+
+  test("the draft outlives the process", () => {
+    // A relaunch or crash mid-utterance is not a decision to discard speech.
+    const talk = app("TalkController.swift");
+    expect(talk).toMatch(/didSet \{ UserDefaults\.standard\.set\(committed, forKey: Self\.draftKey\) \}/);
+    expect(talk).toMatch(/committed = UserDefaults\.standard\.string\(forKey: Self\.draftKey\)/);
+  });
+
+  test("words in hand are sent even when recognition never signed off", () => {
+    // Refusing to send text we already have, because the recogniser failed to
+    // say "done", punishes you for its problem.
+    const talk = app("TalkController.swift");
+    expect(talk).not.toMatch(/guard self\.finalizationSucceeded else \{[\s\S]*?return\n            \}/);
+    const guardEmpty = talk.indexOf("guard !text.isEmpty else {");
+    const deliver = talk.indexOf("let delivered = await deliver(text)");
+    expect(guardEmpty).toBeGreaterThan(-1);
+    expect(deliver).toBeGreaterThan(guardEmpty);
+  });
+
   test("a draft is shown only under the session it was spoken to", () => {
     // One controller now serves every session; without this the draft would
     // surface under a conversation you never said it to.
