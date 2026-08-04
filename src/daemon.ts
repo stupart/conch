@@ -1593,14 +1593,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
       ? findTranscript(cfg.claudeDir, previewId)
       : undefined;
     const contentEvent = recitingEvent ?? lastTurn;
-    const [transcriptReplyText, previewText] = await Promise.all([
+    // The RAW reply is fetched alongside the spoken one. stripMarkdown exists to
+    // make text speakable; handing that same string to a GUI is what made every
+    // list render as a literal "- " with no blocks at all.
+    const [transcriptReplyRaw, previewRaw] = await Promise.all([
       contentEvent?.transcriptPath
-        ? lastAssistantText(contentEvent.transcriptPath).then(stripMarkdown)
+        ? lastAssistantText(contentEvent.transcriptPath)
         : Promise.resolve(""),
-      previewPath
-        ? lastAssistantText(previewPath).then(stripMarkdown)
-        : Promise.resolve(""),
+      previewPath ? lastAssistantText(previewPath) : Promise.resolve(""),
     ]);
+    const transcriptReplyText = stripMarkdown(transcriptReplyRaw);
+    const previewText = stripMarkdown(previewRaw);
     if (shuttingDown) return;
     // Registry and transcript reads can overlap; only the newest complete model
     // may reach the renderer.
@@ -1639,6 +1642,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
             sessionId: contentEvent.sessionId,
             text: replyText,
             spokenChars: committedLiveState.reading?.spokenChars ?? 0,
+            ...(transcriptReplyRaw ? { markdown: transcriptReplyRaw } : {}),
           }
           : null,
         panelOpen,
@@ -1647,6 +1651,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         navSelectedId,
         previewId,
         previewText,
+        previewRaw,
       );
       model.settingsOverlay = settingsOverlay?.model() ?? null;
       model.sessionActionsOverlay = sessionActionsOverlay?.model() ?? null;

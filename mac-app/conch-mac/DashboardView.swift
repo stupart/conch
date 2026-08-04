@@ -1102,26 +1102,26 @@ private struct ConversationDocument {
         let isDictating = live.isCapturing || live.state == "transcribing"
 
         var replyText = ""
-        var spokenChars = 0
+        var spokenFraction = 0.0
         var isQuotedReply = false
         var showsReadingProgress = false
 
         if isDictating {
             if let reading = live.reading, !reading.text.isEmpty {
-                replyText = reading.text
-                spokenChars = reading.spokenChars
+                replyText = reading.displayText
+                spokenFraction = reading.spokenFraction
             } else if let reply = state.reply, !reply.text.isEmpty {
-                replyText = reply.text
-                spokenChars = reply.spokenChars
+                replyText = reply.displayText
+                spokenFraction = reply.spokenFraction
             }
             isQuotedReply = true
         } else if let reading = live.reading, !reading.text.isEmpty {
-            replyText = reading.text
-            spokenChars = reading.spokenChars
+            replyText = reading.displayText
+            spokenFraction = reading.spokenFraction
             showsReadingProgress = true
         } else if let reply = state.reply, !reply.text.isEmpty {
-            replyText = reply.text
-            spokenChars = reply.spokenChars
+            replyText = reply.displayText
+            spokenFraction = reply.spokenFraction
             showsReadingProgress = true
         }
 
@@ -1150,15 +1150,14 @@ private struct ConversationDocument {
                 // Rendering the two halves separately corrupts block structure:
                 // a list straddling the boundary is parsed twice, so one half
                 // loses its bullets and the other injects one mid-sentence.
-                // Instead render once, and locate the boundary by rendering the
-                // raw prefix alone and taking its RENDERED length — markdown
-                // removes syntax, so a raw offset does not survive parsing.
                 let rendered = NSMutableAttributedString(
                     attributedString: ConversationDocument.markdown(replyText, attributes: body)
                 )
-                let parts = splitAtUTF16Offset(replyText, spokenChars)
+                // Progress arrives as a fraction of the SPOKEN text, which has no
+                // markdown in it — so a character offset from it cannot index the
+                // rendered string. Scale the fraction onto the rendered length.
                 let spokenLength = min(
-                    ConversationDocument.markdown(parts.prefix, attributes: body).length,
+                    Int((Double(rendered.length) * spokenFraction).rounded()),
                     rendered.length
                 )
                 if spokenLength < rendered.length {

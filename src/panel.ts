@@ -44,8 +44,15 @@ export interface PanelRowModel {
 
 export interface PanelReplyModel {
   sessionId: string;
+  /** Speech text: markdown stripped and flattened. spokenChars indexes THIS. */
   text: string;
   spokenChars: number;
+  /**
+   * The same reply with its markdown intact, for viewers that render rather
+   * than speak. Without it a GUI receives text already flattened for TTS, so
+   * every list marker shows up as a literal "- " and no block survives.
+   */
+  markdown?: string;
 }
 
 export interface SettingsOverlayRowModel {
@@ -152,7 +159,7 @@ const MAX_PUBLISHED_CONVERSATION_CHARS = 4_000;
  * bounded to the final 4,000 characters (the part being read next), and rebase
  * spoken progress so it remains meaningful within the published suffix.
  */
-function publishedReply<T extends { text: string; spokenChars: number }>(
+function publishedReply<T extends { text: string; spokenChars: number; markdown?: string }>(
   reply: T,
 ): T {
   if (reply.text.length <= MAX_PUBLISHED_CONVERSATION_CHARS) return { ...reply };
@@ -160,6 +167,12 @@ function publishedReply<T extends { text: string; spokenChars: number }>(
   const removedChars = reply.text.length - MAX_PUBLISHED_CONVERSATION_CHARS;
   return {
     ...reply,
+    // The markdown copy is capped to its own tail. It cannot align exactly with
+    // the speech text (markdown syntax has no spoken counterpart), so viewers
+    // locate reading progress by PROPORTION rather than by character offset.
+    ...(reply.markdown && reply.markdown.length > MAX_PUBLISHED_CONVERSATION_CHARS
+      ? { markdown: reply.markdown.slice(reply.markdown.length - MAX_PUBLISHED_CONVERSATION_CHARS) }
+      : {}),
     text: reply.text.slice(removedChars),
     spokenChars: Math.max(
       0,
@@ -397,12 +410,13 @@ export function previewForPanelSelection(
   navSelectedId: string | null,
   requestedSessionId: string | null,
   text: string,
+  markdown?: string,
 ): PanelReplyModel | null {
   if (
     !navSelectedId
     || navSelectedId !== requestedSessionId
   ) return null;
-  return { sessionId: navSelectedId, text, spokenChars: 0 };
+  return { sessionId: navSelectedId, text, spokenChars: 0, ...(markdown ? { markdown } : {}) };
 }
 
 /** Build the semantic dashboard once; renderers decide how it looks. */

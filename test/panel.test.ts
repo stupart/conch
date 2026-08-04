@@ -784,6 +784,7 @@ describe("previewForPanelSelection — async cursor stale guard", () => {
         navSelectedId,
         previewId,
         previewText,
+        previewRaw,
       )`,
     );
     expect(render).toContain(
