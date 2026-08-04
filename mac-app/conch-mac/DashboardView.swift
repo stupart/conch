@@ -1116,9 +1116,20 @@ private struct ConversationPane: View {
             ?? state.rows.first
     }
 
+    /// The row whose review the pane is showing: the explicit selection, or the
+    /// focused fallback when nothing is selected. Must match selectedReview.
+    private var reviewOwnerRow: SessionRow? {
+        selectedRow ?? (selectedSessionID == nil ? focusedRow : nil)
+    }
+
     private var selectedReview: ReviewItem? {
-        guard let selectedRow else { return nil }
-        return ReviewItem(row: selectedRow)
+        // The pane's contract is "show the FOCUSED session's content" — and a
+        // review is that session's content. Requiring an explicit selection
+        // here (alone of all the pane's surfaces) meant the review you were
+        // just pinged about was invisible when the window opened, until you
+        // clicked the row that was already in front of you.
+        guard let row = reviewOwnerRow else { return nil }
+        return ReviewItem(row: row)
     }
 
     private var watchesTranscriptForRow: SessionRow? {
@@ -1159,11 +1170,11 @@ private struct ConversationPane: View {
 
     var body: some View {
         Group {
-            if let selectedReview, let selectedRow {
+            if let selectedReview, let reviewRow = reviewOwnerRow {
                 VStack(spacing: 0) {
                     InlineReviewView(
                         item: selectedReview,
-                        onExpand: { onExpandReview(selectedRow) }
+                        onExpand: { onExpandReview(reviewRow) }
                     )
 
                     if isFocusedSessionLive {
@@ -1218,7 +1229,7 @@ private struct ConversationPane: View {
     }
 }
 
-private struct ConversationDocument {
+struct ConversationDocument {
     let text: NSAttributedString
     let scrollTarget: ConversationScrollTarget
     /// Which session's reply this is. Scroll position resets when the CONTENT
@@ -1384,7 +1395,7 @@ private struct ConversationDocument {
         }
     }
 
-    private static func attributes(color: NSColor) -> [NSAttributedString.Key: Any] {
+    static func attributes(color: NSColor) -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = 5
         paragraph.paragraphSpacing = 0
@@ -1632,7 +1643,7 @@ private struct ConversationDocument {
     }
 }
 
-private enum ConversationScrollTarget: Equatable {
+enum ConversationScrollTarget: Equatable {
     case none
     case character(Int)
     case end

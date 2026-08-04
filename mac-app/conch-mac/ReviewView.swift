@@ -1,4 +1,5 @@
 import AppKit
+import PDFKit
 import SwiftUI
 
 struct ReviewItem: Identifiable, Equatable {
@@ -193,6 +194,49 @@ private struct ReviewContent: View {
                 .onAppear {
                     isWebLoading = false
                 }
+        case let .pdf(url):
+            DeliverablePDFView(url: url)
+                .background(ConchPalette.bg)
+                .onAppear {
+                    isWebLoading = false
+                }
+        case let .markdown(url):
+            DeliverableDocumentView(url: url, renderMarkdown: true)
+                .background(ConchPalette.bg)
+                .onAppear {
+                    isWebLoading = false
+                }
+        case let .text(url):
+            DeliverableDocumentView(url: url, renderMarkdown: false)
+                .background(ConchPalette.bg)
+                .onAppear {
+                    isWebLoading = false
+                }
+        case let .missing(url):
+            VStack(spacing: 10) {
+                Image(systemName: "questionmark.folder")
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundStyle(ConchPalette.textDim)
+                Text("Couldn't find \(url.lastPathComponent)")
+                    .font(ConchTypography.font(size: 14, weight: .medium))
+                    .foregroundStyle(ConchPalette.textPrimary)
+                Text("It may have been moved or deleted since the review was filed.")
+                    .font(ConchTypography.font(size: 12))
+                    .foregroundStyle(ConchPalette.textDim)
+                Text(url.path)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ConchPalette.textFaint)
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 460)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(24)
+            .background(ConchPalette.bg)
+            .onAppear {
+                isWebLoading = false
+            }
         case .web:
             VStack(spacing: 0) {
                 // A deliverable is an agent-authored URL rendered full-bleed in
@@ -430,12 +474,23 @@ private struct DeliverableLoadingLine: View {
     }
 }
 
-private enum DeliverableSource {
+enum DeliverableSource: Equatable {
     case image(URL)
+    case pdf(URL)
+    case markdown(URL)
+    case text(URL)
+    case missing(URL)
     case web
 
     private static let imageExtensions = Set([
-        "png", "jpg", "jpeg", "gif", "webp", "svg",
+        "png", "jpg", "jpeg", "gif", "webp", "svg", "heic", "tiff",
+    ])
+    private static let markdownExtensions = Set(["md", "markdown"])
+    // Types that are TEXT to a person even when they aren't .txt. Everything
+    // else local still falls through to the web view, which handles .html and
+    // anything WebKit natively previews.
+    private static let textExtensions = Set([
+        "txt", "log", "json", "yaml", "yml", "toml", "csv", "diff", "patch",
     ])
 
     init(link: String) {
@@ -446,10 +501,26 @@ private enum DeliverableSource {
             return
         }
 
+        // Every local type used to fall into the WKWebView, where a .md file
+        // rendered as raw syntax and a .txt as a white page inside a dark app.
+        // Each type now goes to a renderer that shows its WHOLE content.
         let localURL = Self.localFileURL(for: link)
-        if Self.imageExtensions.contains(localURL.pathExtension.lowercased()) {
+        // A vanished file must SAY so. Falling through to a renderer produced a
+        // lone glyph with no words — indistinguishable from a broken renderer.
+        if !FileManager.default.fileExists(atPath: localURL.path) {
+            self = .missing(localURL)
+            return
+        }
+        switch localURL.pathExtension.lowercased() {
+        case let ext where Self.imageExtensions.contains(ext):
             self = .image(localURL)
-        } else {
+        case "pdf":
+            self = .pdf(localURL)
+        case let ext where Self.markdownExtensions.contains(ext):
+            self = .markdown(localURL)
+        case let ext where Self.textExtensions.contains(ext):
+            self = .text(localURL)
+        default:
             self = .web
         }
     }
@@ -464,6 +535,102 @@ private enum DeliverableSource {
     }
 }
 
+/// A PDF deliverable, whole and scrollable — WKWebView happened to preview
+/// PDFs, but PDFKit gives continuous scroll, fit-to-width, and Select/Copy.
+private struct DeliverablePDFView: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> PDFView {
+        let view = PDFView()
+        view.autoScales = true
+        view.displayMode = .singlePageContinuous
+        view.displaysPageBreaks = true
+        view.backgroundColor = NSColor(ConchPalette.bg)
+        view.document = PDFDocument(url: url)
+        return view
+    }
+
+    func updateNSView(_ view: PDFView, context: Context) {
+        if view.document?.documentURL != url {
+            view.document = PDFDocument(url: url)
+        }
+    }
+}
+
+/// A markdown or plain-text deliverable rendered natively, dark and complete.
+/// These used to fall into the WKWebView: markdown showed its raw syntax and
+/// text files painted a white system page inside a dark app.
+private struct DeliverableDocumentView: NSViewRepresentable {
+    let url: URL
+    let renderMarkdown: Bool
+
+    /// Deliverables are files an agent just produced, but an unbounded read is
+    /// still an unbounded read. 2MB of text is far past what a review is for.
+    private static let maxBytes = 2 * 1024 * 1024
+
+    final class Coordinator {
+        var loadedURL: URL?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+
+        let textView = NSTextView()
+        textView.drawsBackground = false
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.textContainerInset = NSSize(width: 24, height: 20)
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        scrollView.documentView = textView
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard context.coordinator.loadedURL != url,
+              let textView = scrollView.documentView as? NSTextView else { return }
+        context.coordinator.loadedURL = url
+
+        let content = Self.read(url)
+        if renderMarkdown {
+            let attributes = ConversationDocument.attributes(
+                color: NSColor(ConchPalette.textPrimary)
+            )
+            textView.textStorage?.setAttributedString(
+                ConversationDocument.markdown(content, attributes: attributes)
+            )
+        } else {
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineSpacing = 3
+            textView.textStorage?.setAttributedString(
+                NSAttributedString(string: content, attributes: [
+                    .font: NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular),
+                    .foregroundColor: NSColor(ConchPalette.textPrimary),
+                    .paragraphStyle: paragraph,
+                ])
+            )
+        }
+    }
+
+    private static func read(_ url: URL) -> String {
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            return "Couldn't read \(url.lastPathComponent)."
+        }
+        defer { try? handle.close() }
+        let data = (try? handle.read(upToCount: maxBytes)) ?? Data()
+        var text = String(decoding: data, as: UTF8.self)
+        if data.count == maxBytes {
+            text += "\n\n… truncated at 2MB — open the file for the rest."
+        }
+        return text
+    }
+}
+
 private struct DeliverableImageView: NSViewRepresentable {
     let url: URL
 
@@ -471,46 +638,65 @@ private struct DeliverableImageView: NSViewRepresentable {
         var loadedURL: URL?
     }
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    /// Fit to WIDTH and scroll vertically. Fitting the whole image scaled a
+    /// tall full-page screenshot down to an unreadable thumbnail — the pane's
+    /// job is to show the entire deliverable at a size a person can judge.
+    /// Images smaller than the pane centre at native size; nothing upscales.
+    /// Flipped so the document's origin is the TOP — an unflipped container
+    /// opened every tall screenshot scrolled to its bottom.
+    private final class FlippedView: NSView {
+        override var isFlipped: Bool { true }
     }
 
-    /// NSImageView reports the image's NATIVE size as its intrinsic size, so a
-    /// screenshot-sized deliverable laid out larger than the pane and got
-    /// clipped — and shoved the header around on its way. Claiming no intrinsic
-    /// size lets SwiftUI size it to the pane, which is what makes
-    /// `scaleProportionallyUpOrDown` actually fit instead of crop.
-    final class FittingImageView: NSImageView {
-        override var intrinsicContentSize: NSSize {
-            NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    final class FitWidthImageScrollView: NSScrollView {
+        let imageView = NSImageView()
+        private let container = FlippedView()
+
+        init() {
+            super.init(frame: .zero)
+            drawsBackground = false
+            hasVerticalScroller = true
+            imageView.imageScaling = .scaleProportionallyUpOrDown
+            container.addSubview(imageView)
+            documentView = container
+        }
+
+        required init?(coder: NSCoder) { nil }
+
+        override func layout() {
+            super.layout()
+            guard let image = imageView.image, image.size.width > 0 else { return }
+            let paneWidth = contentSize.width
+            let targetWidth = min(paneWidth - 36, image.size.width)
+            guard targetWidth > 0 else { return }
+            let height = targetWidth * image.size.height / image.size.width
+            let containerHeight = max(height + 36, contentSize.height)
+            container.frame = NSRect(x: 0, y: 0, width: paneWidth, height: containerHeight)
+            imageView.frame = NSRect(
+                x: (paneWidth - targetWidth) / 2,
+                y: (containerHeight - height) / 2,
+                width: targetWidth,
+                height: height
+            )
         }
     }
 
-    func makeNSView(context: Context) -> NSImageView {
-        let imageView = FittingImageView()
-        imageView.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        imageView.setContentHuggingPriority(.defaultLow, for: .vertical)
-        imageView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        imageView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-        imageView.imageAlignment = .alignCenter
-        imageView.imageFrameStyle = .none
-        imageView.imageScaling = .scaleProportionallyUpOrDown
-        imageView.animates = true
-        imageView.wantsLayer = true
-        imageView.layer?.backgroundColor = NSColor.clear.cgColor
-        // No border: a deliverable is usually a screenshot that already carries
-        // its own window chrome, so framing it again reads as a frame in a frame.
-        return imageView
+    func makeNSView(context: Context) -> FitWidthImageScrollView {
+        FitWidthImageScrollView()
     }
 
-    func updateNSView(_ imageView: NSImageView, context: Context) {
+    func updateNSView(_ view: FitWidthImageScrollView, context: Context) {
         guard context.coordinator.loadedURL != url else { return }
         context.coordinator.loadedURL = url
-        imageView.image = NSImage(contentsOf: url)
+        view.imageView.image = NSImage(contentsOf: url)
             ?? NSImage(
                 systemSymbolName: "photo.badge.exclamationmark",
                 accessibilityDescription: nil
             )
+        view.needsLayout = true
+        view.contentView.scroll(to: .zero)
     }
 }
 
