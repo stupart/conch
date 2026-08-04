@@ -7,15 +7,19 @@ enum ConchPalette {
         green: 0.051,
         blue: 0.047
     )
+    // Selection must outrank hover. It used to measure 1.07:1 against bg while
+    // hover measured 1.17:1, so a hovered row read as MORE selected than the
+    // selected one — and 1.07:1 is below the ~1.2:1 where a surface step is
+    // perceptible at all. Measured now: selection 1.56:1, hover 1.22:1.
     static let raised = Color(
-        red: 0.082,
-        green: 0.093,
-        blue: 0.088
+        red: 0.186,
+        green: 0.209,
+        blue: 0.198
     )
     static let hover = Color(
-        red: 0.11,
-        green: 0.123,
-        blue: 0.117
+        red: 0.122,
+        green: 0.136,
+        blue: 0.130
     )
     static let textPrimary = Color(
         red: 0.91,
@@ -58,7 +62,8 @@ enum ConchPalette {
         blue: 0.19
     )
 
-    static let textFaint = textDim.opacity(0.62)
+    // 0.62 put this at 2.63:1, below AA, while carrying the row age. Now 4.54:1.
+    static let textFaint = textDim.opacity(0.93)
     static let divider = Color.white.opacity(0.075)
 }
 
@@ -332,7 +337,7 @@ private struct DashboardHeader: View {
                     .font(ConchTypography.font(size: 11.5))
                     .foregroundStyle(ConchPalette.textDim)
                     .lineLimit(1)
-                    .truncationMode(.middle)
+                    .truncationMode(.tail)
                     .contentTransition(.opacity)
             }
         }
@@ -885,12 +890,19 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
         switch self {
         case .idle:
             return "circle.dotted"
-        case .working, .listening:
+        case .working:
             return "circle.fill"
+        case .listening:
+            // Was identical to .working, so the ledger could not tell you
+            // whether your MICROPHONE was open — the single most consequential
+            // distinction in a voice product.
+            return "mic.fill"
         case .waiting:
-            return "circle"
+            return "circle.inset.filled"
         case .needs:
-            return "exclamationmark"
+            // A bare hairline glyph carried the most urgent state while calmer
+            // states were filled discs — urgency rising as ink fell.
+            return "exclamationmark.circle.fill"
         case .review:
             return "star.fill"
         case .muted:
@@ -914,7 +926,9 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             return 9
         case .transcribing:
             return 11
-        case .idle, .working, .waiting, .listening:
+        case .listening:
+            return 10
+        case .idle, .working, .waiting:
             return 8
         }
     }
@@ -927,14 +941,23 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             return ConchPalette.statusWaiting
         case .needs:
             return ConchPalette.statusNeeds
-        case .review, .speaking:
+        case .review:
             return ConchPalette.statusReview
+        case .speaking:
+            // Speaking is LIVENESS, not a demand. Sharing gold with .review left
+            // the one colour that means "act" claimed by a session merely
+            // talking, so a real review no longer stood out.
+            return ConchPalette.statusWorking
         case .recording:
             return ConchPalette.brandCyan
         case .transcribing:
             return ConchPalette.statusWorking.opacity(0.78)
-        case .idle, .muted, .paused:
+        case .idle:
             return ConchPalette.textFaint
+        case .muted, .paused:
+            // "Why is this one silent?" is a question the user actually asks;
+            // textFaint answered it at 2.63:1, below AA.
+            return ConchPalette.textDim
         }
     }
 
@@ -1426,13 +1449,29 @@ private struct ConversationDocument {
                 )
             }
 
+            // Tab stops are what make a table read as columns. Placed after
+            // lineAttributes exists so the separator and the cell share them.
+            if isTableCell,
+               let tabbed = (base[.paragraphStyle] as? NSParagraphStyle)?
+                   .mutableCopy() as? NSMutableParagraphStyle {
+                tabbed.tabStops = (1...8).map {
+                    NSTextTab(textAlignment: .left, location: CGFloat($0) * 118)
+                }
+                tabbed.defaultTabInterval = 118
+                lineAttributes[.paragraphStyle] = tabbed
+                piece.addAttribute(.paragraphStyle, value: tabbed, range: whole)
+            }
+
             if isTableCell {
                 // Row breaks come from the first cell; cells within a row are
                 // separated inline so the row reads as a row.
                 if output.length > 0 {
                     output.append(
                         NSAttributedString(
-                            string: startsTableRow ? "\n" : "   ",
+                            // Three spaces is not a column. Tab stops are what
+                            // make "cold read | 41ms | 6ms" line up under its
+                            // header instead of reading as a run-on sentence.
+                            string: startsTableRow ? "\n" : "\t",
                             attributes: base
                         )
                     )
@@ -1749,20 +1788,27 @@ private struct DashboardKeybar: View {
         return state?.rows.first { $0.id == selectedSessionID }
     }
 
+    // A long session label used to be spelled out in BOTH the pause and mute
+    // buttons — once middle-truncated, once not — consuming the whole bar with
+    // the same name twice. What the buttons target is already stated by the
+    // ledger highlight and the pane header, so "all" is the only qualifier that
+    // adds anything: it's the case where the scope is NOT what's highlighted.
     private var talkLabel: String {
         state?.live.isExchangeActive == true ? "Stop" : "Talk"
     }
 
+    private var scopeSuffix: String {
+        selectedRow == nil ? " all" : ""
+    }
+
     private var pauseLabel: String {
         let paused = selectedRow?.paused ?? state?.mode.paused ?? false
-        let action = paused ? "Resume" : "Pause"
-        return "\(action) \(selectedRow?.label ?? "all")"
+        return (paused ? "Resume" : "Pause") + scopeSuffix
     }
 
     private var muteLabel: String {
         let muted = selectedRow?.muted ?? state?.mode.muted ?? false
-        let action = muted ? "Unmute" : "Mute"
-        return "\(action) \(selectedRow?.label ?? "all")"
+        return (muted ? "Unmute" : "Mute") + scopeSuffix
     }
 
     var body: some View {
@@ -1816,7 +1862,7 @@ private struct KeybarActionButton: View {
             Text(label)
                 .font(ConchTypography.font(size: 11.5, weight: .medium))
                 .lineLimit(1)
-                .truncationMode(.middle)
+                .truncationMode(.tail)
                 .foregroundStyle(
                     isHovered || isProminent || isSelected
                         ? ConchPalette.textPrimary
