@@ -2371,7 +2371,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // tmux pane AND typing is disabled, so EVERY utterance lands here — a
       // config problem, not a transient one. Without this the log line is
       // identical either way and the real cause takes an hour to find.
-      log(`injected via ${via}${reason ? ` (${reason})` : ""}`);
+      log(`injected into "${event.label}" via ${via}${reason ? ` (${reason})` : ""}`);
       if (beforeInject && !(await beforeInject())) return false;
       await speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.", event.label);
       return true;
@@ -2383,7 +2383,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       return true;
     }
     if (beforeCount === null) {
-      log(`injected via ${via}`); // no transcript to confirm against — trust it
+      log(`injected into "${event.label}" via ${via}`); // no transcript to confirm against — trust it
       return true;
     }
 
@@ -2395,7 +2395,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       await Bun.sleep(900 + attempt * 600); // give Claude Code time to write the prompt entry
       if (beforeInject && !(await beforeInject())) return false;
       if ((await transcriptMark(event.transcriptPath!)) > beforeCount) {
-        log(`injected via ${via} — confirmed sent${attempt ? ` (after ${attempt} re-send${attempt > 1 ? "s" : ""})` : ""}`);
+        log(`injected into "${event.label}" via ${via} — confirmed sent${attempt ? ` (after ${attempt} re-send${attempt > 1 ? "s" : ""})` : ""}`);
         return true;
       }
       if (attempt < 2) {
@@ -2405,7 +2405,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
     }
     if (beforeInject && !(await beforeInject())) return false;
-    log(`⚠ inject via ${via} NOT confirmed — words placed on clipboard`);
+    log(`⚠ inject into "${event.label}" via ${via} NOT confirmed — words placed on clipboard`);
     await toClipboard(text);
     if (beforeInject && !(await beforeInject())) return false;
     await speak(cfg, "I typed that but it didn't send. Your words are on the clipboard — just paste and press return.", event.label);
@@ -3035,7 +3035,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
     }
     const initialWindow = seededSegments.length ? cfg.holdSubmitSecs : cfg.listenWindowSecs;
-    log(`listening (start within ${initialWindow}s)${seededSegments.length ? " · holding" : ""}...`);
+    log(`listening → "${event.label}" (start within ${initialWindow}s)${seededSegments.length ? " · holding" : ""}...`);
     if (shuttingDown || (interruptedByPause() && !initialDictationCapture)) return;
     let needsCapture = attachedInitialCapture || Boolean(initialDictationCapture)
       || (!deferredInitialExternal && !interruptedByPause());
