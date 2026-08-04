@@ -121,6 +121,27 @@ describe("only one side of the phone owns the audio route", () => {
     expect(talk.match(/absorbPartial\(removingCommittedOverlap\(from: text\)\)/g)?.length).toBe(2);
   });
 
+  test("overlap stripping runs only where audio was actually replayed", () => {
+    // It exists to absorb the ~1.5s a rollover feeds back into the next
+    // request. Run unconditionally it cannot tell replayed audio from a
+    // person repeating themselves, and eats the opening of "no, no — the
+    // other one". Every replay site must arm it; nothing else may.
+    const talk = app("TalkController.swift");
+    const fn = talk.slice(talk.indexOf("private func removingCommittedOverlap"));
+    expect(fn.slice(0, fn.indexOf("\n    }"))).toMatch(/guard expectsReplayOverlap else \{ return candidate \}/);
+    // Armed exactly where a cursor is replayed, never for a fresh capture.
+    const arms = [...talk.matchAll(/expectsReplayOverlap = true/g)].length;
+    expect(arms).toBe(2); // rollover + finalisation recovery
+    for (const site of ["audioRelay.install(next, replayAfter: cursor)",
+                        "audioRelay.install(recovery, replayAfter: replayAfterSequence)"]) {
+      const at = talk.indexOf(site);
+      expect(at).toBeGreaterThan(-1);
+      expect(talk.slice(Math.max(0, at - 200), at)).toMatch(/expectsReplayOverlap = true/);
+    }
+    const fresh = talk.indexOf("audioRelay.install(request, replayAfter: nil)");
+    expect(talk.slice(Math.max(0, fresh - 120), fresh)).toMatch(/expectsReplayOverlap = false/);
+  });
+
   test("a confirmed send clears only what it acknowledged", () => {
     // A late callback can append during the `await deliver`, and assigning
     // empty afterwards deletes words that were never sent to anyone.

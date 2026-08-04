@@ -233,6 +233,13 @@ final class TalkController: NSObject, ObservableObject {
     // callback from the old task inert before the replacement can be mutated.
     private var generation = 0
     private var replayAfterSequence = 0
+    /// True only while a request is being fed audio it has already heard.
+    ///
+    /// Rollover replays ~1.5s into the replacement request so no audio falls
+    /// between tasks; the text arriving from that replay must be de-duplicated
+    /// against what is already committed. Outside that window there is nothing
+    /// to de-duplicate, and stripping anyway silently ate deliberate repeats.
+    private var expectsReplayOverlap = false
     /// Why recognition last died. Shown when finalisation fails, because "it
     /// couldn't finish" is undiagnosable from a treadmill — the underlying
     /// error is what distinguishes an audio-session collision from a stall.
@@ -310,6 +317,7 @@ final class TalkController: NSObject, ObservableObject {
         self.request = request
         generation += 1
         replayAfterSequence = audioRelay.cursor()
+        expectsReplayOverlap = false
         audioRelay.install(request, replayAfter: nil)
 
         do {
@@ -466,6 +474,9 @@ final class TalkController: NSObject, ObservableObject {
     private func commit(_ text: String) {
         let novel = removingCommittedOverlap(from: text)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        // The replayed prefix has now been absorbed; anything the user says
+        // from here is theirs, repeats included.
+        expectsReplayOverlap = false
         guard !novel.isEmpty else { partial = ""; return }
         committed = committed.isEmpty ? novel : committed + " " + novel
         partial = ""
@@ -473,6 +484,12 @@ final class TalkController: NSObject, ObservableObject {
 
     private func removingCommittedOverlap(from text: String) -> String {
         let candidate = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Only strip where audio was ACTUALLY replayed. This exists solely to
+        // absorb the 1.5s a rollover feeds back into the next request; run
+        // unconditionally, it cannot tell replayed audio from a person simply
+        // repeating themselves, and "no, no — do the other one" loses its
+        // opening. Say something twice on purpose and it survives now.
+        guard expectsReplayOverlap else { return candidate }
         guard !committed.isEmpty, !candidate.isEmpty else { return candidate }
         let existingWords = committed.split(whereSeparator: { $0.isWhitespace })
         let candidateWords = candidate.split(whereSeparator: { $0.isWhitespace })
@@ -502,6 +519,7 @@ final class TalkController: NSObject, ObservableObject {
         replayAfterSequence = cursor
         // The relay moves first. Any tap callback concurrent with rollover is
         // serialized onto the new request, and retained audio fills its prefix.
+        expectsReplayOverlap = true
         audioRelay.install(next, replayAfter: cursor)
         previousRequest?.endAudio()
         previousRecognition?.cancel()
@@ -633,6 +651,7 @@ final class TalkController: NSObject, ObservableObject {
         finishingGeneration = recoveryGeneration
         let recovery = makeRequest(for: recognizer)
         request = recovery
+        expectsReplayOverlap = true
         audioRelay.install(recovery, replayAfter: replayAfterSequence)
         startRecognition(
             on: recognizer,
