@@ -27,6 +27,8 @@ export const SETTING_KEYS = [
   "barge-threshold",
   "voice-speed",
   "keystroke-fallback",
+  "phone",
+  "phone-port",
   "read-full",
   "interrupt-on-manual-reply",
   "handoff-order",
@@ -53,6 +55,8 @@ export type SettingField =
   | "bargeThresholdPct"
   | "ttsSpeed"
   | "keystrokeFallback"
+  | "phoneEnabled"
+  | "phonePort"
   | "readFull"
   | "interruptOnManualReply"
   | "handoffOrder"
@@ -232,6 +236,28 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "type into the session's window when it isn't in a tmux pane",
+  },
+  {
+    key: "phone",
+    field: "phoneEnabled",
+    env: "CONCH_PHONE",
+    kind: "boolean",
+    default: false,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "let the conch iPhone app connect over Wi-Fi (run `conch pair`)",
+  },
+  {
+    key: "phone-port",
+    field: "phonePort",
+    env: "CONCH_PHONE_PORT",
+    kind: "number",
+    default: 8674,
+    parse: numberParser(positive, "a number greater than 0"),
+    bounds: positive,
+    apply: "live",
+    help: "port the phone bridge listens on",
   },
   {
     key: "read-full",

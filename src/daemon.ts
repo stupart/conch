@@ -35,6 +35,7 @@ import { injectText, injectKey, revealSessionWindow, toClipboard } from "./injec
 import { classify, classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
 import { recordTelemetry } from "./telemetry.ts";
+import { createPhoneBridge, ensurePhoneToken, forwardToDaemonSocket, type PhoneBridgeHandle } from "./phone-bridge.ts";
 import { askClaude, type AskClaude } from "./model.ts";
 import { routeVoicePrompt } from "./voice-qa.ts";
 import {
@@ -537,6 +538,7 @@ export function dispatchControlMessage(
 }
 
 const TURN_EVENT_TYPES = new Set<TurnEvent["type"]>([
+  "inject",
   "turn-end",
   "needs-you",
   "wake",
@@ -1516,8 +1518,40 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // Publication is always on, independent of the selected terminal renderer.
   // Full ledger rebuilds and cheap conversation refreshes share this writer so
   // neither path can bypass the 10 Hz leading/trailing throttle.
+  // The phone bridge shares the publish cadence: whatever the file gets, a
+  // connected phone gets, from the same object at the same moment.
+  let phoneBridge: PhoneBridgeHandle | null = null;
+  function syncPhoneBridge(): void {
+    const wanted = cfg.phoneEnabled;
+    if (!wanted && phoneBridge) {
+      phoneBridge.stop();
+      phoneBridge = null;
+      log("phone bridge stopped");
+      return;
+    }
+    if (wanted && phoneBridge && phoneBridge.port !== cfg.phonePort) {
+      phoneBridge.stop();
+      phoneBridge = null;
+    }
+    if (wanted && !phoneBridge) {
+      try {
+        phoneBridge = createPhoneBridge(
+          {
+            getState: () => lastPublishedPanelState,
+            forwardControl: (line) => forwardToDaemonSocket(cfg.socketPath, line),
+            log,
+          },
+          { port: cfg.phonePort, token: ensurePhoneToken() },
+        );
+      } catch (error) {
+        log(`phone bridge failed to start: ${String(error)}`);
+      }
+    }
+  }
+
   const publishedStateWriter = createPublishThrottle(() => {
     if (lastPublishedPanelState) publishSessionsFile(lastPublishedPanelState);
+    phoneBridge?.publish();
   });
 
   /** Publish progress against the last reconciled ledger without another registry scan. */
@@ -1908,6 +1942,23 @@ export async function runDaemon(cfg: Config): Promise<void> {
         : { replayed: 0, dropped: 0, cancelled: false };
       if (result.digested) return handlePreparedResumeDigest(event, result);
       return pause.announceResumed(result);
+    }
+    if (event.type === "inject") {
+      // The phone's voice path: text transcribed ON the phone, delivered into
+      // the named session through the exact machinery Mac dictation uses —
+      // name-addressing, focus, confirm-by-transcript, clipboard fallback,
+      // telemetry. One injection path, however the words arrived.
+      const info = event.sessionId ? panelSessions.get(event.sessionId) : undefined;
+      const target: TurnEvent = {
+        ...event,
+        type: "turn-end",
+        pid: event.pid ?? info?.pid,
+        transcriptPath: event.transcriptPath
+          ?? findTranscript(cfg.claudeDir, event.sessionId),
+      };
+      const delivered = await deliver(target, event.announce);
+      log(`phone inject into "${event.label}" ${delivered ? "delivered" : "failed"}`);
+      return;
     }
     if (event.type === "speak") {
       const speechCfg = event.voice ? { ...cfg, ttsVoices: [event.voice] } : cfg;
@@ -3669,6 +3720,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     settingsPath: daemonSettingsPath,
     onLiveChange: (key, value) => {
       if (key === "meeting-autopause") meetingMic?.setEnabled(value === true);
+      if (key === "phone" || key === "phone-port") syncPhoneBridge();
     },
   });
   // These controllers own settings/session-action data and side effects for
@@ -3971,6 +4023,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   if (existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath); // stale socket from a previous run
   server.listen(cfg.socketPath);
+  syncPhoneBridge();
   // The socket accepts mic-opening, speech, and settings mutations, so it must
   // not be world-writable in /tmp. Darwin enforces socket mode on connect(2).
   try {

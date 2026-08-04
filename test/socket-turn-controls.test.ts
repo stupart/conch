@@ -467,3 +467,27 @@ describe("session command dispatch", () => {
     expect(restoreDismissedSessionState("session-a", dismissed, muted)).toBeFalse();
   });
 });
+
+test("inject events carry a session, a label, and the text to deliver", () => {
+  // The phone's voice path. Full-shape on purpose: an inject with no text or
+  // no target is not a request the daemon can honour safely.
+  const good = validateSocketTurnEvent({
+    type: "inject",
+    sessionId: "abc",
+    label: "dayloop",
+    announce: "run the tests and report",
+  });
+  expect(good.ok).toBe(true);
+
+  for (const missing of ["sessionId", "label", "announce"] as const) {
+    const event: Record<string, unknown> = {
+      type: "inject",
+      sessionId: "abc",
+      label: "dayloop",
+      announce: "text",
+    };
+    delete event[missing];
+    const result = validateSocketTurnEvent(event);
+    expect(result.ok).toBe(false);
+  }
+});
