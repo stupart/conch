@@ -88,7 +88,7 @@ struct PairingView: View {
             case .ok:
                 onPaired(candidate)
             case .badCode:
-                problem = "That code didn't match — copy it fresh from `conch pair`."
+                problem = "That code didn't match — copy it fresh from conch pair on the Mac."
             case let .unreachable(reason):
                 problem = reason
             }

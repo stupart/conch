@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The Mac dashboard's exact palette, so the two surfaces read as one product.
 /// Values are copied, not approximated — the status ladder was converged on by
@@ -31,8 +32,11 @@ enum Palette {
 /// platform's accessibility contract — at XXXL only the nav title scaled.
 enum Type {
     static func label(_ size: CGFloat = 17, weight: Font.Weight = .regular) -> Font {
-        // Sized labels ride .body so they still scale with the user's setting.
-        .system(size: size, weight: weight)
+        // Actually ride the user's text size: a fixed .system(size:) here made
+        // card TITLES stay put while their scaling captions outgrew them -
+        // hierarchy inverted exactly at the accessibility sizes that need it.
+        let scaled = UIFontMetrics(forTextStyle: .body).scaledValue(for: size)
+        return .system(size: scaled, weight: weight)
     }
 
     static let sessionName = Font.body.weight(.semibold)

@@ -69,10 +69,14 @@ struct DeliverableSheet: View {
                 AsyncImage(url: url) { phase in
                     switch phase {
                     case let .success(image):
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .containerRelativeFrame(.horizontal)
+                        // No containerRelativeFrame: inside a vertical
+                        // ScrollView it passed the CONTAINER'S HEIGHT into the
+                        // proposal, so aspect-fit fitted the height - a tall
+                        // screenshot crammed into one screen as a thumbnail
+                        // column. A vertical ScrollView already proposes
+                        // (viewport width, nil); scaledToFit against that IS
+                        // fit-to-width. The fix was a deletion.
+                        image.resizable().scaledToFit()
                     case .failure:
                         unavailableView("Couldn't load the image from your Mac.")
                     default:
