@@ -64,17 +64,23 @@ describe("only one side of the phone owns the audio route", () => {
     expect(app("ConchApp.swift")).toMatch(/@StateObject private var talk = TalkController\(\)/);
   });
 
-  test("only a confirmed send may clear the transcript", () => {
+  test("only a confirmed send or an explicit discard clears the transcript", () => {
     // Three separate bugs deleted this string, each fix closing only the path
-    // it knew about. The policy replaces the whack-a-mole: exactly one write
-    // clears it, and it is the one that follows `deliver`.
+    // it knew about. The policy replaces the whack-a-mole: the only writes
+    // that empty it are the one after `deliver` and the one the user asked
+    // for by name.
     const talk = app("TalkController.swift");
-    const clears = [...talk.matchAll(/committed = ""/g)].map((m) => m.index ?? 0);
-    // One is the property's own initialiser; the other must be the send.
-    expect(clears.length).toBe(2);
+    const clears = [...talk.matchAll(/^\s*(?:self\.)?committed = ""$/gm)]
+      .map((m) => m.index ?? 0);
     const send = talk.lastIndexOf("let delivered = await deliver(text)");
+    const discard = talk.indexOf("func discard(session: String)");
     expect(send).toBeGreaterThan(-1);
-    expect(clears[1]).toBeGreaterThan(send);
+    expect(discard).toBeGreaterThan(-1);
+    for (const at of clears) {
+      const inSend = at > send;
+      const inDiscard = at > discard && at < talk.indexOf("\n    }", discard);
+      expect(inSend || inDiscard).toBeTrue();
+    }
     // Starting a recording continues an unsent draft rather than wiping it.
     const begin = talk.indexOf("private func beginCapture()");
     const beginBody = talk.slice(begin, talk.indexOf("private func makeRequest", begin));
@@ -84,8 +90,26 @@ describe("only one side of the phone owns the audio route", () => {
   test("the draft outlives the process", () => {
     // A relaunch or crash mid-utterance is not a decision to discard speech.
     const talk = app("TalkController.swift");
-    expect(talk).toMatch(/didSet \{ UserDefaults\.standard\.set\(committed, forKey: Self\.draftKey\) \}/);
-    expect(talk).toMatch(/committed = UserDefaults\.standard\.string\(forKey: Self\.draftKey\)/);
+    expect(talk).toMatch(/didSet \{ persistDrafts\(\) \}/);
+    expect(talk).toMatch(/UserDefaults\.standard\.set\(all, forKey: Self\.draftKey\)/);
+    expect(talk).toMatch(/parked = UserDefaults\.standard\.dictionary\(forKey: Self\.draftKey\)/);
+  });
+
+  test("a draft belongs to its session, and cannot be sent to another", () => {
+    // `deliver` comes from whichever screen is on top. Talking to A, walking
+    // into B and tapping the button — which even said "Send" — would have
+    // injected A's words into B, and an unsent draft would follow you in.
+    const talk = app("TalkController.swift");
+    const toggle = talk.slice(talk.indexOf("func toggle(session: String"));
+    const body = toggle.slice(0, toggle.indexOf("\n    }"));
+    expect(body).toMatch(/session == targetSessionId/);
+    const finish = body.indexOf("finish(deliver: deliver)");
+    const guardIndex = body.indexOf("session == targetSessionId");
+    expect(guardIndex).toBeLessThan(finish);
+    // Drafts are stored per session, not one string for the whole app.
+    expect(talk).toMatch(/private var parked: \[String: String\]/);
+    // Every talk affordance is scoped to the session on screen.
+    expect(session).toMatch(/talk\.targetSessionId == sessionId && talk\.phase == \.listening/);
   });
 
   test("words in hand are sent even when recognition never signed off", () => {

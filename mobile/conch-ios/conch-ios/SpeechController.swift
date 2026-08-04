@@ -126,11 +126,26 @@ final class SpeechController: NSObject, ObservableObject {
 }
 
 extension SpeechController: AVSpeechSynthesizerDelegate {
+    /// The synthesizer is the truth, not our flag. Setting `isSpeaking` only
+    /// where we call speak() left the toolbar showing "read aloud" while conch
+    /// was mid-sentence — the button lied until you tapped it.
+    nonisolated func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer,
+        didStart utterance: AVSpeechUtterance
+    ) {
+        Task { @MainActor in self.isSpeaking = true }
+    }
+
     nonisolated func speechSynthesizer(
         _ synthesizer: AVSpeechSynthesizer,
         didFinish utterance: AVSpeechUtterance
     ) {
         Task { @MainActor in
+            // speak() QUEUES: a second reply arriving mid-sentence does not
+            // interrupt the first. Treating this callback as "done speaking"
+            // therefore ended the read while audio was still playing — and
+            // opened the mic on top of it, which is how the loop hears itself.
+            guard !synthesizer.isSpeaking else { return }
             self.isSpeaking = false
             // Hand audio back FIRST, so music returns to full volume and the
             // session is free. Opening the mic before releasing it meant this

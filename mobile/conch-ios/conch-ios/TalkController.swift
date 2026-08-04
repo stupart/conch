@@ -136,7 +136,7 @@ final class TalkController: NSObject, ObservableObject {
         [committed, partial].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
-    /// Everything recognised and not yet successfully sent.
+    /// Unsent words for the session being talked to right now.
     ///
     /// Append-only and written to disk on every change. Exactly ONE thing may
     /// clear it: a send the Mac confirmed. Not starting a recording, not a
@@ -148,9 +148,61 @@ final class TalkController: NSObject, ObservableObject {
     /// each fix only closed the path it knew about. Words that cannot be
     /// deleted cannot be deleted by the next path either.
     @Published private(set) var committed = "" {
-        didSet { UserDefaults.standard.set(committed, forKey: Self.draftKey) }
+        didSet { persistDrafts() }
     }
-    private static let draftKey = "conch.draft.committed"
+    /// Unsent words for every OTHER session.
+    ///
+    /// A draft belongs to a conversation, not to the app. One controller now
+    /// serves every session, so without this an unsent draft would follow you
+    /// into the next session and be injected there — and worse, tapping the
+    /// button while another session held the mic would deliver ITS words to
+    /// whatever you happened to be looking at.
+    private var parked: [String: String] = [:]
+    private static let draftKey = "conch.drafts"
+
+    /// What is waiting to be sent to `session`, active or parked.
+    func draft(for session: String) -> String {
+        session == targetSessionId ? transcript : (parked[session] ?? "")
+    }
+
+    /// Throw a draft away, on purpose.
+    ///
+    /// Everything else in here refuses to delete your words; that only works
+    /// as a promise if you have a way to delete them yourself. Deliberate and
+    /// explicit is the whole distinction — the bug was words vanishing
+    /// without anyone asking.
+    func discard(session: String) {
+        if session == targetSessionId {
+            if phase == .listening || starting { cancel() }
+            partial = ""
+            failure = nil
+            committed = ""
+        } else {
+            parked.removeValue(forKey: session)
+            persistDrafts()
+        }
+    }
+
+    private func persistDrafts() {
+        var all = parked
+        if let target = targetSessionId {
+            if committed.isEmpty { all.removeValue(forKey: target) } else { all[target] = committed }
+        }
+        UserDefaults.standard.set(all, forKey: Self.draftKey)
+    }
+
+    /// Park the current draft under its own session and adopt `session`'s.
+    private func switchTarget(to session: String) {
+        guard targetSessionId != session else { return }
+        if let previous = targetSessionId {
+            if committed.isEmpty { parked.removeValue(forKey: previous) }
+            else { parked[previous] = committed }
+        }
+        targetSessionId = session
+        partial = ""
+        failure = nil
+        committed = parked[session] ?? ""
+    }
     @Published private(set) var partial = ""
     @Published private(set) var failure: String?
     /// Which session this draft is being spoken to.
@@ -166,7 +218,7 @@ final class TalkController: NSObject, ObservableObject {
         // A relaunch or a crash mid-utterance is not a decision to discard
         // what you said. Whatever was unsent when the process died is still
         // unsent now, and it is still yours.
-        committed = UserDefaults.standard.string(forKey: Self.draftKey) ?? ""
+        parked = UserDefaults.standard.dictionary(forKey: Self.draftKey) as? [String: String] ?? [:]
     }
 
     private let engine = AVAudioEngine()
@@ -196,15 +248,22 @@ final class TalkController: NSObject, ObservableObject {
     private var finalizationTimeout: Task<Void, Never>?
 
     func toggle(session: String, deliver: @escaping (String) async -> Bool) {
-        switch phase {
-        case .listening:
+        if phase == .sending { return }
+        // Send ONLY into the session the words were spoken to. `deliver` comes
+        // from whichever screen is on top, so a tap here while another session
+        // held the mic would have injected its words into this one.
+        if phase == .listening, session == targetSessionId {
             finish(deliver: deliver)
-        case .idle, .denied:
-            targetSessionId = session
-            start()
-        case .sending:
-            break
+            return
         }
+        if phase == .listening {
+            // Tapping Talk in a different session means "talk to this one
+            // instead" — keep what was said to the other, do not send it.
+            commit(partial)
+            cancel()
+        }
+        switchTarget(to: session)
+        start()
     }
 
     private func start() {

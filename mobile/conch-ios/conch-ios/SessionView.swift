@@ -16,6 +16,13 @@ struct SessionView: View {
 
     private static let draftAnchor = "conch.draft"
 
+    /// Whether the mic is open FOR THIS SESSION. One controller serves them
+    /// all, so `phase` alone would light up the mic and relabel the button in
+    /// a session that is merely being looked at while another one listens.
+    private var isTalkingHere: Bool {
+        talk.targetSessionId == sessionId && talk.phase == .listening
+    }
+
     private var row: PublishedState.Row? {
         bridge.state?.rows.first { $0.id == sessionId }
     }
@@ -62,11 +69,10 @@ struct SessionView: View {
                     // Your words belong in the thread, under what you are
                     // answering — not stacked on top of the button. It reads as
                     // a conversation, and you can see the whole utterance grow.
-                    if talk.targetSessionId == sessionId,
-                       talk.phase == .listening || !talk.transcript.isEmpty {
+                    if isTalkingHere || !talk.draft(for: sessionId).isEmpty {
                         YourTurnBubble(
-                            text: talk.transcript,
-                            isSending: talk.phase == .sending
+                            text: talk.draft(for: sessionId),
+                            isSending: isTalkingHere && talk.phase == .sending
                         )
                         .id(Self.draftAnchor)
                     }
@@ -74,7 +80,7 @@ struct SessionView: View {
                 .padding(20)
                 .padding(.bottom, 12)
             }
-            .onChange(of: talk.transcript) { _, _ in
+            .onChange(of: talk.draft(for: sessionId)) { _, _ in
                 withAnimation(.easeOut(duration: 0.2)) {
                     scroller.scrollTo(Self.draftAnchor, anchor: .bottom)
                 }
@@ -103,7 +109,7 @@ struct SessionView: View {
                         .foregroundStyle(speech.isSpeaking ? Palette.needs : Palette.textDim)
                         .contentTransition(.symbolEffect(.replace))
                 }
-                .disabled(replyText == nil || talk.phase == .listening)
+                .disabled(replyText == nil || isTalkingHere)
                 .accessibilityLabel(speech.isSpeaking ? "Stop reading" : "Read this aloud")
             }
 
@@ -119,13 +125,13 @@ struct SessionView: View {
                         // ear the indicator was reporting a microphone on the
                         // other side of the room — the one state you cannot
                         // afford to be wrong about.
-                        Image(systemName: talk.phase == .listening ? "mic.fill" : mark.symbol)
+                        Image(systemName: isTalkingHere ? "mic.fill" : mark.symbol)
                             .font(.system(size: 12))
-                            .foregroundStyle(talk.phase == .listening ? Palette.micOpen : mark.color)
+                            .foregroundStyle(isTalkingHere ? Palette.micOpen : mark.color)
                         // The word earns its place only when nothing else on
                         // screen explains the glyph — a review card directly
                         // beneath saying the same thing is clutter.
-                        if talk.phase == .listening {
+                        if isTalkingHere {
                             Text("Mic open")
                                 .font(Type.caption)
                                 .foregroundStyle(Palette.micOpen)
@@ -191,6 +197,17 @@ struct SessionView: View {
                     .foregroundStyle(Palette.needs)
             }
 
+            // Nothing else here will delete your words, which only works as a
+            // promise if you can delete them yourself.
+            if !talk.draft(for: sessionId).isEmpty {
+                Button("Discard draft", role: .destructive) {
+                    talk.discard(session: sessionId)
+                    sendFailed = false
+                }
+                .font(Type.caption.weight(.medium))
+                .foregroundStyle(Palette.textDim)
+            }
+
             if let failure = talk.failure {
                 Text(failure)
                     .font(Type.caption)
@@ -201,7 +218,7 @@ struct SessionView: View {
 
             Button(action: toggleTalk) {
                 HStack(spacing: 10) {
-                    Image(systemName: talk.phase == .listening ? "arrow.up.circle.fill" : "mic.fill")
+                    Image(systemName: isTalkingHere ? "arrow.up.circle.fill" : "mic.fill")
                         .font(.system(size: 20, weight: .semibold))
                     Text(talkLabel)
                         .font(Type.label(17, weight: .semibold))
@@ -209,10 +226,10 @@ struct SessionView: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 58)
                 .background(
-                    talk.phase == .listening ? Palette.micOpen : Palette.raised,
+                    isTalkingHere ? Palette.micOpen : Palette.raised,
                     in: RoundedRectangle(cornerRadius: 16)
                 )
-                .foregroundStyle(talk.phase == .listening ? Palette.bg : Palette.textPrimary)
+                .foregroundStyle(isTalkingHere ? Palette.bg : Palette.textPrimary)
             }
             .buttonStyle(.plain)
             .disabled(talk.phase == .sending)
@@ -225,11 +242,9 @@ struct SessionView: View {
     }
 
     private var talkLabel: String {
-        switch talk.phase {
-        case .listening: "Send"
-        case .sending: "Sending…"
-        case .idle, .denied: "Talk"
-        }
+        if isTalkingHere { return "Send" }
+        if talk.targetSessionId == sessionId, talk.phase == .sending { return "Sending…" }
+        return "Talk"
     }
 
     private func toggleTalk() {
