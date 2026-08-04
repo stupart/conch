@@ -95,6 +95,34 @@ describe("only one side of the phone owns the audio route", () => {
     expect(talk).toMatch(/parked = UserDefaults\.standard\.dictionary\(forKey: Self\.draftKey\)/);
   });
 
+  test("a volatile partial can never shrink the visible transcript", () => {
+    // Apple: a nonfinal transcription may represent only PART of the audio.
+    // A pause makes the recogniser resegment and hand back "" or a stub for a
+    // sentence it already reported whole — and assigning that wholesale is
+    // what emptied the bubble with no Send, no navigation, nothing. Every
+    // other guarantee in this file protects `committed`; the words on screen
+    // are in `partial` until a result goes final.
+    const talk = app("TalkController.swift");
+    expect(talk).toMatch(/private static func richer\(/);
+    // Both writers of `partial`, and the final commit, must go through it.
+    const writes = [...talk.matchAll(/^\s*partial = (?!"").*$/gm)].map((m) => m[0]);
+    expect(writes.length).toBeGreaterThan(0);
+    for (const write of writes) expect(write).toMatch(/Self\.richer\(/);
+    expect(talk).toMatch(/commit\(Self\.richer\(removingCommittedOverlap\(from: text\), than: partial\)\)/);
+  });
+
+  test("a confirmed send clears only what it acknowledged", () => {
+    // A late callback can append during the `await deliver`, and assigning
+    // empty afterwards deletes words that were never sent to anyone.
+    const talk = app("TalkController.swift");
+    const send = talk.indexOf("let delivered = await deliver(text)");
+    const after = talk.slice(send);
+    expect(after).toMatch(/held\.hasPrefix\(text\)/);
+    // Belt and braces: the capture's callbacks go inert before that await.
+    const cleanup = talk.indexOf("self.finishingGeneration = nil");
+    expect(talk.slice(cleanup, send)).toMatch(/self\.generation \+= 1/);
+  });
+
   test("a draft belongs to its session, and cannot be sent to another", () => {
     // `deliver` comes from whichever screen is on top. Talking to A, walking
     // into B and tapping the button — which even said "Send" — would have

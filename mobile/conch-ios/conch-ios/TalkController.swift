@@ -382,13 +382,12 @@ final class TalkController: NSObject, ObservableObject {
         if let result {
             let text = result.bestTranscription.formattedString
             if result.isFinal {
-                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    commit(partial)
-                } else {
-                    commit(text)
-                }
+                // A final can arrive SHORTER than the partial it replaces, and
+                // committing it verbatim threw the difference away. Keep
+                // whichever carries more of what was said.
+                commit(Self.richer(removingCommittedOverlap(from: text), than: partial))
             } else {
-                partial = removingCommittedOverlap(from: text)
+                partial = Self.richer(removingCommittedOverlap(from: text), than: partial)
                 // Retain a short overlap, plus every buffer after this callback,
                 // then release audio older than that safe replay boundary.
                 replayAfterSequence = audioRelay.replayCursor(endingAt: callbackCursor)
@@ -419,6 +418,30 @@ final class TalkController: NSObject, ObservableObject {
             ? audioRelay.replayCursor(endingAt: callbackCursor)
             : replayAfterSequence
         restartRecognition(after: cursor)
+    }
+
+    /// The better of two hypotheses for the same audio.
+    ///
+    /// THIS is the one that was eating Tyler's transcript. Everything else in
+    /// this file protects `committed`, but until a result is final the words
+    /// on screen live in `partial` — and a nonfinal SFSpeech result replaces
+    /// that whole string. Apple is explicit that a nonfinal transcription may
+    /// represent only part of the audio, so a pause that makes the recogniser
+    /// resegment can legitimately hand back "" or a stub for a sentence it
+    /// already reported in full. Assigning it wholesale is what made an entire
+    /// utterance vanish on silence, with no Send, no navigation, nothing.
+    ///
+    /// Word count, not length: "I'll" -> "I will" is longer in characters and
+    /// says no more. Ties go to the newer text so in-place corrections still
+    /// land — only a hypothesis that carries strictly less is refused.
+    private static func richer(_ candidate: String, than current: String) -> String {
+        let next = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        let held = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        if held.isEmpty { return next }
+        if next.isEmpty { return held }
+        let nextWords = next.split(whereSeparator: { $0.isWhitespace }).count
+        let heldWords = held.split(whereSeparator: { $0.isWhitespace }).count
+        return nextWords >= heldWords ? next : held
     }
 
     /// Append a segment while removing only a proven multi-word audio overlap.
@@ -496,6 +519,12 @@ final class TalkController: NSObject, ObservableObject {
             self.finalizationTimeout?.cancel()
             self.finalizationTimeout = nil
             self.finishingGeneration = nil
+            // Make every in-flight callback from this capture inert BEFORE we
+            // await the Mac. Cleanup nilled the references but left the
+            // generation intact, so a late same-generation result could still
+            // append a tail during the await — and then be deleted by the
+            // clear below, having never been sent.
+            self.generation += 1
             self.recognition = nil
             self.request = nil
             self.audioRelay.reset()
@@ -522,8 +551,14 @@ final class TalkController: NSObject, ObservableObject {
             // Keep failed text intact; a subsequent Talk starts only after the
             // user has had a chance to copy/retry it from the visible bubble.
             if delivered {
-                self.committed = ""
-                self.partial = ""
+                // Clear exactly what was acknowledged, never the whole buffer.
+                // Assigning empty after an await deletes anything that arrived
+                // during it — words that were never sent to anyone.
+                let held = self.committed.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.committed = held.hasPrefix(text)
+                    ? String(held.dropFirst(text.count))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    : ""
             }
             self.phase = .idle
         }
