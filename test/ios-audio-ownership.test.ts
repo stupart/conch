@@ -121,25 +121,45 @@ describe("only one side of the phone owns the audio route", () => {
     expect(talk.match(/absorbPartial\(removingCommittedOverlap\(from: text\)\)/g)?.length).toBe(2);
   });
 
-  test("overlap stripping runs only where audio was actually replayed", () => {
-    // It exists to absorb the ~1.5s a rollover feeds back into the next
-    // request. Run unconditionally it cannot tell replayed audio from a
-    // person repeating themselves, and eats the opening of "no, no — the
-    // other one". Every replay site must arm it; nothing else may.
+  test("the mic silences speech before it opens, not after", () => {
+    // The Mac has refused to open the mic while TTS speaks since day one; the
+    // phone only ever had the other half. Capture opening on top of a live
+    // utterance tore the playback route away mid-sentence, the synthesizer
+    // stalled without calling didFinish, and the button sat showing
+    // "speaking" while nothing played and the mic was live.
     const talk = app("TalkController.swift");
-    const fn = talk.slice(talk.indexOf("private func removingCommittedOverlap"));
-    expect(fn.slice(0, fn.indexOf("\n    }"))).toMatch(/guard expectsReplayOverlap else \{ return candidate \}/);
-    // Armed exactly where a cursor is replayed, never for a fresh capture.
-    const arms = [...talk.matchAll(/expectsReplayOverlap = true/g)].length;
-    expect(arms).toBe(2); // rollover + finalisation recovery
-    for (const site of ["audioRelay.install(next, replayAfter: cursor)",
-                        "audioRelay.install(recovery, replayAfter: replayAfterSequence)"]) {
-      const at = talk.indexOf(site);
-      expect(at).toBeGreaterThan(-1);
-      expect(talk.slice(Math.max(0, at - 200), at)).toMatch(/expectsReplayOverlap = true/);
-    }
-    const fresh = talk.indexOf("audioRelay.install(request, replayAfter: nil)");
-    expect(talk.slice(Math.max(0, fresh - 120), fresh)).toMatch(/expectsReplayOverlap = false/);
+    const begin = talk.indexOf("private func beginCapture()");
+    const silence = talk.indexOf("silenceSpeech()", begin);
+    const route = talk.indexOf("session.setCategory(.record", begin);
+    expect(silence).toBeGreaterThan(-1);
+    expect(silence).toBeLessThan(route);
+    // Installed beside its mirror image, where both objects outlive any view.
+    expect(app("ConchApp.swift")).toMatch(/talk\.silenceSpeech = \{ \[weak speech\] in speech\?\.stop\(\) \}/);
+  });
+
+  test("overlap stripping is unconditional", () => {
+    // Scoping it to rollover windows dropped its SECOND job — stopping a
+    // resegmented phrase being appended again when the final for that same
+    // audio arrives whole — and duplicated ~40 words of a real message into
+    // a live session. Worse than the deliberate-repeat case it was fixing.
+    const talk = app("TalkController.swift");
+    expect(talk).not.toContain("expectsReplayOverlap");
+    const start = talk.indexOf("private func removingCommittedOverlap");
+    const fn = talk.slice(start, talk.indexOf("\n    }", start));
+    expect(fn).toMatch(/guard !committed\.isEmpty, !candidate\.isEmpty else \{ return candidate \}/);
+    // Nothing may short-circuit ahead of that guard.
+    expect(fn.slice(0, fn.indexOf("guard !committed"))).not.toMatch(/return candidate/);
+  });
+
+  test("a transient overlay is not a handback of the audio", () => {
+    // iOS reports .inactive for a context menu or system sheet. Releasing
+    // there made the lease flap twice inside one second in the daemon log.
+    const conchApp = app("ConchApp.swift");
+    const inactive = conchApp.indexOf("case .inactive:");
+    const background = conchApp.indexOf("case .background:");
+    expect(inactive).toBeGreaterThan(-1);
+    expect(conchApp.slice(background, inactive)).toMatch(/claimAudio\(false\)/);
+    expect(conchApp.slice(inactive, inactive + 500)).not.toMatch(/claimAudio/);
   });
 
   test("a confirmed send clears only what it acknowledged", () => {

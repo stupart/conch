@@ -54,14 +54,27 @@ struct ConchApp: App {
                 speech.captureOwnsAudio = { [weak talk] in
                     talk?.phase == .listening || talk?.phase == .sending
                 }
+                // The other direction, which the phone never had: opening the
+                // mic silences anything being read. Both objects live for the
+                // whole app, so the pair of invariants is installed together
+                // and neither can be dropped by a view disappearing.
+                talk.silenceSpeech = { [weak speech] in speech?.stop() }
             }
             .onChange(of: scenePhase) { _, phase in
                 guard let bridge else { return }
                 switch phase {
                 case .active:
                     Task { await bridge.claimAudio(true) }
-                case .background, .inactive:
+                case .background:
                     Task { await bridge.claimAudio(false) }
+                case .inactive:
+                    // NOT a handback. iOS reports .inactive for anything that
+                    // transiently covers the app — a context menu, a system
+                    // sheet, the control centre — so releasing here made the
+                    // lease flap: "phone has the audio" / "audio back on this
+                    // Mac" twice inside one second in the daemon log, every
+                    // time a menu opened. Backgrounding is the real signal.
+                    break
                 @unknown default:
                     break
                 }

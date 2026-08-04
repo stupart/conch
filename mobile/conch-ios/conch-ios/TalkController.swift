@@ -233,13 +233,16 @@ final class TalkController: NSObject, ObservableObject {
     // callback from the old task inert before the replacement can be mutated.
     private var generation = 0
     private var replayAfterSequence = 0
-    /// True only while a request is being fed audio it has already heard.
+    /// Called immediately before the mic opens, to silence anything speaking.
     ///
-    /// Rollover replays ~1.5s into the replacement request so no audio falls
-    /// between tasks; the text arriving from that replay must be de-duplicated
-    /// against what is already committed. Outside that window there is nothing
-    /// to de-duplicate, and stripping anyway silently ate deliberate repeats.
-    private var expectsReplayOverlap = false
+    /// The Mac has refused to open the mic while TTS speaks since day one.
+    /// The phone only ever got the OTHER half — speaking was gated on
+    /// capture, capture was never gated on speaking. So the mic opened on top
+    /// of a live utterance, `.record` tore the playback route out from under
+    /// the synthesizer, and it stalled without ever calling didFinish: the
+    /// button sat showing "speaking", nothing was audible, and the mic was
+    /// live. Stopping first makes both states true at once impossible.
+    var silenceSpeech: () -> Void = {}
     /// Why recognition last died. Shown when finalisation fails, because "it
     /// couldn't finish" is undiagnosable from a treadmill — the underlying
     /// error is what distinguishes an audio-session collision from a stall.
@@ -292,6 +295,8 @@ final class TalkController: NSObject, ObservableObject {
 
     private func beginCapture() async {
         guard starting else { return }
+        // Before the route changes, not after.
+        silenceSpeech()
         guard await AVAudioApplication.requestRecordPermission() else {
             starting = false
             phase = .denied("Microphone access is off for conch — enable it in Settings.")
@@ -317,7 +322,6 @@ final class TalkController: NSObject, ObservableObject {
         self.request = request
         generation += 1
         replayAfterSequence = audioRelay.cursor()
-        expectsReplayOverlap = false
         audioRelay.install(request, replayAfter: nil)
 
         do {
@@ -475,8 +479,6 @@ final class TalkController: NSObject, ObservableObject {
         let novel = removingCommittedOverlap(from: text)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         // The replayed prefix has now been absorbed; anything the user says
-        // from here is theirs, repeats included.
-        expectsReplayOverlap = false
         guard !novel.isEmpty else { partial = ""; return }
         committed = committed.isEmpty ? novel : committed + " " + novel
         partial = ""
@@ -484,12 +486,12 @@ final class TalkController: NSObject, ObservableObject {
 
     private func removingCommittedOverlap(from text: String) -> String {
         let candidate = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Only strip where audio was ACTUALLY replayed. This exists solely to
-        // absorb the 1.5s a rollover feeds back into the next request; run
-        // unconditionally, it cannot tell replayed audio from a person simply
-        // repeating themselves, and "no, no — do the other one" loses its
-        // opening. Say something twice on purpose and it survives now.
-        guard expectsReplayOverlap else { return candidate }
+        // Scoping this to rollover windows only was a mistake, reverted: it
+        // has a SECOND job. When a resegment banks a phrase and the final for
+        // that same audio then arrives in full, this is what stops the phrase
+        // being appended twice. Removing that duplicated ~40 words of Tyler's
+        // message straight into the session, which is far worse than the
+        // deliberate-repeat case it was meant to fix (Codex #6, still open).
         guard !committed.isEmpty, !candidate.isEmpty else { return candidate }
         let existingWords = committed.split(whereSeparator: { $0.isWhitespace })
         let candidateWords = candidate.split(whereSeparator: { $0.isWhitespace })
@@ -518,8 +520,6 @@ final class TalkController: NSObject, ObservableObject {
         request = next
         replayAfterSequence = cursor
         // The relay moves first. Any tap callback concurrent with rollover is
-        // serialized onto the new request, and retained audio fills its prefix.
-        expectsReplayOverlap = true
         audioRelay.install(next, replayAfter: cursor)
         previousRequest?.endAudio()
         previousRecognition?.cancel()
@@ -651,7 +651,6 @@ final class TalkController: NSObject, ObservableObject {
         finishingGeneration = recoveryGeneration
         let recovery = makeRequest(for: recognizer)
         request = recovery
-        expectsReplayOverlap = true
         audioRelay.install(recovery, replayAfter: replayAfterSequence)
         startRecognition(
             on: recognizer,
