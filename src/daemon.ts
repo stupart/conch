@@ -34,6 +34,7 @@ import type { RecorderHandle } from "./dictation-controller.ts";
 import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
 import { classify, classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
+import { recordTelemetry } from "./telemetry.ts";
 import { askClaude, type AskClaude } from "./model.ts";
 import { routeVoicePrompt } from "./voice-qa.ts";
 import {
@@ -2363,6 +2364,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // Baseline the target session's user-prompt count so we can CONFIRM the
     // prompt actually submitted. null ⇒ no transcript to watch, skip confirmation.
     const beforeCount = event.transcriptPath ? await transcriptMark(event.transcriptPath) : null;
+    const injectStartedAt = Date.now();
     const { via, interrupted, reason } = await injectText(
       cfg,
       event.pid,
@@ -2377,6 +2379,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // config problem, not a transient one. Without this the log line is
       // identical either way and the real cause takes an hour to find.
       log(`injected into "${event.label}" via ${via}${reason ? ` (${reason})` : ""}`);
+      recordTelemetry("inject", {
+        route: via,
+        confirmed: false,
+        chars: text.length,
+        ...(reason ? { reason } : {}),
+      });
       if (beforeInject && !(await beforeInject())) return false;
       await speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.", event.label);
       return true;
@@ -2401,6 +2409,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (beforeInject && !(await beforeInject())) return false;
       if ((await transcriptMark(event.transcriptPath!)) > beforeCount) {
         log(`injected into "${event.label}" via ${via} — confirmed sent${attempt ? ` (after ${attempt} re-send${attempt > 1 ? "s" : ""})` : ""}`);
+        recordTelemetry("inject", {
+          route: via,
+          confirmed: true,
+          resends: attempt,
+          chars: text.length,
+          latencyMs: Date.now() - injectStartedAt,
+        });
         return true;
       }
       if (attempt < 2) {
@@ -2411,6 +2426,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
     if (beforeInject && !(await beforeInject())) return false;
     log(`⚠ inject into "${event.label}" via ${via} NOT confirmed — words placed on clipboard`);
+    recordTelemetry("inject", {
+      route: via,
+      confirmed: false,
+      resends: 2,
+      chars: text.length,
+      reason: "never-confirmed",
+      latencyMs: Date.now() - injectStartedAt,
+    });
     await toClipboard(text);
     if (beforeInject && !(await beforeInject())) return false;
     await speak(cfg, "I typed that but it didn't send. Your words are on the clipboard — just paste and press return.", event.label);

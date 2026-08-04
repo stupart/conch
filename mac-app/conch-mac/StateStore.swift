@@ -23,6 +23,9 @@ final class StateStore: ObservableObject {
     @Published private(set) var rowMessages: [String: String] = [:]
     @Published private(set) var undoDismissal: SessionDismissUndo?
     @Published private(set) var newerDaemonWarningVisible = false
+    /// The other half of the product. See PluginPresence — computed once at
+    /// launch, because installing a plugin means restarting the editor anyway.
+    @Published private(set) var pluginHintVisible = false
     @Published private(set) var isLogDrawerOpen = false
     @Published private(set) var logLines: [String] = []
 
@@ -51,6 +54,7 @@ final class StateStore: ObservableObject {
     private var dockBadgeCount = 0
     private var undoGeneration = 0
     private var dismissedNewerDaemonVersion: Int?
+    private static let pluginHintDismissedKey = "conch.pluginHintDismissed"
 
     private var lastConfirmedAliveAt: Date?
     private var lastProbeAttemptAt: Date?
@@ -71,6 +75,8 @@ final class StateStore: ObservableObject {
         )
         self.reader = reader
         socketClient = ConchSocketClient(environment: environment)
+        pluginHintVisible = !UserDefaults.standard.bool(forKey: Self.pluginHintDismissedKey)
+            && !PluginPresence.isInstalled()
 
         pollingTask = Task { @MainActor [weak self, reader] in
             while !Task.isCancelled {
@@ -606,6 +612,11 @@ final class StateStore: ObservableObject {
 
         dockBadgeCount = nextCount
         NSApp.dockTile.badgeLabel = nextCount == 0 ? nil : String(nextCount)
+    }
+
+    func dismissPluginHint() {
+        UserDefaults.standard.set(true, forKey: Self.pluginHintDismissedKey)
+        pluginHintVisible = false
     }
 
     private func updateNewerDaemonWarning() {

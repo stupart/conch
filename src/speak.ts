@@ -19,6 +19,7 @@ import {
   type WatchdogWarning,
 } from "./audio-watchdog.ts";
 import type { Config } from "./config.ts";
+import { recordTelemetry, round } from "./telemetry.ts";
 import { splitSentences } from "./snippet.ts";
 import { TtsHealthMachine, type TtsHealthSnapshot } from "./tts-health.ts";
 import {
@@ -278,6 +279,20 @@ async function tryWorkerSynth(
       signal: cancellationSignal,
     });
     path = result.path;
+    // Per-chunk loudness. Kokoro's level varies per utterance and conch does
+    // not normalize, so a short chunk can land noticeably louder than the run
+    // of speech around it — this is what makes that measurable rather than
+    // arguable. `chars` matters because short chunks are the suspect case.
+    recordTelemetry("tts.synth", {
+      voice,
+      chars: input.length,
+      samples: result.samples,
+      seconds: round(result.samples / (result.sampleRate || 1), 2),
+      latencyMs: round(result.latencyMs, 1),
+      ...(result.peak !== undefined ? { peak: round(result.peak, 4) } : {}),
+      ...(result.rms !== undefined ? { rms: round(result.rms, 4) } : {}),
+      speed: options.speed ?? cfg.ttsSpeed,
+    });
     const audio = new Uint8Array(readFileSync(path));
     if (!parseWav(audio)) {
       return {
@@ -733,6 +748,22 @@ function sayFlags(cfg: Config): string[] {
 function spawnSay(cfg: Config, text: string, control: CancelControl): AudioProcess {
   // Keep the measured volume match. Strip embedded [[...]] commands first.
   const safe = `[[volm ${cfg.sayVolume}]] ${text.replace(/\[\[|\]\]/g, "")}`;
+  // Every `say` is a FALLBACK off kokoro, and raw `say` is ~3.4x louder — the
+  // volm above is what matches them. A single chunk falling back mid-reading is
+  // therefore audible as a sudden loud burst of a few words, and used to leave
+  // no trace at all. Record it so a loudness complaint can be confirmed or
+  // dismissed from the log instead of guessed at.
+  try {
+    control.runtime.warn(
+      `tts fallback → say (volm ${cfg.sayVolume}, ${text.length} chars): "${text.slice(0, 60)}"`,
+    );
+  } catch {}
+  recordTelemetry("tts.fallback", {
+    chars: text.length,
+    sayVolume: cfg.sayVolume,
+    sayRate: cfg.sayRate,
+    voice: cfg.voice || "system-default",
+  });
   return trackProcess(
     control.runtime.spawnAudio(["say", ...sayFlags(cfg), "--", safe]),
     control,
