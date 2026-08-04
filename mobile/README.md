@@ -18,3 +18,10 @@ The Mac does the work; the phone is a glance and a voice.
 Build: `xcodebuild -project mobile/conch-ios/conch-ios.xcodeproj -scheme conch-ios`.
 The simulator can pair headlessly via `CONCH_PAIR_HOST` / `CONCH_PAIR_TOKEN`
 launch environment (the screenshot harness uses this; never persisted).
+
+## Verifying visuals
+
+Build and screenshot on an **iOS 26** simulator. iOS 17/18 render toolbar
+buttons flat, so glass-button work judged there looks broken when it isn't —
+that cost a round of "you removed the glass" when nothing had changed. Shut
+sims down when finished; several may be in use by other work on this machine.

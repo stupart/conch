@@ -16,22 +16,6 @@ struct LedgerView: View {
                         // A dead connection must be LEGIBLE, not a private 8px
                         // dot: these rows are a snapshot, and their ages keep
                         // counting as if live. Say so, and dim what's stale.
-                        if let mode = bridge.state?.mode, mode.muted {
-                            HStack(spacing: 8) {
-                                Image(systemName: "bell.slash.fill")
-                                    .font(.system(size: 11))
-                                Text(
-                                    mode.holding > 0
-                                        ? "Passive — \(mode.holding) finished turn\(mode.holding == 1 ? "" : "s") waiting"
-                                        : "Passive — nothing will be announced"
-                                )
-                                .font(Type.caption)
-                            }
-                            .foregroundStyle(Palette.textDim)
-                            .listRowBackground(Palette.bg)
-                            .listRowSeparator(.hidden)
-                        }
-
                         if !bridge.isConnected {
                             HStack(spacing: 8) {
                                 ProgressView().controlSize(.small)
@@ -60,9 +44,23 @@ struct LedgerView: View {
                 }
             }
             .background(Palette.bg)
-            .navigationTitle("conch")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                // The Mac dashboard has carried the shell in its header since
+                // the beginning; the phone's ledger was the one surface without
+                // it. Same wordmark, same mark, wherever you look at conch.
+                ToolbarItem(placement: .principal) {
+                    HStack(spacing: 5) {
+                        Text("\u{1F41A}")
+                            .font(.system(size: 13))
+                            .accessibilityHidden(true)
+                        Text("conch")
+                            .font(Type.label(17, weight: .semibold))
+                            .foregroundStyle(Palette.textPrimary)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("conch")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     modeToggle
                 }
@@ -117,17 +115,25 @@ struct LedgerView: View {
     /// Passive keeps every session visible and still lets you talk to one on
     /// purpose; it just stops the machine speaking first. That distinction is
     /// the one you change constantly and the only one worth a permanent button.
+    ///
+    /// A dot rather than a glyph: iOS's glass button already reads as pressable,
+    /// so the button chrome carries the affordance and the dot carries only the
+    /// state — live red, or grey when it isn't listening for you.
     private var modeToggle: some View {
         let passive = bridge.state?.mode.muted ?? false
         return Button {
             Task { await bridge.send(mode: passive ? "unmute" : "mute") }
         } label: {
-            Image(systemName: passive ? "bell.slash.fill" : "bell.fill")
-                .foregroundStyle(passive ? Palette.textDim : Palette.waiting)
-                .contentTransition(.symbolEffect(.replace))
+            Circle()
+                .fill(passive ? Palette.textDim : Palette.needs)
+                .frame(width: 10, height: 10)
+                .animation(.easeOut(duration: 0.18), value: passive)
         }
-        .accessibilityLabel(passive ? "Passive — turn announcements on" : "Active — turn announcements off")
-        .animation(.easeOut(duration: 0.18), value: passive)
+        .accessibilityLabel(
+            passive
+                ? "Passive — nothing is announced. Activate."
+                : "Active — announcing finished turns. Go passive."
+        )
     }
 
     private var emptyState: some View {
