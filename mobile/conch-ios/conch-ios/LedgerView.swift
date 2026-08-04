@@ -40,7 +40,7 @@ struct LedgerView: View {
                     }
                     .listStyle(.plain)
                     .navigationDestination(for: String.self) { id in
-                        SessionView(bridge: bridge, sessionId: id)
+                        SessionView(bridge: bridge, speech: speech, sessionId: id)
                     }
                 } else {
                     emptyState

@@ -278,3 +278,22 @@ describe("on-demand replies", () => {
     expect(bare.status).toBe(401);
   });
 })
+
+describe("client presence", () => {
+  test("reports connect and disconnect so the Mac can reclaim audio", async () => {
+    // A phone that walks out of the room must not leave the Mac permanently
+    // mute — the daemon needs to know the moment the last one goes away.
+    const counts: number[] = [];
+    const b = startBridge({ onClientsChanged: (n: number) => counts.push(n) });
+    const ws = new WebSocket(`ws://127.0.0.1:${b.port}/ws?token=${TOKEN}`);
+    await new Promise<void>((resolve, reject) => {
+      ws.onmessage = () => resolve();
+      ws.onerror = () => reject(new Error("ws error"));
+      setTimeout(() => reject(new Error("timed out")), 3000);
+    });
+    expect(counts).toEqual([1]);
+    ws.close();
+    await new Promise<void>((resolve) => setTimeout(resolve, 400));
+    expect(counts).toEqual([1, 0]);
+  });
+});

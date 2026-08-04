@@ -13,6 +13,8 @@ final class BridgeClient: ObservableObject {
     private var reconnectDelay: TimeInterval = 0.5
     private var closed = false
     private let pairing: Pairing
+    /// Fired on every (re)connection, so a claim survives daemon restarts.
+    var onConnected: (() -> Void)?
 
     struct Pairing: Equatable {
         var host: String   // "192.168.1.20:8674"
@@ -68,7 +70,10 @@ final class BridgeClient: ObservableObject {
                 guard let self, self.task === task else { return }
                 switch result {
                 case let .success(message):
-                    self.isConnected = true
+                    if !self.isConnected {
+                        self.isConnected = true
+                        self.onConnected?()
+                    }
                     self.lastError = nil
                     self.reconnectDelay = 0.5
                     if case let .string(text) = message,
@@ -109,6 +114,14 @@ final class BridgeClient: ObservableObject {
             "announce": text,
             "eventAt": Date().timeIntervalSince1970 * 1000,
         ])
+    }
+
+    /// Claim (or hand back) the voice. While the phone holds it the Mac stays
+    /// quiet — otherwise you hear conch from the next room and from your ear at
+    /// once, which is worse than either alone.
+    @discardableResult
+    func claimAudio(_ mine: Bool) async -> Bool {
+        await post(control: ["kind": "audio-sink", "sink": mine ? "phone" : "mac"])
     }
 
     func send(mode action: String) async -> Bool {
