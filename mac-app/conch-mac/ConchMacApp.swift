@@ -268,7 +268,37 @@ private enum HIDIdleTime {
 /// Paints the host NSWindow's background dark so it never flashes white for a
 /// frame before SwiftUI's dark content draws on cold launch.
 private struct WindowBackgroundConfigurator: NSViewRepresentable {
-    static let frameAutosaveName = "conch.dashboard.window"
+    private static let frameKey = "conch.dashboard.windowFrame"
+    private static var observers: [NSObjectProtocol] = []
+
+    private static func restoreFrame(of window: NSWindow) {
+        guard let saved = UserDefaults.standard.string(forKey: frameKey) else { return }
+        let frame = NSRectFromString(saved)
+        guard frame.width > 200, frame.height > 200 else { return }
+        // Only restore onto a screen that still exists — an external display
+        // that has since been unplugged would put the window out of reach.
+        guard NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) else {
+            return
+        }
+        window.setFrame(frame, display: false)
+    }
+
+    private static func observeFrame(of window: NSWindow) {
+        let save: (Notification) -> Void = { note in
+            guard let window = note.object as? NSWindow else { return }
+            UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: frameKey)
+        }
+        for name in [NSWindow.didEndLiveResizeNotification, NSWindow.didMoveNotification] {
+            observers.append(
+                NotificationCenter.default.addObserver(
+                    forName: name,
+                    object: window,
+                    queue: .main,
+                    using: save
+                )
+            )
+        }
+    }
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -277,12 +307,16 @@ private struct WindowBackgroundConfigurator: NSViewRepresentable {
             window.backgroundColor = NSColor(ConchPalette.bg)
             window.isOpaque = true
             // SwiftUI's own autosave name embeds an ASLR-varying pointer, so it
-            // wrote a NEW defaults key every launch and read none back: the
-            // window never restored its size or position, and the defaults
-            // domain grew a dead key per run. A stable name fixes both.
-            if window.frameAutosaveName != Self.frameAutosaveName {
-                window.setFrameAutosaveName(Self.frameAutosaveName)
-            }
+            // writes a NEW defaults key every launch and reads none back: the
+            // window never restores its size or position, and the defaults
+            // domain grows a dead key per run.
+            //
+            // setFrameAutosaveName does NOT survive here — SwiftUI reapplies its
+            // own name after makeNSView, which is why the previous attempt
+            // silently did nothing. Persist the frame ourselves under a fixed
+            // key instead.
+            Self.restoreFrame(of: window)
+            Self.observeFrame(of: window)
             ReviewNotifications.shared.register(window: window)
         }
         return view
