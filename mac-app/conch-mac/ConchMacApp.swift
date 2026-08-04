@@ -268,12 +268,21 @@ private enum HIDIdleTime {
 /// Paints the host NSWindow's background dark so it never flashes white for a
 /// frame before SwiftUI's dark content draws on cold launch.
 private struct WindowBackgroundConfigurator: NSViewRepresentable {
+    static let frameAutosaveName = "conch.dashboard.window"
+
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async { [weak view] in
             guard let window = view?.window else { return }
             window.backgroundColor = NSColor(ConchPalette.bg)
             window.isOpaque = true
+            // SwiftUI's own autosave name embeds an ASLR-varying pointer, so it
+            // wrote a NEW defaults key every launch and read none back: the
+            // window never restored its size or position, and the defaults
+            // domain grew a dead key per run. A stable name fixes both.
+            if window.frameAutosaveName != Self.frameAutosaveName {
+                window.setFrameAutosaveName(Self.frameAutosaveName)
+            }
             ReviewNotifications.shared.register(window: window)
         }
         return view
