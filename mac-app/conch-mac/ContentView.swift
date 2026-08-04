@@ -330,6 +330,12 @@ private struct KeyboardShortcutsSheet: View {
 
             ShortcutHelpSection(title: "Spoken commands", rows: spokenRows)
 
+            Text("The conch plugin adds these tools inside Claude Code and Codex: /plugin marketplace add Blueprint-Studio-AI/claude-code-marketplace")
+                .font(ConchTypography.font(size: 12))
+                .foregroundStyle(ConchPalette.textDim)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+
             Text("Saying a session’s name addresses it.")
                 .font(ConchTypography.font(size: 12.5))
                 .foregroundStyle(ConchPalette.textDim)

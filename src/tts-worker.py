@@ -148,11 +148,20 @@ def synthesize(model: Any, text: str, voice: str, speed: float, output: Path) ->
         except FileNotFoundError:
             pass
 
+    # Loudness telemetry. Kokoro's output level varies per utterance and we do
+    # not normalize, so a short chunk can land noticeably louder than the run of
+    # speech around it. Reporting peak and RMS makes that measurable from the
+    # log instead of arguable by ear.
+    peak = float(np.max(np.abs(audio))) if audio.shape[0] else 0.0
+    rms = float(np.sqrt(np.mean(np.square(audio, dtype="float64")))) if audio.shape[0] else 0.0
+
     return {
         "path": str(output),
         "sample_rate": sample_rate,
         "samples": int(audio.shape[0]),
         "latency_ms": round((time.perf_counter() - started) * 1000, 3),
+        "peak": round(peak, 5),
+        "rms": round(rms, 5),
     }
 
 

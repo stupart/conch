@@ -7,6 +7,7 @@ import {
   type WatchdogWarning,
 } from "./audio-watchdog.ts";
 import type { Config } from "./config.ts";
+import { recordTelemetry, round } from "./telemetry.ts";
 import type { TranscriptionEngine } from "./diagnostics.ts";
 
 /**
@@ -408,6 +409,10 @@ export async function transcribePcm(
 ): Promise<{ text: string; error?: string }> {
   const wav = wavFromRawPcm(pcm);
   const client = options.client ?? whisperServerClient;
+  const started = Date.now();
+  // 16kHz mono PCM16: two bytes per sample. Audio seconds are what make the
+  // latency figure meaningful — 2s on a 5s clip is fine, on a 1s clip it isn't.
+  const audioSeconds = round(pcm.length / 2 / 16000, 2);
 
   const warm = await client.transcribeWarm(
     cfg,
@@ -417,7 +422,15 @@ export async function transcribePcm(
   );
   if (warm.status === "ok") {
     onEngine?.("warm");
-    return { text: filterWhisperTranscript(warm.body.text, pcm, warm.body.segments) };
+    const text = filterWhisperTranscript(warm.body.text, pcm, warm.body.segments);
+    recordTelemetry("stt.transcribe", {
+      engine: "warm",
+      audioSeconds,
+      latencyMs: Date.now() - started,
+      chars: text.length,
+      empty: text.trim().length === 0,
+    });
+    return { text };
   }
   if (options.coldFallback === false) return { text: "" };
 
@@ -426,7 +439,16 @@ export async function transcribePcm(
   try {
     await Bun.write(tmp, wav as unknown as Uint8Array<ArrayBuffer>);
     const result = await transcribeWavCli(cfg, tmp, options);
-    return { ...result, text: filterWhisperTranscript(result.text, pcm) };
+    const text = filterWhisperTranscript(result.text, pcm);
+    recordTelemetry("stt.transcribe", {
+      engine: "cold",
+      audioSeconds,
+      latencyMs: Date.now() - started,
+      chars: text.length,
+      empty: text.trim().length === 0,
+      ...(result.error ? { error: result.error } : {}),
+    });
+    return { ...result, text };
   } finally {
     try {
       unlinkSync(tmp);

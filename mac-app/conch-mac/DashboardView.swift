@@ -137,6 +137,16 @@ struct DashboardView: View {
                     .fill(ConchPalette.divider)
                     .frame(height: 1)
 
+                // The app and the plugin are two halves and neither installs the
+                // other, so someone who only ran the brew install never learns the
+                // other half exists. Said once, dismissible, never nagged again.
+                if store.pluginHintVisible {
+                    PluginHintBar(onDismiss: store.dismissPluginHint)
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(height: 1)
+                }
+
                 HStack(spacing: 0) {
                     SessionLedger(
                         state: state,
@@ -196,6 +206,54 @@ struct DashboardView: View {
 
     private func ledgerWidth(for totalWidth: CGFloat) -> CGFloat {
         min(380, max(280, totalWidth * 0.30))
+    }
+}
+
+/// One quiet line telling the user the editor plugin exists.
+private struct PluginHintBar: View {
+    let onDismiss: () -> Void
+    @State private var copied = false
+
+    private static let command = "/plugin marketplace add Blueprint-Studio-AI/claude-code-marketplace"
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "puzzlepiece.extension")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(ConchPalette.textDim)
+
+            Text("Talk to your sessions from inside Claude Code or Codex — add the conch plugin.")
+                .font(ConchTypography.font(size: 11.5))
+                .foregroundStyle(ConchPalette.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 8)
+
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(Self.command, forType: .string)
+                copied = true
+            } label: {
+                Text(copied ? "Copied" : "Copy command")
+                    .font(ConchTypography.font(size: 11))
+                    .foregroundStyle(copied ? ConchPalette.statusWorking : ConchPalette.textPrimary)
+            }
+            .buttonStyle(.plain)
+            .help(Self.command)
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .foregroundStyle(ConchPalette.textDim)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Dismiss")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 7)
+        .background(ConchPalette.raised)
     }
 }
 

@@ -54,6 +54,10 @@ export interface TtsWorkerSynthesisResult {
   sampleRate: number;
   samples: number;
   latencyMs: number;
+  /** Loudness of the generated audio. Kokoro's level varies per utterance and
+   *  we do not normalize, so these are what make "that was too loud" checkable. */
+  peak?: number;
+  rms?: number;
 }
 
 /** Minimal synthesis surface injected into speak.ts and simple to fake in tests. */
@@ -122,6 +126,8 @@ interface ResultFrame {
   sample_rate?: number;
   samples?: number;
   latency_ms?: number;
+  peak?: number;
+  rms?: number;
   kind?: "request" | "inference";
   error?: string;
 }
@@ -682,6 +688,9 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
       sampleRate: frame.sample_rate,
       samples: frame.samples,
       latencyMs: frame.latency_ms,
+      // Optional: an older worker script predates loudness reporting.
+      ...(isFiniteNonNegative(frame.peak) ? { peak: frame.peak } : {}),
+      ...(isFiniteNonNegative(frame.rms) ? { rms: frame.rms } : {}),
     });
   }
 

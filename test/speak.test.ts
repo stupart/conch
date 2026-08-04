@@ -456,7 +456,11 @@ test("a never-exiting say is killed, resolves, and does not poison the next call
 
   expect(spawns).toBe(2);
   expect(kills).toEqual(["SIGKILL"]);
-  expect(warnings).toEqual(["⚠ say timed out after 5ms — killed, moving on"]);
+  // Every say is a fallback and is now recorded; the timeout warning still fires.
+  expect(warnings.filter((w) => !w.startsWith("tts fallback"))).toEqual([
+    "⚠ say timed out after 5ms — killed, moving on",
+  ]);
+  expect(warnings.filter((w) => w.startsWith("tts fallback"))).toHaveLength(2);
 });
 
 test("a failed readiness canary reports recovery once before falling back to say", async () => {
