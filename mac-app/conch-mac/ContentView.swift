@@ -310,6 +310,7 @@ private struct KeyboardShortcutsSheet: View {
         ShortcutHelpRow(command: "Esc", result: "Release selection / close"),
         ShortcutHelpRow(command: "Right-click a row", result: "Rename, dismiss"),
         ShortcutHelpRow(command: "⌘,", result: "Settings"),
+        ShortcutHelpRow(command: "?", result: "This list"),
     ]
 
     private let spokenRows = [
@@ -329,6 +330,11 @@ private struct KeyboardShortcutsSheet: View {
             ShortcutHelpSection(title: "Keys", rows: keyRows)
 
             ShortcutHelpSection(title: "Spoken commands", rows: spokenRows)
+
+            // The entire ledger language is coloured glyphs, and this was the
+            // only help surface — documenting keys and speech but never saying
+            // what a gold star or a cyan mic actually means.
+            LedgerLegendSection()
 
             Text("The conch plugin adds these tools inside Claude Code and Codex: /plugin marketplace add Blueprint-Studio-AI/claude-code-marketplace")
                 .font(ConchTypography.font(size: 12))
@@ -357,6 +363,48 @@ private struct KeyboardShortcutsSheet: View {
     }
 }
 
+/// What the ledger's glyphs mean, in the calm -> act-now order they escalate in.
+private struct LedgerLegendSection: View {
+    private struct Entry: Identifiable {
+        let symbol: String
+        let color: Color
+        let meaning: String
+        var id: String { meaning }
+    }
+
+    private let entries: [Entry] = [
+        Entry(symbol: "circle.fill", color: ConchPalette.statusWorking, meaning: "Working — nothing needed"),
+        Entry(symbol: "mic.fill", color: ConchPalette.statusWorking, meaning: "Mic open — talking to it now"),
+        Entry(symbol: "circle.inset.filled", color: ConchPalette.statusWaiting, meaning: "Finished — waiting on you"),
+        Entry(symbol: "exclamationmark.circle.fill", color: ConchPalette.statusNeeds, meaning: "Blocked — needs an answer"),
+        Entry(symbol: "star.fill", color: ConchPalette.statusReview, meaning: "Has work for you to look at"),
+        Entry(symbol: "speaker.slash.fill", color: ConchPalette.textDim, meaning: "Muted — announcements dropped"),
+        Entry(symbol: "pause.fill", color: ConchPalette.textDim, meaning: "Paused — turns held for later"),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("What the marks mean")
+                .font(ConchTypography.font(size: 11, weight: .medium))
+                .foregroundStyle(ConchPalette.textDim)
+                .textCase(.uppercase)
+                .tracking(0.6)
+
+            ForEach(entries) { entry in
+                HStack(spacing: 10) {
+                    Image(systemName: entry.symbol)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(entry.color)
+                        .frame(width: 16)
+                    Text(entry.meaning)
+                        .font(ConchTypography.font(size: 12.5))
+                        .foregroundStyle(ConchPalette.textPrimary)
+                }
+            }
+        }
+    }
+}
+
 private struct ShortcutHelpRow: Identifiable {
     let command: String
     let result: String
@@ -380,14 +428,17 @@ private struct ShortcutHelpSection: View {
             Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 9) {
                 ForEach(rows) { row in
                     GridRow {
+                        // You scan for the ACTION and then find its key, so the
+                        // meaning is the column that has to be scannable. It was
+                        // the dim one while the key carried the emphasis.
                         Text(row.command)
-                            .font(ConchTypography.font(size: 12.5, weight: .medium))
-                            .foregroundStyle(ConchPalette.textPrimary)
+                            .font(ConchTypography.font(size: 12.5))
+                            .foregroundStyle(ConchPalette.textDim)
                             .frame(width: 144, alignment: .leading)
 
                         Text(row.result)
-                            .font(ConchTypography.font(size: 12.5))
-                            .foregroundStyle(ConchPalette.textDim)
+                            .font(ConchTypography.font(size: 12.5, weight: .medium))
+                            .foregroundStyle(ConchPalette.textPrimary)
                     }
                 }
             }

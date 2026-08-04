@@ -648,9 +648,15 @@ private struct DashboardRow: View {
                     // 116pt did the opposite: "dayloop-feature…" truncated while
                     // "portal" left dead space, and the summary — the answer to
                     // "what did it make for me?" — was cut to "Rebuilt th…".
-                    .fixedSize(horizontal: true, vertical: false)
+                    //
+                    // Do NOT add .fixedSize here: it overrides the lineLimit and
+                    // truncationMode above, so a long label runs over the age and
+                    // draws straight through the status glyph. The higher
+                    // layoutPriority already gets the label its ideal width and
+                    // lets it truncate only when it genuinely cannot fit.
                     .frame(minWidth: 54, alignment: .leading)
                     .layoutPriority(3)
+                    .opacity(isDimmed ? 0.58 : 1)
             }
 
             if row.prioritized {
@@ -676,6 +682,7 @@ private struct DashboardRow: View {
                     .layoutPriority(rowMessage == nil ? 1 : 5)
                     .accessibilityLabel(inlineDetail)
                     .help(inlineDetail)
+                    .opacity(isDimmed ? 0.58 : 1)
             } else {
                 Spacer(minLength: 0)
             }
@@ -687,17 +694,23 @@ private struct DashboardRow: View {
                     .monospacedDigit()
                     .lineLimit(1)
                     .layoutPriority(1)
+                    .opacity(isDimmed ? 0.58 : 1)
             }
 
             // The status glyph reads as the row's verdict, so it sits at the end
             // of the line where the eye lands last — after the age, hard right.
+            //
+            // It is deliberately NOT dimmed with the rest of the row. Dimming a
+            // muted row used to fade the glyph too, dropping it to 2.45:1 — so
+            // the pixel answering "why is this one silent?" became the least
+            // legible thing on screen, in a product whose failure mode IS
+            // silence. The row recedes; its verdict does not.
             DashboardStatusGlyph(visual: LedgerVisual(row: row))
                 .frame(width: 16)
         }
         .padding(.trailing, 10)
         .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
         .contentShape(Rectangle())
-        .opacity(isDimmed ? 0.58 : 1)
     }
 
     private func pulseForReview() {
@@ -1093,7 +1106,8 @@ private struct ConversationPane: View {
 
                         ConversationTextView(
                             attributedText: document.text,
-                            scrollTarget: document.scrollTarget
+                            scrollTarget: document.scrollTarget,
+                            contentID: document.contentID
                         )
                         .textSelection(.enabled)
                         .frame(minHeight: 96, idealHeight: 150, maxHeight: 190)
@@ -1105,7 +1119,8 @@ private struct ConversationPane: View {
                 VStack(spacing: 0) {
                     ConversationTextView(
                         attributedText: document.text,
-                        scrollTarget: document.scrollTarget
+                        scrollTarget: document.scrollTarget,
+                        contentID: document.contentID
                     )
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1139,6 +1154,9 @@ private struct ConversationPane: View {
 private struct ConversationDocument {
     let text: NSAttributedString
     let scrollTarget: ConversationScrollTarget
+    /// Which session's reply this is. Scroll position resets when the CONTENT
+    /// changes identity, never merely because a streaming reply got longer.
+    let contentID: String
 
     init(
         state: PublishedState?,
@@ -1146,6 +1164,7 @@ private struct ConversationDocument {
         isTargetLive: Bool,
         staticContent: SessionStaticContent
     ) {
+        contentID = targetRow?.id ?? ""
         guard let state else {
             text = NSAttributedString(
                 string: "Waiting for Conch…",
@@ -1548,10 +1567,12 @@ private enum ConversationScrollTarget: Equatable {
 private struct ConversationTextView: NSViewRepresentable {
     let attributedText: NSAttributedString
     let scrollTarget: ConversationScrollTarget
+    let contentID: String
 
     final class Coordinator {
         var previousText = NSAttributedString(string: "")
         var previousScrollTarget = ConversationScrollTarget.none
+        var previousContentID = ""
     }
 
     func makeCoordinator() -> Coordinator {
@@ -1636,11 +1657,17 @@ private struct ConversationTextView: NSViewRepresentable {
         }
 
         context.coordinator.previousScrollTarget = scrollTarget
+        // Resetting on ANY text change dragged the reader back to the top every
+        // poll while a reply was still being written — the most common state in
+        // a voice loop, and the one where you most want to read. Only a change
+        // of WHOSE reply this is starts you at the top again.
+        let identityChanged = context.coordinator.previousContentID != contentID
+        context.coordinator.previousContentID = contentID
         guard textChanged || targetChanged else { return }
 
         DispatchQueue.main.async { [weak scrollView, weak textView] in
             guard let scrollView, let textView else { return }
-            scroll(textView, in: scrollView, to: scrollTarget, reset: textChanged)
+            scroll(textView, in: scrollView, to: scrollTarget, reset: identityChanged)
         }
     }
 

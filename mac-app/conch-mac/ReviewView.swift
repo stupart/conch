@@ -186,7 +186,36 @@ private struct ReviewContent: View {
                     isWebLoading = false
                 }
         case .web:
-            ZStack {
+            VStack(spacing: 0) {
+                // A deliverable is an agent-authored URL rendered full-bleed in
+                // conch's own chrome, so a third-party page — a sign-in form,
+                // say — was indistinguishable from conch's UI. Naming the origin
+                // is what makes the boundary visible.
+                HStack(spacing: 6) {
+                    Image(systemName: "globe")
+                        .font(.system(size: 9.5))
+                    Text(URL(string: link)?.host ?? link)
+                        .font(ConchTypography.font(size: 11))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    Button("Open in browser") {
+                        if let url = URL(string: link) { NSWorkspace.shared.open(url) }
+                    }
+                    .buttonStyle(.plain)
+                    .font(ConchTypography.font(size: 11))
+                }
+                .foregroundStyle(ConchPalette.textDim)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(ConchPalette.raised)
+
+                Rectangle()
+                    .fill(ConchPalette.divider)
+                    .frame(height: 1)
+
+                ZStack {
                 DeliverableWebView(
                     link: link,
                     reloadID: reloadID,
@@ -225,6 +254,7 @@ private struct ReviewContent: View {
                             NSWorkspace.shared.open(failure.url)
                         }
                     )
+                }
                 }
             }
             .background(ConchPalette.bg)
