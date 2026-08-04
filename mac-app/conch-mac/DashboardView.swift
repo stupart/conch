@@ -164,6 +164,32 @@ struct DashboardView: View {
                 // The app and the plugin are two halves and neither installs the
                 // other, so someone who only ran the brew install never learns the
                 // other half exists. Said once, dismissible, never nagged again.
+                // A newer conch is on disk and this process is still the old
+                // one. Nothing else on screen can tell you that, and everything
+                // you see may be behaviour that has already been fixed.
+                if store.staleBuild {
+                    HStack(spacing: 10) {
+                        Image(systemName: "arrow.trianglehead.2.clockwise")
+                            .font(.system(size: 10.5, weight: .medium))
+                        Text("A newer conch is installed — this window is still running the old one.")
+                            .font(ConchTypography.font(size: 11.5))
+                        Spacer(minLength: 8)
+                        Button("Relaunch", action: store.relaunchForNewBuild)
+                            .buttonStyle(.plain)
+                            .font(ConchTypography.font(size: 11, weight: .medium))
+                            .foregroundStyle(ConchPalette.statusWorking)
+                    }
+                    .foregroundStyle(ConchPalette.statusWaiting)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ConchPalette.raised)
+
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(height: 1)
+                }
+
                 if store.pluginHintVisible {
                     PluginHintBar(onDismiss: store.dismissPluginHint)
                     Rectangle()

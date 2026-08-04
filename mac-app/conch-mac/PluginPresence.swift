@@ -47,3 +47,30 @@ enum PluginPresence {
         return entries.contains { fm.fileExists(atPath: $0.appendingPathComponent("conch").path) }
     }
 }
+
+
+/// Whether a newer conch has been installed since this one started running.
+///
+/// Overwriting /Applications/conch.app leaves the RUNNING process on old code
+/// with no hint anything changed — during development that meant hours spent
+/// looking at an already-fixed bug, and after a `brew upgrade` it means a user
+/// sees stale behaviour and reports it.
+///
+/// Comparing versions cannot work: a running process reads the bundle it is
+/// running FROM, which is the one that just got overwritten, so it would only
+/// ever compare the new build against itself. The stamp is therefore captured
+/// once at launch and everything after is measured against that.
+enum BuildFreshness {
+    private static let launchStamp = executableModified()
+
+    static var installedIsNewer: Bool {
+        guard let launchStamp, let current = executableModified() else { return false }
+        // A second of slack: copying a bundle is not instantaneous.
+        return current > launchStamp.addingTimeInterval(1)
+    }
+
+    private static func executableModified() -> Date? {
+        guard let url = Bundle.main.executableURL else { return nil }
+        return (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+    }
+}

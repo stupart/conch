@@ -11,18 +11,6 @@ import SwiftUI
 @MainActor
 final class SpeechController: NSObject, ObservableObject {
     @Published private(set) var isSpeaking = false
-    @Published var isEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(isEnabled, forKey: Self.defaultsKey)
-            if !isEnabled { stop() }
-            onEnabledChange?(isEnabled)
-        }
-    }
-
-    /// Told the bridge, so the Mac knows to stay quiet (or start again).
-    var onEnabledChange: ((Bool) -> Void)?
-
-    private static let defaultsKey = "conch.speakOnThisPhone"
     private let synthesizer = AVSpeechSynthesizer()
     /// What has already been read, per session, so a re-published state — which
     /// arrives at 10Hz — cannot make it read the same reply over and over.
@@ -30,15 +18,20 @@ final class SpeechController: NSObject, ObservableObject {
     private var primed = false
 
     override init() {
-        let defaults = UserDefaults.standard
-        isEnabled = defaults.object(forKey: Self.defaultsKey) as? Bool ?? true
         super.init()
         synthesizer.delegate = self
     }
 
     /// Called on every published state. Speaks a session's reply once.
+    ///
+    /// Whether it speaks is ACTIVE mode, not a second preference: one switch,
+    /// the dot in the toolbar. "Speak on this phone" as its own setting could
+    /// not even be read unambiguously — does it mean the phone talks to you, or
+    /// that you talk to it? Tapping Talk always works regardless; that is a
+    /// deliberate act, and mode only governs what happens on its own.
     func consider(state: PublishedState?) {
         guard let state, let reply = state.reply, !reply.sessionId.isEmpty else { return }
+        let passive = state.mode.muted
         let text = reply.displayText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
 
@@ -51,7 +44,7 @@ final class SpeechController: NSObject, ObservableObject {
         }
         guard spoken[reply.sessionId] != text else { return }
         spoken[reply.sessionId] = text
-        guard isEnabled else { return }
+        guard !passive else { return }
 
         let label = state.rows.first { $0.id == reply.sessionId }?.label
         speak(text, from: label)
