@@ -13,6 +13,8 @@ struct SessionView: View {
     @State private var fetchedReply: String?
     @State private var loadingReply = false
 
+    private static let draftAnchor = "conch.draft"
+
     private var row: PublishedState.Row? {
         bridge.state?.rows.first { $0.id == sessionId }
     }
@@ -32,6 +34,7 @@ struct SessionView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            ScrollViewReader { scroller in
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let review = row?.review {
@@ -54,9 +57,26 @@ struct SessionView: View {
                             .padding(.top, 32)
                             .frame(maxWidth: .infinity)
                     }
+
+                    // Your words belong in the thread, under what you are
+                    // answering — not stacked on top of the button. It reads as
+                    // a conversation, and you can see the whole utterance grow.
+                    if talk.phase == .listening || talk.phase == .sending {
+                        YourTurnBubble(
+                            text: talk.transcript,
+                            isSending: talk.phase == .sending
+                        )
+                        .id(Self.draftAnchor)
+                    }
                 }
                 .padding(20)
                 .padding(.bottom, 12)
+            }
+            .onChange(of: talk.transcript) { _, _ in
+                withAnimation(.easeOut(duration: 0.2)) {
+                    scroller.scrollTo(Self.draftAnchor, anchor: .bottom)
+                }
+            }
             }
 
             talkSurface
@@ -123,17 +143,6 @@ struct SessionView: View {
                 .padding(.horizontal, 20)
             }
 
-            if talk.phase == .listening {
-                Text(talk.transcript.isEmpty ? "Listening…" : talk.transcript)
-                    .font(Type.body)
-                    .foregroundStyle(
-                        talk.transcript.isEmpty ? Palette.textFaint : Palette.textPrimary
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 20)
-                    .transition(.opacity)
-            }
-
             if sendFailed {
                 Text("Couldn't reach the Mac — your words are kept above.")
                     .font(Type.caption)
@@ -185,6 +194,34 @@ struct SessionView: View {
             if !delivered { sendFailed = true }
             return delivered
         }
+    }
+}
+
+/// What you are saying, as a turn in the conversation.
+private struct YourTurnBubble: View {
+    let text: String
+    let isSending: Bool
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 40)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(text.isEmpty ? "Listening…" : text)
+                    .font(Type.body)
+                    .foregroundStyle(text.isEmpty ? Palette.textFaint : Palette.bg)
+                    .multilineTextAlignment(.leading)
+                if isSending {
+                    Text("Sending…")
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.bg.opacity(0.7))
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Palette.micOpen, in: RoundedRectangle(cornerRadius: 16))
+        }
+        .padding(.top, 8)
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
     }
 }
 

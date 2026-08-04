@@ -35,6 +35,19 @@ final class BridgeClient: ObservableObject {
         task?.cancel(with: .goingAway, reason: nil)
     }
 
+    /// The Mac this phone is paired to, for the connection popover.
+    var pairedHost: String { pairing.host }
+
+    /// Retry now instead of waiting out the backoff — for when you know the
+    /// Mac just came back and don't want to stare at a spinner.
+    func reconnectNow() {
+        guard !closed else { return }
+        reconnectDelay = 0.5
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+        connect()
+    }
+
     private func connect() {
         guard !closed, let base = pairing.base else { return }
         var components = URLComponents(

@@ -233,6 +233,13 @@ function parsedEntry(lineBytes: Uint8Array): { parsed: boolean; entry?: any } {
 
 function isRealUserPrompt(entry: any): boolean {
   if (entry.origin?.kind === "task-notification" || entry.promptSource === "system") return false;
+  // Hook-injected turns wear isMeta. A /goal loop re-prompts its session
+  // through the Stop hook, which lands as a user entry — so conch read it as
+  // "you already replied by text", held the mic, and moved on to announce the
+  // next report. In a loop that is EVERY iteration: you start dictating, the
+  // loop turns over, and your words are discarded mid-sentence. The machine
+  // prompting itself is not you replying.
+  if (entry.isMeta === true) return false;
   const content = entry.message?.content;
   if (typeof content === "string" && content.startsWith("<task-notification>")) return false;
   return typeof content === "string"

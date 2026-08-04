@@ -47,7 +47,7 @@ struct LedgerView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    connectionDot
+                    connectionControl
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Menu {
@@ -77,14 +77,29 @@ struct LedgerView: View {
         }
     }
 
-    /// Liveness, stated without words: the same cyan/dim vocabulary as rows.
-    private var connectionDot: some View {
-        // Deliberately NOT the working-cyan: that hue means "machine busy" one
-        // point away in the rows, and liveness is a different statement.
-        Circle()
-            .fill(bridge.isConnected ? Palette.textDim : Palette.needs)
-            .frame(width: 8, height: 8)
-            .accessibilityLabel(bridge.isConnected ? "Connected" : "Disconnected")
+    /// Liveness. iOS gives every toolbar item button chrome, so a bare dot
+    /// looked pressable and did nothing — the first thing asked about on the
+    /// real device. It is a button now, and says something worth tapping for:
+    /// which Mac, and a way to stop waiting out the reconnect backoff.
+    ///
+    /// The fill is deliberately NOT working-cyan: that hue means "machine busy"
+    /// one point away in the rows, and liveness is a different statement.
+    private var connectionControl: some View {
+        Menu {
+            Section(bridge.isConnected ? "Connected" : "Not connected") {
+                Text(bridge.pairedHost)
+            }
+            Button("Reconnect now") { bridge.reconnectNow() }
+        } label: {
+            Circle()
+                .fill(bridge.isConnected ? Palette.textDim : Palette.needs)
+                .frame(width: 9, height: 9)
+        }
+        .accessibilityLabel(
+            bridge.isConnected
+                ? "Connected to \(bridge.pairedHost)"
+                : "Not connected to \(bridge.pairedHost)"
+        )
     }
 
     private var emptyState: some View {
