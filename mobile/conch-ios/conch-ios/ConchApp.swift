@@ -13,14 +13,17 @@ struct ConchApp: App {
         return PairingStore.load()
     }()
     @State private var bridge: BridgeClient?
+    @StateObject private var speech = SpeechController()
 
     var body: some Scene {
         WindowGroup {
             Group {
                 if let pairing {
-                    LedgerView(bridge: bridgeClient(for: pairing)) {
-                        unpair()
-                    }
+                    LedgerView(
+                        bridge: bridgeClient(for: pairing),
+                        onUnpair: unpair,
+                        speech: speech
+                    )
                 } else {
                     PairingView { newPairing in
                         PairingStore.save(newPairing)

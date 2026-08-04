@@ -19,6 +19,7 @@
 		C1000000000000000000000A /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000000A /* PairingView.swift */; };
 		C1000000000000000000A1 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000A1 /* SettingsView.swift */; };
 		C1000000000000000000A2 /* ConchSetting.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000A2 /* ConchSetting.swift */; };
+		C1000000000000000000B1 /* SpeechController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000B1 /* SpeechController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -36,6 +37,7 @@
 		C20000000000000000000101 /* conch-ios.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "conch-ios.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		C2000000000000000000A1 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		C2000000000000000000A2 /* ConchSetting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConchSetting.swift; sourceTree = "<group>"; };
+		C2000000000000000000B1 /* SpeechController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -72,6 +74,7 @@
 				C2000000000000000000000A /* PairingView.swift */,
 				C2000000000000000000A1 /* SettingsView.swift */,
 				C2000000000000000000A2 /* ConchSetting.swift */,
+				C2000000000000000000B1 /* SpeechController.swift */,
 				C20000000000000000000100 /* Info.plist */,
 			);
 			path = "conch-ios";
@@ -165,6 +168,7 @@
 				C1000000000000000000000A /* PairingView.swift in Sources */,
 				C1000000000000000000A1 /* SettingsView.swift in Sources */,
 				C1000000000000000000A2 /* ConchSetting.swift in Sources */,
+				C1000000000000000000B1 /* SpeechController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
