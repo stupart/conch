@@ -113,13 +113,22 @@ struct SessionView: View {
                             Circle().fill(Palette.needs).frame(width: 7, height: 7)
                                 .accessibilityLabel("Disconnected")
                         }
-                        Image(systemName: mark.symbol)
+                        // THIS phone's mic, not the daemon's. The published
+                        // state describes the Mac, so while the phone held the
+                        // ear the indicator was reporting a microphone on the
+                        // other side of the room — the one state you cannot
+                        // afford to be wrong about.
+                        Image(systemName: talk.phase == .listening ? "mic.fill" : mark.symbol)
                             .font(.system(size: 12))
-                            .foregroundStyle(mark.color)
+                            .foregroundStyle(talk.phase == .listening ? Palette.micOpen : mark.color)
                         // The word earns its place only when nothing else on
                         // screen explains the glyph — a review card directly
                         // beneath saying the same thing is clutter.
-                        if row?.review == nil {
+                        if talk.phase == .listening {
+                            Text("Mic open")
+                                .font(Type.caption)
+                                .foregroundStyle(Palette.micOpen)
+                        } else if row?.review == nil {
                             Text(mark.meaning)
                                 .font(Type.caption)
                                 .foregroundStyle(mark.color)

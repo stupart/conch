@@ -1342,6 +1342,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let ttsStartup: Promise<void> = Promise.resolve();
 
   const reserveNormalMic = async (): Promise<boolean> => {
+    // The phone holding the voice means it holds the EAR too. Gating only the
+    // announce path left the Mac's mic opening anyway: it transcribed Tyler
+    // from across the room, tried to inject, failed to the clipboard, and lost
+    // the words — while the phone was delivering the same sentence correctly.
+    // Two open mics is not a degraded mode, it is a broken one.
+    if (audioSink === "phone") return false;
     // Close the gate before yielding. Already-admitted audio may finish; every
     // queued/new task now fails its actual-start check until the controller is
     // synchronously started or resumed.
