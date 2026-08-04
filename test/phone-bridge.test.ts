@@ -297,3 +297,37 @@ describe("client presence", () => {
     expect(counts).toEqual([1, 0]);
   });
 });
+
+describe("the audio lease", () => {
+  test("stop() reports zero clients so the Mac is never left silent", async () => {
+    const counts: number[] = [];
+    const b = startBridge({ onClientsChanged: (n: number) => counts.push(n) });
+    const ws = new WebSocket(`ws://127.0.0.1:${b.port}/ws?token=${TOKEN}`);
+    await new Promise<void>((resolve, reject) => {
+      ws.onmessage = () => resolve();
+      ws.onerror = () => reject(new Error("ws error"));
+      setTimeout(() => reject(new Error("timed out")), 3000);
+    });
+    expect(counts.at(-1)).toBe(1);
+    // Turning the bridge off must release the lease; otherwise disabling the
+    // phone leaves the Mac mute with nothing left to speak for it.
+    b.stop();
+    expect(counts.at(-1)).toBe(0);
+    bridge = null;
+  });
+
+  test("clientCount is the lease's source of truth", async () => {
+    const b = startBridge();
+    expect(b.clientCount()).toBe(0);
+    const ws = new WebSocket(`ws://127.0.0.1:${b.port}/ws?token=${TOKEN}`);
+    await new Promise<void>((resolve, reject) => {
+      ws.onmessage = () => resolve();
+      ws.onerror = () => reject(new Error("ws error"));
+      setTimeout(() => reject(new Error("timed out")), 3000);
+    });
+    expect(b.clientCount()).toBe(1);
+    ws.close();
+    await new Promise<void>((r) => setTimeout(r, 400));
+    expect(b.clientCount()).toBe(0);
+  });
+});

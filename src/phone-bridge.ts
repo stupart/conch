@@ -69,6 +69,8 @@ export interface PhoneBridgeHandle {
   stop(): void;
   /** Push the freshly published state to every connected phone. */
   publish(): void;
+  /** Live websocket count — an audio claim is only valid while this is > 0. */
+  clientCount(): number;
 }
 
 export function phoneTokenPath(home: string = homedir()): string {
@@ -260,6 +262,12 @@ export function createPhoneBridge(
     stop() {
       server.stop(true);
       sockets.clear();
+      // Tell the daemon the clients are gone, or turning the bridge off leaves
+      // the Mac silent with no phone left to speak.
+      dependencies.onClientsChanged?.(0);
+    },
+    clientCount() {
+      return sockets.size;
     },
     publish() {
       if (sockets.size === 0) return;
@@ -267,8 +275,11 @@ export function createPhoneBridge(
       if (!state) return;
       const frame = JSON.stringify(state);
       for (const ws of sockets) {
-        try { ws.send(frame); } catch {}
+        // A socket that cannot be written to is gone; keeping it in the set
+        // makes the audio lease look alive forever.
+        try { ws.send(frame); } catch { sockets.delete(ws); }
       }
+      dependencies.onClientsChanged?.(sockets.size);
     },
   };
 }

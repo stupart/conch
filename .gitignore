@@ -8,6 +8,7 @@ build/
 # Xcode derived data for the iOS device build. `build/` does not match this,
 # which is how 103MB of index junk reached a public repo.
 build-device/
+build26/
 
 # personal roadmap / plans — local only
 ROADMAP.md

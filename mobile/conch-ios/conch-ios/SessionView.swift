@@ -142,6 +142,17 @@ struct SessionView: View {
                 DeliverableSheet(bridge: bridge, review: review)
             }
         }
+        .onAppear {
+            // Auto-open the mic when a reply for THIS session finishes reading.
+            // Only while the session is on screen: a phone in your pocket must
+            // not silently start recording.
+            speech.onFinishedReading = {
+                guard talk.phase == .idle,
+                      speech.lastSpokenSessionId == sessionId else { return }
+                toggleTalk()
+            }
+        }
+        .onDisappear { speech.onFinishedReading = nil }
         .task(id: sessionId) {
             guard fetchedReply == nil else { return }
             loadingReply = true
