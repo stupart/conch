@@ -51,6 +51,12 @@ struct ConchApp: App {
             // `.sending` counts: send ends audio, then waits up to three
             // seconds for recognition to flush its final result.
             .onAppear {
+                // Opening the mic silences anything being read. The phone
+                // only ever had the other half of this invariant, so capture
+                // opened on top of live speech, `.record` tore the playback
+                // route away, and the synthesizer stalled without calling
+                // didFinish — button showing "speaking", nothing audible.
+                talk.silenceSpeech = { [weak speech] in speech?.stop() }
                 speech.captureOwnsAudio = { [weak talk] in
                     talk?.phase == .listening || talk?.phase == .sending
                 }
@@ -60,8 +66,14 @@ struct ConchApp: App {
                 switch phase {
                 case .active:
                     Task { await bridge.claimAudio(true) }
-                case .background, .inactive:
+                case .background:
                     Task { await bridge.claimAudio(false) }
+                case .inactive:
+                    // NOT a handback. iOS reports .inactive for anything that
+                    // transiently covers the app — a context menu, a system
+                    // sheet, the control centre — so releasing here made the
+                    // lease flap twice inside one second in the daemon log.
+                    break
                 @unknown default:
                     break
                 }

@@ -506,6 +506,11 @@ final class TalkController: NSObject, ObservableObject {
         }
     }
 
+    /// Called immediately before the mic opens, to silence anything speaking.
+    /// The Mac has refused to open the mic while TTS speaks since day one; the
+    /// phone only ever got the other half of that invariant.
+    var silenceSpeech: () -> Void = {}
+
     private let engine = AVAudioEngine()
     private var recognizer: SFSpeechRecognizer?
     private var request: SFSpeechAudioBufferRecognitionRequest?
@@ -565,6 +570,9 @@ final class TalkController: NSObject, ObservableObject {
 
     private func beginCapture() async {
         guard starting else { return }
+        // Before the route changes, but only once we know we are opening it:
+        // an aborted start must not stop audio for nothing.
+        silenceSpeech()
         guard await AVAudioApplication.requestRecordPermission() else {
             starting = false
             phase = .denied("Microphone access is off for conch — enable it in Settings.")
