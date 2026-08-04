@@ -5,6 +5,7 @@ import SwiftUI
 /// thumb should not have to aim.
 struct SessionView: View {
     @ObservedObject var bridge: BridgeClient
+    @ObservedObject var speech: SpeechController
     let sessionId: String
 
     @StateObject private var talk = TalkController()
@@ -85,6 +86,26 @@ struct SessionView: View {
         .navigationTitle(row?.label ?? "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // Read it to me. The Mac and terminal have always had `recite`;
+            // without it the phone could only speak replies that happened to
+            // arrive while you were watching, which is the opposite of the
+            // case the phone exists for.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    if speech.isSpeaking {
+                        speech.stop()
+                    } else if let replyText {
+                        speech.speak(replyText, from: row?.label)
+                    }
+                } label: {
+                    Image(systemName: speech.isSpeaking ? "stop.fill" : "speaker.wave.2.fill")
+                        .foregroundStyle(speech.isSpeaking ? Palette.needs : Palette.textDim)
+                        .contentTransition(.symbolEffect(.replace))
+                }
+                .disabled(replyText == nil)
+                .accessibilityLabel(speech.isSpeaking ? "Stop reading" : "Read this aloud")
+            }
+
             if let mark {
                 ToolbarItem(placement: .topBarTrailing) {
                     HStack(spacing: 6) {

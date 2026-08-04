@@ -38,6 +38,15 @@ struct ConchApp: App {
     private func bridgeClient(for pairing: BridgeClient.Pairing) -> BridgeClient {
         if let bridge { return bridge }
         let created = BridgeClient(pairing: pairing)
+        // Claim the voice as soon as we are connected, and re-claim on every
+        // reconnect — the daemon hands audio back to the Mac whenever the last
+        // phone drops, which includes its own restarts.
+        created.onConnected = { [speech] in
+            Task { await created.claimAudio(speech.isEnabled) }
+        }
+        speech.onEnabledChange = { enabled in
+            Task { await created.claimAudio(enabled) }
+        }
         // Assigning state during view construction is fine here: the next
         // render pass reuses the cached client rather than reconnecting.
         DispatchQueue.main.async { self.bridge = created }

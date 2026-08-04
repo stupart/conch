@@ -15,8 +15,12 @@ final class SpeechController: NSObject, ObservableObject {
         didSet {
             UserDefaults.standard.set(isEnabled, forKey: Self.defaultsKey)
             if !isEnabled { stop() }
+            onEnabledChange?(isEnabled)
         }
     }
+
+    /// Told the bridge, so the Mac knows to stay quiet (or start again).
+    var onEnabledChange: ((Bool) -> Void)?
 
     private static let defaultsKey = "conch.speakOnThisPhone"
     private let synthesizer = AVSpeechSynthesizer()

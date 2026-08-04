@@ -57,6 +57,8 @@ export interface PhoneBridgeDependencies {
   forwardControl(line: string): Promise<string>;
   /** Latest assistant reply for ANY session, raw markdown, read on demand. */
   replyFor(sessionId: string): Promise<string>;
+  /** Connected phone count, so the daemon can reclaim audio when it hits zero. */
+  onClientsChanged?(count: number): void;
   log(message: string): void;
 }
 
@@ -232,11 +234,13 @@ export function createPhoneBridge(
     websocket: {
       open(ws) {
         sockets.add(ws);
+        dependencies.onClientsChanged?.(sockets.size);
         const state = dependencies.getState();
         if (state) ws.send(JSON.stringify(state));
       },
       close(ws) {
         sockets.delete(ws);
+        dependencies.onClientsChanged?.(sockets.size);
       },
       message() {
         // Phones send controls over POST /control so every message shares one

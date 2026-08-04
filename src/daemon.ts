@@ -1520,6 +1520,23 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // neither path can bypass the 10 Hz leading/trailing throttle.
   // The phone bridge shares the publish cadence: whatever the file gets, a
   // connected phone gets, from the same object at the same moment.
+  /**
+   * Where conch's voice comes out.
+   *
+   * Synthesis on the Mac is right when you are at the Mac. When a phone is
+   * carrying the loop, the Mac speaking too is worse than useless: you hear it
+   * from the next room, or not at all, and the phone's own voice collides with
+   * it. Tyler, bluntly: "if I wanted headphones close enough to my laptop to
+   * work, I wouldn't need the mobile app in the first place."
+   *
+   * So the phone claims the audio and the Mac goes quiet — announcements and
+   * the Mac's mic both. Everything else runs unchanged: turns still queue, the
+   * dashboard still updates, and the phone speaks and listens instead.
+   *
+   * It ALWAYS returns to the Mac when the phone disconnects. A phone that walks
+   * out of the room must not leave the Mac permanently mute.
+   */
+  let audioSink: "mac" | "phone" = "mac";
   let phoneBridge: PhoneBridgeHandle | null = null;
   function syncPhoneBridge(): void {
     const wanted = cfg.phoneEnabled;
@@ -1539,6 +1556,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
           {
             getState: () => lastPublishedPanelState,
             forwardControl: (line) => forwardToDaemonSocket(cfg.socketPath, line),
+            onClientsChanged: (count) => {
+              if (count === 0 && audioSink === "phone") {
+                audioSink = "mac";
+                log("phone disconnected — audio back on this Mac");
+                void renderSessionPanel();
+              }
+            },
             replyFor: async (sessionId) => {
               const path = findTranscript(cfg.claudeDir, sessionId);
               // RAW, not stripMarkdown: the phone renders it, it doesn't speak it.
@@ -1732,6 +1756,51 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
     });
   }
+  /**
+   * Rebuild what each session last said, from disk, at startup.
+   *
+   * Turn history lived only in memory, so every daemon restart blanked the row
+   * summaries and the reply pane until each session happened to finish another
+   * turn — and a launchd-supervised daemon restarts for all sorts of reasons.
+   * Twenty-eight restarts in one day of development made the dashboard look
+   * like it was losing data, because it was.
+   *
+   * The transcripts are the durable record; this reads them once and seeds the
+   * same state a turn-end would have. Best effort throughout: a session whose
+   * transcript is unreadable simply stays blank, exactly as before.
+   */
+  async function rehydrateFromTranscripts(): Promise<void> {
+    try {
+      const snapshot = await registrySnapshot(cfg.claudeDir);
+      const sessions = snapshot?.infos ?? [];
+      for (const session of sessions) {
+        if (shuttingDown) return;
+        if (latestTurnBySession.has(session.sessionId)) continue;
+        const transcriptPath = findTranscript(cfg.claudeDir, session.sessionId);
+        if (!transcriptPath) continue;
+        const raw = await lastAssistantText(transcriptPath).catch(() => "");
+        if (!raw) continue;
+        const label = sessionLabel(session, session.cwd);
+        const announce = stripMarkdown(raw).slice(0, cfg.speakMaxChars).trim();
+        if (!announce) continue;
+        // A reconstructed turn is NOT a new turn: it must never announce, ring,
+        // or open the mic. It only restores what the dashboard already knew.
+        latestTurnBySession.set(session.sessionId, {
+          type: "turn-end",
+          sessionId: session.sessionId,
+          label,
+          cwd: session.cwd,
+          announce,
+          transcriptPath,
+          eventAt: session.statusUpdatedAt ?? Date.now(),
+        } as TurnEvent);
+      }
+      if (!shuttingDown && sessions.length) void renderSessionPanel();
+    } catch {
+      // Never let a cold-start convenience break the daemon coming up.
+    }
+  }
+
   function setSessionState(
     sessionId: string,
     label: string,
@@ -2002,7 +2071,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       log(`"${event.label}" still has live background work — downgrading to working`);
     }
 
-    const audibleTurn = shouldHandleTurnAudibly(event, cfg.workingMic);
+    const audibleTurn = shouldHandleTurnAudibly(event, cfg.workingMic)
+      && audioSink === "mac";
     if (
       audibleTurn
       && sessionGoneFromSnapshot(
@@ -3855,6 +3925,21 @@ export async function runDaemon(cfg: Config): Promise<void> {
         // bridge lives in that process, so only it can offer a code.
         if (
           typeof value === "object" && value !== null
+          && (value as { kind?: unknown }).kind === "audio-sink"
+        ) {
+          const wanted = (value as { sink?: unknown }).sink === "phone" ? "phone" : "mac";
+          if (wanted !== audioSink) {
+            audioSink = wanted;
+            log(audioSink === "phone"
+              ? "phone has the audio — this Mac is quiet"
+              : "audio back on this Mac");
+            void renderSessionPanel();
+          }
+          sock.end(JSON.stringify({ kind: "audio-sink-ack", sink: audioSink }) + "\n");
+          return;
+        }
+        if (
+          typeof value === "object" && value !== null
           && (value as { kind?: unknown }).kind === "open-pairing"
         ) {
           syncPhoneBridge();
@@ -4058,6 +4143,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   if (existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath); // stale socket from a previous run
   server.listen(cfg.socketPath);
   syncPhoneBridge();
+  void rehydrateFromTranscripts();
   // The socket accepts mic-opening, speech, and settings mutations, so it must
   // not be world-writable in /tmp. Darwin enforces socket mode on connect(2).
   try {
