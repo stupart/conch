@@ -134,6 +134,48 @@ final class BridgeClient: ObservableObject {
         }
     }
 
+    enum SettingsResult {
+        case loaded([ConchSetting])
+        case failed(String)
+    }
+
+    /// The daemon's own settings registry, over the control channel the Mac
+    /// and terminal already use. The phone renders it; it never redefines it.
+    func fetchSettings() async -> SettingsResult {
+        guard let reply = await postControlRaw(["kind": "get-config"]) else {
+            return .failed("Couldn't reach your Mac.")
+        }
+        guard let snapshot = reply["snapshot"] as? [String: Any] else {
+            return .failed((reply["error"] as? String) ?? "The Mac sent something unexpected.")
+        }
+        return .loaded(snapshot.compactMap(ConchSetting.init(key:raw:)))
+    }
+
+    func setSetting(key: String, value: ConchSettingValue) async -> Bool {
+        let wire: Any
+        switch value {
+        case let .bool(on): wire = on
+        case let .number(number): wire = number
+        case let .string(text): wire = text
+        }
+        let reply = await postControlRaw(["kind": "set-config", "key": key, "value": wire])
+        // The daemon acks with the resolved setting; an error carries `error`.
+        return reply != nil && reply?["error"] == nil
+    }
+
+    private func postControlRaw(_ message: [String: Any]) async -> [String: Any]? {
+        guard let base = pairing.base,
+              let body = try? JSONSerialization.data(withJSONObject: message) else { return nil }
+        var request = URLRequest(url: base.appendingPathComponent("control"))
+        request.httpMethod = "POST"
+        request.httpBody = body
+        request.setValue("Bearer \(pairing.token)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 8
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
     /// Any session's latest reply, fetched on demand.
     ///
     /// Published state carries only the LAST turn's reply, so every other

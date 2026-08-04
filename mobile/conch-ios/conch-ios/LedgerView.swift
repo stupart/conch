@@ -6,6 +6,7 @@ struct LedgerView: View {
     @ObservedObject var bridge: BridgeClient
     let onUnpair: () -> Void
     @State private var confirmingUnpair = false
+    @State private var showingSettings = false
 
     var body: some View {
         NavigationStack {
@@ -15,6 +16,22 @@ struct LedgerView: View {
                         // A dead connection must be LEGIBLE, not a private 8px
                         // dot: these rows are a snapshot, and their ages keep
                         // counting as if live. Say so, and dim what's stale.
+                        if let mode = bridge.state?.mode, mode.muted {
+                            HStack(spacing: 8) {
+                                Image(systemName: "bell.slash.fill")
+                                    .font(.system(size: 11))
+                                Text(
+                                    mode.holding > 0
+                                        ? "Passive — \(mode.holding) finished turn\(mode.holding == 1 ? "" : "s") waiting"
+                                        : "Passive — nothing will be announced"
+                                )
+                                .font(Type.caption)
+                            }
+                            .foregroundStyle(Palette.textDim)
+                            .listRowBackground(Palette.bg)
+                            .listRowSeparator(.hidden)
+                        }
+
                         if !bridge.isConnected {
                             HStack(spacing: 8) {
                                 ProgressView().controlSize(.small)
@@ -47,25 +64,41 @@ struct LedgerView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    connectionControl
+                    modeToggle
                 }
                 ToolbarItem(placement: .topBarLeading) {
+                    // Everything about THIS Mac lives here: whether we are
+                    // connected, to what, how to retry, and how to forget it.
+                    // The right-hand button is conch's own settings, so neither
+                    // button is a grab-bag.
                     Menu {
-                        // The app's only destructive action: one stray tap
-                        // otherwise discards the pairing and demands the Mac's
-                        // code again.
+                        Section(bridge.isConnected ? "Connected" : "Not connected") {
+                            Text(bridge.pairedHost)
+                        }
+                        Button("Reconnect now") { bridge.reconnectNow() }
+                        Divider()
+                        Button("conch settings…") { showingSettings = true }
+                        Divider()
                         Button("Unpair from this Mac…", role: .destructive) {
                             confirmingUnpair = true
                         }
                     } label: {
-                        Image(systemName: "ellipsis.circle")
-                            .foregroundStyle(Palette.textDim)
+                        Image(systemName: bridge.isConnected ? "laptopcomputer" : "laptopcomputer.slash")
+                            .foregroundStyle(bridge.isConnected ? Palette.textDim : Palette.needs)
                     }
+                    .accessibilityLabel(
+                        bridge.isConnected
+                            ? "Connected to \(bridge.pairedHost)"
+                            : "Not connected to \(bridge.pairedHost)"
+                    )
                 }
             }
         }
         .tint(Palette.micOpen)
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $showingSettings) {
+            SettingsView(bridge: bridge)
+        }
         .confirmationDialog(
             "Unpair from this Mac?",
             isPresented: $confirmingUnpair,
@@ -77,29 +110,24 @@ struct LedgerView: View {
         }
     }
 
-    /// Liveness. iOS gives every toolbar item button chrome, so a bare dot
-    /// looked pressable and did nothing — the first thing asked about on the
-    /// real device. It is a button now, and says something worth tapping for:
-    /// which Mac, and a way to stop waiting out the reconnect backoff.
+    /// Active or passive, in one tap.
     ///
-    /// The fill is deliberately NOT working-cyan: that hue means "machine busy"
-    /// one point away in the rows, and liveness is a different statement.
-    private var connectionControl: some View {
-        Menu {
-            Section(bridge.isConnected ? "Connected" : "Not connected") {
-                Text(bridge.pairedHost)
-            }
-            Button("Reconnect now") { bridge.reconnectNow() }
+    /// Active is the loop: finished turns announce themselves, get read aloud,
+    /// and the mic opens for your reply — the Mac and terminal behaviour.
+    /// Passive keeps every session visible and still lets you talk to one on
+    /// purpose; it just stops the machine speaking first. That distinction is
+    /// the one you change constantly and the only one worth a permanent button.
+    private var modeToggle: some View {
+        let passive = bridge.state?.mode.muted ?? false
+        return Button {
+            Task { await bridge.send(mode: passive ? "unmute" : "mute") }
         } label: {
-            Circle()
-                .fill(bridge.isConnected ? Palette.textDim : Palette.needs)
-                .frame(width: 9, height: 9)
+            Image(systemName: passive ? "bell.slash.fill" : "bell.fill")
+                .foregroundStyle(passive ? Palette.textDim : Palette.waiting)
+                .contentTransition(.symbolEffect(.replace))
         }
-        .accessibilityLabel(
-            bridge.isConnected
-                ? "Connected to \(bridge.pairedHost)"
-                : "Not connected to \(bridge.pairedHost)"
-        )
+        .accessibilityLabel(passive ? "Passive — turn announcements on" : "Active — turn announcements off")
+        .animation(.easeOut(duration: 0.18), value: passive)
     }
 
     private var emptyState: some View {
