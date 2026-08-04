@@ -206,10 +206,36 @@ private struct ConchSettingRowView: View {
         setting.entry.source == .environment
     }
 
+    /// Auto-titling produced "Voice Qa" and "Say Wpm". These are a dozen fixed
+    /// keys; writing them out is cheaper than any clever de-abbreviator.
+    private static let displayNames: [String: String] = [
+        "end-silence": "End-of-speech pause",
+        "mic-gain": "Microphone gain",
+        "hold-submit-delay": "Hold before sending",
+        "listen-window": "Listening window",
+        "typing-grace": "Typing grace period",
+        "barge-threshold": "Barge-in threshold",
+        "voice-speed": "Voice speed",
+        "keystroke-fallback": "Type into the session window",
+        "read-full": "Read the full reply",
+        "interrupt-on-manual-reply": "Stop reading when you type",
+        "handoff-order": "Hand-off order",
+        "reveal-on-turn": "Raise the window on a finished turn",
+        "reveal-typing-grace": "Don't raise while typing",
+        "working-mic": "Open the mic while working",
+        "voice-qa": "Voice Q&A",
+        "resume-digest": "Digest on resume",
+        "announce-summary": "Announce a summary",
+        "haiku-timeout": "Haiku timeout",
+        "meeting-autopause": "Auto-pause in meetings",
+        "announce-sentences": "Sentences announced",
+        "announce-max-chars": "Announcement length limit",
+        "say-rate": "Fallback voice speed (wpm)",
+    ]
+
     private var displayName: String {
-        setting.key
-            .replacingOccurrences(of: "-", with: " ")
-            .capitalized
+        Self.displayNames[setting.key]
+            ?? setting.key.replacingOccurrences(of: "-", with: " ").capitalized
     }
 
     var body: some View {
@@ -228,7 +254,7 @@ private struct ConchSettingRowView: View {
 
                     Text(metadata)
                         .font(ConchTypography.font(size: 11, weight: .medium))
-                        .foregroundStyle(isReadOnly ? ConchPalette.statusWaiting : ConchPalette.textFaint)
+                        .foregroundStyle(isReadOnly ? ConchPalette.textDim : ConchPalette.textFaint)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -243,18 +269,22 @@ private struct ConchSettingRowView: View {
                         .frame(width: 215, alignment: .trailing)
                         .disabled(isReadOnly || isPending)
 
-                    Button("Reset", action: onReset)
-                        .disabled(isReadOnly || isPending || setting.entry.source == .defaultValue)
-                        .frame(minHeight: 28)
-                        .help("Remove the saved value and use the next available source")
+                    // Shown only when there is something TO reset. A permanently
+                    // dim Reset on every default row is chrome, not an affordance.
+                    if setting.entry.source != .defaultValue, !isReadOnly {
+                        Button("Reset", action: onReset)
+                            .disabled(isPending)
+                            .frame(minHeight: 28)
+                            .help("Remove the saved value and use the next available source")
+                    }
                 }
                 .frame(minHeight: 40)
             }
 
             if isReadOnly {
-                Text("This value is controlled by the environment. File changes cannot override it.")
+                Text("Set by the environment — a saved value cannot override it.")
                     .font(ConchTypography.font(size: 11))
-                    .foregroundStyle(ConchPalette.statusWaiting)
+                    .foregroundStyle(ConchPalette.textDim)
             }
 
             if let diagnostic = setting.entry.diagnostic?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -262,7 +292,7 @@ private struct ConchSettingRowView: View {
                feedback == nil {
                 Text(diagnostic)
                     .font(ConchTypography.font(size: 11))
-                    .foregroundStyle(ConchPalette.statusWaiting)
+                    .foregroundStyle(ConchPalette.textDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -278,7 +308,15 @@ private struct ConchSettingRowView: View {
     }
 
     private var metadata: String {
-        var parts = [setting.entry.source.label, "Default: \(setting.entry.defaultValue.displayText)"]
+        // Naming the source and then the default said "Default · Default: 350"
+        // whenever the value simply was the default — which is most rows.
+        var parts: [String] = []
+        if setting.entry.source == .defaultValue {
+            parts.append("Default \(setting.entry.defaultValue.displayText)")
+        } else {
+            parts.append(setting.entry.source.label)
+            parts.append("Default: \(setting.entry.defaultValue.displayText)")
+        }
         if let bounds = setting.entry.bounds?.description(
             forceInteger: setting.entry.kind == "integer"
         ) {
@@ -353,6 +391,8 @@ private struct NumberSettingControl: View {
         entry.kind == "integer"
     }
 
+    @FocusState private var isEditing: Bool
+
     private var canApply: Bool {
         draft != current && accepts(draft)
     }
@@ -369,7 +409,14 @@ private struct NumberSettingControl: View {
                 .multilineTextAlignment(.trailing)
                 .monospacedDigit()
                 .frame(width: 92)
+                .focused($isEditing)
                 .onSubmit { commit(draft) }
+                // Commit on blur as well as Enter. Requiring Apply made numbers
+                // behave differently from the toggles beside them, and a value
+                // typed but not applied silently did nothing.
+                .onChange(of: isEditing) { _, editing in
+                    if !editing, canApply { commit(draft) }
+                }
                 .accessibilityLabel("Setting value")
 
                 Stepper(
@@ -383,11 +430,14 @@ private struct NumberSettingControl: View {
                 }
                 .labelsHidden()
 
-                Button("Apply") {
-                    commit(draft)
+                // Present only while an edit is pending. A permanently dim
+                // Apply on every row is chrome, not an affordance.
+                if canApply {
+                    Button("Apply") {
+                        commit(draft)
+                    }
+                    .frame(minHeight: 28)
                 }
-                .disabled(!canApply)
-                .frame(minHeight: 28)
             }
 
             if let validationMessage {

@@ -70,11 +70,19 @@ enum ConchPalette {
 enum ConchTypography {
     private static let family = "Helvetica Neue"
 
-    static func font(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+    /// `relativeTo:` is what makes a custom face respect the system text-size
+    /// setting. Without it every size here was a fixed point value and the app
+    /// ignored Dynamic Type entirely — bad for a dashboard meant to be
+    /// glanceable from across a room.
+    static func font(
+        size: CGFloat,
+        weight: Font.Weight = .regular,
+        relativeTo style: Font.TextStyle = .body
+    ) -> Font {
         guard NSFont(name: family, size: size) != nil else {
             return .system(size: size, weight: weight)
         }
-        return .custom(family, size: size).weight(weight)
+        return .custom(family, size: size, relativeTo: style).weight(weight)
     }
 
     static func nsFont(size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
@@ -1181,7 +1189,7 @@ private struct ConversationDocument {
             if targetRow == nil, state.rows.isEmpty {
                 content = SessionStaticContent(
                     rowID: nil,
-                    text: "No sessions yet.",
+                    text: "Start a session and its replies appear here.",
                     isPlaceholder: true
                 )
             } else {
@@ -1864,9 +1872,12 @@ private struct DashboardKeybar: View {
         HStack(spacing: 5) {
             KeybarActionButton(
                 label: talkLabel,
-                isProminent: true,
+                // Prominence is a claim that this is the thing to do next. With
+                // no sessions there is nothing to talk to, so it stops shouting.
+                isProminent: !(state?.rows.isEmpty ?? true),
                 action: actions.onTalkOrStop
             )
+            .disabled(state?.rows.isEmpty ?? true)
             KeybarActionButton(
                 label: pauseLabel,
                 action: actions.onPauseOrResume
@@ -1955,15 +1966,30 @@ private struct DashboardEmptyState: View {
     let hasSnapshot: Bool
 
     var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: hasSnapshot ? "circle" : "ellipsis")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(ConchPalette.statusWaiting)
+        // The calmest screen in the product was painted in the alarm colour, and
+        // said nothing twice ("No sessions" here, "No sessions yet." in the
+        // pane) without ever saying how a session gets here.
+        VStack(spacing: 10) {
+            Image(systemName: hasSnapshot ? "terminal" : "ellipsis")
+                .font(.system(size: 15, weight: .regular))
+                .foregroundStyle(ConchPalette.textFaint)
 
-            Text(hasSnapshot ? "No sessions" : "Waiting for Conch")
-                .font(ConchTypography.font(size: 12.5))
+            Text(hasSnapshot ? "Nothing running yet" : "Waiting for conch")
+                .font(ConchTypography.font(size: 13, weight: .medium))
                 .foregroundStyle(ConchPalette.textDim)
+
+            Text(
+                hasSnapshot
+                    ? "Start a Claude Code or Codex session and it appears here — conch reads its finished turns aloud."
+                    : "Checking whether the conch daemon is running."
+            )
+            .font(ConchTypography.font(size: 11.5))
+            .foregroundStyle(ConchPalette.textFaint)
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: 250)
         }
+        .padding(.horizontal, 16)
     }
 }
 
