@@ -45,11 +45,22 @@ enum ConchPalette {
     // restful state; "waiting" means a finished turn is sitting on YOU, so it
     // reads as attention rather than inert grey; "needs" is blocking and
     // outranks it.
-    static let statusWorking = brandCyan
+    // Machine-busy states share a calmer cyan so the brand cyan at full strength
+    // can mean one thing only: your microphone is open. That is the state with
+    // the highest cost of being wrong about.
+    static let statusWorking = Color(
+        red: 0.31,
+        green: 0.55,
+        blue: 0.60
+    )
+    static let statusMicOpen = brandCyan
+    // Waiting and review were 20/255 apart in a single channel — the same gold,
+    // separated only by glyph shape. Waiting now sits at the orange end, where
+    // "a finished turn is sitting on you" belongs.
     static let statusWaiting = Color(
-        red: 0.95,
-        green: 0.69,
-        blue: 0.20
+        red: 0.96,
+        green: 0.60,
+        blue: 0.13
     )
     static let statusNeeds = Color(
         red: 0.94,
@@ -57,9 +68,9 @@ enum ConchPalette {
         blue: 0.24
     )
     static let statusReview = Color(
-        red: 0.96,
-        green: 0.77,
-        blue: 0.19
+        red: 0.98,
+        green: 0.84,
+        blue: 0.32
     )
 
     // 0.62 put this at 2.63:1, below AA, while carrying the row age. Now 4.54:1.
@@ -963,8 +974,12 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
 
     var color: Color {
         switch self {
-        case .working, .listening:
+        case .working:
             return ConchPalette.statusWorking
+        case .listening:
+            // Full brand cyan is reserved for "your mic is open" — the state
+            // with the highest cost of being wrong about.
+            return ConchPalette.statusMicOpen
         case .waiting:
             return ConchPalette.statusWaiting
         case .needs:
@@ -977,7 +992,7 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             // talking, so a real review no longer stood out.
             return ConchPalette.statusWorking
         case .recording:
-            return ConchPalette.brandCyan
+            return ConchPalette.statusMicOpen
         case .transcribing:
             return ConchPalette.statusWorking.opacity(0.78)
         case .idle:
