@@ -1,4 +1,6 @@
 import { test, expect } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   stripMarkdown,
   speakable,
@@ -648,4 +650,26 @@ test("speakable drops decorative glyphs a voice would announce literally", () =>
   expect(speakable("Done \ud83c\udf89 shipped it!")).toBe("Done shipped it!");
   // real prosody must survive: em dash + ellipsis are how a sentence breathes
   expect(speakable("It works \u2014 really well\u2026 yes.")).toBe("It works \u2014 really well\u2026 yes.");
+});
+
+test("a hook-injected turn is not you replying", async () => {
+  // A /goal loop re-prompts its own session through the Stop hook. That lands
+  // in the transcript as type:"user" with isMeta — and counting it as a real
+  // prompt made conch believe the user had answered by keyboard, so it held
+  // the mic and discarded whatever they were mid-way through dictating.
+  const dir = mkdtempSync("/tmp/conch-meta-prompt-");
+  const path = join(dir, "t.jsonl");
+  const lines = [
+    { type: "user", message: { content: "do the thing" } },
+    { type: "assistant", message: { content: [{ type: "text", text: "done" }] } },
+    { type: "user", isMeta: true, message: { content: "Stop hook feedback:\n[keep going]" } },
+    { type: "assistant", message: { content: [{ type: "text", text: "still going" }] } },
+  ];
+  writeFileSync(path, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+
+  // One human prompt in that file, not two.
+  const mark = await transcriptMark(path);
+  expect(mark).toBe(1);
+  // And nothing "responded" after the human's own prompt.
+  expect(await userRespondedSince(path, 1)).toBe(false);
 });

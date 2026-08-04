@@ -17,7 +17,17 @@ final class TalkController: NSObject, ObservableObject {
     }
 
     @Published private(set) var phase = Phase.idle
-    @Published private(set) var transcript = ""
+    /// Everything said this session: finalised segments plus the live partial.
+    var transcript: String {
+        [committed, partial].filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    /// SFSpeechRecognizer finalises a segment and STARTS OVER — on a pause, or
+    /// around a minute of speech. `formattedString` then describes only the
+    /// newest segment, so overwriting on every result threw away everything
+    /// said before the last pause. Finalised text is banked here.
+    @Published private(set) var committed = ""
+    @Published private(set) var partial = ""
 
     private let engine = AVAudioEngine()
     private var recognizer: SFSpeechRecognizer?
@@ -75,8 +85,10 @@ final class TalkController: NSObject, ObservableObject {
 
             let input = engine.inputNode
             let format = input.outputFormat(forBus: 0)
-            input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-                request.append(buffer)
+            // Reads self.request each time: a restarted segment swaps it, and a
+            // tap holding the OLD request would feed audio into a dead task.
+            input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+                self?.request?.append(buffer)
             }
             engine.prepare()
             try engine.start()
@@ -85,16 +97,57 @@ final class TalkController: NSObject, ObservableObject {
             return
         }
 
-        transcript = ""
+        committed = ""
+        partial = ""
         phase = .listening
-        recognition = recognizer.recognitionTask(with: request) { [weak self] result, _ in
+        startRecognition(on: recognizer, request: request)
+    }
+
+    private func startRecognition(
+        on recognizer: SFSpeechRecognizer,
+        request: SFSpeechAudioBufferRecognitionRequest
+    ) {
+        recognition = recognizer.recognitionTask(with: request) { [weak self] result, error in
             Task { @MainActor [weak self] in
                 guard let self, self.phase == .listening else { return }
                 if let result {
-                    self.transcript = result.bestTranscription.formattedString
+                    let text = result.bestTranscription.formattedString
+                    if result.isFinal {
+                        // Bank it and clear the partial: the next callback is a
+                        // NEW segment starting from empty, not a continuation.
+                        self.commit(text)
+                    } else {
+                        self.partial = text
+                    }
+                }
+                if result?.isFinal == true || error != nil {
+                    // The engine is still running and the user is still talking;
+                    // a finished task just means this segment ended. Start the
+                    // next one or the rest of the sentence is never heard.
+                    self.restartRecognition()
                 }
             }
         }
+    }
+
+    private func commit(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { partial = ""; return }
+        committed = committed.isEmpty ? trimmed : committed + " " + trimmed
+        partial = ""
+    }
+
+    private func restartRecognition() {
+        guard phase == .listening, let recognizer else { return }
+        recognition = nil
+        request?.endAudio()
+        let next = SFSpeechAudioBufferRecognitionRequest()
+        next.shouldReportPartialResults = true
+        if recognizer.supportsOnDeviceRecognition {
+            next.requiresOnDeviceRecognition = true
+        }
+        request = next
+        startRecognition(on: recognizer, request: next)
     }
 
     private func finish(deliver: @escaping (String) async -> Bool) {
@@ -104,7 +157,8 @@ final class TalkController: NSObject, ObservableObject {
         recognition?.finish()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
 
-        let text = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        commit(partial)
+        let text = committed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
             phase = .idle
             return
@@ -114,7 +168,8 @@ final class TalkController: NSObject, ObservableObject {
             let delivered = await deliver(text)
             // Keep the words on screen briefly on failure so they aren't lost.
             if delivered {
-                self.transcript = ""
+                self.committed = ""
+                self.partial = ""
             }
             self.phase = .idle
         }
@@ -127,7 +182,8 @@ final class TalkController: NSObject, ObservableObject {
         request?.endAudio()
         recognition?.cancel()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        transcript = ""
+        committed = ""
+        partial = ""
         phase = .idle
     }
 }
