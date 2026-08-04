@@ -189,23 +189,42 @@ struct LiveState: Decodable, Equatable, Sendable {
 }
 
 struct ReadingProgress: Decodable, Equatable, Sendable {
+    /// Speech text: markdown stripped and flattened. `spokenChars` indexes this.
     let text: String
     let spokenChars: Int
+    /// The same reply with markdown intact. Absent on older daemons.
+    let markdown: String?
 
-    init(text: String = "", spokenChars: Int = 0) {
+    init(text: String = "", spokenChars: Int = 0, markdown: String? = nil) {
         self.text = text
         self.spokenChars = spokenChars
+        self.markdown = markdown
     }
 
     private enum CodingKeys: String, CodingKey {
         case text
         case spokenChars
+        case markdown
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         text = (try? container.decodeIfPresent(String.self, forKey: .text)) ?? ""
         spokenChars = Self.decodeCharacterCount(from: container)
+        markdown = (try? container.decodeIfPresent(String.self, forKey: .markdown)) ?? nil
+    }
+
+    /// Text to RENDER, preferring the markdown copy when the daemon sends one.
+    var displayText: String {
+        guard let markdown, !markdown.isEmpty else { return text }
+        return markdown
+    }
+
+    /// Reading progress as a fraction. Markdown syntax has no spoken counterpart,
+    /// so a character offset from the speech text cannot index the rendered one.
+    var spokenFraction: Double {
+        guard !text.isEmpty else { return 0 }
+        return min(1, max(0, Double(spokenChars) / Double(text.count)))
     }
 
     fileprivate static func decodeCharacterCount<Key: CodingKey>(
@@ -239,11 +258,13 @@ struct ConversationReply: Decodable, Equatable, Sendable {
     let sessionId: String
     let text: String
     let spokenChars: Int
+    let markdown: String?
 
     private enum CodingKeys: String, CodingKey {
         case sessionId
         case text
         case spokenChars
+        case markdown
     }
 
     init(from decoder: Decoder) throws {
@@ -254,6 +275,17 @@ struct ConversationReply: Decodable, Equatable, Sendable {
             from: container,
             forKey: .spokenChars
         )
+        markdown = (try? container.decodeIfPresent(String.self, forKey: .markdown)) ?? nil
+    }
+
+    var displayText: String {
+        guard let markdown, !markdown.isEmpty else { return text }
+        return markdown
+    }
+
+    var spokenFraction: Double {
+        guard !text.isEmpty else { return 0 }
+        return min(1, max(0, Double(spokenChars) / Double(text.count)))
     }
 }
 

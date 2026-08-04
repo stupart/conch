@@ -240,7 +240,7 @@ export const MCP_TOOLS = [
   },
   {
     name: "review_to_front",
-    description: "Surface a worker session's finished deliverable for the user's review: session is required and must name the worker whose deliverable this is. Latches that session as needs-review in conch's dashboard, announces it, and opens an optional safe link.",
+    description: "Surface YOUR finished deliverable for the user's review. Defaults to the calling session; a session may only surface its own work. Latches it as needs-review in conch's dashboard, announces it, and opens an optional safe link.",
     inputSchema: {
       type: "object",
       properties: {
@@ -249,10 +249,10 @@ export const MCP_TOOLS = [
         session: {
           type: "string",
           minLength: 1,
-          description: "Required live session id or label of the worker whose deliverable this is.",
+          description: "Optional. Defaults to YOUR session. A session may only surface its own work; naming another session is refused.",
         },
       },
-      required: ["summary", "session"],
+      required: ["summary"],
       additionalProperties: false,
     },
   },
@@ -415,14 +415,56 @@ async function resolveSession(
   return session;
 }
 
+/**
+ * The session that OWNS this MCP server.
+ *
+ * Claude Code spawns the plugin's MCP server as a direct child of the session
+ * process, so the parent pid identifies the caller. That is what lets a review
+ * default to "mine" and lets us refuse to file one under somebody else's name.
+ * Returns null when the parent isn't a known session (a bare `conch mcp` run).
+ */
+async function callerSession(
+  config: McpRuntimeConfig,
+  dependencies: McpDependencies,
+): Promise<SessionInfo | null> {
+  const parentPid = typeof process.ppid === "number" ? process.ppid : 0;
+  if (!parentPid) return null;
+  const infos = (await dependencies.registrySnapshot(config.claudeDir))?.infos ?? [];
+  return infos.find((session) => session.pid === parentPid) ?? null;
+}
+
+/**
+ * A session may only surface its OWN deliverable.
+ *
+ * Nothing used to stop one session filing a review under another's name, and
+ * the dashboard attributes it to the named session — so a caller could put
+ * words in a sibling's mouth. Reviews are an approval gate; misattributing one
+ * is worse than failing to file it.
+ */
 async function requiredReviewSession(
   argumentsValue: Readonly<Record<string, unknown>>,
   config: McpRuntimeConfig,
   dependencies: McpDependencies,
 ): Promise<string> {
+  const caller = await callerSession(config, dependencies);
   const value = argumentsValue.session;
-  if (typeof value === "string" && value.trim()) return value;
+  const named = typeof value === "string" ? value.trim() : "";
 
+  if (caller) {
+    // Naming yourself is fine and is the normal case; naming anyone else is not.
+    if (!named) return caller.sessionId;
+    const requested = await dependencies.findSessionByName(config.claudeDir, named);
+    if (requested && requested.sessionId !== caller.sessionId) {
+      throw new ToolInputError(
+        `a session can only surface its own work — you are "`
+          + `${dependencies.sessionLabel(caller, caller.cwd)}", not "${named}". `
+          + "Omit `session` to surface your own deliverable.",
+      );
+    }
+    return caller.sessionId;
+  }
+
+  if (named) return named;
   const infos = (await dependencies.registrySnapshot(config.claudeDir))?.infos ?? [];
   const labels = Array.from(new Set(
     infos.map((session) => dependencies.sessionLabel(session, session.cwd)),

@@ -388,7 +388,8 @@ describe("MCP tool discovery", () => {
       conch_rename: ["session", "label"],
       conch_config: [],
       conch_transcript_tail: ["session"],
-      review_to_front: ["summary", "session"],
+      // session is optional now: it defaults to the CALLING session.
+      review_to_front: ["summary"],
     };
 
     for (const tool of result.tools) {
@@ -892,7 +893,8 @@ describe("real MCP tool handlers with injected dependencies", () => {
       "session is required and must name the worker whose deliverable this is"
         + "; live sessions: Alpha, Beta",
     );
-    expect(h.calls.registries).toEqual(["/virtual/claude"]);
+    // Two reads: one to identify the caller, one to list labels for the error.
+    expect(h.calls.registries).toEqual(["/virtual/claude", "/virtual/claude"]);
     expect(h.calls.sessionLookups).toEqual([]);
     expect(h.calls.daemon).toEqual([]);
     expect(h.calls.opened).toEqual([]);
@@ -1030,5 +1032,43 @@ describe("real MCP tool handlers with injected dependencies", () => {
       content: [{ type: "text", text: "conch daemon is not running" }],
       isError: true,
     });
+  });
+  test("review_to_front refuses to file a review under another session's name", async () => {
+    // The MCP server runs as a direct child of its Claude Code session, so the
+    // parent pid identifies the caller. Nothing used to stop one session filing a
+    // review attributed to a sibling — reviews are an approval gate, so a
+    // misattributed one is worse than a missing one.
+    const h = fakeHarness({
+      registry: {
+        infos: [
+          { sessionId: "session-a", name: "Alpha", cwd: "/work/alpha", status: "busy", pid: process.ppid },
+          { sessionId: "session-b", name: "Beta", cwd: "/work/beta", status: "busy", pid: process.ppid + 1 },
+        ],
+        liveIds: new Set(["session-a", "session-b"]),
+        complete: true,
+      },
+    });
+    h.dependencies.sessionLabel = (session) => session?.name ?? "unnamed";
+    h.dependencies.findSessionByName = async (_dir, query) =>
+      query === "Beta"
+        ? { sessionId: "session-b", name: "Beta", cwd: "/work/beta", status: "busy", pid: process.ppid + 1 }
+        : { sessionId: "session-a", name: "Alpha", cwd: "/work/alpha", status: "busy", pid: process.ppid };
+    const handlers = createMcpToolHandlers(
+      { claudeDir: "/virtual/claude", socketPath: "/virtual/conch.sock" },
+      h.dependencies,
+    );
+
+    let thrown: unknown;
+    try {
+      await handlers.review_to_front({ summary: "not mine", session: "Beta" });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).name).toBe("ToolInputError");
+    expect((thrown as Error).message).toContain("can only surface its own work");
+    // Nothing was announced or opened on the refused path.
+    expect(h.calls.daemon).toEqual([]);
+    expect(h.calls.opened).toEqual([]);
   });
 });
