@@ -666,7 +666,11 @@ private struct DashboardRow: View {
                     .font(ConchTypography.font(size: 13.5, weight: .medium))
                     .foregroundStyle(ConchPalette.textPrimary)
                     .lineLimit(1)
-                    .truncationMode(.tail)
+                    // Sibling sessions share a prefix far more often than a
+                    // suffix ("dayloop-feature-flags" vs "…-rollout"), so tail
+                    // truncation made two different rows read identically. The
+                    // distinguishing end survives a middle ellipsis.
+                    .truncationMode(.middle)
                     .contentTransition(.opacity)
                     // The label is near-fixed prose and should size to its
                     // content; the deliverable summary beside it is the variable

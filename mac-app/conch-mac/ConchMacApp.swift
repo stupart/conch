@@ -269,7 +269,23 @@ private enum HIDIdleTime {
 /// frame before SwiftUI's dark content draws on cold launch.
 private struct WindowBackgroundConfigurator: NSViewRepresentable {
     private static let frameKey = "conch.dashboard.windowFrame"
-    private static var observers: [NSObjectProtocol] = []
+    // Replaced rather than appended, so a second makeNSView cannot double up.
+    private static var observers: [NSObjectProtocol] = [] {
+        willSet {
+            for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        }
+    }
+
+    /// SwiftUI writes a frame key whose name embeds an ASLR-varying pointer, so
+    /// it accrues one dead key per launch forever. We keep our own key; these are
+    /// pure garbage and are swept on the way past.
+    private static func sweepDeadFrameKeys() {
+        let defaults = UserDefaults.standard
+        for key in defaults.dictionaryRepresentation().keys
+        where key.hasPrefix("NSWindow Frame SwiftUI") {
+            defaults.removeObject(forKey: key)
+        }
+    }
 
     private static func restoreFrame(of window: NSWindow) {
         guard let saved = UserDefaults.standard.string(forKey: frameKey) else { return }
@@ -286,16 +302,17 @@ private struct WindowBackgroundConfigurator: NSViewRepresentable {
     private static func observeFrame(of window: NSWindow) {
         let save: (Notification) -> Void = { note in
             guard let window = note.object as? NSWindow else { return }
+            // Full screen reports a screen-sized frame through didMove; saving it
+            // would restore a maximised window forever after one zoom.
+            guard !window.styleMask.contains(.fullScreen) else { return }
             UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: frameKey)
         }
-        for name in [NSWindow.didEndLiveResizeNotification, NSWindow.didMoveNotification] {
-            observers.append(
-                NotificationCenter.default.addObserver(
-                    forName: name,
-                    object: window,
-                    queue: .main,
-                    using: save
-                )
+        observers = [NSWindow.didEndLiveResizeNotification, NSWindow.didMoveNotification].map {
+            NotificationCenter.default.addObserver(
+                forName: $0,
+                object: window,
+                queue: .main,
+                using: save
             )
         }
     }
@@ -315,6 +332,7 @@ private struct WindowBackgroundConfigurator: NSViewRepresentable {
             // own name after makeNSView, which is why the previous attempt
             // silently did nothing. Persist the frame ourselves under a fixed
             // key instead.
+            Self.sweepDeadFrameKeys()
             Self.restoreFrame(of: window)
             Self.observeFrame(of: window)
             ReviewNotifications.shared.register(window: window)
