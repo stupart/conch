@@ -139,6 +139,13 @@ final class TalkController: NSObject, ObservableObject {
     @Published private(set) var committed = ""
     @Published private(set) var partial = ""
     @Published private(set) var failure: String?
+    /// Which session this draft is being spoken to.
+    ///
+    /// One controller now serves every session, because a per-view one died
+    /// with its view and took your words with it. The cost is that a draft
+    /// could surface under a conversation you did not say it to — so it is
+    /// stamped once, at the moment you start talking, and shown nowhere else.
+    @Published private(set) var targetSessionId: String?
 
     private let engine = AVAudioEngine()
     private let audioRelay = RecognitionAudioRelay()
@@ -166,11 +173,12 @@ final class TalkController: NSObject, ObservableObject {
     private var finalizationContinuation: CheckedContinuation<Void, Never>?
     private var finalizationTimeout: Task<Void, Never>?
 
-    func toggle(deliver: @escaping (String) async -> Bool) {
+    func toggle(session: String, deliver: @escaping (String) async -> Bool) {
         switch phase {
         case .listening:
             finish(deliver: deliver)
         case .idle, .denied:
+            targetSessionId = session
             start()
         case .sending:
             break

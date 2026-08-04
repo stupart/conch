@@ -14,6 +14,17 @@ struct ConchApp: App {
     }()
     @State private var bridge: BridgeClient?
     @StateObject private var speech = SpeechController()
+    /// Your words outlive the screen showing them.
+    ///
+    /// This lived inside SessionView, which is a `navigationDestination` under
+    /// a conditional the ledger re-evaluates on every published state. Any
+    /// teardown — one empty row list, a reconnect, navigation churn — took the
+    /// @StateObject with it and ran `.onDisappear { talk.cancel() }`, and
+    /// cancel clears `committed`. Mid-sentence, the whole transcript, gone.
+    /// The audio pipeline was appending correctly the entire time; the view
+    /// lifecycle was deleting the result. Nothing you have said should be
+    /// reachable by a redraw.
+    @StateObject private var talk = TalkController()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -23,7 +34,8 @@ struct ConchApp: App {
                     LedgerView(
                         bridge: bridgeClient(for: pairing),
                         onUnpair: unpair,
-                        speech: speech
+                        speech: speech,
+                        talk: talk
                     )
                 } else {
                     PairingView { newPairing in
@@ -33,6 +45,16 @@ struct ConchApp: App {
                 }
             }
             .background(Palette.bg)
+            // Speaking and recording share one AVAudioSession. Wiring this in
+            // a view meant a teardown mid-utterance dropped the guard; both
+            // objects live for the whole app, so the invariant does too.
+            // `.sending` counts: send ends audio, then waits up to three
+            // seconds for recognition to flush its final result.
+            .onAppear {
+                speech.captureOwnsAudio = { [weak talk] in
+                    talk?.phase == .listening || talk?.phase == .sending
+                }
+            }
             .onChange(of: scenePhase) { _, phase in
                 guard let bridge else { return }
                 switch phase {

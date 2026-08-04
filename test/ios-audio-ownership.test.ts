@@ -41,9 +41,34 @@ describe("only one side of the phone owns the audio route", () => {
     // `finish()` sets `.sending`, THEN ends audio and waits up to three
     // seconds for the final result. Gating on `.listening` alone opened that
     // window at the exact moment a queue of unread replies was released.
-    const wiring = session.slice(session.indexOf("speech.captureOwnsAudio = {"));
-    expect(wiring).toMatch(/talk\.phase == \.listening/);
-    expect(wiring.slice(0, wiring.indexOf("}"))).toMatch(/talk\.phase == \.sending/);
+    const app = readFileSync(
+      join(import.meta.dir, "..", "mobile", "conch-ios", "conch-ios", "ConchApp.swift"),
+      "utf8",
+    );
+    const wiring = app.slice(app.indexOf("speech.captureOwnsAudio = {"));
+    const closure = wiring.slice(0, wiring.indexOf("\n                }"));
+    expect(closure).toMatch(/phase == \.listening/);
+    expect(closure).toMatch(/phase == \.sending/);
+    // In a view it died with the view, which is how it came to be dropped
+    // mid-utterance in the first place.
+    expect(session).not.toMatch(/captureOwnsAudio/);
+  });
+
+  test("the transcript is not reachable from the view lifecycle", () => {
+    // A per-view @StateObject died with its view and `.onDisappear` called
+    // cancel(), which clears `committed` — the entire transcript, mid-word,
+    // on any redraw that tore the destination down. Nothing about which
+    // screen is showing should be able to delete what you have said.
+    expect(session).not.toMatch(/@StateObject private var talk/);
+    expect(session).not.toMatch(/talk\.cancel\(\)/);
+    expect(app("ConchApp.swift")).toMatch(/@StateObject private var talk = TalkController\(\)/);
+  });
+
+  test("a draft is shown only under the session it was spoken to", () => {
+    // One controller now serves every session; without this the draft would
+    // surface under a conversation you never said it to.
+    expect(session).toMatch(/talk\.targetSessionId == sessionId/);
+    expect(session).toMatch(/talk\.toggle\(session: sessionId\)/);
   });
 
   test("the reply is released before the mic opens", () => {

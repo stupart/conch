@@ -6,6 +6,11 @@ struct LedgerView: View {
     @ObservedObject var bridge: BridgeClient
     let onUnpair: () -> Void
     @ObservedObject var speech: SpeechController
+    /// Passed through, deliberately NOT observed: the ledger only hands this
+    /// to SessionView, and observing it would rebuild the whole list on every
+    /// partial word — churning the very view whose teardown used to delete
+    /// the transcript. SessionView observes it and updates on its own.
+    let talk: TalkController
     @State private var confirmingUnpair = false
     @State private var showingSettings = false
     /// What the user just asked for, shown until the daemon's own state agrees.
@@ -40,7 +45,7 @@ struct LedgerView: View {
                     }
                     .listStyle(.plain)
                     .navigationDestination(for: String.self) { id in
-                        SessionView(bridge: bridge, speech: speech, sessionId: id)
+                        SessionView(bridge: bridge, speech: speech, talk: talk, sessionId: id)
                     }
                 } else {
                     emptyState

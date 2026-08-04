@@ -6,9 +6,9 @@ import SwiftUI
 struct SessionView: View {
     @ObservedObject var bridge: BridgeClient
     @ObservedObject var speech: SpeechController
+    /// Owned by the app, never by this view — see ConchApp.
+    @ObservedObject var talk: TalkController
     let sessionId: String
-
-    @StateObject private var talk = TalkController()
     @State private var showReview = false
     @State private var sendFailed = false
     @State private var fetchedReply: String?
@@ -62,7 +62,8 @@ struct SessionView: View {
                     // Your words belong in the thread, under what you are
                     // answering — not stacked on top of the button. It reads as
                     // a conversation, and you can see the whole utterance grow.
-                    if talk.phase == .listening || !talk.transcript.isEmpty {
+                    if talk.targetSessionId == sessionId,
+                       talk.phase == .listening || !talk.transcript.isEmpty {
                         YourTurnBubble(
                             text: talk.transcript,
                             isSending: talk.phase == .sending
@@ -143,15 +144,6 @@ struct SessionView: View {
             }
         }
         .onAppear {
-            // The ledger considers every published state for speaking and has
-            // no view of the mic — TalkController lives here. This is the only
-            // place that owns both, so the invariant gets installed here.
-            // `.sending` counts: send ends the audio but then waits up to three
-            // seconds for recognition to flush, and releasing a queue of unread
-            // replies into that window is what threw the words away.
-            speech.captureOwnsAudio = {
-                talk.phase == .listening || talk.phase == .sending
-            }
             // Auto-open the mic when a reply for THIS session finishes reading.
             // Only while the session is on screen: a phone in your pocket must
             // not silently start recording.
@@ -162,17 +154,13 @@ struct SessionView: View {
                 toggleTalk()
             }
         }
-        .onDisappear {
-            speech.onFinishedReading = nil
-            speech.captureOwnsAudio = { false }
-        }
+        .onDisappear { speech.onFinishedReading = nil }
         .task(id: sessionId) {
             guard fetchedReply == nil else { return }
             loadingReply = true
             fetchedReply = await bridge.fetchReply(sessionId: sessionId)
             loadingReply = false
         }
-        .onDisappear { talk.cancel() }
     }
 
     // MARK: - Talk
@@ -247,7 +235,7 @@ struct SessionView: View {
     private func toggleTalk() {
         sendFailed = false
         let label = row?.label ?? ""
-        talk.toggle { text in
+        talk.toggle(session: sessionId) { text in
             let delivered = await bridge.inject(
                 sessionId: sessionId,
                 label: label,
