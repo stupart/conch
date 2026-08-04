@@ -62,7 +62,7 @@ struct SessionView: View {
                     // Your words belong in the thread, under what you are
                     // answering — not stacked on top of the button. It reads as
                     // a conversation, and you can see the whole utterance grow.
-                    if talk.phase == .listening || !talk.transcript.isEmpty {
+                    if talk.phase == .listening || talk.phase == .sending || !talk.transcript.isEmpty {
                         YourTurnBubble(
                             text: talk.transcript,
                             isSending: talk.phase == .sending

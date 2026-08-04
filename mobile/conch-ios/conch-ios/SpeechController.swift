@@ -15,15 +15,21 @@ final class SpeechController: NSObject, ObservableObject {
     var onFinishedReading: (() -> Void)?
     /// Which session was just read, so the mic opens pointed at the right one.
     private(set) var lastSpokenSessionId: String?
-    /// Whether THIS phone's microphone is open right now.
+    /// Whether the capture side still owns the audio route.
     ///
     /// Speaking and recording share one AVAudioSession singleton. Speaking
-    /// flips it to `.playback` and reactivates it; doing that while the mic is
-    /// open tears down the recording route mid-utterance, and the recognition
-    /// task errors out — you watch your words appear and then get thrown away.
-    /// The Mac has refused to open the mic while TTS speaks since day one; the
-    /// phone grew a second audio owner and never inherited the invariant.
-    var micIsOpen: () -> Bool = { false }
+    /// flips it to `.playback` and reactivates it; doing that while capture
+    /// owns the route tears down recognition, and the words you watched appear
+    /// are thrown away. The Mac has refused to open the mic while TTS speaks
+    /// since day one; the phone grew a second audio owner and never inherited
+    /// the invariant.
+    ///
+    /// "Still owns it" outlasts the mic being open. Sending ends the audio but
+    /// then waits up to three seconds for recognition to flush its final
+    /// result — a window that gated on `.listening` alone left wide open, and
+    /// tapping send is precisely when a queue of unread replies is released to
+    /// pounce on it. That was the remaining loss.
+    var captureOwnsAudio: () -> Bool = { false }
     private let synthesizer = AVSpeechSynthesizer()
     /// What has already been read, per session, so a re-published state — which
     /// arrives at 10Hz — cannot make it read the same reply over and over.
@@ -58,7 +64,7 @@ final class SpeechController: NSObject, ObservableObject {
         guard spoken[reply.sessionId] != text else { return }
         // Defer rather than drop, and deliberately do NOT mark it spoken: this
         // same state republishes, so the reply is read the moment you send.
-        guard !micIsOpen() else { return }
+        guard !captureOwnsAudio() else { return }
         spoken[reply.sessionId] = text
         guard !passive else { return }
 
@@ -70,7 +76,7 @@ final class SpeechController: NSObject, ObservableObject {
     func speak(_ markdown: String, from label: String?) {
         // Backstop for every caller, not just `consider`: touching the audio
         // session while recording is what destroys the utterance.
-        guard !micIsOpen() else { return }
+        guard !captureOwnsAudio() else { return }
         configureSession()
         let spokenText = Self.speakable(markdown)
         guard !spokenText.isEmpty else { return }
