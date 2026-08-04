@@ -121,6 +121,12 @@ final class TalkController: NSObject, ObservableObject {
                     }
                 }
                 if result?.isFinal == true || error != nil {
+                    // BANK THE PARTIAL FIRST. iOS ends a segment two ways: with
+                    // isFinal, or with an error (a pause, a timeout, the
+                    // on-device model rotating). The error path was dropping
+                    // everything said since the last final — which is exactly
+                    // "it threw out the old segments and kept the latest one".
+                    self.commit(self.partial)
                     // The engine is still running and the user is still talking;
                     // a finished task just means this segment ended. Start the
                     // next one or the rest of the sentence is never heard.
@@ -139,15 +145,18 @@ final class TalkController: NSObject, ObservableObject {
 
     private func restartRecognition() {
         guard phase == .listening, let recognizer else { return }
+        let previous = request
         recognition = nil
-        request?.endAudio()
         let next = SFSpeechAudioBufferRecognitionRequest()
         next.shouldReportPartialResults = true
         if recognizer.supportsOnDeviceRecognition {
             next.requiresOnDeviceRecognition = true
         }
+        // Swap first, THEN close the old one: the tap reads self.request, so
+        // closing first drops every buffer spoken during the changeover.
         request = next
         startRecognition(on: recognizer, request: next)
+        previous?.endAudio()
     }
 
     private func finish(deliver: @escaping (String) async -> Bool) {

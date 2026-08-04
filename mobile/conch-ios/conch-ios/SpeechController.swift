@@ -31,7 +31,7 @@ final class SpeechController: NSObject, ObservableObject {
     /// deliberate act, and mode only governs what happens on its own.
     func consider(state: PublishedState?) {
         guard let state, let reply = state.reply, !reply.sessionId.isEmpty else { return }
-        let passive = state.mode.muted
+        let passive = state.mode.paused || state.mode.muted
         let text = reply.displayText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
 

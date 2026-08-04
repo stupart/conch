@@ -14,6 +14,7 @@ struct ConchApp: App {
     }()
     @State private var bridge: BridgeClient?
     @StateObject private var speech = SpeechController()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -32,6 +33,17 @@ struct ConchApp: App {
                 }
             }
             .background(Palette.bg)
+            .onChange(of: scenePhase) { _, phase in
+                guard let bridge else { return }
+                switch phase {
+                case .active:
+                    Task { await bridge.claimAudio(true) }
+                case .background, .inactive:
+                    Task { await bridge.claimAudio(false) }
+                @unknown default:
+                    break
+                }
+            }
         }
     }
 
@@ -43,12 +55,11 @@ struct ConchApp: App {
         // phone drops, which includes its own restarts.
         // Claim the voice on every (re)connect: the daemon hands audio back to
         // the Mac whenever the last phone drops, including across its restarts.
-        created.onConnected = {
-            Task {
-                let passive = created.state?.mode.muted ?? false
-                await created.claimAudio(!passive)
-            }
-        }
+        // Which machine is primary is decided by whether this app is OPEN.
+        // Open and foregrounded: the phone has the voice and the ear. Closed or
+        // backgrounded: the Mac takes them straight back. No button to get
+        // wrong, and no state to leave stranded on the wrong device.
+        created.onConnected = { Task { await created.claimAudio(true) } }
         // Assigning state during view construction is fine here: the next
         // render pass reuses the cached client rather than reconnecting.
         DispatchQueue.main.async { self.bridge = created }

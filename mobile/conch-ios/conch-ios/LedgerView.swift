@@ -134,17 +134,21 @@ struct LedgerView: View {
     /// state is held only until the daemon's own state agrees, so the truth
     /// still comes from one place; a failed request snaps back.
     private var modeToggle: some View {
-        let passive = pendingPassive ?? (bridge.state?.mode.muted ?? false)
+        let passive = pendingPassive ?? (bridge.state?.mode.paused ?? false)
         return Button {
             let next = !passive
             pendingPassive = next
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             Task {
-                let sent = await bridge.send(mode: next ? "mute" : "unmute")
+                // PAUSE, not mute. Mute FORGETS finished turns — Tyler pressed
+                // this and lost two. Pause holds them and replays on resume,
+                // which is what "not right now" should ever mean.
+                //
+                // And it does NOT hand the Mac back: which machine is primary
+                // is decided by whether this app is open, not by a button that
+                // would then mean two things at once.
+                let sent = await bridge.send(mode: next ? "pause" : "resume")
                 if !sent { pendingPassive = nil }
-                // Active means this phone carries the voice; passive hands it
-                // back so the Mac is usable on its own again.
-                await bridge.claimAudio(!next)
                 if next { speech.stop() }
             }
         } label: {
@@ -155,10 +159,10 @@ struct LedgerView: View {
         }
         .accessibilityLabel(
             passive
-                ? "Passive — nothing is announced. Activate."
-                : "Active — announcing finished turns. Go passive."
+                ? "Paused — finished turns are being held. Resume."
+                : "Active — announcing finished turns. Pause."
         )
-        .onChange(of: bridge.state?.mode.muted) { _, actual in
+        .onChange(of: bridge.state?.mode.paused) { _, actual in
             // The daemon has caught up (or something else changed it); stop
             // holding the local guess so the two can never disagree for long.
             if let pendingPassive, pendingPassive == actual { self.pendingPassive = nil }
