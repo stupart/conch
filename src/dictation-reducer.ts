@@ -269,9 +269,16 @@ export class DictationReducer {
     const pending = this.#pending;
     this.#pending = null;
     const submits = SUBMIT_ACTIONS.has(pending.action);
-    const payload = submits && this.#buffer.length
+    const joined = submits && this.#buffer.length
       ? this.#buffer.map((segment) => segment.text).join(" ")
       : null;
+    // Whisper renders near-silence as punctuation — a three-minute empty
+    // window came back as "-" and was injected into a live session as if it
+    // were a message. Speech that carries no letter or digit is not something
+    // anyone said, and the empty-buffer path already knows what to do with
+    // nothing. Guarding here rather than at deliver() because deliver
+    // returning false means "you replied by hand", which this is not.
+    const payload = joined && /[\p{L}\p{N}]/u.test(joined) ? joined : null;
     const payloadRefs = diagnosticRefsFromSegments(this.#buffer);
     const actionRefs = pending.actionDiagnostics;
     const retained = RETAIN_ACTIONS.has(pending.action)
