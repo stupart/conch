@@ -566,6 +566,107 @@ export type SocketTurnEventValidation =
   | { ok: true; value: TurnEvent }
   | { ok: false; err: string };
 
+export type AudioSink = "mac" | "phone";
+
+/** Small state machine for the phone's client-backed audio lease. */
+export class AudioSinkLease {
+  #sink: AudioSink = "mac";
+
+  get sink(): AudioSink {
+    return this.#sink;
+  }
+
+  isPhone(): boolean {
+    return this.#sink === "phone";
+  }
+
+  request(requested: unknown, connectedClients: number): AudioSink {
+    this.#sink = requested === "phone" && connectedClients > 0 ? "phone" : "mac";
+    return this.#sink;
+  }
+
+  clientsChanged(connectedClients: number): boolean {
+    if (connectedClients > 0 || this.#sink === "mac") return false;
+    this.#sink = "mac";
+    return true;
+  }
+}
+
+/** Stop a disabled or wrong-port bridge before any replacement is created. */
+export function retainMatchingPhoneBridge(
+  bridge: PhoneBridgeHandle | null,
+  enabled: boolean,
+  port: number,
+): PhoneBridgeHandle | null {
+  if (bridge && (!enabled || bridge.port !== port)) {
+    bridge.stop();
+    return null;
+  }
+  return bridge;
+}
+
+/** Sink-aware reservation seam, exported so the post-await race stays tested. */
+export async function reserveNormalMicForSink(options: {
+  sink(): AudioSink;
+  shuttingDown(): boolean;
+  setReserved(value: boolean): void;
+  quiescent(): Promise<void>;
+}): Promise<boolean> {
+  if (options.sink() === "phone") return false;
+  options.setReserved(true);
+  await options.quiescent();
+  if (!options.shuttingDown() && options.sink() === "mac") return true;
+  options.setReserved(false);
+  return false;
+}
+
+export type PublishedInjectScope =
+  | { ok: true; value: TurnEvent }
+  | { ok: false; err: string };
+
+/** Replace every caller-controlled routing field with daemon-owned session data. */
+export function scopePublishedInjectEvent(
+  event: TurnEvent,
+  published: Pick<PublishedState, "rows"> | null,
+  canonical: {
+    label?: string;
+    cwd?: string;
+    pid?: number;
+    transcriptPath?: string;
+  } = {},
+  now = Date.now(),
+): PublishedInjectScope {
+  const sessionId = event.sessionId.trim();
+  const suppliedLabel = event.label.trim();
+  const announce = event.announce.trim();
+  if (!sessionId) return { ok: false, err: "sessionId is required for inject" };
+  if (!suppliedLabel) return { ok: false, err: "label is required for inject" };
+  if (!announce) return { ok: false, err: "announce is required for inject" };
+  const row = published?.rows.find((candidate) => candidate.id === sessionId);
+  if (!row) return { ok: false, err: "inject target is not a live published session" };
+
+  const {
+    pid: _callerPid,
+    cwd: _callerCwd,
+    transcriptPath: _callerTranscriptPath,
+    eventAt: _callerEventAt,
+    ...safe
+  } = event;
+  return {
+    ok: true,
+    value: {
+      ...safe,
+      sessionId,
+      label: canonical.label?.trim() || row.label || suppliedLabel,
+      announce,
+      eventAt: now,
+      ...(canonical.cwd ? { cwd: canonical.cwd } : {}),
+      ...(canonical.pid !== undefined ? { pid: canonical.pid } : {}),
+      ...(canonical.transcriptPath ? { transcriptPath: canonical.transcriptPath } : {}),
+    },
+  };
+}
+
 function socketRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -610,6 +711,9 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
       if (typeof value[field] !== "string") {
         return { ok: false, err: `${field} is required for ${type}` };
       }
+      if (type === "inject" && value[field].trim().length === 0) {
+        return { ok: false, err: `${field} must not be empty for inject` };
+      }
     }
   } else if ((type === "wake" || type === "recite") && typeof value.sessionId !== "string") {
     return { ok: false, err: `sessionId is required for ${type}` };
@@ -625,6 +729,29 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
       announce: typeof value.announce === "string" ? value.announce : "",
     } as TurnEvent,
   };
+}
+
+/** One boundary for hostile socket input plus daemon-owned phone inject routing. */
+export function validateAndScopeSocketTurnEvent(
+  value: unknown,
+  published: Pick<PublishedState, "rows"> | null,
+  canonicalFor: (sessionId: string) => {
+    cwd?: string;
+    pid?: number;
+    transcriptPath?: string;
+  } = () => ({}),
+  now = Date.now(),
+): SocketTurnEventValidation {
+  const validated = validateSocketTurnEvent(value);
+  if (!validated.ok || validated.value.type !== "inject") return validated;
+  const sessionId = validated.value.sessionId.trim();
+  const row = published?.rows.find((candidate) => candidate.id === sessionId);
+  return scopePublishedInjectEvent(
+    validated.value,
+    published,
+    row ? { label: row.label, ...canonicalFor(sessionId) } : {},
+    now,
+  );
 }
 
 /** Only a genuine turn end, or an explicitly opted-in reclassified Stop, owns audio. */
@@ -1055,6 +1182,47 @@ export function buildDaemonPublishedState(
   );
 }
 
+/**
+ * Reconstruct dashboard-only turn summaries without ever entering the live
+ * queue. The second map check is the startup race boundary: a hook that arrives
+ * during transcript I/O always wins over reconstructed history.
+ */
+export async function rehydrateLatestTurns(options: {
+  sessions: readonly SessionInfo[];
+  latest: Map<string, TurnEvent>;
+  transcriptFor(sessionId: string): string | undefined;
+  readAssistant(path: string): Promise<string>;
+  labelFor(session: SessionInfo): string;
+  maxChars: number;
+  stopping(): boolean;
+  now?(): number;
+}): Promise<number> {
+  let restored = 0;
+  for (const session of options.sessions) {
+    if (options.stopping()) break;
+    if (options.latest.has(session.sessionId)) continue;
+    const transcriptPath = options.transcriptFor(session.sessionId);
+    if (!transcriptPath) continue;
+    const raw = await options.readAssistant(transcriptPath).catch(() => "");
+    if (!raw || options.stopping()) continue;
+    // A live hook may have arrived while readAssistant yielded.
+    if (options.latest.has(session.sessionId)) continue;
+    const announce = stripMarkdown(raw).slice(0, options.maxChars).trim();
+    if (!announce) continue;
+    options.latest.set(session.sessionId, {
+      type: "turn-end",
+      sessionId: session.sessionId,
+      label: options.labelFor(session),
+      cwd: session.cwd,
+      announce,
+      transcriptPath,
+      eventAt: session.statusUpdatedAt ?? (options.now ?? Date.now)(),
+    });
+    restored += 1;
+  }
+  return restored;
+}
+
 export async function runDaemon(cfg: Config): Promise<void> {
   prepareLogFile();
   // Read cfg.haikuTimeoutSecs at call time — the config socket mutates cfg in
@@ -1084,6 +1252,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     requestExternal(action: ExternalDictationAction, barrierReason?: string): void;
     done: Promise<void>;
   } | null = null;
+  const audioLease = new AudioSinkLease();
   let shuttingDown = false;
   let normalMicReserved = false;
   let bargeHandoffOpen = false;
@@ -1195,7 +1364,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
   whisperServerClient.setRecoveryHandler((reason) => whisperSupervisor?.requestRecovery(reason));
   const speech = new SpeechManager(
     { speakCancellable: backendSpeakCancellable, stopSpeaking: backendStopSpeaking },
-    (operation, output) => withNormalMicClosed(normalMicOpen, operation, output),
+    (operation, output) => withNormalMicClosed(
+      normalMicOpen,
+      operation,
+      () => audioLease.sink === "phone"
+        ? Promise.resolve(undefined as Awaited<ReturnType<typeof output>>)
+        : output(),
+    ),
     {
       warn: log,
       worker: cfg.ttsEngine === "worker" ? ttsWorker : null,
@@ -1347,17 +1522,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // from across the room, tried to inject, failed to the clipboard, and lost
     // the words — while the phone was delivering the same sentence correctly.
     // Two open mics is not a degraded mode, it is a broken one.
-    if (audioSink === "phone") return false;
-    // Close the gate before yielding. Already-admitted audio may finish; every
-    // queued/new task now fails its actual-start check until the controller is
-    // synchronously started or resumed.
-    normalMicReserved = true;
-    await speech.quiescent();
-    // Re-check AFTER the await: a phone can claim the voice during it, and
-    // returning true then opens the Mac's mic behind the claim's back.
-    if (!shuttingDown && audioSink === "mac") return true;
-    normalMicReserved = false;
-    return false;
+    return reserveNormalMicForSink({
+      sink: () => audioLease.sink,
+      shuttingDown: () => shuttingDown,
+      setReserved: (value) => { normalMicReserved = value; },
+      quiescent: () => speech.quiescent(),
+    });
   };
 
   const speak = async (speechCfg: Config, text: string, label = ""): Promise<void> => {
@@ -1367,7 +1537,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // still talking — Tyler heard the Mac and the phone reading the same reply
     // simultaneously. A per-call-site gate is a list you can forget to add to;
     // this is not.
-    if (audioSink === "phone") return;
+    if (audioLease.sink === "phone") return;
     await speech.speak(speechCfg, text, label);
   };
 
@@ -1551,19 +1721,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
    * It ALWAYS returns to the Mac when the phone disconnects. A phone that walks
    * out of the room must not leave the Mac permanently mute.
    */
-  let audioSink: "mac" | "phone" = "mac";
   let phoneBridge: PhoneBridgeHandle | null = null;
   function syncPhoneBridge(): void {
     const wanted = cfg.phoneEnabled;
-    if (!wanted && phoneBridge) {
-      phoneBridge.stop();
-      phoneBridge = null;
+    const previousBridge = phoneBridge;
+    phoneBridge = retainMatchingPhoneBridge(phoneBridge, wanted, cfg.phonePort);
+    if (!wanted && previousBridge) {
       log("phone bridge stopped");
       return;
-    }
-    if (wanted && phoneBridge && phoneBridge.port !== cfg.phonePort) {
-      phoneBridge.stop();
-      phoneBridge = null;
     }
     if (wanted && !phoneBridge) {
       try {
@@ -1572,8 +1737,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
             getState: () => lastPublishedPanelState,
             forwardControl: (line) => forwardToDaemonSocket(cfg.socketPath, line),
             onClientsChanged: (count) => {
-              if (count === 0 && audioSink === "phone") {
-                audioSink = "mac";
+              if (audioLease.clientsChanged(count)) {
                 log("phone disconnected — audio back on this Mac");
                 void renderSessionPanel();
               }
@@ -1788,29 +1952,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
     try {
       const snapshot = await registrySnapshot(cfg.claudeDir);
       const sessions = snapshot?.infos ?? [];
-      for (const session of sessions) {
-        if (shuttingDown) return;
-        if (latestTurnBySession.has(session.sessionId)) continue;
-        const transcriptPath = findTranscript(cfg.claudeDir, session.sessionId);
-        if (!transcriptPath) continue;
-        const raw = await lastAssistantText(transcriptPath).catch(() => "");
-        if (!raw) continue;
-        const label = sessionLabel(session, session.cwd);
-        const announce = stripMarkdown(raw).slice(0, cfg.speakMaxChars).trim();
-        if (!announce) continue;
-        // A reconstructed turn is NOT a new turn: it must never announce, ring,
-        // or open the mic. It only restores what the dashboard already knew.
-        latestTurnBySession.set(session.sessionId, {
-          type: "turn-end",
-          sessionId: session.sessionId,
-          label,
-          cwd: session.cwd,
-          announce,
-          transcriptPath,
-          eventAt: session.statusUpdatedAt ?? Date.now(),
-        } as TurnEvent);
-      }
-      if (!shuttingDown && sessions.length) void renderSessionPanel();
+      const restored = await rehydrateLatestTurns({
+        sessions,
+        latest: latestTurnBySession,
+        transcriptFor: (sessionId) => findTranscript(cfg.claudeDir, sessionId),
+        readAssistant: lastAssistantText,
+        labelFor: (session) => sessionLabel(session, session.cwd),
+        maxChars: cfg.speakMaxChars,
+        stopping: () => shuttingDown,
+      });
+      // Reconstructed turns never enter enqueue/handle, so this can only repaint
+      // row summaries — it cannot announce, ring, or open a recorder.
+      if (!shuttingDown && restored) void renderSessionPanel();
     } catch {
       // Never let a cold-start convenience break the daemon coming up.
     }
@@ -2041,17 +2194,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (event.type === "inject") {
       // The phone's voice path: text transcribed ON the phone, delivered into
       // the named session through the exact machinery Mac dictation uses —
-      // name-addressing, focus, confirm-by-transcript, clipboard fallback,
-      // telemetry. One injection path, however the words arrived.
-      const info = event.sessionId ? panelSessions.get(event.sessionId) : undefined;
+      // exact-pane focus, confirm-by-transcript, clipboard fallback, telemetry.
+      // Name-addressing is deliberately disabled: the published session id is
+      // the only target the phone is authorized to drive.
       const target: TurnEvent = {
         ...event,
         type: "turn-end",
-        pid: event.pid ?? info?.pid,
-        transcriptPath: event.transcriptPath
-          ?? findTranscript(cfg.claudeDir, event.sessionId),
       };
-      const delivered = await deliver(target, event.announce);
+      const delivered = await deliver(target, event.announce, undefined, undefined, {
+        allowNameAddressing: false,
+        allowBlindFallback: false,
+      });
       log(`phone inject into "${event.label}" ${delivered ? "delivered" : "failed"}`);
       return;
     }
@@ -2087,7 +2240,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
 
     const audibleTurn = shouldHandleTurnAudibly(event, cfg.workingMic)
-      && audioSink === "mac";
+      && audioLease.sink === "mac";
     if (
       audibleTurn
       && sessionGoneFromSnapshot(
@@ -2390,7 +2543,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (interrupted()) return { heard: "", cut: true };
     // The phone owns the voice AND the ear: this path both speaks and arms the
     // Mac's recorder, so it must return before either.
-    if (audioSink === "phone") return { heard: "", cut: false };
+    if (audioLease.isPhone()) return { heard: "", cut: false };
     setState("speaking", event.label);
     if (!cfg.bargeThresholdPct || disabled) {
       const playback = speech.speakCancellable(cfg, text, event.label);
@@ -2405,9 +2558,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // the manager's audio FIFO. Its actual-start gate checks this precondition
     // again before the intentional high-threshold barge recorder is armed.
     await speech.quiescent();
+    if (audioLease.isPhone()) return { heard: "", cut: false };
     if (stopKey || interrupted()) return { heard: "", cut: true };
     assertNormalMicClosed("barge-in TTS");
     const result = await speech.runInterruptible(cfg, text, event.label, async (startSpeech) => {
+      if (audioLease.isPhone()) return { heard: "", cut: false };
       if (interrupted()) return { heard: "", cut: true };
       const barge = armBargeRecorder(cfg, traceParent, nextTraceSequence?.() ?? 1);
       const speechRun = startSpeech();
@@ -2459,18 +2614,24 @@ export async function runDaemon(cfg: Config): Promise<void> {
     text: string,
     diagnosticIds?: string | Iterable<string | undefined>,
     beforeInject?: () => boolean | Promise<boolean>,
+    options: {
+      allowNameAddressing?: boolean;
+      allowBlindFallback?: boolean;
+    } = {},
   ): Promise<boolean> {
-    const addressed = await resolveNameAddressRoute(cfg.claudeDir, event, text);
-    if (addressed.addressed) {
-      log(`addressed "${addressed.addressed.name}" -> "${addressed.addressed.label}"`);
+    if (options.allowNameAddressing !== false) {
+      const addressed = await resolveNameAddressRoute(cfg.claudeDir, event, text);
+      if (addressed.addressed) {
+        log(`addressed "${addressed.addressed.name}" -> "${addressed.addressed.label}"`);
+      }
+      if (addressed.kind === "wake") {
+        if (beforeInject && !(await beforeInject())) return false;
+        enqueue(addressed.event);
+        return true;
+      }
+      event = addressed.event;
+      text = addressed.text;
     }
-    if (addressed.kind === "wake") {
-      if (beforeInject && !(await beforeInject())) return false;
-      enqueue(addressed.event);
-      return true;
-    }
-    event = addressed.event;
-    text = addressed.text;
 
     return routeVoicePrompt(cfg.voiceQa, text, event.transcriptPath, {
       askClaude: askHaiku,
@@ -2480,6 +2641,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         prompt,
         diagnosticIds,
         beforeInject,
+        options,
       ),
       ...(beforeInject ? { canContinue: beforeInject } : {}),
     });
@@ -2491,6 +2653,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     text: string,
     diagnosticIds?: string | Iterable<string | undefined>,
     beforeInject?: () => boolean | Promise<boolean>,
+    options: { allowBlindFallback?: boolean } = {},
   ): Promise<boolean> {
     let committed = false;
     const commit = async (): Promise<boolean> => {
@@ -2521,6 +2684,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       event.pid,
       text,
       beforeInject ? commit : undefined,
+      { allowBlindFallback: options.allowBlindFallback },
     );
     if (interrupted) return false;
 
@@ -3946,23 +4110,29 @@ export async function runDaemon(cfg: Config): Promise<void> {
           typeof value === "object" && value !== null
           && (value as { kind?: unknown }).kind === "audio-sink"
         ) {
-          const wanted = (value as { sink?: unknown }).sink === "phone"
-            // A claim with no live websocket cannot be honoured: nothing would
-            // ever release it. This is the stuck-phone case — a Mac left deaf
-            // and mute by an in-flight claim that lands after the socket closed.
-            && (phoneBridge?.clientCount() ?? 0) > 0
-            ? "phone"
-            : "mac";
-          if (wanted !== audioSink) {
-            audioSink = wanted;
-            // Stop mid-sentence rather than finishing over the phone's copy.
-            if (wanted === "phone") speech.cancelCurrent();
-            log(audioSink === "phone"
+          const previous = audioLease.sink;
+          const requested = (value as { sink?: unknown }).sink;
+          const connectedClients = phoneBridge?.clientCount() ?? 0;
+          const claimingPhone = requested === "phone"
+            && connectedClients > 0
+            && previous !== "phone";
+          if (claimingPhone) {
+            // Tear down physical Mac audio before publishing phone ownership.
+            // The callback is synchronous, so no new daemon work can enter the
+            // old lease between this stop and request() below.
+            speech.cancelCurrent();
+            speech.cancelPendingAudio();
+            activeDictation?.requestExternal("spacebar", "phone-audio-claim");
+            void Promise.resolve(killActiveRecorders()).catch(() => {});
+          }
+          const wanted = audioLease.request(requested, connectedClients);
+          if (wanted !== previous) {
+            log(audioLease.sink === "phone"
               ? "phone has the audio — this Mac is quiet"
               : "audio back on this Mac");
             void renderSessionPanel();
           }
-          sock.end(JSON.stringify({ kind: "audio-sink-ack", sink: audioSink }) + "\n");
+          sock.end(JSON.stringify({ kind: "audio-sink-ack", sink: audioLease.sink }) + "\n");
           return;
         }
         if (
@@ -3998,9 +4168,26 @@ export async function runDaemon(cfg: Config): Promise<void> {
         );
         if (control.handled) response = control.response;
         else {
-          const turn = validateSocketTurnEvent(value);
-          if (turn.ok) dispatchSocketTurnEvent(turn.value, socketTurnCallbacks);
-          else log(`ignoring malformed event: ${turn.err}`);
+          const turn = validateAndScopeSocketTurnEvent(
+            value,
+            lastPublishedPanelState,
+            (sessionId) => {
+              const session = panelSessions.get(sessionId);
+              return {
+                cwd: session?.cwd,
+                pid: session?.pid,
+                transcriptPath: findTranscript(cfg.claudeDir, sessionId),
+              };
+            },
+          );
+          if (!turn.ok) {
+            log(`ignoring malformed event: ${turn.err}`);
+            if (socketRecord(value) && value.type === "inject") {
+              response = { kind: "session-error", error: turn.err };
+            }
+          } else {
+            dispatchSocketTurnEvent(turn.value, socketTurnCallbacks);
+          }
         }
       } catch {
         log("ignoring malformed event");

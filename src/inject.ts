@@ -6,7 +6,14 @@ export interface InjectTextResult {
   via: InjectRoute;
   interrupted?: true;
   /** Why we fell back to the clipboard — the two causes need different fixes. */
-  reason?: "keystroke-fallback-off" | "window-not-focusable";
+  reason?: "keystroke-fallback-off" | "window-not-focusable" | "session-not-routable";
+}
+
+export interface InjectTextOptions {
+  /** Phone traffic must never type into whichever unrelated app happens to be frontmost. */
+  allowBlindFallback?: boolean;
+  /** Test seam for proving the no-blind-route branch without mutating the real clipboard. */
+  copyToClipboard?(text: string): Promise<void>;
 }
 
 /**
@@ -26,8 +33,10 @@ export async function injectText(
   sessionPid: number | undefined,
   text: string,
   beforeInject?: () => boolean | Promise<boolean>,
+  options: InjectTextOptions = {},
 ): Promise<InjectTextResult> {
   const submit = cfg.autoSubmit;
+  const copyToClipboard = options.copyToClipboard ?? toClipboard;
   const mayInject = async (): Promise<boolean> => beforeInject ? await beforeInject() : true;
   const interrupted = (): InjectTextResult => ({ via: "none", interrupted: true });
   if (sessionPid) {
@@ -50,12 +59,17 @@ export async function injectText(
   }
 
   if (cfg.keystrokeFallback) {
+    if (!sessionPid && options.allowBlindFallback === false) {
+      if (!(await mayInject())) return interrupted();
+      await copyToClipboard(text);
+      return { via: "clipboard", reason: "session-not-routable" };
+    }
     const focused = sessionPid ? await focusSessionWindow(sessionPid) : false;
     if (!focused && sessionPid) {
       // We know which session this is for but can't put its window in
       // front — typing would land somewhere unknowable. Clipboard instead.
       if (!(await mayInject())) return interrupted();
-      await toClipboard(text);
+      await copyToClipboard(text);
       return { via: "clipboard", reason: "window-not-focusable" };
     }
     if (focused) await Bun.sleep(300); // let the window raise settle
@@ -83,7 +97,7 @@ export async function injectText(
   }
 
   if (!(await mayInject())) return interrupted();
-  await toClipboard(text);
+  await copyToClipboard(text);
   return { via: "clipboard", reason: "keystroke-fallback-off" };
 }
 

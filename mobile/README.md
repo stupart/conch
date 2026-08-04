@@ -2,6 +2,12 @@
 
 The Mac does the work; the phone is a glance and a voice.
 
+Use the phone bridge only on a trusted LAN. It uses plaintext HTTP and
+WebSocket traffic with no transport encryption. The bearer token appears in
+query strings for WebSocket and file requests, so anyone who can observe that
+traffic can reuse it. Do not enable the bridge on an untrusted or shared
+network.
+
 - **Pair once**: run `conch pair` on the Mac, type the host and code into the
   phone. The token lives in the Keychain — it can read session transcripts, so
   it gets credential storage.

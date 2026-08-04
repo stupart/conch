@@ -490,4 +490,15 @@ test("inject events carry a session, a label, and the text to deliver", () => {
     const result = validateSocketTurnEvent(event);
     expect(result.ok).toBe(false);
   }
+
+  for (const empty of ["sessionId", "label", "announce"] as const) {
+    const event: Record<string, unknown> = {
+      type: "inject",
+      sessionId: "abc",
+      label: "dayloop",
+      announce: "text",
+      [empty]: "   ",
+    };
+    expect(validateSocketTurnEvent(event).ok).toBe(false);
+  }
 });
