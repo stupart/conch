@@ -631,8 +631,15 @@ private struct DashboardRow: View {
 
     private var rowContent: some View {
         HStack(spacing: 7) {
+            // Full brand cyan means "your mic is open". The rail was painting it
+            // on speaking and transcribing rows too — a bigger patch of it than
+            // the glyph — so it contradicted the very invariant the glyph sets.
             Capsule(style: .continuous)
-                .fill(ConchPalette.brandCyan)
+                .fill(
+                    LedgerVisual(row: row) == .listening || LedgerVisual(row: row) == .recording
+                        ? ConchPalette.statusMicOpen
+                        : ConchPalette.statusWorking
+                )
                 .frame(width: 3, height: 22)
                 .opacity(isLiveSession ? 1 : 0)
                 .frame(width: 10)
@@ -673,7 +680,7 @@ private struct DashboardRow: View {
                     // draws straight through the status glyph. The higher
                     // layoutPriority already gets the label its ideal width and
                     // lets it truncate only when it genuinely cannot fit.
-                    .frame(minWidth: 54, alignment: .leading)
+                    .frame(minWidth: 54, maxWidth: 190, alignment: .leading)
                     .layoutPriority(3)
                     .opacity(isDimmed ? 0.58 : 1)
             }
@@ -712,7 +719,15 @@ private struct DashboardRow: View {
                     .foregroundStyle(ConchPalette.textFaint)
                     .monospacedDigit()
                     .lineLimit(1)
-                    .layoutPriority(1)
+                    // The age had no truncationMode and lost the layout fight to
+                    // a long label, so it was CLIPPED mid-string: a session that
+                    // finished 10 minutes ago rendered "1". On a dashboard whose
+                    // job is "who has been waiting longest", a plausible wrong
+                    // number is worse than no number. It is short and fixed —
+                    // it should never be the thing that gives way.
+                    .truncationMode(.tail)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(4)
                     .opacity(isDimmed ? 0.58 : 1)
             }
 
@@ -1386,6 +1401,7 @@ private struct ConversationDocument {
         let output = NSMutableAttributedString()
         var previousBlock: Int?
         var previousWasListItem = false
+        var previousWasTableCell = false
 
         for run in parsed.runs {
             let piece = NSMutableAttributedString(
@@ -1425,10 +1441,17 @@ private struct ConversationDocument {
                             ?? NSFont.boldSystemFont(ofSize: size)
                     case .listItem(let ordinal):
                         isListItem = true
-                        let ordered = components.contains {
-                            if case .orderedList = $0.kind { return true }
+                        // "Is ANY ancestor an ordered list" made a bullet nested
+                        // under a numbered item render as a number, and left the
+                        // "◦ " branch unreachable. What matters is the list this
+                        // item actually belongs to: the NEAREST list ancestor.
+                        let ordered: Bool = {
+                            for candidate in components {
+                                if case .orderedList = candidate.kind { return true }
+                                if case .unorderedList = candidate.kind { return false }
+                            }
                             return false
-                        }
+                        }()
                         // Only the OUTERMOST listItem marks this line; the inner
                         // components describe ancestors, whose bullets already ran.
                         if isNewBlock, prefix.isEmpty {
@@ -1514,15 +1537,13 @@ private struct ConversationDocument {
                 // Row breaks come from the first cell; cells within a row are
                 // separated inline so the row reads as a row.
                 if output.length > 0 {
-                    output.append(
-                        NSAttributedString(
-                            // Three spaces is not a column. Tab stops are what
-                            // make "cold read | 41ms | 6ms" line up under its
-                            // header instead of reading as a run-on sentence.
-                            string: startsTableRow ? "\n" : "\t",
-                            attributes: base
-                        )
-                    )
+                    // A table is a block like any other: it needs air above it,
+                    // not to be welded onto the sentence before it. Rows within
+                    // the table stay tight.
+                    let separator = startsTableRow
+                        ? (previousWasTableCell ? "\n" : "\n\n")
+                        : "\t"
+                    output.append(NSAttributedString(string: separator, attributes: base))
                 }
             } else {
                 if isNewBlock, output.length > 0 {
@@ -1574,6 +1595,7 @@ private struct ConversationDocument {
             output.append(piece)
             previousBlock = blockID
             previousWasListItem = isListItem
+            previousWasTableCell = isTableCell
         }
 
         guard output.length > 0 else { return NSAttributedString(string: text, attributes: base) }
@@ -1646,16 +1668,22 @@ private struct ConversationTextView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
-        let inset = textView.textContainerInset.width * 2
-        let available = max(200, scrollView.contentSize.width - inset)
+        // Centre the capped measure. Left-aligning it left ~800pt of dead black
+        // to the right of the text on a wide pane, which reads as broken rather
+        // than as a deliberate column.
+        let available = max(200, scrollView.contentSize.width - 48)
         let measure = min(available, Self.maxMeasure)
+        let sideInset = max(24, (scrollView.contentSize.width - measure) / 2)
+        if textView.textContainerInset.width != sideInset {
+            textView.textContainerInset = NSSize(width: sideInset, height: 24)
+        }
         if textView.textContainer?.containerSize.width != measure {
             textView.textContainer?.containerSize = NSSize(
                 width: measure,
                 height: CGFloat.greatestFiniteMagnitude
             )
-            textView.frame.size.width = available
         }
+        textView.frame.size.width = scrollView.contentSize.width
         let textChanged = !context.coordinator.previousText.isEqual(to: attributedText)
         let targetChanged = context.coordinator.previousScrollTarget != scrollTarget
 

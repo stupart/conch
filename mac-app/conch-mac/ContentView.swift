@@ -374,12 +374,17 @@ private struct LedgerLegendSection: View {
 
     private let entries: [Entry] = [
         Entry(symbol: "circle.fill", color: ConchPalette.statusWorking, meaning: "Working — nothing needed"),
-        Entry(symbol: "mic.fill", color: ConchPalette.statusWorking, meaning: "Mic open — talking to it now"),
+        Entry(symbol: "mic.fill", color: ConchPalette.statusMicOpen, meaning: "Mic open — it is hearing you"),
         Entry(symbol: "circle.inset.filled", color: ConchPalette.statusWaiting, meaning: "Finished — waiting on you"),
         Entry(symbol: "exclamationmark.circle.fill", color: ConchPalette.statusNeeds, meaning: "Blocked — needs an answer"),
         Entry(symbol: "star.fill", color: ConchPalette.statusReview, meaning: "Has work for you to look at"),
         Entry(symbol: "speaker.slash.fill", color: ConchPalette.textDim, meaning: "Muted — announcements dropped"),
         Entry(symbol: "pause.fill", color: ConchPalette.textDim, meaning: "Paused — turns held for later"),
+        Entry(symbol: "record.circle.fill", color: ConchPalette.statusMicOpen, meaning: "Recording your reply"),
+        Entry(symbol: "play.fill", color: ConchPalette.statusWorking, meaning: "Reading a reply aloud"),
+        Entry(symbol: "ellipsis", color: ConchPalette.statusWorking, meaning: "Transcribing what you said"),
+        Entry(symbol: "diamond.fill", color: ConchPalette.textDim, meaning: "Prioritised — jumps the queue"),
+        Entry(symbol: "circle.dotted", color: ConchPalette.textFaint, meaning: "Idle — nothing happening"),
     ]
 
     var body: some View {

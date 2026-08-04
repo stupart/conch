@@ -271,12 +271,16 @@ private struct ConchSettingRowView: View {
 
                     // Shown only when there is something TO reset. A permanently
                     // dim Reset on every default row is chrome, not an affordance.
-                    if setting.entry.source != .defaultValue, !isReadOnly {
-                        Button("Reset", action: onReset)
-                            .disabled(isPending)
-                            .frame(minHeight: 28)
-                            .help("Remove the saved value and use the next available source")
+                    // The slot is RESERVED either way, or rows without a Reset
+                    // slide right and the control column comes out jagged.
+                    Group {
+                        if setting.entry.source != .defaultValue, !isReadOnly {
+                            Button("Reset", action: onReset)
+                                .disabled(isPending)
+                                .help("Remove the saved value and use the next available source")
+                        }
                     }
+                    .frame(width: 76, height: 28, alignment: .trailing)
                 }
                 .frame(minHeight: 40)
             }
