@@ -1353,12 +1353,21 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // synchronously started or resumed.
     normalMicReserved = true;
     await speech.quiescent();
-    if (!shuttingDown) return true;
+    // Re-check AFTER the await: a phone can claim the voice during it, and
+    // returning true then opens the Mac's mic behind the claim's back.
+    if (!shuttingDown && audioSink === "mac") return true;
     normalMicReserved = false;
     return false;
   };
 
   const speak = async (speechCfg: Config, text: string, label = ""): Promise<void> => {
+    // The phone owning the voice has to mean it HERE, at the one place every
+    // path funnels through. Gating the announce path alone left wake, recite,
+    // explicit speak, mute/pause acknowledgements and every error fallback
+    // still talking — Tyler heard the Mac and the phone reading the same reply
+    // simultaneously. A per-call-site gate is a list you can forget to add to;
+    // this is not.
+    if (audioSink === "phone") return;
     await speech.speak(speechCfg, text, label);
   };
 
@@ -2362,6 +2371,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
    * from "cancelled" — a cancellation with an empty transcript is a false
    * trigger (noise blip) and the caller should re-speak, not skip content.
    */
+  /** Gated on the sink like `speak`: this one also arms the Mac's recorder. */
   async function speakInterruptible(
     event: TurnEvent,
     text: string,
@@ -2378,6 +2388,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     captureParent?: string;
   }> {
     if (interrupted()) return { heard: "", cut: true };
+    // The phone owns the voice AND the ear: this path both speaks and arms the
+    // Mac's recorder, so it must return before either.
+    if (audioSink === "phone") return { heard: "", cut: false };
     setState("speaking", event.label);
     if (!cfg.bargeThresholdPct || disabled) {
       const playback = speech.speakCancellable(cfg, text, event.label);
@@ -3933,9 +3946,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
           typeof value === "object" && value !== null
           && (value as { kind?: unknown }).kind === "audio-sink"
         ) {
-          const wanted = (value as { sink?: unknown }).sink === "phone" ? "phone" : "mac";
+          const wanted = (value as { sink?: unknown }).sink === "phone"
+            // A claim with no live websocket cannot be honoured: nothing would
+            // ever release it. This is the stuck-phone case — a Mac left deaf
+            // and mute by an in-flight claim that lands after the socket closed.
+            && (phoneBridge?.clientCount() ?? 0) > 0
+            ? "phone"
+            : "mac";
           if (wanted !== audioSink) {
             audioSink = wanted;
+            // Stop mid-sentence rather than finishing over the phone's copy.
+            if (wanted === "phone") speech.cancelCurrent();
             log(audioSink === "phone"
               ? "phone has the audio — this Mac is quiet"
               : "audio back on this Mac");

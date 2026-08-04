@@ -11,6 +11,10 @@ import SwiftUI
 @MainActor
 final class SpeechController: NSObject, ObservableObject {
     @Published private(set) var isSpeaking = false
+    /// Fired when a reply finishes being read, so the mic can open by itself.
+    var onFinishedReading: (() -> Void)?
+    /// Which session was just read, so the mic opens pointed at the right one.
+    private(set) var lastSpokenSessionId: String?
     private let synthesizer = AVSpeechSynthesizer()
     /// What has already been read, per session, so a re-published state — which
     /// arrives at 10Hz — cannot make it read the same reply over and over.
@@ -47,6 +51,7 @@ final class SpeechController: NSObject, ObservableObject {
         guard !passive else { return }
 
         let label = state.rows.first { $0.id == reply.sessionId }?.label
+        lastSpokenSessionId = reply.sessionId
         speak(text, from: label)
     }
 
@@ -106,6 +111,11 @@ extension SpeechController: AVSpeechSynthesizerDelegate {
     ) {
         Task { @MainActor in
             self.isSpeaking = false
+            // The loop's whole shape: it finishes reading, then listens. Making
+            // you tap Talk after every reply is the difference between a voice
+            // loop and a dictation box — and on a treadmill it is the
+            // difference between usable and not.
+            self.onFinishedReading?()
             // Hand audio back so music returns to full volume.
             try? AVAudioSession.sharedInstance().setActive(
                 false,
