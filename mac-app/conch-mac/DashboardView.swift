@@ -565,7 +565,7 @@ private struct DashboardRow: View {
                     rowContent
                 }
                 .buttonStyle(.plain)
-                .help("Select \(row.label)")
+                .help(row.label)
             }
         }
         .frame(maxWidth: .infinity, minHeight: 42)
@@ -642,7 +642,14 @@ private struct DashboardRow: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .contentTransition(.opacity)
-                    .frame(minWidth: 54, idealWidth: 92, maxWidth: 116, alignment: .leading)
+                    // The label is near-fixed prose and should size to its
+                    // content; the deliverable summary beside it is the variable
+                    // part and should take the flex. Hard-capping the label at
+                    // 116pt did the opposite: "dayloop-feature…" truncated while
+                    // "portal" left dead space, and the summary — the answer to
+                    // "what did it make for me?" — was cut to "Rebuilt th…".
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(minWidth: 54, alignment: .leading)
                     .layoutPriority(3)
             }
 
@@ -666,7 +673,7 @@ private struct DashboardRow: View {
                     .truncationMode(.tail)
                     .contentTransition(.opacity)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .layoutPriority(rowMessage == nil ? 0 : 5)
+                    .layoutPriority(rowMessage == nil ? 1 : 5)
                     .accessibilityLabel(inlineDetail)
                     .help(inlineDetail)
             } else {
@@ -1387,12 +1394,11 @@ private struct ConversationDocument {
                         }
                         indent = CGFloat(listDepth) * 16
                     case .blockQuote:
-                        indent = 16
-                        piece.addAttribute(
-                            .foregroundColor,
-                            value: NSColor(ConchPalette.textDim),
-                            range: whole
-                        )
+                        // Dimming a quote collides with reading progress, which
+                        // dims the text the voice has NOT reached yet: during a
+                        // read-aloud a quote looked unread and unread text looked
+                        // quoted. Indent carries the quote instead.
+                        indent = 22
                     case .codeBlock:
                         blockFont = NSFont.monospacedSystemFont(
                             ofSize: baseFont.pointSize - 1,
@@ -1579,17 +1585,33 @@ private struct ConversationTextView: NSViewRepresentable {
         textView.isHorizontallyResizable = false
         textView.isVerticallyResizable = true
         textView.autoresizingMask = [.width]
-        textView.textContainer?.widthTracksTextView = true
+        // Measure is capped rather than tracking the view: at full width a wide
+        // window ran ~95 characters per line, well past the 60-75 that reads
+        // comfortably, and it got worse the wider the window went.
+        textView.textContainer?.widthTracksTextView = false
         textView.textContainer?.containerSize = NSSize(
-            width: 0,
+            width: ConversationTextView.maxMeasure,
             height: CGFloat.greatestFiniteMagnitude
         )
         scrollView.documentView = textView
         return scrollView
     }
 
+    /// ~75 characters at the 16pt body size.
+    static let maxMeasure: CGFloat = 580
+
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
+        let inset = textView.textContainerInset.width * 2
+        let available = max(200, scrollView.contentSize.width - inset)
+        let measure = min(available, Self.maxMeasure)
+        if textView.textContainer?.containerSize.width != measure {
+            textView.textContainer?.containerSize = NSSize(
+                width: measure,
+                height: CGFloat.greatestFiniteMagnitude
+            )
+            textView.frame.size.width = available
+        }
         let textChanged = !context.coordinator.previousText.isEqual(to: attributedText)
         let targetChanged = context.coordinator.previousScrollTarget != scrollTarget
 
