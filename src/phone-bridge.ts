@@ -7,15 +7,16 @@ import { homedir } from "node:os";
  * The phone's transport into conch.
  *
  * The daemon's real protocol lives on a Unix socket a phone cannot reach, so
- * this bridge exposes exactly two things over the LAN: the published state
- * (the same object every other viewer renders) and a forwarder onto the local
- * socket — which means every control message a phone sends passes through the
- * daemon's OWN validation and pause lifecycle, not a second implementation.
+ * this bridge exposes the phone UI's scoped state, reply, file, websocket, and
+ * control endpoints over the LAN. Control messages are forwarded onto the
+ * local socket, so they pass through the daemon's own validation and pause
+ * lifecycle rather than a second implementation.
  *
- * Security posture: OFF by default; a bearer token is required on every
- * request, compared in constant time; the token file is 0600; and the server
- * never logs the token. A session transcript is the user's private work — the
- * bar is "safe to leave on at a coffee shop", not "fine on home Wi-Fi".
+ * Security posture: OFF by default and intended only for a trusted LAN. The
+ * bridge is plaintext HTTP/ws: there is no transport encryption, and the
+ * websocket plus /file carry the bearer token in their query strings because
+ * those iOS loaders cannot attach the Authorization header uniformly. Other
+ * HTTP routes require the header. The token file is 0600 and never logged.
  */
 
 export const PHONE_BRIDGE_DEFAULT_PORT = 8674;
@@ -36,6 +37,7 @@ export interface PairingCode {
 
 const PAIRING_CODE_TTL_MS = 120_000;
 const PAIRING_CODE_ATTEMPTS = 5;
+export const PAIRING_BODY_MAX_BYTES = 1024;
 
 export function mintPairingCode(now = Date.now()): PairingCode {
   // Rejection-sampled so every code is equally likely; a modulo bias here would
@@ -73,6 +75,18 @@ export interface PhoneBridgeHandle {
   clientCount(): number;
 }
 
+/** Bun reports a connection-dropped frame with 0; backpressure (-1) is alive. */
+export function sendPhoneFrame(
+  socket: { send(data: string): number },
+  frame: string,
+): boolean {
+  try {
+    return socket.send(frame) !== 0;
+  } catch {
+    return false;
+  }
+}
+
 export function phoneTokenPath(home: string = homedir()): string {
   return join(home, ".config", "conch", "phone-token");
 }
@@ -107,22 +121,108 @@ export function tokenMatches(presented: string | null, expected: string): boolea
 function presentedToken(req: Request): string | null {
   const header = req.headers.get("authorization");
   if (header?.toLowerCase().startsWith("bearer ")) return header.slice(7).trim();
-  // WebSocket upgrades cannot carry headers from URLSession/NWConnection
-  // uniformly, so the query form is accepted for the upgrade request only.
+  // URLSession's websocket and media loaders cannot attach headers uniformly.
+  // Keep the query credential confined to the two routes that require it.
   const url = new URL(req.url);
-  return url.searchParams.get("token");
+  return url.pathname === "/ws" || url.pathname === "/file"
+    ? url.searchParams.get("token")
+    : null;
 }
 
 const CONTROL_MAX_BYTES = 64 * 1024; // mirrors the Unix socket's frame cap
+
+type PairingRedemption =
+  | { kind: "token" }
+  | { kind: "wrong" }
+  | { kind: "closed" }
+  | { kind: "exhausted" };
+
+/**
+ * Synchronous pairing state machine. Request bodies are read before entering
+ * it, then each redemption runs without an await, so Bun's event loop cannot
+ * interleave the attempt check with its increment/clear.
+ */
+export class PairingWindow {
+  #offered: PairingCode | null = null;
+  #attempts = 0;
+
+  offer(code: PairingCode): void {
+    this.#offered = code;
+    this.#attempts = 0;
+  }
+
+  redeem(submitted: string, now = Date.now()): PairingRedemption {
+    const offered = this.#offered;
+    if (!offered || now > offered.expiresAt) {
+      this.#offered = null;
+      this.#attempts = 0;
+      return { kind: "closed" };
+    }
+    if (this.#attempts >= PAIRING_CODE_ATTEMPTS) {
+      this.#offered = null;
+      this.#attempts = 0;
+      return { kind: "exhausted" };
+    }
+    if (!tokenMatches(submitted, offered.code)) {
+      this.#attempts += 1;
+      return { kind: "wrong" };
+    }
+    this.#offered = null;
+    this.#attempts = 0;
+    return { kind: "token" };
+  }
+}
+
+type LimitedPairingBody =
+  | { ok: true; code: string }
+  | { ok: false; tooLarge: boolean };
+
+/** Buffer at most the pairing cap, including for chunked requests. */
+export async function readPairingBody(
+  req: Request,
+  maxBytes = PAIRING_BODY_MAX_BYTES,
+): Promise<LimitedPairingBody> {
+  const declared = Number(req.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    return { ok: false, tooLarge: true };
+  }
+
+  const reader = req.body?.getReader();
+  if (!reader) return { ok: true, code: "" };
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      return { ok: false, tooLarge: true };
+    }
+    chunks.push(value);
+  }
+
+  const body = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(body)) as { code?: unknown };
+    return { ok: true, code: String(parsed.code ?? "") };
+  } catch {
+    return { ok: true, code: "" };
+  }
+}
 
 export function createPhoneBridge(
   dependencies: PhoneBridgeDependencies,
   options: { port?: number; token: string; hostname?: string } ,
 ): PhoneBridgeHandle {
   const port = options.port ?? PHONE_BRIDGE_DEFAULT_PORT;
-  const sockets = new Set<{ send(data: string): void }>();
-  let pairingCode: PairingCode | null = null;
-  let pairingAttempts = 0;
+  const sockets = new Set<{ send(data: string): number }>();
+  const pairing = new PairingWindow();
 
   const server = Bun.serve({
     port,
@@ -130,36 +230,33 @@ export function createPhoneBridge(
     fetch(req, srv) {
       const url = new URL(req.url);
 
-      // The ONE unauthenticated route, and the only reason it is safe: the code
-      // it accepts expires in two minutes, dies on first success, and dies after
-      // five wrong guesses.
+      // The one unauthenticated route. Its exposure is bounded — not made safe
+      // for hostile networks — by a two-minute, single-use, five-guess window.
       if (url.pathname === "/pair" && req.method === "POST") {
         return (async () => {
-          const offered = pairingCode;
-          if (!offered || Date.now() > offered.expiresAt) {
-            pairingCode = null;
+          const body = await readPairingBody(req);
+          if (!body.ok) {
+            return Response.json(
+              { error: "Pairing request is too large." },
+              { status: 413 },
+            );
+          }
+          const result = pairing.redeem(body.code);
+          if (result.kind === "closed") {
             return Response.json(
               { error: "No pairing window open — run `conch pair` on the Mac." },
               { status: 403 },
             );
           }
-          if (pairingAttempts >= PAIRING_CODE_ATTEMPTS) {
-            pairingCode = null;
+          if (result.kind === "exhausted") {
             return Response.json(
               { error: "Too many attempts — run `conch pair` again." },
               { status: 429 },
             );
           }
-          let submitted = "";
-          try {
-            submitted = String(((await req.json()) as { code?: unknown }).code ?? "");
-          } catch {}
-          if (!tokenMatches(submitted, offered.code)) {
-            pairingAttempts += 1;
+          if (result.kind === "wrong") {
             return Response.json({ error: "That code didn't match." }, { status: 401 });
           }
-          pairingCode = null;
-          pairingAttempts = 0;
           dependencies.log("phone paired");
           return Response.json({ token: options.token });
         })();
@@ -238,7 +335,10 @@ export function createPhoneBridge(
         sockets.add(ws);
         dependencies.onClientsChanged?.(sockets.size);
         const state = dependencies.getState();
-        if (state) ws.send(JSON.stringify(state));
+        if (state && !sendPhoneFrame(ws, JSON.stringify(state))) {
+          sockets.delete(ws);
+          dependencies.onClientsChanged?.(sockets.size);
+        }
       },
       close(ws) {
         sockets.delete(ws);
@@ -256,8 +356,7 @@ export function createPhoneBridge(
   return {
     port: server.port ?? port,
     offerPairingCode(code) {
-      pairingCode = code;
-      pairingAttempts = 0;
+      pairing.offer(code);
     },
     stop() {
       server.stop(true);
@@ -277,7 +376,7 @@ export function createPhoneBridge(
       for (const ws of sockets) {
         // A socket that cannot be written to is gone; keeping it in the set
         // makes the audio lease look alive forever.
-        try { ws.send(frame); } catch { sockets.delete(ws); }
+        if (!sendPhoneFrame(ws, frame)) sockets.delete(ws);
       }
       dependencies.onClientsChanged?.(sockets.size);
     },

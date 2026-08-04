@@ -62,7 +62,7 @@ struct SessionView: View {
                     // Your words belong in the thread, under what you are
                     // answering — not stacked on top of the button. It reads as
                     // a conversation, and you can see the whole utterance grow.
-                    if talk.phase == .listening || talk.phase == .sending {
+                    if talk.phase == .listening || talk.phase == .sending || !talk.transcript.isEmpty {
                         YourTurnBubble(
                             text: talk.transcript,
                             isSending: talk.phase == .sending
@@ -148,6 +148,7 @@ struct SessionView: View {
             // not silently start recording.
             speech.onFinishedReading = {
                 guard talk.phase == .idle,
+                      talk.transcript.isEmpty,
                       speech.lastSpokenSessionId == sessionId else { return }
                 toggleTalk()
             }
@@ -188,6 +189,14 @@ struct SessionView: View {
                 Text("Couldn't reach the Mac — your words are kept above.")
                     .font(Type.caption)
                     .foregroundStyle(Palette.needs)
+            }
+
+            if let failure = talk.failure {
+                Text(failure)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.needs)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 20)
             }
 
             Button(action: toggleTalk) {
@@ -251,6 +260,7 @@ private struct YourTurnBubble: View {
                     .font(Type.body)
                     .foregroundStyle(text.isEmpty ? Palette.textFaint : Palette.bg)
                     .multilineTextAlignment(.leading)
+                    .textSelection(.enabled)
                 if isSending {
                     Text("Sending…")
                         .font(Type.caption)

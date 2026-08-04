@@ -6,6 +6,8 @@ import {
   ensurePhoneToken,
   forwardToDaemonSocket,
   mintPairingCode,
+  readPairingBody,
+  sendPhoneFrame,
   tokenMatches,
   type PhoneBridgeHandle,
 } from "../src/phone-bridge.ts";
@@ -72,6 +74,23 @@ describe("the auth gate", () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ v: 1, rows: [{ id: "r1" }] });
+  });
+
+  test("query tokens are accepted only where the iOS clients require them", async () => {
+    const b = startBridge({
+      getState: () => ({
+        v: 1,
+        rows: [{ id: "r1", review: { link: "/tmp/not-read", summary: "x" } }],
+      }),
+    });
+    for (const path of ["/state", "/reply?session=r1", "/control"]) {
+      const separator = path.includes("?") ? "&" : "?";
+      const res = await fetch(
+        `http://127.0.0.1:${b.port}${path}${separator}token=${TOKEN}`,
+        path.startsWith("/control") ? { method: "POST", body: "{}" } : undefined,
+      );
+      expect(res.status).toBe(401);
+    }
   });
 });
 
@@ -174,6 +193,12 @@ describe("file serving", () => {
     expect(ok.status).toBe(200);
     expect(await ok.text()).toBe("the deliverable body");
 
+    const queryAuthenticated = await fetch(
+      `http://127.0.0.1:${b.port}/file?path=${encodeURIComponent(served)}&token=${TOKEN}`,
+    );
+    expect(queryAuthenticated.status).toBe(200);
+    expect(await queryAuthenticated.text()).toBe("the deliverable body");
+
     // The token holder may see what the dashboard shows — nothing else.
     const denied = await fetch(
       `http://127.0.0.1:${b.port}/file?path=${encodeURIComponent(secret)}`,
@@ -189,6 +214,46 @@ describe("file serving", () => {
 });
 
 describe("short pairing code", () => {
+  test("the body cap rejects declared and chunked oversized input before redemption", async () => {
+    let readerRequests = 0;
+    const declared = {
+      headers: new Headers({ "content-length": "1025" }),
+      body: {
+        getReader() {
+          readerRequests += 1;
+          throw new Error("oversized declared body was read");
+        },
+      },
+    } as unknown as Request;
+    expect(await readPairingBody(declared)).toEqual({ ok: false, tooLarge: true });
+    expect(readerRequests).toBe(0);
+
+    const chunked = new Request("http://bridge/pair", {
+      method: "POST",
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(700));
+          controller.enqueue(new Uint8Array(700));
+          controller.close();
+        },
+      }),
+    });
+    expect(await readPairingBody(chunked)).toEqual({ ok: false, tooLarge: true });
+
+    const b = startBridge();
+    b.offerPairingCode({ code: "123456", expiresAt: Date.now() + 60_000 });
+    const oversized = await fetch(`http://127.0.0.1:${b.port}/pair`, {
+      method: "POST",
+      body: "x".repeat(1025),
+    });
+    expect(oversized.status).toBe(413);
+    const stillRedeemable = await fetch(`http://127.0.0.1:${b.port}/pair`, {
+      method: "POST",
+      body: JSON.stringify({ code: "123456" }),
+    });
+    expect(stillRedeemable.status).toBe(200);
+  });
+
   test("exchanges once for the token, then is spent", async () => {
     const b = startBridge();
     const code = mintPairingCode();
@@ -211,7 +276,7 @@ describe("short pairing code", () => {
 
   test("wrong codes are refused and burn the window after five tries", async () => {
     const b = startBridge();
-    b.offerPairingCode(mintPairingCode());
+    b.offerPairingCode({ code: "654321", expiresAt: Date.now() + 60_000 });
     for (let attempt = 0; attempt < 5; attempt++) {
       const res = await fetch(`http://127.0.0.1:${b.port}/pair`, {
         method: "POST",
@@ -225,6 +290,37 @@ describe("short pairing code", () => {
       body: JSON.stringify({ code: "000000" }),
     });
     expect(exhausted.status).toBe(429);
+  });
+
+  test("parallel guesses share one five-attempt budget", async () => {
+    const b = startBridge();
+    b.offerPairingCode({ code: "654321", expiresAt: Date.now() + 60_000 });
+    const statuses = await Promise.all(Array.from({ length: 20 }, async (_, index) => {
+      const res = await fetch(`http://127.0.0.1:${b.port}/pair`, {
+        method: "POST",
+        body: JSON.stringify({ code: String(index).padStart(6, "0") }),
+      });
+      return res.status;
+    }));
+
+    expect(statuses.filter((status) => status === 401)).toHaveLength(5);
+    expect(statuses.filter((status) => status === 429)).toHaveLength(1);
+    expect(statuses.filter((status) => status === 403)).toHaveLength(14);
+  });
+
+  test("parallel correct redemptions release the token exactly once", async () => {
+    const b = startBridge();
+    b.offerPairingCode({ code: "123456", expiresAt: Date.now() + 60_000 });
+    const responses = await Promise.all(Array.from({ length: 12 }, () =>
+      fetch(`http://127.0.0.1:${b.port}/pair`, {
+        method: "POST",
+        body: JSON.stringify({ code: "123456" }),
+      })
+    ));
+    const bodies = await Promise.all(responses.map((response) => response.text()));
+
+    expect(responses.filter((response) => response.status === 200)).toHaveLength(1);
+    expect(bodies.filter((body) => body.includes(TOKEN))).toHaveLength(1);
   });
 
   test("an expired code cannot be redeemed", async () => {
@@ -280,6 +376,14 @@ describe("on-demand replies", () => {
 })
 
 describe("client presence", () => {
+  test("a dropped send return value evicts; backpressure does not", () => {
+    expect(sendPhoneFrame({ send: () => 12 }, "frame")).toBeTrue();
+    expect(sendPhoneFrame({ send: () => -1 }, "frame")).toBeTrue();
+    expect(sendPhoneFrame({ send: () => 0 }, "frame")).toBeFalse();
+    expect(sendPhoneFrame({ send: () => { throw new Error("closed"); } }, "frame"))
+      .toBeFalse();
+  });
+
   test("reports connect and disconnect so the Mac can reclaim audio", async () => {
     // A phone that walks out of the room must not leave the Mac permanently
     // mute — the daemon needs to know the moment the last one goes away.
@@ -295,6 +399,31 @@ describe("client presence", () => {
     ws.close();
     await new Promise<void>((resolve) => setTimeout(resolve, 400));
     expect(counts).toEqual([1, 0]);
+  });
+
+  test("one of multiple clients closing does not release the last-client lease", async () => {
+    const counts: number[] = [];
+    const b = startBridge({ onClientsChanged: (n: number) => counts.push(n) });
+    const connect = (ws: WebSocket) => new Promise<void>((resolve, reject) => {
+      ws.onmessage = () => resolve();
+      ws.onerror = () => reject(new Error("ws error"));
+      setTimeout(() => reject(new Error("timed out")), 3000);
+    });
+    const first = new WebSocket(`ws://127.0.0.1:${b.port}/ws?token=${TOKEN}`);
+    const second = new WebSocket(`ws://127.0.0.1:${b.port}/ws?token=${TOKEN}`);
+    await Promise.all([connect(first), connect(second)]);
+    expect(b.clientCount()).toBe(2);
+    expect(counts.at(-1)).toBe(2);
+
+    first.close();
+    for (let i = 0; i < 20 && b.clientCount() !== 1; i++) await Bun.sleep(20);
+    expect(b.clientCount()).toBe(1);
+    expect(counts.at(-1)).toBe(1);
+
+    second.close();
+    for (let i = 0; i < 20 && b.clientCount() !== 0; i++) await Bun.sleep(20);
+    expect(b.clientCount()).toBe(0);
+    expect(counts.at(-1)).toBe(0);
   });
 });
 

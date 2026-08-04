@@ -10,6 +10,7 @@ final class BridgeClient: ObservableObject {
     @Published private(set) var lastError: String?
 
     private var task: URLSessionWebSocketTask?
+    private var reconnectTask: Task<Void, Never>?
     private var reconnectDelay: TimeInterval = 0.5
     private var closed = false
     private let pairing: Pairing
@@ -29,12 +30,17 @@ final class BridgeClient: ObservableObject {
     }
 
     deinit {
+        reconnectTask?.cancel()
         task?.cancel(with: .goingAway, reason: nil)
     }
 
     func stop() {
         closed = true
+        reconnectTask?.cancel()
+        reconnectTask = nil
         task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+        isConnected = false
     }
 
     /// The Mac this phone is paired to, for the connection popover.
@@ -45,13 +51,15 @@ final class BridgeClient: ObservableObject {
     func reconnectNow() {
         guard !closed else { return }
         reconnectDelay = 0.5
+        reconnectTask?.cancel()
+        reconnectTask = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         connect()
     }
 
     private func connect() {
-        guard !closed, let base = pairing.base else { return }
+        guard !closed, task == nil, let base = pairing.base else { return }
         var components = URLComponents(
             url: base.appendingPathComponent("ws"),
             resolvingAgainstBaseURL: false
@@ -85,6 +93,8 @@ final class BridgeClient: ObservableObject {
                 case let .failure(error):
                     self.isConnected = false
                     self.lastError = error.localizedDescription
+                    task.cancel(with: .goingAway, reason: nil)
+                    self.task = nil
                     self.scheduleReconnect()
                 }
             }
@@ -93,13 +103,16 @@ final class BridgeClient: ObservableObject {
 
     private func scheduleReconnect() {
         guard !closed else { return }
+        reconnectTask?.cancel()
         let delay = reconnectDelay
         // Exponential backoff capped at 8s: fast enough to feel instant when
         // the Mac wakes, slow enough not to churn a phone battery all workout.
         reconnectDelay = min(8, reconnectDelay * 2)
-        Task { @MainActor [weak self] in
+        reconnectTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(delay))
-            self?.connect()
+            guard !Task.isCancelled, let self, !self.closed else { return }
+            self.reconnectTask = nil
+            self.connect()
         }
     }
 
@@ -139,8 +152,18 @@ final class BridgeClient: ObservableObject {
         request.setValue("Bearer \(pairing.token)", forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 6
         do {
-            let (_, response) = try await URLSession.shared.data(for: request)
-            return (response as? HTTPURLResponse)?.statusCode == 200
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return false }
+            // Turn-event success is an empty daemon reply. A scoped inject can
+            // instead return session-error; do not tell TalkController to erase
+            // the user's words when the daemon rejected the target.
+            if !data.isEmpty,
+               let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               body["error"] != nil {
+                lastError = body["error"] as? String
+                return false
+            }
+            return true
         } catch {
             lastError = error.localizedDescription
             return false
