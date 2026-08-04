@@ -55,6 +55,8 @@ export interface PhoneBridgeDependencies {
   getState(): unknown;
   /** Forward one control line to the daemon's Unix socket; resolve its reply. */
   forwardControl(line: string): Promise<string>;
+  /** Latest assistant reply for ANY session, raw markdown, read on demand. */
+  replyFor(sessionId: string): Promise<string>;
   log(message: string): void;
 }
 
@@ -171,6 +173,19 @@ export function createPhoneBridge(
 
       if (url.pathname === "/state") {
         return Response.json(dependencies.getState() ?? { v: 0 });
+      }
+
+      // Published state carries ONE reply — whichever session last finished a
+      // turn — so every other session looked empty on the phone, and a daemon
+      // restart made them all look empty. The Mac app never had this problem
+      // because it reads the transcript itself; the phone can't, so it asks.
+      if (url.pathname === "/reply") {
+        const sessionId = url.searchParams.get("session") ?? "";
+        if (!sessionId) return new Response("session required", { status: 400 });
+        const known = (dependencies.getState() as { rows?: Array<{ id?: string }> } | null)
+          ?.rows?.some((row) => row.id === sessionId);
+        if (!known) return new Response("unknown session", { status: 404 });
+        return (async () => Response.json({ markdown: await dependencies.replyFor(sessionId) }))();
       }
 
       if (url.pathname === "/file") {

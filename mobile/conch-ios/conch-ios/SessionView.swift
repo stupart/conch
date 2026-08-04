@@ -10,6 +10,8 @@ struct SessionView: View {
     @StateObject private var talk = TalkController()
     @State private var showReview = false
     @State private var sendFailed = false
+    @State private var fetchedReply: String?
+    @State private var loadingReply = false
 
     private var row: PublishedState.Row? {
         bridge.state?.rows.first { $0.id == sessionId }
@@ -19,11 +21,13 @@ struct SessionView: View {
         row.map(StatusMark.init(row:))
     }
 
-    /// The reply belongs in this view only when it is this session's.
+    /// The live reply when this session owns it, else whatever we fetched.
     private var replyText: String? {
-        guard let reply = bridge.state?.reply, reply.sessionId == sessionId,
-              !reply.displayText.isEmpty else { return nil }
-        return reply.displayText
+        if let reply = bridge.state?.reply, reply.sessionId == sessionId,
+           !reply.displayText.isEmpty {
+            return reply.displayText
+        }
+        return fetchedReply
     }
 
     var body: some View {
@@ -39,6 +43,10 @@ struct SessionView: View {
                     if let replyText {
                         MarkdownView(text: replyText)
                             .foregroundStyle(Palette.textPrimary)
+                    } else if loadingReply {
+                        ProgressView()
+                            .padding(.top, 32)
+                            .frame(maxWidth: .infinity)
                     } else if row?.review == nil {
                         Text("No reply yet — talk to it below.")
                             .font(Type.summary)
@@ -83,6 +91,12 @@ struct SessionView: View {
             if let review = row?.review {
                 DeliverableSheet(bridge: bridge, review: review)
             }
+        }
+        .task(id: sessionId) {
+            guard fetchedReply == nil else { return }
+            loadingReply = true
+            fetchedReply = await bridge.fetchReply(sessionId: sessionId)
+            loadingReply = false
         }
         .onDisappear { talk.cancel() }
     }

@@ -1539,6 +1539,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
           {
             getState: () => lastPublishedPanelState,
             forwardControl: (line) => forwardToDaemonSocket(cfg.socketPath, line),
+            replyFor: async (sessionId) => {
+              const path = findTranscript(cfg.claudeDir, sessionId);
+              // RAW, not stripMarkdown: the phone renders it, it doesn't speak it.
+              const finalMessage = path ? await lastAssistantText(path) : "";
+              if (finalMessage) return finalMessage;
+              // Empty means the session is MID-TURN — lastAssistantText returns
+              // the final message of a turn, and deliberately nothing while a
+              // tool call is outstanding, so speech never announces half a turn.
+              // The phone still deserves the last thing it actually told you.
+              return latestTurnBySession.get(sessionId)?.announce ?? "";
+            },
             log,
           },
           { port: cfg.phonePort, token: ensurePhoneToken() },

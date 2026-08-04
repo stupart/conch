@@ -121,6 +121,32 @@ final class BridgeClient: ObservableObject {
         }
     }
 
+    /// Any session's latest reply, fetched on demand.
+    ///
+    /// Published state carries only the LAST turn's reply, so every other
+    /// session rendered "No reply yet" — and a daemon restart made them all
+    /// render it. The Mac app reads transcripts itself; the phone asks.
+    func fetchReply(sessionId: String) async -> String? {
+        guard let base = pairing.base else { return nil }
+        var components = URLComponents(
+            url: base.appendingPathComponent("reply"),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [URLQueryItem(name: "session", value: sessionId)]
+        guard let url = components.url else { return nil }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(pairing.token)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 6
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let markdown = body["markdown"] as? String,
+              !markdown.isEmpty else {
+            return nil
+        }
+        return markdown
+    }
+
     /// URL for a local-file deliverable, served by the bridge's scoped /file.
     func fileURL(for path: String) -> URL? {
         guard let base = pairing.base else { return nil }
