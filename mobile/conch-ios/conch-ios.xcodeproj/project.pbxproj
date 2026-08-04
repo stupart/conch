@@ -1,0 +1,272 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		C10000000000000000000001 /* ConchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000001 /* ConchApp.swift */; };
+		C10000000000000000000002 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000002 /* Theme.swift */; };
+		C10000000000000000000003 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000003 /* Models.swift */; };
+		C10000000000000000000004 /* BridgeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000004 /* BridgeClient.swift */; };
+		C10000000000000000000005 /* TalkController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000005 /* TalkController.swift */; };
+		C10000000000000000000006 /* MarkdownView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000006 /* MarkdownView.swift */; };
+		C10000000000000000000007 /* LedgerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000007 /* LedgerView.swift */; };
+		C10000000000000000000008 /* SessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000008 /* SessionView.swift */; };
+		C10000000000000000000009 /* DeliverableSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000009 /* DeliverableSheet.swift */; };
+		C1000000000000000000000A /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000000A /* PairingView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		C20000000000000000000001 /* ConchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConchApp.swift; sourceTree = "<group>"; };
+		C20000000000000000000002 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		C20000000000000000000003 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		C20000000000000000000004 /* BridgeClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeClient.swift; sourceTree = "<group>"; };
+		C20000000000000000000005 /* TalkController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkController.swift; sourceTree = "<group>"; };
+		C20000000000000000000006 /* MarkdownView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownView.swift; sourceTree = "<group>"; };
+		C20000000000000000000007 /* LedgerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LedgerView.swift; sourceTree = "<group>"; };
+		C20000000000000000000008 /* SessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionView.swift; sourceTree = "<group>"; };
+		C20000000000000000000009 /* DeliverableSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeliverableSheet.swift; sourceTree = "<group>"; };
+		C2000000000000000000000A /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
+		C20000000000000000000100 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		C20000000000000000000101 /* conch-ios.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "conch-ios.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		C30000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		C40000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				C40000000000000000000002 /* conch-ios */,
+				C40000000000000000000004 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		C40000000000000000000002 /* conch-ios */ = {
+			isa = PBXGroup;
+			children = (
+				C20000000000000000000001 /* ConchApp.swift */,
+				C20000000000000000000002 /* Theme.swift */,
+				C20000000000000000000003 /* Models.swift */,
+				C20000000000000000000004 /* BridgeClient.swift */,
+				C20000000000000000000005 /* TalkController.swift */,
+				C20000000000000000000006 /* MarkdownView.swift */,
+				C20000000000000000000007 /* LedgerView.swift */,
+				C20000000000000000000008 /* SessionView.swift */,
+				C20000000000000000000009 /* DeliverableSheet.swift */,
+				C2000000000000000000000A /* PairingView.swift */,
+				C20000000000000000000100 /* Info.plist */,
+			);
+			path = "conch-ios";
+			sourceTree = "<group>";
+		};
+		C40000000000000000000004 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				C20000000000000000000101 /* conch-ios.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		C50000000000000000000001 /* conch-ios */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C90000000000000000000002 /* Build configuration list for PBXNativeTarget "conch-ios" */;
+			buildPhases = (
+				C70000000000000000000001 /* Sources */,
+				C30000000000000000000001 /* Frameworks */,
+				C60000000000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "conch-ios";
+			productName = "conch-ios";
+			productReference = C20000000000000000000101 /* conch-ios.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		C50000000000000000000002 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					C50000000000000000000001 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = C90000000000000000000001 /* Build configuration list for PBXProject "conch-ios" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = C40000000000000000000001;
+			productRefGroup = C40000000000000000000004 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				C50000000000000000000001 /* conch-ios */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		C60000000000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		C70000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C10000000000000000000001 /* ConchApp.swift in Sources */,
+				C10000000000000000000002 /* Theme.swift in Sources */,
+				C10000000000000000000003 /* Models.swift in Sources */,
+				C10000000000000000000004 /* BridgeClient.swift in Sources */,
+				C10000000000000000000005 /* TalkController.swift in Sources */,
+				C10000000000000000000006 /* MarkdownView.swift in Sources */,
+				C10000000000000000000007 /* LedgerView.swift in Sources */,
+				C10000000000000000000008 /* SessionView.swift in Sources */,
+				C10000000000000000000009 /* DeliverableSheet.swift in Sources */,
+				C1000000000000000000000A /* PairingView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		C80000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		C80000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		C80000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 5DRS8F56M2;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "conch-ios/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.2.1;
+				PRODUCT_BUNDLE_IDENTIFIER = "ai.blueprintstudio.conch.ios";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		C80000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 5DRS8F56M2;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "conch-ios/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.2.1;
+				PRODUCT_BUNDLE_IDENTIFIER = "ai.blueprintstudio.conch.ios";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		C90000000000000000000001 /* Build configuration list for PBXProject "conch-ios" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C80000000000000000000001 /* Debug */,
+				C80000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C90000000000000000000002 /* Build configuration list for PBXNativeTarget "conch-ios" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C80000000000000000000003 /* Debug */,
+				C80000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = C50000000000000000000002 /* Project object */;
+}
