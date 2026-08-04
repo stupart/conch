@@ -305,3 +305,4 @@ describe("cold transcription recovery", () => {
     expect(coldSpawns).toBe(0);
   });
 });
+

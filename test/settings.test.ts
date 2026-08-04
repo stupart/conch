@@ -45,6 +45,7 @@ const expected = {
   "hold-submit-delay": ["holdSubmitSecs", "CONCH_HOLD_SUBMIT_SECS", "live", 8],
   "listen-window": ["listenWindowSecs", "CONCH_LISTEN_WINDOW_SECS", "live", 30],
   "typing-grace": ["typingGraceSecs", "CONCH_TYPING_GRACE_SECS", "live", 2],
+  "away-after": ["awayAfterSecs", "CONCH_AWAY_AFTER_SECS", "live", 300],
   "barge-threshold": ["bargeThresholdPct", "CONCH_BARGE_THRESHOLD_PCT", "live", 0],
   "voice-speed": ["ttsSpeed", "CONCH_TTS_SPEED", "live", 1.35],
   "keystroke-fallback": ["keystrokeFallback", "CONCH_KEYSTROKE_FALLBACK", "live", false],
@@ -67,10 +68,10 @@ const expected = {
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 24 curated, default-bearing knobs", () => {
+  test("contains exactly the 25 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(24);
+    expect(SETTING_DESCRIPTORS).toHaveLength(25);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });
@@ -534,4 +535,15 @@ describe("control-message validation", () => {
       help: "choose queued sessions by newest, oldest, or urgency",
     });
   });
+});
+
+test("away-detection is ON by default — an empty room must not become a prompt", () => {
+  // With this at 0 the away check is skipped entirely, and conch opened the mic
+  // and injected what the ROOM said into a live session while nobody was there.
+  // A stray conversation became a prompt an agent then acted on.
+  const away = SETTING_REGISTRY.get("away-after");
+  expect(away?.default).toBe(300);
+  expect(away?.apply).toBe("live");
+  // Zero must remain expressible: it is the documented "never" escape hatch.
+  expect(parseSetting("away-after", "0").ok).toBe(true);
 });

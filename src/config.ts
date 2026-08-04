@@ -180,7 +180,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     micGainDb: settings["mic-gain"].value as number,
     startThresholdPct: num(env.CONCH_START_THRESHOLD_PCT, 2),
     endThresholdPct: num(env.CONCH_END_THRESHOLD_PCT, 2),
-    awayAfterSecs: num(env.CONCH_AWAY_AFTER_SECS, 0),
+    awayAfterSecs: settings["away-after"].value as number,
     typingGraceSecs: settings["typing-grace"].value as number, // touched keys/mouse within 2s ⇒ working; 0 disables the gate
     readFull: settings["read-full"].value as boolean,
     interruptOnManualReply: settings["interrupt-on-manual-reply"].value as boolean,
