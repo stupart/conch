@@ -148,3 +148,40 @@ describe("socket forwarder", () => {
     }
   });
 });
+
+describe("file serving", () => {
+  test("serves only a path that is currently a review link", async () => {
+    const dir = mkdtempSync("/tmp/conch-phone-file-");
+    const served = join(dir, "deliverable.txt");
+    await Bun.write(served, "the deliverable body");
+    const secret = join(dir, "secret.txt");
+    await Bun.write(secret, "never served");
+
+    const b = startBridge({
+      getState: () => ({
+        v: 1,
+        rows: [{ id: "r1", review: { link: served, summary: "x" } }],
+      }),
+    });
+    const auth = { authorization: `Bearer ${TOKEN}` };
+
+    const ok = await fetch(
+      `http://127.0.0.1:${b.port}/file?path=${encodeURIComponent(served)}`,
+      { headers: auth },
+    );
+    expect(ok.status).toBe(200);
+    expect(await ok.text()).toBe("the deliverable body");
+
+    // The token holder may see what the dashboard shows — nothing else.
+    const denied = await fetch(
+      `http://127.0.0.1:${b.port}/file?path=${encodeURIComponent(secret)}`,
+      { headers: auth },
+    );
+    expect(denied.status).toBe(403);
+
+    const noToken = await fetch(
+      `http://127.0.0.1:${b.port}/file?path=${encodeURIComponent(served)}`,
+    );
+    expect(noToken.status).toBe(401);
+  });
+});

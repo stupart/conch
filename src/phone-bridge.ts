@@ -103,6 +103,27 @@ export function createPhoneBridge(
         return Response.json(dependencies.getState() ?? { v: 0 });
       }
 
+      if (url.pathname === "/file") {
+        // Serve a LOCAL deliverable to the phone — but only a file that is,
+        // right now, a review link in the published state. That constraint is
+        // the whole security story: the token holder can see what the
+        // dashboard is currently showing, never read arbitrary files.
+        const requested = url.searchParams.get("path") ?? "";
+        const state = dependencies.getState() as
+          | { rows?: Array<{ review?: { link?: string } }> }
+          | null;
+        const links = (state?.rows ?? [])
+          .map((row) => row.review?.link)
+          .filter((link): link is string => Boolean(link));
+        if (!requested || !links.includes(requested)) {
+          return new Response("not a current deliverable", { status: 403 });
+        }
+        const file = Bun.file(requested);
+        return (async () => (await file.exists())
+          ? new Response(file)
+          : new Response("gone", { status: 404 }))();
+      }
+
       if (url.pathname === "/control" && req.method === "POST") {
         return (async () => {
           const body = await req.text();
