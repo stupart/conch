@@ -2358,7 +2358,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // Baseline the target session's user-prompt count so we can CONFIRM the
     // prompt actually submitted. null ⇒ no transcript to watch, skip confirmation.
     const beforeCount = event.transcriptPath ? await transcriptMark(event.transcriptPath) : null;
-    const { via, interrupted } = await injectText(
+    const { via, interrupted, reason } = await injectText(
       cfg,
       event.pid,
       text,
@@ -2367,7 +2367,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (interrupted) return false;
 
     if (via === "clipboard") {
-      log(`injected via ${via}`);
+      // Name the cause: "keystroke-fallback-off" means the session isn't in a
+      // tmux pane AND typing is disabled, so EVERY utterance lands here — a
+      // config problem, not a transient one. Without this the log line is
+      // identical either way and the real cause takes an hour to find.
+      log(`injected via ${via}${reason ? ` (${reason})` : ""}`);
       if (beforeInject && !(await beforeInject())) return false;
       await speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.", event.label);
       return true;

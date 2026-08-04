@@ -5,6 +5,8 @@ export type InjectRoute = "tmux" | "osascript-focused" | "osascript-blind" | "cl
 export interface InjectTextResult {
   via: InjectRoute;
   interrupted?: true;
+  /** Why we fell back to the clipboard — the two causes need different fixes. */
+  reason?: "keystroke-fallback-off" | "window-not-focusable";
 }
 
 /**
@@ -54,7 +56,7 @@ export async function injectText(
       // front — typing would land somewhere unknowable. Clipboard instead.
       if (!(await mayInject())) return interrupted();
       await toClipboard(text);
-      return { via: "clipboard" };
+      return { via: "clipboard", reason: "window-not-focusable" };
     }
     if (focused) await Bun.sleep(300); // let the window raise settle
     if (!(await mayInject())) return interrupted();
@@ -82,7 +84,7 @@ export async function injectText(
 
   if (!(await mayInject())) return interrupted();
   await toClipboard(text);
-  return { via: "clipboard" };
+  return { via: "clipboard", reason: "keystroke-fallback-off" };
 }
 
 /** Run osascript with one or more `-e` statements, output discarded. */
