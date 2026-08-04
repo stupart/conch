@@ -458,8 +458,8 @@ private struct DeliverableImageView: NSViewRepresentable {
         imageView.animates = true
         imageView.wantsLayer = true
         imageView.layer?.backgroundColor = NSColor.clear.cgColor
-        imageView.layer?.borderWidth = 1
-        imageView.layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        // No border: a deliverable is usually a screenshot that already carries
+        // its own window chrome, so framing it again reads as a frame in a frame.
         return imageView
     }
 
