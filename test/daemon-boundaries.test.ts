@@ -172,6 +172,7 @@ describe("phone inject scope", () => {
       pid: 99999,
       transcriptPath: "/attacker/transcript",
       eventAt: 1,
+      requestId: "phone-send-1",
     };
     const scoped = validateAndScopeSocketTurnEvent(event, published, () => ({
       cwd: "/real",
@@ -190,6 +191,7 @@ describe("phone inject scope", () => {
         pid: 42,
         transcriptPath: "/real/transcript",
         eventAt: 500,
+        requestId: "phone-send-1",
       },
     });
     expect(validateAndScopeSocketTurnEvent(

@@ -679,7 +679,7 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
   }
   const type = value.type as TurnEvent["type"];
 
-  for (const field of ["sessionId", "label", "cwd", "announce", "transcriptPath", "ntype", "voice"] as const) {
+  for (const field of ["sessionId", "label", "cwd", "announce", "transcriptPath", "ntype", "voice", "requestId"] as const) {
     if (value[field] !== undefined && typeof value[field] !== "string") {
       return { ok: false, err: `${field} must be a string` };
     }
@@ -968,7 +968,7 @@ export function insertQueuedEvent(
   instantBarriers: { has(event: TurnEvent): boolean } = NO_INSTANT_QUEUE_BARRIERS,
 ): boolean {
   const instant = instantBarriers.has(event);
-  const duplicateIndex = event.type === "speak" && !event.sessionId
+  const duplicateIndex = event.type === "inject" || (event.type === "speak" && !event.sessionId)
     ? -1
     : queue.findIndex(
       (queued) => queued.sessionId === event.sessionId && queued.type === event.type,
@@ -1240,6 +1240,30 @@ export async function runDaemon(cfg: Config): Promise<void> {
   };
   const diagnosticsEnabled = recorderDiagnosticsEnabled();
   const queue: TurnEvent[] = [];
+  const injectWaiters = new Map<string, {
+    timer: ReturnType<typeof setTimeout>;
+    resolve: (delivered: boolean) => void;
+  }>();
+  const waitForInjectResult = (requestId: string): Promise<boolean> => new Promise((resolve) => {
+    const previous = injectWaiters.get(requestId);
+    if (previous) {
+      clearTimeout(previous.timer);
+      previous.resolve(false);
+    }
+    const timer = setTimeout(() => {
+      injectWaiters.delete(requestId);
+      resolve(false);
+    }, 25_000);
+    injectWaiters.set(requestId, { timer, resolve });
+  });
+  const settleInject = (event: Pick<TurnEvent, "requestId">, delivered: boolean): void => {
+    if (!event.requestId) return;
+    const waiter = injectWaiters.get(event.requestId);
+    if (!waiter) return;
+    injectWaiters.delete(event.requestId);
+    clearTimeout(waiter.timer);
+    waiter.resolve(delivered);
+  };
   let busy = false;
   let lastTurn: TurnEvent | null = null;
   const persisted = readState(); // survives restarts — see STATE_FILE
@@ -1676,6 +1700,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (stopKey && queue.length) {
         const skipped = takeNextQueuedEvent(queue, cfg.handoffOrder, prioritizedSessionIds)!;
         stopKey = false;
+        settleInject(skipped, false);
         log(`⏹ spacebar — skipped queued ${skipped.type} for "${skipped.label}" during TTS startup`);
       }
       while (queue.length) {
@@ -1686,6 +1711,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           // one bad event (closed pane, missing binary, socket reset, a throw
           // from any spawn) must not take the whole daemon down mid-exchange.
           log(`error handling ${event.type} "${event.label}": ${e}`);
+          settleInject(event, false);
           speech.cancelCurrent();
         }
       }
@@ -1735,7 +1761,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
         phoneBridge = createPhoneBridge(
           {
             getState: () => lastPublishedPanelState,
-            forwardControl: (line) => forwardToDaemonSocket(cfg.socketPath, line),
+            forwardControl: (line) => {
+              let timeout = 4_000;
+              try {
+                if ((JSON.parse(line) as { type?: unknown }).type === "inject") timeout = 30_000;
+              } catch {
+                // The daemon owns validation; malformed controls retain the short timeout.
+              }
+              return forwardToDaemonSocket(cfg.socketPath, line, timeout);
+            },
             onClientsChanged: (count) => {
               if (audioLease.clientsChanged(count)) {
                 log("phone disconnected — audio back on this Mac");
@@ -2201,11 +2235,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
         ...event,
         type: "turn-end",
       };
-      const delivered = await deliver(target, event.announce, undefined, undefined, {
-        allowNameAddressing: false,
-        allowBlindFallback: false,
-      });
-      log(`phone inject into "${event.label}" ${delivered ? "delivered" : "failed"}`);
+      let delivered = false;
+      try {
+        delivered = await deliver(target, event.announce, undefined, undefined, {
+          allowNameAddressing: false,
+          allowBlindFallback: false,
+          allowVoiceQa: false,
+          requireConfirmed: true,
+        });
+        log(`phone inject into "${event.label}" ${delivered ? "confirmed" : "not confirmed"}`);
+      } finally {
+        settleInject(event, delivered);
+      }
       return;
     }
     if (event.type === "speak") {
@@ -2617,6 +2658,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
     options: {
       allowNameAddressing?: boolean;
       allowBlindFallback?: boolean;
+      allowVoiceQa?: boolean;
+      requireConfirmed?: boolean;
     } = {},
   ): Promise<boolean> {
     if (options.allowNameAddressing !== false) {
@@ -2633,6 +2676,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
       text = addressed.text;
     }
 
+    if (options.allowVoiceQa === false) {
+      return deliverToSession(event, text, diagnosticIds, beforeInject, options);
+    }
     return routeVoicePrompt(cfg.voiceQa, text, event.transcriptPath, {
       askClaude: askHaiku,
       speak: (answer) => speak(cfg, answer, event.label),
@@ -2653,7 +2699,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     text: string,
     diagnosticIds?: string | Iterable<string | undefined>,
     beforeInject?: () => boolean | Promise<boolean>,
-    options: { allowBlindFallback?: boolean } = {},
+    options: { allowBlindFallback?: boolean; requireConfirmed?: boolean } = {},
   ): Promise<boolean> {
     let committed = false;
     const commit = async (): Promise<boolean> => {
@@ -2702,17 +2748,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
       });
       if (beforeInject && !(await beforeInject())) return false;
       await speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.", event.label);
-      return true;
+      return options.requireConfirmed !== true;
     }
     if (via === "none") {
       log(`injected via ${via}`);
       if (beforeInject && !(await beforeInject())) return false;
       await speak(cfg, "Heard you, but I could not find the session's pane.", event.label);
-      return true;
+      return options.requireConfirmed !== true;
     }
     if (beforeCount === null) {
       log(`injected into "${event.label}" via ${via}`); // no transcript to confirm against — trust it
-      return true;
+      return options.requireConfirmed !== true;
     }
 
     // The osascript path can type the text without the Return landing ("typed but
@@ -2752,7 +2798,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     await toClipboard(text);
     if (beforeInject && !(await beforeInject())) return false;
     await speak(cfg, "I typed that but it didn't send. Your words are on the clipboard — just paste and press return.", event.label);
-    return true;
+    return options.requireConfirmed !== true;
   }
 
   /** Shared handling for anything heard while reading aloud (gap or barge-in). */
@@ -4198,6 +4244,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
             if (socketRecord(value) && value.type === "inject") {
               response = { kind: "session-error", error: turn.err };
             }
+          } else if (turn.value.type === "inject" && turn.value.requestId) {
+            const event = turn.value;
+            const requestId = turn.value.requestId;
+            const result = waitForInjectResult(requestId);
+            dispatchSocketTurnEvent(event, socketTurnCallbacks);
+            void result.then((delivered) => {
+              sock.end(JSON.stringify({
+                kind: "inject-result",
+                requestId,
+                delivered,
+              }) + "\n");
+            });
+            return;
           } else {
             dispatchSocketTurnEvent(turn.value, socketTurnCallbacks);
           }
@@ -4241,6 +4300,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
     publishedStateWriter.flush();
     meetingMic?.close();
     queue.length = 0;
+    for (const [requestId, waiter] of injectWaiters) {
+      injectWaiters.delete(requestId);
+      clearTimeout(waiter.timer);
+      waiter.resolve(false);
+    }
     speech.close(); // cancel and seal speech, cues, and in-flight/future canaries
     // Close the controller's rearm gate synchronously before taking the
     // recorder snapshot. No await is allowed before this request.

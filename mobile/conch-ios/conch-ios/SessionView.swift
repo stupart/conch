@@ -23,6 +23,10 @@ struct SessionView: View {
         talk.targetSessionId == sessionId && talk.phase == .listening
     }
 
+    private var isSendingHere: Bool {
+        talk.targetSessionId == sessionId && talk.phase == .sending
+    }
+
     private var row: PublishedState.Row? {
         bridge.state?.rows.first { $0.id == sessionId }
     }
@@ -72,7 +76,8 @@ struct SessionView: View {
                     if isTalkingHere || !talk.draft(for: sessionId).isEmpty {
                         YourTurnBubble(
                             text: talk.draft(for: sessionId),
-                            isSending: isTalkingHere && talk.phase == .sending,
+                            isSending: isSendingHere,
+                            canDiscard: !isSendingHere,
                             onDiscard: {
                                 talk.discard(session: sessionId)
                                 sendFailed = false
@@ -225,7 +230,10 @@ struct SessionView: View {
                 .foregroundStyle(isTalkingHere ? Palette.bg : Palette.textPrimary)
             }
             .buttonStyle(.plain)
-            .disabled(talk.phase == .sending)
+            .disabled(
+                talk.phase == .sending
+                    || (talk.phase == .listening && !isTalkingHere)
+            )
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
             .animation(.easeOut(duration: 0.18), value: talk.phase)
@@ -259,6 +267,7 @@ struct SessionView: View {
 private struct YourTurnBubble: View {
     let text: String
     let isSending: Bool
+    let canDiscard: Bool
     let onDiscard: () -> Void
 
     var body: some View {
@@ -284,6 +293,7 @@ private struct YourTurnBubble: View {
         .transition(.opacity.combined(with: .move(edge: .bottom)))
         .contextMenu {
             Button("Discard draft", systemImage: "trash", role: .destructive, action: onDiscard)
+                .disabled(!canDiscard)
         }
         .accessibilityHint("Long press to discard this draft")
     }

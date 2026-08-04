@@ -49,6 +49,18 @@ describe("ordered dictation reducer", () => {
     expect(action.finalSubmittedDiagnosticIds).toEqual(["rec-0025", "rec-0026", "rec-0027"]);
   });
 
+  test("identical consecutive final segments are both real speech", () => {
+    const reducer = new DictationReducer({ holdSubmit: true });
+    reducer.consume(transcript(1, "do not delete this", "first"));
+    reducer.consume(transcript(2, "do not delete this", "repeated"));
+
+    const request = requested(reducer.requestExternalAction("spacebar"));
+    const action = ready(reducer.consume(barrier(3, request)));
+
+    expect(action.payload).toBe("do not delete this do not delete this");
+    expect(action.payloadDiagnosticIds).toEqual(["first", "repeated"]);
+  });
+
   test("send waits for its barrier and includes prompt-like hot tail", () => {
     const reducer = new DictationReducer({ holdSubmit: true });
     reducer.consume(transcript(1, "fix the cache", "prompt-before"));

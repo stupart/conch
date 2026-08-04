@@ -1,89 +1,314 @@
 import AVFoundation
 import Speech
 
-/// Thread-safe handoff between AVAudioEngine's render callback and MainActor.
+/// Owns every captured PCM buffer exactly once, across immutable phrases.
 ///
-/// A recognition task can end before its callback reaches MainActor. Every
-/// buffer is therefore retained until a result establishes a safe replay
-/// cursor; rollover installs the next request atomically and replays everything
-/// after that cursor. The overlap is removed at the text boundary, never at the
-/// audio boundary — duplicate audio is recoverable, missing audio is not.
-private final class RecognitionAudioRelay: @unchecked Sendable {
+/// Speech only permits one live recognition task at a time. When phrase A ends,
+/// phrase B therefore has to accumulate while A reaches a terminal callback.
+/// The audio tap cannot safely coordinate that handoff through MainActor, so one
+/// lock assigns every whole buffer to A or B and creates B before exposing A's
+/// boundary. No buffer is replayed into two phrases and no text overlap needs to
+/// be guessed away later.
+private final class PhraseAudioRouter: @unchecked Sendable {
+    static let silenceThreshold: Float = 0.02
+    static let trailingSilence: TimeInterval = 0.8
+    static let maximumPhraseDuration: TimeInterval = 40
+
+    enum BoundaryReason: Sendable {
+        case silence
+        case recognizerFinal
+        case maximumDuration
+        case send
+    }
+
+    struct Boundary: Sendable {
+        let phraseID: Int
+        let nextPhraseID: Int?
+        let reason: BoundaryReason
+    }
+
+    enum InstallResult {
+        case live
+        case sealed
+        case missing
+    }
+
     private struct BufferedAudio {
         let sequence: Int
         let duration: TimeInterval
         let buffer: AVAudioPCMBuffer
     }
 
-    private let lock = NSLock()
-    private var request: SFSpeechAudioBufferRecognitionRequest?
-    private var buffered: [BufferedAudio] = []
-    private var nextSequence = 0
+    private final class BufferedPhrase {
+        let id: Int
+        var buffers: [BufferedAudio] = []
+        var deliveredCount = 0
+        var request: SFSpeechAudioBufferRecognitionRequest?
+        var installing = false
+        var sealed = false
+        var hasVoicedAudio = false
+        var trailingSilenceDuration: TimeInterval = 0
+        var totalDuration: TimeInterval = 0
 
+        init(id: Int) { self.id = id }
+    }
+
+    private let lock = NSLock()
+    private let onBoundary: @Sendable (Boundary) -> Void
+    private var phrases: [Int: BufferedPhrase] = [:]
+    private var pendingPhrases: [Int] = []
+    private var activePhraseID: Int?
+    private var nextPhraseID = 1
+    private var nextSequence = 0
+    private var accepting = false
+
+    init(onBoundary: @escaping @Sendable (Boundary) -> Void) {
+        self.onBoundary = onBoundary
+    }
+
+    /// Begin a fresh capture. Existing finalized text lives outside this router.
+    func start() -> Int {
+        lock.lock()
+        phrases.removeAll(keepingCapacity: false)
+        pendingPhrases.removeAll(keepingCapacity: false)
+        activePhraseID = nil
+        nextSequence = 0
+        accepting = true
+        let id = createPhraseLocked()
+        lock.unlock()
+        return id
+    }
+
+    /// Called by AVAudioEngine's tap. Copying and assignment happen under the
+    /// same lock as sealing, so a callback is wholly before or after a boundary.
     func append(_ source: AVAudioPCMBuffer) {
-        guard let copy = Self.copy(source) else { return }
+        var boundary: Boundary?
+        lock.lock()
+        guard accepting,
+              let phraseID = activePhraseID,
+              let phrase = phrases[phraseID],
+              let copy = Self.copy(source) else {
+            lock.unlock()
+            return
+        }
+
+        nextSequence += 1
         let duration = source.format.sampleRate > 0
             ? TimeInterval(source.frameLength) / source.format.sampleRate
             : 0
-        lock.lock()
-        nextSequence += 1
-        request?.append(copy)
-        buffered.append(BufferedAudio(
-            sequence: nextSequence,
-            duration: duration,
-            buffer: copy
-        ))
+        let item = BufferedAudio(sequence: nextSequence, duration: duration, buffer: copy)
+        phrase.buffers.append(item)
+        phrase.totalDuration += duration
+
+        if let request = phrase.request, !phrase.installing {
+            request.append(copy)
+            phrase.deliveredCount = phrase.buffers.count
+        }
+
+        let voiced = Self.rootMeanSquare(source) >= Self.silenceThreshold
+        if voiced {
+            phrase.hasVoicedAudio = true
+            phrase.trailingSilenceDuration = 0
+        } else if phrase.hasVoicedAudio {
+            phrase.trailingSilenceDuration += duration
+        }
+
+        let reason: BoundaryReason?
+        if phrase.hasVoicedAudio,
+           phrase.trailingSilenceDuration >= Self.trailingSilence {
+            reason = .silence
+        } else if phrase.totalDuration >= Self.maximumPhraseDuration {
+            reason = .maximumDuration
+        } else {
+            reason = nil
+        }
+
+        if let reason {
+            boundary = sealLocked(phraseID: phraseID, reason: reason, createSuccessor: true)
+        }
         lock.unlock()
+
+        if let boundary { onBoundary(boundary) }
     }
 
-    func cursor() -> Int {
-        lock.withLock { nextSequence }
+    /// Atomically seal the current phrase and, while capture continues, make a
+    /// successor its owner. The triggering buffer remains in the ending phrase.
+    func sealCurrentPhrase(
+        expectedPhraseID: Int? = nil,
+        reason: BoundaryReason,
+        createSuccessor: Bool = true
+    ) -> Boundary? {
+        lock.lock()
+        guard let phraseID = activePhraseID,
+              expectedPhraseID == nil || expectedPhraseID == phraseID else {
+            lock.unlock()
+            return nil
+        }
+        let boundary = sealLocked(
+            phraseID: phraseID,
+            reason: reason,
+            createSuccessor: createSuccessor && accepting
+        )
+        lock.unlock()
+        return boundary
     }
 
-    /// Cursor just before an overlap window ending at `sequence`.
-    func replayCursor(endingAt sequence: Int, overlapSeconds: TimeInterval = 1.5) -> Int {
-        lock.withLock {
-            var duration: TimeInterval = 0
-            var first = sequence + 1
-            for item in buffered.reversed() where item.sequence <= sequence {
-                first = item.sequence
-                duration += item.duration
-                if duration >= overlapSeconds { break }
+    /// Stop accepting tap buffers and seal the exact last phrase. No successor
+    /// is created because capture hardware is already stopping for the barrier.
+    func closeAndSeal(reason: BoundaryReason) -> Boundary? {
+        lock.lock()
+        accepting = false
+        guard let phraseID = activePhraseID else {
+            lock.unlock()
+            return nil
+        }
+        let boundary = sealLocked(phraseID: phraseID, reason: reason, createSuccessor: false)
+        lock.unlock()
+        return boundary
+    }
+
+    /// If Speech or the system finalizes a task before our RMS boundary fires,
+    /// rotate synchronously on the delegate callback so the tap never keeps
+    /// appending to a phrase which its recognizer has already finalized.
+    func recognizerDidFinalize(_ phraseID: Int) {
+        var boundary: Boundary?
+        lock.lock()
+        if accepting, activePhraseID == phraseID {
+            boundary = sealLocked(
+                phraseID: phraseID,
+                reason: .recognizerFinal,
+                createSuccessor: true
+            )
+        }
+        lock.unlock()
+        if let boundary { onBoundary(boundary) }
+    }
+
+    /// Feed a phrase's retained prefix without blocking the tap lock. While a
+    /// batch is appended, new buffers only join the phrase FIFO. The empty-FIFO
+    /// check and transition to direct/live delivery are one locked operation,
+    /// so a new buffer can neither overtake the prefix nor be sent twice.
+    func install(_ request: SFSpeechAudioBufferRecognitionRequest, for phraseID: Int) -> InstallResult {
+        lock.lock()
+        guard let phrase = phrases[phraseID] else {
+            lock.unlock()
+            return .missing
+        }
+        phrase.installing = true
+        phrase.request = nil
+        lock.unlock()
+
+        while true {
+            lock.lock()
+            guard let phrase = phrases[phraseID] else {
+                lock.unlock()
+                return .missing
             }
-            return max(0, first - 1)
+            let start = phrase.deliveredCount
+            let batch = start < phrase.buffers.count
+                ? Array(phrase.buffers[start...])
+                : []
+            phrase.deliveredCount = phrase.buffers.count
+            if batch.isEmpty {
+                phrase.installing = false
+                if phrase.sealed {
+                    phrase.request = nil
+                    lock.unlock()
+                    return .sealed
+                }
+                phrase.request = request
+                lock.unlock()
+                return .live
+            }
+            lock.unlock()
+            for item in batch { request.append(item.buffer) }
         }
     }
 
-    /// Install a request and replay every retained buffer after the safe cursor.
-    func install(_ next: SFSpeechAudioBufferRecognitionRequest, replayAfter cursor: Int?) {
+    /// A terminal task error may retry the same phrase from byte zero. Its PCM
+    /// is retained until a final succeeds; this is not cross-phrase replay.
+    func prepareRetry(for phraseID: Int) -> Bool {
         lock.lock()
-        request = next
-        if let cursor {
-            for item in buffered where item.sequence > cursor {
-                next.append(item.buffer)
-            }
+        defer { lock.unlock() }
+        guard let phrase = phrases[phraseID] else { return false }
+        phrase.request = nil
+        phrase.installing = false
+        phrase.deliveredCount = 0
+        return true
+    }
+
+    func complete(_ phraseID: Int) {
+        lock.lock()
+        phrases.removeValue(forKey: phraseID)
+        if pendingPhrases.first == phraseID {
+            pendingPhrases.removeFirst()
+        } else if let index = pendingPhrases.firstIndex(of: phraseID) {
+            pendingPhrases.remove(at: index)
         }
         lock.unlock()
     }
 
-    /// Stop feeding the current request after every in-flight tap callback has
-    /// left the lock. The caller may then call endAudio without racing append.
-    func detach() {
-        lock.withLock { request = nil }
+    var firstPendingPhraseID: Int? {
+        lock.withLock { pendingPhrases.first }
     }
 
-    func discard(through cursor: Int) {
-        lock.lock()
-        let removed = buffered.prefix { $0.sequence <= cursor }
-        buffered.removeFirst(removed.count)
-        lock.unlock()
+    var pendingPhraseCount: Int {
+        lock.withLock { pendingPhrases.count }
+    }
+
+    func hasVoicedAudio(_ phraseID: Int) -> Bool {
+        lock.withLock { phrases[phraseID]?.hasVoicedAudio == true }
     }
 
     func reset() {
         lock.lock()
-        request = nil
-        buffered.removeAll(keepingCapacity: false)
+        accepting = false
+        phrases.removeAll(keepingCapacity: false)
+        pendingPhrases.removeAll(keepingCapacity: false)
+        activePhraseID = nil
         lock.unlock()
+    }
+
+    private func createPhraseLocked() -> Int {
+        let id = nextPhraseID
+        nextPhraseID += 1
+        phrases[id] = BufferedPhrase(id: id)
+        pendingPhrases.append(id)
+        activePhraseID = id
+        return id
+    }
+
+    private func sealLocked(
+        phraseID: Int,
+        reason: BoundaryReason,
+        createSuccessor: Bool
+    ) -> Boundary? {
+        guard let phrase = phrases[phraseID], !phrase.sealed else { return nil }
+        phrase.sealed = true
+        phrase.request = nil
+        let successor = createSuccessor ? createPhraseLocked() : nil
+        if successor == nil { activePhraseID = nil }
+        return Boundary(phraseID: phraseID, nextPhraseID: successor, reason: reason)
+    }
+
+    private static func rootMeanSquare(_ buffer: AVAudioPCMBuffer) -> Float {
+        guard let channels = buffer.floatChannelData else {
+            // Unknown PCM is treated as voiced: a fixed detector may fail to
+            // split, but it must never discard quiet/unsupported audio.
+            return 1
+        }
+        let channelCount = Int(buffer.format.channelCount)
+        let frameCount = Int(buffer.frameLength)
+        guard channelCount > 0, frameCount > 0 else { return 0 }
+        var sum: Float = 0
+        for channel in 0..<channelCount {
+            let samples = channels[channel]
+            for frame in 0..<frameCount {
+                let sample = samples[frame]
+                sum += sample * sample
+            }
+        }
+        return sqrt(sum / Float(channelCount * frameCount))
     }
 
     private static func copy(_ source: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
@@ -98,7 +323,7 @@ private final class RecognitionAudioRelay: @unchecked Sendable {
         for index in sourceBuffers.indices {
             let sourceBuffer = sourceBuffers[index]
             guard let sourceData = sourceBuffer.mData,
-                  let destinationData = destinationBuffers[index].mData else { continue }
+                  let destinationData = destinationBuffers[index].mData else { return nil }
             let bytes = Int(sourceBuffer.mDataByteSize)
             memcpy(destinationData, sourceData, bytes)
             destinationBuffers[index].mDataByteSize = sourceBuffer.mDataByteSize
@@ -115,12 +340,65 @@ private extension NSLock {
     }
 }
 
-/// Push-to-talk, transcribed ON the phone.
-///
-/// On-device SFSpeechRecognizer means no audio crosses the network, no
-/// contention with the Mac's microphone, and words appear as you say them.
-/// Tap to start, tap to send — a hold gesture fails exactly when this app is
-/// needed most, one-handed mid-workout.
+/// Aggregates one task's final before reporting terminal completion. A successor
+/// is not started merely because `didFinishRecognition` fired; Apple can still
+/// consider the task active until `didFinishSuccessfully`.
+private final class PhraseRecognitionDelegate: NSObject, SFSpeechRecognitionTaskDelegate,
+    @unchecked Sendable {
+    typealias PartialHandler = @Sendable (Int, Int, Int, String) -> Void
+    typealias FinalDetectedHandler = @Sendable (Int) -> Void
+    typealias FinishedHandler = @Sendable (Int, Int, Int, Bool, String?, String?) -> Void
+
+    private let phraseID: Int
+    private let token: Int
+    private let epoch: Int
+    private let onPartial: PartialHandler
+    private let onFinalDetected: FinalDetectedHandler
+    private let onFinished: FinishedHandler
+    private let lock = NSLock()
+    private var finalText: String?
+
+    init(
+        phraseID: Int,
+        token: Int,
+        epoch: Int,
+        onPartial: @escaping PartialHandler,
+        onFinalDetected: @escaping FinalDetectedHandler,
+        onFinished: @escaping FinishedHandler
+    ) {
+        self.phraseID = phraseID
+        self.token = token
+        self.epoch = epoch
+        self.onPartial = onPartial
+        self.onFinalDetected = onFinalDetected
+        self.onFinished = onFinished
+    }
+
+    func speechRecognitionTask(
+        _ task: SFSpeechRecognitionTask,
+        didHypothesizeTranscription transcription: SFTranscription
+    ) {
+        onPartial(phraseID, token, epoch, transcription.formattedString)
+    }
+
+    func speechRecognitionTask(
+        _ task: SFSpeechRecognitionTask,
+        didFinishRecognition recognitionResult: SFSpeechRecognitionResult
+    ) {
+        lock.withLock { finalText = recognitionResult.bestTranscription.formattedString }
+        onFinalDetected(phraseID)
+    }
+
+    func speechRecognitionTask(
+        _ task: SFSpeechRecognitionTask,
+        didFinishSuccessfully successfully: Bool
+    ) {
+        let text = lock.withLock { finalText }
+        onFinished(phraseID, token, epoch, successfully, text, task.error?.localizedDescription)
+    }
+}
+
+/// Push-to-talk, transcribed ON the phone as discrete immutable final phrases.
 @MainActor
 final class TalkController: NSObject, ObservableObject {
     enum Phase: Equatable {
@@ -131,52 +409,68 @@ final class TalkController: NSObject, ObservableObject {
     }
 
     @Published private(set) var phase = Phase.idle
-    /// Everything said this session: finalised segments plus the live partial.
+
+    /// Immutable final phrases are truth; the revisable hypothesis is display only.
     var transcript: String {
-        [committed, partial].filter { !$0.isEmpty }.joined(separator: " ")
+        [segments.joined(separator: " "), partial]
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 
-    /// Unsent words for the session being talked to right now.
-    ///
-    /// Append-only and written to disk on every change. Exactly ONE thing may
-    /// clear it: a send the Mac confirmed. Not starting a recording, not a
-    /// failed finalisation, not a teardown, not a relaunch, not a crash.
-    ///
-    /// This is a policy, not an optimisation, and it is here because the
-    /// alternative kept failing. Three separate bugs deleted this string —
-    /// a view lifecycle, an audio-session collision, a re-entered start — and
-    /// each fix only closed the path it knew about. Words that cannot be
-    /// deleted cannot be deleted by the next path either.
-    @Published private(set) var committed = "" {
+    @Published private(set) var segments: [String] = [] {
         didSet { persistDrafts() }
     }
-    /// Unsent words for every OTHER session.
-    ///
-    /// A draft belongs to a conversation, not to the app. One controller now
-    /// serves every session, so without this an unsent draft would follow you
-    /// into the next session and be injected there — and worse, tapping the
-    /// button while another session held the mic would deliver ITS words to
-    /// whatever you happened to be looking at.
-    private var parked: [String: String] = [:]
-    private static let draftKey = "conch.drafts"
+    @Published private(set) var partial = ""
+    @Published private(set) var failure: String?
+    @Published private(set) var targetSessionId: String?
 
-    /// What is waiting to be sent to `session`, active or parked.
-    func draft(for session: String) -> String {
-        session == targetSessionId ? transcript : (parked[session] ?? "")
+    private var parked: [String: [String]] = [:]
+    private var pendingLegacyDraft: String?
+    private static let draftKey = "conch.drafts"
+    private static let legacyDraftKey = "conch.draft.committed"
+
+    override init() {
+        let defaults = UserDefaults.standard
+        let newSchemaExists = defaults.object(forKey: Self.draftKey) != nil
+        if let stored = defaults.dictionary(forKey: Self.draftKey) {
+            for (session, value) in stored {
+                if let savedSegments = value as? [String] {
+                    parked[session] = savedSegments.filter { !$0.isEmpty }
+                } else if let joined = value as? String, !joined.isEmpty {
+                    // Migrate the first per-session String schema in place.
+                    parked[session] = [joined]
+                }
+            }
+        }
+        if !newSchemaExists,
+           let legacy = defaults.string(forKey: Self.legacyDraftKey),
+           !legacy.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // The legacy value has no owner. Adopt it only when the user next
+            // chooses a session; a newer schema is authoritative if it exists.
+            pendingLegacyDraft = legacy
+        } else if newSchemaExists {
+            defaults.removeObject(forKey: Self.legacyDraftKey)
+        }
+        super.init()
+        if newSchemaExists { defaults.set(parked, forKey: Self.draftKey) }
     }
 
-    /// Throw a draft away, on purpose.
-    ///
-    /// Everything else in here refuses to delete your words; that only works
-    /// as a promise if you have a way to delete them yourself. Deliberate and
-    /// explicit is the whole distinction — the bug was words vanishing
-    /// without anyone asking.
+    /// What is waiting for one conversation, including only this capture's live hypothesis.
+    func draft(for session: String) -> String {
+        if session == targetSessionId { return transcript }
+        return (parked[session] ?? []).joined(separator: " ")
+    }
+
+    /// The only user-directed destructive operation. It is unavailable while a
+    /// send acknowledgement is in flight, so failure can always leave a retry.
     func discard(session: String) {
+        guard phase != .sending else { return }
         if session == targetSessionId {
             if phase == .listening || starting { cancel() }
+            audioRouter.reset()
             partial = ""
             failure = nil
-            committed = ""
+            segments.removeAll()
         } else {
             parked.removeValue(forKey: session)
             persistDrafts()
@@ -186,88 +480,67 @@ final class TalkController: NSObject, ObservableObject {
     private func persistDrafts() {
         var all = parked
         if let target = targetSessionId {
-            if committed.isEmpty { all.removeValue(forKey: target) } else { all[target] = committed }
+            if segments.isEmpty { all.removeValue(forKey: target) }
+            else { all[target] = segments }
         }
         UserDefaults.standard.set(all, forKey: Self.draftKey)
     }
 
-    /// Park the current draft under its own session and adopt `session`'s.
     private func switchTarget(to session: String) {
         guard targetSessionId != session else { return }
         if let previous = targetSessionId {
-            if committed.isEmpty { parked.removeValue(forKey: previous) }
-            else { parked[previous] = committed }
+            if segments.isEmpty { parked.removeValue(forKey: previous) }
+            else { parked[previous] = segments }
         }
         targetSessionId = session
         partial = ""
         failure = nil
-        committed = parked[session] ?? ""
-    }
-    @Published private(set) var partial = ""
-    @Published private(set) var failure: String?
-    /// Which session this draft is being spoken to.
-    ///
-    /// One controller now serves every session, because a per-view one died
-    /// with its view and took your words with it. The cost is that a draft
-    /// could surface under a conversation you did not say it to — so it is
-    /// stamped once, at the moment you start talking, and shown nowhere else.
-    @Published private(set) var targetSessionId: String?
-
-    override init() {
-        super.init()
-        // A relaunch or a crash mid-utterance is not a decision to discard
-        // what you said. Whatever was unsent when the process died is still
-        // unsent now, and it is still yours.
-        parked = UserDefaults.standard.dictionary(forKey: Self.draftKey) as? [String: String] ?? [:]
+        if let existing = parked[session] {
+            segments = existing
+        } else if let legacy = pendingLegacyDraft {
+            segments = [legacy]
+            pendingLegacyDraft = nil
+            UserDefaults.standard.removeObject(forKey: Self.legacyDraftKey)
+        } else {
+            segments = []
+        }
     }
 
     private let engine = AVAudioEngine()
-    private let audioRelay = RecognitionAudioRelay()
     private var recognizer: SFSpeechRecognizer?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var recognition: SFSpeechRecognitionTask?
+    private var recognitionDelegate: PhraseRecognitionDelegate?
     private var tapInstalled = false
     private var starting = false
 
-    // All recognition callbacks carry this identity. Advancing it makes every
-    // callback from the old task inert before the replacement can be mutated.
-    private var generation = 0
-    private var replayAfterSequence = 0
-    /// True only while a request is being fed audio it has already heard.
-    ///
-    /// Rollover replays ~1.5s into the replacement request so no audio falls
-    /// between tasks; the text arriving from that replay must be de-duplicated
-    /// against what is already committed. Outside that window there is nothing
-    /// to de-duplicate, and stripping anyway silently ate deliberate repeats.
-    private var expectsReplayOverlap = false
-    /// Why recognition last died. Shown when finalisation fails, because "it
-    /// couldn't finish" is undiagnosable from a treadmill — the underlying
-    /// error is what distinguishes an audio-session collision from a stall.
-    private var lastRecognitionError: String?
+    /// Capture-wide invalidation, distinct from each phrase's identity/token.
+    private var captureEpoch = 0
+    private var taskToken = 0
+    private var processingPhraseID: Int?
+    private var finishingPhraseID: Int?
+    private var retryCount: [Int: Int] = [:]
+    private var phraseWallTask: Task<Void, Never>?
+    private var phraseFinalizationTask: Task<Void, Never>?
+    private var phraseCancellationGraceTask: Task<Void, Never>?
 
-    // Send waits for recognition to flush its final result. A stalled/erroring
-    // task gets one recovery pass fed entirely from the retained audio relay.
-    private var finishingGeneration: Int?
-    private var finalizationRecoveryRemaining = 0
-    private var finalizationResolved = false
-    private var finalizationSucceeded = false
-    private var finalizationContinuation: CheckedContinuation<Void, Never>?
-    private var finalizationTimeout: Task<Void, Never>?
+    private var finalBarrierResolved = false
+    private var finalBarrierSucceeded = false
+    private var finalBarrierContinuation: CheckedContinuation<Void, Never>?
+    private var finalBarrierTimeout: Task<Void, Never>?
+
+    private lazy var audioRouter = PhraseAudioRouter { [weak self] boundary in
+        Task { @MainActor [weak self] in self?.phraseDidSeal(boundary) }
+    }
 
     func toggle(session: String, deliver: @escaping (String) async -> Bool) {
         if phase == .sending { return }
-        // Send ONLY into the session the words were spoken to. `deliver` comes
-        // from whichever screen is on top, so a tap here while another session
-        // held the mic would have injected its words into this one.
-        if phase == .listening, session == targetSessionId {
+        if phase == .listening {
+            // Another session cannot cancel or inherit a volatile live phrase.
+            // Finish/discard the owner first; its button remains the only Send.
+            guard session == targetSessionId else { return }
             finish(deliver: deliver)
             return
-        }
-        if phase == .listening {
-            // Tapping Talk in a different session means "talk to this one
-            // instead" — keep what was said to the other, do not send it.
-            commit(partial)
-            cancel()
         }
         switchTarget(to: session)
         start()
@@ -305,35 +578,26 @@ final class TalkController: NSObject, ObservableObject {
             return
         }
         self.recognizer = recognizer
-
-        // Deliberately NOT clearing `committed`: a start that lands on top of
-        // unsent words is a continuation, not a reset. Re-entering start was
-        // one of the three paths that ate the transcript — you tap what you
-        // believe is Send, phase has fallen back to idle, and it begins afresh.
+        captureEpoch += 1
         partial = ""
-        lastRecognitionError = nil
-        audioRelay.reset()
-        let request = makeRequest(for: recognizer)
-        self.request = request
-        generation += 1
-        replayAfterSequence = audioRelay.cursor()
-        expectsReplayOverlap = false
-        audioRelay.install(request, replayAfter: nil)
+        retryCount.removeAll()
 
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .measurement, options: .duckOthers)
             try session.setActive(true, options: .notifyOthersOnDeactivation)
 
+            let firstPhraseID = audioRouter.start()
             let input = engine.inputNode
             let format = input.outputFormat(forBus: 0)
-            let relay = audioRelay
+            let router = audioRouter
             input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-                relay.append(buffer)
+                router.append(buffer)
             }
             tapInstalled = true
             phase = .listening
-            startRecognition(on: recognizer, request: request, generation: generation)
+            startRecognition(for: firstPhraseID)
+            scheduleWallLimit(for: firstPhraseID)
             engine.prepare()
             try engine.start()
             starting = false
@@ -341,7 +605,7 @@ final class TalkController: NSObject, ObservableObject {
             starting = false
             stopCaptureHardware()
             invalidateRecognition()
-            audioRelay.reset()
+            audioRouter.reset()
             phase = .denied("Couldn't open the microphone: \(error.localizedDescription)")
         }
     }
@@ -357,173 +621,204 @@ final class TalkController: NSObject, ObservableObject {
         return request
     }
 
-    private func startRecognition(
-        on recognizer: SFSpeechRecognizer,
-        request: SFSpeechAudioBufferRecognitionRequest,
-        generation: Int
-    ) {
-        let relay = audioRelay
-        recognition = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            // Capture the audio boundary before hopping actors. Buffers appended
-            // after this cursor are unambiguously part of the replacement task.
-            let callbackCursor = relay.cursor()
-            Task { @MainActor [weak self] in
-                self?.handleRecognition(
-                    result: result,
-                    error: error,
-                    generation: generation,
-                    callbackCursor: callbackCursor
-                )
+    private func startRecognition(for phraseID: Int) {
+        guard processingPhraseID == nil, let recognizer else { return }
+        taskToken += 1
+        let token = taskToken
+        let epoch = captureEpoch
+        let request = makeRequest(for: recognizer)
+        let delegate = PhraseRecognitionDelegate(
+            phraseID: phraseID,
+            token: token,
+            epoch: epoch,
+            onPartial: { [weak self] phraseID, token, epoch, text in
+                Task { @MainActor [weak self] in
+                    self?.receivePartial(text, phraseID: phraseID, token: token, epoch: epoch)
+                }
+            },
+            onFinalDetected: { [audioRouter] phraseID in
+                audioRouter.recognizerDidFinalize(phraseID)
+            },
+            onFinished: { [weak self] phraseID, token, epoch, succeeded, finalText, error in
+                Task { @MainActor [weak self] in
+                    self?.recognitionFinished(
+                        phraseID: phraseID,
+                        token: token,
+                        epoch: epoch,
+                        succeeded: succeeded,
+                        finalText: finalText,
+                        error: error
+                    )
+                }
             }
+        )
+        processingPhraseID = phraseID
+        self.request = request
+        recognitionDelegate = delegate
+        recognition = recognizer.recognitionTask(with: request, delegate: delegate)
+
+        switch audioRouter.install(request, for: phraseID) {
+        case .live:
+            break
+        case .sealed:
+            endRecognitionInput(for: phraseID)
+        case .missing:
+            recognition?.cancel()
+            clearRecognitionReferences()
+            startNextPhraseIfNeeded()
         }
     }
 
-    private func handleRecognition(
-        result: SFSpeechRecognitionResult?,
-        error: Error?,
-        generation callbackGeneration: Int,
-        callbackCursor: Int
+    private func receivePartial(_ text: String, phraseID: Int, token: Int, epoch: Int) {
+        guard epoch == captureEpoch,
+              token == taskToken,
+              phraseID == processingPhraseID else { return }
+        // Revisions may grow, shrink, or empty. They are display only and can
+        // never mutate the immutable final segment buffer.
+        partial = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func recognitionFinished(
+        phraseID: Int,
+        token: Int,
+        epoch: Int,
+        succeeded: Bool,
+        finalText: String?,
+        error: String?
     ) {
-        guard callbackGeneration == generation else { return }
-        if let error { lastRecognitionError = error.localizedDescription }
+        guard epoch == captureEpoch,
+              token == taskToken,
+              phraseID == processingPhraseID else { return }
+        cancelPhraseFinalizationTimers()
+        clearRecognitionReferences(keepProcessingID: true)
 
-        if let result {
-            let text = result.bestTranscription.formattedString
-            if result.isFinal {
-                // A final can arrive SHORTER than the partial it replaces, or
-                // be a new phrase entirely. Same decision as any other
-                // hypothesis — then bank whatever survives it.
-                absorbPartial(removingCommittedOverlap(from: text))
-                commit(partial)
-            } else {
-                absorbPartial(removingCommittedOverlap(from: text))
-                // Retain a short overlap, plus every buffer after this callback,
-                // then release audio older than that safe replay boundary.
-                replayAfterSequence = audioRelay.replayCursor(endingAt: callbackCursor)
-                audioRelay.discard(through: replayAfterSequence)
-            }
-        }
-
-        guard result?.isFinal == true || error != nil else { return }
-        if result?.isFinal != true {
-            // Preserve the best reported text. Unreported audio is still in the
-            // relay and will be replayed into the replacement/recovery request.
-            commit(partial)
-        }
-
-        if finishingGeneration == callbackGeneration {
-            if result?.isFinal == true {
-                resolveFinalization(succeeded: true)
-            } else if finalizationRecoveryRemaining > 0 {
-                startFinalizationRecovery()
-            } else {
-                resolveFinalization(succeeded: false)
-            }
+        let immutableFinal = finalText?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let phraseContainedVoice = audioRouter.hasVoicedAudio(phraseID)
+        if !immutableFinal.isEmpty || (succeeded && !phraseContainedVoice) {
+            if !immutableFinal.isEmpty { appendFinalSegment(immutableFinal) }
+            partial = ""
+            retryCount.removeValue(forKey: phraseID)
+            audioRouter.complete(phraseID)
+            processingPhraseID = nil
+            startNextPhraseIfNeeded()
+            checkFinalBarrier()
             return
         }
 
-        guard phase == .listening else { return }
-        let cursor = result?.isFinal == true
-            ? audioRelay.replayCursor(endingAt: callbackCursor)
-            : replayAfterSequence
-        restartRecognition(after: cursor)
-    }
-
-    /// Fold a fresh hypothesis into the visible draft.
-    ///
-    /// Until a result goes final the words on screen live in `partial`, and a
-    /// nonfinal SFSpeech result replaces that whole string. Apple is explicit
-    /// that a nonfinal transcription may represent only part of the audio, so
-    /// a pause makes the recogniser hand back something SHORTER for speech it
-    /// already reported. Assigning it wholesale emptied the bubble mid-
-    /// sentence; refusing every shorter hypothesis then froze the transcript
-    /// at its high-water mark and it never grew again. Both are the same
-    /// mistake — reading one string as the whole truth.
-    ///
-    /// Shorter means one of two different things, and they need opposite
-    /// handling:
-    ///
-    ///   revision   held "tell Tyler I will arrive"  next "tell Tyler"
-    ///              -> same phrase, less of it. Keep what we have.
-    ///   resegment  held "tell Tyler I will arrive"  next "so anyway"
-    ///              -> a NEW phrase. Bank the old one and carry on.
-    ///
-    /// A prefix match separates them: a revision of a phrase still starts like
-    /// that phrase, and a new phrase almost never does.
-    private func absorbPartial(_ candidate: String) {
-        let next = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-        let held = partial.trimmingCharacters(in: .whitespacesAndNewlines)
-        if held.isEmpty { partial = next; return }
-        // Silence between words, not a retraction of what was already said.
-        if next.isEmpty { return }
-
-        // Word count, not length: "I'll" -> "I will" is longer in characters
-        // and says no more. Ties go to the newer text so in-place corrections
-        // still land.
-        let nextWords = next.split(whereSeparator: { $0.isWhitespace }).count
-        let heldWords = held.split(whereSeparator: { $0.isWhitespace }).count
-        if nextWords >= heldWords { partial = next; return }
-
-        if held.lowercased().hasPrefix(next.lowercased()) { return }
-        commit(held)
-        partial = next
-    }
-
-    /// Append a segment while removing only a proven multi-word audio overlap.
-    /// A one-word repeat may be intentional; preserving it is safer than loss.
-    private func commit(_ text: String) {
-        let novel = removingCommittedOverlap(from: text)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        // The replayed prefix has now been absorbed; anything the user says
-        // from here is theirs, repeats included.
-        expectsReplayOverlap = false
-        guard !novel.isEmpty else { partial = ""; return }
-        committed = committed.isEmpty ? novel : committed + " " + novel
-        partial = ""
-    }
-
-    private func removingCommittedOverlap(from text: String) -> String {
-        let candidate = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Only strip where audio was ACTUALLY replayed. This exists solely to
-        // absorb the 1.5s a rollover feeds back into the next request; run
-        // unconditionally, it cannot tell replayed audio from a person simply
-        // repeating themselves, and "no, no — do the other one" loses its
-        // opening. Say something twice on purpose and it survives now.
-        guard expectsReplayOverlap else { return candidate }
-        guard !committed.isEmpty, !candidate.isEmpty else { return candidate }
-        let existingWords = committed.split(whereSeparator: { $0.isWhitespace })
-        let candidateWords = candidate.split(whereSeparator: { $0.isWhitespace })
-        let limit = min(16, min(existingWords.count, candidateWords.count))
-        guard limit >= 2 else { return candidate }
-
-        func normalized(_ word: Substring) -> String {
-            word.lowercased().trimmingCharacters(in: .punctuationCharacters)
+        if retryCount[phraseID, default: 0] < 1,
+           audioRouter.prepareRetry(for: phraseID) {
+            retryCount[phraseID, default: 0] += 1
+            processingPhraseID = nil
+            startRecognition(for: phraseID)
+            return
         }
-        for count in stride(from: limit, through: 2, by: -1) {
-            let suffix = existingWords.suffix(count).map(normalized)
-            let prefix = candidateWords.prefix(count).map(normalized)
-            if suffix == prefix {
-                return candidateWords.dropFirst(count).joined(separator: " ")
+
+        failure = "Speech recognition couldn't finalize a phrase"
+            + (error.map { ": \($0)" } ?? ". Finalized phrases are still kept.")
+        stopCaptureHardware()
+        if let boundary = audioRouter.closeAndSeal(reason: .send),
+           boundary.phraseID != phraseID {
+            phraseDidSeal(boundary)
+        }
+        resolveFinalBarrier(succeeded: false)
+        if phase == .listening { phase = .idle }
+    }
+
+    /// Append exactly one terminal transcription. Repeated identical phrases
+    /// remain distinct, just as DictationReducer preserves discrete Whisper rows.
+    private func appendFinalSegment(_ text: String) {
+        let final = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !final.isEmpty else { return }
+        segments.append(final)
+    }
+
+    /// Used by the wall watchdog and Send. Rollover never stops or reinstalls
+    /// the audio tap; the router swaps phrase ownership before `endAudio()`.
+    private func sealCurrentPhrase(
+        expectedPhraseID: Int? = nil,
+        reason: PhraseAudioRouter.BoundaryReason,
+        createSuccessor: Bool = true
+    ) {
+        guard let boundary = audioRouter.sealCurrentPhrase(
+            expectedPhraseID: expectedPhraseID,
+            reason: reason,
+            createSuccessor: createSuccessor
+        ) else { return }
+        if boundary.phraseID == processingPhraseID {
+            request?.endAudio()
+            recognition?.finish()
+            finishingPhraseID = boundary.phraseID
+            schedulePhraseFinalizationTimeout(phraseID: boundary.phraseID, token: taskToken)
+        }
+        phraseDidSeal(boundary, recognitionAlreadyEnded: true)
+    }
+
+    private func phraseDidSeal(
+        _ boundary: PhraseAudioRouter.Boundary,
+        recognitionAlreadyEnded: Bool = false
+    ) {
+        if let nextPhraseID = boundary.nextPhraseID {
+            scheduleWallLimit(for: nextPhraseID)
+        } else {
+            phraseWallTask?.cancel()
+            phraseWallTask = nil
+        }
+        if boundary.phraseID == processingPhraseID, !recognitionAlreadyEnded {
+            endRecognitionInput(for: boundary.phraseID)
+        } else if processingPhraseID == nil {
+            startNextPhraseIfNeeded()
+        }
+    }
+
+    private func endRecognitionInput(for phraseID: Int) {
+        guard processingPhraseID == phraseID, finishingPhraseID != phraseID else { return }
+        finishingPhraseID = phraseID
+        request?.endAudio()
+        recognition?.finish()
+        schedulePhraseFinalizationTimeout(phraseID: phraseID, token: taskToken)
+    }
+
+    private func startNextPhraseIfNeeded() {
+        guard processingPhraseID == nil else { return }
+        guard let next = audioRouter.firstPendingPhraseID else {
+            checkFinalBarrier()
+            return
+        }
+        startRecognition(for: next)
+    }
+
+    private func scheduleWallLimit(for phraseID: Int) {
+        phraseWallTask?.cancel()
+        phraseWallTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(PhraseAudioRouter.maximumPhraseDuration))
+            guard !Task.isCancelled, let self, self.phase == .listening else { return }
+            self.sealCurrentPhrase(expectedPhraseID: phraseID, reason: .maximumDuration)
+        }
+    }
+
+    private func schedulePhraseFinalizationTimeout(phraseID: Int, token: Int) {
+        phraseFinalizationTask?.cancel()
+        phraseFinalizationTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled,
+                  let self,
+                  self.processingPhraseID == phraseID,
+                  self.taskToken == token else { return }
+            self.recognition?.cancel()
+            self.phraseCancellationGraceTask?.cancel()
+            self.phraseCancellationGraceTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled,
+                      let self,
+                      self.processingPhraseID == phraseID,
+                      self.taskToken == token else { return }
+                self.failure = "Speech recognition stalled. Finalized phrases are still kept."
+                self.resolveFinalBarrier(succeeded: false)
+                self.stopCaptureHardware()
+                if self.phase == .listening { self.phase = .idle }
             }
         }
-        return candidate
-    }
-
-    private func restartRecognition(after cursor: Int) {
-        guard phase == .listening, let recognizer else { return }
-        let previousRequest = request
-        let previousRecognition = recognition
-        generation += 1
-        let next = makeRequest(for: recognizer)
-        request = next
-        replayAfterSequence = cursor
-        // The relay moves first. Any tap callback concurrent with rollover is
-        // serialized onto the new request, and retained audio fills its prefix.
-        expectsReplayOverlap = true
-        audioRelay.install(next, replayAfter: cursor)
-        previousRequest?.endAudio()
-        previousRecognition?.cancel()
-        startRecognition(on: recognizer, request: next, generation: generation)
     }
 
     private func finish(deliver: @escaping (String) async -> Bool) {
@@ -531,144 +826,118 @@ final class TalkController: NSObject, ObservableObject {
         phase = .sending
         Task { @MainActor [weak self] in
             guard let self else { return }
-            // A tap is delivered in audio-buffer-sized chunks. Give its final
-            // chunk time to arrive before stopping the engine; stopping at the
-            // button edge can otherwise discard the last phoneme before the
-            // relay ever sees it.
             try? await Task.sleep(for: .milliseconds(120))
 
-            self.finishingGeneration = self.generation
-            self.finalizationRecoveryRemaining = 1
-            self.finalizationResolved = false
-            self.finalizationSucceeded = false
+            self.armFinalBarrier()
             self.stopCaptureHardware()
+            if let boundary = self.audioRouter.closeAndSeal(reason: .send) {
+                self.phraseDidSeal(boundary)
+            }
+            self.checkFinalBarrier()
+            await self.waitForAllFinalSegments()
 
-            let finishingRequest = self.request
-            let finishingTask = self.recognition
-            self.scheduleFinalizationTimeout(for: self.generation)
-            finishingRequest?.endAudio()
-            finishingTask?.finish()
-            if finishingTask == nil { self.resolveFinalization(succeeded: false) }
+            self.finalBarrierTimeout?.cancel()
+            self.finalBarrierTimeout = nil
+            let allPhrasesFinal = self.finalBarrierSucceeded
 
-            await waitForFinalization()
-            self.finalizationTimeout?.cancel()
-            self.finalizationTimeout = nil
-            self.finishingGeneration = nil
-            // Make every in-flight callback from this capture inert BEFORE we
-            // await the Mac. Cleanup nilled the references but left the
-            // generation intact, so a late same-generation result could still
-            // append a tail during the await — and then be deleted by the
-            // clear below, having never been sent.
-            self.generation += 1
-            self.recognition = nil
-            self.request = nil
-            self.audioRelay.reset()
+            // Every callback from this capture becomes inert before the network
+            // await. Phrase identity handles FIFO; this epoch handles lifetime.
+            self.captureEpoch += 1
+            self.cancelPhraseFinalizationTimers()
+            self.request?.endAudio()
+            self.recognition?.cancel()
+            self.clearRecognitionReferences()
+            self.audioRouter.reset()
 
-            let text = self.committed.trimmingCharacters(in: .whitespacesAndNewlines)
-            // Words in hand get sent, whether or not recognition signed off.
-            // Refusing to send text we already have because the recogniser
-            // failed to say "done" punishes you for its problem: you asked to
-            // send, the words exist, send them. The only thing a failed
-            // finalisation costs is the tail it never reported, and that is
-            // worth saying out loud rather than swallowing the whole message.
+            let sentSegments = self.segments
+            let text = sentSegments.joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else {
-                if !self.finalizationSucceeded {
-                    let why = self.lastRecognitionError.map { " (\($0))" } ?? ""
-                    self.failure = "Speech recognition couldn't finish\(why) — nothing was captured."
+                if !allPhrasesFinal {
+                    self.failure = "Speech recognition couldn't finalize this phrase — nothing final was sent."
                 }
                 self.phase = .idle
                 return
             }
-            if !self.finalizationSucceeded {
-                self.failure = "Recognition cut out at the end — sending what it caught."
+            if !allPhrasesFinal {
+                self.failure = "The last phrase did not finalize — sending only the finalized phrases."
             }
+
             let delivered = await deliver(text)
-            // Keep failed text intact; a subsequent Talk starts only after the
-            // user has had a chance to copy/retry it from the visible bubble.
             if delivered {
-                // Clear exactly what was acknowledged, never the whole buffer.
-                // Assigning empty after an await deletes anything that arrived
-                // during it — words that were never sent to anyone.
-                let held = self.committed.trimmingCharacters(in: .whitespacesAndNewlines)
-                self.committed = held.hasPrefix(text)
-                    ? String(held.dropFirst(text.count))
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    : ""
+                // Consume the exact immutable prefix acknowledged by this send.
+                // Later segments, if any, are not text-prefix compared or cleared.
+                if self.segments.starts(with: sentSegments) {
+                    self.segments.removeFirst(sentSegments.count)
+                }
             }
             self.phase = .idle
         }
     }
 
-    private func waitForFinalization() async {
-        if finalizationResolved { return }
+    private func armFinalBarrier() {
+        finalBarrierResolved = false
+        finalBarrierSucceeded = false
+        finalBarrierTimeout?.cancel()
+        finalBarrierTimeout = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            guard !Task.isCancelled, let self, !self.finalBarrierResolved else { return }
+            self.resolveFinalBarrier(succeeded: false)
+        }
+    }
+
+    private func checkFinalBarrier() {
+        guard phase == .sending,
+              audioRouter.pendingPhraseCount == 0,
+              processingPhraseID == nil else { return }
+        resolveFinalBarrier(succeeded: true)
+    }
+
+    private func waitForAllFinalSegments() async {
+        if finalBarrierResolved { return }
         await withCheckedContinuation { continuation in
-            if finalizationResolved {
+            if finalBarrierResolved {
                 continuation.resume()
             } else {
-                finalizationContinuation = continuation
+                finalBarrierContinuation = continuation
             }
         }
     }
 
-    private func resolveFinalization(succeeded: Bool) {
-        guard !finalizationResolved else { return }
-        finalizationResolved = true
-        finalizationSucceeded = succeeded
-        finalizationTimeout?.cancel()
-        finalizationTimeout = nil
-        let continuation = finalizationContinuation
-        finalizationContinuation = nil
+    private func resolveFinalBarrier(succeeded: Bool) {
+        guard !finalBarrierResolved else { return }
+        finalBarrierResolved = true
+        finalBarrierSucceeded = succeeded
+        let continuation = finalBarrierContinuation
+        finalBarrierContinuation = nil
         continuation?.resume()
     }
 
-    private func scheduleFinalizationTimeout(for generation: Int) {
-        finalizationTimeout?.cancel()
-        finalizationTimeout = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(3))
-            guard !Task.isCancelled,
-                  let self,
-                  self.finishingGeneration == generation else { return }
-            if self.finalizationRecoveryRemaining > 0 {
-                self.startFinalizationRecovery()
-            } else {
-                self.commit(self.partial)
-                self.resolveFinalization(succeeded: false)
-            }
-        }
+    private func clearRecognitionReferences(keepProcessingID: Bool = false) {
+        request = nil
+        recognition = nil
+        recognitionDelegate = nil
+        finishingPhraseID = nil
+        if !keepProcessingID { processingPhraseID = nil }
     }
 
-    private func startFinalizationRecovery() {
-        guard finalizationRecoveryRemaining > 0, let recognizer else {
-            resolveFinalization(succeeded: false)
-            return
-        }
-        finalizationRecoveryRemaining -= 1
-        recognition?.cancel()
-        request?.endAudio()
-
-        generation += 1
-        let recoveryGeneration = generation
-        finishingGeneration = recoveryGeneration
-        let recovery = makeRequest(for: recognizer)
-        request = recovery
-        expectsReplayOverlap = true
-        audioRelay.install(recovery, replayAfter: replayAfterSequence)
-        startRecognition(
-            on: recognizer,
-            request: recovery,
-            generation: recoveryGeneration
-        )
-        scheduleFinalizationTimeout(for: recoveryGeneration)
-        recovery.endAudio()
-        recognition?.finish()
+    private func cancelPhraseFinalizationTimers() {
+        phraseFinalizationTask?.cancel()
+        phraseFinalizationTask = nil
+        phraseCancellationGraceTask?.cancel()
+        phraseCancellationGraceTask = nil
     }
 
     private func invalidateRecognition() {
-        generation += 1
+        captureEpoch += 1
+        phraseWallTask?.cancel()
+        phraseWallTask = nil
+        cancelPhraseFinalizationTimers()
+        finalBarrierTimeout?.cancel()
+        finalBarrierTimeout = nil
         request?.endAudio()
         recognition?.cancel()
-        request = nil
-        recognition = nil
+        clearRecognitionReferences()
     }
 
     private func stopCaptureHardware() {
@@ -677,7 +946,6 @@ final class TalkController: NSObject, ObservableObject {
             engine.inputNode.removeTap(onBus: 0)
             tapInstalled = false
         }
-        audioRelay.detach()
         try? AVAudioSession.sharedInstance().setActive(
             false,
             options: .notifyOthersOnDeactivation
@@ -689,7 +957,7 @@ final class TalkController: NSObject, ObservableObject {
         starting = false
         stopCaptureHardware()
         invalidateRecognition()
-        audioRelay.reset()
+        audioRouter.reset()
         partial = ""
         failure = nil
         phase = .idle

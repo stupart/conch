@@ -363,6 +363,26 @@ describe("daemon config controller", () => {
     expect(takeNextQueuedEvent(queue, "newest")).toBe(laterWake);
   });
 
+  test("phone injects are never coalesced, even for the same session", () => {
+    const first: TurnEvent = {
+      type: "inject",
+      requestId: "phone-send-1",
+      sessionId: "target",
+      label: "target",
+      announce: "first immutable draft",
+    };
+    const second: TurnEvent = {
+      ...first,
+      requestId: "phone-send-2",
+      announce: "second immutable draft",
+    };
+    const queue: TurnEvent[] = [];
+
+    expect(insertQueuedEvent(queue, first)).toBeTrue();
+    expect(insertQueuedEvent(queue, second)).toBeTrue();
+    expect(queue).toEqual([first, second]);
+  });
+
   test("a cancelled takeover may be superseded by a later ordinary duplicate", () => {
     const cancelledRecite: TurnEvent = {
       type: "recite",

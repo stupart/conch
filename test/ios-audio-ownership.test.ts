@@ -9,6 +9,21 @@ import { join } from "node:path";
 const app = (name: string) =>
   readFileSync(join(import.meta.dir, "..", "mobile", "conch-ios", "conch-ios", name), "utf8");
 
+/** Return the complete brace-delimited Swift block following `marker`. */
+const swiftBlock = (source: string, marker: string) => {
+  const markerIndex = source.indexOf(marker);
+  expect(markerIndex).toBeGreaterThan(-1);
+  const open = source.indexOf("{", markerIndex);
+  expect(open).toBeGreaterThan(markerIndex);
+  let depth = 0;
+  for (let index = open; index < source.length; index += 1) {
+    if (source[index] === "{") depth += 1;
+    if (source[index] === "}") depth -= 1;
+    if (depth === 0) return source.slice(open + 1, index);
+  }
+  throw new Error(`unterminated Swift block after ${marker}`);
+};
+
 describe("only one side of the phone owns the audio route", () => {
   const speech = app("SpeechController.swift");
   const session = app("SessionView.swift");
@@ -64,94 +79,179 @@ describe("only one side of the phone owns the audio route", () => {
     expect(app("ConchApp.swift")).toMatch(/@StateObject private var talk = TalkController\(\)/);
   });
 
-  test("only a confirmed send or an explicit discard clears the transcript", () => {
-    // Three separate bugs deleted this string, each fix closing only the path
-    // it knew about. The policy replaces the whack-a-mole: the only writes
-    // that empty it are the one after `deliver` and the one the user asked
-    // for by name.
+  test("only a confirmed send or an explicit discard removes final segments", () => {
+    // Final recognizer results are the durable source of truth. Starting,
+    // switching, finalization failure, and teardown may change the live
+    // display hypothesis, but must not erase an immutable segment.
     const talk = app("TalkController.swift");
-    const clears = [...talk.matchAll(/^\s*(?:self\.)?committed = ""$/gm)]
-      .map((m) => m.index ?? 0);
-    const send = talk.lastIndexOf("let delivered = await deliver(text)");
-    const discard = talk.indexOf("func discard(session: String)");
-    expect(send).toBeGreaterThan(-1);
-    expect(discard).toBeGreaterThan(-1);
-    for (const at of clears) {
-      const inSend = at > send;
-      const inDiscard = at > discard && at < talk.indexOf("\n    }", discard);
-      expect(inSend || inDiscard).toBeTrue();
-    }
+    expect(talk).toMatch(/@Published private\(set\) var segments: \[String\]/);
+    expect(swiftBlock(talk, "func discard(session: String)")).toMatch(/segments\.removeAll\(\)/);
+
+    const acknowledged = swiftBlock(talk, "if delivered {");
+    expect(acknowledged).toMatch(/segments\.removeFirst\(/);
+    expect(acknowledged).toMatch(
+      /segments\.starts\(with: sentSegments\)|Array\((?:self\.)?segments\.prefix\(sentSegments\.count\)\) == sentSegments/,
+    );
+    expect(acknowledged).not.toMatch(/segments\.removeAll\(\)|segments = \[\]|hasPrefix/);
+
+    // One deliberate clear, one acknowledged-prefix consumption, no other
+    // destructive mutation of the active segment buffer.
+    expect([...talk.matchAll(/segments\.(?:removeAll|removeFirst)\(/g)]).toHaveLength(2);
     // Starting a recording continues an unsent draft rather than wiping it.
     const begin = talk.indexOf("private func beginCapture()");
     const beginBody = talk.slice(begin, talk.indexOf("private func makeRequest", begin));
-    expect(beginBody).not.toMatch(/committed = ""/);
+    expect(beginBody).not.toMatch(/segments\.(?:removeAll|removeFirst)\(|segments = \[\]/);
   });
 
   test("the draft outlives the process", () => {
-    // A relaunch or crash mid-utterance is not a decision to discard speech.
+    // A relaunch or crash is not a decision to discard finalized speech.
     const talk = app("TalkController.swift");
     expect(talk).toMatch(/didSet \{ persistDrafts\(\) \}/);
-    expect(talk).toMatch(/UserDefaults\.standard\.set\(all, forKey: Self\.draftKey\)/);
-    expect(talk).toMatch(/parked = UserDefaults\.standard\.dictionary\(forKey: Self\.draftKey\)/);
+    expect(talk).toMatch(/UserDefaults\.standard\.set\(/);
+    expect(talk).toMatch(/forKey: Self\.draftKey/);
+    expect(talk).toMatch(/(?:UserDefaults\.standard|defaults)\.(?:data|dictionary)\(forKey: Self\.draftKey\)/);
+    // c8dcead shipped the first durable draft under this key. Changing the
+    // schema without reading it makes an already-preserved user message
+    // disappear on upgrade.
+    expect(talk).toContain('"conch.draft.committed"');
   });
 
-  test("a volatile partial can never shrink the visible transcript", () => {
-    // Apple: a nonfinal transcription may represent only PART of the audio.
-    // A pause makes the recogniser resegment and hand back "" or a stub for a
-    // sentence it already reported whole — and assigning that wholesale is
-    // what emptied the bubble with no Send, no navigation, nothing. Every
-    // other guarantee in this file protects `committed`; the words on screen
-    // are in `partial` until a result goes final.
+  test("only final results append immutable segments; partial is display-only", () => {
+    // SFSpeech nonfinal results are revisable hypotheses. They may replace the
+    // live line as often as needed, but they cannot revise or append the
+    // reducer-like finalized segment buffer.
     const talk = app("TalkController.swift");
-    const absorb = talk.slice(talk.indexOf("private func absorbPartial("));
-    const body = absorb.slice(0, absorb.indexOf("\n    }"));
-    // Refusing a shorter hypothesis outright was the opposite failure: on a
-    // pause the recogniser starts a NEW phrase, which is shorter, so the
-    // transcript froze at its high-water mark and never grew again. A prefix
-    // match is what separates "less of the same phrase" from "a new one".
-    expect(body).toMatch(/hasPrefix/);
-    expect(body).toMatch(/commit\(held\)/);
-    // Silence is not a retraction.
-    expect(body).toMatch(/if next\.isEmpty \{ return \}/);
-    // Every hypothesis, nonfinal or final, goes through the same decision.
-    const writes = [...talk.matchAll(/^\s*partial = (?!"").*$/gm)].map((m) => m[0]);
-    for (const write of writes) {
-      expect(write.includes("next") || write.includes("parked")).toBeTrue();
-    }
-    expect(talk.match(/absorbPartial\(removingCommittedOverlap\(from: text\)\)/g)?.length).toBe(2);
+    expect(talk).toMatch(/var transcript: String[\s\S]*segments\.joined\(separator: " "\)/);
+    expect(talk).toMatch(/didFinishRecognition[\s\S]*finalText = recognitionResult\.bestTranscription/);
+    const finished = swiftBlock(talk, "private func recognitionFinished(");
+    expect(finished).toMatch(/immutableFinal[\s\S]*appendFinalSegment\(/);
+    const partial = swiftBlock(talk, "private func receivePartial(");
+    expect(partial).toMatch(/partial = text/);
+    expect(partial).not.toMatch(/segments\.|appendFinalSegment/);
+    const appendCalls = [...talk.matchAll(/appendFinalSegment\(/g)].length;
+    expect(appendCalls).toBeGreaterThan(1); // declaration plus final callback
+    expect(talk).not.toMatch(/absorbPartial|\bricher\b/);
   });
 
-  test("overlap stripping runs only where audio was actually replayed", () => {
-    // It exists to absorb the ~1.5s a rollover feeds back into the next
-    // request. Run unconditionally it cannot tell replayed audio from a
-    // person repeating themselves, and eats the opening of "no, no — the
-    // other one". Every replay site must arm it; nothing else may.
+  test("phrase audio has no replay, cursor, or text-overlap path", () => {
+    // Every captured buffer belongs to exactly one phrase. Replaying audio
+    // requires heuristic text deletion, which cannot distinguish duplicated
+    // audio from a deliberate repeated phrase.
     const talk = app("TalkController.swift");
-    const fn = talk.slice(talk.indexOf("private func removingCommittedOverlap"));
-    expect(fn.slice(0, fn.indexOf("\n    }"))).toMatch(/guard expectsReplayOverlap else \{ return candidate \}/);
-    // Armed exactly where a cursor is replayed, never for a fresh capture.
-    const arms = [...talk.matchAll(/expectsReplayOverlap = true/g)].length;
-    expect(arms).toBe(2); // rollover + finalisation recovery
-    for (const site of ["audioRelay.install(next, replayAfter: cursor)",
-                        "audioRelay.install(recovery, replayAfter: replayAfterSequence)"]) {
-      const at = talk.indexOf(site);
-      expect(at).toBeGreaterThan(-1);
-      expect(talk.slice(Math.max(0, at - 200), at)).toMatch(/expectsReplayOverlap = true/);
-    }
-    const fresh = talk.indexOf("audioRelay.install(request, replayAfter: nil)");
-    expect(talk.slice(Math.max(0, fresh - 120), fresh)).toMatch(/expectsReplayOverlap = false/);
+    for (const obsolete of [
+      "RecognitionAudioRelay",
+      "replayCursor",
+      "replayAfterSequence",
+      "discard(through:",
+      "expectsReplayOverlap",
+      "removingCommittedOverlap",
+    ]) expect(talk).not.toContain(obsolete);
+  });
+
+  test("phrase rollover assigns every tap buffer exactly once with no handoff gap", () => {
+    // AVAudioEngine's tap is concurrent with MainActor. The sink replacement
+    // therefore has to be one locked operation: seal the old phrase and make
+    // its successor current before returning it for endAudio/finalization.
+    // Stopping/reinstalling the tap between phrases would create a real hole.
+    const talk = app("TalkController.swift");
+    expect(talk).toContain("private final class PhraseAudioRouter");
+    const router = swiftBlock(talk, "private final class PhraseAudioRouter");
+    expect(router).toContain("NSLock()");
+    expect(router).toMatch(/func append\(_ source: AVAudioPCMBuffer\)/);
+    expect(router).toMatch(/func seal/);
+    expect(router).toMatch(/nextPhraseID/);
+
+    // Rollover itself never stops the engine or removes/reinstalls the tap.
+    const rollover = swiftBlock(talk, "private func sealCurrentPhrase");
+    expect(rollover).not.toMatch(/engine\.stop|removeTap|installTap/);
+    const swap = rollover.search(/(?:audioRouter|router)\.seal/);
+    const end = rollover.indexOf("endAudio()", swap);
+    expect(swap).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(swap);
+
+    // The router retains phrase identity and a serial FIFO. This prevents an
+    // older task's late final from overtaking a newer phrase, and avoids
+    // starting task N+1 while task N is still active (Speech error 1100).
+    expect(talk).toMatch(/(?:struct|class) (?:Buffered)?Phrase[\s\S]*\b(?:id|sequence): Int/);
+    expect(talk).toMatch(/(?:pending|sealed|queued)Phrases/);
+    expect(talk).toMatch(/removeFirst\(\)/);
+
+    // Speech/the system may finalize before the RMS timer. Its final callback
+    // must rotate the still-active phrase synchronously; otherwise `complete`
+    // removes the phrase while the tap targets its stale id and drops buffers.
+    const didFinish = swiftBlock(talk, "didFinishRecognition recognitionResult:");
+    expect(didFinish).toMatch(/onFinalDetected\(phraseID\)/);
+    const nativeFinal = swiftBlock(talk, "func recognizerDidFinalize(");
+    expect(nativeFinal).toMatch(/activePhraseID == phraseID/);
+    expect(nativeFinal).toMatch(/sealLocked\(/);
+    expect(nativeFinal).toMatch(/createSuccessor: true/);
+  });
+
+  test("silence segmentation is voiced-gated and bounded below the task limit", () => {
+    const talk = app("TalkController.swift");
+    // The 2% threshold matches the Mac recorder's default end threshold. The
+    // phone uses a deliberately shorter 800 ms phrase boundary (not the Mac's
+    // 3.5 s whole-utterance boundary) so it forces a final before Speech's own
+    // pause endpoint can strand a task. A sub-minute cap covers uninterrupted
+    // speech, so no recognizer task approaches the roughly one-minute limit.
+    expect(talk).toMatch(/bufferSize: 1024/);
+    expect(talk).toMatch(/silenceThreshold[^\n]*0\.02/);
+    expect(talk).toMatch(/trailingSilence[^\n]*0\.8/);
+    const maximum = talk.match(/(?:maxPhrase|maximumPhraseDuration)[^=\n]*=\s*([\d.]+)/);
+    expect(maximum).not.toBeNull();
+    expect(Number(maximum?.[1])).toBeLessThan(60);
+    expect(talk).toMatch(/hasVoice|hasVoicedAudio|heardVoice/);
+    expect(talk).toMatch(/(?:voice|voiced)[\s\S]*trailingSilence/);
+    expect(talk).toMatch(/maximumPhraseDuration[\s\S]*(?:sealCurrentPhrase|seal\()/);
+  });
+
+  test("send is a phrase-finalization barrier", () => {
+    const talk = app("TalkController.swift");
+    const finish = swiftBlock(talk, "private func finish(");
+    const seal = finish.search(/sealCurrentPhrase|audioRouter\.(?:seal|closeAndSeal)/);
+    const wait = finish.search(/await .*Final/);
+    const snapshot = finish.search(/let sentSegments|let acknowledgedSegments/);
+    const deliver = finish.indexOf("await deliver");
+    expect(seal).toBeGreaterThan(-1);
+    expect(wait).toBeGreaterThan(seal);
+    expect(snapshot).toBeGreaterThan(wait);
+    expect(deliver).toBeGreaterThan(snapshot);
   });
 
   test("a confirmed send clears only what it acknowledged", () => {
-    // A late callback can append during the `await deliver`, and assigning
-    // empty afterwards deletes words that were never sent to anyone.
+    // A late/future capture may append segments beyond the immutable send
+    // snapshot. Acknowledgement consumes that exact array prefix, never a
+    // String prefix and never the whole current draft.
     const talk = app("TalkController.swift");
     const send = talk.indexOf("let delivered = await deliver(text)");
     const after = talk.slice(send);
-    expect(after).toMatch(/held\.hasPrefix\(text\)/);
+    expect(after).toMatch(/segments\.removeFirst\(/);
+    expect(after).toMatch(/segments\.starts\(with: sentSegments\)|Array\((?:self\.)?segments\.prefix\(sentSegments\.count\)\) == sentSegments/);
+    expect(after).not.toMatch(/hasPrefix\(text\)|segments\.removeAll\(\)/);
     // Belt and braces: the capture's callbacks go inert before that await.
-    const cleanup = talk.indexOf("self.finishingGeneration = nil");
-    expect(talk.slice(cleanup, send)).toMatch(/self\.generation \+= 1/);
+    const beforeSend = talk.slice(0, send);
+    expect(beforeSend).toMatch(/self\.(?:generation|captureEpoch) \+= 1/);
+  });
+
+  test("bridge success means transcript-confirmed delivery, not queue acceptance", () => {
+    const bridge = app("BridgeClient.swift");
+    const daemon = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
+    const inject = swiftBlock(bridge, "func inject(sessionId:");
+    expect(inject).toMatch(/UUID\(\)\.uuidString/);
+    expect(inject).toMatch(/"requestId": requestId/);
+    expect(inject).toMatch(/confirmedRequestId: requestId/);
+
+    const post = swiftBlock(bridge, "private func post(");
+    expect(post).toMatch(/"kind"\] as\? String == "inject-result"/);
+    expect(post).toMatch(/"requestId"\] as\? String == confirmedRequestId/);
+    expect(post).toMatch(/"delivered"\] as\? Bool == true/);
+
+    // The daemon holds the control socket until the target transcript advances.
+    expect(daemon).toMatch(/waitForInjectResult\(requestId\)[\s\S]*kind: "inject-result"/);
+    expect(daemon).toMatch(/allowBlindFallback: false,[\s\S]*requireConfirmed: true/);
+    const delivery = daemon.slice(daemon.indexOf("async function deliverToSession("));
+    expect(delivery).toMatch(/transcriptMark\(event\.transcriptPath!\)[\s\S]*> beforeCount/);
+    expect(delivery).toMatch(/return options\.requireConfirmed !== true/);
   });
 
   test("a draft belongs to its session, and cannot be sent to another", () => {
@@ -165,15 +265,23 @@ describe("only one side of the phone owns the audio route", () => {
     const finish = body.indexOf("finish(deliver: deliver)");
     const guardIndex = body.indexOf("session == targetSessionId");
     expect(guardIndex).toBeLessThan(finish);
+    // A volatile hypothesis is not a finalized segment and cannot be parked
+    // as though it were one when changing conversations.
+    expect(body).not.toMatch(/appendFinalSegment\(partial\)|commit\(partial\)/);
+    // Switching destinations during a live phrase cannot cancel/drop that
+    // phrase. The UI may ignore the second-session tap or force-finalize A,
+    // but the old cancel-and-start path is forbidden.
+    expect(body).not.toMatch(/if phase == \.listening \{[\s\S]*?cancel\(\)/);
     // Drafts are stored per session, not one string for the whole app.
-    expect(talk).toMatch(/private var parked: \[String: String\]/);
+    expect(talk).toMatch(/private var parked: \[String: \[String\]\]/);
     // Every talk affordance is scoped to the session on screen.
     expect(session).toMatch(/talk\.targetSessionId == sessionId && talk\.phase == \.listening/);
   });
 
-  test("words in hand are sent even when recognition never signed off", () => {
-    // Refusing to send text we already have, because the recogniser failed to
-    // say "done", punishes you for its problem.
+  test("finalized words in hand are sent even when the last phrase fails", () => {
+    // A failed last final must not block already-finalized immutable segments.
+    // The volatile partial remains display-only; this preserves the original
+    // guarantee without promoting a revisable hypothesis into durable truth.
     const talk = app("TalkController.swift");
     expect(talk).not.toMatch(/guard self\.finalizationSucceeded else \{[\s\S]*?return\n            \}/);
     const guardEmpty = talk.indexOf("guard !text.isEmpty else {");

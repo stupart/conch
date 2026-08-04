@@ -118,15 +118,18 @@ final class BridgeClient: ObservableObject {
 
     // MARK: - Commands
 
-    /// Deliver spoken text into a session. Returns true when the daemon took it.
+    /// Deliver spoken text into a session. Returns true only after the target
+    /// transcript confirms that the prompt was submitted.
     func inject(sessionId: String, label: String, text: String) async -> Bool {
-        await post(control: [
+        let requestId = UUID().uuidString
+        return await post(control: [
             "type": "inject",
+            "requestId": requestId,
             "sessionId": sessionId,
             "label": label,
             "announce": text,
             "eventAt": Date().timeIntervalSince1970 * 1000,
-        ])
+        ], confirmedRequestId: requestId)
     }
 
     /// Claim (or hand back) the voice. While the phone holds it the Mac stays
@@ -141,7 +144,10 @@ final class BridgeClient: ObservableObject {
         await post(control: ["type": action, "sessionId": "", "label": "", "announce": ""])
     }
 
-    private func post(control message: [String: Any]) async -> Bool {
+    private func post(
+        control message: [String: Any],
+        confirmedRequestId: String? = nil
+    ) async -> Bool {
         guard let base = pairing.base,
               let body = try? JSONSerialization.data(withJSONObject: message) else {
             return false
@@ -150,10 +156,20 @@ final class BridgeClient: ObservableObject {
         request.httpMethod = "POST"
         request.httpBody = body
         request.setValue("Bearer \(pairing.token)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 6
+        request.timeoutInterval = confirmedRequestId == nil ? 6 : 35
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { return false }
+            if let confirmedRequestId {
+                guard let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                      body["kind"] as? String == "inject-result",
+                      body["requestId"] as? String == confirmedRequestId,
+                      body["delivered"] as? Bool == true else {
+                    lastError = "The Mac did not confirm delivery."
+                    return false
+                }
+                return true
+            }
             // Turn-event success is an empty daemon reply. A scoped inject can
             // instead return session-error; do not tell TalkController to erase
             // the user's words when the daemon rejected the target.

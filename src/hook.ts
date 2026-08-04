@@ -39,6 +39,8 @@ export interface TurnEvent {
   voice?: string;
   /** Epoch-ms when the hook observed this event, before any async processing. */
   eventAt?: number;
+  /** Correlates a phone inject with its end-to-end delivery acknowledgement. */
+  requestId?: string;
   /** This working state came from a Stop reclassified for live background work. */
   backgroundWork?: true;
   /** Set when the final reply carried a conch:review marker. */

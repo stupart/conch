@@ -105,6 +105,30 @@ describe("control forwarding", () => {
     expect(await res.json()).toEqual({ echoed: "get-config" });
   });
 
+  test("POST /control preserves a daemon's inject confirmation", async () => {
+    const confirmation = {
+      kind: "inject-result",
+      requestId: "phone-send-1",
+      delivered: true,
+    };
+    const b = startBridge({
+      forwardControl: async () => JSON.stringify(confirmation),
+    });
+    const res = await fetch(`http://127.0.0.1:${b.port}/control`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        type: "inject",
+        requestId: confirmation.requestId,
+        sessionId: "r1",
+        label: "target",
+        announce: "immutable draft",
+      }),
+    });
+
+    expect(await res.json()).toEqual(confirmation);
+  });
+
   test("a dead daemon is a 502, not a hang or a crash", async () => {
     const b = startBridge({
       forwardControl: async () => { throw new Error("no socket"); },
