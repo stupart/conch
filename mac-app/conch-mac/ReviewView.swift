@@ -196,6 +196,24 @@ private struct ReviewContent: View {
                     }
                 )
 
+                // WKWebView paints the document white until the page's own
+                // background lands, so a remote deliverable flashed a blinding
+                // white rectangle for several seconds inside a dark app. Cover
+                // it until the load settles. Failure states set isLoading false
+                // too, so this can't strand the pane behind a permanent cover.
+                if isWebLoading, navigationFailure == nil {
+                    ConchPalette.bg
+                        .overlay(
+                            VStack(spacing: 10) {
+                                ProgressView().controlSize(.small)
+                                Text(URL(string: link)?.host ?? "loading…")
+                                    .font(ConchTypography.font(size: 12))
+                                    .foregroundStyle(ConchPalette.textDim)
+                            }
+                        )
+                        .transition(.opacity)
+                }
+
                 if let failure = navigationFailure {
                     DeliverableFailureView(
                         failure: failure,
@@ -417,8 +435,23 @@ private struct DeliverableImageView: NSViewRepresentable {
         Coordinator()
     }
 
+    /// NSImageView reports the image's NATIVE size as its intrinsic size, so a
+    /// screenshot-sized deliverable laid out larger than the pane and got
+    /// clipped — and shoved the header around on its way. Claiming no intrinsic
+    /// size lets SwiftUI size it to the pane, which is what makes
+    /// `scaleProportionallyUpOrDown` actually fit instead of crop.
+    final class FittingImageView: NSImageView {
+        override var intrinsicContentSize: NSSize {
+            NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+        }
+    }
+
     func makeNSView(context: Context) -> NSImageView {
-        let imageView = NSImageView()
+        let imageView = FittingImageView()
+        imageView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        imageView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        imageView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        imageView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         imageView.imageAlignment = .alignCenter
         imageView.imageFrameStyle = .none
         imageView.imageScaling = .scaleProportionallyUpOrDown

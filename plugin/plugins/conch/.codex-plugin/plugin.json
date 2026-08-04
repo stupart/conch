@@ -1,6 +1,6 @@
 {
   "name": "conch",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Voice-loop control: see and steer your other Codex/Claude sessions.",
   "author": {
     "name": "Tyler Stupart"
