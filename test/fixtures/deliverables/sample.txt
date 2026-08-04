@@ -1,0 +1,10 @@
+build output — deliverable check
+================================
+
+12:01:33  compile        ok (4.2s)
+12:01:39  link           ok (0.8s)
+12:01:41  tests          712 pass, 0 fail
+12:01:44  package        conch-0.2.1.tar.gz (18MB)
+
+A plain-text deliverable must render dark and monospace,
+never as a white system page inside a dark app.
