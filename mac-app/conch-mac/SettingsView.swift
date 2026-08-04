@@ -278,6 +278,11 @@ private struct ConchSettingRowView: View {
                             Button("Reset", action: onReset)
                                 .disabled(isPending)
                                 .help("Remove the saved value and use the next available source")
+                        } else {
+                            // An empty Group collapses, so the frame reserved
+                            // nothing and the control column still came out
+                            // jagged. Something has to occupy the slot.
+                            Color.clear
                         }
                     }
                     .frame(width: 76, height: 28, alignment: .trailing)
