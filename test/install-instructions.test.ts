@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   installReviewInstructions,
+  renderSupervisorScript,
   REVIEW_INSTRUCTIONS_BLOCK,
   spliceReviewInstructions,
 } from "../src/install.ts";
@@ -144,5 +145,36 @@ describe("global review instructions", () => {
       console.warn = originalWarn;
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("the supervisor's liveness check", () => {
+  // The prose explains what went wrong and names the very commands under
+  // test; asserting against it would pass on a script that only apologises.
+  const code = renderSupervisorScript("/opt/homebrew/bin/tmux", "bun run src/cli.ts daemon")
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("#"))
+    .join("\n");
+
+  test("gates recovery on the daemon process, not the tmux session", () => {
+    // `has-session` outlives a dead pane, so as the OUTER gate it reported
+    // healthy while conch was gone and recovery could never run. It is still
+    // sound further in, for "is there a stale session to clear" — so assert
+    // the ordering, which is the part that was wrong, not its mere absence.
+    const liveness = code.indexOf("pgrep -f 'bun run src/cli.ts daemon'");
+    expect(liveness).toBeGreaterThan(-1);
+    expect(code.indexOf("has-session")).toBeGreaterThan(liveness);
+  });
+
+  test("never kills a session and creates one in the same pass", () => {
+    // Killing the last session stops the tmux server; a new-session issued
+    // before that teardown finishes silently loses the race, which is what
+    // stretched healing to 30-45s. They must sit on opposite branches.
+    const clear = code.indexOf("kill-session");
+    const create = code.indexOf("new-session");
+    expect(clear).toBeGreaterThan(-1);
+    expect(create).toBeGreaterThan(-1);
+    const between = code.slice(Math.min(clear, create), Math.max(clear, create));
+    expect(between).toMatch(/\belse\b/);
   });
 });
