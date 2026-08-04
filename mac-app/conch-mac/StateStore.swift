@@ -26,6 +26,8 @@ final class StateStore: ObservableObject {
     /// The other half of the product. See PluginPresence — computed once at
     /// launch, because installing a plugin means restarting the editor anyway.
     @Published private(set) var pluginHintVisible = false
+    /// A newer build is sitting on disk; this process is still the old one.
+    @Published private(set) var staleBuild = false
     @Published private(set) var isLogDrawerOpen = false
     @Published private(set) var logLines: [String] = []
 
@@ -81,6 +83,9 @@ final class StateStore: ObservableObject {
         pollingTask = Task { @MainActor [weak self, reader] in
             while !Task.isCancelled {
                 guard let self else { return }
+                // Cheap, and it is the difference between staring at a bug that
+                // was fixed hours ago and knowing to relaunch.
+                if !staleBuild, BuildFreshness.installedIsNewer { staleBuild = true }
                 let result = await reader.read(includeLog: isLogDrawerOpen)
                 if let snapshot = result.snapshot {
                     accept(snapshot)
@@ -617,6 +622,15 @@ final class StateStore: ObservableObject {
     func dismissPluginHint() {
         UserDefaults.standard.set(true, forKey: Self.pluginHintDismissedKey)
         pluginHintVisible = false
+    }
+
+    func relaunchForNewBuild() {
+        guard let bundle = Bundle.main.bundleURL as URL? else { return }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: bundle, configuration: configuration) { _, _ in
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
     }
 
     private func updateNewerDaemonWarning() {

@@ -41,11 +41,13 @@ struct ConchApp: App {
         // Claim the voice as soon as we are connected, and re-claim on every
         // reconnect — the daemon hands audio back to the Mac whenever the last
         // phone drops, which includes its own restarts.
-        created.onConnected = { [speech] in
-            Task { await created.claimAudio(speech.isEnabled) }
-        }
-        speech.onEnabledChange = { enabled in
-            Task { await created.claimAudio(enabled) }
+        // Claim the voice on every (re)connect: the daemon hands audio back to
+        // the Mac whenever the last phone drops, including across its restarts.
+        created.onConnected = {
+            Task {
+                let passive = created.state?.mode.muted ?? false
+                await created.claimAudio(!passive)
+            }
         }
         // Assigning state during view construction is fine here: the next
         // render pass reuses the cached client rather than reconnecting.

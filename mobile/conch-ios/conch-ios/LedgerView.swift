@@ -78,11 +78,10 @@ struct LedgerView: View {
                         }
                         Button("Reconnect now") { bridge.reconnectNow() }
                         Divider()
-                        Toggle("Speak on this phone", isOn: $speech.isEnabled)
                         if speech.isSpeaking {
                             Button("Stop reading") { speech.stop() }
+                            Divider()
                         }
-                        Divider()
                         Button("conch settings…") { showingSettings = true }
                         Divider()
                         Button("Unpair from this Mac…", role: .destructive) {
@@ -143,6 +142,10 @@ struct LedgerView: View {
             Task {
                 let sent = await bridge.send(mode: next ? "mute" : "unmute")
                 if !sent { pendingPassive = nil }
+                // Active means this phone carries the voice; passive hands it
+                // back so the Mac is usable on its own again.
+                await bridge.claimAudio(!next)
+                if next { speech.stop() }
             }
         } label: {
             Circle()
