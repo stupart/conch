@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   AudioSinkLease,
+  type AudioSink,
   rehydrateLatestTurns,
   reserveNormalMicForSink,
   retainMatchingPhoneBridge,
@@ -215,5 +217,56 @@ describe("phone inject scope", () => {
 
     expect(result).toEqual({ via: "clipboard", reason: "session-not-routable" });
     expect(copied).toEqual(["irreplaceable words"]);
+  });
+});
+
+describe("every Mac speech path is gated on the audio lease", () => {
+  // Mutation-found gap: breaking the gate inside `speak` passed all 747 tests
+  // while the user could HEAR both machines reading the same reply. The lease's
+  // own state machine is well covered; its WIRING into the speech paths was not
+  // covered at all, and the wiring is the part I got wrong twice.
+  const daemonSource = readFileSync(
+    new URL("../src/daemon.ts", import.meta.url),
+    "utf8",
+  );
+
+  function bodyOf(startMarker: string, endMarker: string): string {
+    const start = daemonSource.indexOf(startMarker);
+    expect(start).toBeGreaterThan(-1);
+    const end = daemonSource.indexOf(endMarker, start);
+    expect(end).toBeGreaterThan(start);
+    return daemonSource.slice(start, end);
+  }
+
+  test("`speak` returns before synthesising when the phone owns the voice", () => {
+    const speak = bodyOf("const speak = async (speechCfg", "await speech.speak(");
+    expect(speak).toMatch(/audioLease\.(isPhone\(\)|sink === "phone")/);
+  });
+
+  test("`speakInterruptible` returns before it can arm the Mac recorder", () => {
+    // This path is worse than plain speech: it opens the microphone directly,
+    // so the gate must precede setState/recorder arming, not merely playback.
+    const interruptible = bodyOf(
+      "async function speakInterruptible(",
+      "setState(\"speaking\", event.label)",
+    );
+    expect(interruptible).toMatch(/audioLease\.(isPhone\(\)|sink === "phone")/);
+  });
+
+  test("the mic reservation re-checks the lease after awaiting quiescence", async () => {
+    // TOCTOU: a claim landing during the await would otherwise open the Mac's
+    // mic behind the phone's back.
+    // This one IS unit-testable, so assert behaviour rather than source: the
+    // lease flipping during the await must not yield a reserved mic.
+    let sink: AudioSink = "mac";
+    let reserved = false;
+    const granted = await reserveNormalMicForSink({
+      sink: () => sink,
+      shuttingDown: () => false,
+      setReserved: (value) => { reserved = value; },
+      quiescent: async () => { sink = "phone"; },
+    });
+    expect(granted).toBe(false);
+    expect(reserved).toBe(false);
   });
 });
