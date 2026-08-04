@@ -382,12 +382,13 @@ final class TalkController: NSObject, ObservableObject {
         if let result {
             let text = result.bestTranscription.formattedString
             if result.isFinal {
-                // A final can arrive SHORTER than the partial it replaces, and
-                // committing it verbatim threw the difference away. Keep
-                // whichever carries more of what was said.
-                commit(Self.richer(removingCommittedOverlap(from: text), than: partial))
+                // A final can arrive SHORTER than the partial it replaces, or
+                // be a new phrase entirely. Same decision as any other
+                // hypothesis — then bank whatever survives it.
+                absorbPartial(removingCommittedOverlap(from: text))
+                commit(partial)
             } else {
-                partial = Self.richer(removingCommittedOverlap(from: text), than: partial)
+                absorbPartial(removingCommittedOverlap(from: text))
                 // Retain a short overlap, plus every buffer after this callback,
                 // then release audio older than that safe replay boundary.
                 replayAfterSequence = audioRelay.replayCursor(endingAt: callbackCursor)
@@ -420,28 +421,44 @@ final class TalkController: NSObject, ObservableObject {
         restartRecognition(after: cursor)
     }
 
-    /// The better of two hypotheses for the same audio.
+    /// Fold a fresh hypothesis into the visible draft.
     ///
-    /// THIS is the one that was eating Tyler's transcript. Everything else in
-    /// this file protects `committed`, but until a result is final the words
-    /// on screen live in `partial` — and a nonfinal SFSpeech result replaces
-    /// that whole string. Apple is explicit that a nonfinal transcription may
-    /// represent only part of the audio, so a pause that makes the recogniser
-    /// resegment can legitimately hand back "" or a stub for a sentence it
-    /// already reported in full. Assigning it wholesale is what made an entire
-    /// utterance vanish on silence, with no Send, no navigation, nothing.
+    /// Until a result goes final the words on screen live in `partial`, and a
+    /// nonfinal SFSpeech result replaces that whole string. Apple is explicit
+    /// that a nonfinal transcription may represent only part of the audio, so
+    /// a pause makes the recogniser hand back something SHORTER for speech it
+    /// already reported. Assigning it wholesale emptied the bubble mid-
+    /// sentence; refusing every shorter hypothesis then froze the transcript
+    /// at its high-water mark and it never grew again. Both are the same
+    /// mistake — reading one string as the whole truth.
     ///
-    /// Word count, not length: "I'll" -> "I will" is longer in characters and
-    /// says no more. Ties go to the newer text so in-place corrections still
-    /// land — only a hypothesis that carries strictly less is refused.
-    private static func richer(_ candidate: String, than current: String) -> String {
+    /// Shorter means one of two different things, and they need opposite
+    /// handling:
+    ///
+    ///   revision   held "tell Tyler I will arrive"  next "tell Tyler"
+    ///              -> same phrase, less of it. Keep what we have.
+    ///   resegment  held "tell Tyler I will arrive"  next "so anyway"
+    ///              -> a NEW phrase. Bank the old one and carry on.
+    ///
+    /// A prefix match separates them: a revision of a phrase still starts like
+    /// that phrase, and a new phrase almost never does.
+    private func absorbPartial(_ candidate: String) {
         let next = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-        let held = current.trimmingCharacters(in: .whitespacesAndNewlines)
-        if held.isEmpty { return next }
-        if next.isEmpty { return held }
+        let held = partial.trimmingCharacters(in: .whitespacesAndNewlines)
+        if held.isEmpty { partial = next; return }
+        // Silence between words, not a retraction of what was already said.
+        if next.isEmpty { return }
+
+        // Word count, not length: "I'll" -> "I will" is longer in characters
+        // and says no more. Ties go to the newer text so in-place corrections
+        // still land.
         let nextWords = next.split(whereSeparator: { $0.isWhitespace }).count
         let heldWords = held.split(whereSeparator: { $0.isWhitespace }).count
-        return nextWords >= heldWords ? next : held
+        if nextWords >= heldWords { partial = next; return }
+
+        if held.lowercased().hasPrefix(next.lowercased()) { return }
+        commit(held)
+        partial = next
     }
 
     /// Append a segment while removing only a proven multi-word audio overlap.

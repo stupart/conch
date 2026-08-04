@@ -72,7 +72,11 @@ struct SessionView: View {
                     if isTalkingHere || !talk.draft(for: sessionId).isEmpty {
                         YourTurnBubble(
                             text: talk.draft(for: sessionId),
-                            isSending: isTalkingHere && talk.phase == .sending
+                            isSending: isTalkingHere && talk.phase == .sending,
+                            onDiscard: {
+                                talk.discard(session: sessionId)
+                                sendFailed = false
+                            }
                         )
                         .id(Self.draftAnchor)
                     }
@@ -197,17 +201,6 @@ struct SessionView: View {
                     .foregroundStyle(Palette.needs)
             }
 
-            // Nothing else here will delete your words, which only works as a
-            // promise if you can delete them yourself.
-            if !talk.draft(for: sessionId).isEmpty {
-                Button("Discard draft", role: .destructive) {
-                    talk.discard(session: sessionId)
-                    sendFailed = false
-                }
-                .font(Type.caption.weight(.medium))
-                .foregroundStyle(Palette.textDim)
-            }
-
             if let failure = talk.failure {
                 Text(failure)
                     .font(Type.caption)
@@ -266,6 +259,7 @@ struct SessionView: View {
 private struct YourTurnBubble: View {
     let text: String
     let isSending: Bool
+    let onDiscard: () -> Void
 
     var body: some View {
         HStack {
@@ -288,6 +282,10 @@ private struct YourTurnBubble: View {
         }
         .padding(.top, 8)
         .transition(.opacity.combined(with: .move(edge: .bottom)))
+        .contextMenu {
+            Button("Discard draft", systemImage: "trash", role: .destructive, action: onDiscard)
+        }
+        .accessibilityHint("Long press to discard this draft")
     }
 }
 

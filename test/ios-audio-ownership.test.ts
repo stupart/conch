@@ -103,12 +103,22 @@ describe("only one side of the phone owns the audio route", () => {
     // other guarantee in this file protects `committed`; the words on screen
     // are in `partial` until a result goes final.
     const talk = app("TalkController.swift");
-    expect(talk).toMatch(/private static func richer\(/);
-    // Both writers of `partial`, and the final commit, must go through it.
+    const absorb = talk.slice(talk.indexOf("private func absorbPartial("));
+    const body = absorb.slice(0, absorb.indexOf("\n    }"));
+    // Refusing a shorter hypothesis outright was the opposite failure: on a
+    // pause the recogniser starts a NEW phrase, which is shorter, so the
+    // transcript froze at its high-water mark and never grew again. A prefix
+    // match is what separates "less of the same phrase" from "a new one".
+    expect(body).toMatch(/hasPrefix/);
+    expect(body).toMatch(/commit\(held\)/);
+    // Silence is not a retraction.
+    expect(body).toMatch(/if next\.isEmpty \{ return \}/);
+    // Every hypothesis, nonfinal or final, goes through the same decision.
     const writes = [...talk.matchAll(/^\s*partial = (?!"").*$/gm)].map((m) => m[0]);
-    expect(writes.length).toBeGreaterThan(0);
-    for (const write of writes) expect(write).toMatch(/Self\.richer\(/);
-    expect(talk).toMatch(/commit\(Self\.richer\(removingCommittedOverlap\(from: text\), than: partial\)\)/);
+    for (const write of writes) {
+      expect(write.includes("next") || write.includes("parked")).toBeTrue();
+    }
+    expect(talk.match(/absorbPartial\(removingCommittedOverlap\(from: text\)\)/g)?.length).toBe(2);
   });
 
   test("a confirmed send clears only what it acknowledged", () => {
