@@ -173,12 +173,27 @@ struct LedgerView: View {
                 let sent = await bridge.send(mode: next ? "pause" : "resume")
                 if !sent { pendingPassive = nil }
                 if next { speech.stop() }
+                // If the daemon never agrees — command lost, relay blip — the
+                // guess would otherwise show the wrong state indefinitely and
+                // every further tap would fight it. Let the truth win back.
+                try? await Task.sleep(for: .seconds(3))
+                if pendingPassive == next, bridge.state?.mode.paused != next {
+                    pendingPassive = nil
+                }
             }
         } label: {
+            // The DOT is 10pt; the TARGET is 44. A Button's hit area is its
+            // label's frame, so this was a 10x10 target — Tyler: "the button
+            // isn't working :((( oh nvm i just had to click it 5 times". He
+            // was not tapping a broken button five times, he was missing a dot
+            // four times. 44 is Apple's minimum for a reason, and contentShape
+            // is what makes the empty space around the dot count as the dot.
             Circle()
                 .fill(passive ? Palette.textDim : Palette.needs)
                 .frame(width: 10, height: 10)
                 .animation(.easeOut(duration: 0.12), value: passive)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .accessibilityLabel(
             passive
