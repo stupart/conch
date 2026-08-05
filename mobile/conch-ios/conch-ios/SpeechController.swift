@@ -15,6 +15,16 @@ final class SpeechController: NSObject, ObservableObject {
     var onFinishedReading: (() -> Void)?
     /// Which session was just read, so the mic opens pointed at the right one.
     private(set) var lastSpokenSessionId: String?
+    /// Reports this phone's speech to the Mac, so the ledger can show which
+    /// session is being read. Set by the app, which owns the bridge.
+    var reportSpeaking: (Bool, String) -> Void = { _, _ in }
+    /// The label most recently read, so the stop report names the same row.
+    private var speakingLabel = ""
+    /// Why the phone could not read aloud, when it could not.
+    ///
+    /// Silence with no explanation is indistinguishable from a bug in the
+    /// text, the network, or the agent — this says which one it was.
+    @Published private(set) var speechFailure: String?
     /// Whether the capture side still owns the audio route.
     ///
     /// Speaking and recording share one AVAudioSession singleton. Speaking
@@ -77,7 +87,11 @@ final class SpeechController: NSObject, ObservableObject {
         // Backstop for every caller, not just `consider`: touching the audio
         // session while recording is what destroys the utterance.
         guard !captureOwnsAudio() else { return }
-        configureSession()
+        // Both of these were `try?`. When activation failed the synthesizer
+        // spoke into a dead session — didStart still fires, so the button
+        // flipped to "stop" and the row said reading, with no sound. Tyler:
+        // "it was the phone app claiming to read while silent."
+        guard configureSession() else { return }
         let spokenText = Self.speakable(markdown)
         guard !spokenText.isEmpty else { return }
         let utterance = AVSpeechUtterance(
@@ -86,24 +100,48 @@ final class SpeechController: NSObject, ObservableObject {
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 1.08
         utterance.postUtteranceDelay = 0.1
         isSpeaking = true
+        speakingLabel = label ?? ""
+        reportSpeaking(true, speakingLabel)
         synthesizer.speak(utterance)
     }
 
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
         isSpeaking = false
+        reportSpeaking(false, speakingLabel)
     }
 
     /// Duck rather than interrupt: a workout has music playing, and conch
     /// talking over it briefly is far better than killing it.
-    private func configureSession() {
+    @discardableResult
+    private func configureSession() -> Bool {
         let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(
-            .playback,
-            mode: .spokenAudio,
-            options: [.duckOthers, .allowBluetoothA2DP]
-        )
-        try? session.setActive(true)
+        let take = {
+            try session.setCategory(
+                .playback,
+                mode: .spokenAudio,
+                options: [.duckOthers, .allowBluetoothA2DP]
+            )
+            try session.setActive(true)
+        }
+        do {
+            try take()
+            speechFailure = nil
+            return true
+        } catch {
+            // Almost always the capture session still holding the route: you
+            // just finished talking and the recording session has not been
+            // released yet. Release it and take the route once more.
+            try? session.setActive(false, options: .notifyOthersOnDeactivation)
+            do {
+                try take()
+                speechFailure = nil
+                return true
+            } catch {
+                speechFailure = "Couldn't take the audio to read aloud — \(error.localizedDescription)"
+                return false
+            }
+        }
     }
 
     /// Markdown is written to be read, not spoken. Strip what would be recited
@@ -147,6 +185,7 @@ extension SpeechController: AVSpeechSynthesizerDelegate {
             // opened the mic on top of it, which is how the loop hears itself.
             guard !synthesizer.isSpeaking else { return }
             self.isSpeaking = false
+            self.reportSpeaking(false, self.speakingLabel)
             // Hand audio back FIRST, so music returns to full volume and the
             // session is free. Opening the mic before releasing it meant this
             // deactivation could land on the recording session that
@@ -168,6 +207,9 @@ extension SpeechController: AVSpeechSynthesizerDelegate {
         _ synthesizer: AVSpeechSynthesizer,
         didCancel utterance: AVSpeechUtterance
     ) {
-        Task { @MainActor in self.isSpeaking = false }
+        Task { @MainActor in
+            self.isSpeaking = false
+            self.reportSpeaking(false, self.speakingLabel)
+        }
     }
 }

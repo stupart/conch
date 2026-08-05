@@ -98,6 +98,16 @@ final class BridgeClient: ObservableObject {
         await post(control: ["kind": "audio-sink", "sink": mine ? "phone" : "mac"])
     }
 
+    /// Tell the Mac which session THIS phone is reading, and when it stops.
+    ///
+    /// The Mac cannot see the end of phone speech: with the audio lease held
+    /// its own speak() returns immediately, so the ledger's speaking state
+    /// flashed and vanished. Only the phone knows.
+    @discardableResult
+    func reportSpeaking(_ speaking: Bool, label: String) async -> Bool {
+        await post(control: ["kind": "phone-speaking", "speaking": speaking, "label": label])
+    }
+
     func send(mode action: String) async -> Bool {
         await post(control: ["type": action, "sessionId": "", "label": "", "announce": ""])
     }

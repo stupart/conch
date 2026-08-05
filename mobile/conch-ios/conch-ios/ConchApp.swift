@@ -59,6 +59,12 @@ struct ConchApp: App {
                 // whole app, so the pair of invariants is installed together
                 // and neither can be dropped by a view disappearing.
                 talk.silenceSpeech = { [weak speech] in speech?.stop() }
+                // Through the cached client, not a fresh one: reporting must
+                // ride the connection that already exists, and must never be
+                // the thing that constructs one.
+                speech.reportSpeaking = { speaking, label in
+                    Task { await bridge?.reportSpeaking(speaking, label: label) }
+                }
             }
             .onChange(of: scenePhase) { _, phase in
                 guard let bridge else { return }

@@ -4219,6 +4219,29 @@ export async function runDaemon(cfg: Config): Promise<void> {
           sock.end(JSON.stringify({ kind: "audio-sink-ack", sink: audioLease.sink }) + "\n");
           return;
         }
+        // The phone is the only thing that knows when the PHONE finishes
+        // reading. With the audio lease held, speak() returns immediately, so
+        // the Mac sets "speaking" and the caller clears it milliseconds later
+        // — the glyph flashes and the ledger says "Waiting for you" for a
+        // session being read aloud. Tyler: "the reason I can't tell which one
+        // is speaking is cause the state is broken."
+        if (
+          typeof value === "object" && value !== null
+          && (value as { kind?: unknown }).kind === "phone-speaking"
+        ) {
+          const speaking = (value as { speaking?: unknown }).speaking === true;
+          const rawLabel = (value as { label?: unknown }).label;
+          const label = typeof rawLabel === "string" ? rawLabel.slice(0, 120) : "";
+          // Only while the phone actually owns the audio: a stale report from
+          // a backgrounded phone must not silence or mislabel this Mac.
+          if (audioLease.isPhone()) {
+            if (speaking && label) setState("speaking", label);
+            else if (!speaking) setState("idle");
+            void renderSessionPanel();
+          }
+          sock.end(JSON.stringify({ kind: "phone-speaking-ack", speaking }) + "\n");
+          return;
+        }
         if (
           typeof value === "object" && value !== null
           && (value as { kind?: unknown }).kind === "open-pairing"

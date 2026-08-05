@@ -248,6 +248,16 @@ struct SessionView: View {
                     .foregroundStyle(Palette.needs)
             }
 
+            // The phone going quiet with no explanation is indistinguishable
+            // from a broken agent, a dead network, or an empty reply.
+            if let failure = speech.speechFailure {
+                Text(failure)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.needs)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 20)
+            }
+
             if let failure = talk.failure {
                 Text(failure)
                     .font(Type.caption)
