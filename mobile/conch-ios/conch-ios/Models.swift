@@ -69,8 +69,14 @@ struct PublishedState: Decodable, Equatable {
         var text = ""
         var spokenChars = 0
         var markdown: String?
+        /// The daemon caps published replies at 4,000 chars and keeps the TAIL,
+        /// so this arrives with its beginning missing. Indistinguishable from a
+        /// complete short reply by looking — hence the flag, and hence /reply.
+        var truncated = false
 
-        private enum CodingKeys: String, CodingKey { case sessionId, text, spokenChars, markdown }
+        private enum CodingKeys: String, CodingKey {
+            case sessionId, text, spokenChars, markdown, truncated
+        }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -78,6 +84,7 @@ struct PublishedState: Decodable, Equatable {
             text = (try? c.decodeIfPresent(String.self, forKey: .text)) ?? ""
             spokenChars = (try? c.decodeIfPresent(Int.self, forKey: .spokenChars)) ?? 0
             markdown = try? c.decodeIfPresent(String.self, forKey: .markdown)
+            truncated = (try? c.decodeIfPresent(Bool.self, forKey: .truncated)) ?? false
         }
 
         var displayText: String {

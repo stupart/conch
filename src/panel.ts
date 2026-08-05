@@ -167,6 +167,12 @@ function publishedReply<T extends { text: string; spokenChars: number; markdown?
   const removedChars = reply.text.length - MAX_PUBLISHED_CONVERSATION_CHARS;
   return {
     ...reply,
+    // Say so. This keeps the TAIL, so a long reply reaches a client with its
+    // beginning missing — which reads as a random snippet rather than as a
+    // truncation, and a client cannot tell the difference by looking. The Mac
+    // panel wants the bound; the phone can fetch the whole thing from /reply,
+    // but only if it knows there is more to fetch.
+    truncated: true,
     // The markdown copy is capped to its own tail. It cannot align exactly with
     // the speech text (markdown syntax has no spoken counterpart), so viewers
     // locate reading progress by PROPORTION rather than by character offset.

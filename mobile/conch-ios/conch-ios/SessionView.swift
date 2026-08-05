@@ -13,6 +13,9 @@ struct SessionView: View {
     @State private var sendFailed = false
     @State private var fetchedReply: String?
     @State private var loadingReply = false
+    /// The reply the fetched copy belongs to, so a new turn refetches instead
+    /// of showing the previous answer in full and the current one in part.
+    @State private var fetchedFor: String?
 
     private static let draftAnchor = "conch.draft"
 
@@ -33,11 +36,22 @@ struct SessionView: View {
 
     /// The live reply when this session owns it, else whatever we fetched.
     private var replyText: String? {
-        if let reply = bridge.state?.reply, reply.sessionId == sessionId,
-           !reply.displayText.isEmpty {
-            return reply.displayText
+        guard let reply = bridge.state?.reply, reply.sessionId == sessionId,
+              !reply.displayText.isEmpty else { return fetchedReply }
+        // A truncated live reply is the LAST 4,000 characters, so showing it
+        // hands you the middle of an answer with no sign that anything is
+        // missing. Prefer the whole thing once /reply has returned it; until
+        // then the tail is still better than a spinner.
+        if reply.truncated, let whole = fetchedReply, whole.count >= reply.displayText.count {
+            return whole
         }
-        return fetchedReply
+        return reply.displayText
+    }
+
+    /// Identity of the current reply — a new turn changes the text.
+    private var replyFingerprint: String? {
+        guard let reply = bridge.state?.reply, reply.sessionId == sessionId else { return nil }
+        return "\(reply.text.count):\(reply.displayText.suffix(64))"
     }
 
     var body: some View {
@@ -175,11 +189,19 @@ struct SessionView: View {
             }
         }
         .onDisappear { speech.onFinishedReading = nil }
-        .task(id: sessionId) {
-            guard fetchedReply == nil else { return }
-            loadingReply = true
-            fetchedReply = await bridge.fetchReply(sessionId: sessionId)
+        // Keyed on the REPLY, not the session: fetching once per session meant
+        // the first answer was whole and every one after it was a tail.
+        .task(id: "\(sessionId)|\(replyFingerprint ?? "")") {
+            let wanted = replyFingerprint
+            if fetchedReply != nil, fetchedFor == wanted { return }
+            loadingReply = fetchedReply == nil
+            let whole = await bridge.fetchReply(sessionId: sessionId)
             loadingReply = false
+            guard !Task.isCancelled else { return }
+            if let whole, !whole.isEmpty {
+                fetchedReply = whole
+                fetchedFor = wanted
+            }
         }
     }
 

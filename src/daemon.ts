@@ -1552,6 +1552,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // simultaneously. A per-call-site gate is a list you can forget to add to;
     // this is not.
     if (audioLease.sink === "phone") return;
+    // Owning the announcement means owning the STATE. Four call sites set
+    // "speaking" and THEN called this, so while the phone held the audio the
+    // Mac published "Reading aloud" for a session it was silent about — Tyler
+    // saw two rows claiming to read at once with nothing audible. The lie was
+    // in the status, not the audio. Same reasoning as the gate above: a
+    // per-call-site rule is a list you can forget to add to.
+    setState("speaking", label);
     await speech.speak(speechCfg, text, label);
   };
 
@@ -2209,7 +2216,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
       await runResumeDigest(events, plan.briefing, {
         speak: async (text) => {
-          setState("speaking");
           await speak(cfg, text);
         },
         listen: async () => {
@@ -2429,7 +2435,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
         log(`recite -> "${target.label}"`);
         if (cfg.revealOnTurn && target.pid) void revealSessionWindow(target.pid);
         resetReadingProgress();
-        setState("speaking", target.label);
         await speak(cfg, `${target.label}:`, target.label);
         if (shuttingDown || interruptedByPause()) return;
         // event.announce is intentionally empty, so conversationLoop starts at
@@ -2474,7 +2479,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
         log(`wake -> "${target.label}"`);
         if (cfg.revealOnTurn && target.pid) void revealSessionWindow(target.pid); // surface it, no focus steal
         resetReadingProgress();
-        setState("speaking", target.label);
         await speak(cfg, `Mic open for ${target.label}.`, target.label);
         if (interruptedByPause()) return;
         await conversationLoop(target, "", undefined, undefined, undefined, undefined, undefined, undefined, false, pauseGeneration);
@@ -3359,7 +3363,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
         }
         case "repeat":
           emitTerminalRows(action);
-          setState("speaking", event.label);
           await speak(cfg, lastSpoken, event.label);
           if (interruptedByPause()) return "done";
           return "resume";
@@ -3379,7 +3382,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
             return "resume";
           }
           lastSpoken = chunk;
-          setState("speaking", event.label);
           await speak(cfg, chunk, event.label);
           if (interruptedByPause()) return "done";
           cursor += cfg.continueSentences;

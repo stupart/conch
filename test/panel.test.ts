@@ -408,16 +408,49 @@ describe("buildPublishedState — external session snapshot", () => {
 
     const published = buildPublishedState(model, new Map(), new Set(), 10);
 
-    expect(published.live.reading).toEqual({ text: retained, spokenChars: 125 });
+    // The reading text is capped by the same function, so it carries the same
+    // flag — a viewer tracking reading progress is looking at a tail too.
+    expect(published.live.reading).toEqual({
+      text: retained,
+      spokenChars: 125,
+      truncated: true,
+    });
+    // The flag is the point: this keeps the TAIL, so a client holding the
+    // result cannot tell a truncated long reply from a complete short one by
+    // looking. The phone showed people the middle of an answer for weeks.
     expect(published.reply).toEqual({
       sessionId: "long",
       text: retained,
       spokenChars: 250,
+      truncated: true,
     });
     expect(published.preview).toEqual({
       sessionId: "parked",
       text: retained,
       spokenChars: retained.length,
+      truncated: true,
+    });
+  });
+
+  test("a reply that fits is not marked truncated", () => {
+    // Otherwise the phone refetches every short reply over the relay for
+    // nothing, and "truncated" stops meaning anything.
+    const model = buildPanelModel({
+      sessions: [],
+      sessionStates: new Map(),
+      pausedSessionIds: new Set(),
+      mutedSessionIds: new Set(),
+      live: { state: "idle", label: "", partial: "" },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+      reply: { sessionId: "short", text: "all of it", spokenChars: 9 },
+    });
+    const published = buildPublishedState(model, new Map(), new Set(), 10);
+    expect(published.reply).toEqual({
+      sessionId: "short",
+      text: "all of it",
+      spokenChars: 9,
     });
   });
 });
