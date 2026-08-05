@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   createPhoneBridge,
+  createPhoneBridgeApplication,
   ensurePhoneToken,
   forwardToDaemonSocket,
   mintPairingCode,
@@ -19,6 +20,21 @@ afterEach(() => {
 });
 
 const TOKEN = "a".repeat(32);
+
+function makeApplication(
+  overrides: Partial<Parameters<typeof createPhoneBridge>[0]> = {},
+) {
+  return createPhoneBridgeApplication(
+    {
+      getState: () => ({ v: 1, rows: [{ id: "r1" }] }),
+      forwardControl: async (line) => JSON.stringify({ echoed: JSON.parse(line).kind }),
+      replyFor: async () => "",
+      log: () => {},
+      ...overrides,
+    },
+    { token: TOKEN },
+  );
+}
 
 function startBridge(overrides: Partial<Parameters<typeof createPhoneBridge>[0]> = {}) {
   bridge = createPhoneBridge(
@@ -91,6 +107,80 @@ describe("the auth gate", () => {
       );
       expect(res.status).toBe(401);
     }
+  });
+});
+
+describe("transport-independent request handler", () => {
+  test("the shared handler itself owns the auth gate for every protected route", async () => {
+    const application = makeApplication();
+    const routes: Array<{ path: string; init?: RequestInit }> = [
+      { path: "/state" },
+      { path: "/reply?session=r1" },
+      { path: "/file?path=%2Ftmp%2Fanything" },
+      { path: "/control", init: { method: "POST", body: "{}" } },
+      { path: "/ws" },
+      { path: "/nope" },
+    ];
+
+    for (const { path, init } of routes) {
+      const missing = await application.handle(new Request(`https://relay.invalid${path}`, init));
+      expect(missing).toBeInstanceOf(Response);
+      expect((missing as Response).status).toBe(401);
+
+      const wrong = await application.handle(new Request(`https://relay.invalid${path}`, {
+        ...init,
+        headers: { authorization: `Bearer ${"b".repeat(32)}` },
+      }));
+      expect(wrong).toBeInstanceOf(Response);
+      expect((wrong as Response).status).toBe(401);
+    }
+
+    const state = await application.handle(new Request("https://relay.invalid/state", {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    }));
+    expect(state).toBeInstanceOf(Response);
+    expect(await (state as Response).json()).toEqual({ v: 1, rows: [{ id: "r1" }] });
+  });
+
+  test("a synthetic /ws upgrade subscribes through the shared state hub", () => {
+    const counts: number[] = [];
+    let version = 1;
+    const application = makeApplication({
+      getState: () => ({ v: version, rows: [] }),
+      onClientsChanged: (count) => counts.push(count),
+    });
+    const frames: string[] = [];
+    const sink = {
+      send(frame: string) {
+        frames.push(frame);
+        return frame.length;
+      },
+    };
+
+    const result = application.handle(
+      new Request("https://relay.invalid/ws", {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      }),
+      {
+        upgradeState(_request, subscribe) {
+          subscribe(sink);
+          return true;
+        },
+      },
+    );
+
+    expect(result).toBeUndefined();
+    expect(application.clientCount()).toBe(1);
+    expect(counts).toEqual([1]);
+    expect(frames.map((frame) => JSON.parse(frame).v)).toEqual([1]);
+
+    version = 2;
+    application.publish();
+    expect(frames.map((frame) => JSON.parse(frame).v)).toEqual([1, 2]);
+
+    application.unsubscribeState(sink);
+    expect(application.clientCount()).toBe(0);
+    expect(counts).toEqual([1, 0]);
   });
 });
 
@@ -210,6 +300,44 @@ describe("file serving", () => {
       `http://127.0.0.1:${b.port}/file?path=${encodeURIComponent(served)}`,
     );
     expect(noToken.status).toBe(401);
+  });
+
+  test("the synthetic handler checks the current review set at dispatch time", async () => {
+    const dir = mkdtempSync("/tmp/conch-phone-handler-file-");
+    const served = join(dir, "deliverable.txt");
+    const secret = join(dir, "secret.txt");
+    await Bun.write(served, "approved now");
+    await Bun.write(secret, "never approved");
+    let currentLink: string | undefined = served;
+    const application = makeApplication({
+      getState: () => ({
+        v: 1,
+        rows: currentLink
+          ? [{ id: "r1", review: { link: currentLink, summary: "x" } }]
+          : [{ id: "r1" }],
+      }),
+    });
+    const request = (path: string) => new Request(
+      `https://relay.invalid/file?path=${encodeURIComponent(path)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+    );
+
+    const approved = await application.handle(request(served));
+    expect(approved).toBeInstanceOf(Response);
+    expect((approved as Response).status).toBe(200);
+    expect(await (approved as Response).text()).toBe("approved now");
+
+    const sibling = await application.handle(request(secret));
+    expect(sibling).toBeInstanceOf(Response);
+    expect((sibling as Response).status).toBe(403);
+
+    // A delayed relay frame is authorized against NOW, not the state from when
+    // the phone first created it. Removing this current-link check must make
+    // this mutation test fail over both transports.
+    currentLink = undefined;
+    const stale = await application.handle(request(served));
+    expect(stale).toBeInstanceOf(Response);
+    expect((stale as Response).status).toBe(403);
   });
 });
 

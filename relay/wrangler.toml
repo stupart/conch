@@ -1,0 +1,12 @@
+name = "conch-relay"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+[durable_objects]
+bindings = [
+  { name = "RELAY_ROOM", class_name = "RelayRoom" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelayRoom"]

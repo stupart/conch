@@ -1,119 +1,80 @@
 import Foundation
 
-/// The phone's line to the Mac: one WebSocket for state, REST for everything
-/// else. Owns reconnection so no view ever thinks about it — the connection
-/// either delivers fresh state or `isConnected` says why the screen is stale.
+/// The phone's protocol client. Pairing selects exactly one transport; state,
+/// commands, replies, settings, and scoped files above this point are identical.
 @MainActor
 final class BridgeClient: ObservableObject {
     @Published private(set) var state: PublishedState?
     @Published private(set) var isConnected = false
     @Published private(set) var lastError: String?
 
-    private var task: URLSessionWebSocketTask?
-    private var reconnectTask: Task<Void, Never>?
-    private var reconnectDelay: TimeInterval = 0.5
-    private var closed = false
     private let pairing: Pairing
+    private let transport: BridgeTransport
     /// Fired on every (re)connection, so a claim survives daemon restarts.
     var onConnected: (() -> Void)?
 
-    struct Pairing: Equatable {
-        var host: String   // "192.168.1.20:8674"
-        var token: String
+    enum Pairing: Equatable {
+        case lan(host: String, token: String)
+        case relay(RelayPairingPayload)
 
-        var base: URL? { URL(string: "http://\(host)") }
-    }
+        var bearer: String {
+            switch self {
+            case let .lan(_, token): token
+            case let .relay(payload): payload.secret
+            }
+        }
 
-    init(pairing: Pairing) {
-        self.pairing = pairing
-        connect()
-    }
-
-    deinit {
-        reconnectTask?.cancel()
-        task?.cancel(with: .goingAway, reason: nil)
-    }
-
-    func stop() {
-        closed = true
-        reconnectTask?.cancel()
-        reconnectTask = nil
-        task?.cancel(with: .goingAway, reason: nil)
-        task = nil
-        isConnected = false
-    }
-
-    /// The Mac this phone is paired to, for the connection popover.
-    var pairedHost: String { pairing.host }
-
-    /// Retry now instead of waiting out the backoff — for when you know the
-    /// Mac just came back and don't want to stare at a spinner.
-    func reconnectNow() {
-        guard !closed else { return }
-        reconnectDelay = 0.5
-        reconnectTask?.cancel()
-        reconnectTask = nil
-        task?.cancel(with: .goingAway, reason: nil)
-        task = nil
-        connect()
-    }
-
-    private func connect() {
-        guard !closed, task == nil, let base = pairing.base else { return }
-        var components = URLComponents(
-            url: base.appendingPathComponent("ws"),
-            resolvingAgainstBaseURL: false
-        )!
-        components.scheme = "ws"
-        components.queryItems = [URLQueryItem(name: "token", value: pairing.token)]
-        let task = URLSession.shared.webSocketTask(with: components.url!)
-        self.task = task
-        task.resume()
-        receive(on: task)
-    }
-
-    private func receive(on task: URLSessionWebSocketTask) {
-        task.receive { [weak self] result in
-            Task { @MainActor [weak self] in
-                guard let self, self.task === task else { return }
-                switch result {
-                case let .success(message):
-                    if !self.isConnected {
-                        self.isConnected = true
-                        self.onConnected?()
-                    }
-                    self.lastError = nil
-                    self.reconnectDelay = 0.5
-                    if case let .string(text) = message,
-                       let data = text.data(using: .utf8),
-                       let decoded = try? JSONDecoder().decode(PublishedState.self, from: data) {
-                        self.state = decoded
-                    }
-                    self.receive(on: task)
-                case let .failure(error):
-                    self.isConnected = false
-                    self.lastError = error.localizedDescription
-                    task.cancel(with: .goingAway, reason: nil)
-                    self.task = nil
-                    self.scheduleReconnect()
-                }
+        var displayHost: String {
+            switch self {
+            case let .lan(host, _): host
+            case let .relay(payload): "Relay · \(payload.endpointURL.host ?? payload.endpoint)"
             }
         }
     }
 
-    private func scheduleReconnect() {
-        guard !closed else { return }
-        reconnectTask?.cancel()
-        let delay = reconnectDelay
-        // Exponential backoff capped at 8s: fast enough to feel instant when
-        // the Mac wakes, slow enough not to churn a phone battery all workout.
-        reconnectDelay = min(8, reconnectDelay * 2)
-        reconnectTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(delay))
-            guard !Task.isCancelled, let self, !self.closed else { return }
-            self.reconnectTask = nil
-            self.connect()
+    init(pairing: Pairing) {
+        self.pairing = pairing
+        switch pairing {
+        case let .lan(host, token):
+            transport = DirectHTTPTransport(host: host, token: token)
+        case let .relay(payload):
+            transport = RelayTransport(pairing: payload)
         }
+        transport.onStateData = { [weak self] data in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      let decoded = try? JSONDecoder().decode(PublishedState.self, from: data) else { return }
+                self.state = decoded
+            }
+        }
+        transport.onConnectionChange = { [weak self] connected, error in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let becameConnected = connected && !self.isConnected
+                self.isConnected = connected
+                self.lastError = connected ? nil : error
+                if becameConnected { self.onConnected?() }
+            }
+        }
+        transport.start()
+    }
+
+    deinit {
+        transport.stop()
+    }
+
+    func stop() {
+        transport.stop()
+        isConnected = false
+    }
+
+    /// The Mac this phone is paired to, for the connection popover.
+    var pairedHost: String { pairing.displayHost }
+
+    /// Retry now instead of waiting out the backoff — for when you know the
+    /// Mac just came back and don't want to stare at a spinner.
+    func reconnectNow() {
+        transport.reconnectNow()
     }
 
     // MARK: - Commands
@@ -142,25 +103,23 @@ final class BridgeClient: ObservableObject {
     }
 
     private func post(control message: [String: Any]) async -> Bool {
-        guard let base = pairing.base,
-              let body = try? JSONSerialization.data(withJSONObject: message) else {
+        guard let body = try? JSONSerialization.data(withJSONObject: message) else {
             return false
         }
-        var request = URLRequest(url: base.appendingPathComponent("control"))
-        request.httpMethod = "POST"
-        request.httpBody = body
-        request.setValue("Bearer \(pairing.token)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 6
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { return false }
+            let response = try await transport.request(authorizedRequest(
+                method: "POST",
+                path: "/control",
+                body: body
+            ))
+            guard response.status == 200 else { return false }
             // Turn-event success is an empty daemon reply. A scoped inject can
             // instead return session-error; do not tell TalkController to erase
             // the user's words when the daemon rejected the target.
-            if !data.isEmpty,
-               let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-               body["error"] != nil {
-                lastError = body["error"] as? String
+            if !response.body.isEmpty,
+               let decoded = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any],
+               decoded["error"] != nil {
+                lastError = decoded["error"] as? String
                 return false
             }
             return true
@@ -200,16 +159,14 @@ final class BridgeClient: ObservableObject {
     }
 
     private func postControlRaw(_ message: [String: Any]) async -> [String: Any]? {
-        guard let base = pairing.base,
-              let body = try? JSONSerialization.data(withJSONObject: message) else { return nil }
-        var request = URLRequest(url: base.appendingPathComponent("control"))
-        request.httpMethod = "POST"
-        request.httpBody = body
-        request.setValue("Bearer \(pairing.token)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 8
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        guard let body = try? JSONSerialization.data(withJSONObject: message),
+              let response = try? await transport.request(authorizedRequest(
+                method: "POST",
+                path: "/control",
+                body: body
+              )),
+              response.status == 200 else { return nil }
+        return (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
     }
 
     /// Any session's latest reply, fetched on demand.
@@ -218,19 +175,13 @@ final class BridgeClient: ObservableObject {
     /// session rendered "No reply yet" — and a daemon restart made them all
     /// render it. The Mac app reads transcripts itself; the phone asks.
     func fetchReply(sessionId: String) async -> String? {
-        guard let base = pairing.base else { return nil }
-        var components = URLComponents(
-            url: base.appendingPathComponent("reply"),
-            resolvingAgainstBaseURL: false
-        )!
+        var components = URLComponents()
+        components.path = "/reply"
         components.queryItems = [URLQueryItem(name: "session", value: sessionId)]
-        guard let url = components.url else { return nil }
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(pairing.token)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 6
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+        guard let path = components.string,
+              let response = try? await transport.request(authorizedRequest(method: "GET", path: path)),
+              response.status == 200,
+              let body = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any],
               let markdown = body["markdown"] as? String,
               !markdown.isEmpty else {
             return nil
@@ -238,18 +189,29 @@ final class BridgeClient: ObservableObject {
         return markdown
     }
 
-    /// URL for a local-file deliverable, served by the bridge's scoped /file.
-    func fileURL(for path: String) -> URL? {
-        guard let base = pairing.base else { return nil }
-        var components = URLComponents(
-            url: base.appendingPathComponent("file"),
-            resolvingAgainstBaseURL: false
-        )!
-        components.queryItems = [
-            URLQueryItem(name: "path", value: path),
-            URLQueryItem(name: "token", value: pairing.token),
-        ]
-        return components.url
+    /// Materialize a currently-scoped local deliverable for either transport.
+    /// Relay files are decrypted chunk-by-chunk to a temporary file; LAN files
+    /// use URLSession's disk-backed download path. Neither is assembled in RAM.
+    func downloadFile(path: String) async -> URL? {
+        var components = URLComponents()
+        components.path = "/file"
+        components.queryItems = [URLQueryItem(name: "path", value: path)]
+        guard let requestPath = components.string else { return nil }
+        do {
+            return try await transport.download(authorizedRequest(method: "GET", path: requestPath))
+        } catch {
+            lastError = error.localizedDescription
+            return nil
+        }
+    }
+
+    private func authorizedRequest(method: String, path: String, body: Data = Data()) -> BridgeRequest {
+        BridgeRequest(
+            method: method,
+            path: path,
+            headers: ["authorization": "Bearer \(pairing.bearer)"],
+            body: body
+        )
     }
 }
 
@@ -299,9 +261,12 @@ func redeemPairingCode(host: String, code: String) async -> RedeemResult {
 /// saved. Committing blind meant a typo'd host and a wrong code looked
 /// identical: a keychain write and an endless "Looking for your Mac…".
 func probePairing(_ pairing: BridgeClient.Pairing) async -> PairingProbeResult {
-    guard let base = pairing.base else { return .unreachable("That host doesn't look right.") }
+    guard case let .lan(host, token) = pairing,
+          let base = URL(string: "http://\(host)") else {
+        return .unreachable("That host doesn't look right.")
+    }
     var request = URLRequest(url: base.appendingPathComponent("state"))
-    request.setValue("Bearer \(pairing.token)", forHTTPHeaderField: "Authorization")
+    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     request.timeoutInterval = 5
     do {
         let (_, response) = try await URLSession.shared.data(for: request)
@@ -311,7 +276,7 @@ func probePairing(_ pairing: BridgeClient.Pairing) async -> PairingProbeResult {
         default: return .unreachable("The Mac answered, but not like conch — check the host.")
         }
     } catch {
-        return .unreachable("Couldn't reach \(pairing.host) — same Wi-Fi as the Mac?")
+        return .unreachable("Couldn't reach \(host) — same Wi-Fi as the Mac?")
     }
 }
 
@@ -319,9 +284,41 @@ func probePairing(_ pairing: BridgeClient.Pairing) async -> PairingProbeResult {
 /// it gets credential storage, not UserDefaults.
 enum PairingStore {
     private static let service = "ai.blueprintstudio.conch.phone"
+    private static let versionedAccount = "pairing-v2"
+
+    private struct StoredPairing: Codable {
+        let version: Int
+        let kind: String
+        let host: String?
+        let token: String?
+        let relay: RelayPairingPayload?
+
+        init(_ pairing: BridgeClient.Pairing) {
+            version = 2
+            switch pairing {
+            case let .lan(host, token):
+                kind = "lan"
+                self.host = host
+                self.token = token
+                relay = nil
+            case let .relay(payload):
+                kind = "relay"
+                host = nil
+                token = nil
+                relay = payload
+            }
+        }
+
+        var pairing: BridgeClient.Pairing? {
+            guard version == 2 else { return nil }
+            if kind == "lan", let host, let token { return .lan(host: host, token: token) }
+            if kind == "relay", let relay { return .relay(relay) }
+            return nil
+        }
+    }
 
     static func load() -> BridgeClient.Pairing? {
-        var query: [String: Any] = [
+        let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecReturnData as String: true,
@@ -330,21 +327,28 @@ enum PairingStore {
         var item: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
               let existing = item as? [String: Any],
-              let host = existing[kSecAttrAccount as String] as? String,
-              let data = existing[kSecValueData as String] as? Data,
-              let token = String(data: data, encoding: .utf8) else {
+              let account = existing[kSecAttrAccount as String] as? String,
+              let data = existing[kSecValueData as String] as? Data else {
             return nil
         }
-        return BridgeClient.Pairing(host: host, token: token)
+        if account == versionedAccount,
+           let stored = try? JSONDecoder().decode(StoredPairing.self, from: data) {
+            return stored.pairing
+        }
+        // Legacy installs stored account=host and value=raw token. Loading it
+        // remains side-effect free and selects the LAN transport exactly.
+        guard let token = String(data: data, encoding: .utf8) else { return nil }
+        return .lan(host: account, token: token)
     }
 
     static func save(_ pairing: BridgeClient.Pairing) {
+        guard let data = try? JSONEncoder().encode(StoredPairing(pairing)) else { return }
         delete()
         let add: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: pairing.host,
-            kSecValueData as String: Data(pairing.token.utf8),
+            kSecAttrAccount as String: versionedAccount,
+            kSecValueData as String: data,
         ]
         SecItemAdd(add as CFDictionary, nil)
     }

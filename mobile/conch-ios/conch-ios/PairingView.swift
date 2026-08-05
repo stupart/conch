@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 /// Two fields, once. `conch pair` on the Mac prints exactly these.
@@ -8,6 +9,7 @@ struct PairingView: View {
     @State private var code = ""
     @State private var checking = false
     @State private var problem: String?
+    @State private var scanningRelay = false
     @FocusState private var focused: Field?
 
     private enum Field { case host, code }
@@ -22,8 +24,13 @@ struct PairingView: View {
         trimmedCode.count == 6 && trimmedCode.allSatisfy(\.isNumber)
     }
 
+    private var looksLikeRelayCode: Bool {
+        trimmedCode.hasPrefix(RelayPairingPayload.codePrefix)
+    }
+
     private var canPair: Bool {
-        host.contains(":") && (looksLikeShortCode || trimmedCode.count >= 24)
+        looksLikeRelayCode
+            || (host.contains(":") && (looksLikeShortCode || trimmedCode.count >= 24))
     }
 
     var body: some View {
@@ -36,7 +43,7 @@ struct PairingView: View {
                 Text("conch")
                     .font(Type.label(22, weight: .semibold))
                     .foregroundStyle(Palette.textPrimary)
-                Text("Run `conch pair` on your Mac,\nthen copy what it prints here.")
+                Text("Run `conch pair` on your Mac.\nUse LAN fields or scan its relay QR.")
                     .font(Type.summary)
                     .foregroundStyle(Palette.textDim)
                     .multilineTextAlignment(.center)
@@ -50,6 +57,16 @@ struct PairingView: View {
                     .keyboardType(.numbersAndPunctuation)
             }
             .padding(.horizontal, 28)
+
+            Button {
+                scanningRelay = true
+            } label: {
+                Label("Scan relay QR", systemImage: "qrcode.viewfinder")
+                    .font(Type.label(15, weight: .medium))
+                    .foregroundStyle(Palette.textPrimary)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 14)
 
             if let problem {
                 Text(problem)
@@ -85,6 +102,14 @@ struct PairingView: View {
         .background(Palette.bg)
         .preferredColorScheme(.dark)
         .onAppear { focused = .host }
+        .sheet(isPresented: $scanningRelay) {
+            RelayQRScanner { scanned in
+                scanningRelay = false
+                code = scanned
+                problem = nil
+            }
+            .ignoresSafeArea()
+        }
     }
 
     private func connect() {
@@ -94,11 +119,21 @@ struct PairingView: View {
         Task { @MainActor in
             defer { checking = false }
 
+            if looksLikeRelayCode {
+                do {
+                    let relay = try RelayPairingPayload.decodePairingCode(trimmedCode)
+                    onPaired(.relay(relay))
+                } catch {
+                    problem = error.localizedDescription
+                }
+                return
+            }
+
             // Six digits: redeem them for the token the user never has to see.
             if looksLikeShortCode {
                 switch await redeemPairingCode(host: trimmedHost, code: trimmedCode) {
                 case let .token(token):
-                    onPaired(BridgeClient.Pairing(host: trimmedHost, token: token))
+                    onPaired(.lan(host: trimmedHost, token: token))
                 case let .failed(reason):
                     problem = reason
                 }
@@ -107,7 +142,7 @@ struct PairingView: View {
 
             // A pasted token still works — and still gets probed before it is
             // trusted, so a bad paste says which half was wrong.
-            let candidate = BridgeClient.Pairing(host: trimmedHost, token: trimmedCode)
+            let candidate = BridgeClient.Pairing.lan(host: trimmedHost, token: trimmedCode)
             switch await probePairing(candidate) {
             case .ok:
                 onPaired(candidate)
@@ -139,5 +174,74 @@ struct PairingView: View {
                 .padding(13)
                 .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 11))
         }
+    }
+}
+
+/// In-app scanning keeps the relay secret out of a custom URL scheme that any
+/// other installed app could claim. The QR is decoded locally and never leaves
+/// the phone before its encrypted connection to the Mac.
+private struct RelayQRScanner: UIViewControllerRepresentable {
+    let onCode: (String) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onCode: onCode) }
+
+    func makeUIViewController(context: Context) -> ScannerViewController {
+        let controller = ScannerViewController()
+        controller.configure(delegate: context.coordinator)
+        return controller
+    }
+
+    func updateUIViewController(_ controller: ScannerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, AVCaptureMetadataOutputObjectsDelegate {
+        let onCode: (String) -> Void
+        private var delivered = false
+
+        init(onCode: @escaping (String) -> Void) { self.onCode = onCode }
+
+        func metadataOutput(
+            _ output: AVCaptureMetadataOutput,
+            didOutput metadataObjects: [AVMetadataObject],
+            from connection: AVCaptureConnection
+        ) {
+            guard !delivered,
+                  let object = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
+                  object.type == .qr,
+                  let value = object.stringValue,
+                  value.hasPrefix(RelayPairingPayload.codePrefix) else { return }
+            delivered = true
+            onCode(value)
+        }
+    }
+}
+
+private final class ScannerViewController: UIViewController {
+    private let session = AVCaptureSession()
+    private var preview: AVCaptureVideoPreviewLayer?
+
+    func configure(delegate: AVCaptureMetadataOutputObjectsDelegate) {
+        guard let camera = AVCaptureDevice.default(for: .video),
+              let input = try? AVCaptureDeviceInput(device: camera),
+              session.canAddInput(input) else { return }
+        session.addInput(input)
+        let output = AVCaptureMetadataOutput()
+        guard session.canAddOutput(output) else { return }
+        session.addOutput(output)
+        output.setMetadataObjectsDelegate(delegate, queue: .main)
+        output.metadataObjectTypes = [.qr]
+        let preview = AVCaptureVideoPreviewLayer(session: session)
+        preview.videoGravity = .resizeAspectFill
+        view.layer.addSublayer(preview)
+        self.preview = preview
+        DispatchQueue.global(qos: .userInitiated).async { [session] in session.startRunning() }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        preview?.frame = view.bounds
+    }
+
+    deinit {
+        session.stopRunning()
     }
 }

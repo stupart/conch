@@ -35,7 +35,21 @@ import { injectText, injectKey, revealSessionWindow, toClipboard } from "./injec
 import { classify, classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
 import { recordTelemetry } from "./telemetry.ts";
-import { createPhoneBridge, ensurePhoneToken, forwardToDaemonSocket, mintPairingCode, type PhoneBridgeHandle } from "./phone-bridge.ts";
+import {
+  createPhoneBridgeApplication,
+  createPhoneBridgeServer,
+  ensurePhoneToken,
+  forwardToDaemonSocket,
+  mintPairingCode,
+  type PhoneBridgeApplication,
+  type PhoneBridgeHandle,
+} from "./phone-bridge.ts";
+import {
+  createPhoneRelay,
+  ensureRelayPairing,
+  type PhoneRelayHandle,
+  type RelayPairing,
+} from "./phone-relay.ts";
 import { askClaude, type AskClaude } from "./model.ts";
 import { routeVoicePrompt } from "./voice-qa.ts";
 import {
@@ -968,7 +982,7 @@ export function insertQueuedEvent(
   instantBarriers: { has(event: TurnEvent): boolean } = NO_INSTANT_QUEUE_BARRIERS,
 ): boolean {
   const instant = instantBarriers.has(event);
-  const duplicateIndex = event.type === "speak" && !event.sessionId
+  const duplicateIndex = event.type === "inject" || (event.type === "speak" && !event.sessionId)
     ? -1
     : queue.findIndex(
       (queued) => queued.sessionId === event.sessionId && queued.type === event.type,
@@ -1721,51 +1735,92 @@ export async function runDaemon(cfg: Config): Promise<void> {
    * It ALWAYS returns to the Mac when the phone disconnects. A phone that walks
    * out of the room must not leave the Mac permanently mute.
    */
+  let phoneApplication: PhoneBridgeApplication | null = null;
   let phoneBridge: PhoneBridgeHandle | null = null;
+  let phoneRelay: PhoneRelayHandle | null = null;
+  let activeRelayEndpoint = "";
+  let activeRelayPairing: RelayPairing | null = null;
   function syncPhoneBridge(): void {
     const wanted = cfg.phoneEnabled;
     const previousBridge = phoneBridge;
     phoneBridge = retainMatchingPhoneBridge(phoneBridge, wanted, cfg.phonePort);
-    if (!wanted && previousBridge) {
-      log("phone bridge stopped");
+    if (!wanted) {
+      phoneRelay?.stop();
+      phoneRelay = null;
+      activeRelayEndpoint = "";
+      activeRelayPairing = null;
+      phoneApplication = null;
+      if (previousBridge) log("phone bridge stopped");
       return;
     }
-    if (wanted && !phoneBridge) {
-      try {
-        phoneBridge = createPhoneBridge(
-          {
-            getState: () => lastPublishedPanelState,
-            forwardControl: (line) => forwardToDaemonSocket(cfg.socketPath, line),
-            onClientsChanged: (count) => {
-              if (audioLease.clientsChanged(count)) {
-                log("phone disconnected — audio back on this Mac");
-                void renderSessionPanel();
-              }
-            },
-            replyFor: async (sessionId) => {
-              const path = findTranscript(cfg.claudeDir, sessionId);
-              // RAW, not stripMarkdown: the phone renders it, it doesn't speak it.
-              const finalMessage = path ? await lastAssistantText(path) : "";
-              if (finalMessage) return finalMessage;
-              // Empty means the session is MID-TURN — lastAssistantText returns
-              // the final message of a turn, and deliberately nothing while a
-              // tool call is outstanding, so speech never announces half a turn.
-              // The phone still deserves the last thing it actually told you.
-              return latestTurnBySession.get(sessionId)?.announce ?? "";
-            },
-            log,
+    if (!phoneApplication) {
+      phoneApplication = createPhoneBridgeApplication(
+        {
+          getState: () => lastPublishedPanelState,
+          forwardControl: (line) => forwardToDaemonSocket(cfg.socketPath, line),
+          onClientsChanged: (count) => {
+            if (audioLease.clientsChanged(count)) {
+              log("phone disconnected — audio back on this Mac");
+              void renderSessionPanel();
+            }
           },
-          { port: cfg.phonePort, token: ensurePhoneToken() },
+          replyFor: async (sessionId) => {
+            const path = findTranscript(cfg.claudeDir, sessionId);
+            // RAW, not stripMarkdown: the phone renders it, it doesn't speak it.
+            const finalMessage = path ? await lastAssistantText(path) : "";
+            if (finalMessage) return finalMessage;
+            // Empty means the session is MID-TURN — lastAssistantText returns
+            // the final message of a turn, and deliberately nothing while a
+            // tool call is outstanding, so speech never announces half a turn.
+            // The phone still deserves the last thing it actually told you.
+            return latestTurnBySession.get(sessionId)?.announce ?? "";
+          },
+          log,
+        },
+        { token: ensurePhoneToken() },
+      );
+    }
+    if (!phoneBridge) {
+      try {
+        phoneBridge = createPhoneBridgeServer(
+          phoneApplication,
+          { log },
+          { port: cfg.phonePort },
         );
       } catch (error) {
         log(`phone bridge failed to start: ${String(error)}`);
+      }
+    }
+
+    const relayEndpoint = cfg.phoneRelayURL.trim();
+    if (phoneRelay && relayEndpoint !== activeRelayEndpoint) {
+      phoneRelay.stop();
+      phoneRelay = null;
+      activeRelayPairing = null;
+    }
+    if (!relayEndpoint) {
+      phoneRelay?.stop();
+      phoneRelay = null;
+      activeRelayEndpoint = "";
+      activeRelayPairing = null;
+      return;
+    }
+    if (!phoneRelay) {
+      try {
+        activeRelayPairing = ensureRelayPairing(relayEndpoint);
+        activeRelayEndpoint = relayEndpoint;
+        phoneRelay = createPhoneRelay(phoneApplication, activeRelayPairing, { log });
+      } catch (error) {
+        activeRelayEndpoint = "";
+        activeRelayPairing = null;
+        log(`phone relay failed to start: ${String(error)}`);
       }
     }
   }
 
   const publishedStateWriter = createPublishThrottle(() => {
     if (lastPublishedPanelState) publishSessionsFile(lastPublishedPanelState);
-    phoneBridge?.publish();
+    phoneApplication?.publish();
   });
 
   /** Publish progress against the last reconciled ledger without another registry scan. */
@@ -3997,7 +4052,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     settingsPath: daemonSettingsPath,
     onLiveChange: (key, value) => {
       if (key === "meeting-autopause") meetingMic?.setEnabled(value === true);
-      if (key === "phone" || key === "phone-port") syncPhoneBridge();
+      if (key === "phone" || key === "phone-port" || key === "phone-relay-url") syncPhoneBridge();
     },
   });
   // These controllers own settings/session-action data and side effects for
@@ -4125,7 +4180,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         ) {
           const previous = audioLease.sink;
           const requested = (value as { sink?: unknown }).sink;
-          const connectedClients = phoneBridge?.clientCount() ?? 0;
+          const connectedClients = phoneApplication?.clientCount() ?? 0;
           const claimingPhone = requested === "phone"
             && connectedClients > 0
             && previous !== "phone";
@@ -4164,6 +4219,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
               code: code.code,
               expiresAt: code.expiresAt,
               port: phoneBridge.port,
+              ...(activeRelayPairing ? { relay: activeRelayPairing } : {}),
             } as unknown as ControlResponse;
           }
           sock.end(JSON.stringify(response) + "\n");
@@ -4240,6 +4296,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
     onLiveDataChange(null);
     publishedStateWriter.flush();
     meetingMic?.close();
+    phoneRelay?.stop();
+    phoneBridge?.stop();
     queue.length = 0;
     speech.close(); // cancel and seal speech, cues, and in-flight/future canaries
     // Close the controller's rearm gate synchronously before taking the

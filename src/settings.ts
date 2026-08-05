@@ -30,6 +30,7 @@ export const SETTING_KEYS = [
   "keystroke-fallback",
   "phone",
   "phone-port",
+  "phone-relay-url",
   "read-full",
   "interrupt-on-manual-reply",
   "handoff-order",
@@ -59,6 +60,7 @@ export type SettingField =
   | "keystrokeFallback"
   | "phoneEnabled"
   | "phonePort"
+  | "phoneRelayURL"
   | "readFull"
   | "interruptOnManualReply"
   | "handoffOrder"
@@ -74,7 +76,7 @@ export type SettingField =
   | "speakMaxChars"
   | "sayRate";
 export type HandoffOrder = "newest" | "oldest" | "urgency";
-export type SettingValue = number | boolean | HandoffOrder;
+export type SettingValue = number | boolean | string;
 export type SettingApply = "live" | "hook";
 export type SettingSource = "env" | "file" | "default";
 
@@ -92,7 +94,7 @@ export interface SettingDescriptor {
   key: SettingKey;
   field: SettingField;
   env: string;
-  kind: "number" | "integer" | "boolean" | "enum";
+  kind: "number" | "integer" | "boolean" | "enum" | "string";
   default: SettingValue;
   parse(raw: unknown): ParseResult<SettingValue>;
   bounds: SettingBounds | null;
@@ -119,6 +121,22 @@ function parseHandoffOrder(raw: unknown): ParseResult<HandoffOrder> {
     }
   }
   return { ok: false, err: "expected newest, oldest, or urgency" };
+}
+
+function parseRelayURL(raw: unknown): ParseResult<string> {
+  if (typeof raw !== "string") return { ok: false, err: "expected an https or wss URL" };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: "" };
+  try {
+    const url = new URL(value);
+    if ((url.protocol !== "https:" && url.protocol !== "wss:")
+      || !url.hostname || url.username || url.password || url.hash || url.search) {
+      return { ok: false, err: "expected an https or wss URL without credentials, query, or fragment" };
+    }
+    return { ok: true, value };
+  } catch {
+    return { ok: false, err: "expected an https or wss URL" };
+  }
 }
 
 function numberParser(bounds: SettingBounds, description: string): (raw: unknown) => ParseResult<number> {
@@ -277,6 +295,17 @@ export const SETTING_DESCRIPTORS = [
     bounds: positive,
     apply: "live",
     help: "port the phone bridge listens on",
+  },
+  {
+    key: "phone-relay-url",
+    field: "phoneRelayURL",
+    env: "CONCH_PHONE_RELAY_URL",
+    kind: "string",
+    default: "",
+    parse: parseRelayURL,
+    bounds: null,
+    apply: "live",
+    help: "deployed relay Worker URL; empty disables internet relay while LAN pairing stays available",
   },
   {
     key: "read-full",
@@ -744,7 +773,8 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 
 function validSettingKind(value: unknown): value is SettingDescriptor["kind"] {
-  return value === "number" || value === "integer" || value === "boolean" || value === "enum";
+  return value === "number" || value === "integer" || value === "boolean"
+    || value === "enum" || value === "string";
 }
 
 function validateSnapshotBounds(value: unknown): ParseResult<SettingBounds | null> {

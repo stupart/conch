@@ -20,6 +20,9 @@
 		C1000000000000000000A1 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000A1 /* SettingsView.swift */; };
 		C1000000000000000000A2 /* ConchSetting.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000A2 /* ConchSetting.swift */; };
 		C1000000000000000000B1 /* SpeechController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000B1 /* SpeechController.swift */; };
+		C1000000000000000000C1 /* RelayProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000C1 /* RelayProtocol.swift */; };
+		C1000000000000000000C2 /* RelayTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000C2 /* RelayTransport.swift */; };
+		C1000000000000000000C3 /* DirectHTTPTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000C3 /* DirectHTTPTransport.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -38,6 +41,9 @@
 		C2000000000000000000A1 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		C2000000000000000000A2 /* ConchSetting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConchSetting.swift; sourceTree = "<group>"; };
 		C2000000000000000000B1 /* SpeechController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechController.swift; sourceTree = "<group>"; };
+		C2000000000000000000C1 /* RelayProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayProtocol.swift; sourceTree = "<group>"; };
+		C2000000000000000000C2 /* RelayTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayTransport.swift; sourceTree = "<group>"; };
+		C2000000000000000000C3 /* DirectHTTPTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectHTTPTransport.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -75,6 +81,9 @@
 				C2000000000000000000A1 /* SettingsView.swift */,
 				C2000000000000000000A2 /* ConchSetting.swift */,
 				C2000000000000000000B1 /* SpeechController.swift */,
+				C2000000000000000000C1 /* RelayProtocol.swift */,
+				C2000000000000000000C2 /* RelayTransport.swift */,
+				C2000000000000000000C3 /* DirectHTTPTransport.swift */,
 				C20000000000000000000100 /* Info.plist */,
 			);
 			path = "conch-ios";
@@ -169,6 +178,9 @@
 				C1000000000000000000A1 /* SettingsView.swift in Sources */,
 				C1000000000000000000A2 /* ConchSetting.swift in Sources */,
 				C1000000000000000000B1 /* SpeechController.swift in Sources */,
+				C1000000000000000000C1 /* RelayProtocol.swift in Sources */,
+				C1000000000000000000C2 /* RelayTransport.swift in Sources */,
+				C1000000000000000000C3 /* DirectHTTPTransport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

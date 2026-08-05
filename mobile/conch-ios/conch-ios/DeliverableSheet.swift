@@ -9,13 +9,13 @@ struct DeliverableSheet: View {
     @ObservedObject var bridge: BridgeClient
     let review: PublishedState.Row.Review
     @Environment(\.dismiss) private var dismiss
+    @State private var localURL: URL?
+    @State private var localFailed = false
 
+    private enum LocalKind { case image, pdf, markdown, text }
     private enum Kind {
         case web(URL)
-        case image(URL)
-        case pdf(URL)
-        case markdown(URL)
-        case text(URL)
+        case local(LocalKind)
         case unavailable(String)
     }
 
@@ -26,18 +26,15 @@ struct DeliverableSheet: View {
            scheme == "http" || scheme == "https" {
             return .web(url)
         }
-        guard let served = bridge.fileURL(for: link) else {
-            return .unavailable("This deliverable lives on your Mac and couldn't be fetched.")
-        }
         switch (link as NSString).pathExtension.lowercased() {
         case "png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "svg":
-            return .image(served)
+            return .local(.image)
         case "pdf":
-            return .pdf(served)
+            return .local(.pdf)
         case "md", "markdown":
-            return .markdown(served)
+            return .local(.markdown)
         default:
-            return .text(served)
+            return .local(.text)
         }
     }
 
@@ -54,6 +51,22 @@ struct DeliverableSheet: View {
                 }
         }
         .preferredColorScheme(.dark)
+        .task(id: review.link) {
+            localURL = nil
+            localFailed = false
+            guard case .local = kind, let link = review.link else { return }
+            let downloaded = await bridge.downloadFile(path: link)
+            if Task.isCancelled {
+                if let downloaded { try? FileManager.default.removeItem(at: downloaded) }
+                return
+            }
+            localURL = downloaded
+            localFailed = localURL == nil
+        }
+        .onDisappear {
+            if let localURL { try? FileManager.default.removeItem(at: localURL) }
+            localURL = nil
+        }
     }
 
     @ViewBuilder
@@ -61,37 +74,35 @@ struct DeliverableSheet: View {
         switch kind {
         case let .web(url):
             BridgedWebView(url: url)
-        case let .image(url):
+        case let .local(localKind):
+            if let url = localURL {
+                localContent(localKind, url: url)
+            } else if localFailed {
+                unavailableView("This deliverable lives on your Mac and couldn't be fetched.")
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        case let .unavailable(reason):
+            unavailableView(reason)
+        }
+    }
+
+    @ViewBuilder
+    private func localContent(_ kind: LocalKind, url: URL) -> some View {
+        switch kind {
+        case .image:
             // Fit to WIDTH, scroll vertically, start at the top. Two-axis
             // panning at native pixel scale made a tall screenshot — the single
             // most likely deliverable — unreadable.
             ScrollView(.vertical) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case let .success(image):
-                        // No containerRelativeFrame: inside a vertical
-                        // ScrollView it passed the CONTAINER'S HEIGHT into the
-                        // proposal, so aspect-fit fitted the height - a tall
-                        // screenshot crammed into one screen as a thumbnail
-                        // column. A vertical ScrollView already proposes
-                        // (viewport width, nil); scaledToFit against that IS
-                        // fit-to-width. The fix was a deletion.
-                        image.resizable().scaledToFit()
-                    case .failure:
-                        unavailableView("Couldn't load the image from your Mac.")
-                    default:
-                        ProgressView().padding(60)
-                    }
-                }
+                LocalImageView(url: url)
             }
-        case let .pdf(url):
+        case .pdf:
             BridgedPDFView(url: url)
-        case let .markdown(url):
+        case .markdown:
             RemoteDocumentView(url: url, renderMarkdown: true)
-        case let .text(url):
+        case .text:
             RemoteDocumentView(url: url, renderMarkdown: false)
-        case let .unavailable(reason):
-            unavailableView(reason)
         }
     }
 
@@ -149,7 +160,12 @@ private struct RemoteDocumentView: View {
         }
         .task {
             do {
-                let (data, _) = try await URLSession.shared.data(from: url)
+                let data: Data
+                if url.isFileURL {
+                    data = try Data(contentsOf: url)
+                } else {
+                    data = try await URLSession.shared.data(from: url).0
+                }
                 content = String(decoding: data, as: UTF8.self)
             } catch {
                 failed = true
@@ -181,9 +197,17 @@ private struct BridgedPDFView: UIViewRepresentable {
         view.displayMode = .singlePageContinuous
         view.backgroundColor = UIColor(Palette.bg)
         Task {
-            if let (data, _) = try? await URLSession.shared.data(from: url) {
+            let document: PDFDocument?
+            if url.isFileURL {
+                document = PDFDocument(url: url)
+            } else if let data = try? await URLSession.shared.data(from: url).0 {
+                document = PDFDocument(data: data)
+            } else {
+                document = nil
+            }
+            if let document {
                 await MainActor.run {
-                    view.document = PDFDocument(data: data)
+                    view.document = document
                     // Scale and position are computed against an EMPTY document
                     // otherwise, which opened with a dead gap above the page.
                     view.autoScales = true
@@ -197,4 +221,21 @@ private struct BridgedPDFView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: PDFView, context: Context) {}
+}
+
+private struct LocalImageView: View {
+    let url: URL
+
+    var body: some View {
+        if let image = UIImage(contentsOfFile: url.path) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+        } else {
+            Text("Couldn't load the image from your Mac.")
+                .font(Type.summary)
+                .foregroundStyle(Palette.textDim)
+                .padding(40)
+        }
+    }
 }

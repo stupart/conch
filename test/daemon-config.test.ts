@@ -385,6 +385,24 @@ describe("daemon config controller", () => {
     expect(takeNextQueuedEvent(queue, "newest")).toBe(laterRecite);
   });
 
+  test("distinct queued phone injects are append-only and never coalesced", () => {
+    const first: TurnEvent = {
+      type: "inject",
+      sessionId: "target",
+      label: "target",
+      announce: "first dictated prompt",
+    };
+    const second: TurnEvent = {
+      ...first,
+      announce: "second dictated prompt",
+    };
+    const queue: TurnEvent[] = [];
+
+    expect(insertQueuedEvent(queue, first)).toBeTrue();
+    expect(insertQueuedEvent(queue, second)).toBeTrue();
+    expect(queue).toEqual([first, second]);
+  });
+
   test("oldest and urgency reorder only the state cohort newer than the latest command", () => {
     const olderWaiting: TurnEvent = { type: "turn-end", sessionId: "old", label: "old", announce: "" };
     const wake: TurnEvent = { type: "wake", sessionId: "target", label: "target", announce: "" };

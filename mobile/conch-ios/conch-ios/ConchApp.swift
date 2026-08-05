@@ -8,7 +8,7 @@ struct ConchApp: App {
     @State private var pairing: BridgeClient.Pairing? = {
         let env = ProcessInfo.processInfo.environment
         if let host = env["CONCH_PAIR_HOST"], let token = env["CONCH_PAIR_TOKEN"] {
-            return BridgeClient.Pairing(host: host, token: token)
+            return .lan(host: host, token: token)
         }
         return PairingStore.load()
     }()
@@ -94,7 +94,10 @@ struct ConchApp: App {
         // Open and foregrounded: the phone has the voice and the ear. Closed or
         // backgrounded: the Mac takes them straight back. No button to get
         // wrong, and no state to leave stranded on the wrong device.
-        created.onConnected = { Task { await created.claimAudio(true) } }
+        created.onConnected = { [weak created] in
+            guard let created else { return }
+            Task { await created.claimAudio(true) }
+        }
         // Assigning state during view construction is fine here: the next
         // render pass reuses the cached client rather than reconnecting.
         DispatchQueue.main.async { self.bridge = created }

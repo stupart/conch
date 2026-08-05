@@ -538,7 +538,11 @@ switch (command) {
       { kind: "open-pairing" } as never,
     );
     const window = opened.ok
-      ? (opened.response as unknown as { code?: string; port?: number })
+      ? (opened.response as unknown as {
+        code?: string;
+        port?: number;
+        relay?: import("./phone-relay.ts").RelayPairing;
+      })
       : null;
     if (!window?.code) {
       console.error("[conch] couldn't open a pairing window — is the daemon running?");
@@ -558,7 +562,27 @@ switch (command) {
     console.log(`    Code   ${window.code}`);
     console.log("");
     console.log("  The code works once, for two minutes. Run `conch pair` again");
-    console.log("  for a fresh one. Turn the bridge off: conch set phone false");
+    console.log("  for a fresh one.");
+    if (window.relay) {
+      const { relayPairingCode } = await import("./phone-relay.ts");
+      const qrcode = await import("qrcode-terminal");
+      const relayCode = relayPairingCode(window.relay);
+      console.log("");
+      console.log("  From anywhere (cellular or any Wi-Fi), scan this in conch:");
+      console.log("");
+      qrcode.generate(relayCode, { small: true }, (qr) => console.log(qr));
+      console.log(`    Relay code   ${relayCode}`);
+      console.log("");
+      console.log("  The relay pairing is long-lived and selects relay only; the app");
+      console.log("  will not silently fall back to the LAN transport.");
+    } else {
+      console.log("");
+      console.log("  Internet relay is not configured. After deploying relay/, run:");
+      console.log("    conch set phone-relay-url https://<worker>.workers.dev");
+      console.log("    conch pair");
+    }
+    console.log("");
+    console.log("  Turn every phone transport off: conch set phone false");
     console.log("");
     break;
   }

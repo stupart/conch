@@ -31,6 +31,8 @@
 	</array>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>conch listens while you talk to your coding sessions. Audio never leaves this phone.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>conch scans the encrypted relay pairing QR shown by your Mac.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>conch turns your voice into text on this phone, then sends only the text to your Mac.</string>
 	<key>NSLocalNetworkUsageDescription</key>

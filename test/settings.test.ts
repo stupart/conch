@@ -51,6 +51,7 @@ const expected = {
   "keystroke-fallback": ["keystrokeFallback", "CONCH_KEYSTROKE_FALLBACK", "live", false],
   "phone": ["phoneEnabled", "CONCH_PHONE", "live", false],
   "phone-port": ["phonePort", "CONCH_PHONE_PORT", "live", 8674],
+  "phone-relay-url": ["phoneRelayURL", "CONCH_PHONE_RELAY_URL", "live", ""],
   "read-full": ["readFull", "CONCH_READ_FULL", "live", true],
   "interrupt-on-manual-reply": ["interruptOnManualReply", "CONCH_INTERRUPT_ON_MANUAL_REPLY", "live", true],
   "handoff-order": ["handoffOrder", "CONCH_HANDOFF_ORDER", "live", "oldest"],
@@ -68,10 +69,10 @@ const expected = {
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 25 curated, default-bearing knobs", () => {
+  test("contains exactly the 26 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(25);
+    expect(SETTING_DESCRIPTORS).toHaveLength(26);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });
@@ -113,6 +114,13 @@ describe("settings parser", () => {
     expect(parse("voice-qa", "1")).toEqual({ ok: true, value: true });
     expect(parse("resume-digest", "0")).toEqual({ ok: true, value: false });
     expect(parse("handoff-order", " OLDEST ")).toEqual({ ok: true, value: "oldest" });
+    expect(parse("phone-relay-url", " https://relay.example.test/path ")).toEqual({
+      ok: true,
+      value: "https://relay.example.test/path",
+    });
+    expect(parse("phone-relay-url", "")).toEqual({ ok: true, value: "" });
+    expect(parse("phone-relay-url", "http://relay.example.test").ok).toBe(false);
+    expect(parse("phone-relay-url", "https://user@relay.example.test").ok).toBe(false);
   });
 
   test("enforces finite positive and zeroable number bounds", () => {
@@ -493,7 +501,7 @@ describe("control-message validation", () => {
     }
   });
 
-  test("config snapshot metadata round-trips for number, boolean, and enum settings", () => {
+  test("config snapshot metadata round-trips for number, boolean, enum, and string settings", () => {
     const snapshot = Object.create(null) as ConfigSnapshot;
     for (const descriptor of SETTING_DESCRIPTORS) {
       snapshot[descriptor.key] = configSnapshotEntry(descriptor, {

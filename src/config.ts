@@ -98,6 +98,8 @@ export interface Config {
   keystrokeFallback: boolean;
   phoneEnabled: boolean;
   phonePort: number;
+  /** Deployed Cloudflare Worker URL; empty keeps the unchanged LAN transport only. */
+  phoneRelayURL: string;
   /** Reveal a session's window (raise-without-focus-steal) when conch starts talking to it. */
   revealOnTurn: boolean;
   /** suppress a window raise if keys/mouse were touched within this many seconds (0 = always raise) */
@@ -199,6 +201,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     keystrokeFallback: settings["keystroke-fallback"].value as boolean,
     phoneEnabled: settings["phone"].value as boolean,
     phonePort: settings["phone-port"].value as number,
+    phoneRelayURL: settings["phone-relay-url"].value as string,
     revealOnTurn: settings["reveal-on-turn"].value as boolean,
     revealTypingGraceSecs: settings["reveal-typing-grace"].value as number,
     workingMic: settings["working-mic"].value as boolean,
