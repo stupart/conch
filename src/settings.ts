@@ -765,7 +765,28 @@ export type SessionAck = {
 };
 
 export type SessionError = { kind: "session-error"; error: string };
-export type SessionControlResponse = SessionAck | SessionError;
+/// The daemon's answer to `open-pairing`.
+///
+/// This was missing from the response union, so every reply to `conch pair`
+/// failed validation and surfaced as "couldn't open a pairing window — is the
+/// daemon running?" while the daemon was running perfectly and answering
+/// correctly. The workaround was handing over the raw 32-char token by hand,
+/// which is why pairing felt like typing a hash.
+export interface PairingOpen {
+  kind: "pairing-open";
+  code: string;
+  expiresAt: number;
+  port: number;
+  relay?: {
+    version: 1;
+    endpoint: string;
+    roomId: string;
+    secret: string;
+    createdAt: number;
+  };
+}
+
+export type SessionControlResponse = SessionAck | SessionError | PairingOpen;
 export type ControlResponse = ConfigControlResponse | SessionControlResponse;
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -934,6 +955,45 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
         command: value.command,
         ...(label === undefined ? {} : { label }),
         changed: value.changed,
+      },
+    };
+  }
+  if (value.kind === "pairing-open") {
+    if (typeof value.code !== "string" || !/^[0-9]{6}$/.test(value.code)) {
+      return { ok: false, err: "invalid pairing code" };
+    }
+    if (!Number.isSafeInteger(value.expiresAt) || (value.expiresAt as number) <= 0) {
+      return { ok: false, err: "invalid pairing expiry" };
+    }
+    if (!Number.isSafeInteger(value.port) || (value.port as number) <= 0 || (value.port as number) > 65535) {
+      return { ok: false, err: "invalid pairing port" };
+    }
+    let relay: PairingOpen["relay"];
+    if (value.relay !== undefined) {
+      const r = value.relay;
+      if (
+        !record(r) || r.version !== 1
+        || typeof r.endpoint !== "string" || !/^wss:\/\/[^\s]+$/.test(r.endpoint)
+        || typeof r.roomId !== "string" || !/^[A-Za-z0-9_-]{16,}$/.test(r.roomId)
+        || typeof r.secret !== "string" || !/^[A-Za-z0-9_-]{16,}$/.test(r.secret)
+        || !Number.isSafeInteger(r.createdAt)
+      ) return { ok: false, err: "invalid relay pairing" };
+      relay = {
+        version: 1,
+        endpoint: r.endpoint,
+        roomId: r.roomId,
+        secret: r.secret,
+        createdAt: r.createdAt as number,
+      };
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "pairing-open",
+        code: value.code,
+        expiresAt: value.expiresAt as number,
+        port: value.port as number,
+        ...(relay === undefined ? {} : { relay }),
       },
     };
   }
