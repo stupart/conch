@@ -1,6 +1,6 @@
 # 🐚 conch
 
-A voice loop for Claude Code. Your sessions announce themselves out loud when they finish — then you just talk back.
+A voice loop for Claude Code. Your sessions announce themselves out loud when they finish — then you just talk back. From your Mac, or from your phone anywhere in the world.
 
 ![The conch dashboard — a live session ledger down the left (sorted so whatever needs you floats to the top, each row a colored status dot), and a pane on the right that reads along with the session conch is talking to: here, your spoken reply building word by word as it records.](docs/dashboard.png)
 
@@ -27,6 +27,34 @@ Prompts are injected via `tmux send-keys` targeted at the exact pane running tha
 The native macOS app is conch's primary UI. It shows the live session ledger and conversation while conch speaks and listens, and renders a finished deliverable inline when a session publishes one for review.
 
 The app is currently built from source. Open `mac-app/conch-mac.xcodeproj` in Xcode, select the `conch-mac` scheme, and press Run. Keep using the terminal dashboard (`conch`) as the SSH/remote fallback.
+
+## Your phone
+
+<img src="docs/iphone-ledger.png" alt="conch on iPhone: a ledger of live sessions, each row showing what it wants — arch-website needs an answer, dayloop is being read aloud, conch has work to look at. A session that is merely working says nothing." width="300" align="right">
+
+The iOS app is the same ledger in your pocket. Every session, sorted so whatever
+needs you floats to the top, each row saying what it actually wants: *Needs an
+answer*, *Reading aloud*, *Has work to look at*. A session that is merely
+working says nothing — printing "Working" on every quiet row is how you learn
+to stop reading the column.
+
+Tap in and you get that session's reply in full, a Talk button that transcribes
+**on the phone** (no audio crosses the network), and the deliverable when
+there's one to look at. Replies are read aloud through your AirPods, and the
+mic opens by itself when the reading stops — so a whole turn costs you one tap.
+
+**It works from anywhere.** Not just your Wi-Fi: over cellular, from another
+country, without a VPN, a tunnel, or an open port. Your Mac and phone each dial
+*out* to a small Cloudflare Worker that pairs them up, and every frame is
+encrypted end to end with a key from the pairing QR — the relay stores and
+forwards bytes it cannot read. Deploy your own in one command; the whole thing
+is in [`relay/`](relay/), and at conch's traffic it costs nothing.
+
+Pair it from the Mac app's **Phone** tab (or `conch pair`): scan the QR and
+you're connected. There's a LAN-only mode too if you'd rather nothing left the
+house.
+
+<br clear="right">
 
 ## Install
 
@@ -232,7 +260,7 @@ The full environment-variable surface remains available (put overrides in the ho
 ## Roadmap
 
 - **Name-addressing** — "hey dayloop, ..." routes to any session, not just the last announcer
-- **Phone remote** — hear from and talk back to your sessions over a websocket when you're away from the machine
+- **Images from the phone** — screenshot something and send it to a session, since the phone has a camera and the Mac does not
 - **Always-listening mode** — seashell's concurrent VAD architecture, once extracted from its TUI, replaces the per-window sox capture
 - **Linux** — swap `say`/`afplay` for espeak/paplay, keystroke fallback for xdotool
 
