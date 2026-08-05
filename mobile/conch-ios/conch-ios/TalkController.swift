@@ -508,6 +508,29 @@ final class TalkController: NSObject, ObservableObject {
                 return candidateWords.dropFirst(count).joined(separator: " ")
             }
         }
+
+        // RESTATEMENT, not continuation. A final result can report the whole
+        // utterance again rather than only the part since the last final, and
+        // the loop above cannot see it: that compares what we HAVE ended with
+        // against what the candidate STARTS with, and a restatement starts at
+        // the beginning. Observed live — the same sentence arrived twice in one
+        // block, the second copy opening "Right" where the first said "All
+        // right", so it was not even byte-identical to compare against.
+        //
+        // Matching TAILS is the tell. Two independent transcriptions of the
+        // same audio converge at the end far more reliably than at the start,
+        // where a dropped leading word is common. Six words is long enough that
+        // ordinary speech does not collide by accident.
+        let tailWords = min(8, min(existingWords.count, candidateWords.count))
+        if tailWords >= 6 {
+            let existingTail = existingWords.suffix(tailWords).map(normalized)
+            let candidateTail = candidateWords.suffix(tailWords).map(normalized)
+            if existingTail == candidateTail {
+                // Anything the candidate adds beyond what we hold would sit
+                // AFTER that shared tail, and there is nothing after it.
+                return ""
+            }
+        }
         return candidate
     }
 
