@@ -182,18 +182,19 @@ struct LedgerView: View {
                 }
             }
         } label: {
-            // The DOT is 10pt; the TARGET is 44. A Button's hit area is its
-            // label's frame, so this was a 10x10 target — Tyler: "the button
-            // isn't working :((( oh nvm i just had to click it 5 times". He
-            // was not tapping a broken button five times, he was missing a dot
-            // four times. 44 is Apple's minimum for a reason, and contentShape
-            // is what makes the empty space around the dot count as the dot.
-            Circle()
-                .fill(passive ? Palette.textDim : Palette.needs)
-                .frame(width: 10, height: 10)
+            // An Image, not a Circle. A Button's hit area is its label's
+            // frame: a shape given .frame(10) is a 10pt target, so four of
+            // Tyler's five taps landed on nothing. Padding it out to 44 fixed
+            // the aiming and inflated the glass capsule with it — "bruh u just
+            // made the button ugly".
+            //
+            // A toolbar Image gets the platform's own button metrics, which is
+            // why the laptop menu opposite has always worked first try. Same
+            // 10pt dot on screen, full glass tappable, nothing added.
+            Image(systemName: "circle.fill")
+                .font(.system(size: 10))
+                .foregroundStyle(passive ? Palette.textDim : Palette.needs)
                 .animation(.easeOut(duration: 0.12), value: passive)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
         }
         .accessibilityLabel(
             passive

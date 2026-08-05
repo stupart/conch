@@ -204,6 +204,30 @@ struct SessionView: View {
             }
         }
         .onDisappear { speech.onFinishedReading = nil }
+        // Keep asking while the session is producing.
+        //
+        // The Mac app re-reads the transcript file continuously, which is why
+        // it grows in front of you. The phone fetched once per fingerprint
+        // change, and a fingerprint built from the ROW only moves when the
+        // session's status does — not as an answer is written. So the phone
+        // held a stale snapshot of a turn that was still growing: "still not
+        // getting your full messages written out like I do on desktop".
+        //
+        // Only while this session is on screen AND actually working, so a
+        // ledger of idle sessions costs nothing. Task cancellation on
+        // disappear stops it; there is no timer to leak.
+        .task(id: "poll|\(sessionId)|\(row?.status ?? "")") {
+            while !Task.isCancelled, row?.status == "working" {
+                try? await Task.sleep(for: .milliseconds(1500))
+                if Task.isCancelled { return }
+                guard let whole = await bridge.fetchReply(sessionId: sessionId),
+                      !whole.isEmpty else { continue }
+                // Never let a shorter re-read replace a longer one: a tail read
+                // that lands mid-write would otherwise make the answer flicker
+                // backwards while you are reading it.
+                if whole.count >= (fetchedReply?.count ?? 0) { fetchedReply = whole }
+            }
+        }
         // Keyed on the REPLY, not the session: fetching once per session meant
         // the first answer was whole and every one after it was a tail.
         .task(id: "\(sessionId)|\(replyFingerprint ?? "")") {
