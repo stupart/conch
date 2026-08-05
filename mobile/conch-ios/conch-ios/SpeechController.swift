@@ -117,11 +117,15 @@ final class SpeechController: NSObject, ObservableObject {
     private func configureSession() -> Bool {
         let session = AVAudioSession.sharedInstance()
         let take = {
-            try session.setCategory(
-                .playback,
-                mode: .spokenAudio,
-                options: [.duckOthers, .allowBluetoothA2DP]
-            )
+            // .duckOthers ONLY. `.allowBluetoothA2DP` is valid solely with
+            // .playAndRecord — with .playback it is both redundant (A2DP is
+            // already the default route) and rejected, and it was throwing
+            // OSStatus -50 (paramErr) on every single call. Under `try?` that
+            // was invisible, so the synthesizer spoke into a session that had
+            // never been configured and only made sound when something else
+            // had happened to leave the session usable. That is the
+            // intermittent "claiming to read while silent".
+            try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
             try session.setActive(true)
         }
         do {
