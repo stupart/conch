@@ -207,6 +207,19 @@ enum StatusMark {
         }
     }
 
+    /// Whether the ledger spells this state out beside the glyph.
+    ///
+    /// Working is the resting state and by far the most common; printing it
+    /// on every quiet row is the kind of repetition that teaches you to stop
+    /// reading the column entirely. Everything here either wants you or is
+    /// happening right now.
+    var showsMeaningInLedger: Bool {
+        switch self {
+        case .working, .idle: false
+        case .waiting, .needs, .review, .micOpen, .speaking, .muted, .paused: true
+        }
+    }
+
     var meaning: String {
         switch self {
         case .working: "Working"

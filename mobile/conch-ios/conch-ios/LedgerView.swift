@@ -246,10 +246,24 @@ struct SessionRowView: View {
 
             Spacer(minLength: 8)
 
-            if let age = relativeAge(epochMilliseconds: row.review?.at ?? row.at) {
-                Text(age)
-                    .font(Type.caption.monospacedDigit())
-                    .foregroundStyle(Palette.textFaint)
+            VStack(alignment: .trailing, spacing: 2) {
+                if let age = relativeAge(epochMilliseconds: row.review?.at ?? row.at) {
+                    Text(age)
+                        .font(Type.caption.monospacedDigit())
+                        .foregroundStyle(Palette.textFaint)
+                }
+                // Say what the glyph MEANS, so the ledger answers "which one
+                // wants me?" without opening three sessions to find out.
+                //
+                // Only when it is not the resting state. "Working" on every
+                // quiet row is noise that trains you to stop reading the
+                // column, which costs you the one row that did need you.
+                if mark.showsMeaningInLedger {
+                    Text(mark.meaning)
+                        .font(Type.caption)
+                        .foregroundStyle(mark.color)
+                        .lineLimit(1)
+                }
             }
         }
         .padding(.vertical, 8)
