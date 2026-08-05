@@ -1,4 +1,5 @@
 import { createServer } from "node:net";
+import { currentTurnText } from "./transcript-turn.ts";
 import {
   chmodSync, existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -1773,6 +1774,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
           },
           replyFor: async (sessionId) => {
             const path = findTranscript(cfg.claudeDir, sessionId);
+            // The WHOLE turn in progress, the way the Mac dashboard shows it —
+            // every assistant block back to the last genuine human turn. The
+            // phone is showing, not speaking, so the rule that protects speech
+            // (never announce half a turn) makes it show the wrong thing: it
+            // fell through to an earlier turn's short spoken announce, which is
+            // where "one random sentence idk where from" came from.
+            const turn = path ? await currentTurnText(path) : "";
+            if (turn) return turn;
             // RAW, not stripMarkdown: the phone renders it, it doesn't speak it.
             const finalMessage = path ? await lastAssistantText(path) : "";
             if (finalMessage) return finalMessage;

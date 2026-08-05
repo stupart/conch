@@ -143,10 +143,14 @@ export interface PublishedState {
     label: string;
     partial?: string;
     transcriptPrefix?: string;
-    reading?: { text: string; spokenChars: number };
+    /// `truncated` marks a tail: the publisher caps long text and keeps the
+    /// END, so a client cannot tell a capped long reply from a short whole one
+    /// by looking. Declared on the PUBLISHED shape only — the in-memory model
+    /// is never capped and must not imply it might be.
+    reading?: { text: string; spokenChars: number; truncated?: boolean };
   };
-  reply?: PanelReplyModel;
-  preview?: PanelReplyModel;
+  reply?: PanelReplyModel & { truncated?: boolean };
+  preview?: PanelReplyModel & { truncated?: boolean };
   rows: PublishedSessionRow[];
   dismissed: string[];
   dismissedRows: Array<{ id: string; label: string }>;
