@@ -12,6 +12,7 @@
 		A10000000000000000000003 /* StateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* StateStore.swift */; };
 		A10000000000000000000004 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* ContentView.swift */; };
 		A10000000000000000000005 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* DashboardView.swift */; };
+		A10000000000000000000090 /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000090 /* PairingView.swift */; };
 		A10000000000000000000006 /* ReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* ReviewView.swift */; };
 		A10000000000000000000007 /* WebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* WebView.swift */; };
 		A10000000000000000000009 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000A /* WebKit.framework */; };
@@ -29,6 +30,7 @@
 		A20000000000000000000003 /* StateStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateStore.swift; sourceTree = "<group>"; };
 		A20000000000000000000004 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A20000000000000000000005 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
+		A20000000000000000000090 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
 		A20000000000000000000006 /* ReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewView.swift; sourceTree = "<group>"; };
 		A20000000000000000000007 /* WebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebView.swift; sourceTree = "<group>"; };
 		A20000000000000000000009 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -71,6 +73,7 @@
 				A20000000000000000000003 /* StateStore.swift */,
 				A20000000000000000000004 /* ContentView.swift */,
 				A20000000000000000000005 /* DashboardView.swift */,
+				A20000000000000000000090 /* PairingView.swift */,
 				A20000000000000000000006 /* ReviewView.swift */,
 				A20000000000000000000007 /* WebView.swift */,
 				A2000000000000000000000C /* ConchSocketClient.swift */,
@@ -173,6 +176,7 @@
 				A10000000000000000000003 /* StateStore.swift in Sources */,
 				A10000000000000000000004 /* ContentView.swift in Sources */,
 				A10000000000000000000005 /* DashboardView.swift in Sources */,
+				A10000000000000000000090 /* PairingView.swift in Sources */,
 				A10000000000000000000006 /* ReviewView.swift in Sources */,
 				A10000000000000000000007 /* WebView.swift in Sources */,
 				A1000000000000000000000A /* ConchSocketClient.swift in Sources */,

@@ -28,6 +28,14 @@ struct PairingView: View {
         trimmedCode.hasPrefix(RelayPairingPayload.codePrefix)
     }
 
+    /// The host a scanned pairing will actually use, so the confirmation says
+    /// something checkable rather than just "trust me".
+    private var relayEndpointSummary: String? {
+        guard looksLikeRelayCode,
+              let payload = try? RelayPairingPayload.decodePairingCode(trimmedCode) else { return nil }
+        return "Connects through \(payload.endpoint)"
+    }
+
     private var canPair: Bool {
         looksLikeRelayCode
             || (host.contains(":") && (looksLikeShortCode || trimmedCode.count >= 24))
@@ -50,13 +58,36 @@ struct PairingView: View {
             }
             .padding(.bottom, 36)
 
-            VStack(spacing: 14) {
-                field("Host", text: $host, placeholder: "192.168.1.20:8674", field: .host)
-                    .keyboardType(.numbersAndPunctuation)
-                field("Code", text: $code, placeholder: "6-digit code", field: .code)
-                    .keyboardType(.numbersAndPunctuation)
+            // A scanned relay pairing needs no host and no typed code — it
+            // carries its own endpoint. Leaving the LAN fields on screen made
+            // a successful scan look like a half-filled form: one field
+            // populated with 200 characters of base64, the other empty.
+            if looksLikeRelayCode {
+                VStack(spacing: 6) {
+                    Label("Relay pairing scanned", systemImage: "checkmark.circle.fill")
+                        .font(Type.label(15, weight: .medium))
+                        .foregroundStyle(Palette.micOpen)
+                    Text(relayEndpointSummary ?? "Ready to connect from anywhere.")
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.textDim)
+                        .multilineTextAlignment(.center)
+                    Button("Use this network instead") {
+                        code = ""
+                    }
+                    .font(Type.caption.weight(.medium))
+                    .foregroundStyle(Palette.textDim)
+                    .padding(.top, 4)
+                }
+                .padding(.horizontal, 28)
+            } else {
+                VStack(spacing: 14) {
+                    field("Host", text: $host, placeholder: "192.168.1.20:8674", field: .host)
+                        .keyboardType(.numbersAndPunctuation)
+                    field("Code", text: $code, placeholder: "6-digit code", field: .code)
+                        .keyboardType(.numbersAndPunctuation)
+                }
+                .padding(.horizontal, 28)
             }
-            .padding(.horizontal, 28)
 
             Button {
                 scanningRelay = true

@@ -45,7 +45,15 @@ struct ConchMacApp: App {
         }
 
         Settings {
-            ConchSettingsView()
+            // Pairing first, knobs second: connecting a phone is the one thing
+            // a new person must do, and it used to require a terminal.
+            TabView {
+                ConchPairingView()
+                    .tabItem { Label("Phone", systemImage: "iphone") }
+                ConchSettingsView()
+                    .tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
+            }
+            .frame(minWidth: 640, idealWidth: 680, minHeight: 480, idealHeight: 620)
         }
     }
 }
