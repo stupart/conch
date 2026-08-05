@@ -22,6 +22,22 @@ import {
   type OpenedRelayFrame,
 } from "../src/relay-protocol.ts";
 
+/// Wait for a condition with a DEADLINE, not an open-ended spin.
+///
+/// These were `while (!cond) await new Promise(r => setTimeout(r, 0))`, which
+/// under a loaded parallel suite starves the producer and blows bun's 5s test
+/// limit — a random failure that says nothing about what went wrong. A real
+/// yield plus a deadline turns a flake into either a pass or a sentence.
+async function settle(check: () => boolean, what: string, budgetMs = 10_000): Promise<void> {
+  const started = Bun.nanoseconds();
+  while (!check()) {
+    if ((Bun.nanoseconds() - started) / 1e6 > budgetMs) {
+      throw new Error(`timed out after ${budgetMs}ms waiting for ${what}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+}
+
 const temporary: string[] = [];
 afterEach(() => {
   for (const path of temporary.splice(0)) {
@@ -297,7 +313,7 @@ describe("Mac phone relay adapter", () => {
       requestBody("/ws", harness.relay.secret),
     );
     await harness.peer.receive(JSON.stringify(subscribe));
-    while (harness.sent.length < 3) await new Promise((resolve) => setTimeout(resolve, 0));
+    await settle(() => harness.sent.length >= 3, "3 relay frames");
     const initial = await openSent(harness.phone, harness.sent);
     expect(initial.map((frame) => frame.header.kind)).toEqual([
       "response-head",
@@ -307,7 +323,7 @@ describe("Mac phone relay adapter", () => {
     expect(JSON.parse(new TextDecoder().decode(responseBody(initial, "state-subscription"))).v).toBe(7);
     expect(harness.clients()).toBe(1);
     harness.application.publish();
-    while (harness.sent.length < 3) await new Promise((resolve) => setTimeout(resolve, 0));
+    await settle(() => harness.sent.length >= 3, "3 relay frames");
     expect((await openSent(harness.phone, harness.sent))[0]?.header.kind).toBe("response-head");
     harness.peer.close();
     expect(harness.clients()).toBe(0);
@@ -321,7 +337,7 @@ describe("Mac phone relay adapter", () => {
       requestBody("/ws", harness.relay.secret),
     );
     await harness.peer.receive(JSON.stringify(subscribe));
-    while (harness.sent.length < 5) await new Promise((resolve) => setTimeout(resolve, 0));
+    await settle(() => harness.sent.length >= 5, "5 relay frames");
     const frames = await openSent(harness.phone, harness.sent);
     const chunks = frames.filter((frame) => frame.header.kind === "response-chunk");
     expect(chunks.map((frame) => frame.body.byteLength)).toEqual([65_536, 65_536, 18_962]);
@@ -449,7 +465,7 @@ describe("Mac phone relay adapter", () => {
     );
     await harness.peer.receive(JSON.stringify(nextSubscribe));
     releaseOldChunk();
-    while (harness.sent.length < 3) await new Promise((resolve) => setTimeout(resolve, 0));
+    await settle(() => harness.sent.length >= 3, "3 relay frames");
 
     const frames = await openSent(nextPhone, harness.sent);
     expect(JSON.parse(
@@ -528,7 +544,7 @@ describe("Mac phone relay adapter", () => {
       requestBody(`/file?path=${encodeURIComponent(deliverable)}`, harness.relay.secret),
     );
     const fileDelivery = harness.peer.receive(JSON.stringify(file));
-    while (harness.sent.length < 2) await new Promise((resolve) => setTimeout(resolve, 0));
+    await settle(() => harness.sent.length >= 2, "2 relay frames");
 
     const controlId = "fairness-control-request";
     const control = await harness.phone.seal(

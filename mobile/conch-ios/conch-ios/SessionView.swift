@@ -48,10 +48,20 @@ struct SessionView: View {
         return reply.displayText
     }
 
-    /// Identity of the current reply — a new turn changes the text.
+    /// What must change before this session's reply is worth refetching.
+    ///
+    /// `state.reply` is ONE globally-latest reply across every session, not a
+    /// reply per session. So a session that is not the most recent to speak
+    /// gets no live text at all, and keying the refetch on it meant those
+    /// sessions fetched once, ever — you opened conch and read a sentence
+    /// belonging to dayloop. This session's own ROW still moves whenever it
+    /// produces a turn, which is the signal that actually tracks it.
     private var replyFingerprint: String? {
-        guard let reply = bridge.state?.reply, reply.sessionId == sessionId else { return nil }
-        return "\(reply.text.count):\(reply.displayText.suffix(64))"
+        if let reply = bridge.state?.reply, reply.sessionId == sessionId {
+            return "live:\(reply.text.count):\(reply.displayText.suffix(48))"
+        }
+        guard let row else { return nil }
+        return "row:\(Int(row.at)):\(row.status):\(row.review?.summary ?? "")"
     }
 
     var body: some View {
