@@ -38,14 +38,19 @@ struct SessionView: View {
     private var replyText: String? {
         guard let reply = bridge.state?.reply, reply.sessionId == sessionId,
               !reply.displayText.isEmpty else { return fetchedReply }
-        // A truncated live reply is the LAST 4,000 characters, so showing it
-        // hands you the middle of an answer with no sign that anything is
-        // missing. Prefer the whole thing once /reply has returned it; until
-        // then the tail is still better than a spinner.
-        if reply.truncated, let whole = fetchedReply, whole.count >= reply.displayText.count {
-            return whole
+        // Whichever actually holds more of the answer.
+        //
+        // Gating this on `truncated` was not enough: the live reply is often
+        // the short spoken ANNOUNCE, which is complete and therefore not
+        // marked truncated, so it beat the full turn fetched from /reply and
+        // you got a fragment of an older message while a new one streamed in.
+        // Length is the honest comparison — the live copy is for immediacy,
+        // /reply is authoritative, and once the live one genuinely overtakes
+        // it (a longer turn arriving) it wins on its own merits.
+        guard let whole = fetchedReply, whole.count > reply.displayText.count else {
+            return reply.displayText
         }
-        return reply.displayText
+        return whole
     }
 
     /// What must change before this session's reply is worth refetching.

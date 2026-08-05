@@ -1552,14 +1552,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // still talking — Tyler heard the Mac and the phone reading the same reply
     // simultaneously. A per-call-site gate is a list you can forget to add to;
     // this is not.
-    if (audioLease.sink === "phone") return;
-    // Owning the announcement means owning the STATE. Four call sites set
-    // "speaking" and THEN called this, so while the phone held the audio the
-    // Mac published "Reading aloud" for a session it was silent about — Tyler
-    // saw two rows claiming to read at once with nothing audible. The lie was
-    // in the status, not the audio. Same reasoning as the gate above: a
-    // per-call-site rule is a list you can forget to add to.
+    // The state names the SESSION being read, not the device making the sound.
+    // Moving it below the gate stopped the Mac claiming to read while silent,
+    // but broke the thing that made it useful: liveGlyph is only set for the
+    // ACTIVE row, active is only set when live.state is a live state, so with
+    // the phone owning the audio no row was ever marked speaking and the
+    // ledger said "Waiting for you" for a session being read aloud.
+    //
+    // Above the gate, so it is set on both paths. Known limit: while the phone
+    // reads, the Mac cannot see when it finishes, so this clears when the Mac
+    // would have stopped rather than when the phone actually does. The phone
+    // reporting its own speech is the honest fix and is not this change.
     setState("speaking", label);
+    if (audioLease.sink === "phone") return;
     await speech.speak(speechCfg, text, label);
   };
 
