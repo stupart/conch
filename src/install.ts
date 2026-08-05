@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, chmodSync, unlinkSync, statSync, renameSync } fr
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
 import { CONCH_DATA } from "./config.ts";
-import { serviceManager } from "./platform.ts";
+import { packageHints, platform, playBinary, serviceManager, speechBinary } from "./platform.ts";
 
 const SERVICE_LABEL = "com.conch.daemon";
 
@@ -46,34 +46,52 @@ function conchInvocation(): string {
 export async function runSetup(cfg: Config): Promise<void> {
   console.log("🐚 conch setup — getting your machine ready for voice\n");
 
-  // 1. Binaries. sox + tmux come from Homebrew; whisper-cli/-server ship in the
-  //    whisper-cpp formula. `say`/`afplay` are macOS built-ins (checked by doctor).
-  const brew = Bun.which("brew");
-  const missing: Array<{ formula: string; why: string }> = [];
-  if (!Bun.which("sox")) missing.push({ formula: "sox", why: "microphone capture" });
-  if (!Bun.which("tmux")) missing.push({ formula: "tmux", why: "daemon hosting + pane injection" });
+  // 1. Binaries. On macOS everything (including whisper) comes from Homebrew.
+  //    On Linux/WSL the audio tools come from apt and whisper is a source build
+  //    (see buildWhisperFromSource) so it can be compiled against the GPU.
+  const os = platform();
+  const hints = packageHints(os);
+  const missing: Array<{ pkg: string; why: string }> = [];
+  if (!Bun.which("sox")) missing.push({ pkg: "sox", why: "microphone capture" });
+  if (!Bun.which("tmux")) missing.push({ pkg: "tmux", why: "daemon hosting + pane injection" });
+  if (!Bun.which(playBinary(os))) missing.push({ pkg: hints.manager === "brew" ? playBinary(os) : "pulseaudio-utils", why: "bell + mic cues" });
+  if (os === "linux" && !Bun.which("espeak-ng")) missing.push({ pkg: "espeak-ng", why: "speech" });
   // Gate on whisper-cli only — the brew whisper-cpp formula ships it but builds
   // with WHISPER_BUILD_SERVER=OFF, so whisper-server is never present on a brew
   // box. It's an optional speed/partials upgrade, not a requirement.
-  if (!existsSync(cfg.whisperCli)) {
-    missing.push({ formula: "whisper-cpp", why: "speech-to-text" });
+  if (os === "darwin" && !existsSync(cfg.whisperCli)) {
+    missing.push({ pkg: "whisper-cpp", why: "speech-to-text" });
   }
   if (missing.length) {
-    if (!brew) {
+    const pkgs = missing.map((m) => m.pkg).join(" ");
+    if (os === "darwin" && !Bun.which("brew")) {
       console.log("⚠️  Missing dependencies and Homebrew isn't installed. Install brew from https://brew.sh, then:");
-      console.log(`      brew install ${missing.map((m) => m.formula).join(" ")}\n`);
-    } else {
-      console.log(`Installing via Homebrew: ${missing.map((m) => `${m.formula} (${m.why})`).join(", ")}`);
-      const proc = Bun.spawn(["brew", "install", ...missing.map((m) => m.formula)], { stdout: "inherit", stderr: "inherit" });
-      const code = await proc.exited;
-      if (code !== 0) {
+      console.log(`      brew install ${pkgs}\n`);
+    } else if (os === "darwin") {
+      console.log(`Installing via Homebrew: ${missing.map((m) => `${m.pkg} (${m.why})`).join(", ")}`);
+      const proc = Bun.spawn(["brew", "install", ...missing.map((m) => m.pkg)], { stdout: "inherit", stderr: "inherit" });
+      if (await proc.exited !== 0) {
         console.error("\n❌ brew install failed — resolve the error above and re-run `conch setup`.");
         process.exit(1);
       }
       console.log("");
+    } else {
+      // apt needs root; asking rather than sudo-ing keeps setup non-privileged.
+      console.log(`⚠️  Missing: ${missing.map((m) => `${m.pkg} (${m.why})`).join(", ")}. Install them, then re-run \`conch setup\`:`);
+      console.log(`      ${hints.install} ${pkgs}\n`);
     }
   } else {
-    console.log("✅ binaries present (sox, tmux, whisper-cpp)");
+    console.log(`✅ binaries present (${hints.packages.join(", ")})`);
+  }
+
+  if (os !== "darwin" && !existsSync(cfg.whisperCli)) {
+    console.log(`\n⚠️  whisper-cli not found at ${cfg.whisperCli}.`);
+    console.log("   Build it from source (CUDA-accelerated if you have an NVIDIA GPU):");
+    console.log(`      ${hints.install} cmake build-essential git`);
+    console.log(`      git clone https://github.com/ggml-org/whisper.cpp ${join(CONCH_DATA, "src", "whisper.cpp")}`);
+    console.log(`      cd ${join(CONCH_DATA, "src", "whisper.cpp")} && cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=1 && cmake --build build -j`);
+    console.log(`   Then link the binaries where conch looks for them:`);
+    console.log(`      mkdir -p ${join(CONCH_DATA, "bin")} && ln -sf ${join(CONCH_DATA, "src/whisper.cpp/build/bin")}/whisper-{cli,server} ${join(CONCH_DATA, "bin")}/\n`);
   }
 
   // 2. Models. Skip any that config already resolves (a seashell box has them).
@@ -94,11 +112,16 @@ export async function runSetup(cfg: Config): Promise<void> {
     console.log(`   → ${dest}`);
   }
 
-  // 3. Kokoro voices (optional). Without mlx-audio, conch falls back to `say`.
+  // 3. Kokoro voices (optional). Without a TTS server, conch falls back to the
+  //    platform voice (say / SAPI / espeak-ng).
   if (!Bun.which(cfg.ttsServerBin)) {
-    console.log('\nℹ️  Natural per-session voices are optional. For them, install mlx-audio:');
-    console.log('      uv tool install --with "misaki[en]" "mlx-audio[server]"');
-    console.log("   Without it, conch uses the macOS `say` voice.");
+    console.log("\nℹ️  Natural per-session voices are optional. For them:");
+    console.log(
+      os === "darwin"
+        ? '      uv tool install --with "misaki[en]" "mlx-audio[server]"'
+        : `      run a Kokoro-FastAPI server on :${cfg.ttsPort} (same OpenAI-compatible API and voice names)`,
+    );
+    console.log(`   Without it, conch uses the ${speechBinary(os)} voice.`);
   } else {
     console.log(`✅ kokoro voices available via ${cfg.ttsServerBin}`);
   }
@@ -302,9 +325,11 @@ export async function runInstall(cfg: Config): Promise<void> {
 
 /** Sanity-check every external dependency conch shells out to. */
 export async function runDoctor(cfg: Config): Promise<void> {
+  const os = platform();
   const checks: Array<[string, () => boolean | Promise<boolean>]> = [
-    ["say (TTS)", () => binaryExists("say")],
-    ["afplay (bell)", () => binaryExists("afplay")],
+    [`${speechBinary(os)} (TTS)`, () => binaryExists(speechBinary(os))],
+    [`${playBinary(os)} (bell + cues)`, () => binaryExists(playBinary(os))],
+    [`bell sound at ${cfg.bellSound}`, () => existsSync(cfg.bellSound)],
     ["sox (mic capture)", () => binaryExists("sox")],
     ["tmux (pane injection)", () => binaryExists("tmux")],
     [`whisper-cli at ${cfg.whisperCli}`, () => existsSync(cfg.whisperCli)],
@@ -329,9 +354,22 @@ export async function runDoctor(cfg: Config): Promise<void> {
   );
 
   const ttsAvailable = binaryExists(cfg.ttsServerBin);
+  const fallbackName = speechBinary(os);
   console.log(
-    `ℹ️  tts: ${cfg.ttsEngine === "say" ? "say (forced)" : ttsAvailable ? `kokoro via ${cfg.ttsServerBin} on :${cfg.ttsPort}, ${cfg.ttsVoices.length} voices` : `say — ${cfg.ttsServerBin} not found (uv tool install "mlx-audio[server]" for natural per-session voices)`}`,
+    `ℹ️  tts: ${cfg.ttsEngine === "say" ? `${fallbackName} (forced)` : ttsAvailable ? `kokoro via ${cfg.ttsServerBin} on :${cfg.ttsPort}, ${cfg.ttsVoices.length} voices` : `${fallbackName} — ${cfg.ttsServerBin} not found (${os === "darwin" ? 'uv tool install "mlx-audio[server]"' : "run a Kokoro-FastAPI server on :" + cfg.ttsPort} for natural per-session voices)`}`,
   );
+
+  if (os !== "darwin") {
+    // The mic rides PulseAudio here (WSLg's RDPSource, or the desktop server).
+    // A missing/silent source is the single most common reason the loop looks
+    // alive but never hears anything, so surface the source list explicitly.
+    const src = Bun.spawnSync(["pactl", "info"]);
+    console.log(
+      src.exitCode === 0
+        ? `ℹ️  audio: ${String(src.stdout).match(/Default Source: (.+)/)?.[1] ?? "pulseaudio reachable"}`
+        : "⚠️  pulseaudio not reachable (pactl info failed) — mic capture and cues will be silent",
+    );
+  }
 
   if (!ok) process.exit(1);
 }

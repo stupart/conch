@@ -120,13 +120,40 @@ function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, n));
 }
 
+/** The binary that speaks, for doctor/setup to check and name. */
+export function speechBinary(os: Platform = platform()): string {
+  return os === "darwin" ? "say" : os === "wsl" ? "powershell.exe" : "espeak-ng";
+}
+
 // ---------------------------------------------------------------------------
 // Audio file playback (the `afplay` seam)
 // ---------------------------------------------------------------------------
 
 /** argv that plays an audio file (bell, mic cues, Kokoro wavs). paplay rides WSLg/desktop PulseAudio. */
 export function playFileArgs(path: string, os: Platform = platform()): string[] {
-  return os === "darwin" ? ["afplay", path] : ["paplay", path];
+  return [playBinary(os), path];
+}
+
+/** The binary that plays audio files, for doctor/setup to check and name. */
+export function playBinary(os: Platform = platform()): string {
+  return os === "darwin" ? "afplay" : "paplay";
+}
+
+/**
+ * The packages a fresh box needs, by package manager. `conch setup` installs
+ * these; doctor names them when something's missing. whisper is deliberately
+ * absent — on Linux it's a source build (see setup), not a package.
+ */
+export function packageHints(os: Platform = platform()): { manager: string; install: string; packages: string[] } {
+  if (os === "darwin") {
+    return { manager: "brew", install: "brew install", packages: ["sox", "tmux", "whisper-cpp"] };
+  }
+  return {
+    manager: "apt",
+    install: "sudo apt-get install -y",
+    // pulseaudio-utils gives paplay; libsox-fmt-all lets sox read the cue wavs.
+    packages: ["sox", "libsox-fmt-all", "tmux", "pulseaudio-utils", ...(os === "linux" ? ["espeak-ng"] : [])],
+  };
 }
 
 // ---------------------------------------------------------------------------
