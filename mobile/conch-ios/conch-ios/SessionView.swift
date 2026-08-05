@@ -135,14 +135,24 @@ struct SessionView: View {
                         // The word earns its place only when nothing else on
                         // screen explains the glyph — a review card directly
                         // beneath saying the same thing is clutter.
+                        // The trailing inset goes on the TEXT, not the HStack:
+                        // the capsule pads its leading edge but hugs the last
+                        // glyph, so the label sat flush against the right wall
+                        // while everything else breathed. Padding the HStack
+                        // would fix that and push the icon off-centre in the
+                        // icon-only case, where there is no text at all.
+                        // 6pt is this HStack's own spacing, so the gap at the
+                        // edge matches the gap between the glyph and the word.
                         if isTalkingHere {
                             Text("Mic open")
                                 .font(Type.caption)
                                 .foregroundStyle(Palette.micOpen)
+                                .padding(.trailing, 6)
                         } else if row?.review == nil {
                             Text(mark.meaning)
                                 .font(Type.caption)
                                 .foregroundStyle(mark.color)
+                                .padding(.trailing, 6)
                         }
                     }
                 }
