@@ -475,10 +475,17 @@ export function renderSupervisorScript(tmux: string, daemonCmd: string): string 
 # outage that survives indefinitely because the check can never fail. Killing
 # the stale session first is what lets new-session run at all.
 while true; do
-  # Matches the bun invocation only: the tmux/shell wrapper quotes the binary
-  # path, so its cmdline reads \`bun" run …\` and cannot match this pattern —
-  # a live wrapper around a dead daemon must not read as healthy.
-  if ! pgrep -f 'bun run src/cli.ts daemon' >/dev/null; then
+  # Match how the daemon ACTUALLY runs, not one spelling of it. This read
+  # \`bun run src/cli.ts daemon\`, but \`conch service install\` starts it as
+  # \`bun /abs/path/src/cli.ts daemon\` — no \`run\` — so the pattern never
+  # matched, the supervisor believed conch was dead, and it killed and
+  # recreated the session every 5 seconds. Observed live: the socket owner
+  # changed four times in twelve seconds.
+  #
+  # \`cli.ts daemon\` covers every spelling; filtering to a bun process is what
+  # keeps a tmux wrapper carrying the same words in its argv from counting as
+  # the daemon it is merely launching.
+  if ! pgrep -f 'cli\.ts daemon' 2>/dev/null | xargs -I{} ps -o comm= -p {} 2>/dev/null | grep -q bun; then
     # Clear a stale session and create on the NEXT pass. Killing the last
     # session stops the tmux server, and a new-session issued in the same
     # breath races that shutdown — measured healing at 30-45s instead of one

@@ -215,3 +215,62 @@ function exists(path: string): boolean {
     return false;
   }
 }
+
+describe("scoping the uninstall to one agent", () => {
+  test("--codex leaves Claude Code entirely alone", () => {
+    // An integration can rot while the rest is healthy. Codex 0.144.1 does not
+    // execute ~/.codex/hooks.json at all, so conch's Stop hook never fires and
+    // no Codex session registers — while AGENTS.md still tells Codex to end
+    // deliverables with `conch:review …`. Removing that side must not touch
+    // Claude Code, which works.
+    expect(parseUninstallArgs(["--codex"])).toEqual({ models: false, only: "codex" });
+    expect(parseUninstallArgs(["--claude"])).toEqual({ models: false, only: "claude" });
+    expect(parseUninstallArgs([])).toEqual({ models: false });
+  });
+
+  test("refuses to delete shared models under an agent scope", () => {
+    // The speech models are shared by both agents and the terminal loop.
+    // Deleting 1.6 GB while scoping to one agent is a surprise, not a shortcut.
+    expect(() => parseUninstallArgs(["--codex", "--models"])).toThrow(/shared speech models/);
+  });
+
+  test("refuses an ambiguous scope", () => {
+    expect(() => parseUninstallArgs(["--codex", "--claude"])).toThrow(/choose one/);
+  });
+});
+
+describe("an agent scope never touches the install itself", () => {
+  test("--codex leaves the service, tmux and models alone", async () => {
+    // This is not hypothetical. `conch uninstall --codex` removed the Codex
+    // hooks as asked and then deleted the launch agent and killed the daemon,
+    // because the scope only guarded the hook and instruction loops. A flag
+    // named for one integration took the whole install down on a live machine.
+    let serviceOffCalled = false;
+    let tmuxStopped = false;
+    const summary = await runUninstall(
+      { claudeDir: "/tmp/conch-scope-test/.claude" } as never,
+      {
+        models: false,
+        only: "codex",
+        log: () => {},
+        error: () => {},
+        paths: {
+          claudeSettings: "/tmp/conch-scope-test/settings.json",
+          claudeInstructions: "/tmp/conch-scope-test/CLAUDE.md",
+          codexHooks: "/tmp/conch-scope-test/hooks.json",
+          codexInstructions: "/tmp/conch-scope-test/AGENTS.md",
+          servicePlist: "/tmp/conch-scope-test/com.conch.daemon.plist",
+          modelsDir: "/tmp/conch-scope-test/models",
+        },
+      },
+      {
+        serviceOff: async () => { serviceOffCalled = true; },
+        stopTmux: async () => { tmuxStopped = true; return "removed" as const; },
+      },
+    );
+    expect(serviceOffCalled).toBeFalse();
+    expect(tmuxStopped).toBeFalse();
+    expect(summary.serviceRemoved).toBeFalse();
+    expect(summary.modelsRemovedBytes).toBe(0);
+  });
+});

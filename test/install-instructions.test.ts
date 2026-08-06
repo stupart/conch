@@ -161,9 +161,22 @@ describe("the supervisor's liveness check", () => {
     // healthy while conch was gone and recovery could never run. It is still
     // sound further in, for "is there a stale session to clear" — so assert
     // the ordering, which is the part that was wrong, not its mere absence.
-    const liveness = code.indexOf("pgrep -f 'bun run src/cli.ts daemon'");
+    const liveness = code.indexOf("pgrep -f");
     expect(liveness).toBeGreaterThan(-1);
     expect(code.indexOf("has-session")).toBeGreaterThan(liveness);
+  });
+
+  test("matches how the daemon actually runs, not one spelling of it", () => {
+    // The replacement for has-session was equally wrong, just differently:
+    // it looked for `bun run src/cli.ts daemon`, while `conch service install`
+    // starts the daemon as `bun /abs/path/src/cli.ts daemon` — no `run`. The
+    // supervisor never matched, believed conch was dead, and killed and
+    // recreated it every 5 seconds on a live machine.
+    expect(code).not.toMatch(/pgrep -f 'bun run/);
+    expect(code).toMatch(/cli\.ts daemon/);
+    // And a tmux wrapper carries the same words in its argv, so the process
+    // itself has to be the discriminator — not just the command line.
+    expect(code).toMatch(/ps -o comm=/);
   });
 
   test("never kills a session and creates one in the same pass", () => {
