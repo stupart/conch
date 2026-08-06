@@ -219,7 +219,13 @@ struct LedgerView: View {
             Text(
                 bridge.isConnected
                     ? "Start a Claude Code or Codex session on your Mac and it appears here."
-                    : "Same Wi-Fi as the Mac, and conch running there — it reconnects on its own."
+                    // Over the relay, Wi-Fi is irrelevant advice — Tyler was on
+                    // cellular, correctly, and being told to check the thing
+                    // that could not be the cause. What actually has to be true
+                    // is that the Mac is awake with conch running.
+                    : bridge.isRelayPaired
+                        ? "Your Mac needs to be awake with conch running — it reconnects on its own."
+                        : "Same Wi-Fi as the Mac, and conch running there — it reconnects on its own."
             )
             .font(Type.caption)
             .foregroundStyle(Palette.textFaint)

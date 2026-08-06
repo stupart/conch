@@ -24,6 +24,16 @@ final class BridgeClient: ObservableObject {
             }
         }
 
+        /// Whether this pairing reaches the Mac over the internet.
+        ///
+        /// It changes what a failure MEANS, so it changes what we say about
+        /// one: on LAN, "same Wi-Fi" is the likely fix; over the relay it is
+        /// irrelevant advice that sends you to check something correct.
+        var isRelay: Bool {
+            if case .relay = self { return true }
+            return false
+        }
+
         var displayHost: String {
             switch self {
             case let .lan(host, _): host
@@ -70,6 +80,10 @@ final class BridgeClient: ObservableObject {
 
     /// The Mac this phone is paired to, for the connection popover.
     var pairedHost: String { pairing.displayHost }
+
+    /// Whether this pairing goes over the internet, which decides what a
+    /// disconnection can honestly be blamed on.
+    var isRelayPaired: Bool { pairing.isRelay }
 
     /// Retry now instead of waiting out the backoff — for when you know the
     /// Mac just came back and don't want to stare at a spinner.

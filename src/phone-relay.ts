@@ -1072,7 +1072,27 @@ export function createPhoneRelay(
       if (socket !== ws || connectionGeneration !== generation) return;
       dependencies.log("phone relay connected");
       sendHello();
+      let lastTick = Date.now();
       livenessTimer = setInterval(() => {
+        const now = Date.now();
+        const drift = now - lastTick;
+        lastTick = now;
+        // A 5s timer that took a minute means the PROCESS WAS SUSPENDED — the
+        // Mac slept. TCP dies across sleep with no FIN, so this socket is
+        // almost certainly dead while readyState still says OPEN and the close
+        // event never fires. The daemon then sits "connected" to nothing, which
+        // is exactly what happened overnight: the log's last line said
+        // connected, and there was no socket to Cloudflare at all. Everything
+        // below only ever expired the PHONE's session, never questioned ours.
+        //
+        // Reconnecting on a false positive costs one handshake; trusting a
+        // dead socket costs the phone until someone restarts the daemon.
+        if (drift > 60_000) {
+          dependencies.log(`phone relay: process was suspended for ${Math.round(drift / 1000)}s — reconnecting`);
+          try { ws.close(4002, "relay socket did not survive sleep"); } catch {}
+          disconnect(ws, 4002);
+          return;
+        }
         if (peer?.expireIfStale()) {
           try { ws.close(4002, "relay session stale"); } catch {}
           disconnect(ws, 4002);
