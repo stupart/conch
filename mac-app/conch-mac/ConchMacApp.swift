@@ -53,7 +53,12 @@ struct ConchMacApp: App {
                 ConchSettingsView()
                     .tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
             }
-            .frame(minWidth: 640, idealWidth: 680, minHeight: 480, idealHeight: 620)
+            // A Settings window sizes to its content and does NOT scroll, so
+            // an ideal height taller than a laptop screen simply overflows.
+            // 560 leaves room for the tab bar and the title bar on a 13".
+            // Each tab scrolls internally, which is what actually makes long
+            // content reachable rather than relying on the window growing.
+            .frame(minWidth: 620, idealWidth: 680, minHeight: 420, idealHeight: 560)
         }
     }
 }

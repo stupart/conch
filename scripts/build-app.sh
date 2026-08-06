@@ -4,7 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT_PATH="$REPO_ROOT/mac-app/conch-mac.xcodeproj"
-DERIVED_DATA_PATH="$REPO_ROOT/build/app"
+# .noindex so Spotlight skips the build output. Without it every build
+# leaves another launchable "conch" in Launchpad — Tyler hit this twice.
+DERIVED_DATA_PATH="$REPO_ROOT/build/app.noindex"
 BUILT_APP_PATH="$DERIVED_DATA_PATH/Build/Products/Release/conch-mac.app"
 INSTALLED_APP_PATH="/Applications/conch.app"
 TEAM_ID="5DRS8F56M2"

@@ -23,11 +23,11 @@ rm -rf "$DIST"; mkdir -p "$DIST"
 APP_SRC=""
 if command -v xcodebuild >/dev/null 2>&1; then
   echo "→ building conch.app (universal)"
-  rm -rf build/release-app
+  rm -rf build/release-app.noindex
   if xcodebuild -project mac-app/conch-mac.xcodeproj -scheme conch-mac \
-       -configuration Release -derivedDataPath build/release-app \
+       -configuration Release -derivedDataPath build/release-app.noindex \
        ARCHS="x86_64 arm64" ONLY_ACTIVE_ARCH=NO build >/dev/null 2>&1; then
-    APP_SRC="build/release-app/Build/Products/Release/conch-mac.app"
+    APP_SRC="build/release-app.noindex/Build/Products/Release/conch-mac.app"
     codesign --verify --strict "$APP_SRC" || { echo "app signature invalid" >&2; exit 1; }
   else
     echo "⚠️  app build failed — shipping the CLI only" >&2

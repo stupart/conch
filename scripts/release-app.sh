@@ -15,7 +15,9 @@ cd "$(dirname "$0")/.."
 
 VERSION="${1:-$(bun --print 'require("./package.json").version')}"
 DIST=dist
-DERIVED=build/app-release
+# .noindex so Spotlight skips the build output. Without it every build
+# leaves another launchable "conch" in Launchpad — Tyler hit this twice.
+DERIVED=build/app-release.noindex
 APP="$DERIVED/Build/Products/Release/conch-mac.app"
 ZIP="$DIST/conch-mac-$VERSION.zip"
 

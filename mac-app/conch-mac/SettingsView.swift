@@ -13,7 +13,10 @@ struct ConchSettingsView: View {
 
             content
         }
-        .frame(minWidth: 640, idealWidth: 680, minHeight: 480, idealHeight: 620)
+        // No frame here. This view used to BE the settings window and sized it;
+        // inside a TabView that became a second, competing demand and the
+        // window grew past the screen with nothing to scroll. The scene owns
+        // the size now.
         .background(ConchPalette.bg)
         .preferredColorScheme(.dark)
         .task {
