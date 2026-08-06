@@ -164,16 +164,19 @@ describe("one-command setup", () => {
     expect(skipped).not.toContain("installed: hooks · plugin");
   });
 
-  test("ready output sends an unwired existing Codex install to its hook installer", () => {
+  test("ready output never sends anyone to wire Codex", () => {
+    // It used to LEAD with "Run `conch install --codex`", so the first
+    // instruction a new person received was the one thing that does not work:
+    // Codex 0.144.1 never executes ~/.codex/hooks.json, proven with a bare
+    // `touch` hook that did not fire. An unfinished integration should be
+    // named honestly and left off, not put at the top of the getting-started.
     const ready = renderSetupReady(
       { service: "installed", plugin: "installed" },
       { codexNeedsInstall: true, color: false },
     );
-    expect(ready.split("\n")[0]).toBe(
-      "╭─ 🐚 DO THIS FIRST — Run `conch install --codex`.",
-    );
-    expect(ready).not.toContain("Type /hooks");
-    expect(ready).toContain("Codex is present, but its lifecycle hooks are not wired yet.");
+    expect(ready.split("\n")[0]).toContain("Type /hooks");
+    expect(ready).not.toContain("conch install --codex");
+    expect(ready).toContain("unfinished");
   });
 
   test("hard-dependency guidance is copyable and includes Homebrew when absent", () => {

@@ -284,11 +284,12 @@ export function renderSetupReady(
   completion: SetupCompletion,
   options: SetupReadyOptions = {},
 ): string {
-  const first = options.codexNeedsInstall
-    ? "╭─ 🐚 DO THIS FIRST — Run `conch install --codex`."
-    : "╭─ 🐚 DO THIS FIRST — Type /hooks in any Claude Code session you already have open.";
+  // No Codex nudge. It used to lead with "Run `conch install --codex`", which
+  // wires hooks that Codex 0.144.1 never executes — the first thing a new
+  // person was told to do was the one thing that does not work.
+  const first = "╭─ 🐚 DO THIS FIRST — Type /hooks in any Claude Code session you already have open.";
   const pickup = options.codexNeedsInstall
-    ? "│ Codex is present, but its lifecycle hooks are not wired yet."
+    ? "│ Codex is present; its support is unfinished and stays off (see the README)."
     : "│ Sessions opened from now on pick conch up automatically.";
   const then = completion.service === "skipped"
     ? "│ THEN — Run `conch daemon` to start the voice loop; leave it open, then\n│ finish a turn. conch reads it aloud, plays a tink, and opens the mic."
@@ -414,10 +415,18 @@ export async function runSetup(
   const codexWasPresent = existsSync(codexDir);
   console.log("\nWiring Claude Code hooks and global review instructions…");
   await runInstall(cfg);
-  await installReviewInstructions(
-    join(codexDir, "AGENTS.md"),
-    "AGENTS.md",
-  );
+  // Codex only gets the review contract if its hooks are actually wired.
+  //
+  // Setup used to write it unconditionally, so every machine with a ~/.codex
+  // directory told Codex to end deliverables with `conch:review …` — a line
+  // conch can only act on through the Stop hook. Codex 0.144.1 does not
+  // execute ~/.codex/hooks.json at all (proven with a bare `touch` hook that
+  // never fired), so the instruction went nowhere and Codex spent turns
+  // honouring a contract with no counterparty. An integration that does not
+  // work should be silent, not advertised.
+  if (await codexHooksAreWiredAt(codexDir)) {
+    await installReviewInstructions(join(codexDir, "AGENTS.md"), "AGENTS.md");
+  }
   console.log("\nRunning doctor…\n");
   await runDoctor(cfg);
   const completion = await runSetupIntegrations(cfg, options);

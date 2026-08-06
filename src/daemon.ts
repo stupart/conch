@@ -1,4 +1,4 @@
-import { createServer } from "node:net";
+import { createServer, connect } from "node:net";
 import { currentTurnText } from "./transcript-turn.ts";
 import {
   chmodSync, existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -1236,6 +1236,38 @@ export async function rehydrateLatestTurns(options: {
     restored += 1;
   }
   return restored;
+}
+
+/**
+ * Is a live daemon already listening on this socket?
+ *
+ * The file existing means nothing — a unix socket outlives the process that
+ * created it, which is why "unlink and rebind" felt safe and was not. Connect
+ * instead: only an answer proves someone is home. A refusal (ECONNREFUSED)
+ * means the file is a leftover and is safe to remove.
+ */
+export async function anotherDaemonIsListening(
+  socketPath: string,
+  timeoutMs = 500,
+): Promise<boolean> {
+  if (!existsSync(socketPath)) return false;
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const socket = connect({ path: socketPath });
+    const finish = (answer: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { socket.destroy(); } catch {}
+      resolve(answer);
+    };
+    // A socket that accepts but never speaks is still an owner; treat a
+    // timeout as OCCUPIED rather than stale, because deleting a live
+    // daemon's socket is the failure this exists to prevent.
+    const timer = setTimeout(() => finish(true), timeoutMs);
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+  });
 }
 
 export async function runDaemon(cfg: Config): Promise<void> {
@@ -4464,7 +4496,21 @@ export async function runDaemon(cfg: Config): Promise<void> {
     log,
   });
 
-  if (existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath); // stale socket from a previous run
+  // ONE daemon. This used to unlink unconditionally, so a second daemon
+  // silently stole the socket from a live one — which is how a supervisor
+  // whose liveness check never matched could kill and recreate conch every
+  // five seconds and still look like it was working. Two daemons also means
+  // two mics, two speakers, and two writers to the same state file.
+  //
+  // A socket FILE proves nothing: it outlives the process that made it. Only
+  // connecting proves someone is home.
+  if (await anotherDaemonIsListening(cfg.socketPath)) {
+    log(`another conch daemon already owns ${cfg.socketPath} — this one is exiting`);
+    // 0, not 1: a supervisor treats a nonzero exit as a crash and retries
+    // harder. Losing a race is the system working, not failing.
+    process.exit(0);
+  }
+  if (existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath); // genuinely stale
   server.listen(cfg.socketPath);
   syncPhoneBridge();
   void rehydrateFromTranscripts();

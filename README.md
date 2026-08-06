@@ -65,7 +65,7 @@ brew install stupart/tap/conch     # binary + sox/tmux/whisper-cpp
 conch setup                        # models, hooks, service, and app plugins
 ```
 
-`brew install` pulls the system dependencies (`sox`, `tmux`, `whisper-cpp`) automatically. `conch setup` then downloads the two speech models into `~/.cache/conch/models` (whisper large-v3-turbo ~1.6 GB, silero VAD ~900 KB), wires the Claude Code hooks, verifies the chain, starts the launchd service, and installs the conch plugin for whichever of Claude Code and Codex are present. It's idempotent — re-run it any time; it skips or safely refreshes managed pieces. Already have a whisper.cpp build and models (e.g. a [seashell](https://github.com/stupart/seashell) checkout)? Point `CONCH_WHISPER_CLI` / `CONCH_WHISPER_MODEL` / `CONCH_VAD_MODEL` (or `CONCH_SEASHELL_ROOT`) at them and setup leaves them untouched.
+`brew install` pulls the system dependencies (`sox`, `tmux`, `whisper-cpp`) automatically. `conch setup` then downloads the two speech models into `~/.cache/conch/models` (whisper large-v3-turbo ~1.6 GB, silero VAD ~900 KB), wires the Claude Code hooks, verifies the chain, starts the launchd service, and installs the conch plugin. It's idempotent — re-run it any time; it skips or safely refreshes managed pieces. Already have a whisper.cpp build and models (e.g. a [seashell](https://github.com/stupart/seashell) checkout)? Point `CONCH_WHISPER_CLI` / `CONCH_WHISPER_MODEL` / `CONCH_VAD_MODEL` (or `CONCH_SEASHELL_ROOT`) at them and setup leaves them untouched.
 
 <details>
 <summary><b>From source</b> (for hacking on conch)</summary>
@@ -123,8 +123,9 @@ The worker itself adds no package beyond the installed `mlx-audio`, NumPy, `misa
 | `conch uninstall [--models]` | Remove managed hooks, instructions, service, tmux session, and plugin; also remove downloaded models only with `--models` |
 | `conch version` / `--version` | Print the installed package version |
 | `conch service [install\|off]` | Optionally install/refresh or remove launchd supervision |
-| `conch install-plugin` / `uninstall-plugin` | Optionally manage the Claude Code and Codex plugin separately |
-| `conch install [--codex]` | Optionally wire Claude Code or Codex hooks separately |
+| `conch install-plugin` / `uninstall-plugin` | Optionally manage the Claude Code plugin separately |
+| `conch install` | Optionally wire Claude Code hooks separately |
+| `conch uninstall [--claude \| --codex]` | Remove one agent's wiring, or everything |
 | `conch daemon` | Run the voice loop: announce → listen → inject |
 | `conch wake [name]` | Reopen the mic — last announced session, or by name (bind it to a hotkey) |
 | `conch recite [name]` | Read the latest response aloud — last announced session, or by name |
@@ -256,6 +257,25 @@ The full environment-variable surface remains available (put overrides in the ho
 | `CONCH_TTS_VOICES` | 8-voice ring | comma-separated Kokoro voices; sessions hash onto the ring |
 | `CONCH_TTS_SPEED` | `1.35` | Kokoro/voice synthesis speed (`conch set voice-speed …`) |
 | `CONCH_TTS_BATCH_CHARS` | `240` | coalesce later short sentences up to this size; `0` disables (sentence one always stays separate) |
+
+## Codex support is unfinished
+
+conch is built for Claude Code. There is Codex code in here — hooks, a
+transcript reader, a plugin — and it does not currently work: **Codex 0.144.1
+does not execute `~/.codex/hooks.json` at all.** Verified by installing a hook
+that does nothing but `touch` a file, and watching it never fire, after ruling
+out hook trust and schema problems.
+
+So a Codex session never announces itself, never appears in the ledger, and
+cannot be talked to. It is **off by default** — setup no longer writes the
+review contract into `~/.codex/AGENTS.md`, because telling Codex to end
+deliverables with `conch:review …` when nothing can act on it just spends its
+turns. `conch uninstall --codex` removes any earlier wiring without touching
+Claude Code.
+
+Fixing it likely means following Codex's own plugin/marketplace structure
+rather than the hooks file. Contributions welcome; until then the honest
+status is *written, not working*.
 
 ## Roadmap
 
