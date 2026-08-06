@@ -51,7 +51,11 @@ struct PairingView: View {
                 Text("conch")
                     .font(Type.label(22, weight: .semibold))
                     .foregroundStyle(Palette.textPrimary)
-                Text("Run `conch pair` on your Mac.\nUse LAN fields or scan its relay QR.")
+                // "LAN" is our word, not a person's, and it led with the
+                // narrower option. Scanning works from anywhere and is one
+                // gesture; typing a host works only on this network.
+                Text("Run `conch pair` on your Mac, or open its Phone tab.\n"
+                     + "Scan the QR to connect from anywhere.")
                     .font(Type.summary)
                     .foregroundStyle(Palette.textDim)
                     .multilineTextAlignment(.center)

@@ -210,7 +210,11 @@ struct LedgerView: View {
 
     private var emptyState: some View {
         VStack(spacing: 10) {
-            Image(systemName: bridge.isConnected ? "terminal" : "wifi.slash")
+            // Not wifi.slash: this shows for BOTH transports, and over the
+            // relay the Wi-Fi is fine — it is the Mac that cannot be reached.
+            // Naming the wrong culprit in a glyph is the same mistake as
+            // naming it in a sentence, just harder to notice.
+            Image(systemName: bridge.isConnected ? "terminal" : "laptopcomputer.slash")
                 .font(.system(size: 22))
                 .foregroundStyle(Palette.textFaint)
             Text(bridge.isConnected ? "Nothing running yet" : "Looking for your Mac…")
