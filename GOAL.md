@@ -33,7 +33,36 @@ with artifacts rendered inline, not one string that gets replaced.
    suite is not verification unless the test would have failed before.
 5. **If it isn't observed working, say so.** "Should work" is not done.
 
-Repeat 1–5 until the observation is clean. Then stop.
+Repeat 1–5 until the observation is clean. Then take the next item.
+
+## The queue
+
+Work the top item until it is observed working, then take the next. One at a
+time — the failures below all came from moving on while something was still
+"probably fine". Full backlog in ROADMAP.md (local, ~48 items); this is the
+order.
+
+1. **Phone won't pair from the Mac QR.** Blocks the phone entirely. Known: QR
+   content correct, Worker healthy, room accepts a phone, daemon socket real.
+   Unknown: why the handshake never completes. Needs iOS-side logging.
+2. **TestFlight.** The build on the phone is a devicectl development install
+   and EXPIRES on its own — this one has a deadline nothing else has.
+3. **Review rows never appear.** `conch:review` parses, but no row. Pause is
+   NOT the cause. Next step is logging what the Stop hook actually parses.
+4. **The conversation surface.** Reply pane becomes a live conversation, with
+   `conch:/path` and `conch:link.com` markers rendering artifacts inline. The
+   viewers already exist. Biggest quality win; fixes three complaints at once.
+5. **Reply collapses to its first paragraph** when a new turn starts.
+6. **"Delivered" is a lie** when the Mac fell back to the clipboard — the
+   draft clears and the words are only on the clipboard.
+7. **Resume one session out of a global pause.** Needs an exemption checked
+   ahead of the global gate.
+8. **Auto-open the session that is speaking.**
+9. **Pluggable voice engines** — local default, plus OpenAI / xAI / ElevenLabs
+   for both transcription and speech. The system voice is the loudest quality
+   problem left.
+10. **Ship it** — Homebrew release past v0.2.1, images from the phone, an
+    icon, a landing page.
 
 ## Rules earned the hard way
 
