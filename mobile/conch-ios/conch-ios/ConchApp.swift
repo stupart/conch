@@ -70,6 +70,20 @@ struct ConchApp: App {
                 guard let bridge else { return }
                 switch phase {
                 case .active:
+                    // Reconnect FIRST, then claim.
+                    //
+                    // The phone pings every 10s and the Mac expires a silent
+                    // peer after 30, but that heartbeat is a Task and iOS
+                    // suspends it on background — so backgrounding always kills
+                    // the session about half a minute later. Handing the audio
+                    // back then is correct. Coming back and NOT re-dialling is
+                    // not: the app sat on a dead socket waiting out a backoff,
+                    // which is the "it disconnects and won't come back" that
+                    // has made pairing feel unreliable.
+                    //
+                    // Before claimAudio, because a claim sent over a dead
+                    // socket accomplishes nothing.
+                    bridge.reconnectNow()
                     Task { await bridge.claimAudio(true) }
                 case .background:
                     Task { await bridge.claimAudio(false) }

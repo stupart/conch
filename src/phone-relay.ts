@@ -408,9 +408,15 @@ export class MacRelayPeer {
         this.pairing.roomId,
         this.pairing.secret,
       );
-    } catch {
+    } catch (error) {
       // Application frames use fresh session keys, so they cannot open under
-      // the long-lived handshake keys. Try the active session below.
+      // the long-lived handshake keys — that failure is ordinary and silent.
+      // A frame that opens as NEITHER is the interesting case: a phone with
+      // the wrong secret or a stale pairing, which otherwise just retries
+      // forever while the person watches "Looking for your Mac".
+      if (!this.#cipher) {
+        this.log(`phone hello rejected: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     if (phoneChallenge) {
       const challengeId = encodeBase64URL(phoneChallenge);
@@ -456,6 +462,11 @@ export class MacRelayPeer {
       this.#nextPhoneSequence = 0;
       this.#pendingPhoneFrames.clear();
       this.#lastAuthenticatedAt = Date.now();
+      // Say that a phone got in. Without this, a failed pairing and a phone
+      // that never dialled look identical from the Mac: the log shows the
+      // relay connected and then nothing, forever. Tyler spent an evening
+      // stuck on "Looking for your Mac" with no way to tell which it was.
+      this.log("phone paired — session established");
       this.onAuthenticated?.();
       // The DO intentionally retains no handshake. Replying to a valid phone
       // hello closes rendezvous without burning one handshake-key frame every
