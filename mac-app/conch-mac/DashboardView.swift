@@ -1969,6 +1969,13 @@ private struct DashboardKeybar: View {
         selectedRow == nil ? " all" : ""
     }
 
+    /// Pause's scope word, which differs from the others: while conch is
+    /// paused globally the button resumes EVERYTHING, whatever is selected,
+    /// because one session cannot be lifted out of a global pause.
+    private var pauseScopeSuffix: String {
+        (state?.mode.paused == true) ? " all" : scopeSuffix
+    }
+
     // EFFECTIVE state, not just the row's own flag.
     //
     // `selectedRow?.paused ?? global` made global pause invisible whenever a
@@ -1980,7 +1987,7 @@ private struct DashboardKeybar: View {
     // whatever its own flag says.
     private var pauseLabel: String {
         let paused = state?.mode.paused == true || selectedRow?.paused == true
-        return (paused ? "Resume" : "Pause") + scopeSuffix
+        return (paused ? "Resume" : "Pause") + pauseScopeSuffix
     }
 
     private var muteLabel: String {

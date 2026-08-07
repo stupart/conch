@@ -208,6 +208,23 @@ struct ContentView: View {
     }
 
     private func pauseOrResume() {
+        let globallyPaused = store.state?.mode.paused ?? false
+        // While conch is paused globally, a per-session resume cannot lift it:
+        // the daemon holds every turn behind the global gate, so scoping the
+        // command to one session did nothing visible. Worse, it read
+        // `selectedRow.paused` — false, because that row was not individually
+        // paused — and sent PAUSE from a button labelled Resume. Tyler: "i just
+        // tried clicking the resume button and nothing happened."
+        //
+        // So while globally paused the control is global, and says "all".
+        // Resuming ONE session out of a global pause is a real feature and is
+        // on the roadmap; pretending the button already does it is worse than
+        // not having it.
+        if globallyPaused {
+            store.send(.global(.resume))
+            return
+        }
+
         if let selectedRow {
             store.send(
                 .scoped(
@@ -218,9 +235,7 @@ struct ContentView: View {
             )
             return
         }
-
-        let paused = store.state?.mode.paused ?? false
-        store.send(.global(paused ? .resume : .pause))
+        store.send(.global(.pause))
     }
 
     private func muteOrUnmute() {
