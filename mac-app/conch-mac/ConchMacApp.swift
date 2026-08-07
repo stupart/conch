@@ -52,7 +52,7 @@ struct ConchMacApp: App {
                 // ordinary settings; "Phone" named a device rather than the
                 // job. Two tabs, named for what each one is.
                 ConchPairingView()
-                    .tabItem { Label("Your phone", systemImage: "iphone") }
+                    .tabItem { Label("Phone app", systemImage: "iphone") }
                 ConchSettingsView()
                     .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
             }

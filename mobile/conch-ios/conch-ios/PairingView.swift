@@ -142,6 +142,14 @@ struct PairingView: View {
                 scanningRelay = false
                 code = scanned
                 problem = nil
+                // Scanning IS the decision. A QR carries the endpoint, the
+                // room and the secret — there is nothing left to fill in and
+                // nothing to confirm, so asking for a second tap only adds a
+                // step that can be missed. Tyler: "once u scan it should just
+                // go into the app paired like you shouldn't have to then click
+                // pair after scanning." Typing a host still needs Connect,
+                // because a typed host can be wrong.
+                connect()
             }
             .ignoresSafeArea()
         }
