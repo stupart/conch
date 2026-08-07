@@ -223,10 +223,12 @@ private struct ReviewContent: View {
             // A limitation stated plainly, not WebKit's "Frame load
             // interrupted" — which looked like conch had broken.
             VStack(spacing: 10) {
-                Image(systemName: "doc.zipper")
+                Image(systemName: url.hasDirectoryPath ? "folder" : "doc.zipper")
                     .font(.system(size: 22, weight: .regular))
                     .foregroundStyle(ConchPalette.textDim)
-                Text("conch can't preview a \(url.pathExtension.uppercased())")
+                Text(url.hasDirectoryPath
+                     ? "\(url.lastPathComponent) is a folder"
+                     : "conch can't preview a \(url.pathExtension.uppercased())")
                     .font(ConchTypography.font(size: 14, weight: .medium))
                     .foregroundStyle(ConchPalette.textPrimary)
                 Text("It's on this Mac — open it in Finder to look inside.")
@@ -554,8 +556,19 @@ enum DeliverableSource: Equatable {
         let localURL = Self.localFileURL(for: link)
         // A vanished file must SAY so. Falling through to a renderer produced a
         // lone glyph with no words — indistinguishable from a broken renderer.
-        if !FileManager.default.fileExists(atPath: localURL.path) {
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: localURL.path, isDirectory: &isDirectory)
+        if !exists {
             self = .missing(localURL)
+            return
+        }
+        // A FOLDER is a real thing to hand over — Tyler filed a review pointing
+        // at /tmp/deliverable-shots and got nothing, because a directory has no
+        // extension, fell through to the web view, and WebKit refused it. It is
+        // not missing and it is not broken; there is simply nothing to render,
+        // and the useful action is to open it.
+        if isDirectory.boolValue {
+            self = .unsupported(localURL)
             return
         }
         switch localURL.pathExtension.lowercased() {

@@ -240,7 +240,7 @@ export const MCP_TOOLS = [
   },
   {
     name: "review_to_front",
-    description: "Surface YOUR finished deliverable for the user's review. Defaults to the calling session; a session may only surface its own work. Latches it as needs-review in conch's dashboard, announces it, and opens an optional safe link.",
+    description: "File a deliverable for the user to review — the tool form of `conch:review`, and the one to prefer. Pass a one-line spoken summary and, when there is one, a link or file path; conch RENDERS it (page, image, PDF, video, document) in the Mac and phone apps rather than printing the path. Preferred over the text marker because a tool call happens during the turn, while the text form is parsed after it and can be missed. Defaults to the calling session; a session may only surface its own work.",
     inputSchema: {
       type: "object",
       properties: {

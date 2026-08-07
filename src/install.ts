@@ -17,10 +17,12 @@ const REVIEW_INSTRUCTIONS_END = "<!-- conch:end -->";
 export const REVIEW_INSTRUCTIONS_BLOCK = `${REVIEW_INSTRUCTIONS_BEGIN}
 ## Conch review handoff
 
-When a deliverable is DONE, self-critiqued, and ready for the user's final look, end the final reply with its own line:
+When a deliverable is DONE, self-critiqued, and ready for the user's final look, **call the \`review_to_front\` tool** with a one-line spoken summary and, when there is one, a link or file path to the thing itself. Conch renders it — a page, an image, a PDF, a video, a document — rather than showing the path.
+
+If that tool is not available, fall back to ending your final reply with its own line:
 \`conch:review <one-line spoken summary> | <link-or-path>\`
 
-Use this only as a final approval gate—not for routine "I finished" messages or every iteration. Conch already announces finished turns. If there is no useful link or path, omit the \` | …\` suffix.
+Use this only as a final approval gate—not for routine "I finished" messages or every iteration. Conch already announces finished turns.
 ${REVIEW_INSTRUCTIONS_END}`;
 
 const REVIEW_INSTRUCTIONS_PATTERN =
