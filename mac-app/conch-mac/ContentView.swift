@@ -321,6 +321,34 @@ private struct KeyboardShortcutsSheet: View {
     ]
 
     var body: some View {
+        // Scrolls, and stops growing. This was a fixed WIDTH with an unbounded
+        // height, and the content is long — nine key rows, four spoken ones, a
+        // legend and two paragraphs — so on a laptop the sheet ran off the
+        // screen and there was no way to reach the bottom. Close is pinned
+        // outside the scroll so it cannot be the part that goes missing.
+        VStack(spacing: 0) {
+            ScrollView {
+                content
+            }
+            Divider().background(ConchPalette.divider)
+            HStack {
+                Spacer()
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 14)
+        }
+        .frame(width: 440)
+        // 620 keeps it inside a 13" screen once the title bar is counted.
+        .frame(maxHeight: 620)
+        .background(ConchPalette.bg)
+        .onExitCommand {
+            dismiss()
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 22) {
             Text("Keyboard Shortcuts")
                 .font(ConchTypography.font(size: 19, weight: .medium))
@@ -346,21 +374,11 @@ private struct KeyboardShortcutsSheet: View {
                 .font(ConchTypography.font(size: 12.5))
                 .foregroundStyle(ConchPalette.textDim)
 
-            HStack {
-                Spacer()
-                Button("Close") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-            }
         }
         .padding(24)
-        .frame(width: 440)
-        .background(ConchPalette.bg)
-        .onExitCommand {
-            dismiss()
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
+
 }
 
 /// What the ledger's glyphs mean, in the calm -> act-now order they escalate in.
