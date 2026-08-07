@@ -270,21 +270,24 @@ private struct ConchSettingRowView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                // A real column: every control STARTS at the same x.
+                // Every control's RIGHT edge lands on the same line, hard
+                // against the right margin — the way a settings pane reads
+                // everywhere else.
                 //
-                // Reserving the slots was not enough. Right-aligning controls
-                // of wildly different widths — a wide number field against a
-                // small toggle — lines up their right edges and leaves their
-                // left edges ragged, which is the part the eye follows down a
-                // list. Leading alignment inside a fixed slot is what makes it
-                // read as a column, and is what macOS System Settings does.
+                // I tried leading alignment first, reasoning that the left
+                // edge is what the eye follows. It left a dead gap between
+                // each control and the row's right edge, so the column looked
+                // unfinished: "still looks wack... just right align all the
+                // main elements for each setting row against the right edge
+                // like normal settings." The slot is sized to the widest
+                // control so trailing alignment costs no dead space.
                 HStack(alignment: .center, spacing: 10) {
                     if isPending {
                         ProgressView().controlSize(.small)
                     }
 
                     settingControl
-                        .frame(width: 190, alignment: .leading)
+                        .frame(width: 150, alignment: .trailing)
                         .disabled(isReadOnly || isPending)
 
                     // An icon, not a word. "Reset" as a bordered button is the
