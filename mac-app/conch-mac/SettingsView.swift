@@ -255,42 +255,61 @@ private struct ConchSettingRowView: View {
                         .foregroundStyle(ConchPalette.textDim)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    Text(metadata)
-                        .font(ConchTypography.font(size: 11, weight: .medium))
+                    // Metadata and the source note share ONE line. Each row
+                    // carried four: name, help, bounds, and an override note —
+                    // so the two that matter were outnumbered two to one, and
+                    // a dozen rows became a wall. Truncated with the full text
+                    // on hover, because the detail is worth keeping and not
+                    // worth the height.
+                    Text(footnote)
+                        .font(ConchTypography.font(size: 11))
                         .foregroundStyle(isReadOnly ? ConchPalette.textDim : ConchPalette.textFaint)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .help(footnote)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
+                // A real column: every control STARTS at the same x.
+                //
+                // Reserving the slots was not enough. Right-aligning controls
+                // of wildly different widths — a wide number field against a
+                // small toggle — lines up their right edges and leaves their
+                // left edges ragged, which is the part the eye follows down a
+                // list. Leading alignment inside a fixed slot is what makes it
+                // read as a column, and is what macOS System Settings does.
                 HStack(alignment: .center, spacing: 10) {
                     if isPending {
-                        ProgressView()
-                            .controlSize(.small)
+                        ProgressView().controlSize(.small)
                     }
 
                     settingControl
-                        .frame(width: 215, alignment: .trailing)
+                        .frame(width: 190, alignment: .leading)
                         .disabled(isReadOnly || isPending)
 
-                    // Shown only when there is something TO reset. A permanently
-                    // dim Reset on every default row is chrome, not an affordance.
-                    // The slot is RESERVED either way, or rows without a Reset
-                    // slide right and the control column comes out jagged.
+                    // An icon, not a word. "Reset" as a bordered button is the
+                    // heaviest thing in the row and appears on exactly the rows
+                    // you have already touched — so the list got louder the more
+                    // you used it. The slot stays reserved either way, because an
+                    // empty Group collapses and the column goes jagged again.
                     Group {
                         if setting.entry.source != .defaultValue, !isReadOnly {
-                            Button("Reset", action: onReset)
-                                .disabled(isPending)
-                                .help("Remove the saved value and use the next available source")
+                            Button(action: onReset) {
+                                Image(systemName: "arrow.uturn.backward")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(ConchPalette.textDim)
+                            .disabled(isPending)
+                            .help("Reset to the default")
+                            .accessibilityLabel("Reset \(displayName)")
                         } else {
-                            // An empty Group collapses, so the frame reserved
-                            // nothing and the control column still came out
-                            // jagged. Something has to occupy the slot.
                             Color.clear
                         }
                     }
-                    .frame(width: 76, height: 28, alignment: .trailing)
+                    .frame(width: 22, height: 22)
                 }
-                .frame(minHeight: 40)
+                .frame(minHeight: 34)
             }
 
             if isReadOnly {
@@ -299,14 +318,6 @@ private struct ConchSettingRowView: View {
                     .foregroundStyle(ConchPalette.textDim)
             }
 
-            if let diagnostic = setting.entry.diagnostic?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !diagnostic.isEmpty,
-               feedback == nil {
-                Text(diagnostic)
-                    .font(ConchTypography.font(size: 11))
-                    .foregroundStyle(ConchPalette.textDim)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
 
             if let feedback {
                 Text(feedback.text)
@@ -317,6 +328,17 @@ private struct ConchSettingRowView: View {
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 15)
+    }
+
+    /// The one dim line under the help text: bounds, default, and where the
+    /// value came from, joined rather than stacked.
+    private var footnote: String {
+        var parts = [metadata]
+        if let diagnostic = setting.entry.diagnostic?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !diagnostic.isEmpty {
+            parts.append(diagnostic)
+        }
+        return parts.joined(separator: " · ")
     }
 
     private var metadata: String {
