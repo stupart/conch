@@ -9,6 +9,7 @@ import {
   transcriptMark,
   parseReviewRequest,
 } from "./snippet.ts";
+import { currentTurnText } from "./transcript-turn.ts";
 import { findSession, sessionLabel, isEngageable } from "./sessions.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
 import { askClaude } from "./model.ts";
@@ -108,7 +109,20 @@ export async function runHook(cfg: Config): Promise<void> {
     const finalText = payload.transcript_path
       ? await lastAssistantText(payload.transcript_path)
       : "";
-    const review = parseReviewRequest(finalText);
+    // Parse the review from the WHOLE turn, not lastAssistantText.
+    //
+    // That returns the final message of a completed turn and deliberately
+    // nothing while a tool call is outstanding — right for speech, which must
+    // never announce half a turn. But it meant the marker was parsed out of an
+    // EMPTY STRING, so `conch:review …` lines never became rows at all.
+    // Measured on a live transcript: length 0, contains "conch:review" false,
+    // parse null — while the same turn read 2,381 characters through
+    // currentTurnText. The marker is the LAST such line in the turn, so
+    // reading more text can only find it, never resurrect an older one.
+    const reviewSource = payload.transcript_path
+      ? await currentTurnText(payload.transcript_path)
+      : "";
+    const review = parseReviewRequest(reviewSource || finalText);
     const backgroundWork = !review && payload.transcript_path
       ? sessionHasLiveBackgroundWork(payload.transcript_path)
       : false;

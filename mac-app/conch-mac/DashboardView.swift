@@ -1969,13 +1969,22 @@ private struct DashboardKeybar: View {
         selectedRow == nil ? " all" : ""
     }
 
+    // EFFECTIVE state, not just the row's own flag.
+    //
+    // `selectedRow?.paused ?? global` made global pause invisible whenever a
+    // session was selected: everything was paused, that row was not
+    // INDIVIDUALLY paused, and the button still read "Pause". Tyler hit this
+    // twice — "the pause button should say resume when paused not pause
+    // still", and earlier, having to move the selector off a session before
+    // pause-all made any sense. A session inside a paused conch is paused,
+    // whatever its own flag says.
     private var pauseLabel: String {
-        let paused = selectedRow?.paused ?? state?.mode.paused ?? false
+        let paused = state?.mode.paused == true || selectedRow?.paused == true
         return (paused ? "Resume" : "Pause") + scopeSuffix
     }
 
     private var muteLabel: String {
-        let muted = selectedRow?.muted ?? state?.mode.muted ?? false
+        let muted = state?.mode.muted == true || selectedRow?.muted == true
         return (muted ? "Unmute" : "Mute") + scopeSuffix
     }
 
