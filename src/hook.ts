@@ -55,6 +55,34 @@ const ACTIONABLE = new Set(["permission_prompt", "idle_prompt", "elicitation_dia
  * stdin, rings the bell, and either hands the event to a running daemon
  * (which owns speak -> listen -> inject) or speaks the announcement itself.
  */
+/**
+ * One line per Stop hook, appended next to the daemon's log.
+ *
+ * The hook runs as its own short-lived process with nowhere to speak, so when
+ * `conch:review` stopped producing rows there was no way to see what it read
+ * or decided — only to infer it from outside, which was wrong twice. Failures
+ * here are silent by construction unless something writes them down.
+ *
+ * Best-effort and never throws: a diagnostic must not be able to break the
+ * hook it is diagnosing.
+ */
+async function appendHookTrace(
+  cfg: Config,
+  fields: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const line = JSON.stringify({ at: new Date().toISOString(), ...fields });
+    const path = (cfg as { hookTracePath?: string }).hookTracePath ?? "/tmp/conch-hook.log";
+    const file = Bun.file(path);
+    const existing = await file.exists() ? await file.text() : "";
+    // Bounded: this is a diagnostic, not an archive.
+    const kept = (existing + line + "\n").split("\n").slice(-500).join("\n");
+    await Bun.write(path, kept);
+  } catch {
+    // Deliberately silent.
+  }
+}
+
 export async function runHook(cfg: Config): Promise<void> {
   if (process.env.CONCH_INTERNAL) return; // conch's own model shell-outs must never announce
   let payload: HookPayload;
@@ -123,6 +151,17 @@ export async function runHook(cfg: Config): Promise<void> {
       ? await currentTurnText(payload.transcript_path)
       : "";
     const review = parseReviewRequest(reviewSource || finalText);
+    // The hook is a separate short-lived process with no terminal and no log,
+    // so every failure here has been invisible — three rounds of reasoning
+    // about reviews from OUTSIDE the process that decides. Record what it
+    // actually read and what it made of it, next to the daemon's own log.
+    void appendHookTrace(cfg, {
+      event: "Stop",
+      turnChars: reviewSource.length,
+      finalChars: finalText.length,
+      sawMarker: reviewSource.includes("conch:review") || finalText.includes("conch:review"),
+      parsed: review ? { summary: review.summary.slice(0, 60), link: review.link ?? null } : null,
+    });
     const backgroundWork = !review && payload.transcript_path
       ? sessionHasLiveBackgroundWork(payload.transcript_path)
       : false;
