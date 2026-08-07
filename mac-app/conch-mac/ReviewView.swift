@@ -173,6 +173,13 @@ private struct MissingDeliverableView: View {
 }
 
 private struct ReviewContent: View {
+    /// Conch's own quiet mode, read here so a video can respect it.
+    ///
+    /// Playing a video is a DELIBERATE act, so it is never blocked — the same
+    /// rule that lets Talk work while passive. But mute usually means "I am in
+    /// a meeting", and a video that starts blasting is worse than one that
+    /// starts silent with an obvious control to unmute.
+    @EnvironmentObject private var store: StateStore
     let link: String
 
     /// Scheme + host together: on a bar whose job is marking a trust boundary,
@@ -196,7 +203,10 @@ private struct ReviewContent: View {
                     isWebLoading = false
                 }
         case let .video(url):
-            DeliverableVideoView(url: url)
+            DeliverableVideoView(
+                url: url,
+                startMuted: store.state?.mode.muted == true
+            )
                 .background(ConchPalette.bg)
                 .onAppear {
                     isWebLoading = false
@@ -606,18 +616,28 @@ enum DeliverableSource: Equatable {
 /// volume and fullscreen, and fails loudly when it cannot decode.
 private struct DeliverableVideoView: NSViewRepresentable {
     let url: URL
+    /// Start silent when conch is muted — audible on one tap of the player's
+    /// own volume control. Independent of conch's voice thereafter: unmuting a
+    /// video says nothing about whether conch should start announcing turns.
+    let startMuted: Bool
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
         view.controlsStyle = .inline
         view.videoGravity = .resizeAspect
-        view.player = AVPlayer(url: url)
+        let player = AVPlayer(url: url)
+        player.isMuted = startMuted
+        view.player = player
         return view
     }
 
     func updateNSView(_ view: AVPlayerView, context: Context) {
+        // Only on a NEW video. Re-applying startMuted here would silently undo
+        // the user's own unmute every time conch published state.
         if (view.player?.currentItem?.asset as? AVURLAsset)?.url != url {
-            view.player = AVPlayer(url: url)
+            let player = AVPlayer(url: url)
+            player.isMuted = startMuted
+            view.player = player
         }
     }
 }

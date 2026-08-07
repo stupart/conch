@@ -100,6 +100,12 @@ struct DeliverableSheet: View {
         }
     }
 
+    private func mutedAwarePlayer(url: URL) -> AVPlayer {
+        let player = AVPlayer(url: url)
+        player.isMuted = bridge.state?.mode.muted == true
+        return player
+    }
+
     @ViewBuilder
     private func localContent(_ kind: LocalKind, url: URL) -> some View {
         switch kind {
@@ -113,7 +119,12 @@ struct DeliverableSheet: View {
         case .video:
             // A real player. Routed to `.text` before, which meant a video
             // deliverable rendered as pages of bytes.
-            VideoPlayer(player: AVPlayer(url: url))
+            //
+            // Starts silent while conch is muted, audible on one tap. Playing
+            // is a deliberate act so it is never blocked — the same rule that
+            // lets Talk work while passive — but mute usually means "I am in a
+            // meeting", and this one lives in a pocket.
+            VideoPlayer(player: mutedAwarePlayer(url: url))
                 .background(Palette.bg)
         case .pdf:
             BridgedPDFView(url: url)
