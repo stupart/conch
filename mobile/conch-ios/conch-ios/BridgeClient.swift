@@ -62,6 +62,7 @@ final class BridgeClient: ObservableObject {
                 guard let self else { return }
                 let becameConnected = connected && !self.isConnected
                 self.isConnected = connected
+                if connected { self.hasEverConnected = true }
                 self.lastError = connected ? nil : error
                 if becameConnected { self.onConnected?() }
             }
@@ -84,6 +85,15 @@ final class BridgeClient: ObservableObject {
     /// Whether this pairing goes over the internet, which decides what a
     /// disconnection can honestly be blamed on.
     var isRelayPaired: Bool { pairing.isRelay }
+
+    /// Has this pairing EVER connected?
+    ///
+    /// "Looking for your Mac…" is right the first time and misleading every
+    /// time after: once a pairing has worked, a drop is a reconnection, not a
+    /// search, and the two want different words and different advice. Tyler
+    /// sat on that message unable to tell whether his pairing was wrong or his
+    /// Mac was asleep.
+    @Published private(set) var hasEverConnected = false
 
     /// Retry now instead of waiting out the backoff — for when you know the
     /// Mac just came back and don't want to stare at a spinner.

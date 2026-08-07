@@ -217,7 +217,9 @@ struct LedgerView: View {
             Image(systemName: bridge.isConnected ? "terminal" : "laptopcomputer.slash")
                 .font(.system(size: 22))
                 .foregroundStyle(Palette.textFaint)
-            Text(bridge.isConnected ? "Nothing running yet" : "Looking for your Mac…")
+            Text(bridge.isConnected
+                ? "Nothing running yet"
+                : bridge.hasEverConnected ? "Reconnecting…" : "Looking for your Mac…")
                 .font(Type.label(16, weight: .medium))
                 .foregroundStyle(Palette.textDim)
             Text(
@@ -227,9 +229,14 @@ struct LedgerView: View {
                     // cellular, correctly, and being told to check the thing
                     // that could not be the cause. What actually has to be true
                     // is that the Mac is awake with conch running.
-                    : bridge.isRelayPaired
-                        ? "Your Mac needs to be awake with conch running — it reconnects on its own."
-                        : "Same Wi-Fi as the Mac, and conch running there — it reconnects on its own."
+                    // Three different situations, three different fixes. Lumping
+                    // them under one sentence is what left Tyler checking Wi-Fi
+                    // that was fine, for a pairing that was correct.
+                    : bridge.hasEverConnected
+                        ? "This usually clears on its own. If it doesn't, your Mac may be asleep or conch stopped."
+                        : bridge.isRelayPaired
+                            ? "Your Mac needs to be awake with conch running — it reconnects on its own."
+                            : "Same Wi-Fi as the Mac, and conch running there — it reconnects on its own."
             )
             .font(Type.caption)
             .foregroundStyle(Palette.textFaint)

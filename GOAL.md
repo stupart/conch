@@ -41,18 +41,29 @@ Work the top item until it is observed working, then take the next. One at a
 time — every failure in the rules below came from moving on while something
 was still "probably fine". Fuller notes in ROADMAP.md (local, ~48 items).
 
-**1. The phone pairing is unreliable.**
+**1. The phone pairing is unreliable.** *(hardening + logging + UX done;
+awaiting one real background→foreground observation)*
 It has worked — a dictated message went from the phone over cellular, through
 the relay, into a live session. But it does not work *consistently*: it
 disconnects on its own, sometimes will not reconnect, and a fresh pair from
 the Mac's QR left the phone stuck on "Looking for your Mac". Two causes are
 known and fixed (the Mac's relay socket dying silently when the laptop slept;
 the daemon running stale code), which means the remaining failures have a
-different cause that has not been found. This needs three things, not one: a
-connection UX that says what is actually wrong instead of "Looking for your
-Mac"; logging on both ends so a failed handshake can be read rather than
-guessed at; and hardening so a dropped socket always recovers without a human
-restarting the daemon.
+different cause that has not been found. Three things were needed, and all three are in:
+- **Hardening** — the phone's 10s heartbeat is a Task that iOS suspends on
+  background, so the Mac's 30s liveness window always expired about half a
+  minute after backgrounding. Dropping is correct (audio hands back); not
+  re-dialling on return was the bug. `.active` now reconnects BEFORE claiming
+  audio, since a claim over a dead socket does nothing.
+- **Logging** — the Mac now says "phone paired — session established" and
+  reports a REJECTED hello. Before, a failed pairing and a phone that never
+  dialled were indistinguishable: relay connected, then silence.
+- **UX** — "Looking for your Mac…" now only appears before a pairing has ever
+  worked; after that a drop reads "Reconnecting…", with advice that matches
+  which of the three situations it is.
+
+Verified: two "phone paired" lines at 13:40 after the fix. Still unobserved:
+a real background→foreground cycle recovering unaided.
 
 **2. Ship the iPhone app through TestFlight.**
 The build on the phone was installed over USB as a development build. Those
