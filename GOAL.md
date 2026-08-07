@@ -1,5 +1,23 @@
 # How I work on conch
 
+## What this is
+
+conch is a voice loop for Claude Code. Sessions announce themselves aloud when
+they finish a turn, the mic opens, and what you say goes back into that
+session. Three surfaces share one daemon:
+
+- **the daemon** (Bun/TypeScript) — hooks, speech, the mic, session state
+- **the Mac app** (SwiftUI) — the ledger and the reply pane, its main UI
+- **the iPhone app** (SwiftUI) — the same ledger anywhere, over an end-to-end
+  encrypted Cloudflare relay, transcribing on the phone
+
+The point is working away from the desk. That makes the phone the demanding
+surface and the reason most bugs matter.
+
+**Where it stands:** the loop works, the relay works over cellular, and the
+current push is quality — the reply pane should become a live conversation
+with artifacts rendered inline, not one string that gets replaced.
+
 ## The rule
 
 **Don't stop at the first plausible cause. Stop when the thing works, observed.**
