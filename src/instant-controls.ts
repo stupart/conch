@@ -17,6 +17,12 @@ export interface InstantControlsOptions {
   pause: PauseController;
   globalHeldTurns: Map<string, TurnEvent>;
   pausedSessionIds: Set<string>;
+  /**
+   * Sessions exempted from a GLOBAL pause because they were resumed by name.
+   * Cleared whenever the global pause itself changes — a fresh pause means
+   * everything is paused, and a global resume makes exemptions meaningless.
+   */
+  resumedSessionIds: Set<string>;
   mutedSessionIds: Set<string>;
   sessionHeldTurns: Map<string, TurnEvent>;
   setMuted(next: boolean): void;
@@ -94,6 +100,7 @@ export class InstantControls {
 
     if (next) {
       pausedSessionIds.add(sessionId);
+      this.#options.resumedSessionIds?.delete(sessionId);
       sessionHeldTurns.delete(sessionId);
       pause.interrupt({ sessionId, hold: sessionHeldTurns });
       this.#options.log(`⏸ paused "${label}" — its latest turn will replay when you press p`);
@@ -106,9 +113,17 @@ export class InstantControls {
         preserveHeld: true,
       });
       pausedSessionIds.delete(sessionId);
+      // Resuming one session out of a GLOBAL pause exempts it from that pause.
+      // Otherwise the command reported success and changed nothing, because the
+      // global gate runs first.
+      if (pause.paused) {
+        this.#options.resumedSessionIds?.add(sessionId);
+        this.#options.log(`▶ resumed "${label}" — the rest stay paused`);
+      } else {
+        this.#options.log(`▶ resumed "${label}"`);
+      }
       const latest = sessionHeldTurns.get(sessionId);
       sessionHeldTurns.delete(sessionId);
-      this.#options.log(`▶ resumed "${label}"`);
       if (latest) this.#options.enqueue(latest);
     }
     this.#options.render();
@@ -211,6 +226,15 @@ export function gateTurnForControls(
     pausedSessionIds: ReadonlySet<string>;
     mutedSessionIds: ReadonlySet<string>;
     sessionHeldTurns: Map<string, TurnEvent>;
+    /**
+     * Sessions resumed BY NAME while conch is paused globally.
+     *
+     * Without this a global pause is absolute: the gate below checks it before
+     * it ever consults per-session state, so "resume just this one" had nowhere
+     * to take effect. Tyler: "i should be able to resume one if i want and the
+     * rest stay paused."
+     */
+    resumedSessionIds?: ReadonlySet<string>;
   },
 ): TurnControlDisposition {
   // Explicit user commands cut through quiet modes. Settings remains a modal
@@ -233,6 +257,9 @@ export function gateTurnForControls(
     options.sessionHeldTurns.set(event.sessionId, event);
     return "session-paused";
   }
+  // Checked BEFORE the global gate, which is the whole point: a session
+  // resumed by name speaks while everything else stays held.
+  if (options.resumedSessionIds?.has(event.sessionId)) return null;
   if (options.globalPaused && (!explicitQuietOverride || options.settingsOpen)) {
     options.globalHeldTurns.set(event.sessionId, event);
     return "global-paused";

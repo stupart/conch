@@ -220,15 +220,20 @@ struct ContentView: View {
         // Resuming ONE session out of a global pause is a real feature and is
         // on the roadmap; pretending the button already does it is worse than
         // not having it.
-        if globallyPaused {
+        // With a session selected, resume THAT one and leave the rest paused —
+        // which the daemon now supports via an exemption checked ahead of the
+        // global gate. Before that it silently did nothing, so the button was
+        // temporarily made global; it no longer needs to be.
+        if globallyPaused, selectedRow == nil {
             store.send(.global(.resume))
             return
         }
 
         if let selectedRow {
+            let rowEffectivelyPaused = globallyPaused || selectedRow.paused
             store.send(
                 .scoped(
-                    selectedRow.paused ? .resume : .pause,
+                    rowEffectivelyPaused ? .resume : .pause,
                     sessionId: selectedRow.id,
                     label: selectedRow.label
                 )

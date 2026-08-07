@@ -95,6 +95,7 @@ function harness(options: {
     pause,
     globalHeldTurns,
     pausedSessionIds,
+    resumedSessionIds: new Set<string>(),
     mutedSessionIds,
     sessionHeldTurns,
     setMuted: (next) => {
@@ -665,5 +666,35 @@ describe("future-turn control gates", () => {
   test("manual global mute and unmute keep their spoken acknowledgements", () => {
     expect(muteAcknowledgement(true)).toBe("Muted.");
     expect(muteAcknowledgement(false)).toBe("Back on.");
+  });
+});
+
+describe("resuming one session out of a global pause", () => {
+  const turn = (sessionId: string): TurnEvent =>
+    ({ type: "turn-end", sessionId, label: sessionId, announce: "done", eventAt: 1 }) as TurnEvent;
+
+  const gate = (sessionId: string, resumed: string[]) =>
+    gateTurnForControls(turn(sessionId), true, {
+      globalMuted: false,
+      globalPaused: true,
+      settingsOpen: false,
+      globalHeldTurns: new Map(),
+      pausedSessionIds: new Set<string>(),
+      mutedSessionIds: new Set<string>(),
+      sessionHeldTurns: new Map(),
+      resumedSessionIds: new Set(resumed),
+    });
+
+  test("an exempted session speaks while the rest stay held", () => {
+    // Tyler: "i should be able to resume one if i want and the rest stay
+    // paused." The global gate ran before any per-session state, so a scoped
+    // resume reported success and changed nothing.
+    expect(gate("alpha", ["alpha"])).toBeNull();
+    expect(gate("beta", ["alpha"])).toBe("global-paused");
+  });
+
+  test("with no exemptions a global pause still holds everything", () => {
+    // The exemption must be the only way through, or "pause" stops meaning it.
+    expect(gate("alpha", [])).toBe("global-paused");
   });
 });

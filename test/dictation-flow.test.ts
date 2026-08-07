@@ -262,6 +262,7 @@ describe("controller/reducer integration contracts", () => {
         pause,
         globalHeldTurns,
         pausedSessionIds,
+        resumedSessionIds: new Set<string>(),
         mutedSessionIds,
         sessionHeldTurns,
         setMuted: (next) => void (muted = next),

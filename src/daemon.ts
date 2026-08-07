@@ -1344,6 +1344,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // Per-session modes are transient dashboard state. Pause holds only the newest
   // turn for replay; mute deliberately forgets.
   const pausedSessionIds = new Set<string>();
+  // Sessions resumed by name out of a global pause. Cleared on every global
+  // edge: a new pause pauses everything, and a global resume makes the
+  // exemption meaningless.
+  const resumedSessionIds = new Set<string>();
   const mutedSessionIds = new Set<string>();
   const prioritizedSessionIds = new Set<string>();
   const dismissedSessionIds = new Set<string>();
@@ -1480,6 +1484,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     pause,
     globalHeldTurns: pending,
     pausedSessionIds,
+    resumedSessionIds,
     mutedSessionIds,
     sessionHeldTurns,
     setMuted,
@@ -1686,6 +1691,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     ) {
       // Apply every mode edge synchronously. The queued event owns only its
       // spoken acknowledgement after the aborted exchange closes its barrier.
+      // Any GLOBAL pause/resume clears per-session exemptions: a fresh pause
+      // pauses everything, and a global resume makes an exemption meaningless.
+      if (!event.sessionId) resumedSessionIds.clear();
       if (event.type === "resume") {
         // A second resume can overtake a prepared-but-not-yet-spoken digest.
         // Put its exact work back under PauseController before snapshotting.
@@ -1916,6 +1924,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         sessionStates.delete(id);
         eventOrder.forget(id);
         pausedSessionIds.delete(id);
+        resumedSessionIds.delete(id);
         mutedSessionIds.delete(id);
         prioritizedSessionIds.delete(id);
         dismissedSessionIds.delete(id);
@@ -2360,6 +2369,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       eventOrder.forget(event.sessionId);
       latestTurnBySession.delete(event.sessionId);
       pausedSessionIds.delete(event.sessionId);
+      resumedSessionIds.delete(event.sessionId);
       mutedSessionIds.delete(event.sessionId);
       prioritizedSessionIds.delete(event.sessionId);
       dismissedSessionIds.delete(event.sessionId);
@@ -2409,6 +2419,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       settingsOpen: explicitQuietOverrideBlocked(),
       globalHeldTurns: pending,
       pausedSessionIds,
+      resumedSessionIds,
       mutedSessionIds,
       sessionHeldTurns,
     });

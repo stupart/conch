@@ -1973,7 +1973,10 @@ private struct DashboardKeybar: View {
     /// paused globally the button resumes EVERYTHING, whatever is selected,
     /// because one session cannot be lifted out of a global pause.
     private var pauseScopeSuffix: String {
-        (state?.mode.paused == true) ? " all" : scopeSuffix
+        // Only "all" when the action really is global — nothing selected.
+        // With a row selected the command now scopes to it, even under a
+        // global pause, because the daemon can exempt one session.
+        scopeSuffix
     }
 
     // EFFECTIVE state, not just the row's own flag.

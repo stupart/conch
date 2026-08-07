@@ -160,6 +160,11 @@ export async function runHook(cfg: Config): Promise<void> {
       turnChars: reviewSource.length,
       finalChars: finalText.length,
       sawMarker: reviewSource.includes("conch:review") || finalText.includes("conch:review"),
+      // The shape of what it read, so the next failure names itself instead
+      // of being inferred. 291 characters told me the scan stopped early; it
+      // could not tell me WHERE.
+      head: reviewSource.slice(0, 90),
+      tail: reviewSource.slice(-90),
       parsed: review ? { summary: review.summary.slice(0, 60), link: review.link ?? null } : null,
     });
     const backgroundWork = !review && payload.transcript_path
