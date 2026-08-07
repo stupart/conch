@@ -147,10 +147,29 @@ export async function runHook(cfg: Config): Promise<void> {
     // parse null — while the same turn read 2,381 characters through
     // currentTurnText. The marker is the LAST such line in the turn, so
     // reading more text can only find it, never resurrect an older one.
+    // Wait for the turn to actually LAND in the transcript.
+    //
+    // Stop fires before Claude Code has flushed the final assistant message.
+    // Measured: at Stop the file held 1,410 characters of this turn ending
+    // mid-narration, and lastAssistantText read 0 — so the `conch:review`
+    // marker, which is written on the LAST line of the last message, was never
+    // findable at Stop time no matter how it was parsed. Three previous
+    // attempts fixed the parser and the text source; the text simply was not
+    // there yet.
+    //
+    // A settled turn is one where lastAssistantText returns something: that
+    // function deliberately yields nothing until the turn completes. Bounded
+    // to about a second, and skipped entirely once it settles — most turns
+    // pay nothing.
+    let settledText = finalText;
+    for (let attempt = 0; attempt < 6 && !settledText && payload.transcript_path; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 180));
+      settledText = await lastAssistantText(payload.transcript_path);
+    }
     const reviewSource = payload.transcript_path
       ? await currentTurnText(payload.transcript_path)
       : "";
-    const review = parseReviewRequest(reviewSource || finalText);
+    const review = parseReviewRequest(reviewSource || settledText || finalText);
     // The hook is a separate short-lived process with no terminal and no log,
     // so every failure here has been invisible — three rounds of reasoning
     // about reviews from OUTSIDE the process that decides. Record what it
@@ -159,6 +178,7 @@ export async function runHook(cfg: Config): Promise<void> {
       event: "Stop",
       turnChars: reviewSource.length,
       finalChars: finalText.length,
+      settledChars: settledText.length,
       sawMarker: reviewSource.includes("conch:review") || finalText.includes("conch:review"),
       // The shape of what it read, so the next failure names itself instead
       // of being inferred. 291 characters told me the scan stopped early; it
