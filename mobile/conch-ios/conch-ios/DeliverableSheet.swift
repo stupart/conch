@@ -1,4 +1,5 @@
 import PDFKit
+import AVKit
 import SwiftUI
 import WebKit
 
@@ -12,7 +13,7 @@ struct DeliverableSheet: View {
     @State private var localURL: URL?
     @State private var localFailed = false
 
-    private enum LocalKind { case image, pdf, markdown, text }
+    private enum LocalKind { case image, video, pdf, markdown, page, text, unsupported }
     private enum Kind {
         case web(URL)
         case local(LocalKind)
@@ -26,15 +27,27 @@ struct DeliverableSheet: View {
            scheme == "http" || scheme == "https" {
             return .web(url)
         }
+        // Kept in step with the Mac's router in ReviewView.swift. They had
+        // DRIFTED: a local .html rendered as a page there and as raw markup
+        // here, and anything unrecognised — a video, a zip, an .app — was
+        // printed as text, which for a binary means pages of bytes.
         switch (link as NSString).pathExtension.lowercased() {
         case "png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "svg":
             return .local(.image)
+        case "mp4", "mov", "m4v", "webm":
+            return .local(.video)
         case "pdf":
             return .local(.pdf)
         case "md", "markdown":
             return .local(.markdown)
-        default:
+        case "html", "htm", "svgz":
+            return .local(.page)
+        case "txt", "log", "json", "yaml", "yml", "toml", "csv", "diff", "patch",
+             "swift", "ts", "js", "tsx", "jsx", "py", "rb", "go", "rs", "sh", "css":
             return .local(.text)
+        default:
+            // Honest about what it cannot show, rather than rendering bytes.
+            return .local(.unsupported)
         }
     }
 
@@ -97,12 +110,29 @@ struct DeliverableSheet: View {
             ScrollView(.vertical) {
                 LocalImageView(url: url)
             }
+        case .video:
+            // A real player. Routed to `.text` before, which meant a video
+            // deliverable rendered as pages of bytes.
+            VideoPlayer(player: AVPlayer(url: url))
+                .background(Palette.bg)
         case .pdf:
             BridgedPDFView(url: url)
         case .markdown:
             RemoteDocumentView(url: url, renderMarkdown: true)
+        case .page:
+            // A local .html is a PAGE. The Mac has always rendered it as one;
+            // here it was raw markup, so the same deliverable looked finished
+            // on one surface and broken on the other.
+            // loadFileURL, not load(URLRequest:) — a file:// page needs read
+            // access granted to its own directory or its assets never load.
+            LocalPageView(url: url)
         case .text:
             RemoteDocumentView(url: url, renderMarkdown: false)
+        case .unsupported:
+            unavailableView(
+                "conch can't preview a \(url.pathExtension.uppercased()) yet — "
+                + "it's on the Mac at \(url.lastPathComponent)."
+            )
         }
     }
 
@@ -182,6 +212,25 @@ private struct BridgedWebView: UIViewRepresentable {
         view.isOpaque = false
         view.backgroundColor = UIColor(Palette.bg)
         view.load(URLRequest(url: url))
+        return view
+    }
+
+    func updateUIView(_ view: WKWebView, context: Context) {}
+}
+
+/// A local HTML page, with read access to its own folder.
+///
+/// WKWebView will not fetch a page's sibling assets — its CSS, its images —
+/// from a file:// URL unless it is granted the containing directory, so a page
+/// loaded the ordinary way renders unstyled and looks broken.
+private struct LocalPageView: UIViewRepresentable {
+    let url: URL
+
+    func makeUIView(context: Context) -> WKWebView {
+        let view = WKWebView()
+        view.isOpaque = false
+        view.backgroundColor = UIColor(Palette.bg)
+        view.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
         return view
     }
 

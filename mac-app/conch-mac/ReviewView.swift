@@ -1,5 +1,6 @@
 import AppKit
 import PDFKit
+import AVKit
 import SwiftUI
 
 struct ReviewItem: Identifiable, Equatable {
@@ -190,6 +191,12 @@ private struct ReviewContent: View {
         case let .image(url):
             DeliverableImageView(url: url)
                 .padding(18)
+                .background(ConchPalette.bg)
+                .onAppear {
+                    isWebLoading = false
+                }
+        case let .video(url):
+            DeliverableVideoView(url: url)
                 .background(ConchPalette.bg)
                 .onAppear {
                     isWebLoading = false
@@ -476,6 +483,7 @@ private struct DeliverableLoadingLine: View {
 
 enum DeliverableSource: Equatable {
     case image(URL)
+    case video(URL)
     case pdf(URL)
     case markdown(URL)
     case text(URL)
@@ -486,6 +494,12 @@ enum DeliverableSource: Equatable {
         "png", "jpg", "jpeg", "gif", "webp", "svg", "heic", "tiff",
     ])
     private static let markdownExtensions = Set(["md", "markdown"])
+    // WebKit will play some of these and refuse others depending on codec, so
+    // "it fell through to the web view" was luck rather than support. AVKit
+    // plays them with real transport controls.
+    private static let videoExtensions = Set([
+        "mp4", "mov", "m4v", "webm",
+    ])
     // Types that are TEXT to a person even when they aren't .txt. Everything
     // else local still falls through to the web view, which handles .html and
     // anything WebKit natively previews.
@@ -516,6 +530,8 @@ enum DeliverableSource: Equatable {
             self = .image(localURL)
         case "pdf":
             self = .pdf(localURL)
+        case let ext where Self.videoExtensions.contains(ext):
+            self = .video(localURL)
         case let ext where Self.markdownExtensions.contains(ext):
             self = .markdown(localURL)
         case let ext where Self.textExtensions.contains(ext):
@@ -532,6 +548,29 @@ enum DeliverableSource: Equatable {
 
         let expanded = NSString(string: link).expandingTildeInPath
         return URL(fileURLWithPath: expanded, isDirectory: false).standardizedFileURL
+    }
+}
+
+/// A video deliverable with real transport controls.
+///
+/// These used to fall through to the web view, which plays some codecs and
+/// silently refuses others — so support was luck. AVKit gives scrubbing,
+/// volume and fullscreen, and fails loudly when it cannot decode.
+private struct DeliverableVideoView: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .inline
+        view.videoGravity = .resizeAspect
+        view.player = AVPlayer(url: url)
+        return view
+    }
+
+    func updateNSView(_ view: AVPlayerView, context: Context) {
+        if (view.player?.currentItem?.asset as? AVURLAsset)?.url != url {
+            view.player = AVPlayer(url: url)
+        }
     }
 }
 
