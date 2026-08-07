@@ -219,6 +219,31 @@ private struct ReviewContent: View {
                 .onAppear {
                     isWebLoading = false
                 }
+        case let .unsupported(url):
+            // A limitation stated plainly, not WebKit's "Frame load
+            // interrupted" — which looked like conch had broken.
+            VStack(spacing: 10) {
+                Image(systemName: "doc.zipper")
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundStyle(ConchPalette.textDim)
+                Text("conch can't preview a \(url.pathExtension.uppercased())")
+                    .font(ConchTypography.font(size: 14, weight: .medium))
+                    .foregroundStyle(ConchPalette.textPrimary)
+                Text("It's on this Mac — open it in Finder to look inside.")
+                    .font(ConchTypography.font(size: 12))
+                    .foregroundStyle(ConchPalette.textDim)
+                Text(url.path)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ConchPalette.textDim)
+                    .textSelection(.enabled)
+                Button("Reveal in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+                .padding(.top, 4)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(ConchPalette.bg)
+            .onAppear { isWebLoading = false }
         case let .missing(url):
             VStack(spacing: 10) {
                 Image(systemName: "questionmark.folder")
@@ -487,6 +512,7 @@ enum DeliverableSource: Equatable {
     case pdf(URL)
     case markdown(URL)
     case text(URL)
+    case unsupported(URL)
     case missing(URL)
     case web
 
@@ -499,6 +525,13 @@ enum DeliverableSource: Equatable {
     // plays them with real transport controls.
     private static let videoExtensions = Set([
         "mp4", "mov", "m4v", "webm",
+    ])
+    // Nothing can render these, and WebKit fails them with "Frame load
+    // interrupted" — jargon that reads as a crash rather than a limitation.
+    // Naming the type is the whole difference between "conch is broken" and
+    // "conch can't show a zip".
+    private static let unpreviewableExtensions = Set([
+        "zip", "gz", "tar", "tgz", "dmg", "pkg", "app", "bin", "exe",
     ])
     // Types that are TEXT to a person even when they aren't .txt. Everything
     // else local still falls through to the web view, which handles .html and
@@ -530,6 +563,8 @@ enum DeliverableSource: Equatable {
             self = .image(localURL)
         case "pdf":
             self = .pdf(localURL)
+        case let ext where Self.unpreviewableExtensions.contains(ext):
+            self = .unsupported(localURL)
         case let ext where Self.videoExtensions.contains(ext):
             self = .video(localURL)
         case let ext where Self.markdownExtensions.contains(ext):

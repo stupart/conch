@@ -72,14 +72,19 @@ launching, whether or not anything new is shipped. TestFlight replaces that
 with real installs that auto-update and last 90 days. This is the only item
 with a deadline that arrives on its own.
 
-**3. `conch:review` never produces a review row.**
+**3. `conch:review` never produces a review row.** *(FIXED and observed —
+Tyler saw the first review row render)*
 An agent can end a reply with `conch:review <summary> | <link>` to flag work
 for a human look. The marker parses correctly, and the row is meant to show a
 gold star with that summary. No row ever appears. Two candidate causes were
 investigated and ruled out — pause is not responsible (reviews latch before
-the pause gate), and the text source was fixed to read the whole turn. It is
-still broken, so the next step is logging what the Stop hook actually receives
-and parses, rather than reasoning about it from outside.
+the pause gate), and the text source was fixed to read the whole turn. The cause, found only after the hook was made to write down what it saw:
+**Stop fires before Claude Code flushes the final assistant message**, so the
+marker — written on the last line of the last message — was never in the file
+at parse time. Three earlier attempts each fixed something real (pause was
+blamed and innocent; the parser was correct; the text source was changed) and
+none could have worked. The hook now waits for the turn to land, bounded to
+about a second.
 
 **4. Rebuild the reply pane as the whole conversation.**
 Today each app shows ONE reply, replaced wholesale every turn — which is why
@@ -88,7 +93,11 @@ missing, and why the previous reply vanishes when a new turn starts. It should
 be the actual conversation stack, the way the terminal shows it: every message
 in order, tool calls included, scrollable, live as it is written.
 
-**5. Render the end product inline, not a path to it.**
+**5. Render the end product inline, not a path to it.** *(deliverable
+ROUTING fixed on both apps; the inline surface is still to build)*
+Both routers now agree — video plays, a local page renders as a page, and an
+unpreviewable file says so instead of printing bytes. What remains is the
+inline part: today an artifact opens in a sheet, not in the conversation.
 When an agent produces something — a web page, an image, a PDF, a document —
 writing `conch:` before the path or URL should make the app RENDER it inside
 the conversation, expanding when clicked. Anything not marked stays plain
@@ -110,10 +119,11 @@ falls back to putting the text on the clipboard — and still tells the phone
 clipboard, and the person who dictated it believes it was sent. This cost a
 real message. Needs a true acknowledgement plus retry.
 
-**8. One session cannot be resumed while the rest stay paused.**
-Pausing conch holds every finished turn. Resuming a single session is not
-possible, because the daemon checks the global pause before it ever looks at
-per-session state. Needs an exemption checked ahead of that gate.
+**8. One session cannot be resumed while the rest stay paused.** *(FIXED,
+tested, not yet used in anger)*
+An exemption set is checked ahead of the global gate: resuming a session by
+name while conch is paused lets it speak while everything else stays held.
+Pausing that session revokes it; any global edge clears the set.
 
 **9. Open the session that is speaking.**
 When a reply is read aloud, the app should move to that conversation, instead
