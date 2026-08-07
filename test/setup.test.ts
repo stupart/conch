@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../src/config.ts";
@@ -8,7 +8,6 @@ import {
   missingHardDependencies,
   parseSetupArgs,
   renderHardDependencyFailure,
-  REVIEW_INSTRUCTIONS_BLOCK,
   renderSetupReady,
   runInstall,
   runSetupIntegrations,
@@ -117,8 +116,11 @@ describe("one-command setup", () => {
       expect(settings.hooks.Stop).toHaveLength(1);
       expect(settings.hooks.Notification).toHaveLength(1);
       expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
-      expect(readFileSync(join(claudeDir, "CLAUDE.md"), "utf8"))
-        .toBe(`${REVIEW_INSTRUCTIONS_BLOCK}\n`);
+      // It creates the directory for its hooks and nothing else. This used to
+      // assert conch had written a CLAUDE.md here — on a machine with no
+      // ~/.claude at all, installing a voice tool would CREATE the user's
+      // global instruction file just to hold conch's own review contract.
+      expect(existsSync(join(claudeDir, "CLAUDE.md"))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -409,26 +409,23 @@ export async function runSetup(
     );
   }
 
-  // 4. Wire Claude Code and give both supported agents the global review
-  //    contract. Codex hooks remain an explicit `conch install --codex` opt-in.
-  const codexDir = join(homedir(), ".codex");
-  // Capture this before writing the cross-agent review contract: setup itself
-  // must not make every Claude-only machine look like an existing Codex install.
-  const codexWasPresent = existsSync(codexDir);
-  console.log("\nWiring Claude Code hooks and global review instructions…");
-  await runInstall(cfg);
-  // Codex only gets the review contract if its hooks are actually wired.
+  // 4. Wire Claude Code's hooks. Codex hooks remain an explicit
+  //    `conch install --codex` opt-in.
   //
-  // Setup used to write it unconditionally, so every machine with a ~/.codex
-  // directory told Codex to end deliverables with `conch:review …` — a line
-  // conch can only act on through the Stop hook. Codex 0.144.1 does not
-  // execute ~/.codex/hooks.json at all (proven with a bare `touch` hook that
-  // never fired), so the instruction went nowhere and Codex spent turns
-  // honouring a contract with no counterparty. An integration that does not
-  // work should be silent, not advertised.
-  if (await codexHooksAreWiredAt(codexDir)) {
-    await installReviewInstructions(join(codexDir, "AGENTS.md"), "AGENTS.md");
-  }
+  // Nothing here writes to CLAUDE.md or AGENTS.md. Conch used to splice a
+  // managed review-contract block into the user's GLOBAL instruction files,
+  // which meant installing a voice tool silently edited the prompt of every
+  // session on the machine, and every wording change needed a reinstall to
+  // take. The contract now ships entirely inside the plugin — see
+  // `docs/conch-control-skill.md`, which becomes both the plugin's AGENTS.md
+  // and its conch-control skill — so it arrives and updates with the thing it
+  // describes, and uninstalling actually removes it.
+  const codexDir = join(homedir(), ".codex");
+  // Capture this before the install runs: setup must not make every
+  // Claude-only machine look like an existing Codex install.
+  const codexWasPresent = existsSync(codexDir);
+  console.log("\nWiring Claude Code hooks…");
+  await runInstall(cfg);
   console.log("\nRunning doctor…\n");
   await runDoctor(cfg);
   const completion = await runSetupIntegrations(cfg, options);
@@ -684,7 +681,6 @@ export async function runCodexInstall(
   codexDir = join(homedir(), ".codex"),
 ): Promise<void> {
   const hooksPath = join(codexDir, "hooks.json");
-  const instructionsPath = join(codexDir, "AGENTS.md");
   const command = `${conchInvocation()} codex-hook`;
 
   let existing: Record<string, any> = {};
@@ -693,10 +689,6 @@ export async function runCodexInstall(
   }
 
   const result = buildCodexHooksSettings(existing, command);
-  const instructionsResult = await installReviewInstructions(
-    instructionsPath,
-    "AGENTS.md",
-  );
   for (const event of ["Stop", "UserPromptSubmit", "SessionStart"]) {
     if (result.addedEvents.includes(event)) {
       console.log(`${event}: wired -> ${command}`);
@@ -714,14 +706,8 @@ export async function runCodexInstall(
     }
     await Bun.write(hooksPath, JSON.stringify(result.settings, null, 2) + "\n");
   }
-  const instructionsChanged =
-    instructionsResult === "created" || instructionsResult === "updated";
   if (result.changed) {
     console.log("\nDone. Codex hooks installed.");
-  } else if (instructionsChanged) {
-    console.log("\nDone. Global Codex review instructions installed; hooks were already wired.");
-  } else if (instructionsResult === "skipped") {
-    console.log("\nCodex hooks were already wired; global review instructions were skipped (see warning above).");
   } else {
     console.log("\nNothing to do.");
   }
@@ -739,7 +725,6 @@ Verify Codex hook activation:
  */
 export async function runInstall(cfg: Config): Promise<void> {
   const settingsPath = join(cfg.claudeDir, "settings.json");
-  const instructionsPath = join(cfg.claudeDir, "CLAUDE.md");
   // Paths are quoted so an install dir containing spaces still yields a runnable
   // hook command. Resolves to `"conch" hook` (compiled) or `"bun" "…/cli.ts" hook`.
   const command = `${conchInvocation()} hook`;
@@ -763,11 +748,6 @@ export async function runInstall(cfg: Config): Promise<void> {
     console.log(`${event}: wired -> ${command}`);
   }
 
-  const instructionsResult = await installReviewInstructions(
-    instructionsPath,
-    "CLAUDE.md",
-  );
-
   if (changed) {
     // Back up only when we're actually about to modify — the old code wrote a
     // fresh timestamped backup on every run, even "Nothing to do", piling up.
@@ -781,14 +761,8 @@ export async function runInstall(cfg: Config): Promise<void> {
     mkdirSync(dirname(settingsPath), { recursive: true });
     await Bun.write(settingsPath, JSON.stringify(settings, null, 2) + "\n");
   }
-  const instructionsChanged =
-    instructionsResult === "created" || instructionsResult === "updated";
   if (changed) {
     console.log("\nDone. Open /hooks in Claude Code (or restart sessions) to reload config.");
-  } else if (instructionsChanged) {
-    console.log("\nDone. Global Claude Code review instructions installed; hooks were already wired.");
-  } else if (instructionsResult === "skipped") {
-    console.log("\nClaude Code hooks were already wired; global review instructions were skipped (see warning above).");
   } else {
     console.log("\nNothing to do.");
   }

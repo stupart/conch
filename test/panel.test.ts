@@ -10,6 +10,7 @@ import {
   refreshPublishedConversationState,
   dashboardPanelLines,
   dashboardRowsForModel,
+  carriedReview,
   latestLatchedState,
   numberPanelSessionRows,
   previewForPanelSelection,
@@ -895,4 +896,37 @@ describe("previewForPanelSelection — async cursor stale guard", () => {
     expect("reply" in switched).toBe(false);
   });
 
+});
+
+describe("a review outlives the turn that produced it", () => {
+  // `review_to_front` defaults `session` to the caller and REFUSES to name a
+  // sibling, so surfacing your own work is the only supported use of the tool.
+  // But the caller's own Stop hook then lands a review-less `turn-end`, and the
+  // latch replaced the whole record — so every self-issued review was erased
+  // within a second of being filed. The plugin documented the marker as the
+  // workaround; this makes the tool actually work.
+  const review = { summary: "the landing page is ready", link: "https://x.test" };
+  const latched = { label: "conch", status: "waiting" as const, at: 1, review };
+
+  test("a review-less turn-end does not erase a just-filed review", () => {
+    expect(carriedReview(latched, "waiting", undefined)).toEqual(review);
+  });
+
+  test("a needs-you notification does not erase it either", () => {
+    expect(carriedReview(latched, "needs", undefined)).toEqual(review);
+  });
+
+  test("starting a new turn clears it", () => {
+    expect(carriedReview(latched, "working", undefined)).toBeUndefined();
+  });
+
+  test("a newer review replaces the old one rather than being ignored", () => {
+    const next = { summary: "second deliverable" };
+    expect(carriedReview(latched, "waiting", next)).toEqual(next);
+    expect(carriedReview(latched, "working", next)).toEqual(next);
+  });
+
+  test("a session that never had one stays without one", () => {
+    expect(carriedReview(undefined, "waiting", undefined)).toBeUndefined();
+  });
 });

@@ -104,6 +104,7 @@ import {
   buildPanelRows,
   buildPublishedState,
   commitLatestPanelRender,
+  carriedReview,
   latestLatchedState,
   numberPanelSessionRows,
   previewForPanelSelection,
@@ -2098,8 +2099,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // Legacy clients without eventAt may still work, but their latch is oldest
     // possible truth and can never clobber a timestamped hook or registry state.
     const at = eventTimestamp(eventAt);
-    const incoming = { label, status, detail, at, ...(review ? { review } : {}) };
-    if (latestLatchedState(sessionStates.get(sessionId), incoming) !== incoming) return false;
+    const prior = sessionStates.get(sessionId);
+    const carried = carriedReview(prior, status, review);
+    const incoming = {
+      label,
+      status,
+      detail: detail ?? carried?.summary,
+      at,
+      ...(carried ? { review: carried } : {}),
+    };
+    if (latestLatchedState(prior, incoming) !== incoming) return false;
     sessionStates.set(sessionId, incoming);
     void renderSessionPanel();
     return true;

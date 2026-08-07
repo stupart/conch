@@ -515,6 +515,36 @@ export function latestLatchedState(
   return current && current.at > incoming.at ? current : incoming;
 }
 
+export interface SessionReview {
+  summary: string;
+  link?: string;
+}
+
+/**
+ * Which review a session's next latched state should carry.
+ *
+ * A review outlives the event that happens to arrive after it. `review_to_front`
+ * latches one, and moments later that same session's Stop hook lands a
+ * review-less `turn-end` — and because the latch REPLACES the whole record, the
+ * review was erased within a second of being filed. That was the only reason a
+ * session could not surface its own finished work through the tool, even though
+ * `requiredReviewSession` defaults `session` to the caller and refuses to name
+ * anyone else; the plugin documented the `conch:review` marker as the
+ * workaround for a tool that could not keep its own result.
+ *
+ * A review belongs to the finished deliverable, not to the last message about
+ * the session, so it survives until the session starts a new turn — which is
+ * also the only status the panel refuses to draw a review row in.
+ */
+export function carriedReview(
+  prior: { review?: SessionReview } | undefined,
+  status: SessionStatus,
+  incoming: SessionReview | undefined,
+): SessionReview | undefined {
+  if (incoming) return incoming;
+  return status === "working" ? undefined : prior?.review;
+}
+
 /**
  * Map Claude Code's registry `status` onto a panel state. The registry is the
  * authoritative source of "is this session working or waiting on me":

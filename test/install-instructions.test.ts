@@ -13,6 +13,7 @@ import {
   installReviewInstructions,
   renderSupervisorScript,
   REVIEW_INSTRUCTIONS_BLOCK,
+  runInstall,
   spliceReviewInstructions,
 } from "../src/install.ts";
 
@@ -189,5 +190,48 @@ describe("the supervisor's liveness check", () => {
     expect(create).toBeGreaterThan(-1);
     const between = code.slice(Math.min(clear, create), Math.max(clear, create));
     expect(between).toMatch(/\belse\b/);
+  });
+});
+
+describe("installing conch leaves the user's own instruction files alone", () => {
+  // `conch install` used to splice a managed review-contract block into the
+  // GLOBAL ~/.claude/CLAUDE.md (and ~/.codex/AGENTS.md), so installing a voice
+  // tool silently edited the standing prompt of every session on the machine.
+  // On Tyler's Mac it had CREATED that file, whose entire contents were conch's
+  // block. The contract belongs to the plugin, which ships and updates with the
+  // thing it describes and uninstalls cleanly.
+  //
+  // `installReviewInstructions` itself is kept — `conch uninstall` still has to
+  // remove the block from machines that took the old install — so the guard has
+  // to be that nothing on the install path CALLS it.
+  test("runInstall writes settings.json and never CLAUDE.md", async () => {
+    const root = mkdtempSync(join(tmpdir(), "conch-install-untouched-"));
+    const log = console.log;
+    try {
+      console.log = () => {};
+      await runInstall({ claudeDir: root } as any);
+      expect(readdirSync(root)).toEqual(["settings.json"]);
+    } finally {
+      console.log = log;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("an existing CLAUDE.md is left byte-for-byte intact", async () => {
+    const root = mkdtempSync(join(tmpdir(), "conch-install-untouched-"));
+    const claudeMd = join(root, "CLAUDE.md");
+    const mine = "# My rules\n\nNothing conch put here.\n";
+    const log = console.log;
+    try {
+      console.log = () => {};
+      writeFileSync(claudeMd, mine);
+      await runInstall({ claudeDir: root } as any);
+      expect(readFileSync(claudeMd, "utf8")).toBe(mine);
+      // and no timestamped backup, which is the fingerprint of a write
+      expect(readdirSync(root).filter((n) => n.includes("conch-backup"))).toEqual([]);
+    } finally {
+      console.log = log;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

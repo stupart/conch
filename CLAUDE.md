@@ -7,5 +7,5 @@ A turn-based voice loop for Claude Code: hooks announce finished turns aloud (`s
 - The mic must never open while TTS is speaking — that invariant (in `daemon.ts`) is what prevents the loop hearing itself.
 - Whisper engine resolves in order: a seashell checkout (`CONCH_SEASHELL_ROOT`, default `~/whisper-cli`) → a brew `whisper-cpp` install → `~/.cache/conch/models` (where `conch setup` downloads them). conch doesn't vendor models in the repo; `conch setup` fetches them.
 - Test text processing with `bun test`; mic/TTS paths need a human (`conch listen`, `conch speak`).
-- When work needs Tyler's review, end the final reply with its own line:
-  `conch:review <one-line spoken summary> | <PR-url-or-path>` (link optional).
+- When work needs Tyler's review, call `review_to_front {summary, link?}`. Fall back to ending the final reply with its own line — `conch:review <summary> | <link>` — only if that tool isn't available.
+- The agent-facing contract for conch's own tools lives in `docs/conch-control-skill.md` and ships inside the plugin. `plugin/plugins/conch/{AGENTS.md,skills/conch-control/SKILL.md}` are GENERATED from it and checked in, because the marketplace serves that directory straight from git while Homebrew regenerates it — edit the doc, then regenerate both (a test enforces it). conch never writes to a user's `~/.claude/CLAUDE.md` or `~/.codex/AGENTS.md`.

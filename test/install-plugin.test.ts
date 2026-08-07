@@ -240,3 +240,41 @@ ${prose}`);
     expect(mcp.mcpServers.conch.args).toEqual(["mcp"]);
   }, 15_000);
 });
+
+describe("the two install paths ship the same prose", () => {
+  // conch reaches users two ways with two different sources for one text:
+  //
+  //   marketplace  -> `plugin/plugins/conch` is served straight out of git
+  //                   (`source: git-subdir` in the marketplace manifest)
+  //   Homebrew/dev -> materializePlugin GENERATES those same files from
+  //                   docs/conch-control-skill.md
+  //
+  // Nothing kept them equal, and they silently drifted into three different
+  // review contracts — the checked-in AGENTS.md told agents `session` was
+  // required and must NOT name the caller, which is the exact inverse of what
+  // `requiredReviewSession` enforces, so following it was a guaranteed
+  // ToolInputError. Whichever file is edited, this fails until both match.
+  const repoRoot = join(import.meta.dir, "..");
+  const prose = readFileSync(join(repoRoot, "docs", "conch-control-skill.md"), "utf8");
+  const pluginRoot = join(repoRoot, "plugin", "plugins", "conch");
+
+  test("the checked-in AGENTS.md is the generated prose", () => {
+    expect(readFileSync(join(pluginRoot, "AGENTS.md"), "utf8")).toBe(prose);
+  });
+
+  test("the checked-in SKILL.md is the generated prose under its frontmatter", () => {
+    const skill = readFileSync(
+      join(pluginRoot, "skills", "conch-control", "SKILL.md"),
+      "utf8",
+    );
+    expect(skill.endsWith(prose)).toBe(true);
+    expect(skill.slice(0, skill.length - prose.length)).toMatch(/^---\nname: conch-control\n/);
+  });
+
+  test("the shipped contract matches what review_to_front actually enforces", () => {
+    // The drift above was undetectable by eye. Pin the two claims that were
+    // wrong: `session` defaults to the caller, and naming a sibling is refused.
+    expect(prose).toContain("`session` is optional and defaults to you");
+    expect(prose).toContain("naming a different session is refused");
+  });
+});
