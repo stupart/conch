@@ -127,6 +127,8 @@ struct DashboardActions {
     let onUndoDismiss: () -> Void
     let onDismissNewerDaemonWarning: () -> Void
     let onToggleLogs: () -> Void
+    /// Opens Settings on the Phone tab, where the pairing QR lives.
+    let onConnectPhone: () -> Void
     let onShowKeyboardShortcuts: () -> Void
     let onTalkOrStop: () -> Void
     let onPauseOrResume: () -> Void
@@ -1999,6 +2001,19 @@ private struct DashboardKeybar: View {
             )
 
             Spacer(minLength: 0)
+
+            // Pairing a phone had no visible affordance at all: you had to
+            // know the app must be frontmost, know to press ⌘, and know the
+            // QR lives behind a tab. Tyler, watching me open it for him:
+            // "users need to be able to open it themselves too tho — how do
+            // they do that?" They could not. Now it is a button, next to the
+            // other things you press.
+            KeybarActionButton(
+                label: "Settings",
+                action: actions.onConnectPhone
+            )
+            .help("Settings — connect a phone, and everything else")
+            .accessibilityLabel("Settings")
 
             KeybarActionButton(
                 label: "Logs",

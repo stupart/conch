@@ -48,10 +48,13 @@ struct ConchMacApp: App {
             // Pairing first, knobs second: connecting a phone is the one thing
             // a new person must do, and it used to require a terminal.
             TabView {
+                // "Advanced" promised something arcane and delivered the
+                // ordinary settings; "Phone" named a device rather than the
+                // job. Two tabs, named for what each one is.
                 ConchPairingView()
-                    .tabItem { Label("Phone", systemImage: "iphone") }
+                    .tabItem { Label("Your phone", systemImage: "iphone") }
                 ConchSettingsView()
-                    .tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
+                    .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
             }
             // A Settings window sizes to its content and does NOT scroll, so
             // an ideal height taller than a laptop screen simply overflows.

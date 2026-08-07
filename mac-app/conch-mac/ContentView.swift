@@ -9,6 +9,17 @@ struct ContentView: View {
     @State private var renamingSessionID: SessionRow.ID?
     @State private var renameDraft = ""
     @State private var isShowingKeyboardShortcuts = false
+    /// SwiftUI's own way to open the Settings scene. Doing it by sending
+    /// showSettingsWindow: to nil is the usual hack and breaks between
+    /// releases; this is the supported route on macOS 14+.
+    @Environment(\.openSettings) private var openSettings
+
+    /// Wrapped rather than passed through: openSettings is an
+    /// OpenSettingsAction, and handing it to a twenty-argument initialiser as
+    /// a closure made Swift give up type-checking the whole expression.
+    private func connectPhone() {
+        openSettings()
+    }
 
     private var reviewItems: [ReviewItem] {
         let indexedItems = store.state?.rows.enumerated().compactMap { index, row in
@@ -83,6 +94,7 @@ struct ContentView: View {
                     onUndoDismiss: store.undoLastDismissal,
                     onDismissNewerDaemonWarning: store.dismissNewerDaemonWarning,
                     onToggleLogs: store.toggleLogDrawer,
+                    onConnectPhone: connectPhone,
                     onShowKeyboardShortcuts: showKeyboardShortcuts,
                     onTalkOrStop: talkOrStop,
                     onPauseOrResume: pauseOrResume,
