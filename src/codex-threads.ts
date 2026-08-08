@@ -87,6 +87,25 @@ export function codexThreadLabel(row: {
   return undefined;
 }
 
+/** How recently a thread must have been written to for recency to imply "working". */
+const ACTIVE_WITHIN_MS = 20_000;
+
+/**
+ * Busy or idle, preferring the authoritative signal and falling back to recency.
+ *
+ * `thread_turns` states it outright, but only covers some threads. For the rest
+ * the only stateless evidence is that Codex just wrote to the row.
+ */
+export function codexThreadStatus(
+  projectedStatus: string | undefined,
+  updatedAtMs: number,
+  now: number,
+): "busy" | "idle" {
+  if (projectedStatus === "inProgress") return "busy";
+  if (projectedStatus === "completed") return "idle";
+  return now - updatedAtMs <= ACTIVE_WITHIN_MS ? "busy" : "idle";
+}
+
 /** A Codex thread's rollout file as it looked at one poll. */
 export interface CodexTurnSnapshot {
   sessionId: string;
@@ -337,7 +356,17 @@ export function readCodexThreads(
       // conch injects into a pane by pid, so a v1 Codex row can be SEEN but not
       // talked to. Better an honest read-only row than none at all.
       pid: 0,
-      status: status.get(String(row.id)) === "inProgress" ? "busy" : "idle",
+      // `thread_turns` is authoritative but SPARSE — a projection that only
+      // covers some threads (7 of them on this machine; "humain" has no rows at
+      // all). Without a fallback those threads sit on "waiting" forever, even
+      // mid-turn. Recency is the stateless stand-in: Codex touches
+      // `updated_at_ms` as it works, so a thread written to within the last few
+      // seconds is working, whatever the projection does or does not know.
+      status: codexThreadStatus(
+        status.get(String(row.id)),
+        Number(row.updated_at_ms ?? 0),
+        now,
+      ),
       updatedAt: Number(row.updated_at_ms ?? 0),
       transcriptPath: String(row.rollout_path ?? ""),
       ...(codexThreadLabel(row) ? { name: codexThreadLabel(row) } : {}),

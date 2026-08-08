@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   codexThreadLabel,
+  codexThreadStatus,
   detectCodexTurnEnds,
   isInterAgentEnvelope,
   readCodexRolloutTail,
@@ -339,5 +340,21 @@ describe("reading a turn out of a real rollout file", () => {
 
   test("a missing rollout is null, not a crash", () => {
     expect(readCodexRolloutTail("/tmp/definitely-not-a-rollout.jsonl")).toBeNull();
+  });
+});
+
+describe("busy/idle when the turn projection has nothing to say", () => {
+  // `thread_turns` is authoritative but sparse — 7 threads on Tyler's machine
+  // have rows and "humain" has none, so it sat on "waiting" forever even while
+  // working. Recency is the stateless stand-in.
+  test("prefers the projection whenever it knows", () => {
+    expect(codexThreadStatus("inProgress", 0, NOW)).toBe("busy");
+    // Even a long-idle row stays idle if the projection says the turn completed.
+    expect(codexThreadStatus("completed", NOW, NOW)).toBe("idle");
+  });
+
+  test("falls back to recency when the projection has no row", () => {
+    expect(codexThreadStatus(undefined, NOW - 5_000, NOW)).toBe("busy");
+    expect(codexThreadStatus(undefined, NOW - 120_000, NOW)).toBe("idle");
   });
 });
