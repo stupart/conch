@@ -52,7 +52,25 @@ export interface CodexThreadsOptions {
   now?: number;
 }
 
-const DEFAULT_LIVE_WITHIN_MS = 30 * 60 * 1000;
+/**
+ * How long a Codex thread stays listed after its last activity.
+ *
+ * Eight hours, not thirty minutes. The lock tells us which single thread Codex
+ * has OPEN, but a person works across several in a day and Codex locks only the
+ * one it is writing — measured exactly that: "asset generator" held the lock
+ * after fourteen idle hours while "humain", used seventy-one minutes earlier,
+ * had none and vanished. Tyler noticed immediately, and he was right to: a
+ * session he had been in an hour ago is obviously still his.
+ *
+ * A Claude session is listed for as long as its process lives, which is usually
+ * a working day, so this is the closer analogue. The cost of being generous is
+ * an extra row or two from this morning; the cost of being strict is hiding
+ * work someone is in the middle of. `CODEX_ROW_LIMIT` bounds the noise.
+ */
+const DEFAULT_LIVE_WITHIN_MS = 8 * 60 * 60 * 1000;
+
+/** Most-recent Codex threads to list, so a heavy day cannot flood the ledger. */
+const CODEX_ROW_LIMIT = 6;
 
 /** Where Codex keeps thread metadata and per-turn status, respectively. */
 export function codexThreadDbPaths(codexHome: string): { state: string; history: string } {
@@ -429,6 +447,7 @@ export function readCodexThreads(
       .filter((row) =>
         openIds.has(String(row.id)) || Number(row.updated_at_ms ?? 0) >= cutoff
       )
+      .slice(0, CODEX_ROW_LIMIT)
       .map((row) => ({
       sessionId: String(row.id),
       cwd: String(row.cwd ?? ""),

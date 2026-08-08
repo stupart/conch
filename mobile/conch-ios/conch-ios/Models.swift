@@ -12,6 +12,8 @@ struct PublishedState: Decodable, Equatable {
     var live = Live()
     var rows: [Row] = []
     var reply: Reply?
+    /// Keyed by session id — the phone looks up whichever session it is showing.
+    var conversations: [String: Conversation] = [:]
 
     struct Mode: Decodable, Equatable {
         var muted = false
@@ -139,7 +141,7 @@ struct PublishedState: Decodable, Equatable {
         }
     }
 
-    private enum CodingKeys: String, CodingKey { case v, ts, mode, live, rows, reply }
+    private enum CodingKeys: String, CodingKey { case v, ts, mode, live, rows, reply, conversations }
 
     init() {}
 
@@ -162,6 +164,7 @@ struct PublishedState: Decodable, Equatable {
             rows = decoded
         }
         reply = try? c.decodeIfPresent(Reply.self, forKey: .reply)
+        conversations = (try? c.decodeIfPresent([String: Conversation].self, forKey: .conversations)) ?? [:]
     }
 }
 
@@ -249,4 +252,52 @@ func relativeAge(epochMilliseconds: Double, now: Date = Date()) -> String? {
     if elapsed < 3_600 { return "\(Int(elapsed / 60))m" }
     if elapsed < 86_400 { return "\(Int(elapsed / 3_600))h" }
     return "\(Int(elapsed / 86_400))d"
+}
+
+/// One message in a session's conversation — the shape the daemon publishes for
+/// every visible session, so the phone never depends on which one the Mac
+/// happens to be showing.
+struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
+    struct Tool: Decodable, Equatable, Sendable {
+        var name = ""
+        var status = "running"
+        var result: String?
+        private enum CodingKeys: String, CodingKey { case name, status, result }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? ""
+            status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? "running"
+            result = try? c.decodeIfPresent(String.self, forKey: .result)
+        }
+    }
+
+    var id = ""
+    var rev = 0
+    /// Unknown kinds render as plain text rather than vanishing.
+    var kind = "assistant"
+    var text = ""
+    var tool: Tool?
+
+    private enum CodingKeys: String, CodingKey { case id, rev, kind, text, tool }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? UUID().uuidString
+        rev = (try? c.decodeIfPresent(Int.self, forKey: .rev)) ?? 0
+        kind = (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? "assistant"
+        text = (try? c.decodeIfPresent(String.self, forKey: .text)) ?? ""
+        tool = try? c.decodeIfPresent(Tool.self, forKey: .tool)
+    }
+}
+
+struct Conversation: Decodable, Equatable, Sendable {
+    var sessionId = ""
+    var items: [ConversationItem] = []
+    var truncated = false
+    private enum CodingKeys: String, CodingKey { case sessionId, items, truncated }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = (try? c.decodeIfPresent(String.self, forKey: .sessionId)) ?? ""
+        items = (try? c.decodeIfPresent([ConversationItem].self, forKey: .items)) ?? []
+        truncated = (try? c.decodeIfPresent(Bool.self, forKey: .truncated)) ?? false
+    }
 }

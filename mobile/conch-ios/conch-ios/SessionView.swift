@@ -80,7 +80,15 @@ struct SessionView: View {
                         }
                     }
 
-                    if let replyText {
+                    // The whole conversation when the daemon has one for THIS
+                    // session, which is what finally puts Codex sessions on the
+                    // phone: their content never arrives as `reply`, because
+                    // that carries only the last turn conch spoke, and conch
+                    // does not speak for a session it merely observes.
+                    if let conversation = bridge.state?.conversations[sessionId],
+                       !conversation.items.isEmpty {
+                        ConversationStack(conversation: conversation)
+                    } else if let replyText {
                         MarkdownView(text: replyText)
                             .foregroundStyle(Palette.textPrimary)
                     } else if loadingReply {
