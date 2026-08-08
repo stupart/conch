@@ -116,6 +116,7 @@ import {
   commitLatestPanelRender,
   carriedReview,
   latestLatchedState,
+  panelReplyText,
   numberPanelSessionRows,
   previewForPanelSelection,
   refreshPublishedConversationState,
@@ -2020,7 +2021,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // or transcript is being read. Sample at commit so an older full render
       // cannot overwrite the lightweight publisher with stale conversation data.
       const committedLiveState = getLiveState();
-      const replyText = committedLiveState.reading?.text || transcriptReplyText;
+      const shownReply = panelReplyText(committedLiveState, transcriptReplyText);
       // Absence is authoritative only for a complete registry read. A torn
       // per-session file must not release a cursor that was meant to stay put.
       if (snap?.complete) {
@@ -2045,11 +2046,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
         mode: { muted, paused: pause.paused, holding: pending.size },
         activeSessionId: nextActiveSessionId,
         navSelectedId,
-        reply: contentEvent && replyText
+        reply: contentEvent && shownReply.text
           ? {
             sessionId: contentEvent.sessionId,
-            text: replyText,
-            spokenChars: committedLiveState.reading?.spokenChars ?? 0,
+            text: shownReply.text,
+            spokenChars: shownReply.spokenChars,
             ...(transcriptReplyRaw ? { markdown: transcriptReplyRaw } : {}),
           }
           : null,

@@ -244,6 +244,34 @@ export function refreshPublishedConversationState(
   };
 }
 
+/**
+ * Which text the reply pane should show, and how far speech has got through it.
+ *
+ * These are two different strings and conflating them is a bug Tyler has
+ * reported repeatedly: "only shows first line of last response instead of full
+ * response". What conch SPEAKS for a finished turn is a one-line announce; what
+ * the pane should SHOW is the whole reply. The old rule preferred the spoken
+ * text whenever it existed, so the moment a turn was announced the pane
+ * collapsed to that single line and stayed there.
+ *
+ * Speaking is the only time the two must agree, because `spokenChars` indexes
+ * the spoken string to highlight progress. Otherwise the transcript wins, and
+ * progress resets to zero rather than pointing into a string it does not index.
+ */
+export function panelReplyText(
+  live: Pick<PanelLiveState, "state" | "reading">,
+  transcriptText: string,
+): { text: string; spokenChars: number } {
+  if (live.state === "speaking" && live.reading?.text) {
+    return { text: live.reading.text, spokenChars: live.reading.spokenChars };
+  }
+  if (transcriptText) return { text: transcriptText, spokenChars: 0 };
+  return {
+    text: live.reading?.text ?? "",
+    spokenChars: live.reading?.spokenChars ?? 0,
+  };
+}
+
 /** Build the versioned, renderer-independent state exposed to external consumers. */
 export function buildPublishedState(
   model: PanelModel,

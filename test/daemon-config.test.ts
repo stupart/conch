@@ -161,7 +161,7 @@ describe("daemon listen status hooks", () => {
     expect(liveProduction).toContain("clearReadingProgress()");
     expect(liveProduction).toContain("setReadingProgress(text, spokenChars)");
     expect(liveProduction).not.toContain("theaterMode");
-    expect(publishedConversation).toContain("reply: contentEvent && replyText");
+    expect(publishedConversation).toContain("reply: contentEvent && shownReply.text");
     expect(publishedConversation).toContain("model.preview = previewForPanelSelection(");
     expect(publishedConversation).not.toContain("theaterMode");
     expect(controllers).toContain("settingsOverlay = new SettingsOverlay(");

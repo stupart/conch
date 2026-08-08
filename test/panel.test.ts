@@ -12,6 +12,7 @@ import {
   dashboardRowsForModel,
   carriedReview,
   latestLatchedState,
+  panelReplyText,
   numberPanelSessionRows,
   previewForPanelSelection,
   reconcileStatus,
@@ -978,5 +979,44 @@ describe("a filed review is not hidden by the registry catching up", () => {
     const row = rowFor("busy", 200);
     expect(row.status).toBe("working");
     expect(row.review).toBeUndefined();
+  });
+});
+
+describe("the reply pane shows the reply, not the announcement", () => {
+  // Reported repeatedly: "only shows first line of last response instead of
+  // full response". What conch SPEAKS for a finished turn is a one-line
+  // announce; what the pane should SHOW is the whole reply. The old rule
+  // preferred the spoken text whenever it existed, so the pane collapsed to
+  // that line the moment a turn was announced and stayed collapsed.
+  const announce = "conch: finished, ready for your next prompt";
+  const full = "Here is the whole reply.\n\nWith several paragraphs of detail.";
+
+  test("a finished turn shows the transcript, not the spoken one-liner", () => {
+    expect(panelReplyText({ state: "idle", reading: { text: announce, spokenChars: 42 } }, full))
+      .toEqual({ text: full, spokenChars: 0 });
+  });
+
+  test("progress resets rather than indexing a string it does not belong to", () => {
+    // spokenChars indexes the SPOKEN text. Carrying it onto the transcript
+    // would highlight an arbitrary prefix of a different string.
+    const { spokenChars } = panelReplyText(
+      { state: "listening", reading: { text: announce, spokenChars: 42 } },
+      full,
+    );
+    expect(spokenChars).toBe(0);
+  });
+
+  test("while speaking the two must agree, so the spoken text wins", () => {
+    expect(panelReplyText({ state: "speaking", reading: { text: announce, spokenChars: 12 } }, full))
+      .toEqual({ text: announce, spokenChars: 12 });
+  });
+
+  test("with no transcript it still shows whatever was spoken", () => {
+    expect(panelReplyText({ state: "idle", reading: { text: announce, spokenChars: 5 } }, ""))
+      .toEqual({ text: announce, spokenChars: 5 });
+  });
+
+  test("nothing at all is empty, not a crash", () => {
+    expect(panelReplyText({ state: "idle" }, "")).toEqual({ text: "", spokenChars: 0 });
   });
 });

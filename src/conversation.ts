@@ -162,7 +162,7 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
       kind: "tool",
       text: summariseToolInput(call.input),
       at,
-      tool: { name: String(call.name ?? "tool"), status: "running" },
+      tool: { name: toolDisplayName(String(call.name ?? "tool")), status: "running" },
     });
   }
 }
@@ -176,6 +176,28 @@ function claudeResultText(content: unknown): string {
       .trim();
   }
   return "";
+}
+
+/**
+ * A tool's name as a person should read it.
+ *
+ * MCP tools arrive wire-named — `mcp__claude-in-chrome__computer` — which is
+ * fine in a protocol and hostile in a conversation. The server is kept because
+ * it is the useful half (figma vs linear vs chrome tells you what happened),
+ * just separated from the plumbing.
+ */
+export function toolDisplayName(name: string): string {
+  const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
+  if (!mcp) return name;
+  // Server names arrive with plumbing on both ends: a `plugin_`/`claude_`
+  // prefix, and the plugin's own name repeated inside the server's
+  // (`plugin_figma_figma`). Strip the prefix and collapse the repeat, or the
+  // label reads "figma-figma".
+  const segments = mcp[1]!.split(/[-_]/).filter((part) => part && part !== "plugin");
+  const deduped = segments.filter((part, index) => part !== segments[index - 1]);
+  const server = (deduped.length > 1 && deduped[0] === "claude" ? deduped.slice(1) : deduped)
+    .join("-");
+  return server ? `${server} · ${mcp[2]!}` : mcp[2]!;
 }
 
 /** Undo one level of source-string escaping, for a command lifted out of code. */
@@ -283,7 +305,7 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
         kind: "tool",
         text: summariseToolInput(parseMaybeJson(payload.arguments ?? payload.input)),
         at,
-        tool: { name: String(payload.name ?? "tool"), status: "running" },
+        tool: { name: toolDisplayName(String(payload.name ?? "tool")), status: "running" },
       });
       return;
     }

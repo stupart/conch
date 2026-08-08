@@ -6,6 +6,7 @@ import {
   conversationWindow,
   emptyConversation,
   summariseToolInput,
+  toolDisplayName,
   upsertConversationItem,
 } from "../src/conversation.ts";
 
@@ -218,5 +219,25 @@ describe("tool rows always say something", () => {
   test("a recognised key still wins over the fallback", () => {
     expect(summariseToolInput({ zzz: "first alphabetically", description: "the real label" }))
       .toBe("the real label");
+  });
+});
+
+describe("tool names a person can read", () => {
+  test("unwraps an MCP wire name, keeping the server", () => {
+    // `mcp__claude-in-chrome__computer` is fine in a protocol and hostile in a
+    // conversation. The server is the useful half — figma vs linear vs chrome
+    // tells you what happened — so it stays, just out of the plumbing.
+    expect(toolDisplayName("mcp__claude-in-chrome__computer")).toBe("in-chrome · computer");
+    // The plugin name repeated inside the server name would otherwise read
+    // "figma-figma".
+    expect(toolDisplayName("mcp__plugin_figma_figma__get_screenshot"))
+      .toBe("figma · get_screenshot");
+    expect(toolDisplayName("mcp__plugin_linear_linear__list_issues"))
+      .toBe("linear · list_issues");
+  });
+
+  test("leaves an ordinary tool name alone", () => {
+    expect(toolDisplayName("Bash")).toBe("Bash");
+    expect(toolDisplayName("SendUserFile")).toBe("SendUserFile");
   });
 });
