@@ -10,6 +10,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
     let live: LiveState
     let reply: ConversationReply?
     let preview: ConversationReply?
+    let conversation: Conversation?
     let rows: [SessionRow]
     let dismissed: [String]
     let dismissedRows: [DismissedSessionRow]
@@ -21,6 +22,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case live
         case reply
         case preview
+        case conversation
         case rows
         case dismissed
         case dismissedRows
@@ -33,6 +35,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         live: LiveState,
         reply: ConversationReply?,
         preview: ConversationReply?,
+        conversation: Conversation? = nil,
         rows: [SessionRow],
         dismissed: [String],
         dismissedRows: [DismissedSessionRow]
@@ -43,6 +46,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.mode = mode
         self.live = live
         self.reply = reply
+        self.conversation = conversation
         self.preview = preview
         self.rows = rows
         self.dismissed = dismissed
@@ -72,6 +76,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         mode = (try? container.decodeIfPresent(ModeState.self, forKey: .mode)) ?? ModeState()
         live = (try? container.decodeIfPresent(LiveState.self, forKey: .live)) ?? LiveState()
         reply = try? container.decodeIfPresent(ConversationReply.self, forKey: .reply)
+        conversation = try? container.decodeIfPresent(Conversation.self, forKey: .conversation)
         preview = try? container.decodeIfPresent(ConversationReply.self, forKey: .preview)
         dismissed = (try? container.decodeIfPresent([String].self, forKey: .dismissed)) ?? []
         dismissedRows = Self.decodeLossyArray(
@@ -251,6 +256,73 @@ struct ReadingProgress: Decodable, Equatable, Sendable {
         from container: KeyedDecodingContainer<CodingKeys>
     ) -> Int {
         decodeCharacterCount(from: container, forKey: .spokenChars)
+    }
+}
+
+
+/// One message in a session's conversation.
+///
+/// The daemon publishes an ordered stack of these instead of a single flattened
+/// reply. `id` is stable across renders on purpose: SwiftUI rebuilds and
+/// re-measures any row whose identity changes, so stable identity is what lets
+/// the stack append without disturbing what is already on screen.
+struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
+    enum Kind: String, Decodable, Sendable {
+        case user, assistant, thinking, tool, review
+        /// A future daemon may add kinds; an unknown one renders as plain text
+        /// rather than dropping the message.
+        static func parse(_ raw: String?) -> Kind { Kind(rawValue: raw ?? "") ?? .assistant }
+    }
+
+    struct Tool: Decodable, Equatable, Sendable {
+        var name = ""
+        var status = "running"
+        var result: String?
+
+        private enum CodingKeys: String, CodingKey { case name, status, result }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? ""
+            status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? "running"
+            result = try? c.decodeIfPresent(String.self, forKey: .result)
+        }
+    }
+
+    let id: String
+    let rev: Int
+    let kind: Kind
+    let text: String
+    let at: TimeInterval?
+    let tool: Tool?
+
+    private enum CodingKeys: String, CodingKey { case id, rev, kind, text, at, tool }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? UUID().uuidString
+        rev = (try? c.decodeIfPresent(Int.self, forKey: .rev)) ?? 0
+        kind = Kind.parse(try? c.decodeIfPresent(String.self, forKey: .kind))
+        text = (try? c.decodeIfPresent(String.self, forKey: .text)) ?? ""
+        at = try? c.decodeIfPresent(TimeInterval.self, forKey: .at)
+        tool = try? c.decodeIfPresent(Tool.self, forKey: .tool)
+    }
+}
+
+/// A session's conversation, windowed and capped by the daemon for the wire.
+struct Conversation: Decodable, Equatable, Sendable {
+    var sessionId = ""
+    var items: [ConversationItem] = []
+    /// Older messages exist above the window, so a viewer can say so.
+    var truncated = false
+
+    private enum CodingKeys: String, CodingKey { case sessionId, items, truncated }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = (try? c.decodeIfPresent(String.self, forKey: .sessionId)) ?? ""
+        items = (try? c.decodeIfPresent([ConversationItem].self, forKey: .items)) ?? []
+        truncated = (try? c.decodeIfPresent(Bool.self, forKey: .truncated)) ?? false
     }
 }
 

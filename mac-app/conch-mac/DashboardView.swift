@@ -1223,13 +1223,25 @@ private struct ConversationPane: View {
                 }
             } else {
                 VStack(spacing: 0) {
-                    ConversationTextView(
-                        attributedText: document.text,
-                        scrollTarget: document.scrollTarget,
-                        contentID: document.contentID
-                    )
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // The stack when the daemon has one FOR THIS SESSION, and
+                    // the old single-reply document otherwise. The session check
+                    // is not paranoia: the daemon publishes one conversation at
+                    // a time, so without it, focusing a second session would
+                    // show it the first one's messages under its own name.
+                    if let conversation = state?.conversation,
+                       !conversation.items.isEmpty,
+                       conversation.sessionId == focusedRow?.id {
+                        ConversationStackView(conversation: conversation)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ConversationTextView(
+                            attributedText: document.text,
+                            scrollTarget: document.scrollTarget,
+                            contentID: document.contentID
+                        )
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
 
                     noteBar
                 }
