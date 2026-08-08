@@ -20,7 +20,7 @@
  * feeds the ledger conch already has rather than inventing a parallel one.
  */
 import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CodexSessionEntry, CodexSessionRegistryRead } from "./codex-sessions.ts";
@@ -85,6 +85,183 @@ export function codexThreadLabel(row: {
     if (trimmed) return trimmed.length > 40 ? `${trimmed.slice(0, 39)}…` : trimmed;
   }
   return undefined;
+}
+
+/** A Codex thread's rollout file as it looked at one poll. */
+export interface CodexTurnSnapshot {
+  sessionId: string;
+  label: string;
+  cwd: string;
+  transcriptPath: string;
+  /** Growth is the only "still working" signal available without a hook. */
+  size: number;
+  /** Identity of the agent's most recent message, so a NEW one is detectable. */
+  messageId: string;
+  text: string;
+}
+
+/** Per-session poll memory: what was last announced, and how big the file was. */
+export interface CodexTurnMemoryEntry {
+  announcedMessageId: string;
+  size: number;
+}
+export type CodexTurnMemory = Map<string, CodexTurnMemoryEntry>;
+
+/**
+ * Which Codex threads have just finished a turn.
+ *
+ * There is no Stop hook here, so "finished" has to be inferred from the file
+ * Codex is writing. Two conditions together, and neither alone is enough:
+ *
+ *  - the agent's latest message is one conch has not announced, and
+ *  - the rollout file has stopped growing since the previous poll.
+ *
+ * The stability half is what stops conch talking over a turn in progress: Codex
+ * streams reasoning, command output and file changes into the same file, and an
+ * agent_message frequently lands mid-turn with more work still to come. Waiting
+ * for one quiet interval costs a few seconds of latency and buys never
+ * interrupting.
+ *
+ * A session seen for the first time is seeded silently. These rollouts are
+ * permanent history, so announcing on first sight would make every daemon
+ * restart read out a backlog of turns that finished hours ago.
+ */
+export function detectCodexTurnEnds(
+  memory: CodexTurnMemory,
+  snapshots: readonly CodexTurnSnapshot[],
+): CodexTurnSnapshot[] {
+  const ended: CodexTurnSnapshot[] = [];
+  for (const snapshot of snapshots) {
+    const seen = memory.get(snapshot.sessionId);
+    if (seen === undefined) {
+      // First sighting: adopt the current message as already-announced.
+      memory.set(snapshot.sessionId, {
+        announcedMessageId: snapshot.messageId,
+        size: snapshot.size,
+      });
+      continue;
+    }
+    const settled = seen.size === snapshot.size;
+    const isNew = snapshot.messageId !== "" && snapshot.messageId !== seen.announcedMessageId;
+    if (settled && isNew) {
+      ended.push(snapshot);
+      memory.set(snapshot.sessionId, {
+        announcedMessageId: snapshot.messageId,
+        size: snapshot.size,
+      });
+      continue;
+    }
+    // Still moving: record the new size but keep the announced id, so the turn
+    // is announced once it settles rather than being forgotten.
+    memory.set(snapshot.sessionId, {
+      announcedMessageId: seen.announcedMessageId,
+      size: snapshot.size,
+    });
+  }
+  // Forget sessions that dropped out of the window, so one returning later is
+  // seeded again rather than replaying its last turn.
+  const live = new Set(snapshots.map((s) => s.sessionId));
+  for (const sessionId of [...memory.keys()]) {
+    if (!live.has(sessionId)) memory.delete(sessionId);
+  }
+  return ended;
+}
+
+/**
+ * Is this message addressed to another agent rather than to the user?
+ *
+ * Subagent traffic rides the same `agent_message` stream as real replies, with
+ * a header envelope. Matching the header rather than the word "FINAL_ANSWER"
+ * anywhere keeps a genuine reply that happens to discuss it.
+ */
+export function isInterAgentEnvelope(text: string): boolean {
+  const head = text.slice(0, 200);
+  return /^\s*Message Type:\s*\w+/.test(head) && /\n\s*(Sender|Task name):/.test(head);
+}
+
+/** The agent's most recent message in a rollout, read from the tail only. */
+export function readCodexRolloutTail(
+  path: string,
+  tailBytes = 256 * 1024,
+): { size: number; messageId: string; text: string } | null {
+  let size = 0;
+  try {
+    size = statSync(path).size;
+  } catch {
+    return null;
+  }
+  // These files reach tens of megabytes — one of Tyler's is 25 MB — and are
+  // polled continuously, so only the tail is ever read.
+  const start = Math.max(0, size - tailBytes);
+  let chunk: string;
+  try {
+    const fd = openSync(path, "r");
+    try {
+      const length = size - start;
+      const buffer = Buffer.alloc(length);
+      readSync(fd, buffer, 0, length, start);
+      chunk = buffer.toString("utf8");
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+
+  const lines = chunk.split("\n");
+  // A tail read almost always begins mid-line; that fragment is not JSON.
+  if (start > 0) lines.shift();
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i]?.trim();
+    if (!line) continue;
+    let parsed: any;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const payload = parsed?.payload;
+    if (parsed?.type !== "response_item" || payload?.type !== "agent_message") continue;
+    const text = typeof payload.text === "string"
+      ? payload.text
+      : Array.isArray(payload.content)
+        ? payload.content.map((part: any) => part?.text ?? "").join("")
+        : "";
+    // Skip machine-to-machine traffic and keep looking further back.
+    //
+    // A session that spawns subagents carries their protocol envelopes in the
+    // same stream, as ordinary agent_message items. Tyler's "humain" thread
+    // ended on "Message Type: FINAL_ANSWER / Task name: /root / Sender: ..."
+    // — addressed to a parent agent, not to him. Reading that out loud is
+    // worse than saying nothing.
+    if (isInterAgentEnvelope(text)) continue;
+    return { size, messageId: String(payload.id ?? `${size}:${text.length}`), text };
+  }
+  return { size, messageId: "", text: "" };
+}
+
+/** Every observable Codex thread's rollout tail, for turn-end detection. */
+export function readCodexTurnSnapshots(
+  options: CodexThreadsOptions = {},
+): CodexTurnSnapshot[] {
+  const read = readCodexThreads(options);
+  if (!read.available) return [];
+  const snapshots: CodexTurnSnapshot[] = [];
+  for (const entry of read.entries) {
+    if (!entry.transcriptPath) continue;
+    const tail = readCodexRolloutTail(entry.transcriptPath);
+    if (!tail) continue;
+    snapshots.push({
+      sessionId: entry.sessionId,
+      label: (entry as any).name ?? entry.sessionId.slice(0, 8),
+      cwd: entry.cwd,
+      transcriptPath: entry.transcriptPath,
+      size: tail.size,
+      messageId: tail.messageId,
+      text: tail.text,
+    });
+  }
+  return snapshots;
 }
 
 export function readCodexThreads(

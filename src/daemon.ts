@@ -34,7 +34,13 @@ import {
 import type { RecorderHandle } from "./dictation-controller.ts";
 import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
 import { classify, classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
-import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
+import { lastAssistantText, splitSentences, stripMarkdown, firstSentences, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
+import {
+  detectCodexTurnEnds,
+  isInterAgentEnvelope,
+  readCodexTurnSnapshots,
+  type CodexTurnMemory,
+} from "./codex-threads.ts";
 import { recordTelemetry } from "./telemetry.ts";
 import {
   createPhoneBridgeApplication,
@@ -4555,6 +4561,49 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // Refresh periodically so killed sessions drop off even with no new events.
   const panelTimer = setInterval(() => void renderSessionPanel(), 20_000);
   panelTimer.unref?.();
+
+  // Announce Codex turns, which have no hook to announce themselves.
+  //
+  // Claude Code tells conch a turn ended; Codex cannot, and wiring its hooks
+  // would mean editing shared config that only takes effect on session start —
+  // so it could never reach a session already running, which is exactly what
+  // Tyler asked to leave alone. Polling the rollout files observes the same
+  // event from outside, and a session never learns conch is watching.
+  //
+  // The announce text comes from `lastAssistantText`, not from the detector's
+  // own tail read: that already knows how to walk a rollout back to the FINAL
+  // message of a turn rather than the last text it happens to see, and routes
+  // on the filename, so Codex and Claude produce the same shape of summary.
+  const codexTurnMemory: CodexTurnMemory = new Map();
+  const codexTimer = setInterval(() => {
+    let ended: ReturnType<typeof detectCodexTurnEnds>;
+    try {
+      ended = detectCodexTurnEnds(codexTurnMemory, readCodexTurnSnapshots());
+    } catch (error) {
+      return log(`codex watch failed: ${error}`);
+    }
+    for (const snapshot of ended) {
+      void (async () => {
+        let text = snapshot.text;
+        try {
+          const full = await lastAssistantText(snapshot.transcriptPath);
+          if (full && !isInterAgentEnvelope(full)) text = full;
+        } catch {}
+        const snippet = firstSentences(stripMarkdown(text), 2, 220);
+        log(`codex turn ended — "${snapshot.label}"`);
+        enqueue({
+          type: "turn-end",
+          sessionId: snapshot.sessionId,
+          label: snapshot.label,
+          cwd: snapshot.cwd,
+          announce: `${snapshot.label}: ${snippet || "finished, ready for your next prompt"}`,
+          transcriptPath: snapshot.transcriptPath,
+          eventAt: Date.now(),
+        });
+      })();
+    }
+  }, 5_000);
+  codexTimer.unref?.();
 
   // Warm Whisper independently after the socket and signal path are live.
   // Startup/recovery never blocks dictation: finals use the cold CLI until the

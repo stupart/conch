@@ -3,7 +3,13 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { codexThreadLabel, readCodexThreads } from "../src/codex-threads.ts";
+import {
+  codexThreadLabel,
+  detectCodexTurnEnds,
+  isInterAgentEnvelope,
+  readCodexThreads,
+  type CodexTurnMemory,
+} from "../src/codex-threads.ts";
 
 /** Build a throwaway pair of databases shaped like Codex 0.147's. */
 function codexHome(
@@ -163,5 +169,82 @@ describe("observing Codex sessions without touching them", () => {
     expect(codexThreadLabel({ name: "   ", title: "fallback" })).toBe("fallback");
     expect(codexThreadLabel({})).toBeUndefined();
     expect(codexThreadLabel({ title: "x".repeat(80) })).toHaveLength(40);
+  });
+});
+
+describe("deciding a Codex turn has ended, with no hook to say so", () => {
+  const base = {
+    sessionId: "s", label: "asset generator", cwd: "/tmp",
+    transcriptPath: "/tmp/rollout-x.jsonl", text: "done",
+  };
+  const snap = (size: number, messageId: string) => [{ ...base, size, messageId }];
+
+  test("a first sighting is seeded silently", () => {
+    // These rollouts are permanent history. Announcing on first sight would
+    // make every daemon restart read out a backlog of turns that finished
+    // hours ago.
+    const memory: CodexTurnMemory = new Map();
+    expect(detectCodexTurnEnds(memory, snap(100, "msg-a"))).toEqual([]);
+    expect(memory.get("s")).toEqual({ announcedMessageId: "msg-a", size: 100 });
+  });
+
+  test("announces once the file settles, not the moment the message appears", () => {
+    // Codex streams reasoning, command output and file changes into the same
+    // file, and an agent_message often lands mid-turn with work still to come.
+    const memory: CodexTurnMemory = new Map();
+    detectCodexTurnEnds(memory, snap(100, "msg-a"));           // seed
+    expect(detectCodexTurnEnds(memory, snap(200, "msg-b"))).toEqual([]); // still growing
+    const ended = detectCodexTurnEnds(memory, snap(200, "msg-b"));       // settled
+    expect(ended.map((e) => e.sessionId)).toEqual(["s"]);
+  });
+
+  test("never announces the same turn twice", () => {
+    const memory: CodexTurnMemory = new Map();
+    detectCodexTurnEnds(memory, snap(100, "msg-a"));
+    detectCodexTurnEnds(memory, snap(200, "msg-b"));
+    expect(detectCodexTurnEnds(memory, snap(200, "msg-b"))).toHaveLength(1);
+    expect(detectCodexTurnEnds(memory, snap(200, "msg-b"))).toHaveLength(0);
+    expect(detectCodexTurnEnds(memory, snap(200, "msg-b"))).toHaveLength(0);
+  });
+
+  test("a turn that grows again after settling still announces only its final message", () => {
+    const memory: CodexTurnMemory = new Map();
+    detectCodexTurnEnds(memory, snap(100, "msg-a"));
+    detectCodexTurnEnds(memory, snap(200, "msg-b"));
+    expect(detectCodexTurnEnds(memory, snap(200, "msg-b"))).toHaveLength(1); // announced b
+    detectCodexTurnEnds(memory, snap(300, "msg-c"));                        // more work
+    expect(detectCodexTurnEnds(memory, snap(300, "msg-c"))).toHaveLength(1); // then c
+  });
+
+  test("a thread with no user-facing message is silent", () => {
+    // An empty messageId means every candidate was inter-agent traffic, which
+    // must not be announced as though the agent had replied.
+    const memory: CodexTurnMemory = new Map();
+    detectCodexTurnEnds(memory, snap(100, ""));
+    expect(detectCodexTurnEnds(memory, snap(100, ""))).toEqual([]);
+  });
+
+  test("a session leaving and returning is re-seeded rather than replayed", () => {
+    const memory: CodexTurnMemory = new Map();
+    detectCodexTurnEnds(memory, snap(100, "msg-a"));
+    expect(detectCodexTurnEnds(memory, [])).toEqual([]);
+    expect(memory.has("s")).toBe(false);
+    expect(detectCodexTurnEnds(memory, snap(500, "msg-z"))).toEqual([]);
+  });
+});
+
+describe("inter-agent traffic is not a reply", () => {
+  test("recognises a subagent envelope", () => {
+    // Verbatim from Tyler's "humain" thread, whose last agent_message was
+    // addressed to a parent agent rather than to him.
+    expect(isInterAgentEnvelope(
+      "Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/some_agent\n\nresult",
+    )).toBe(true);
+  });
+
+  test("does not swallow a real reply that merely mentions it", () => {
+    expect(isInterAgentEnvelope("I looked at the Message Type: FINAL_ANSWER envelope you asked about."))
+      .toBe(false);
+    expect(isInterAgentEnvelope("Done — the tests pass.")).toBe(false);
   });
 });
