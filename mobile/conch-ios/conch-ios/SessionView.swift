@@ -18,8 +18,6 @@ struct SessionView: View {
     /// of showing the previous answer in full and the current one in part.
     @State private var fetchedFor: String?
 
-    private static let draftAnchor = "conch.draft"
-
     /// Whether the mic is open FOR THIS SESSION. One controller serves them
     /// all, so `phase` alone would light up the mic and relabel the button in
     /// a session that is merely being looked at while another one listens.
@@ -104,28 +102,15 @@ struct SessionView: View {
                             .frame(maxWidth: .infinity)
                     }
 
-                    // Your words belong in the thread, under what you are
-                    // answering — not stacked on top of the button. It reads as
-                    // a conversation, and you can see the whole utterance grow.
-                    if isTalkingHere || !talk.draft(for: sessionId).isEmpty {
-                        YourTurnBubble(
-                            text: talk.draft(for: sessionId),
-                            isSending: isTalkingHere && talk.phase == .sending,
-                            onDiscard: {
-                                talk.discard(session: sessionId)
-                                sendFailed = false
-                            }
-                        )
-                        .id(Self.draftAnchor)
-                    }
+                    // No draft bubble here any more. It existed because the
+                    // input bar did not — there was nowhere else to watch your
+                    // words arrive. Now the field holds them, and showing the
+                    // same sentence twice while you type reads as a bug.
+                    // Tyler: "its also showing the preview in blue tho as I
+                    // type so its kinda weird".
                 }
                 .padding(20)
                 .padding(.bottom, 12)
-            }
-            .onChange(of: talk.draft(for: sessionId)) { _, _ in
-                withAnimation(.easeOut(duration: 0.2)) {
-                    scroller.scrollTo(Self.draftAnchor, anchor: .bottom)
-                }
             }
             }
 
@@ -325,22 +310,49 @@ struct SessionView: View {
             // re-dictated, and a room where you cannot speak is not a room where
             // conch stops working.
             HStack(alignment: .bottom, spacing: 10) {
-                TextField("Type or talk…", text: draftBinding, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(Type.body)
-                    .foregroundStyle(Palette.textPrimary)
-                    .lineLimit(1...6)
-                    .focused($typing)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
-                    .background(Palette.raised, in: RoundedRectangle(cornerRadius: 16))
-                    .submitLabel(.send)
+                HStack(alignment: .bottom, spacing: 6) {
+                    TextField("Type or talk…", text: draftBinding, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .font(Type.body)
+                        .foregroundStyle(Palette.textPrimary)
+                        .lineLimit(1...6)
+                        .focused($typing)
+                        .submitLabel(.send)
+
+                    // Deliberate deletion, kept. Everything else in the draft
+                    // machinery refuses to lose your words, and that only works
+                    // as a promise if you can throw them away on purpose —
+                    // clearing a long dictation by hand is not that.
+                    if canSend, talk.phase != .sending {
+                        Button {
+                            talk.discard(session: sessionId)
+                            sendFailed = false
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 15))
+                                .foregroundStyle(Palette.textFaint)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Discard what you have written")
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .background(Palette.raised, in: RoundedRectangle(cornerRadius: 16))
 
                 // One button, and what it does is never ambiguous: send when
                 // there is something to send, otherwise open the mic.
                 Button(action: primaryAction) {
-                    Image(systemName: canSend ? "arrow.up.circle.fill" : "mic.fill")
-                        .font(.system(size: 22, weight: .semibold))
+                    // Sending was the bubble's job to show; with the bubble gone
+                    // the button says it, which is where you are already looking.
+                    Group {
+                        if talk.phase == .sending {
+                            ProgressView().controlSize(.small).tint(Palette.bg)
+                        } else {
+                            Image(systemName: canSend ? "arrow.up.circle.fill" : "mic.fill")
+                                .font(.system(size: 22, weight: .semibold))
+                        }
+                    }
                         .frame(width: 46, height: 46)
                         .background(
                             isTalkingHere || canSend ? Palette.micOpen : Palette.raised,
@@ -411,7 +423,6 @@ struct SessionView: View {
     }
 }
 
-/// What you are saying, as a turn in the conversation.
 private struct YourTurnBubble: View {
     let text: String
     let isSending: Bool
