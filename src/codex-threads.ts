@@ -112,34 +112,35 @@ export interface CodexTurnSnapshot {
   label: string;
   cwd: string;
   transcriptPath: string;
-  /** Growth is the only "still working" signal available without a hook. */
   size: number;
-  /** Identity of the agent's most recent message, so a NEW one is detectable. */
-  messageId: string;
+  /** Codex's own turn identity, from its `task_complete` event. */
+  turnId: string;
+  /** Whether the thread is mid-turn, per `task_started` / `task_complete`. */
+  status: "busy" | "idle";
   text: string;
 }
 
 /** Per-session poll memory: what was last announced, and how big the file was. */
 export interface CodexTurnMemoryEntry {
-  announcedMessageId: string;
-  size: number;
+  /** The last `task_complete` turn conch has already spoken for. */
+  announcedTurnId: string;
 }
 export type CodexTurnMemory = Map<string, CodexTurnMemoryEntry>;
 
 /**
  * Which Codex threads have just finished a turn.
  *
- * There is no Stop hook here, so "finished" has to be inferred from the file
- * Codex is writing. Two conditions together, and neither alone is enough:
+ * Codex declares its own turn boundaries, so nothing here is inferred: a
+ * `task_complete` event carries a `turn_id` and the `last_agent_message`
+ * verbatim. A turn has ended when conch sees a `turn_id` it has not spoken for.
  *
- *  - the agent's latest message is one conch has not announced, and
- *  - the rollout file has stopped growing since the previous poll.
- *
- * The stability half is what stops conch talking over a turn in progress: Codex
- * streams reasoning, command output and file changes into the same file, and an
- * agent_message frequently lands mid-turn with more work still to come. Waiting
- * for one quiet interval costs a few seconds of latency and buys never
- * interrupting.
+ * This replaced a heuristic — "the newest agent_message, once the file stops
+ * growing" — that was not merely uglier but never fired at all. It hunted for
+ * an `agent_message` in a 256 KB tail, and a turn heavy with tool use pushes
+ * that far outside any sane window; Tyler ran two Codex sessions for half an
+ * hour with conch silent throughout. The lesson is the one this file keeps
+ * teaching: look for the signal the system already publishes before inventing
+ * one from side-effects.
  *
  * A session seen for the first time is seeded silently. These rollouts are
  * permanent history, so announcing on first sight would make every daemon
@@ -152,30 +153,20 @@ export function detectCodexTurnEnds(
   const ended: CodexTurnSnapshot[] = [];
   for (const snapshot of snapshots) {
     const seen = memory.get(snapshot.sessionId);
+    const finished = snapshot.status === "idle" && snapshot.turnId !== "";
+    // First sighting adopts whatever is there as already-announced.
     if (seen === undefined) {
-      // First sighting: adopt the current message as already-announced.
-      memory.set(snapshot.sessionId, {
-        announcedMessageId: snapshot.messageId,
-        size: snapshot.size,
-      });
+      memory.set(snapshot.sessionId, { announcedTurnId: snapshot.turnId });
       continue;
     }
-    const settled = seen.size === snapshot.size;
-    const isNew = snapshot.messageId !== "" && snapshot.messageId !== seen.announcedMessageId;
-    if (settled && isNew) {
-      ended.push(snapshot);
-      memory.set(snapshot.sessionId, {
-        announcedMessageId: snapshot.messageId,
-        size: snapshot.size,
-      });
+    if (finished && snapshot.turnId !== seen.announcedTurnId) {
+      memory.set(snapshot.sessionId, { announcedTurnId: snapshot.turnId });
+      // An aborted turn is over but said nothing; announcing it would put the
+      // previous turn's words in its mouth.
+      if (snapshot.text) ended.push(snapshot);
       continue;
     }
-    // Still moving: record the new size but keep the announced id, so the turn
-    // is announced once it settles rather than being forgotten.
-    memory.set(snapshot.sessionId, {
-      announcedMessageId: seen.announcedMessageId,
-      size: snapshot.size,
-    });
+    memory.set(snapshot.sessionId, { announcedTurnId: seen.announcedTurnId });
   }
   // Forget sessions that dropped out of the window, so one returning later is
   // seeded again rather than replaying its last turn.
@@ -198,11 +189,28 @@ export function isInterAgentEnvelope(text: string): boolean {
   return /^\s*Message Type:\s*\w+/.test(head) && /\n\s*(Sender|Task name):/.test(head);
 }
 
-/** The agent's most recent message in a rollout, read from the tail only. */
+/**
+ * The turn state at the end of a rollout, read from the tail only.
+ *
+ * Codex announces its own turn boundaries — `task_started`, `task_complete`,
+ * `turn_aborted` — and `task_complete` carries both a `turn_id` and the
+ * `last_agent_message` verbatim. That is a hook in all but name, and it
+ * replaced an earlier heuristic here that inferred "finished" from the file
+ * having stopped growing. The heuristic was not merely uglier, it never fired:
+ * it hunted for an `agent_message` in the tail, and a turn heavy with tool use
+ * pushes that far out of any sane window, so Tyler's two live sessions ran for
+ * half an hour without conch ever announcing one.
+ *
+ * A megabyte of tail because these files are enormous — 25 MB on this machine,
+ * and openai/codex#24948 reports 732 MB / 170k records. `task_complete` is the
+ * last thing written for a turn, so it is near the end when a turn has just
+ * ended; the window only has to cover whatever the NEXT turn wrote before the
+ * poll noticed.
+ */
 export function readCodexRolloutTail(
   path: string,
-  tailBytes = 256 * 1024,
-): { size: number; messageId: string; text: string } | null {
+  tailBytes = 1024 * 1024,
+): { size: number; turnId: string; status: "busy" | "idle"; text: string } | null {
   let size = 0;
   try {
     size = statSync(path).size;
@@ -239,24 +247,31 @@ export function readCodexRolloutTail(
     } catch {
       continue;
     }
-    const payload = parsed?.payload;
-    if (parsed?.type !== "response_item" || payload?.type !== "agent_message") continue;
-    const text = typeof payload.text === "string"
-      ? payload.text
-      : Array.isArray(payload.content)
-        ? payload.content.map((part: any) => part?.text ?? "").join("")
-        : "";
-    // Skip machine-to-machine traffic and keep looking further back.
-    //
-    // A session that spawns subagents carries their protocol envelopes in the
-    // same stream, as ordinary agent_message items. Tyler's "humain" thread
-    // ended on "Message Type: FINAL_ANSWER / Task name: /root / Sender: ..."
-    // — addressed to a parent agent, not to him. Reading that out loud is
-    // worse than saying nothing.
-    if (isInterAgentEnvelope(text)) continue;
-    return { size, messageId: String(payload.id ?? `${size}:${text.length}`), text };
+    if (parsed?.type !== "event_msg") continue;
+    const payload = parsed.payload;
+    if (payload?.type === "task_started") {
+      return { size, turnId: String(payload.turn_id ?? ""), status: "busy", text: "" };
+    }
+    if (payload?.type === "turn_aborted") {
+      // Ended, but nothing was said: an abort must not announce a stale reply.
+      return { size, turnId: String(payload.turn_id ?? ""), status: "idle", text: "" };
+    }
+    if (payload?.type !== "task_complete") continue;
+    const text = typeof payload.last_agent_message === "string"
+      ? payload.last_agent_message
+      : "";
+    return {
+      size,
+      turnId: String(payload.turn_id ?? `${size}`),
+      status: "idle",
+      // Machine-to-machine traffic is not a reply. A session that spawns
+      // subagents carries their protocol envelopes in the same stream; Tyler's
+      // "humain" thread ended on "Message Type: FINAL_ANSWER / Task name:
+      // /root / Sender: ...", addressed to a parent agent rather than to him.
+      text: isInterAgentEnvelope(text) ? "" : text,
+    };
   }
-  return { size, messageId: "", text: "" };
+  return { size, turnId: "", status: "idle", text: "" };
 }
 
 /** Every observable Codex thread's rollout tail, for turn-end detection. */
@@ -276,7 +291,8 @@ export function readCodexTurnSnapshots(
       cwd: entry.cwd,
       transcriptPath: entry.transcriptPath,
       size: tail.size,
-      messageId: tail.messageId,
+      turnId: tail.turnId,
+      status: tail.status,
       text: tail.text,
     });
   }

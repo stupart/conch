@@ -175,64 +175,62 @@ describe("observing Codex sessions without touching them", () => {
   });
 });
 
-describe("deciding a Codex turn has ended, with no hook to say so", () => {
+describe("deciding a Codex turn has ended", () => {
   const base = {
     sessionId: "s", label: "asset generator", cwd: "/tmp",
-    transcriptPath: "/tmp/rollout-x.jsonl", text: "done",
+    transcriptPath: "/tmp/rollout-x.jsonl", size: 0,
   };
-  const snap = (size: number, messageId: string) => [{ ...base, size, messageId }];
+  const done = (turnId: string, text = "All green.") =>
+    [{ ...base, turnId, status: "idle" as const, text }];
+  const running = (turnId: string) =>
+    [{ ...base, turnId, status: "busy" as const, text: "" }];
 
   test("a first sighting is seeded silently", () => {
     // These rollouts are permanent history. Announcing on first sight would
-    // make every daemon restart read out a backlog of turns that finished
-    // hours ago.
+    // make every daemon restart read out a backlog of old turns.
     const memory: CodexTurnMemory = new Map();
-    expect(detectCodexTurnEnds(memory, snap(100, "msg-a"))).toEqual([]);
-    expect(memory.get("s")).toEqual({ announcedMessageId: "msg-a", size: 100 });
+    expect(detectCodexTurnEnds(memory, done("t1"))).toEqual([]);
+    expect(memory.get("s")).toEqual({ announcedTurnId: "t1" });
   });
 
-  test("announces once the file settles, not the moment the message appears", () => {
-    // Codex streams reasoning, command output and file changes into the same
-    // file, and an agent_message often lands mid-turn with work still to come.
+  test("announces a turn id it has not spoken for", () => {
     const memory: CodexTurnMemory = new Map();
-    detectCodexTurnEnds(memory, snap(100, "msg-a"));           // seed
-    expect(detectCodexTurnEnds(memory, snap(200, "msg-b"))).toEqual([]); // still growing
-    const ended = detectCodexTurnEnds(memory, snap(200, "msg-b"));       // settled
-    expect(ended.map((e) => e.sessionId)).toEqual(["s"]);
+    detectCodexTurnEnds(memory, done("t1"));
+    expect(detectCodexTurnEnds(memory, done("t2")).map((e) => e.text)).toEqual(["All green."]);
   });
 
   test("never announces the same turn twice", () => {
     const memory: CodexTurnMemory = new Map();
-    detectCodexTurnEnds(memory, snap(100, "msg-a"));
-    detectCodexTurnEnds(memory, snap(200, "msg-b"));
-    expect(detectCodexTurnEnds(memory, snap(200, "msg-b"))).toHaveLength(1);
-    expect(detectCodexTurnEnds(memory, snap(200, "msg-b"))).toHaveLength(0);
-    expect(detectCodexTurnEnds(memory, snap(200, "msg-b"))).toHaveLength(0);
+    detectCodexTurnEnds(memory, done("t1"));
+    expect(detectCodexTurnEnds(memory, done("t2"))).toHaveLength(1);
+    expect(detectCodexTurnEnds(memory, done("t2"))).toHaveLength(0);
+    expect(detectCodexTurnEnds(memory, done("t2"))).toHaveLength(0);
   });
 
-  test("a turn that grows again after settling still announces only its final message", () => {
+  test("stays quiet while a turn is still running", () => {
     const memory: CodexTurnMemory = new Map();
-    detectCodexTurnEnds(memory, snap(100, "msg-a"));
-    detectCodexTurnEnds(memory, snap(200, "msg-b"));
-    expect(detectCodexTurnEnds(memory, snap(200, "msg-b"))).toHaveLength(1); // announced b
-    detectCodexTurnEnds(memory, snap(300, "msg-c"));                        // more work
-    expect(detectCodexTurnEnds(memory, snap(300, "msg-c"))).toHaveLength(1); // then c
+    detectCodexTurnEnds(memory, done("t1"));
+    expect(detectCodexTurnEnds(memory, running("t2"))).toEqual([]);
+    expect(detectCodexTurnEnds(memory, done("t2"))).toHaveLength(1);
   });
 
-  test("a thread with no user-facing message is silent", () => {
-    // An empty messageId means every candidate was inter-agent traffic, which
-    // must not be announced as though the agent had replied.
+  test("an aborted turn ends without speaking", () => {
+    // turn_aborted is over but said nothing; announcing it would put the
+    // previous turn's words in its mouth.
     const memory: CodexTurnMemory = new Map();
-    detectCodexTurnEnds(memory, snap(100, ""));
-    expect(detectCodexTurnEnds(memory, snap(100, ""))).toEqual([]);
+    detectCodexTurnEnds(memory, done("t1"));
+    expect(detectCodexTurnEnds(memory, [{ ...base, turnId: "t2", status: "idle", text: "" }]))
+      .toEqual([]);
+    // …and it is still marked seen, so it cannot resurface later.
+    expect(memory.get("s")).toEqual({ announcedTurnId: "t2" });
   });
 
   test("a session leaving and returning is re-seeded rather than replayed", () => {
     const memory: CodexTurnMemory = new Map();
-    detectCodexTurnEnds(memory, snap(100, "msg-a"));
+    detectCodexTurnEnds(memory, done("t1"));
     expect(detectCodexTurnEnds(memory, [])).toEqual([]);
     expect(memory.has("s")).toBe(false);
-    expect(detectCodexTurnEnds(memory, snap(500, "msg-z"))).toEqual([]);
+    expect(detectCodexTurnEnds(memory, done("t9"))).toEqual([]);
   });
 });
 
@@ -260,19 +258,23 @@ describe("reading a turn out of a real rollout file", () => {
     writeFileSync(path, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
     return path;
   }
-  const agentMessage = (id: string, text: string) => ({
-    type: "response_item",
-    payload: { type: "agent_message", id, text },
+  const complete = (turnId: string, text: string) => ({
+    type: "event_msg",
+    payload: { type: "task_complete", turn_id: turnId, last_agent_message: text },
+  });
+  const started = (turnId: string) => ({
+    type: "event_msg",
+    payload: { type: "task_started", turn_id: turnId },
   });
   const noise = (n: number) => ({
     type: "response_item",
     payload: { type: "reasoning", text: `thinking ${n}`.padEnd(200, "x") },
   });
 
-  test("the whole chain: two polls turn a finished rollout into one announcement", () => {
+  test("the whole chain: a finished rollout becomes exactly one announcement", () => {
     const home = mkdtempSync(join(tmpdir(), "conch-codex-home-"));
     try {
-      const path = rollout(home, "t1", [noise(1), agentMessage("m1", "First reply.")]);
+      const path = rollout(home, "t1", [noise(1), complete("turn-1", "First reply.")]);
       const state = new Database(join(home, "state_5.sqlite"));
       state.run(`CREATE TABLE threads (
         id TEXT PRIMARY KEY, cwd TEXT, name TEXT, agent_nickname TEXT, title TEXT,
@@ -286,53 +288,78 @@ describe("reading a turn out of a real rollout file", () => {
       const memory: CodexTurnMemory = new Map();
       const opts = { codexHome: home, now: NOW };
 
-      // Poll 1 seeds on the reply that was already there.
+      // Poll 1 seeds on the turn that was already finished.
       expect(detectCodexTurnEnds(memory, readCodexTurnSnapshots(opts))).toEqual([]);
 
-      // A new turn lands.
-      appendFileSync(path, JSON.stringify(agentMessage("m2", "Second reply. Details after.")) + "\n");
-      // Still growing: not yet.
+      // A new turn starts: still quiet.
+      appendFileSync(path, JSON.stringify(started("turn-2")) + "\n");
       expect(detectCodexTurnEnds(memory, readCodexTurnSnapshots(opts))).toEqual([]);
-      // Settled: announce, once, with the agent's own words.
+
+      // …and completes: announce, once, in the agent's own words.
+      appendFileSync(path, JSON.stringify(complete("turn-2", "Second reply. Details after.")) + "\n");
       const ended = detectCodexTurnEnds(memory, readCodexTurnSnapshots(opts));
       expect(ended).toHaveLength(1);
       expect(ended[0]!.label).toBe("asset generator");
       expect(ended[0]!.text).toBe("Second reply. Details after.");
-      // And never again.
       expect(detectCodexTurnEnds(memory, readCodexTurnSnapshots(opts))).toEqual([]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("reads only the tail of a large file and survives a mid-line start", () => {
-    // Tyler's rollouts reach 25 MB and are polled continuously, so a tail read
-    // is mandatory — and a tail almost always begins mid-line, which is not
-    // valid JSON and must not abort the scan.
+  test("finds the turn boundary past a wall of tool output", () => {
+    // The bug this replaced: a 256 KB window hunting for an agent_message never
+    // found one behind a turn's worth of tool output, so two live sessions ran
+    // for half an hour with conch silent. openai/codex#24948 reports rollouts
+    // reaching 732 MB, so the tail read stays — it just has to be big enough.
     const home = mkdtempSync(join(tmpdir(), "conch-codex-home-"));
     try {
       const path = rollout(home, "big", [
-        agentMessage("old", "buried"),
-        ...Array.from({ length: 400 }, (_, i) => noise(i)),
-        agentMessage("recent", "The visible one."),
-        ...Array.from({ length: 20 }, (_, i) => noise(i)),
+        complete("old", "buried"),
+        ...Array.from({ length: 800 }, (_, i) => noise(i)),
+        complete("recent", "The visible one."),
       ]);
-      const tail = readCodexRolloutTail(path, 8 * 1024);
+      const tail = readCodexRolloutTail(path);
+      expect(tail?.turnId).toBe("recent");
       expect(tail?.text).toBe("The visible one.");
-      expect(tail?.messageId).toBe("recent");
+      expect(tail?.status).toBe("idle");
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("skips inter-agent envelopes and keeps looking further back", () => {
+  test("a running turn reads as busy with nothing to say", () => {
+    const home = mkdtempSync(join(tmpdir(), "conch-codex-home-"));
+    try {
+      const path = rollout(home, "run", [complete("t1", "done"), started("t2")]);
+      expect(readCodexRolloutTail(path)).toMatchObject({ turnId: "t2", status: "busy", text: "" });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("an inter-agent envelope is not offered as the reply", () => {
     const home = mkdtempSync(join(tmpdir(), "conch-codex-home-"));
     try {
       const path = rollout(home, "sub", [
-        agentMessage("real", "The actual answer."),
-        agentMessage("env", "Message Type: FINAL_ANSWER\nSender: /root/agent\n\npayload"),
+        complete("t1", "Message Type: FINAL_ANSWER\nSender: /root/agent\n\npayload"),
       ]);
-      expect(readCodexRolloutTail(path)?.text).toBe("The actual answer.");
+      const tail = readCodexRolloutTail(path);
+      expect(tail?.turnId).toBe("t1"); // the turn still ended
+      expect(tail?.text).toBe("");     // but there is nothing to say aloud
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a mid-line tail start does not abort the scan", () => {
+    const home = mkdtempSync(join(tmpdir(), "conch-codex-home-"));
+    try {
+      const path = rollout(home, "mid", [
+        ...Array.from({ length: 50 }, (_, i) => noise(i)),
+        complete("t1", "Found me."),
+      ]);
+      expect(readCodexRolloutTail(path, 2048)?.text).toBe("Found me.");
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -340,21 +367,5 @@ describe("reading a turn out of a real rollout file", () => {
 
   test("a missing rollout is null, not a crash", () => {
     expect(readCodexRolloutTail("/tmp/definitely-not-a-rollout.jsonl")).toBeNull();
-  });
-});
-
-describe("busy/idle when the turn projection has nothing to say", () => {
-  // `thread_turns` is authoritative but sparse — 7 threads on Tyler's machine
-  // have rows and "humain" has none, so it sat on "waiting" forever even while
-  // working. Recency is the stateless stand-in.
-  test("prefers the projection whenever it knows", () => {
-    expect(codexThreadStatus("inProgress", 0, NOW)).toBe("busy");
-    // Even a long-idle row stays idle if the projection says the turn completed.
-    expect(codexThreadStatus("completed", NOW, NOW)).toBe("idle");
-  });
-
-  test("falls back to recency when the projection has no row", () => {
-    expect(codexThreadStatus(undefined, NOW - 5_000, NOW)).toBe("busy");
-    expect(codexThreadStatus(undefined, NOW - 120_000, NOW)).toBe("idle");
   });
 });
