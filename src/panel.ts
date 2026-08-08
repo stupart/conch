@@ -329,10 +329,22 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
       const latched = options.sessionStates.get(session.sessionId);
       const visibleState = reconcilePanelState(session, latched);
       const status = visibleState?.status ?? null;
-      // A finished deliverable is an attribute of a naturally waiting row, not
-      // a fourth status. Suppress a stale review while a newer signal says the
-      // session is working or needs input; an idle registry refresh may keep it.
-      const review = status === "waiting" && latched?.review
+      // A finished deliverable is an attribute of a row, not a fourth status —
+      // and it is suppressed by exactly one thing: the session going back to
+      // work. `carriedReview` uses the same rule on the latch.
+      //
+      // This used to require `status === "waiting"`, which made the star
+      // vanish almost every time it was filed. `reconcilePanelState` lets the
+      // REGISTRY outvote the latch whenever it is newer, and a session that has
+      // just filed a review is by definition sitting waiting for the user —
+      // which Claude Code registers as blocked/waiting, i.e. `needs`. So the
+      // review landed, rendered for as long as it took the registry to catch
+      // up, and then disappeared. Measured on a live session: latched at
+      // 19:27:36 and visible, gone at 19:29:26 the moment status flipped to
+      // `needs`, with the review still sitting in the latch untouched. Needing
+      // input does not make a finished deliverable stale; starting a new turn
+      // does.
+      const review = status !== "working" && latched?.review
         ? { ...latched.review, at: latched.at }
         : undefined;
       const active = session.sessionId === options.activeSessionId;

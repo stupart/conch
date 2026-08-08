@@ -930,3 +930,53 @@ describe("a review outlives the turn that produced it", () => {
     expect(carriedReview(undefined, "waiting", undefined)).toBeUndefined();
   });
 });
+
+describe("a filed review is not hidden by the registry catching up", () => {
+  // The star almost never survived long enough to be seen, and it looked like
+  // the review was never filed at all. It was: `reconcilePanelState` lets the
+  // REGISTRY outvote the latch whenever it is newer, and a session that has
+  // just filed a review is by definition sitting waiting for the user — which
+  // Claude Code registers as blocked/waiting, mapping to `needs`. The row gate
+  // required exactly `waiting`, so the review vanished the moment the registry
+  // refreshed, with the review still sitting untouched in the latch.
+  //
+  // Measured live: latched 19:27:36 (visible), gone 19:29:26 on the flip to
+  // `needs`. Both the tool and the `conch:review` marker produce the same
+  // latched review, so this hit both equally.
+  const review = { summary: "the landing page is ready", link: "https://x.test" };
+
+  function rowFor(registryStatus: string, registryAt: number) {
+    const model = buildPanelModel({
+      sessions: [
+        { sessionId: "s", name: "conch", status: registryStatus, statusUpdatedAt: registryAt },
+      ],
+      sessionStates: new Map([
+        ["s", { label: "conch", status: "waiting" as const, at: 100, review }],
+      ]),
+      pausedSessionIds: new Set(),
+      mutedSessionIds: new Set(),
+      live: { state: "idle", label: "", partial: "" },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+      reply: null,
+    } as any);
+    return model.rows.find((r) => r.sessionId === "s")!;
+  }
+
+  test("survives a newer registry status of blocked/waiting-on-input", () => {
+    const row = rowFor("blocked", 200);
+    expect(row.status).toBe("needs"); // the registry did outvote the latch
+    expect(row.review).toMatchObject(review); // and the deliverable is still shown
+  });
+
+  test("still shows on a plainly waiting row", () => {
+    expect(rowFor("idle", 200).review).toMatchObject(review);
+  });
+
+  test("is suppressed only once the session goes back to work", () => {
+    const row = rowFor("busy", 200);
+    expect(row.status).toBe("working");
+    expect(row.review).toBeUndefined();
+  });
+});
