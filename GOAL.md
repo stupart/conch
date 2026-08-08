@@ -177,7 +177,23 @@ Both speech and transcription should be pluggable: a free local default, a
 choice of local models on the Mac, and optional API backends (OpenAI, xAI,
 ElevenLabs) for anyone who wants better.
 
-**11. Make it installable and presentable.**
+**11. Integrate Codex properly.**
+conch supports one agent. Codex was wired, found broken, and switched off by
+default — correct at the time, but Tyler runs Codex as the builder on most
+backend work and those sessions are invisible to the voice loop. Measured
+2026-08-07: `hooks.json` is empty and `codex mcp list` has no conch, so there
+is no integration at all right now. It splits in two. **Codex controlling
+conch** is nearly free — registering the existing MCP server hands Codex every
+`conch_*` tool including `review_to_front`, no hook involved. **conch hearing
+Codex** is the half that was broken, and the old finding is stale: it was
+measured on 0.144.1, Codex is now 0.147.0 and ships a hook trust model that
+did not exist then — and conch writes a Claude-Code-shaped `hooks.json` that
+was never checked against Codex's real schema, so the format may always have
+been the bug. Failing that, watch Codex's session files for busy→idle;
+`codex-sessions.ts` already models it. Do not re-enable by default until a
+Codex turn is observed announcing itself.
+
+**12. Make it installable and presentable.**
 A Homebrew release past v0.2.1 so `brew upgrade conch` updates the app;
 sending images from the phone; an icon; a landing page.
 
