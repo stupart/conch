@@ -8,6 +8,7 @@ import {
   codexThreadStatus,
   detectCodexTurnEnds,
   isInterAgentEnvelope,
+  readCodexOpenThreadIds,
   readCodexRolloutTail,
   readCodexThreads,
   readCodexTurnSnapshots,
@@ -367,5 +368,80 @@ describe("reading a turn out of a real rollout file", () => {
 
   test("a missing rollout is null, not a crash", () => {
     expect(readCodexRolloutTail("/tmp/definitely-not-a-rollout.jsonl")).toBeNull();
+  });
+});
+
+describe("an open Codex thread stays listed however idle", () => {
+  // Claude lists a session for as long as its PROCESS lives, however idle. A
+  // Codex thread had only recency, so conch hid one Tyler still had open
+  // because he had not typed in it for twelve hours — two tools, same session,
+  // different rules. `thread-writer-locks/<id>.lock` is Codex's own answer:
+  // verified on a live machine as held by codex pid 69776 for the open thread,
+  // with no lock at all for one closed hours earlier.
+  function homeWith(threads: Array<Record<string, unknown>>, locks: string[]): string {
+    const home = mkdtempSync(join(tmpdir(), "conch-codex-home-"));
+    const state = new Database(join(home, "state_5.sqlite"));
+    state.run(`CREATE TABLE threads (
+      id TEXT PRIMARY KEY, cwd TEXT, name TEXT, agent_nickname TEXT, title TEXT,
+      rollout_path TEXT, updated_at_ms INTEGER, archived INTEGER, source TEXT)`);
+    for (const t of threads) {
+      state.run(
+        `INSERT INTO threads VALUES (?,'/tmp',?,NULL,'','',?,0,'cli')`,
+        [t.id, t.name, t.updated_at_ms] as any,
+      );
+    }
+    state.close();
+    mkdirSync(join(home, "thread-writer-locks"), { recursive: true });
+    for (const id of locks) {
+      writeFileSync(join(home, "thread-writer-locks", `${id}.lock`), "");
+    }
+    return home;
+  }
+
+  test("a long-idle thread Codex still has open is listed", () => {
+    const home = homeWith(
+      [{ id: "open", name: "asset generator", updated_at_ms: NOW - 12 * 3_600_000 }],
+      ["open"],
+    );
+    try {
+      expect(readCodexThreads({ codexHome: home, now: NOW }).entries.map((e) => e.sessionId))
+        .toEqual(["open"]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a long-idle thread with no lock is gone", () => {
+    const home = homeWith(
+      [{ id: "closed", name: "yesterday", updated_at_ms: NOW - 12 * 3_600_000 }],
+      [],
+    );
+    try {
+      expect(readCodexThreads({ codexHome: home, now: NOW }).entries).toEqual([]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("recency still lists a thread whose lock was never written", () => {
+    const home = homeWith([{ id: "fresh", name: "just now", updated_at_ms: NOW - 60_000 }], []);
+    try {
+      expect(readCodexThreads({ codexHome: home, now: NOW }).entries.map((e) => e.sessionId))
+        .toEqual(["fresh"]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("the coordination lock is not a thread", () => {
+    // ~/.codex/thread-writer-locks holds a `.coordination.lock` alongside the
+    // per-thread ones; treating it as a thread id would list a phantom row.
+    const home = homeWith([{ id: "x", name: "x", updated_at_ms: NOW }], []);
+    try {
+      writeFileSync(join(home, "thread-writer-locks", ".coordination.lock"), "");
+      expect(readCodexOpenThreadIds(home)).toEqual(new Set());
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

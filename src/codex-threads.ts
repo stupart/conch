@@ -20,7 +20,7 @@
  * feeds the ledger conch already has rather than inventing a parallel one.
  */
 import { Database } from "bun:sqlite";
-import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CodexSessionEntry, CodexSessionRegistryRead } from "./codex-sessions.ts";
@@ -65,7 +65,21 @@ export function codexThreadDbPaths(codexHome: string): { state: string; history:
 function openReadOnly(path: string): Database {
   // `readonly` is the whole safety story: Codex may be mid-write in another
   // process, and conch must never be the reason its database is locked.
-  return new Database(path, { readonly: true });
+  try {
+    return new Database(path, { readonly: true });
+  } catch (error) {
+    // A WAL database with no `-shm` cannot be opened read-only at all: SQLite
+    // needs to CREATE that file and read-only forbids it. That is the state
+    // Codex leaves behind after a clean shutdown, so this failed exactly when
+    // Codex was not holding the database open — and because the optional
+    // history read shared a try block with the thread list, every Codex row
+    // disappeared whenever Codex was merely idle.
+    //
+    // `immutable=1` reads without any shared-memory index. It is only sound
+    // when nobody is writing, which is precisely the case that gets here: a
+    // live Codex holds the `-shm` and the read-only open above succeeds.
+    return new Database(`file:${path}?immutable=1`, { readonly: true });
+  }
 }
 
 /**
@@ -89,6 +103,35 @@ export function codexThreadLabel(row: {
 
 /** How recently a thread must have been written to for recency to imply "working". */
 const ACTIVE_WITHIN_MS = 20_000;
+
+/**
+ * The threads Codex currently has OPEN, from the writer locks it holds.
+ *
+ * This is the signal that was missing. Claude lists a session for as long as its
+ * PROCESS lives, however idle — but a Codex thread had only recency to go on, so
+ * conch hid one Tyler still had open simply because he had not typed in it for
+ * twelve hours. Two tools, same session, different rules.
+ *
+ * `~/.codex/thread-writer-locks/<thread-id>.lock` is Codex's own answer.
+ * Verified against a live machine: the lock for the open thread was held by
+ * codex pid 69776, while a thread closed hours earlier had no lock at all.
+ *
+ * Presence only — never `flock`. Testing a lock by taking one risks excluding
+ * the process that owns it, and not disturbing Codex is the whole premise here.
+ * The cost is that a crashed Codex leaves a stale lock and one dead row until it
+ * next opens that thread, which is a far better failure than hiding live work.
+ */
+export function readCodexOpenThreadIds(codexHome: string): Set<string> {
+  try {
+    return new Set(
+      readdirSync(join(codexHome, "thread-writer-locks"))
+        .filter((name) => name.endsWith(".lock") && !name.startsWith("."))
+        .map((name) => name.slice(0, -".lock".length)),
+    );
+  } catch {
+    return new Set();
+  }
+}
 
 /**
  * Busy or idle, preferring the authoritative signal and falling back to recency.
@@ -321,6 +364,9 @@ export function readCodexThreads(
   let db: Database | undefined;
   try {
     db = openReadOnly(state);
+    // An open thread is live no matter how long ago it was last touched; the
+    // window only has to catch threads Codex has since closed.
+    const openIds = readCodexOpenThreadIds(codexHome);
     const threads = db
       .query(
         // `source` separates a session from a script. On this machine: 354
@@ -333,10 +379,10 @@ export function readCodexThreads(
            FROM threads
           WHERE archived = 0
             AND source IN ('cli', 'vscode')
-            AND updated_at_ms >= ?
-          ORDER BY updated_at_ms DESC`,
+          ORDER BY updated_at_ms DESC
+          LIMIT 200`,
       )
-      .all(cutoff) as Array<Record<string, any>>;
+      .all() as Array<Record<string, any>>;
     db.close();
     db = undefined;
 
@@ -345,6 +391,9 @@ export function readCodexThreads(
     // without a confident busy/idle, so default to idle rather than drop it.
     const status = new Map<string, string>();
     if (existsSync(history)) {
+      // Its own try: a thread with no known turn is still a real session worth
+      // showing, so losing this must never cost the thread list.
+      try {
       const hist = openReadOnly(history);
       try {
         for (
@@ -363,9 +412,14 @@ export function readCodexThreads(
       } finally {
         hist.close();
       }
+      } catch {}
     }
 
-    const entries: CodexSessionEntry[] = threads.map((row) => ({
+    const entries: CodexSessionEntry[] = threads
+      .filter((row) =>
+        openIds.has(String(row.id)) || Number(row.updated_at_ms ?? 0) >= cutoff
+      )
+      .map((row) => ({
       sessionId: String(row.id),
       cwd: String(row.cwd ?? ""),
       // No pid exists on disk. These rows are observable, not yet addressable —
@@ -386,7 +440,7 @@ export function readCodexThreads(
       updatedAt: Number(row.updated_at_ms ?? 0),
       transcriptPath: String(row.rollout_path ?? ""),
       ...(codexThreadLabel(row) ? { name: codexThreadLabel(row) } : {}),
-    })) as CodexSessionEntry[];
+      })) as CodexSessionEntry[];
 
     return { entries, complete: true, available: true };
   } catch {
