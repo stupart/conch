@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 /// One session: its latest reply, its deliverable when it has one, and the
 /// talk control. The mic button is the entire bottom edge — mid-workout the
@@ -12,6 +13,9 @@ struct SessionView: View {
     @State private var showReview = false
     @State private var sendFailed = false
     @FocusState private var typing: Bool
+    @State private var pickedPhoto: PhotosPickerItem?
+    @State private var attaching = false
+    @State private var attachError: String?
     @State private var fetchedReply: String?
     @State private var loadingReply = false
     /// The reply the fetched copy belongs to, so a new turn refetches instead
@@ -117,6 +121,10 @@ struct SessionView: View {
             talkSurface
         }
         .background(Palette.bg)
+        .onChange(of: pickedPhoto) { _, item in
+            guard let item else { return }
+            Task { await attach(item) }
+        }
         .navigationTitle(row?.label ?? "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -281,6 +289,12 @@ struct SessionView: View {
                 .padding(.horizontal, 20)
             }
 
+            if let attachError {
+                Text(attachError)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.needs)
+            }
+
             if sendFailed {
                 Text("Couldn't reach the Mac — your words are kept above.")
                     .font(Type.caption)
@@ -340,6 +354,19 @@ struct SessionView: View {
                 .padding(.vertical, 12)
                 .background(Palette.raised, in: RoundedRectangle(cornerRadius: 16))
 
+                // The camera roll, one tap from the same bar. An image is a
+                // sentence you cannot say — "look at this" is most of why the
+                // phone is the surface that matters.
+                PhotosPicker(selection: $pickedPhoto, matching: .images, photoLibrary: .shared()) {
+                    Image(systemName: attaching ? "arrow.up.circle" : "photo")
+                        .font(.system(size: 20, weight: .semibold))
+                        .frame(width: 46, height: 46)
+                        .background(Palette.raised, in: RoundedRectangle(cornerRadius: 16))
+                        .foregroundStyle(Palette.textPrimary)
+                }
+                .disabled(attaching)
+                .accessibilityLabel("Attach a picture")
+
                 // One button, and what it does is never ambiguous: send when
                 // there is something to send, otherwise open the mic.
                 Button(action: primaryAction) {
@@ -354,11 +381,11 @@ struct SessionView: View {
                         }
                     }
                         .frame(width: 46, height: 46)
-                        .background(
-                            isTalkingHere || canSend ? Palette.micOpen : Palette.raised,
-                            in: RoundedRectangle(cornerRadius: 16)
-                        )
-                        .foregroundStyle(isTalkingHere || canSend ? Palette.bg : Palette.textPrimary)
+                        // Blue at rest, not only once armed. Talking is the
+                        // point of conch, and a grey mic beside a text field
+                        // reads as the fallback rather than the main event.
+                        .background(Palette.micOpen, in: RoundedRectangle(cornerRadius: 16))
+                        .foregroundStyle(Palette.bg)
                 }
                 .buttonStyle(.plain)
                 .disabled(talk.phase == .sending)
@@ -393,6 +420,33 @@ struct SessionView: View {
         } else {
             toggleTalk()
         }
+    }
+
+    /// Turn a picked photo into a path the agent can open.
+    ///
+    /// The path is appended to the DRAFT rather than sent immediately, so a
+    /// picture and the words about it travel together — "what's wrong with this
+    /// layout?" is one message, not two.
+    private func attach(_ item: PhotosPickerItem) async {
+        attaching = true
+        attachError = nil
+        defer { attaching = false; pickedPhoto = nil }
+
+        guard let raw = try? await item.loadTransferable(type: Data.self) else {
+            attachError = "Couldn't read that picture."
+            return
+        }
+        let type = item.supportedContentTypes.first
+        guard let prepared = ImageUpload.prepare(data: raw, type: type) else {
+            attachError = "That picture is too large to send."
+            return
+        }
+        guard let path = await bridge.uploadImage(data: prepared.data, ext: prepared.ext) else {
+            attachError = "Couldn't reach the Mac."
+            return
+        }
+        let existing = talk.draft(for: sessionId)
+        talk.setDraft(existing.isEmpty ? path : existing + "\n" + path, for: sessionId)
     }
 
     private func sendDraft() {

@@ -166,7 +166,12 @@ describe("only one side of the phone owns the audio route", () => {
     // A late callback can append during the `await deliver`, and assigning
     // empty afterwards deletes words that were never sent to anyone.
     const talk = app("TalkController.swift");
-    const send = talk.indexOf("let delivered = await deliver(text)");
+    // Anchored to `finish`, not to the first delivery in the file. There are
+    // two send paths now — a typed draft delivers directly — and the
+    // generation guard below belongs to the one that tears down a capture.
+    const finish = talk.indexOf("private func finish(deliver:");
+    expect(finish).toBeGreaterThan(-1);
+    const send = talk.indexOf("let delivered = await deliver(text)", finish);
     const after = talk.slice(send);
     expect(after).toMatch(/held\.hasPrefix\(text\)/);
     // Belt and braces: the capture's callbacks go inert before that await.

@@ -1,3 +1,4 @@
+import type { UploadChunk, UploadResult } from "./phone-uploads.ts";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -61,6 +62,8 @@ export interface PhoneBridgeDependencies {
   replyFor(sessionId: string): Promise<string>;
   /** Connected phone count, so the daemon can reclaim audio when it hits zero. */
   onClientsChanged?(count: number): void;
+  /** Take one piece of an image; resolves a path once the last piece lands. */
+  acceptUpload(chunk: UploadChunk): Promise<UploadResult | { error: string }>;
   log(message: string): void;
 }
 
@@ -386,6 +389,30 @@ export class PhoneBridgeApplication {
       return (async () => (await file.exists())
         ? new Response(file)
         : new Response("gone", { status: 404 }))();
+    }
+
+    // Images arrive in pieces: a relay frame caps at 192 KiB and base64 adds a
+    // third. The phone has already sized them to what the model actually uses.
+    if (url.pathname === "/image" && req.method === "POST") {
+      // `handle` is synchronous and returns a promise where it needs one, so
+      // the awaiting lives in here rather than changing every caller.
+      return (async () => {
+        let payload: any;
+        try {
+          payload = await req.json();
+        } catch {
+          return Response.json({ error: "bad request" }, { status: 400 });
+        }
+        const result = await this.#dependencies.acceptUpload({
+          uploadId: String(payload?.uploadId ?? ""),
+          index: Number(payload?.index),
+          total: Number(payload?.total),
+          extension: String(payload?.extension ?? ""),
+          data: String(payload?.data ?? ""),
+        });
+        if ("error" in result) return Response.json(result, { status: 400 });
+        return Response.json(result);
+      })();
     }
 
     if (url.pathname === "/control" && req.method === "POST") {

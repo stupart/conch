@@ -114,6 +114,37 @@ final class BridgeClient: ObservableObject {
         ])
     }
 
+    /// Send one image, in pieces, and get back the path it landed at.
+    ///
+    /// Chunked because a relay frame caps at 192 KiB. The path comes back rather
+    /// than the bytes staying on the phone because Claude Code reads images by
+    /// PATH — the agent needs a file on the Mac, not an attachment.
+    func uploadImage(data: Data, ext: String) async -> String? {
+        let id = ImageUpload.newUploadID()
+        let parts = ImageUpload.chunks(data)
+        for (index, part) in parts.enumerated() {
+            guard let body = try? JSONSerialization.data(withJSONObject: [
+                "uploadId": id,
+                "index": index,
+                "total": parts.count,
+                "extension": ext,
+                "data": part,
+            ]) else { return nil }
+            guard let response = try? await transport.request(authorizedRequest(
+                method: "POST",
+                path: "/image",
+                body: body
+            )), response.status == 200 else { return nil }
+            // The last chunk answers with the path; the others report progress.
+            if index == parts.count - 1,
+               let decoded = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any],
+               let path = decoded["path"] as? String {
+                return path
+            }
+        }
+        return nil
+    }
+
     /// Claim (or hand back) the voice. While the phone holds it the Mac stays
     /// quiet — otherwise you hear conch from the next room and from your ear at
     /// once, which is worse than either alone.

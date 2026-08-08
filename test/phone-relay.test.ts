@@ -79,6 +79,7 @@ async function connectedHarness(options: {
     getState: options.state ?? (() => ({ v: 1, rows: [] })),
     forwardControl: options.forward ?? (async () => ""),
     replyFor: async () => "reply",
+    acceptUpload: async () => ({ received: 1, total: 1 }),
     onClientsChanged: (count) => { clients = count; },
     log() {},
   }, { token: "legacy-lan-token" });
@@ -356,6 +357,7 @@ describe("Mac phone relay adapter", () => {
         return "";
       },
       replyFor: async () => "",
+      acceptUpload: async () => ({ received: 1, total: 1 }),
       log() {},
     }, { token: "lan-token" });
     const sent: string[] = [];

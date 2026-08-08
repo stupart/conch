@@ -29,6 +29,8 @@
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>conch sends a picture you choose to your own Mac, so an agent there can look at it.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>conch listens while you talk to your coding sessions. Audio never leaves this phone.</string>
 	<key>NSCameraUsageDescription</key>

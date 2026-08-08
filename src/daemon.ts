@@ -35,6 +35,8 @@ import type { RecorderHandle } from "./dictation-controller.ts";
 import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
 import { classify, classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
 import { isCodexTranscriptPath, lastAssistantText, splitSentences, stripMarkdown, firstSentences, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
+import { PhoneUploads } from "./phone-uploads.ts";
+import { CONCH_DATA } from "./config.ts";
 import {
   publishedConversation,
   readConversationTail,
@@ -1808,6 +1810,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
    * It ALWAYS returns to the Mac when the phone disconnects. A phone that walks
    * out of the room must not leave the Mac permanently mute.
    */
+  const phoneUploads = new PhoneUploads(join(CONCH_DATA, "uploads"));
   let phoneApplication: PhoneBridgeApplication | null = null;
   let phoneBridge: PhoneBridgeHandle | null = null;
   let phoneRelay: PhoneRelayHandle | null = null;
@@ -1837,6 +1840,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
               void renderSessionPanel();
             }
           },
+          // Images land beside conch's own cache, not in /tmp: an agent may
+          // read one long after it arrived, and /tmp is swept by the OS.
+          acceptUpload: (chunk) => phoneUploads.accept(chunk),
           replyFor: async (sessionId) => {
             const path = findTranscript(cfg.claudeDir, sessionId);
             // The WHOLE turn in progress, the way the Mac dashboard shows it —
