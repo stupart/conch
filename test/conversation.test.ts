@@ -1,0 +1,198 @@
+import { describe, expect, test } from "bun:test";
+import {
+  applyConversationDelta,
+  buildConversation,
+  conversationDelta,
+  conversationWindow,
+  emptyConversation,
+  summariseToolInput,
+  upsertConversationItem,
+} from "../src/conversation.ts";
+
+const lines = (...entries: unknown[]) => entries.map((e) => JSON.stringify(e));
+
+describe("reading a Claude transcript as a conversation", () => {
+  test("a tool result attaches to its call instead of becoming a user message", () => {
+    // The trap: Claude Code records tool results as entries of type "user". In
+    // a live transcript sampled while building this, 75 of 80 "user" entries
+    // were tool results and only 5 were things Tyler typed. Rendering those as
+    // user messages turns a conversation into machine noise.
+    const conversation = buildConversation("s", lines(
+      { type: "user", uuid: "u1", message: { content: [{ type: "text", text: "run the tests" }] } },
+      {
+        type: "assistant",
+        uuid: "a1",
+        message: {
+          content: [
+            { type: "text", text: "Running them now." },
+            { type: "tool_use", id: "call1", name: "Bash", input: { description: "Run the suite", command: "bun test" } },
+          ],
+        },
+      },
+      {
+        type: "user",
+        uuid: "u2",
+        message: { content: [{ type: "tool_result", tool_use_id: "call1", content: "864 pass" }] },
+      },
+    ), "claude");
+
+    expect(conversationWindow(conversation, 10).map((i) => i.kind))
+      .toEqual(["user", "assistant", "tool"]);
+    const tool = conversation.items["tool:call1"]!;
+    expect(tool.tool).toMatchObject({ name: "Bash", status: "done", result: "864 pass" });
+    // The row is titled by what the tool was FOR, not the first line of script.
+    expect(tool.text).toBe("Run the suite");
+  });
+
+  test("an errored tool result is marked, not silently completed", () => {
+    const conversation = buildConversation("s", lines(
+      {
+        type: "assistant",
+        uuid: "a1",
+        message: { content: [{ type: "tool_use", id: "c1", name: "Bash", input: { command: "false" } }] },
+      },
+      {
+        type: "user",
+        message: { content: [{ type: "tool_result", tool_use_id: "c1", is_error: true, content: "boom" }] },
+      },
+    ), "claude");
+    expect(conversation.items["tool:c1"]!.tool).toMatchObject({ status: "error", result: "boom" });
+  });
+
+  test("thinking is kept as its own kind so a viewer can collapse it", () => {
+    const conversation = buildConversation("s", lines({
+      type: "assistant",
+      uuid: "a1",
+      message: { content: [{ type: "thinking", text: "weighing options" }, { type: "text", text: "Done." }] },
+    }), "claude");
+    expect(conversationWindow(conversation, 10).map((i) => [i.kind, i.text]))
+      .toEqual([["thinking", "weighing options"], ["assistant", "Done."]]);
+  });
+
+  test("transcript metadata is not conversation", () => {
+    // A real transcript is full of these: file-history-delta, custom-title,
+    // agent-name, mode, pr-link, attachment, system…
+    const conversation = buildConversation("s", lines(
+      { type: "custom-title", title: "x" },
+      { type: "file-history-snapshot" },
+      { type: "system", content: "…" },
+    ), "claude");
+    expect(conversation.order).toEqual([]);
+  });
+});
+
+describe("reading a Codex rollout as the same conversation", () => {
+  test("agent messages, reasoning and tool calls map onto one shape", () => {
+    const conversation = buildConversation("s", lines(
+      { type: "event_msg", ordinal: 1, payload: { type: "user_message", message: "fix the build" } },
+      { type: "response_item", ordinal: 2, payload: { type: "reasoning", text: "checking" } },
+      {
+        type: "response_item",
+        ordinal: 3,
+        payload: { type: "custom_tool_call", call_id: "c1", name: "exec", input: 'const r = await tools.exec_command({cmd:"pnpm test"})' },
+      },
+      {
+        type: "response_item",
+        ordinal: 4,
+        payload: { type: "custom_tool_call_output", call_id: "c1", output: "ok" },
+      },
+      { type: "response_item", ordinal: 5, payload: { type: "agent_message", id: "m1", text: "Build is green." } },
+    ), "codex");
+
+    expect(conversationWindow(conversation, 10).map((i) => i.kind))
+      .toEqual(["user", "thinking", "tool", "assistant"]);
+    expect(conversation.items["tool:c1"]).toMatchObject({
+      text: "pnpm test",
+      tool: { name: "exec", status: "done", result: "ok" },
+    });
+  });
+
+  test("a failed Codex tool is an error", () => {
+    const conversation = buildConversation("s", lines(
+      { type: "response_item", ordinal: 1, payload: { type: "function_call", call_id: "c1", name: "run", arguments: '{"command":"x"}' } },
+      { type: "response_item", ordinal: 2, payload: { type: "function_call_output", call_id: "c1", output: { success: false, content: "nope" } } },
+    ), "codex");
+    expect(conversation.items["tool:c1"]!.tool).toMatchObject({ status: "error", result: "nope" });
+  });
+});
+
+describe("tool row titles", () => {
+  test("prefers the human-facing description over the script", () => {
+    // Taking `command` first made every shell row in a real transcript read
+    // "cd ~/conch" — the first line of the script, not what it was for.
+    expect(summariseToolInput({ description: "Run the suite", command: "cd ~/conch\nbun test" }))
+      .toBe("Run the suite");
+    expect(summariseToolInput({ command: "cd ~/conch\nbun test" })).toBe("cd ~/conch");
+    expect(summariseToolInput({ file_path: "/a/b.ts" })).toBe("/a/b.ts");
+    expect(summariseToolInput(null)).toBe("");
+  });
+
+  test("lifts the real command out of Codex's JavaScript wrapper", () => {
+    // Codex's dominant tool takes a JS snippet, so the raw first line is the
+    // wrapper: `const r = await tools.exec_command({cmd:"rg -n …`.
+    expect(summariseToolInput('const r = await tools.exec_command({cmd:"pnpm exec vitest run"})'))
+      .toBe("pnpm exec vitest run");
+    expect(summariseToolInput('await tools.exec_command({ cmd: "grep -n \\"needle\\" file" })'))
+      .toBe('grep -n "needle" file');
+  });
+});
+
+describe("revisions, so the wire sends only what moved", () => {
+  test("an unchanged item does not bump its revision", () => {
+    const conversation = emptyConversation("s");
+    upsertConversationItem(conversation, { id: "a", kind: "assistant", text: "hi" });
+    expect(conversation.items.a!.rev).toBe(1);
+    upsertConversationItem(conversation, { id: "a", kind: "assistant", text: "hi" });
+    expect(conversation.items.a!.rev).toBe(1);
+  });
+
+  test("a streaming tail mutates in place rather than appending", () => {
+    // The operation an append-only log cannot express: the last assistant
+    // message GROWS while it streams.
+    const conversation = emptyConversation("s");
+    upsertConversationItem(conversation, { id: "a", kind: "assistant", text: "Let me" });
+    upsertConversationItem(conversation, { id: "a", kind: "assistant", text: "Let me check that." });
+    expect(conversation.order).toEqual(["a"]);
+    expect(conversation.items.a).toMatchObject({ rev: 2, text: "Let me check that." });
+  });
+
+  test("a delta carries the order but only the changed items", () => {
+    const conversation = emptyConversation("s");
+    for (const id of ["a", "b", "c"]) {
+      upsertConversationItem(conversation, { id, kind: "assistant", text: id });
+    }
+    const known = { a: 1, b: 1, c: 1 };
+    expect(conversationDelta(conversation, known, 10).changed).toEqual([]);
+
+    upsertConversationItem(conversation, { id: "c", kind: "assistant", text: "c grew" });
+    const delta = conversationDelta(conversation, known, 10);
+    expect(delta.order).toEqual(["a", "b", "c"]);
+    expect(delta.changed.map((i) => i.id)).toEqual(["c"]);
+  });
+
+  test("a viewer applying deltas converges on the same conversation", () => {
+    const source = emptyConversation("s");
+    let viewer = emptyConversation("s");
+    const known = () =>
+      Object.fromEntries(Object.values(viewer.items).map((i) => [i.id, i.rev]));
+
+    upsertConversationItem(source, { id: "a", kind: "user", text: "hello" });
+    viewer = applyConversationDelta(viewer, conversationDelta(source, known(), 10));
+    upsertConversationItem(source, { id: "b", kind: "assistant", text: "hi" });
+    upsertConversationItem(source, { id: "b", kind: "assistant", text: "hi there" });
+    viewer = applyConversationDelta(viewer, conversationDelta(source, known(), 10));
+
+    expect(viewer.order).toEqual(source.order);
+    expect(viewer.items).toEqual(source.items);
+  });
+
+  test("the window bounds what a viewer holds, dropping what scrolled away", () => {
+    const source = emptyConversation("s");
+    for (const id of ["a", "b", "c", "d"]) {
+      upsertConversationItem(source, { id, kind: "assistant", text: id });
+    }
+    const viewer = applyConversationDelta(emptyConversation("s"), conversationDelta(source, {}, 2));
+    expect(viewer.order).toEqual(["c", "d"]);
+    expect(Object.keys(viewer.items).sort()).toEqual(["c", "d"]);
+  });
+});
