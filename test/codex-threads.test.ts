@@ -1,13 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   codexThreadLabel,
   detectCodexTurnEnds,
   isInterAgentEnvelope,
+  readCodexRolloutTail,
   readCodexThreads,
+  readCodexTurnSnapshots,
   type CodexTurnMemory,
 } from "../src/codex-threads.ts";
 
@@ -246,5 +248,96 @@ describe("inter-agent traffic is not a reply", () => {
     expect(isInterAgentEnvelope("I looked at the Message Type: FINAL_ANSWER envelope you asked about."))
       .toBe(false);
     expect(isInterAgentEnvelope("Done — the tests pass.")).toBe(false);
+  });
+});
+
+describe("reading a turn out of a real rollout file", () => {
+  function rollout(home: string, id: string, lines: unknown[]): string {
+    const dir = join(home, "sessions");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `rollout-2026-08-07T00-00-00-${id}.jsonl`);
+    writeFileSync(path, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+    return path;
+  }
+  const agentMessage = (id: string, text: string) => ({
+    type: "response_item",
+    payload: { type: "agent_message", id, text },
+  });
+  const noise = (n: number) => ({
+    type: "response_item",
+    payload: { type: "reasoning", text: `thinking ${n}`.padEnd(200, "x") },
+  });
+
+  test("the whole chain: two polls turn a finished rollout into one announcement", () => {
+    const home = mkdtempSync(join(tmpdir(), "conch-codex-home-"));
+    try {
+      const path = rollout(home, "t1", [noise(1), agentMessage("m1", "First reply.")]);
+      const state = new Database(join(home, "state_5.sqlite"));
+      state.run(`CREATE TABLE threads (
+        id TEXT PRIMARY KEY, cwd TEXT, name TEXT, agent_nickname TEXT, title TEXT,
+        rollout_path TEXT, updated_at_ms INTEGER, archived INTEGER, source TEXT)`);
+      state.run(
+        `INSERT INTO threads VALUES ('t1','/repo','asset generator',NULL,'',?,?,0,'cli')`,
+        [path, NOW] as any,
+      );
+      state.close();
+
+      const memory: CodexTurnMemory = new Map();
+      const opts = { codexHome: home, now: NOW };
+
+      // Poll 1 seeds on the reply that was already there.
+      expect(detectCodexTurnEnds(memory, readCodexTurnSnapshots(opts))).toEqual([]);
+
+      // A new turn lands.
+      appendFileSync(path, JSON.stringify(agentMessage("m2", "Second reply. Details after.")) + "\n");
+      // Still growing: not yet.
+      expect(detectCodexTurnEnds(memory, readCodexTurnSnapshots(opts))).toEqual([]);
+      // Settled: announce, once, with the agent's own words.
+      const ended = detectCodexTurnEnds(memory, readCodexTurnSnapshots(opts));
+      expect(ended).toHaveLength(1);
+      expect(ended[0]!.label).toBe("asset generator");
+      expect(ended[0]!.text).toBe("Second reply. Details after.");
+      // And never again.
+      expect(detectCodexTurnEnds(memory, readCodexTurnSnapshots(opts))).toEqual([]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("reads only the tail of a large file and survives a mid-line start", () => {
+    // Tyler's rollouts reach 25 MB and are polled continuously, so a tail read
+    // is mandatory — and a tail almost always begins mid-line, which is not
+    // valid JSON and must not abort the scan.
+    const home = mkdtempSync(join(tmpdir(), "conch-codex-home-"));
+    try {
+      const path = rollout(home, "big", [
+        agentMessage("old", "buried"),
+        ...Array.from({ length: 400 }, (_, i) => noise(i)),
+        agentMessage("recent", "The visible one."),
+        ...Array.from({ length: 20 }, (_, i) => noise(i)),
+      ]);
+      const tail = readCodexRolloutTail(path, 8 * 1024);
+      expect(tail?.text).toBe("The visible one.");
+      expect(tail?.messageId).toBe("recent");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("skips inter-agent envelopes and keeps looking further back", () => {
+    const home = mkdtempSync(join(tmpdir(), "conch-codex-home-"));
+    try {
+      const path = rollout(home, "sub", [
+        agentMessage("real", "The actual answer."),
+        agentMessage("env", "Message Type: FINAL_ANSWER\nSender: /root/agent\n\npayload"),
+      ]);
+      expect(readCodexRolloutTail(path)?.text).toBe("The actual answer.");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a missing rollout is null, not a crash", () => {
+    expect(readCodexRolloutTail("/tmp/definitely-not-a-rollout.jsonl")).toBeNull();
   });
 });
