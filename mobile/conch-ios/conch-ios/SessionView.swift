@@ -158,26 +158,47 @@ struct SessionView: View {
                         // ear the indicator was reporting a microphone on the
                         // other side of the room — the one state you cannot
                         // afford to be wrong about.
-                        Image(systemName: isTalkingHere ? "mic.fill" : mark.symbol)
-                            .font(.system(size: 12))
-                            .foregroundStyle(isTalkingHere ? Palette.micOpen : mark.color)
+                        // While this phone holds the mic, the whole glyph-and-
+                        // word chip becomes the way to CLOSE it — which the app
+                        // had no way to do at all, since the bottom button
+                        // sends. Icon and label are one Button on purpose: a
+                        // button's hit area is its label's frame, so wrapping
+                        // only the 12pt glyph would leave a 12pt target sitting
+                        // next to inert text that looks like part of it.
+                        //
+                        // It is otherwise a plain status glyph. A status glyph
+                        // that sometimes does something is worse than one that
+                        // never does.
+                        if isTalkingHere {
+                            Button { talk.closeMic() } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "mic.fill")
+                                        .font(.system(size: 12))
+                                    Text("Mic open")
+                                        .font(Type.caption)
+                                }
+                                .foregroundStyle(Palette.micOpen)
+                                // The trailing inset goes here, matching this
+                                // HStack's own spacing so the gap at the screen
+                                // edge equals the gap between glyph and word.
+                                .padding(.trailing, 6)
+                            }
+                            .accessibilityLabel("Close the microphone")
+                            .accessibilityHint("Keeps what you have said")
+                        } else {
+                            // THIS phone's mic, not the daemon's. The published
+                            // state describes the Mac, so while the phone held
+                            // the ear the indicator was reporting a microphone
+                            // on the other side of the room — the one state you
+                            // cannot afford to be wrong about.
+                            Image(systemName: mark.symbol)
+                                .font(.system(size: 12))
+                                .foregroundStyle(mark.color)
+                        }
                         // The word earns its place only when nothing else on
                         // screen explains the glyph — a review card directly
                         // beneath saying the same thing is clutter.
-                        // The trailing inset goes on the TEXT, not the HStack:
-                        // the capsule pads its leading edge but hugs the last
-                        // glyph, so the label sat flush against the right wall
-                        // while everything else breathed. Padding the HStack
-                        // would fix that and push the icon off-centre in the
-                        // icon-only case, where there is no text at all.
-                        // 6pt is this HStack's own spacing, so the gap at the
-                        // edge matches the gap between the glyph and the word.
-                        if isTalkingHere {
-                            Text("Mic open")
-                                .font(Type.caption)
-                                .foregroundStyle(Palette.micOpen)
-                                .padding(.trailing, 6)
-                        } else if row?.review == nil {
+                        if !isTalkingHere, row?.review == nil {
                             Text(mark.meaning)
                                 .font(Type.caption)
                                 .foregroundStyle(mark.color)

@@ -706,6 +706,23 @@ final class TalkController: NSObject, ObservableObject {
         )
     }
 
+    /// Close the mic without sending and without losing a word.
+    ///
+    /// There was no way to do this at all: the bottom button SENDS while
+    /// listening, so an accidentally-opened mic could only be resolved by
+    /// sending something you did not mean to. Tyler: "I don't think there's a
+    /// way to close the mic on the iPhone app".
+    ///
+    /// `cancel()` alone would drop the in-flight `partial` — the words spoken
+    /// since the last commit — so the partial is banked first. Closing the mic
+    /// is a decision about the MICROPHONE, never about the transcript, which
+    /// stays exactly where it was for the next time you open it.
+    func closeMic() {
+        guard phase == .listening || starting else { return }
+        commit(partial)
+        cancel()
+    }
+
     func cancel() {
         guard phase == .listening || starting else { return }
         starting = false
