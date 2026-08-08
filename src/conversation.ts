@@ -212,6 +212,17 @@ export function summariseToolInput(input: unknown): string {
       return value.split("\n")[0]!.slice(0, 160);
     }
   }
+  // Nothing recognised: take the first short string argument rather than
+  // nothing. Every MCP tool names its arguments differently, so the known-key
+  // list can never be complete — on a real transcript this left rows for
+  // `mcp__claude-in-chrome__computer` and `SendUserFile` with a bare tool name
+  // and no indication of what they did. Long values are skipped because they
+  // are payloads, not labels.
+  for (const value of Object.values(record)) {
+    if (typeof value !== "string") continue;
+    const line = value.split("\n")[0]!.trim();
+    if (line && line.length <= 160) return line;
+  }
   return "";
 }
 
@@ -339,6 +350,106 @@ export function conversationWindow(
     .slice(Math.max(0, conversation.order.length - count))
     .map((id) => conversation.items[id])
     .filter((item): item is ConversationItem => item !== undefined);
+}
+
+/**
+ * Read the end of a transcript as a conversation.
+ *
+ * Only the tail, always. Claude transcripts run to megabytes and Codex rollouts
+ * reach 732 MB (openai/codex#24948); this is called on every render, so reading
+ * a whole file was never an option. A window of items is all any viewer shows,
+ * and the tail is where they are.
+ *
+ * A tail read starts mid-line, so the first fragment is dropped — it is not
+ * valid JSON, and a half-entry would parse as a different shape if it parsed at
+ * all. The cost is losing at most one item at the far edge of the window.
+ */
+export async function readConversationTail(
+  transcriptPath: string,
+  sessionId: string,
+  format: ConversationFormat,
+  tailBytes = 512 * 1024,
+): Promise<Conversation> {
+  const file = Bun.file(transcriptPath);
+  let size = 0;
+  try {
+    size = file.size;
+  } catch {
+    return emptyConversation(sessionId);
+  }
+  if (!size) return emptyConversation(sessionId);
+  const start = Math.max(0, size - tailBytes);
+  let text: string;
+  try {
+    text = await file.slice(start).text();
+  } catch {
+    return emptyConversation(sessionId);
+  }
+  const lines = text.split("\n");
+  if (start > 0) lines.shift();
+  return buildConversation(sessionId, lines, format);
+}
+
+/** A conversation trimmed to what is worth putting on a wire. */
+export interface PublishedConversation {
+  sessionId: string;
+  items: ConversationItem[];
+  /** True when older items exist above the window, so a viewer can say so. */
+  truncated: boolean;
+}
+
+const DEFAULT_WINDOW = 40;
+const DEFAULT_ITEM_CHARS = 4_000;
+/** Tool rows are titles; their output belongs behind a tap, not in every frame. */
+const DEFAULT_TOOL_RESULT_CHARS = 400;
+
+/**
+ * Bound a conversation for publishing.
+ *
+ * Two independent caps, because they fail differently. The WINDOW bounds how
+ * many items ride along — without it, a long session's every render would push
+ * the whole history over a metered phone relay. The per-item cap bounds a single
+ * enormous item, which one pasted file or one `cat` of a large file produces on
+ * its own regardless of how few items there are.
+ */
+export function publishedConversation(
+  conversation: Conversation,
+  options: {
+    windowSize?: number;
+    itemChars?: number;
+    toolResultChars?: number;
+  } = {},
+): PublishedConversation {
+  const windowSize = options.windowSize ?? DEFAULT_WINDOW;
+  const itemChars = options.itemChars ?? DEFAULT_ITEM_CHARS;
+  const toolResultChars = options.toolResultChars ?? DEFAULT_TOOL_RESULT_CHARS;
+  const items = conversationWindow(conversation, windowSize).map((item) => {
+    // Keep the TAIL of a long message: the end is what was just said, and the
+    // beginning is what has already scrolled past.
+    const text = item.text.length > itemChars
+      ? item.text.slice(item.text.length - itemChars)
+      : item.text;
+    const result = item.tool?.result;
+    return {
+      ...item,
+      text,
+      ...(item.tool
+        ? {
+          tool: {
+            ...item.tool,
+            ...(result && result.length > toolResultChars
+              ? { result: result.slice(0, toolResultChars) }
+              : {}),
+          },
+        }
+        : {}),
+    };
+  });
+  return {
+    sessionId: conversation.sessionId,
+    items,
+    truncated: conversation.order.length > items.length,
+  };
 }
 
 export interface ConversationDelta {

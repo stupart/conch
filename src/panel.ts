@@ -1,4 +1,5 @@
 import { sessionLabel, type SessionInfo } from "./sessions.ts";
+import type { PublishedConversation } from "./conversation.ts";
 
 export type PanelConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
 
@@ -100,6 +101,12 @@ export interface PanelModel {
   mode: DashboardMode;
   live: PanelLiveState;
   reply: PanelReplyModel | null;
+  /**
+   * The conversation for whichever session is showing, as an ordered stack of
+   * items. `reply` is the same turn flattened to one string and stays until both
+   * apps render this instead.
+   */
+  conversation?: PublishedConversation | null;
   /** Theater-only parked-session output. Footer rendering intentionally ignores it. */
   preview?: PanelReplyModel | null;
   /** Theater-only presentation state. Footer rendering intentionally ignores it. */
@@ -151,6 +158,8 @@ export interface PublishedState {
   };
   reply?: PanelReplyModel & { truncated?: boolean };
   preview?: PanelReplyModel & { truncated?: boolean };
+  /** The showing session's conversation, windowed and capped for the wire. */
+  conversation?: PublishedConversation;
   rows: PublishedSessionRow[];
   dismissed: string[];
   dismissedRows: Array<{ id: string; label: string }>;
@@ -256,6 +265,7 @@ export function buildPublishedState(
     mode: { ...model.mode },
     live: publishedLiveState(model.live),
     ...(model.reply ? { reply: publishedReply(model.reply) } : {}),
+    ...(model.conversation ? { conversation: model.conversation } : {}),
     ...(model.preview ? { preview: publishedReply(model.preview) } : {}),
     rows: model.rows.map((row) => {
       const transcriptPath = options.transcriptPathForSessionId?.(row.sessionId);

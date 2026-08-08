@@ -34,7 +34,11 @@ import {
 import type { RecorderHandle } from "./dictation-controller.ts";
 import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
 import { classify, classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
-import { lastAssistantText, splitSentences, stripMarkdown, firstSentences, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
+import { isCodexTranscriptPath, lastAssistantText, splitSentences, stripMarkdown, firstSentences, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
+import {
+  publishedConversation,
+  readConversationTail,
+} from "./conversation.ts";
 import {
   detectCodexTurnEnds,
   isInterAgentEnvelope,
@@ -1958,6 +1962,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
       liveSessionIds: snap?.liveIds,
     });
 
+    // Whose conversation to show, in the order a person would expect: the one
+    // they parked the cursor on, else the one conch is about to speak for, else
+    // the busiest row. Anything is better than nothing, which is what a fresh
+    // daemon had before a first turn landed.
+    const conversationSessionId = theaterNavigation.manualSelectedId
+      ?? (cursorAuto ? null : selectedId)
+      ?? nextActiveSessionId
+      ?? orderedRows[0]?.sessionId
+      ?? null;
+
     // Capture either renderer's manual cursor before reading its transcript.
     // Preview production is part of the published model, not theater drawing.
     const previewId = theaterNavigation.manualSelectedId
@@ -1969,11 +1983,32 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // The RAW reply is fetched alongside the spoken one. stripMarkdown exists to
     // make text speakable; handing that same string to a GUI is what made every
     // list render as a literal "- " with no blocks at all.
-    const [transcriptReplyRaw, previewRaw] = await Promise.all([
+    // The conversation is read from the same transcript, at the same moment, as
+    // the flattened reply beside it — so a viewer can never show a stack that
+    // disagrees with the line being spoken.
+    const [transcriptReplyRaw, previewRaw, conversation] = await Promise.all([
       contentEvent?.transcriptPath
         ? lastAssistantText(contentEvent.transcriptPath)
         : Promise.resolve(""),
       previewPath ? lastAssistantText(previewPath) : Promise.resolve(""),
+      // Not tied to `contentEvent` like the reply beside it. That is the last
+      // turn conch SPOKE, which is null for a whole daemon lifetime until
+      // something finishes — so on a fresh start the app would show an empty
+      // stack even with sessions full of history sitting right there. The
+      // conversation belongs to whichever session is showing.
+      (() => {
+        const sessionId = contentEvent?.sessionId ?? conversationSessionId;
+        if (!sessionId) return Promise.resolve(null);
+        const path = contentEvent?.sessionId === sessionId && contentEvent.transcriptPath
+          ? contentEvent.transcriptPath
+          : findTranscript(cfg.claudeDir, sessionId);
+        if (!path) return Promise.resolve(null);
+        return readConversationTail(
+          path,
+          sessionId,
+          isCodexTranscriptPath(path) ? "codex" : "claude",
+        ).catch(() => null);
+      })(),
     ]);
     const transcriptReplyText = stripMarkdown(transcriptReplyRaw);
     const previewText = stripMarkdown(previewRaw);
@@ -2026,6 +2061,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         previewText,
         previewRaw,
       );
+      model.conversation = conversation ? publishedConversation(conversation) : null;
       model.settingsOverlay = settingsOverlay?.model() ?? null;
       model.sessionActionsOverlay = sessionActionsOverlay?.model() ?? null;
       panelOrder = model.rows.map((row) => row.sessionId);

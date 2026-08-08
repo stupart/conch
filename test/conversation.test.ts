@@ -196,3 +196,27 @@ describe("revisions, so the wire sends only what moved", () => {
     expect(Object.keys(viewer.items).sort()).toEqual(["c", "d"]);
   });
 });
+
+describe("tool rows always say something", () => {
+  test("falls back to the first short string when no key is recognised", () => {
+    // Every MCP tool names its arguments differently, so the known-key list can
+    // never be complete. On a real transcript this left rows for
+    // `mcp__claude-in-chrome__computer` and `SendUserFile` showing a bare tool
+    // name with no indication of what they did.
+    expect(summariseToolInput({ action: "screenshot", coordinate: [1, 2] }))
+      .toBe("screenshot");
+    expect(summariseToolInput({ files: "report.md", status: "normal" }))
+      .toBe("report.md");
+  });
+
+  test("skips a payload masquerading as a label", () => {
+    // A long value is content, not a title.
+    const long = "x".repeat(500);
+    expect(summariseToolInput({ blob: long, mode: "write" })).toBe("write");
+  });
+
+  test("a recognised key still wins over the fallback", () => {
+    expect(summariseToolInput({ zzz: "first alphabetically", description: "the real label" }))
+      .toBe("the real label");
+  });
+});
