@@ -1228,9 +1228,15 @@ private struct ConversationPane: View {
                     // is not paranoia: the daemon publishes one conversation at
                     // a time, so without it, focusing a second session would
                     // show it the first one's messages under its own name.
-                    if let conversation = state?.conversation,
+                    // Look up THIS row's conversation. The daemon publishes
+                    // one per visible session precisely so the app never has to
+                    // agree with it about which session is "showing" — the
+                    // terminal dashboard holds its own cursor, and every attempt
+                    // to reconcile them left the stack silently falling back.
+                    if let rowID = focusedRow?.id,
+                       let conversation = state?.conversations?[rowID] ?? state?.conversation,
                        !conversation.items.isEmpty,
-                       conversation.sessionId == focusedRow?.id {
+                       conversation.sessionId == rowID {
                         ConversationStackView(conversation: conversation)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {

@@ -49,6 +49,16 @@ export interface SessionInfo {
   kind?: string;
   /** "cli" for a real terminal session; "sdk-cli" etc. are headless routines. */
   entrypoint?: string;
+  /**
+   * The session's own transcript, when it carries one.
+   *
+   * Claude sessions are found by id under the projects directory, so this stays
+   * empty for them. A Codex thread cannot be: its rollout lives at a path only
+   * Codex's database knows, and dropping it here meant every Codex row reached
+   * the apps with no transcript at all — no conversation, no reply, nothing to
+   * read.
+   */
+  transcriptPath?: string;
 }
 
 /**
@@ -105,6 +115,9 @@ function toInfo(entry: any, backend?: SessionInfo["backend"]): SessionInfo {
         : undefined,
     kind: entry.kind,
     entrypoint: entry.entrypoint,
+    ...(typeof entry.transcriptPath === "string" && entry.transcriptPath
+      ? { transcriptPath: entry.transcriptPath }
+      : {}),
   };
 }
 

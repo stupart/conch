@@ -11,6 +11,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
     let reply: ConversationReply?
     let preview: ConversationReply?
     let conversation: Conversation?
+    /// Keyed by session id, so a viewer finds the one it is showing.
+    let conversations: [String: Conversation]?
     let rows: [SessionRow]
     let dismissed: [String]
     let dismissedRows: [DismissedSessionRow]
@@ -23,6 +25,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case reply
         case preview
         case conversation
+        case conversations
         case rows
         case dismissed
         case dismissedRows
@@ -36,6 +39,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         reply: ConversationReply?,
         preview: ConversationReply?,
         conversation: Conversation? = nil,
+        conversations: [String: Conversation]? = nil,
         rows: [SessionRow],
         dismissed: [String],
         dismissedRows: [DismissedSessionRow]
@@ -47,6 +51,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.live = live
         self.reply = reply
         self.conversation = conversation
+        self.conversations = conversations
         self.preview = preview
         self.rows = rows
         self.dismissed = dismissed
@@ -77,6 +82,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         live = (try? container.decodeIfPresent(LiveState.self, forKey: .live)) ?? LiveState()
         reply = try? container.decodeIfPresent(ConversationReply.self, forKey: .reply)
         conversation = try? container.decodeIfPresent(Conversation.self, forKey: .conversation)
+        conversations = try? container.decodeIfPresent([String: Conversation].self, forKey: .conversations)
         preview = try? container.decodeIfPresent(ConversationReply.self, forKey: .preview)
         dismissed = (try? container.decodeIfPresent([String].self, forKey: .dismissed)) ?? []
         dismissedRows = Self.decodeLossyArray(

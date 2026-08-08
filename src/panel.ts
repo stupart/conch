@@ -107,6 +107,8 @@ export interface PanelModel {
    * apps render this instead.
    */
   conversation?: PublishedConversation | null;
+  /** Every visible session's conversation, so a viewer never depends on the daemon's cursor. */
+  conversations?: Record<string, PublishedConversation> | null;
   /** Theater-only parked-session output. Footer rendering intentionally ignores it. */
   preview?: PanelReplyModel | null;
   /** Theater-only presentation state. Footer rendering intentionally ignores it. */
@@ -160,6 +162,17 @@ export interface PublishedState {
   preview?: PanelReplyModel & { truncated?: boolean };
   /** The showing session's conversation, windowed and capped for the wire. */
   conversation?: PublishedConversation;
+  /**
+   * Every visible session's conversation, keyed by id.
+   *
+   * Published for all rows rather than for "the one that is showing" because
+   * there is no such thing: the terminal dashboard and the Mac app hold
+   * INDEPENDENT cursors, so any single choice is wrong for one of them. Trying
+   * to make them agree produced a stack that silently fell back to the old pane
+   * whenever the two disagreed, which was most of the time. A viewer should ask
+   * for the session it is showing and always find it.
+   */
+  conversations?: Record<string, PublishedConversation>;
   rows: PublishedSessionRow[];
   dismissed: string[];
   dismissedRows: Array<{ id: string; label: string }>;
@@ -294,6 +307,9 @@ export function buildPublishedState(
     live: publishedLiveState(model.live),
     ...(model.reply ? { reply: publishedReply(model.reply) } : {}),
     ...(model.conversation ? { conversation: model.conversation } : {}),
+    ...(model.conversations && Object.keys(model.conversations).length
+      ? { conversations: model.conversations }
+      : {}),
     ...(model.preview ? { preview: publishedReply(model.preview) } : {}),
     rows: model.rows.map((row) => {
       const transcriptPath = options.transcriptPathForSessionId?.(row.sessionId);

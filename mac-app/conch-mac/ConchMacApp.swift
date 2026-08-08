@@ -77,6 +77,29 @@ private final class ConchAppDelegate: NSObject,
         ReviewNotifications.shared.requestAuthorizationAtLaunch()
     }
 
+    /// Closing the window must not strand the app with no way back.
+    ///
+    /// `CommandGroup(replacing: .newItem) {}` removes File ▸ New Window, which
+    /// is right — conch is one window, not a document app — but it also removed
+    /// the only way to get a window back. Close it and the process kept running
+    /// with nothing on screen and no menu item, dock click, or relaunch that
+    /// would bring it back; `open -a` just activated an app with zero windows.
+    /// Found because the app photographed itself and reported "no visible
+    /// window (of 0 total)".
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows: Bool
+    ) -> Bool {
+        if hasVisibleWindows { return true }
+        // Prefer restoring the real window; only ask AppKit to rebuild the
+        // scene if there is genuinely nothing to raise.
+        if let existing = sender.windows.first(where: { $0.canBecomeMain }) {
+            existing.makeKeyAndOrderFront(nil)
+            return false
+        }
+        return true
+    }
+
     private func registerLoginItemIfNeeded() {
         guard Bundle.main.bundlePath.hasPrefix("/Applications/") else { return }
 

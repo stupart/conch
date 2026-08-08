@@ -443,6 +443,41 @@ switch (command) {
   case "service":
     await runService(cfg, rest[0] === "off" ? "off" : "install");
     break;
+  case "shot": {
+    // Ask the Mac app to photograph ITSELF, and wait for the file.
+    //
+    // Exists because verifying UI work by running `screencapture` over the
+    // display caught an unrelated window full of Tyler's private work. The
+    // app's own window is the only thing conch has any business capturing.
+    const target = rest[0] ?? `/tmp/conch-shot-${Date.now()}.png`;
+    if (!target.startsWith("/tmp/") || !target.endsWith(".png")) {
+      console.error("usage: conch shot [/tmp/<name>.png]");
+      process.exitCode = 1;
+      break;
+    }
+    const { unlinkSync: removeFile, existsSync: fileExists } = await import("node:fs");
+    try { removeFile(target); } catch {}
+    await Bun.write("/tmp/conch-shot.request", target);
+    // The app services the request on its state poll, which runs every 250ms.
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      if (fileExists(target)) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!fileExists(target)) {
+      try { removeFile("/tmp/conch-shot.request"); } catch {}
+      // The app reports which step failed rather than leaving the caller to
+      // guess after a five-second wait.
+      const reason = fileExists(target + ".error")
+        ? await Bun.file(target + ".error").text()
+        : "is the conch Mac app running?";
+      console.error(`no snapshot — ${reason.trim()}`);
+      process.exitCode = 1;
+      break;
+    }
+    console.log(target);
+    break;
+  }
   case "doctor":
     await runDoctor(cfg);
     break;

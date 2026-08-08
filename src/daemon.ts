@@ -1186,6 +1186,11 @@ export function listenHooks(
 }
 
 /** Build the external document with daemon-owned voice and priority resolution. */
+/** How many sessions get a published conversation, newest-active first. */
+const MAX_PUBLISHED_CONVERSATIONS = 8;
+/** Per-session window. Smaller than the focused one: this is every row at once. */
+const PUBLISHED_CONVERSATION_WINDOW = 30;
+
 export function buildDaemonPublishedState(
   cfg: Config,
   model: PanelModel,
@@ -1194,6 +1199,8 @@ export function buildDaemonPublishedState(
   prioritizedSessionIds: ReadonlySet<string>,
   now: number,
   labelForSessionId?: (sessionId: string) => string | undefined,
+  /** Codex rollouts live at paths only its database knows; Claude's are found by id. */
+  sessionTranscriptPaths?: ReadonlyMap<string, string>,
 ): PublishedState {
   return buildPublishedState(
     model,
@@ -1201,7 +1208,8 @@ export function buildDaemonPublishedState(
     dismissedSessionIds,
     now,
     {
-      transcriptPathForSessionId: (sessionId) => findTranscript(cfg.claudeDir, sessionId),
+      transcriptPathForSessionId: (sessionId) =>
+        sessionTranscriptPaths?.get(sessionId) ?? findTranscript(cfg.claudeDir, sessionId),
       voiceForLabel: (label) => voiceFor(cfg, label),
       labelForSessionId,
       prioritizedSessionIds,
@@ -1967,9 +1975,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // they parked the cursor on, else the one conch is about to speak for, else
     // the busiest row. Anything is better than nothing, which is what a fresh
     // daemon had before a first turn landed.
-    const conversationSessionId = theaterNavigation.manualSelectedId
-      ?? (cursorAuto ? null : selectedId)
-      ?? nextActiveSessionId
+    // Deliberately NOT the terminal cursor, which drives `preview` instead.
+    //
+    // Two front-ends have independent cursors and only one conversation is
+    // published, so if this followed the TUI's parked row the Mac app would ask
+    // for one session and receive another — measured exactly that: the daemon
+    // published client-dashboard while the app focused asset generator, and the
+    // stack silently fell back to the old pane every time. This chain mirrors
+    // the app's own fallback (active row, else the first), so they agree.
+    const conversationSessionId = nextActiveSessionId
       ?? orderedRows[0]?.sessionId
       ?? null;
 
@@ -2000,9 +2014,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
       (() => {
         const sessionId = contentEvent?.sessionId ?? conversationSessionId;
         if (!sessionId) return Promise.resolve(null);
-        const path = contentEvent?.sessionId === sessionId && contentEvent.transcriptPath
-          ? contentEvent.transcriptPath
-          : findTranscript(cfg.claudeDir, sessionId);
+        // Prefer the session's OWN path. `findTranscript` searches Claude's
+        // projects directory by id, which can never locate a Codex rollout —
+        // so every Codex row resolved to nothing and showed no conversation at
+        // all, even while its rows updated live.
+        const path = (contentEvent?.sessionId === sessionId && contentEvent.transcriptPath)
+          || live.find((session) => session.sessionId === sessionId)?.transcriptPath
+          || findTranscript(cfg.claudeDir, sessionId);
         if (!path) return Promise.resolve(null);
         return readConversationTail(
           path,
@@ -2011,6 +2029,28 @@ export async function runDaemon(cfg: Config): Promise<void> {
         ).catch(() => null);
       })(),
     ]);
+    // One per visible row. The reads are tail-only and bounded, and doing them
+    // together means a viewer can show whichever session it is focused on
+    // without the daemon having to guess which that is.
+    const conversationsBySession = Object.fromEntries(
+      (await Promise.all(
+        live.slice(0, MAX_PUBLISHED_CONVERSATIONS).map(async (session) => {
+          const path = session.transcriptPath
+            ?? findTranscript(cfg.claudeDir, session.sessionId);
+          if (!path) return null;
+          const read = await readConversationTail(
+            path,
+            session.sessionId,
+            isCodexTranscriptPath(path) ? "codex" : "claude",
+          ).catch(() => null);
+          if (!read || read.order.length === 0) return null;
+          return [
+            session.sessionId,
+            publishedConversation(read, { windowSize: PUBLISHED_CONVERSATION_WINDOW }),
+          ] as const;
+        }),
+      )).filter((entry): entry is NonNullable<typeof entry> => entry !== null),
+    );
     const transcriptReplyText = stripMarkdown(transcriptReplyRaw);
     const previewText = stripMarkdown(previewRaw);
     if (shuttingDown) return;
@@ -2063,6 +2103,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         previewRaw,
       );
       model.conversation = conversation ? publishedConversation(conversation) : null;
+      model.conversations = conversationsBySession;
       model.settingsOverlay = settingsOverlay?.model() ?? null;
       model.sessionActionsOverlay = sessionActionsOverlay?.model() ?? null;
       panelOrder = model.rows.map((row) => row.sessionId);
@@ -2091,6 +2132,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
         prioritizedSessionIds,
         Date.now(),
         labelForSessionId,
+        new Map(
+          live.flatMap((session) =>
+            session.transcriptPath ? [[session.sessionId, session.transcriptPath] as const] : []
+          ),
+        ),
       );
       publishedStateWriter.request();
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);

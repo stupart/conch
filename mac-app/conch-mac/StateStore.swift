@@ -94,6 +94,7 @@ final class StateStore: ObservableObject {
                     appendLogLines(result.logLines)
                 }
                 evaluateLiveness()
+                DebugSnapshot.serviceRequest()
 
                 do {
                     try await Task.sleep(nanoseconds: 250_000_000)
@@ -599,6 +600,12 @@ final class StateStore: ObservableObject {
             live: sourceState.live,
             reply: sourceState.reply,
             preview: sourceState.preview,
+            // Carried explicitly. This rebuild is the reason the conversation
+            // stack rendered nothing for an hour: the memberwise init defaults
+            // these to nil, so adding a field to PublishedState compiles here
+            // without a word and silently drops it on every poll.
+            conversation: sourceState.conversation,
+            conversations: sourceState.conversations,
             rows: rows,
             dismissed: sourceState.dismissed,
             dismissedRows: dismissedRows
