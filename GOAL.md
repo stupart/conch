@@ -116,6 +116,25 @@ missing, and why the previous reply vanishes when a new turn starts. It should
 be the actual conversation stack, the way the terminal shows it: every message
 in order, tool calls included, scrollable, live as it is written.
 
+**It carries an input bar, and that is not a side feature** (Tyler, 2026-08-07:
+"would also be great if i had the option to type messages and attach images
+too and what i said showed as transcription in that input bar there. gives the
+ability to still work when i can't make noise talking while still having our
+great unified conch interface"). Three things, one bar:
+- **Type instead of talk.** conch is unusable anywhere you cannot speak — a
+  cafe, a room with someone asleep, a meeting. Typing is not a fallback for a
+  broken mic; it is what makes conch work in the other half of the day.
+- **Live dictation lands IN the bar.** What you said appears as editable text
+  before it is sent, rather than being posted the moment recognition stops.
+  That also folds in items 6 and 7: you can SEE what is about to be sent, so a
+  clipboard fallback cannot silently claim "delivered", and a bad transcription
+  is fixed in place instead of re-dictated.
+- **Attach images.** Already scoped separately for the phone (screenshot →
+  relay → injected as a path the session can read). It belongs to this bar.
+
+Doing these together is the point: one input surface shared by both apps,
+whether the words arrive by voice, keyboard, or camera.
+
 **5. Render the end product inline, not a path to it.** *(deliverable
 ROUTING fixed on both apps; the inline surface is still to build)*
 Both routers now agree — video plays, a local page renders as a page, and an
