@@ -62,8 +62,10 @@ different cause that has not been found. Three things were needed, and all three
   worked; after that a drop reads "Reconnecting…", with advice that matches
   which of the three situations it is.
 
-Verified: two "phone paired" lines at 13:40 after the fix. Still unobserved:
-a real background→foreground cycle recovering unaided.
+Verified: two "phone paired" lines at 13:40 after the fix, and on 2026-08-07
+Tyler held an entire working conversation from the phone — many turns, over
+minutes, no drop. That is the strongest evidence yet, though still not a
+deliberate background→foreground cycle watched end to end.
 
 **2. Ship the iPhone app through TestFlight.**
 The build on the phone was installed over USB as a development build. Those
@@ -72,8 +74,8 @@ launching, whether or not anything new is shipped. TestFlight replaces that
 with real installs that auto-update and last 90 days. This is the only item
 with a deadline that arrives on its own.
 
-**3. `conch:review` never produces a review row.** *(FIXED and observed —
-Tyler saw the first review row render)*
+**3. `conch:review` never produces a review row.** *(FIXED and observed
+2026-08-07 — two separate causes, one found only after the first "fix")*
 An agent can end a reply with `conch:review <summary> | <link>` to flag work
 for a human look. The marker parses correctly, and the row is meant to show a
 gold star with that summary. No row ever appears. Two candidate causes were
@@ -85,6 +87,27 @@ at parse time. Three earlier attempts each fixed something real (pause was
 blamed and innocent; the parser was correct; the text source was changed) and
 none could have worked. The hook now waits for the turn to land, bounded to
 about a second.
+
+That was real but not sufficient — Tyler still saw no row, on either app, and
+reasonably suspected the switch from the marker to the `review_to_front` tool.
+The tool was innocent: both paths produce the same latched review, and it was
+being filed correctly every time. Two more things were destroying it after the
+fact, both of the same shape — an unrelated later event outliving the review:
+- **Its own Stop hook.** A review-less `turn-end` REPLACED the whole latched
+  record a second after filing. Since the tool only permits surfacing your OWN
+  work, this made it unusable for its only legal use, and the plugin documented
+  the marker as the workaround for a tool that could not keep its own result.
+- **The registry catching up.** The row only rendered a review while status was
+  exactly `waiting`, but the registry outvotes the latch when newer — and a
+  session that just filed a review is sitting waiting for the user, which
+  Claude Code registers as blocked, i.e. `needs`. The star showed only until
+  the next registry refresh.
+
+Measured live, before: latched 19:27:36 visible, gone 19:29:26 on the flip to
+`needs`, review still untouched in the latch. After: latched 20:23:16, still
+present at 20:24:29 through that same flip, cleared only at 20:25:28 when a new
+turn began. A review now survives until its session goes back to work — one
+rule, applied in both places.
 
 **4. Rebuild the reply pane as the whole conversation.**
 Today each app shows ONE reply, replaced wholesale every turn — which is why
