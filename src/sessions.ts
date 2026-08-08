@@ -20,6 +20,7 @@ import {
   readCodexSessions,
   type CodexSessionRegistryOptions,
 } from "./codex-sessions.ts";
+import { readCodexThreads } from "./codex-threads.ts";
 
 const LABELS_FILE = join(homedir(), ".config/conch/labels.json");
 const MAX_SESSION_LABEL_LENGTH = 40;
@@ -300,6 +301,22 @@ export async function registrySnapshot(
     infos.push(toInfo(entry, "codex"));
   }
   if (!codex.complete) complete = false;
+
+  // Codex sessions nobody wired a hook into.
+  //
+  // The registry above is written by `conch codex-hook`, which requires hooks
+  // in ~/.codex — shared config that only takes effect on session start, so it
+  // can never reach a session already running. Reading Codex's own databases
+  // observes those sessions without them participating at all. Hook-fed
+  // entries win on conflict: they carry a real pid, so they can be TALKED to,
+  // where an observed row can only be seen.
+  const observed = readCodexThreads(options);
+  for (const entry of observed.entries) {
+    if (liveIds.has(entry.sessionId)) continue;
+    liveIds.add(entry.sessionId);
+    infos.push(toInfo(entry, "codex"));
+  }
+  if (!observed.complete) complete = false;
 
   // No readable source at all retains the legacy "total uncertainty" result.
   // A readable Codex registry can still supply useful sessions when Claude's
