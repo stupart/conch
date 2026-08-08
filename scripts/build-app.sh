@@ -49,11 +49,32 @@ if [[ ! -d "$BUILT_APP_PATH" ]]; then
 fi
 
 echo "Installing $INSTALLED_APP_PATH"
+# Replacing the bundle pulls the ground out from under a RUNNING copy: the
+# process survives on its open inode but its resources are gone, and it starts
+# reporting nonsense — Tyler saw "daemon not responding" from an app whose
+# daemon was perfectly healthy. If it was running, put it back afterwards.
+#
+# Resolved to PIDs and killed one by one, never `pkill -f`: a pattern kill
+# reaches whatever else happens to match it, and has already cost this project
+# another session's work.
+WAS_RUNNING=""
+RUNNING_PIDS="$(pgrep -f "$INSTALLED_APP_PATH/Contents/MacOS/" || true)"
+if [[ -n "$RUNNING_PIDS" ]]; then
+  WAS_RUNNING=1
+  echo "conch.app is running (pids: $RUNNING_PIDS) — it will be relaunched on the new build"
+  for pid in $RUNNING_PIDS; do kill "$pid" 2>/dev/null || true; done
+  sleep 1
+fi
 rm -rf "$INSTALLED_APP_PATH"
 ditto "$BUILT_APP_PATH" "$INSTALLED_APP_PATH"
 
 echo "Verifying installed signature:"
 codesign --verify --strict --verbose=2 "$INSTALLED_APP_PATH"
 codesign -dv --verbose=2 "$INSTALLED_APP_PATH"
+
+if [[ -n "$WAS_RUNNING" ]]; then
+  echo "Relaunching conch.app"
+  open -a "$INSTALLED_APP_PATH"
+fi
 
 echo "Installed $INSTALLED_APP_PATH"

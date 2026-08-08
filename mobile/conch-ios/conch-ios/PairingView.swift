@@ -46,8 +46,17 @@ struct PairingView: View {
             Spacer()
 
             VStack(spacing: 8) {
-                Text("🐚")
-                    .font(.system(size: 34))
+                // The real icon, not the 🐚 emoji it replaced. This is the
+                // first screen anyone sees, and the emoji was a different shell
+                // from the one on the home screen they just tapped — the app
+                // introducing itself as something other than the thing they
+                // launched. Rounded to match how iOS masks the icon, so it
+                // reads as the same object.
+                Image("ConchMark")
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 64, height: 64)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 Text("conch")
                     .font(Type.label(22, weight: .semibold))
                     .foregroundStyle(Palette.textPrimary)
