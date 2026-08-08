@@ -14,6 +14,9 @@ struct SessionView: View {
     @State private var sendFailed = false
     @FocusState private var typing: Bool
     @State private var pickedPhoto: PhotosPickerItem?
+    /// Prepared and waiting, NOT uploaded. Nothing leaves the phone until you
+    /// press send — picking a picture is composing, not sending.
+    @State private var attachments: [PendingAttachment] = []
     @State private var attaching = false
     @State private var attachError: String?
     @State private var fetchedReply: String?
@@ -319,6 +322,37 @@ struct SessionView: View {
                     .padding(.horizontal, 20)
             }
 
+            // What is attached, before it is sent. An attachment you cannot
+            // see is one you cannot remove, and picking the wrong photo is the
+            // most likely mistake at this step.
+            if !attachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(attachments) { attachment in
+                            ZStack(alignment: .topTrailing) {
+                                if let thumbnail = attachment.thumbnail {
+                                    Image(uiImage: thumbnail)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fill)
+                                        .frame(width: 64, height: 64)
+                                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                                }
+                                Button {
+                                    attachments.removeAll { $0.id == attachment.id }
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 16))
+                                        .foregroundStyle(.white, .black.opacity(0.6))
+                                }
+                                .buttonStyle(.plain)
+                                .padding(3)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+            }
+
             // Type or talk, into the SAME draft. Speaking appends to it and
             // typing edits it, so a misheard word is fixed in place instead of
             // re-dictated, and a room where you cannot speak is not a room where
@@ -409,7 +443,8 @@ struct SessionView: View {
     }
 
     private var canSend: Bool {
-        !talk.draft(for: sessionId).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !attachments.isEmpty
+            || !talk.draft(for: sessionId).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Send what is there, else open the mic. Never both, never a guess.
@@ -422,11 +457,14 @@ struct SessionView: View {
         }
     }
 
-    /// Turn a picked photo into a path the agent can open.
+    /// Prepare a picked photo and hold it. Nothing is sent yet.
     ///
-    /// The path is appended to the DRAFT rather than sent immediately, so a
-    /// picture and the words about it travel together — "what's wrong with this
-    /// layout?" is one message, not two.
+    /// Tyler: "it shouldnt send right away anyways it should just add it to the
+    /// input box and then I hit send after adding any text that I want". He is
+    /// right, and it is also more robust — uploading at pick time meant a
+    /// network failure surfaced while you were still composing, with nothing to
+    /// retry. Now the picture rides the send, which already knows how to fail
+    /// and keep your words.
     private func attach(_ item: PhotosPickerItem) async {
         attaching = true
         attachError = nil
@@ -436,29 +474,49 @@ struct SessionView: View {
             attachError = "Couldn't read that picture."
             return
         }
-        let type = item.supportedContentTypes.first
-        // Sized for the agent that will actually read it.
-        guard let prepared = ImageUpload.prepare(data: raw, type: type, backend: row?.backend) else {
+        // Sized for the agent that will actually read it — the ceiling differs
+        // between Claude and Codex.
+        guard let prepared = ImageUpload.prepare(
+            data: raw,
+            type: item.supportedContentTypes.first,
+            backend: row?.backend
+        ) else {
             attachError = "That picture is too large to send."
             return
         }
-        guard let path = await bridge.uploadImage(data: prepared.data, ext: prepared.ext) else {
-            attachError = "Couldn't reach the Mac."
-            return
-        }
-        let existing = talk.draft(for: sessionId)
-        talk.setDraft(existing.isEmpty ? path : existing + "\n" + path, for: sessionId)
+        attachments.append(PendingAttachment(
+            data: prepared.data,
+            ext: prepared.ext,
+            thumbnail: UIImage(data: prepared.data)
+        ))
     }
 
     private func sendDraft() {
         sendFailed = false
+        attachError = nil
         let label = row?.label ?? ""
+        let pending = attachments
         // Route through the controller so a typed message takes exactly the
         // path a spoken one does: the mic closes, the draft is cleared only on
         // a CONFIRMED delivery, and a failure leaves your words on screen.
         talk.send(session: sessionId) { text in
-            let delivered = await bridge.inject(sessionId: sessionId, label: label, text: text)
-            if !delivered { sendFailed = true }
+            // Pictures first, because the message references their paths. If one
+            // fails the whole send fails, which keeps the words AND the images —
+            // half a message is worse than none.
+            var paths: [String] = []
+            for attachment in pending {
+                guard let path = await bridge.uploadImage(
+                    data: attachment.data,
+                    ext: attachment.ext
+                ) else {
+                    attachError = "Couldn't send the picture — try again."
+                    return false
+                }
+                paths.append(path)
+            }
+            let body = (paths + [text]).filter { !$0.isEmpty }.joined(separator: "\n")
+            let delivered = await bridge.inject(sessionId: sessionId, label: label, text: body)
+            if delivered { attachments = [] } else { sendFailed = true }
             return delivered
         }
     }
@@ -540,4 +598,13 @@ private struct ReviewCard: View {
         .buttonStyle(.plain)
         .disabled(review.link == nil)
     }
+}
+
+/// A picture chosen but not yet sent: already converted and sized for the agent
+/// that will read it, waiting for the send that carries it.
+private struct PendingAttachment: Identifiable {
+    let id = UUID()
+    let data: Data
+    let ext: String
+    let thumbnail: UIImage?
 }

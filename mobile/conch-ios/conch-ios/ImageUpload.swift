@@ -31,8 +31,18 @@ enum ImageUpload {
     }
     /// Per-image API limit; a 1568px image lands well under it.
     static let maxBytes = 5 * 1024 * 1024
-    /// Base64 inflates by a third, and a relay frame caps at 192 KiB.
-    static let chunkBytes = 120 * 1024
+    /// Raw bytes per chunk, sized against the PLAINTEXT limit after base64.
+    ///
+    /// The relay allows 128 KiB of plaintext body (192 KiB is the *encrypted*
+    /// frame, which is not the constraint). Base64 inflates by 4/3 and the JSON
+    /// envelope adds a little, so 120 KiB raw became ~160 KB and every frame was
+    /// rejected as too large — the upload failed, and the disrupted session then
+    /// failed the NEXT send too, which is why a text message that arrived fine
+    /// still reported "couldn't reach the Mac".
+    ///
+    /// 64 KiB raw is ~87 KB encoded: comfortably inside the limit with room for
+    /// the envelope, at the cost of a few more round trips.
+    static let chunkBytes = 64 * 1024
 
     struct Prepared {
         let data: Data
