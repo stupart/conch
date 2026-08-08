@@ -66,19 +66,29 @@ function openReadOnly(path: string): Database {
   // `readonly` is the whole safety story: Codex may be mid-write in another
   // process, and conch must never be the reason its database is locked.
   try {
-    return new Database(path, { readonly: true });
+    const db = new Database(path, { readonly: true });
+    // Force the open. `new Database(...)` is LAZY in Bun: it returns happily and
+    // SQLITE_CANTOPEN surfaces on the first query instead, so a try/catch around
+    // the constructor alone catches nothing and the fallback below was dead code
+    // — which is why Codex rows kept vanishing even after this was "fixed".
+    db.query("SELECT 1").get();
+    return db;
   } catch (error) {
-    // A WAL database with no `-shm` cannot be opened read-only at all: SQLite
-    // needs to CREATE that file and read-only forbids it. That is the state
-    // Codex leaves behind after a clean shutdown, so this failed exactly when
-    // Codex was not holding the database open — and because the optional
-    // history read shared a try block with the thread list, every Codex row
-    // disappeared whenever Codex was merely idle.
+    // Codex's live databases intermittently refuse a READ-ONLY open with
+    // SQLITE_CANTOPEN while a plain or `immutable=1` open of the same file
+    // succeeds. Measured repeatedly on the real files; the cause is NOT what it
+    // first looked like — a synthetic WAL database opens read-only fine, and
+    // `state_5.sqlite` reports journal_mode `delete` anyway. Whatever the
+    // mechanism, it is transient and correlated with Codex writing, and it cost
+    // every Codex row in both apps twice.
     //
-    // `immutable=1` reads without any shared-memory index. It is only sound
-    // when nobody is writing, which is precisely the case that gets here: a
-    // live Codex holds the `-shm` and the read-only open above succeeds.
-    return new Database(`file:${path}?immutable=1`, { readonly: true });
+    // `immutable=1` promises SQLite the file will not change. That is a real
+    // risk against a live writer — a torn read — which is why it is the
+    // FALLBACK and never the first choice, and why the caller treats any failure
+    // here as "incomplete" rather than "no sessions".
+    const fallback = new Database(`file:${path}?immutable=1`, { readonly: true });
+    fallback.query("SELECT 1").get();
+    return fallback;
   }
 }
 
@@ -443,10 +453,12 @@ export function readCodexThreads(
       })) as CodexSessionEntry[];
 
     return { entries, complete: true, available: true };
-  } catch {
-    // A torn read, a schema change in a future Codex, a locked file — report
-    // incomplete so liveness logic never concludes a session is GONE on the
-    // strength of a failed read.
+  } catch (error) {
+    // A torn read, a schema change in a future Codex, an unopenable file —
+    // report incomplete so liveness logic never concludes a session is GONE on
+    // the strength of a failed read. CONCH_DEBUG_CODEX surfaces it, because
+    // this catch silently hid two separate bugs for hours.
+    if (process.env.CONCH_DEBUG_CODEX) console.error("codex read failed:", error);
     return { entries: [], complete: false, available: false };
   } finally {
     db?.close();
