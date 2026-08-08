@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A10000000000000000000901 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000901 /* Assets.xcassets */; };
 		A10000000000000000000001 /* ConchMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* ConchMacApp.swift */; };
 		A10000000000000000000002 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* Models.swift */; };
 		A10000000000000000000003 /* StateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* StateStore.swift */; };
@@ -33,6 +34,7 @@
 		A20000000000000000000090 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
 		A20000000000000000000006 /* ReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewView.swift; sourceTree = "<group>"; };
 		A20000000000000000000007 /* WebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebView.swift; sourceTree = "<group>"; };
+		A20000000000000000000901 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A20000000000000000000009 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A2000000000000000000000A /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
 		A2000000000000000000000B /* conch-mac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "conch-mac.app"; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -83,6 +85,7 @@
 				B20000000000000000000001 /* SettingsProtocol.swift */,
 				B20000000000000000000002 /* SettingsView.swift */,
 				A20000000000000000000009 /* Info.plist */,
+				A20000000000000000000901 /* Assets.xcassets */,
 			);
 			path = "conch-mac";
 			sourceTree = "<group>";
@@ -161,6 +164,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10000000000000000000901 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -319,6 +323,7 @@
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				INFOPLIST_FILE = "conch-mac/Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -346,6 +351,7 @@
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				INFOPLIST_FILE = "conch-mac/Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
