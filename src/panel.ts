@@ -31,6 +31,8 @@ export interface DashboardMode {
 export interface PanelRowModel {
   sessionId: string;
   label: string;
+  /** Which agent runs this session; absent means Claude. */
+  backend?: "claude" | "codex";
   status: SessionStatus | null;
   /** Epoch-ms for the status currently visible on this row. */
   at?: number;
@@ -120,6 +122,14 @@ export interface PanelModel {
 export interface PublishedSessionRow {
   id: string;
   label: string;
+  /**
+   * Which agent this session runs, because the answer changes what a client
+   * should send it. Images are the first case: Claude resizes anything past
+   * 1568px on the long edge, while OpenAI's tile models fit to 2048 — so a
+   * phone that assumes one ceiling either wastes bytes or throws away detail
+   * the model would have used.
+   */
+  backend?: "claude" | "codex";
   status: SessionStatus | null;
   /** Epoch-ms for the status currently visible on this row. */
   at?: number;
@@ -317,6 +327,7 @@ export function buildPublishedState(
       return {
         id: row.sessionId,
         label: row.label,
+        ...(row.backend ? { backend: row.backend } : {}),
         status: row.status,
         ...(row.at !== undefined ? { at: row.at } : {}),
         ...(transcriptPath ? { transcriptPath } : {}),
@@ -405,6 +416,7 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
       return {
         sessionId: session.sessionId,
         label: sessionLabel(session, session.cwd),
+        ...(session.backend ? { backend: session.backend } : {}),
         status,
         ...(visibleState?.at !== undefined ? { at: visibleState.at } : {}),
         ...(status === "needs" && latched?.detail

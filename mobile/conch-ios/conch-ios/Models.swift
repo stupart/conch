@@ -99,6 +99,8 @@ struct PublishedState: Decodable, Equatable {
         var id = ""
         var label = ""
         var status = "working"
+        /// Which agent runs this session; decides how an image is sized for it.
+        var backend: String?
         var detail: String?
         var at: Double = 0
         var live: String?
@@ -122,7 +124,7 @@ struct PublishedState: Decodable, Equatable {
         }
 
         private enum CodingKeys: String, CodingKey {
-            case id, label, status, detail, at, live, muted, paused, review
+            case id, label, status, backend, detail, at, live, muted, paused, review
         }
 
         init() {}
@@ -132,6 +134,7 @@ struct PublishedState: Decodable, Equatable {
             id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? ""
             label = (try? c.decodeIfPresent(String.self, forKey: .label)) ?? ""
             status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? "working"
+            backend = try? c.decodeIfPresent(String.self, forKey: .backend)
             detail = try? c.decodeIfPresent(String.self, forKey: .detail)
             at = (try? c.decodeIfPresent(Double.self, forKey: .at)) ?? 0
             live = try? c.decodeIfPresent(String.self, forKey: .live)

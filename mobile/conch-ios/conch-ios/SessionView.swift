@@ -437,7 +437,8 @@ struct SessionView: View {
             return
         }
         let type = item.supportedContentTypes.first
-        guard let prepared = ImageUpload.prepare(data: raw, type: type) else {
+        // Sized for the agent that will actually read it.
+        guard let prepared = ImageUpload.prepare(data: raw, type: type, backend: row?.backend) else {
             attachError = "That picture is too large to send."
             return
         }

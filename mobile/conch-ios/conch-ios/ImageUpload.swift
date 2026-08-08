@@ -17,8 +17,18 @@ import UniformTypeIdentifiers
 /// performance". Downscaling to 1568 therefore loses nothing the model would
 /// have seen, and arrives sooner. Anything already smaller is sent untouched.
 enum ImageUpload {
-    /// The long edge Anthropic scales to. Sending more is slower for no gain.
-    static let maxEdge: CGFloat = 1568
+    /// The long edge each agent actually uses.
+    ///
+    /// They are NOT the same, which Tyler thought to ask about before this
+    /// shipped one number for both. Anthropic scales anything past 1568px on
+    /// the long edge; OpenAI's tile models fit within 2048x2048 and then take
+    /// the shortest side to 768 for high detail. Sizing everything to 1568
+    /// would quietly throw away detail a Codex session would have used, and
+    /// sizing everything to 2048 would send Claude a third more pixels than it
+    /// keeps.
+    static func maxEdge(for backend: String?) -> CGFloat {
+        backend == "codex" ? 2048 : 1568
+    }
     /// Per-image API limit; a 1568px image lands well under it.
     static let maxBytes = 5 * 1024 * 1024
     /// Base64 inflates by a third, and a relay frame caps at 192 KiB.
@@ -42,7 +52,8 @@ enum ImageUpload {
     ///    most useful, and JPEG artefacts land hardest on text and flat colour.
     ///  - GIF and WebP pass through untouched; re-encoding a GIF would drop its
     ///    animation, which is the only reason to send one.
-    static func prepare(data: Data, type: UTType?) -> Prepared? {
+    static func prepare(data: Data, type: UTType?, backend: String?) -> Prepared? {
+        let maxEdge = maxEdge(for: backend)
         let isPNG = type?.conforms(to: .png) ?? false
         if let type, type.conforms(to: .gif) || type.identifier == "org.webmproject.webp" {
             let ext = type.conforms(to: .gif) ? "gif" : "webp"
