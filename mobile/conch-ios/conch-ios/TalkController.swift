@@ -165,6 +165,60 @@ final class TalkController: NSObject, ObservableObject {
         session == targetSessionId ? transcript : (parked[session] ?? "")
     }
 
+    /// Send this session's draft, however it got there.
+    ///
+    /// While the mic is open this IS the existing finish path, so a typed
+    /// correction to a dictated sentence is sent by the same code that has
+    /// learned not to lose the tail. With the mic closed it delivers the draft
+    /// directly — the case that did not exist before, because there was no way
+    /// to have a draft without speaking one.
+    ///
+    /// Clearing follows the same rule either way: only what was ACKNOWLEDGED is
+    /// removed, and only the exact prefix that was sent, so anything typed or
+    /// heard during the round trip survives.
+    func send(session: String, deliver: @escaping (String) async -> Bool) {
+        if phase == .sending { return }
+        if phase == .listening, session == targetSessionId {
+            finish(deliver: deliver)
+            return
+        }
+        switchTarget(to: session)
+        let text = committed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        phase = .sending
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let delivered = await deliver(text)
+            if delivered {
+                let held = self.committed.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.committed = held.hasPrefix(text)
+                    ? String(held.dropFirst(text.count))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    : ""
+            }
+            self.phase = .idle
+        }
+    }
+
+    /// Type into the same draft speech is dictating into.
+    ///
+    /// Tyler: "i had the option to type messages... and what i said showed as
+    /// transcription in that input bar there. gives the ability to still work
+    /// when i can't make noise talking". One draft, two ways in — so a bad
+    /// transcription is fixed in place rather than re-dictated, and a room where
+    /// you cannot speak is not a room where conch stops working.
+    ///
+    /// Writes to `committed`, the banked half, and leaves `partial` alone: an
+    /// edit must not fight words still arriving from the recogniser mid-sentence.
+    func setDraft(_ text: String, for session: String) {
+        if session == targetSessionId {
+            committed = text
+        } else {
+            if text.isEmpty { parked.removeValue(forKey: session) } else { parked[session] = text }
+            persistDrafts()
+        }
+    }
+
     /// Throw a draft away, on purpose.
     ///
     /// Everything else in here refuses to delete your words; that only works

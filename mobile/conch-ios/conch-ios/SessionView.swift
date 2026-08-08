@@ -11,6 +11,7 @@ struct SessionView: View {
     let sessionId: String
     @State private var showReview = false
     @State private var sendFailed = false
+    @FocusState private var typing: Bool
     @State private var fetchedReply: String?
     @State private var loadingReply = false
     /// The reply the fetched copy belongs to, so a new turn refetches instead
@@ -319,23 +320,38 @@ struct SessionView: View {
                     .padding(.horizontal, 20)
             }
 
-            Button(action: toggleTalk) {
-                HStack(spacing: 10) {
-                    Image(systemName: isTalkingHere ? "arrow.up.circle.fill" : "mic.fill")
-                        .font(.system(size: 20, weight: .semibold))
-                    Text(talkLabel)
-                        .font(Type.label(17, weight: .semibold))
+            // Type or talk, into the SAME draft. Speaking appends to it and
+            // typing edits it, so a misheard word is fixed in place instead of
+            // re-dictated, and a room where you cannot speak is not a room where
+            // conch stops working.
+            HStack(alignment: .bottom, spacing: 10) {
+                TextField("Type or talk…", text: draftBinding, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(Type.body)
+                    .foregroundStyle(Palette.textPrimary)
+                    .lineLimit(1...6)
+                    .focused($typing)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 12)
+                    .background(Palette.raised, in: RoundedRectangle(cornerRadius: 16))
+                    .submitLabel(.send)
+
+                // One button, and what it does is never ambiguous: send when
+                // there is something to send, otherwise open the mic.
+                Button(action: primaryAction) {
+                    Image(systemName: canSend ? "arrow.up.circle.fill" : "mic.fill")
+                        .font(.system(size: 22, weight: .semibold))
+                        .frame(width: 46, height: 46)
+                        .background(
+                            isTalkingHere || canSend ? Palette.micOpen : Palette.raised,
+                            in: RoundedRectangle(cornerRadius: 16)
+                        )
+                        .foregroundStyle(isTalkingHere || canSend ? Palette.bg : Palette.textPrimary)
                 }
-                .frame(maxWidth: .infinity)
-                .frame(height: 58)
-                .background(
-                    isTalkingHere ? Palette.micOpen : Palette.raised,
-                    in: RoundedRectangle(cornerRadius: 16)
-                )
-                .foregroundStyle(isTalkingHere ? Palette.bg : Palette.textPrimary)
+                .buttonStyle(.plain)
+                .disabled(talk.phase == .sending)
+                .accessibilityLabel(canSend ? "Send" : "Open the microphone")
             }
-            .buttonStyle(.plain)
-            .disabled(talk.phase == .sending)
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
             .animation(.easeOut(duration: 0.18), value: talk.phase)
@@ -344,10 +360,40 @@ struct SessionView: View {
         .background(.ultraThinMaterial.opacity(0.06))
     }
 
-    private var talkLabel: String {
-        if isTalkingHere { return "Send" }
-        if talk.targetSessionId == sessionId, talk.phase == .sending { return "Sending…" }
-        return "Talk"
+    /// The draft, editable. Reading and writing the same string speech uses is
+    /// what makes typing and talking one surface rather than two.
+    private var draftBinding: Binding<String> {
+        Binding(
+            get: { talk.draft(for: sessionId) },
+            set: { talk.setDraft($0, for: sessionId) }
+        )
+    }
+
+    private var canSend: Bool {
+        !talk.draft(for: sessionId).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Send what is there, else open the mic. Never both, never a guess.
+    private func primaryAction() {
+        typing = false
+        if canSend {
+            sendDraft()
+        } else {
+            toggleTalk()
+        }
+    }
+
+    private func sendDraft() {
+        sendFailed = false
+        let label = row?.label ?? ""
+        // Route through the controller so a typed message takes exactly the
+        // path a spoken one does: the mic closes, the draft is cleared only on
+        // a CONFIRMED delivery, and a failure leaves your words on screen.
+        talk.send(session: sessionId) { text in
+            let delivered = await bridge.inject(sessionId: sessionId, label: label, text: text)
+            if !delivered { sendFailed = true }
+            return delivered
+        }
     }
 
     private func toggleTalk() {
