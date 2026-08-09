@@ -7,6 +7,31 @@ final class BridgeClient: ObservableObject {
     @Published private(set) var state: PublishedState?
     @Published private(set) var isConnected = false
     @Published private(set) var lastError: String?
+    /// Recent connection history, so a failure away from the desk leaves
+    /// evidence instead of a shrug.
+    ///
+    /// Tyler took the phone out, it did not work, and the only record was on
+    /// the Mac — which showed its own relay healthy the whole time and the
+    /// phone simply absent for three hours. Whatever the phone was doing, it
+    /// was doing it unobserved. Kept in memory and shown in Settings: enough to
+    /// answer "did it even try, and what did it say?"
+    @Published private(set) var journal: [ConnectionEvent] = []
+
+    struct ConnectionEvent: Identifiable, Equatable {
+        let id = UUID()
+        let at: Date
+        let connected: Bool
+        let detail: String?
+    }
+
+    private static let journalLimit = 60
+
+    private func record(connected: Bool, detail: String?) {
+        journal.append(ConnectionEvent(at: Date(), connected: connected, detail: detail))
+        if journal.count > Self.journalLimit {
+            journal.removeFirst(journal.count - Self.journalLimit)
+        }
+    }
 
     private let pairing: Pairing
     private let transport: BridgeTransport
@@ -61,6 +86,12 @@ final class BridgeClient: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let becameConnected = connected && !self.isConnected
+                // Record every TRANSITION, not every callback: a retry loop
+                // fires constantly, and sixty lines of "still trying" would push
+                // out the one line that says why.
+                if connected != self.isConnected || (!connected && error != self.lastError) {
+                    self.record(connected: connected, detail: error)
+                }
                 self.isConnected = connected
                 if connected { self.hasEverConnected = true }
                 self.lastError = connected ? nil : error

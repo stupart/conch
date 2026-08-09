@@ -43,6 +43,43 @@ struct SettingsView: View {
                             .listRowBackground(Palette.bg)
                             .listRowSeparatorTint(Palette.divider)
                         }
+
+                        // What the connection actually did, so a failure away
+                        // from the desk can be reported instead of guessed at.
+                        Section("Connection") {
+                            HStack {
+                                Circle()
+                                    .fill(bridge.isConnected ? Palette.working : Palette.needs)
+                                    .frame(width: 7, height: 7)
+                                Text(bridge.isConnected ? "Connected" : "Not connected")
+                                    .font(Type.summary)
+                                    .foregroundStyle(Palette.textPrimary)
+                                Spacer()
+                            }
+                            .listRowBackground(Palette.bg)
+
+                            if bridge.journal.isEmpty {
+                                Text("No connection changes since the app opened.")
+                                    .font(Type.caption)
+                                    .foregroundStyle(Palette.textFaint)
+                                    .listRowBackground(Palette.bg)
+                            }
+                            ForEach(bridge.journal.reversed()) { event in
+                                HStack(alignment: .top, spacing: 8) {
+                                    Text(event.at, style: .time)
+                                        .font(Type.mono)
+                                        .foregroundStyle(Palette.textFaint)
+                                    Text(event.connected ? "connected" : (event.detail ?? "disconnected"))
+                                        .font(Type.caption)
+                                        .foregroundStyle(
+                                            event.connected ? Palette.textDim : Palette.needs
+                                        )
+                                    Spacer(minLength: 0)
+                                }
+                                .listRowBackground(Palette.bg)
+                                .listRowSeparatorTint(Palette.divider)
+                            }
+                        }
                     }
                     .listStyle(.plain)
                 }
