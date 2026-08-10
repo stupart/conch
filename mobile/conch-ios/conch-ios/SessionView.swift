@@ -353,98 +353,100 @@ struct SessionView: View {
                 }
             }
 
-            // One row: attach, field, mic, send.
+            // One surface holding the field AND its controls, the shape
+            // ChatGPT uses and Tyler asked for after two misses.
             //
-            // Two earlier attempts were both wrong in the same way — they gave
-            // the chrome too much room. First three buttons shared the row and
-            // squeezed the field to half the screen; then the buttons moved to
-            // their own row below, which read as detached and cost a whole band
-            // of height with the keyboard already up. Compact controls beside a
-            // flexible field is what every messaging app converges on, and it is
-            // what leaves the most space for the thing you are writing.
-            HStack(alignment: .bottom, spacing: 7) {
-                PhotosPicker(selection: $pickedPhoto, matching: .images, photoLibrary: .shared()) {
-                    Image(systemName: "photo")
-                        .font(.system(size: 16, weight: .semibold))
-                        .frame(width: 36, height: 36)
-                        .background(Palette.raised, in: Circle())
-                        .foregroundStyle(Palette.textPrimary)
-                }
-                .disabled(attaching)
-                .accessibilityLabel("Attach a picture")
+            // The first attempt put three buttons beside the field and squeezed
+            // it to half the screen; the second moved them to a row underneath,
+            // which read as detached because it was a SEPARATE surface. The fix
+            // is not where the buttons sit but what they sit on: inside the same
+            // rounded container, the row is part of the composer rather than
+            // chrome stacked beneath it.
+            VStack(spacing: 10) {
+                TextField("Type or talk…", text: draftBinding, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(Type.body)
+                    .foregroundStyle(Palette.textPrimary)
+                    .lineLimit(1...7)
+                    .focused($typing)
+                    // `.return`, not `.send`: the field is multiline, so the key
+                    // inserts a newline. Labelling it "send" made it say one
+                    // thing and do another — and newlines matter, since an
+                    // attached picture's path sits on its own line above what
+                    // you are asking about.
+                    .submitLabel(.return)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-                HStack(alignment: .bottom, spacing: 6) {
-                    TextField("Type or talk…", text: draftBinding, axis: .vertical)
-                        .textFieldStyle(.plain)
-                        .font(Type.body)
-                        .foregroundStyle(Palette.textPrimary)
-                        .lineLimit(1...6)
-                        .focused($typing)
-                        // `.return`, not `.send`: the field is multiline, so the
-                        // key inserts a newline. Labelling it "send" made it say
-                        // one thing and do another — and newlines matter, since
-                        // an attached picture's path sits on its own line above
-                        // what you are asking about.
-                        .submitLabel(.return)
+                HStack(spacing: 14) {
+                    // Plain glyphs on the left, weight reserved for the actions
+                    // that send something.
+                    PhotosPicker(selection: $pickedPhoto, matching: .images, photoLibrary: .shared()) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 19, weight: .medium))
+                            .frame(width: 30, height: 30)
+                            .foregroundStyle(Palette.textPrimary)
+                    }
+                    .disabled(attaching)
+                    .accessibilityLabel("Attach a picture")
 
-                    // Deliberate deletion, kept. Everything else in the draft
-                    // machinery refuses to lose your words, and that only works
-                    // as a promise if you can throw them away on purpose.
                     if canSend, talk.phase != .sending {
+                        // Deliberate deletion, kept. Everything else in the draft
+                        // machinery refuses to lose your words, and that only
+                        // works as a promise if you can throw them away yourself.
                         Button {
                             talk.discard(session: sessionId)
                             attachments = []
                             sendFailed = false
                         } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 14))
+                            Image(systemName: "trash")
+                                .font(.system(size: 16, weight: .medium))
+                                .frame(width: 30, height: 30)
                                 .foregroundStyle(Palette.textFaint)
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel("Discard what you have written")
                     }
-                }
-                .padding(.leading, 13)
-                .padding(.trailing, 9)
-                .padding(.vertical, 9)
-                .background(Palette.raised, in: RoundedRectangle(cornerRadius: 18))
 
-                // The mic stays a mic. It used to BECOME send as soon as you
-                // typed a character, which quietly broke the point of a shared
-                // draft: you could no longer dictate onto something you typed.
-                Button(action: toggleTalk) {
-                    Image(systemName: isTalkingHere ? "stop.fill" : "mic.fill")
-                        .font(.system(size: 16, weight: .semibold))
-                        .frame(width: 36, height: 36)
-                        // Blue at rest, not only once armed. Talking is the
-                        // point of conch, and a grey mic reads as a fallback.
-                        .background(Palette.micOpen, in: Circle())
-                        .foregroundStyle(Palette.bg)
-                }
-                .buttonStyle(.plain)
-                .disabled(talk.phase == .sending)
-                .accessibilityLabel(isTalkingHere ? "Close the microphone" : "Open the microphone")
+                    Spacer(minLength: 0)
 
-                if canSend || talk.phase == .sending {
-                    Button(action: sendDraft) {
-                        Group {
-                            if talk.phase == .sending {
-                                ProgressView().controlSize(.small).tint(Palette.bg)
-                            } else {
-                                Image(systemName: "arrow.up")
-                                    .font(.system(size: 16, weight: .bold))
-                            }
-                        }
-                        .frame(width: 36, height: 36)
-                        .background(Palette.textPrimary, in: Circle())
-                        .foregroundStyle(Palette.bg)
+                    // The mic stays a mic and stays blue. It used to BECOME send
+                    // as soon as you typed, which quietly broke the point of a
+                    // shared draft: you could no longer dictate onto typed text.
+                    Button(action: toggleTalk) {
+                        Image(systemName: isTalkingHere ? "stop.fill" : "mic.fill")
+                            .font(.system(size: 17, weight: .semibold))
+                            .frame(width: 38, height: 38)
+                            .background(Palette.micOpen, in: Circle())
+                            .foregroundStyle(Palette.bg)
                     }
                     .buttonStyle(.plain)
                     .disabled(talk.phase == .sending)
-                    .accessibilityLabel("Send")
-                    .transition(.scale.combined(with: .opacity))
+                    .accessibilityLabel(isTalkingHere ? "Close the microphone" : "Open the microphone")
+
+                    if canSend || talk.phase == .sending {
+                        Button(action: sendDraft) {
+                            Group {
+                                if talk.phase == .sending {
+                                    ProgressView().controlSize(.small).tint(Palette.bg)
+                                } else {
+                                    Image(systemName: "arrow.up")
+                                        .font(.system(size: 17, weight: .bold))
+                                }
+                            }
+                            .frame(width: 38, height: 38)
+                            .background(Palette.textPrimary, in: Circle())
+                            .foregroundStyle(Palette.bg)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(talk.phase == .sending)
+                        .accessibilityLabel("Send")
+                        .transition(.scale.combined(with: .opacity))
+                    }
                 }
             }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(Palette.raised, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
             .animation(.easeOut(duration: 0.16), value: canSend)
