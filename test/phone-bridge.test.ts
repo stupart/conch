@@ -1,3 +1,4 @@
+import { injectTimeoutFor } from "../src/daemon.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -588,5 +589,26 @@ describe("the audio lease", () => {
     ws.close();
     await new Promise<void>((r) => setTimeout(r, 400));
     expect(b.clientCount()).toBe(0);
+  });
+});
+
+describe("how long the daemon gets to answer", () => {
+  // An inject focuses a pane, types, confirms the text landed and re-sends if
+  // it did not. On a real send that took "1 re-send", the phone gave up two
+  // seconds after the daemon had confirmed delivery — so a message that
+  // arrived perfectly reported "couldn't reach your Mac". A false failure is
+  // the expensive kind: it teaches you not to trust a send that worked.
+  test("an inject gets a budget that matches what it does", () => {
+    expect(injectTimeoutFor(JSON.stringify({ type: "inject", text: "hi" })))
+      .toBeGreaterThan(20_000);
+  });
+
+  test("everything else stays fast, where a quick answer is the point", () => {
+    expect(injectTimeoutFor(JSON.stringify({ kind: "audio-sink", sink: "phone" }))).toBe(4_000);
+    expect(injectTimeoutFor(JSON.stringify({ type: "pause" }))).toBe(4_000);
+  });
+
+  test("a malformed line does not get the long budget by accident", () => {
+    expect(injectTimeoutFor("not json")).toBe(4_000);
   });
 });

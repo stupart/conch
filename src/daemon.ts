@@ -1193,6 +1193,21 @@ const MAX_PUBLISHED_CONVERSATIONS = 8;
 /** Per-session window. Smaller than the focused one: this is every row at once. */
 const PUBLISHED_CONVERSATION_WINDOW = 30;
 
+/**
+ * How long to wait for the daemon to answer one control line.
+ *
+ * Injection does UI automation with confirm-and-retry; a status query does not.
+ * Giving them the same budget meant the slow one reported failure while
+ * succeeding.
+ */
+export function injectTimeoutFor(line: string): number {
+  try {
+    const kind = JSON.parse(line)?.type ?? JSON.parse(line)?.kind;
+    if (kind === "inject") return 25_000;
+  } catch {}
+  return 4_000;
+}
+
 export function buildDaemonPublishedState(
   cfg: Config,
   model: PanelModel,
@@ -1833,7 +1848,21 @@ export async function runDaemon(cfg: Config): Promise<void> {
       phoneApplication = createPhoneBridgeApplication(
         {
           getState: () => lastPublishedPanelState,
-          forwardControl: (line) => forwardToDaemonSocket(cfg.socketPath, line),
+          forwardControl: (line) => forwardToDaemonSocket(
+            cfg.socketPath,
+            line,
+            // An inject is not a query. It focuses a pane, types, CONFIRMS the
+            // text landed and re-sends if it did not — UI automation that
+            // routinely outlives a four-second budget. Measured: "confirmed
+            // sent (after 1 re-send)" at 22:16:29 and the phone giving up two
+            // seconds later, so a message that arrived perfectly reported
+            // "couldn't reach your Mac".
+            //
+            // A false failure is the expensive kind here: it teaches you not to
+            // trust a send that worked, and invites sending twice. Everything
+            // else stays on the short budget, where a quick answer is the point.
+            injectTimeoutFor(line),
+          ),
           onClientsChanged: (count) => {
             if (audioLease.clientsChanged(count)) {
               log("phone disconnected — audio back on this Mac");

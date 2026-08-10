@@ -353,17 +353,21 @@ struct SessionView: View {
                 }
             }
 
-            // Type or talk, into the SAME draft. Speaking appends to it and
-            // typing edits it, so a misheard word is fixed in place instead of
-            // re-dictated, and a room where you cannot speak is not a room where
-            // conch stops working.
-            HStack(alignment: .bottom, spacing: 10) {
+            // Field first, controls underneath.
+            //
+            // They were one row: field on the left, three buttons on the right.
+            // That left the field about half the screen, so a two-line message
+            // wrapped into six narrow lines beside a column of buttons — Tyler:
+            // "this new layout is goofy we cant have this lol", with a
+            // screenshot that made it obvious. What you are writing deserves the
+            // full width; the controls are small and belong out of its way.
+            VStack(spacing: 10) {
                 HStack(alignment: .bottom, spacing: 6) {
                     TextField("Type or talk…", text: draftBinding, axis: .vertical)
                         .textFieldStyle(.plain)
                         .font(Type.body)
                         .foregroundStyle(Palette.textPrimary)
-                        .lineLimit(1...6)
+                        .lineLimit(1...8)
                         .focused($typing)
                         // `.return`, not `.send`: this field is multiline, so
                         // the key inserts a newline. Labelling it "send" made it
@@ -374,11 +378,11 @@ struct SessionView: View {
 
                     // Deliberate deletion, kept. Everything else in the draft
                     // machinery refuses to lose your words, and that only works
-                    // as a promise if you can throw them away on purpose —
-                    // clearing a long dictation by hand is not that.
+                    // as a promise if you can throw them away on purpose.
                     if canSend, talk.phase != .sending {
                         Button {
                             talk.discard(session: sessionId)
+                            attachments = []
                             sendFailed = false
                         } label: {
                             Image(systemName: "xmark.circle.fill")
@@ -391,59 +395,60 @@ struct SessionView: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
-                .background(Palette.raised, in: RoundedRectangle(cornerRadius: 16))
+                .background(Palette.raised, in: RoundedRectangle(cornerRadius: 18))
 
-                // The camera roll, one tap from the same bar. An image is a
-                // sentence you cannot say — "look at this" is most of why the
-                // phone is the surface that matters.
-                PhotosPicker(selection: $pickedPhoto, matching: .images, photoLibrary: .shared()) {
-                    Image(systemName: attaching ? "arrow.up.circle" : "photo")
-                        .font(.system(size: 20, weight: .semibold))
-                        .frame(width: 46, height: 46)
-                        .background(Palette.raised, in: RoundedRectangle(cornerRadius: 16))
-                        .foregroundStyle(Palette.textPrimary)
-                }
-                .disabled(attaching)
-                .accessibilityLabel("Attach a picture")
+                HStack(spacing: 10) {
+                    // The camera roll, one tap from the same bar. An image is a
+                    // sentence you cannot say — "look at this" is most of why
+                    // the phone is the surface that matters.
+                    PhotosPicker(selection: $pickedPhoto, matching: .images, photoLibrary: .shared()) {
+                        Image(systemName: "photo")
+                            .font(.system(size: 18, weight: .semibold))
+                            .frame(width: 44, height: 44)
+                            .background(Palette.raised, in: RoundedRectangle(cornerRadius: 14))
+                            .foregroundStyle(Palette.textPrimary)
+                    }
+                    .disabled(attaching)
+                    .accessibilityLabel("Attach a picture")
 
-                // The mic stays a mic. It used to BECOME send as soon as you
-                // typed a character, which quietly broke the whole point of a
-                // shared draft: you could no longer dictate onto something you
-                // had typed. Tyler: "keep the speech button as an option instead
-                // of turning it to send".
-                Button(action: toggleTalk) {
-                    Image(systemName: isTalkingHere ? "stop.fill" : "mic.fill")
-                        .font(.system(size: 20, weight: .semibold))
-                        .frame(width: 46, height: 46)
-                        // Blue at rest, not only once armed. Talking is the
-                        // point of conch, and a grey mic beside a text field
-                        // reads as the fallback rather than the main event.
-                        .background(Palette.micOpen, in: RoundedRectangle(cornerRadius: 16))
-                        .foregroundStyle(Palette.bg)
-                }
-                .buttonStyle(.plain)
-                .disabled(talk.phase == .sending)
-                .accessibilityLabel(isTalkingHere ? "Close the microphone" : "Open the microphone")
-
-                // Send appears only when there is something to send, so the bar
-                // is a mic until you have said or written something.
-                if canSend || talk.phase == .sending {
-                    Button(action: sendDraft) {
-                        Group {
-                            if talk.phase == .sending {
-                                ProgressView().controlSize(.small).tint(Palette.bg)
-                            } else {
-                                Image(systemName: "arrow.up")
-                                    .font(.system(size: 20, weight: .bold))
-                            }
-                        }
-                        .frame(width: 46, height: 46)
-                        .background(Palette.textPrimary, in: RoundedRectangle(cornerRadius: 16))
-                        .foregroundStyle(Palette.bg)
+                    // The mic stays a mic. It used to BECOME send as soon as you
+                    // typed a character, which quietly broke the whole point of a
+                    // shared draft: you could no longer dictate onto something
+                    // you had typed.
+                    Button(action: toggleTalk) {
+                        Image(systemName: isTalkingHere ? "stop.fill" : "mic.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .frame(width: 44, height: 44)
+                            // Blue at rest, not only once armed. Talking is the
+                            // point of conch, and a grey mic reads as a fallback
+                            // rather than the main event.
+                            .background(Palette.micOpen, in: RoundedRectangle(cornerRadius: 14))
+                            .foregroundStyle(Palette.bg)
                     }
                     .buttonStyle(.plain)
                     .disabled(talk.phase == .sending)
-                    .accessibilityLabel("Send")
+                    .accessibilityLabel(isTalkingHere ? "Close the microphone" : "Open the microphone")
+
+                    Spacer(minLength: 0)
+
+                    if canSend || talk.phase == .sending {
+                        Button(action: sendDraft) {
+                            Group {
+                                if talk.phase == .sending {
+                                    ProgressView().controlSize(.small).tint(Palette.bg)
+                                } else {
+                                    Image(systemName: "arrow.up")
+                                        .font(.system(size: 18, weight: .bold))
+                                }
+                            }
+                            .frame(width: 44, height: 44)
+                            .background(Palette.textPrimary, in: RoundedRectangle(cornerRadius: 14))
+                            .foregroundStyle(Palette.bg)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(talk.phase == .sending)
+                        .accessibilityLabel("Send")
+                    }
                 }
             }
             .padding(.horizontal, 16)
