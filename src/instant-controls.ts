@@ -240,14 +240,6 @@ export function gateTurnForControls(
   // Explicit user commands cut through quiet modes. Settings remains a modal
   // pause: it traps input itself, and a queued command must not pierce it.
   const explicitQuietOverride = event.type === "wake" || event.type === "recite";
-  // An inject is YOU sending something, and pause has never been about that.
-  //
-  // Pause holds conch's OUTPUT so it stops talking; holding your input as well
-  // meant a message typed on the phone was parked forever, the control reply
-  // never came, and the phone reported "Couldn't reach the Mac" — wrong twice
-  // over, since the Mac was fine and the words were not sent but stored. Tyler
-  // hit this on every message to a session while conch happened to be paused.
-  if (event.type === "inject") return null;
   if (
     audible
     && !explicitQuietOverride

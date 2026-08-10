@@ -36,11 +36,24 @@ export async function injectText(
   options: InjectTextOptions = {},
 ): Promise<InjectTextResult> {
   const submit = cfg.autoSubmit;
+  // Step-level timing, because three plausible theories about why an inject
+  // stalls were all wrong when checked against data — a pause gate injects
+  // never reach, an event loop that was never blocked, and a keystroke cost
+  // that does not correlate with length (1414 chars succeeded; 49 failed).
+  // The path has several awaits that can each hang for their own reasons, and
+  // nothing said which one. CONCH_DEBUG_INJECT=1 makes it say.
+  const debugInject = process.env.CONCH_DEBUG_INJECT === "1";
+  const startedAt = Date.now();
+  const step = (name: string): void => {
+    if (debugInject) console.error(`[inject ${Date.now() - startedAt}ms] ${name}`);
+  };
+  step(`begin pid=${sessionPid ?? "none"} chars=${text.length}`);
   const copyToClipboard = options.copyToClipboard ?? toClipboard;
   const mayInject = async (): Promise<boolean> => beforeInject ? await beforeInject() : true;
   const interrupted = (): InjectTextResult => ({ via: "none", interrupted: true });
   if (sessionPid) {
     const pane = await findTmuxPane(sessionPid);
+    step(`findTmuxPane -> ${pane ?? "none"}`);
     if (pane) {
       if (!(await mayInject())) return interrupted();
       // `-l --`: -l sends the text as literal keys, -- stops flag parsing so a
@@ -48,6 +61,7 @@ export async function injectText(
       // AND used to throw, killing the daemon). nothrow + exit check so any
       // send-keys refusal falls through to clipboard instead of crashing.
       const r = await $`tmux send-keys -t ${pane} -l -- ${text}`.quiet().nothrow();
+      step(`tmux send-keys exit=${r.exitCode}`);
       if (r.exitCode === 0) {
         if (submit) {
           if (!(await mayInject())) return interrupted();
@@ -65,6 +79,7 @@ export async function injectText(
       return { via: "clipboard", reason: "session-not-routable" };
     }
     const focused = sessionPid ? await focusSessionWindow(sessionPid) : false;
+    step(`focusSessionWindow -> ${focused}`);
     if (!focused && sessionPid) {
       // We know which session this is for but can't put its window in
       // front — typing would land somewhere unknowable. Clipboard instead.
@@ -78,6 +93,7 @@ export async function injectText(
       ["osascript", "-e", "on run argv", "-e", 'tell application "System Events" to keystroke (item 1 of argv)', "-e", "end run", "--", text],
       { stdout: "ignore", stderr: "ignore" },
     ).exited;
+    step("osascript keystroke returned");
     if (submit) {
       // Separate, delayed Return: bundling it with the text arrived before the
       // terminal finished ingesting the keystrokes. Scale the settle to the
