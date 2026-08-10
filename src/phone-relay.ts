@@ -416,6 +416,19 @@ export class MacRelayPeer {
       // forever while the person watches "Looking for your Mac".
       if (!this.#cipher) {
         this.log(`phone hello rejected: ${error instanceof Error ? error.message : String(error)}`);
+        // We have NO session and this is not a hello, so the phone is talking
+        // under keys we no longer hold — the state after our relay socket
+        // reconnects or the daemon restarts. Dropping the frame silently left
+        // the phone encrypting into a void for MINUTES: it had a session, we
+        // did not, and nothing told it otherwise. Measured on Tyler's phone as
+        // "paired 12:19:24, rejected 12:22:27", with every send in between
+        // failing as "daemon reply timed out" and reported to him as
+        // "Couldn't reach the Mac".
+        //
+        // Closing is the signal. The phone's transport already reconnects with
+        // backoff and opens a fresh handshake, which turns a multi-minute
+        // silent stall into about a second.
+        throw new Error("relay session lost — reconnect to re-handshake");
       }
     }
     if (phoneChallenge) {

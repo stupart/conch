@@ -570,3 +570,26 @@ describe("Mac phone relay adapter", () => {
     expect(controlHead).toBeLessThan(fileChunks[1]!.index);
   });
 });
+
+describe("a Mac that has lost its session says so", () => {
+  test("an application frame with no cipher closes instead of vanishing", async () => {
+    // After the Mac's relay socket reconnects it holds no cipher, but the phone
+    // still has a session and keeps sending frames encrypted under it. Those
+    // cannot open as a hello and have nothing to open under, so they were
+    // logged and DROPPED — leaving the phone encrypting into a void while every
+    // send failed as "daemon reply timed out". Measured on a real phone as
+    // paired 12:19:24, rejected 12:22:27, silent throughout.
+    const harness = await connectedHarness({});
+    // A well-formed frame that is not a hello and does not match the session.
+    const notAHello = JSON.stringify({
+      v: 1,
+      id: "x",
+      kind: "request",
+      method: "POST",
+      seq: 9_999,
+      nonce: "AAAAAAAAAAAAAAAAAAAAAA",
+      ciphertext: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    });
+    await expect(harness.peer.receive(notAHello)).rejects.toThrow();
+  });
+});
