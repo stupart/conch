@@ -2981,13 +2981,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
       });
       if (beforeInject && !(await beforeInject())) return false;
       await speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.", event.label);
-      return true;
+      // NOT delivered. The words are on a clipboard, not in the session, and
+      // saying otherwise is the failure that cost Tyler a real message: the
+      // phone was told "delivered", cleared his draft, and the text existed
+      // only on a Mac he was nowhere near. Whoever is standing at the machine
+      // can still paste — that is what the spoken line above is for — but the
+      // caller must not be told this reached the agent.
+      return false;
     }
     if (via === "none") {
       log(`injected via ${via}`);
       if (beforeInject && !(await beforeInject())) return false;
       await speak(cfg, "Heard you, but I could not find the session's pane.", event.label);
-      return true;
+      return false;
     }
     if (beforeCount === null) {
       log(`injected into "${event.label}" via ${via}`); // no transcript to confirm against — trust it
@@ -3031,7 +3037,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
     await toClipboard(text);
     if (beforeInject && !(await beforeInject())) return false;
     await speak(cfg, "I typed that but it didn't send. Your words are on the clipboard — just paste and press return.", event.label);
-    return true;
+    // Three attempts and the transcript never grew, so the text is sitting
+    // unsent in an input box at best. 15 of Tyler's sends landed here today
+    // against 57 confirmed — a 21% failure rate reported to him as success.
+    return false;
   }
 
   /** Shared handling for anything heard while reading aloud (gap or barge-in). */
