@@ -1,4 +1,5 @@
 import { createServer, connect } from "node:net";
+import { appendFileSync } from "node:fs";
 import { currentTurnText } from "./transcript-turn.ts";
 import {
   chmodSync, existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
@@ -1200,6 +1201,16 @@ const PUBLISHED_CONVERSATION_WINDOW = 30;
  * Giving them the same budget meant the slow one reported failure while
  * succeeding.
  */
+/** Queue tracing, always on: a stuck event is invisible without it. */
+function traceQueue(message: string): void {
+  try {
+    appendFileSync(
+      "/tmp/conch-inject-debug.log",
+      `[${new Date().toISOString().slice(11, 23)}] queue: ${message}\n`,
+    );
+  } catch {}
+}
+
 export function injectTimeoutFor(line: string): number {
   try {
     const kind = JSON.parse(line)?.type ?? JSON.parse(line)?.kind;
@@ -1325,6 +1336,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const diagnosticsEnabled = recorderDiagnosticsEnabled();
   const queue: TurnEvent[] = [];
   let busy = false;
+  let busyLabel = "none";
   let lastTurn: TurnEvent | null = null;
   const persisted = readState(); // survives restarts — see STATE_FILE
   let muted = persisted.muted;
@@ -1772,10 +1784,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
   }
 
   async function drain(): Promise<void> {
+    // The queue drains one event at a time behind a `busy` flag, so ONE event
+    // that never settles silently strands every event after it — injects
+    // included. That is what made a message look session-specific when it was
+    // not: probes into two different idle sessions both hung, with nothing in
+    // the log, because neither ever left the queue.
+    traceQueue(busy ? `blocked behind "${busyLabel}" (${queue.length} waiting)` : `drain start (${queue.length})`);
     if (busy) return;
     busy = true;
     try {
-      await ttsStartup;
       if (shuttingDown) return;
       if (stopKey && queue.length) {
         const skipped = takeNextQueuedEvent(queue, cfg.handoffOrder, prioritizedSessionIds)!;
@@ -1785,7 +1802,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
       while (queue.length) {
         const event = takeNextQueuedEvent(queue, cfg.handoffOrder, prioritizedSessionIds)!;
         try {
+          busyLabel = `${event.type}:${event.label}`;
+          traceQueue(`handle ${busyLabel}`);
           await handle(event);
+          traceQueue(`done ${busyLabel}`);
         } catch (e) {
           // one bad event (closed pane, missing binary, socket reset, a throw
           // from any spawn) must not take the whole daemon down mid-exchange.
@@ -2426,6 +2446,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
   }
 
   async function handle(event: TurnEvent): Promise<void> {
+    // Wait for the voice engine only when this event will SPEAK.
+    //
+    // `drain` used to await it before touching the queue, which meant nothing
+    // moved until Kokoro had warmed up — measured at 67 SECONDS on a cold start
+    // ("warmup 66968ms"), and every daemon restart pays it again. An inject
+    // does not speak, so it was queued behind a text-to-speech model for over a
+    // minute, the socket never replied, and the phone reported "Couldn't reach
+    // the Mac". Restarting the daemon to pick up a fix re-armed the same trap,
+    // which is why this looked intermittent and session-specific for hours.
+    if (event.type !== "inject") await ttsStartup;
     stopKey = false; // a stale press from a past exchange must not skip this one
     micOpen = false; // no listen in flight yet for this event
     if (event.type === "mute") return muted ? announceMuted(true) : undefined;

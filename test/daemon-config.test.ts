@@ -1309,3 +1309,22 @@ describe("daemon config controller", () => {
     expect(cfg.endSilenceSecs).toBe(4);
   });
 });
+
+describe("an inject never waits for the voice engine", () => {
+  // `drain` awaited ttsStartup before touching the queue, so nothing moved
+  // until Kokoro had warmed up — measured at 67 seconds on a cold start
+  // ("warmup 66968ms"), paid again on every daemon restart. An inject does not
+  // speak, so it sat behind a text-to-speech model for over a minute while the
+  // socket never replied and the phone said "Couldn't reach the Mac".
+  const source = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
+
+  test("the queue no longer blocks on startup before dispatching", () => {
+    const drain = source.slice(source.indexOf("async function drain()"));
+    const body = drain.slice(0, drain.indexOf("async function handle("));
+    expect(body).not.toContain("await ttsStartup");
+  });
+
+  test("speaking events still wait for it", () => {
+    expect(source).toContain('if (event.type !== "inject") await ttsStartup;');
+  });
+});
