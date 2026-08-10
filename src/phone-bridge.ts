@@ -427,7 +427,17 @@ export class PhoneBridgeApplication {
             headers: { "content-type": "application/json" },
           });
         } catch (error) {
-          this.#dependencies.log(`phone control failed: ${String(error)}`);
+          // Name the control and the target. "phone control failed" alone could
+          // not distinguish a lost message from a routine status poll giving
+          // up, so a scary line appeared next to sends that had worked while
+          // the one that actually failed looked identical.
+          let what = "control";
+          try {
+            const parsed = JSON.parse(body);
+            const kind = parsed?.type ?? parsed?.kind ?? "control";
+            what = parsed?.label ? `${kind} -> "${parsed.label}"` : String(kind);
+          } catch {}
+          this.#dependencies.log(`phone ${what} failed: ${String(error)}`);
           return new Response("daemon unreachable", { status: 502 });
         }
       })();
