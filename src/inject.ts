@@ -1,4 +1,5 @@
 import { $ } from "bun";
+import { appendFileSync } from "node:fs";
 import type { Config } from "./config.ts";
 
 export type InjectRoute = "tmux" | "osascript-focused" | "osascript-blind" | "clipboard" | "none";
@@ -42,10 +43,23 @@ export async function injectText(
   // that does not correlate with length (1414 chars succeeded; 49 failed).
   // The path has several awaits that can each hang for their own reasons, and
   // nothing said which one. CONCH_DEBUG_INJECT=1 makes it say.
-  const debugInject = process.env.CONCH_DEBUG_INJECT === "1";
+  // Always on, not behind an env var. The supervisor respawns the daemon with
+  // its own command, so an env-gated probe silently never activates — which is
+  // exactly what happened, wasting a whole retry. A handful of appends per
+  // inject is nothing next to another round of guessing.
+  const debugInject = process.env.CONCH_DEBUG_INJECT !== "0";
   const startedAt = Date.now();
   const step = (name: string): void => {
-    if (debugInject) console.error(`[inject ${Date.now() - startedAt}ms] ${name}`);
+    if (!debugInject) return;
+    // Straight to a file, never console.error: the daemon owns an alt-screen
+    // TUI and its stderr goes nowhere visible, so the first attempt at this
+    // produced an empty log and looked like "the code never ran" when it had.
+    try {
+      appendFileSync(
+        "/tmp/conch-inject-debug.log",
+        `[${new Date().toISOString().slice(11, 23)} +${Date.now() - startedAt}ms] ${name}\n`,
+      );
+    } catch {}
   };
   step(`begin pid=${sessionPid ?? "none"} chars=${text.length}`);
   const copyToClipboard = options.copyToClipboard ?? toClipboard;
