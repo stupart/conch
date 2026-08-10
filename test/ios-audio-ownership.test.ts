@@ -211,7 +211,14 @@ describe("only one side of the phone owns the audio route", () => {
     // One controller now serves every session; without this the draft would
     // surface under a conversation you never said it to.
     expect(session).toMatch(/talk\.targetSessionId == sessionId/);
-    expect(session).toMatch(/talk\.toggle\(session: sessionId\)/);
+    // Every controller call names THIS session. The mic and send used to be one
+    // `toggle`; they are separate now, so assert the property that matters —
+    // scoping — rather than one method's name.
+    expect(session).toMatch(/talk\.open\(session: sessionId\)/);
+    expect(session).toMatch(/talk\.send\(session: sessionId\)/);
+    // `closeMic()` is deliberately session-less: it closes whichever mic is
+    // open, and the view only offers it while THIS session holds it.
+    expect(session).not.toMatch(/talk\.(open|send)\((?!session: sessionId)/);
   });
 
   test("the reply is released before the mic opens", () => {

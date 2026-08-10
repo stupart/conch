@@ -165,6 +165,23 @@ final class TalkController: NSObject, ObservableObject {
         session == targetSessionId ? transcript : (parked[session] ?? "")
     }
 
+    /// Open the mic pointed at `session`, keeping whatever draft it already has.
+    ///
+    /// Split out of `toggle` because the mic and send are separate controls now:
+    /// tapping the mic must never deliver anything, and it must be possible to
+    /// dictate ONTO text you typed. Switching sessions still parks the previous
+    /// draft under its own session rather than carrying it across.
+    func open(session: String) {
+        if phase == .sending { return }
+        if phase == .listening {
+            if session == targetSessionId { return }
+            commit(partial)
+            cancel()
+        }
+        switchTarget(to: session)
+        start()
+    }
+
     /// Send this session's draft, however it got there.
     ///
     /// While the mic is open this IS the existing finish path, so a typed

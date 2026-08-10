@@ -365,7 +365,12 @@ struct SessionView: View {
                         .foregroundStyle(Palette.textPrimary)
                         .lineLimit(1...6)
                         .focused($typing)
-                        .submitLabel(.send)
+                        // `.return`, not `.send`: this field is multiline, so
+                        // the key inserts a newline. Labelling it "send" made it
+                        // a control that says one thing and does another — and
+                        // newlines matter here, since an attached picture's path
+                        // sits on its own line above what you are asking about.
+                        .submitLabel(.return)
 
                     // Deliberate deletion, kept. Everything else in the draft
                     // machinery refuses to lose your words, and that only works
@@ -401,19 +406,14 @@ struct SessionView: View {
                 .disabled(attaching)
                 .accessibilityLabel("Attach a picture")
 
-                // One button, and what it does is never ambiguous: send when
-                // there is something to send, otherwise open the mic.
-                Button(action: primaryAction) {
-                    // Sending was the bubble's job to show; with the bubble gone
-                    // the button says it, which is where you are already looking.
-                    Group {
-                        if talk.phase == .sending {
-                            ProgressView().controlSize(.small).tint(Palette.bg)
-                        } else {
-                            Image(systemName: canSend ? "arrow.up.circle.fill" : "mic.fill")
-                                .font(.system(size: 22, weight: .semibold))
-                        }
-                    }
+                // The mic stays a mic. It used to BECOME send as soon as you
+                // typed a character, which quietly broke the whole point of a
+                // shared draft: you could no longer dictate onto something you
+                // had typed. Tyler: "keep the speech button as an option instead
+                // of turning it to send".
+                Button(action: toggleTalk) {
+                    Image(systemName: isTalkingHere ? "stop.fill" : "mic.fill")
+                        .font(.system(size: 20, weight: .semibold))
                         .frame(width: 46, height: 46)
                         // Blue at rest, not only once armed. Talking is the
                         // point of conch, and a grey mic beside a text field
@@ -423,7 +423,28 @@ struct SessionView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(talk.phase == .sending)
-                .accessibilityLabel(canSend ? "Send" : "Open the microphone")
+                .accessibilityLabel(isTalkingHere ? "Close the microphone" : "Open the microphone")
+
+                // Send appears only when there is something to send, so the bar
+                // is a mic until you have said or written something.
+                if canSend || talk.phase == .sending {
+                    Button(action: sendDraft) {
+                        Group {
+                            if talk.phase == .sending {
+                                ProgressView().controlSize(.small).tint(Palette.bg)
+                            } else {
+                                Image(systemName: "arrow.up")
+                                    .font(.system(size: 20, weight: .bold))
+                            }
+                        }
+                        .frame(width: 46, height: 46)
+                        .background(Palette.textPrimary, in: RoundedRectangle(cornerRadius: 16))
+                        .foregroundStyle(Palette.bg)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(talk.phase == .sending)
+                    .accessibilityLabel("Send")
+                }
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
@@ -445,16 +466,6 @@ struct SessionView: View {
     private var canSend: Bool {
         !attachments.isEmpty
             || !talk.draft(for: sessionId).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    /// Send what is there, else open the mic. Never both, never a guess.
-    private func primaryAction() {
-        typing = false
-        if canSend {
-            sendDraft()
-        } else {
-            toggleTalk()
-        }
     }
 
     /// Prepare a picked photo and hold it. Nothing is sent yet.
@@ -521,17 +532,18 @@ struct SessionView: View {
         }
     }
 
+    /// Open the mic, or close it. Never send — that is the other button now.
+    ///
+    /// It used to send on the second tap, because the mic WAS the send button.
+    /// With them separated, tapping the mic again has to mean "stop listening",
+    /// and closing it keeps every word for the send that follows.
     private func toggleTalk() {
         sendFailed = false
-        let label = row?.label ?? ""
-        talk.toggle(session: sessionId) { text in
-            let delivered = await bridge.inject(
-                sessionId: sessionId,
-                label: label,
-                text: text
-            )
-            if !delivered { sendFailed = true }
-            return delivered
+        typing = false
+        if isTalkingHere {
+            talk.closeMic()
+        } else {
+            talk.open(session: sessionId)
         }
     }
 }
