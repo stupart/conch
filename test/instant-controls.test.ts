@@ -698,3 +698,46 @@ describe("resuming one session out of a global pause", () => {
     expect(gate("alpha", [])).toBe("global-paused");
   });
 });
+
+describe("pause holds what conch says, never what you send", () => {
+  // A message typed on the phone was parked by the global pause, so the control
+  // reply never came and the phone reported "Couldn't reach the Mac" — wrong
+  // twice: the Mac was fine, and the words were not sent but stored.
+  const base = {
+    globalMuted: false,
+    settingsOpen: false,
+    globalHeldTurns: new Map(),
+    mutedSessionIds: new Set<string>(),
+    sessionHeldTurns: new Map(),
+  };
+  const inject = {
+    type: "inject",
+    sessionId: "s1",
+    label: "dayloop",
+    announce: "ship it",
+  } as any;
+
+  test("an inject is delivered while conch is globally paused", () => {
+    expect(gateTurnForControls(inject, true, {
+      ...base,
+      globalPaused: true,
+      pausedSessionIds: new Set<string>(),
+    } as any)).toBeNull();
+  });
+
+  test("and while that very session is paused by name", () => {
+    expect(gateTurnForControls(inject, true, {
+      ...base,
+      globalPaused: false,
+      pausedSessionIds: new Set(["s1"]),
+    } as any)).toBeNull();
+  });
+
+  test("a spoken turn is still held, which is what pause is for", () => {
+    expect(gateTurnForControls(
+      { type: "turn-end", sessionId: "s1", label: "dayloop", announce: "done" } as any,
+      true,
+      { ...base, globalPaused: true, pausedSessionIds: new Set<string>() } as any,
+    )).toBe("global-paused");
+  });
+});
