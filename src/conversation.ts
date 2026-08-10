@@ -164,9 +164,27 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
       }
       return;
     }
+    // Attachments you sent. Found by indexing every transcript on the machine
+    // rather than by noticing one missing: 14 `image` and 2 `document` parts
+    // were being dropped, so a turn where you sent a screenshot rendered as
+    // whatever text happened to accompany it — or as nothing at all.
+    const attachments = parts.filter((part) =>
+      part?.type === "image" || part?.type === "document"
+    );
     const text = typeof entry.message?.content === "string"
       ? entry.message.content
       : textFromClaudeParts(parts, "text");
+    if (!text && attachments.length) {
+      upsertConversationItem(conversation, {
+        id: id ?? `user:${conversation.order.length}`,
+        kind: "user",
+        text: attachments.length === 1
+          ? `[${attachments[0]!.type}]`
+          : `[${attachments.length} attachments]`,
+        at,
+      });
+      return;
+    }
     if (!text) return;
     const injected = classifyInjectedUserText(text);
     if (injected?.kind === "drop") return;
@@ -312,6 +330,23 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
   const ordinal = entry.ordinal ?? conversation.order.length;
 
   if (entry.type === "event_msg") {
+    // Codex says the same thing in three places. The index counted 286
+    // `event_msg:agent_message` against 165 `response_item:agent_message`, so
+    // the stream this did NOT read carried more replies than the one it did.
+    if (
+      payload.type === "agent_message"
+      && payload.phase !== "commentary"
+      && typeof payload.message === "string"
+      && payload.message.trim()
+    ) {
+      upsertConversationItem(conversation, {
+        id: `agent:${ordinal}`,
+        kind: "assistant",
+        text: payload.message,
+        at,
+      });
+      return;
+    }
     if (payload.type === "user_message" && typeof payload.message === "string") {
       upsertConversationItem(conversation, {
         id: `user:${ordinal}`,

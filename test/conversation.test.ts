@@ -334,3 +334,40 @@ describe("machine messages filed as 'user' are not you", () => {
     expect(conversationWindow(conversation, 5).map((i) => i.kind)).toEqual(["user"]);
   });
 });
+
+describe("types found by indexing every transcript, not by noticing one", () => {
+  test("an image you sent is a message, not nothing", () => {
+    // 14 `user:image` parts were being dropped across the machine's
+    // transcripts, so a turn where Tyler sent a screenshot rendered as whatever
+    // text happened to accompany it — or as nothing.
+    const conversation = buildConversation("s", lines({
+      type: "user",
+      uuid: "u1",
+      message: { content: [{ type: "image", source: { type: "base64", data: "..." } }] },
+    }), "claude");
+    expect(conversationWindow(conversation, 5).map((i) => [i.kind, i.text]))
+      .toEqual([["user", "[image]"]]);
+  });
+
+  test("a Codex reply on the event stream counts", () => {
+    // The index counted 286 `event_msg:agent_message` against 165
+    // `response_item:agent_message` — the stream conch did NOT read carried
+    // more replies than the one it did.
+    const conversation = buildConversation("s", lines({
+      type: "event_msg",
+      ordinal: 4,
+      payload: { type: "agent_message", message: "Build is green." },
+    }), "codex");
+    expect(conversationWindow(conversation, 5).map((i) => [i.kind, i.text]))
+      .toEqual([["assistant", "Build is green."]]);
+  });
+
+  test("commentary is not the reply", () => {
+    const conversation = buildConversation("s", lines({
+      type: "event_msg",
+      ordinal: 5,
+      payload: { type: "agent_message", phase: "commentary", message: "thinking out loud" },
+    }), "codex");
+    expect(conversation.order).toEqual([]);
+  });
+});
