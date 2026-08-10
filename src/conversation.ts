@@ -93,6 +93,43 @@ function textFromClaudeParts(parts: any[], type: string): string {
 }
 
 /**
+ * Machine-written content that Claude Code files under `type: "user"`.
+ *
+ * The same disguise as tool results, and just as misleading: a
+ * `<task-notification>` telling you a background command was killed rendered as
+ * a message YOU had sent — Tyler: "why is it showing that I'm sending messages
+ * like <task-notification> ... when im not??"
+ *
+ * Returns what the row should be: a tool-shaped record for a task notification,
+ * which is real information worth keeping, or null for the injected wrappers
+ * that are pure plumbing.
+ */
+export function classifyInjectedUserText(
+  text: string,
+): { kind: "task"; name: string; summary: string; status: "done" | "error" } | { kind: "drop" } | null {
+  const head = text.trimStart();
+  if (head.startsWith("<task-notification>")) {
+    const summary = /<summary>([\s\S]*?)<\/summary>/.exec(text)?.[1]?.trim() ?? "";
+    const status = /<status>([\s\S]*?)<\/status>/.exec(text)?.[1]?.trim() ?? "";
+    return {
+      kind: "task",
+      name: "background task",
+      summary: summary || status || "background task finished",
+      // "killed" and "failed" are not successes; anything else reads as done.
+      status: /kill|fail|error/i.test(status) ? "error" : "done",
+    };
+  }
+  // Wrappers with no conversational content of their own.
+  if (/^<(system-reminder|local-command-stdout|local-command-stderr|command-name|command-message)>/.test(head)) {
+    return { kind: "drop" };
+  }
+  // Claude Code writes this itself when you interrupt; it is an artifact of the
+  // interruption, not a thing you said.
+  if (/^\[Request interrupted by user/.test(head)) return { kind: "drop" };
+  return null;
+}
+
+/**
  * Fold one Claude transcript line into the conversation.
  *
  * The trap this exists to avoid: Claude Code records TOOL RESULTS as entries of
@@ -131,6 +168,18 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
       ? entry.message.content
       : textFromClaudeParts(parts, "text");
     if (!text) return;
+    const injected = classifyInjectedUserText(text);
+    if (injected?.kind === "drop") return;
+    if (injected?.kind === "task") {
+      upsertConversationItem(conversation, {
+        id: id ?? `task:${conversation.order.length}`,
+        kind: "tool",
+        text: injected.summary,
+        at,
+        tool: { name: injected.name, status: injected.status },
+      });
+      return;
+    }
     upsertConversationItem(conversation, { id: id ?? `user:${conversation.order.length}`, kind: "user", text, at });
     return;
   }
@@ -288,11 +337,35 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
       }
       return;
     }
+    // The one that carries what Codex actually SAID. Sampled on a live rollout,
+    // a Codex turn contains `message` items and often no `agent_message` at all
+    // — so ignoring this type left a session rendering as nothing but a string
+    // of tool calls, which is exactly what Tyler saw.
+    case "message": {
+      const role = payload.role === "user" ? "user" : "assistant";
+      const text = Array.isArray(payload.content)
+        ? payload.content
+          .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
+          .join("")
+          .trim()
+        : typeof payload.text === "string"
+          ? payload.text
+          : "";
+      if (text) upsertConversationItem(conversation, { id, kind: role, text, at });
+      return;
+    }
     case "reasoning": {
+      // `summary` is usually EMPTY and the real content sits in
+      // `encrypted_content`, which is exactly what it sounds like. Emitting a
+      // blank thinking row for every one of those is noise, so only a reasoning
+      // item that actually carries readable text becomes a row.
       const text = typeof payload.text === "string"
         ? payload.text
         : Array.isArray(payload.summary)
-          ? payload.summary.map((part: any) => part?.text ?? part ?? "").join("\n")
+          ? payload.summary
+            .map((part: any) => (typeof part === "string" ? part : part?.text ?? ""))
+            .join("\n")
+            .trim()
           : "";
       if (text) upsertConversationItem(conversation, { id, kind: "thinking", text, at });
       return;
@@ -424,6 +497,8 @@ const DEFAULT_WINDOW = 40;
 const DEFAULT_ITEM_CHARS = 4_000;
 /** Tool rows are titles; their output belongs behind a tap, not in every frame. */
 const DEFAULT_TOOL_RESULT_CHARS = 400;
+/** Messages always carried, even when tool calls have pushed them out of the window. */
+const MIN_SPOKEN_ITEMS = 6;
 
 /**
  * Bound a conversation for publishing.
@@ -445,7 +520,28 @@ export function publishedConversation(
   const windowSize = options.windowSize ?? DEFAULT_WINDOW;
   const itemChars = options.itemChars ?? DEFAULT_ITEM_CHARS;
   const toolResultChars = options.toolResultChars ?? DEFAULT_TOOL_RESULT_CHARS;
-  const items = conversationWindow(conversation, windowSize).map((item) => {
+  // Guarantee the window contains what was SAID, not only what was done.
+  //
+  // A plain "last N items" window is wrong for an agent mid-task: one Codex
+  // session ran a Playwright loop that filled the entire window with tool
+  // calls, so the pane showed a wall of commands and none of the replies —
+  // Tyler: "i just see a string of tools calls on them". The newest few
+  // messages are pulled in even when they have scrolled past N, so a session
+  // always shows its conversation and its work, not just its work.
+  const recent = conversationWindow(conversation, windowSize);
+  const inWindow = new Set(recent.map((item) => item.id));
+  const spoken = conversation.order
+    .map((id) => conversation.items[id])
+    .filter((item): item is ConversationItem =>
+      item !== undefined && (item.kind === "assistant" || item.kind === "user")
+    )
+    .slice(-MIN_SPOKEN_ITEMS)
+    .filter((item) => !inWindow.has(item.id));
+  const ordered = conversation.order
+    .filter((id) => inWindow.has(id) || spoken.some((item) => item.id === id))
+    .map((id) => conversation.items[id]!)
+    .filter(Boolean);
+  const items = ordered.map((item) => {
     // Keep the TAIL of a long message: the end is what was just said, and the
     // beginning is what has already scrolled past.
     const text = item.text.length > itemChars

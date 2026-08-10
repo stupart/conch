@@ -5,6 +5,7 @@ import {
   conversationDelta,
   conversationWindow,
   emptyConversation,
+  publishedConversation,
   summariseToolInput,
   toolDisplayName,
   upsertConversationItem,
@@ -239,5 +240,97 @@ describe("tool names a person can read", () => {
   test("leaves an ordinary tool name alone", () => {
     expect(toolDisplayName("Bash")).toBe("Bash");
     expect(toolDisplayName("SendUserFile")).toBe("SendUserFile");
+  });
+});
+
+describe("the window always contains what was said", () => {
+  // A plain "last N" window is wrong for an agent mid-task: a Codex session
+  // running a Playwright loop filled the entire window with tool calls, so the
+  // pane showed a wall of commands and none of the replies.
+  test("recent messages survive a flood of tool calls", () => {
+    const conversation = emptyConversation("s");
+    upsertConversationItem(conversation, { id: "said", kind: "assistant", text: "here is the answer" });
+    for (let i = 0; i < 50; i += 1) {
+      upsertConversationItem(conversation, {
+        id: `t${i}`, kind: "tool", text: `step ${i}`,
+        tool: { name: "exec", status: "done" },
+      });
+    }
+    const published = publishedConversation(conversation, { windowSize: 10 });
+    expect(published.items.some((item) => item.id === "said")).toBe(true);
+    // …and it stays in ORDER, before the tools that followed it.
+    expect(published.items[0]!.id).toBe("said");
+  });
+
+  test("a Codex `message` item is the reply, not a tool call", () => {
+    // Sampled on a live rollout: Codex turns carry `message` items and often no
+    // `agent_message` at all, so ignoring this type left sessions rendering as
+    // nothing but tool calls.
+    const conversation = buildConversation("s", lines({
+      type: "response_item",
+      ordinal: 1,
+      payload: {
+        type: "message",
+        id: "m1",
+        role: "assistant",
+        content: [{ type: "output_text", text: "The cleanup is in." }],
+      },
+    }), "codex");
+    expect(conversationWindow(conversation, 5).map((i) => [i.kind, i.text]))
+      .toEqual([["assistant", "The cleanup is in."]]);
+  });
+
+  test("an encrypted reasoning item is skipped, not rendered blank", () => {
+    // Codex reasoning usually has an empty `summary` and an `encrypted_content`
+    // blob; a blank thinking row per item is pure noise.
+    const conversation = buildConversation("s", lines({
+      type: "response_item",
+      ordinal: 1,
+      payload: { type: "reasoning", id: "r1", summary: [], encrypted_content: "gAAAA..." },
+    }), "codex");
+    expect(conversation.order).toEqual([]);
+  });
+});
+
+describe("machine messages filed as 'user' are not you", () => {
+  // Claude Code writes these under type:"user", the same disguise as tool
+  // results. A <task-notification> saying a background command was killed
+  // rendered as a message Tyler had sent: "why is it showing that I'm sending
+  // messages like <task-notification> ... when im not??"
+  const notification = [
+    "<task-notification>",
+    "<task-id>b6aog19q7</task-id>",
+    "<status>killed</status>",
+    '<summary>Background command "Start dev server" was stopped</summary>',
+    "</task-notification>",
+  ].join("\n");
+
+  test("a task notification becomes a tool row carrying its summary", () => {
+    const conversation = buildConversation("s", lines({
+      type: "user", uuid: "u1", message: { content: [{ type: "text", text: notification }] },
+    }), "claude");
+    const items = conversationWindow(conversation, 5);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.kind).toBe("tool");
+    expect(items[0]!.text).toBe('Background command "Start dev server" was stopped');
+    // "killed" is not a success.
+    expect(items[0]!.tool?.status).toBe("error");
+  });
+
+  test("injected wrappers and interruption artifacts are dropped", () => {
+    const conversation = buildConversation("s", lines(
+      { type: "user", message: { content: [{ type: "text", text: "<system-reminder>be nice</system-reminder>" }] } },
+      { type: "user", message: { content: [{ type: "text", text: "[Request interrupted by user for tool use]" }] } },
+      { type: "user", message: { content: [{ type: "text", text: "<local-command-stdout>ok</local-command-stdout>" }] } },
+    ), "claude");
+    expect(conversation.order).toEqual([]);
+  });
+
+  test("a real message that merely mentions a tag is still yours", () => {
+    const conversation = buildConversation("s", lines({
+      type: "user", uuid: "u2",
+      message: { content: [{ type: "text", text: "why does <task-notification> show as me?" }] },
+    }), "claude");
+    expect(conversationWindow(conversation, 5).map((i) => i.kind)).toEqual(["user"]);
   });
 });
