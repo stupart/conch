@@ -89,8 +89,12 @@ struct ConchApp: App {
                     // Before claimAudio, because a claim sent over a dead
                     // socket accomplishes nothing.
                     bridge.reconnectNow()
+                    telemetry.start()
                     Task { await bridge.claimAudio(true) }
                 case .background:
+                    // Nothing to measure while suspended, and a timer that
+                    // survives backgrounding is the drain it claims to watch.
+                    telemetry.stop()
                     // Close the MIC, not just the audio lease.
                     //
                     // Handing the lease back tells the Mac to speak; it does
@@ -106,7 +110,24 @@ struct ConchApp: App {
                     // Nothing is lost: whatever was dictated stays in the draft,
                     // which survives the app being backgrounded.
                     talk.closeMic()
-                    Task { await bridge.claimAudio(false) }
+                    // Hand the audio back, then LET GO of the connection.
+                    //
+                    // iOS suspends the 10s heartbeat the moment we background,
+                    // so the Mac expires this peer 30 seconds later and the
+                    // phone re-handshakes on the way back — 496 connect and
+                    // disconnect pairs in one day's log, each one an encrypted
+                    // handshake the phone paid for. Leaving a socket behind to
+                    // rot is strictly worse than closing it: same outcome,
+                    // more work, and a spell of looking connected while
+                    // nothing can arrive.
+                    //
+                    // Nothing is lost by closing. Replies already queue while
+                    // the app is away and are read when it comes forward, and
+                    // .active reconnects before it claims anything.
+                    Task {
+                        await bridge.claimAudio(false)
+                        bridge.stop()
+                    }
                 case .inactive:
                     // NOT a handback. iOS reports .inactive for anything that
                     // transiently covers the app — a context menu, a system

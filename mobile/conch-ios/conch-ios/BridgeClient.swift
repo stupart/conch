@@ -152,12 +152,16 @@ final class BridgeClient: ObservableObject {
     /// PATH — the agent needs a file on the Mac, not an attachment.
     func uploadImage(data: Data, ext: String) async -> String? {
         let id = ImageUpload.newUploadID()
-        let parts = ImageUpload.chunks(data)
-        for (index, part) in parts.enumerated() {
+        let chunks = ImageUpload.chunks(data)
+        let total = chunks.count
+        guard total > 0 else { return nil }
+        // Chunks is a sequence, not an array: each base64 string is created
+        // immediately before its request and released before the next one.
+        for (index, part) in chunks.enumerated() {
             guard let body = try? JSONSerialization.data(withJSONObject: [
                 "uploadId": id,
                 "index": index,
-                "total": parts.count,
+                "total": total,
                 "extension": ext,
                 "data": part,
             ]) else { return nil }
@@ -167,7 +171,7 @@ final class BridgeClient: ObservableObject {
                 body: body
             )), response.status == 200 else { return nil }
             // The last chunk answers with the path; the others report progress.
-            if index == parts.count - 1,
+            if index == total - 1,
                let decoded = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any],
                let path = decoded["path"] as? String {
                 return path

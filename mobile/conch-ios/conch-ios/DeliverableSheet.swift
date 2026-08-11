@@ -285,17 +285,51 @@ private struct BridgedPDFView: UIViewRepresentable {
 
 private struct LocalImageView: View {
     let url: URL
+    @State private var image: UIImage?
+    @State private var failure: String?
+
+    /// A 4096 px square is at most 64 MB decoded, versus an unbounded source;
+    /// 32 MB compressed also rejects pathological files before ImageIO opens
+    /// them. Tall screenshots retain substantially more useful width here than
+    /// they would under the agents' smaller inference limits.
+    private static let maxPixelSize = 4096
+    private static let maxBytes = 32 * 1024 * 1024
 
     var body: some View {
-        if let image = UIImage(contentsOfFile: url.path) {
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFit()
-        } else {
-            Text("Couldn't load the image from your Mac.")
-                .font(Type.summary)
-                .foregroundStyle(Palette.textDim)
-                .padding(40)
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+            } else if let failure {
+                Text(failure)
+                    .font(Type.summary)
+                    .foregroundStyle(Palette.textDim)
+                    .padding(40)
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity, minHeight: 200)
+            }
+        }
+        .task(id: url) {
+            image = nil
+            failure = nil
+            let result = await ImageDownsampler.filePreview(
+                at: url,
+                maxBytes: Self.maxBytes,
+                maxPixelSize: Self.maxPixelSize
+            )
+            guard !Task.isCancelled else { return }
+            switch result {
+            case let .image(decoded):
+                // ImageIO already decoded this bounded thumbnail on its worker;
+                // UIImage is only the cheap SwiftUI wrapper at this point.
+                image = UIImage(cgImage: decoded)
+            case .tooLarge:
+                failure = "This image is too large to preview on iPhone."
+            case .unreadable:
+                failure = "Couldn't load the image from your Mac."
+            }
         }
     }
 }

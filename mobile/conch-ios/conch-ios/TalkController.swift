@@ -123,6 +123,13 @@ private extension NSLock {
 /// needed most, one-handed mid-workout.
 @MainActor
 final class TalkController: NSObject, ObservableObject {
+    /// Recognition hypotheses publish far more often than controller state.
+    /// Keeping them on a child object lets the composer observe live words
+    /// without making every TalkController observer redraw with them.
+    @MainActor final class LivePartial: ObservableObject {
+        @Published fileprivate(set) var text = ""
+    }
+
     enum Phase: Equatable {
         case idle
         case denied(String)
@@ -274,7 +281,11 @@ final class TalkController: NSObject, ObservableObject {
         failure = nil
         committed = parked[session] ?? ""
     }
-    @Published private(set) var partial = ""
+    let livePartial = LivePartial()
+    private var partial: String {
+        get { livePartial.text }
+        set { livePartial.text = newValue }
+    }
     @Published private(set) var failure: String?
     /// Which session this draft is being spoken to.
     ///

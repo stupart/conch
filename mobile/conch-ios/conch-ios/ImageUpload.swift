@@ -1,5 +1,82 @@
+import ImageIO
 import UIKit
 import UniformTypeIdentifiers
+
+/// ImageIO's thumbnail path is the important primitive here: it asks the image
+/// decoder for a bounded bitmap instead of creating the source-sized bitmap and
+/// drawing that down afterwards. A 48 MP source can otherwise exist as roughly
+/// 192 MB of pixels before the smaller image even begins to render.
+enum ImageDownsampler {
+    enum FilePreview: @unchecked Sendable {
+        case image(CGImage)
+        case tooLarge
+        case unreadable
+    }
+
+    static func source(data: Data) -> CGImageSource? {
+        CGImageSourceCreateWithData(data as CFData, [
+            kCGImageSourceShouldCache: false,
+        ] as CFDictionary)
+    }
+
+    static func thumbnail(source: CGImageSource, maxPixelSize: Int) -> CGImage? {
+        CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            // Decode now, on the worker running this function. Leaving the
+            // thumbnail lazy merely moves its bounded decode back to SwiftUI.
+            kCGImageSourceShouldCacheImmediately: true,
+        ] as CFDictionary)
+    }
+
+    static func pixelSize(source: CGImageSource) -> CGSize? {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber
+        else { return nil }
+        let orientation = (properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
+        // UIImage.size reflected EXIF rotation. Keep that behaviour without
+        // constructing UIImage's source-sized backing image just to learn it.
+        if (5...8).contains(orientation) {
+            return CGSize(width: height.doubleValue, height: width.doubleValue)
+        }
+        return CGSize(width: width.doubleValue, height: height.doubleValue)
+    }
+
+    /// Decode a disk-backed deliverable away from SwiftUI and within fixed
+    /// compressed and decoded bounds. Opening the URL directly also avoids an
+    /// otherwise redundant full-file Data allocation.
+    static func filePreview(
+        at url: URL,
+        maxBytes: Int,
+        maxPixelSize: Int
+    ) async -> FilePreview {
+        let worker = Task.detached(priority: .userInitiated) { () -> FilePreview in
+            autoreleasepool {
+                guard !Task.isCancelled else { return .unreadable }
+                guard let bytes = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+                else { return .unreadable }
+                guard bytes <= maxBytes else { return .tooLarge }
+                guard let source = CGImageSourceCreateWithURL(url as CFURL, [
+                    kCGImageSourceShouldCache: false,
+                ] as CFDictionary), !Task.isCancelled,
+                      let image = thumbnail(source: source, maxPixelSize: maxPixelSize)
+                else { return .unreadable }
+                return .image(image)
+            }
+        }
+        // SwiftUI cancels the view task when the sheet closes. Propagating that
+        // cancellation prevents queued work from opening a file the sheet has
+        // already removed; an ImageIO decode already in flight remains bounded.
+        return await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+    }
+}
 
 /// Getting a picture from your phone to an agent on your Mac, at the best
 /// quality that actually survives the trip.
@@ -43,14 +120,35 @@ enum ImageUpload {
     /// 64 KiB raw is ~87 KB encoded: comfortably inside the limit with room for
     /// the envelope, at the cost of a few more round trips.
     static let chunkBytes = 64 * 1024
+    /// 64 pt at a 3x phone scale. The composer never draws more detail than
+    /// this, so retaining a model-sized image for its thumbnail only wastes RAM.
+    private static let previewPixels = 192
 
-    struct Prepared {
+    struct Prepared: Sendable {
         let data: Data
         /// One of jpg/png/gif/webp — the four formats Claude reads.
         let ext: String
         let pixels: CGSize
         /// True when the original was already within the model's ceiling.
         let untouched: Bool
+        /// A separately downsampled first frame for the 64 pt composer tile.
+        let previewData: Data?
+    }
+
+    private enum SourceFormat: Sendable {
+        case png
+        case jpeg
+        case gif
+        case webp
+        case other
+
+        init(_ type: UTType?) {
+            if type?.conforms(to: .png) == true { self = .png }
+            else if type?.conforms(to: .jpeg) == true { self = .jpeg }
+            else if type?.conforms(to: .gif) == true { self = .gif }
+            else if type?.identifier == "org.webmproject.webp" { self = .webp }
+            else { self = .other }
+        }
     }
 
     /// Convert and size a picked image for an agent to read.
@@ -62,62 +160,158 @@ enum ImageUpload {
     ///    most useful, and JPEG artefacts land hardest on text and flat colour.
     ///  - GIF and WebP pass through untouched; re-encoding a GIF would drop its
     ///    animation, which is the only reason to send one.
-    static func prepare(data: Data, type: UTType?, backend: String?) -> Prepared? {
-        let maxEdge = maxEdge(for: backend)
-        let isPNG = type?.conforms(to: .png) ?? false
-        if let type, type.conforms(to: .gif) || type.identifier == "org.webmproject.webp" {
-            let ext = type.conforms(to: .gif) ? "gif" : "webp"
-            return data.count <= maxBytes
-                ? Prepared(data: data, ext: ext, pixels: .zero, untouched: true)
-                : nil
+    static func prepare(data: Data, type: UTType?, backend: String?) async -> Prepared? {
+        let format = SourceFormat(type)
+        let maxPixelSize = Int(maxEdge(for: backend))
+        // PhotosPicker resumes its caller on MainActor. The entire ImageIO and
+        // encoding path therefore has to cross an explicit executor boundary;
+        // making this function async alone would still freeze the composer.
+        return await Task.detached(priority: .userInitiated) {
+            autoreleasepool {
+                prepare(data: data, format: format, maxPixelSize: maxPixelSize)
+            }
+        }.value
+    }
+
+    private static func prepare(
+        data: Data,
+        format: SourceFormat,
+        maxPixelSize: Int
+    ) -> Prepared? {
+        let passthroughExtension: String?
+        switch format {
+        case .gif: passthroughExtension = "gif"
+        case .webp: passthroughExtension = "webp"
+        default: passthroughExtension = nil
+        }
+        if let ext = passthroughExtension {
+            guard data.count <= maxBytes else { return nil }
+            let preview = ImageDownsampler.source(data: data).flatMap {
+                previewData(source: $0, preserveAlpha: true)
+            }
+            return Prepared(
+                data: data,
+                ext: ext,
+                pixels: .zero,
+                untouched: true,
+                previewData: preview
+            )
         }
 
-        guard let image = UIImage(data: data) else { return nil }
-        let size = image.size
+        guard let source = ImageDownsampler.source(data: data),
+              let size = ImageDownsampler.pixelSize(source: source)
+        else { return nil }
         let longEdge = max(size.width, size.height)
 
         // Already within what the model uses: send the original bytes rather
         // than re-encoding, which could only lose quality.
-        if longEdge <= maxEdge, data.count <= maxBytes,
-           isPNG || (type?.conforms(to: .jpeg) ?? false) {
+        if longEdge <= CGFloat(maxPixelSize), data.count <= maxBytes,
+           format == .png || format == .jpeg {
             return Prepared(
                 data: data,
-                ext: isPNG ? "png" : "jpg",
+                ext: format == .png ? "png" : "jpg",
                 pixels: size,
-                untouched: true
+                untouched: true,
+                previewData: previewData(source: source, preserveAlpha: format == .png)
             )
         }
 
-        let scale = min(1, maxEdge / longEdge)
-        let target = CGSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
-        let format = UIGraphicsImageRendererFormat.default()
-        // 1, not the screen scale: `target` is already in the pixels we want, and
-        // a 3x renderer would silently produce a 4704px image.
-        format.scale = 1
-        format.opaque = !isPNG
-        let rendered = UIGraphicsImageRenderer(size: target, format: format).image { _ in
-            image.draw(in: CGRect(origin: .zero, size: target))
+        guard let image = ImageDownsampler.thumbnail(
+            source: source,
+            maxPixelSize: maxPixelSize
+        ) else { return nil }
+        let pixels = CGSize(width: image.width, height: image.height)
+
+        if format == .png {
+            guard let png = encode(image, type: UTType.png.identifier as CFString),
+                  png.count <= maxBytes else { return nil }
+            return Prepared(
+                data: png,
+                ext: "png",
+                pixels: pixels,
+                untouched: false,
+                previewData: previewData(source: source, preserveAlpha: true)
+            )
         }
 
-        if isPNG, let png = rendered.pngData(), png.count <= maxBytes {
-            return Prepared(data: png, ext: "png", pixels: target, untouched: false)
-        }
         // 0.92: visually indistinguishable at this size, and well clear of the
         // 5 MB ceiling. Stepping down only if a photograph is unusually dense.
         for quality in [0.92, 0.8, 0.65] as [CGFloat] {
-            if let jpeg = rendered.jpegData(compressionQuality: quality), jpeg.count <= maxBytes {
-                return Prepared(data: jpeg, ext: "jpg", pixels: target, untouched: false)
+            if let jpeg = encode(
+                image,
+                type: UTType.jpeg.identifier as CFString,
+                quality: quality
+            ), jpeg.count <= maxBytes {
+                return Prepared(
+                    data: jpeg,
+                    ext: "jpg",
+                    pixels: pixels,
+                    untouched: false,
+                    previewData: previewData(source: source, preserveAlpha: false)
+                )
             }
         }
         return nil
     }
 
-    /// Split for the wire. Chunked because a relay frame caps at 192 KiB and
-    /// base64 adds a third on top.
-    static func chunks(_ data: Data) -> [String] {
-        stride(from: 0, to: data.count, by: chunkBytes).map { start in
-            data[start..<min(start + chunkBytes, data.count)].base64EncodedString()
+    private static func previewData(source: CGImageSource, preserveAlpha: Bool) -> Data? {
+        guard let image = ImageDownsampler.thumbnail(
+            source: source,
+            maxPixelSize: previewPixels
+        ) else { return nil }
+        return encode(
+            image,
+            type: (preserveAlpha ? UTType.png.identifier : UTType.jpeg.identifier) as CFString,
+            quality: preserveAlpha ? nil : 0.75
+        )
+    }
+
+    private static func encode(
+        _ image: CGImage,
+        type: CFString,
+        quality: CGFloat? = nil
+    ) -> Data? {
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output, type, 1, nil)
+        else { return nil }
+        let properties: [CFString: Any] = quality.map {
+            [kCGImageDestinationLossyCompressionQuality: $0]
+        } ?? [:]
+        CGImageDestinationAddImage(destination, image, properties as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return output as Data
+    }
+
+    /// Split for the wire without retaining the base64 form of every piece.
+    /// The iterator owns the original Data by copy-on-write reference and
+    /// materialises only the string the current request is about to send.
+    struct Chunks: Sequence {
+        let data: Data
+
+        var count: Int {
+            guard !data.isEmpty else { return 0 }
+            return (data.count + chunkBytes - 1) / chunkBytes
         }
+
+        struct Iterator: IteratorProtocol {
+            let data: Data
+            var offset = 0
+
+            mutating func next() -> String? {
+                guard offset < data.count else { return nil }
+                let end = Swift.min(offset + chunkBytes, data.count)
+                defer { offset = end }
+                return data[offset..<end].base64EncodedString()
+            }
+        }
+
+        func makeIterator() -> Iterator {
+            Iterator(data: data)
+        }
+    }
+
+    static func chunks(_ data: Data) -> Chunks {
+        Chunks(data: data)
     }
 
     static func newUploadID() -> String {

@@ -120,6 +120,11 @@ final class DeviceTelemetry: ObservableObject {
     func stop() {
         timer?.invalidate()
         timer = nil
+        // Battery monitoring is a subscription, not a read. Leaving it on means
+        // iOS keeps delivering level and state changes to a process that has
+        // stopped asking — exactly the kind of thing that should only be on
+        // while it is needed.
+        UIDevice.current.isBatteryMonitoringEnabled = false
     }
 
     private func sample() {

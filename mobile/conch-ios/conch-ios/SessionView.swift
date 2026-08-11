@@ -10,6 +10,7 @@ struct SessionView: View {
     /// Owned by the app, never by this view — see ConchApp.
     @ObservedObject var talk: TalkController
     let sessionId: String
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showReview = false
     @State private var sendFailed = false
     @FocusState private var typing: Bool
@@ -21,6 +22,9 @@ struct SessionView: View {
     @State private var attachError: String?
     @State private var fetchedReply: String?
     @State private var loadingReply = false
+    /// Four API-sized images put a 20 MB ceiling on retained upload payloads;
+    /// without a count limit, the 5 MB per-image cap was not a memory bound.
+    private static let attachmentLimit = 4
     /// The reply the fetched copy belongs to, so a new turn refetches instead
     /// of showing the previous answer in full and the current one in part.
     @State private var fetchedFor: String?
@@ -121,7 +125,12 @@ struct SessionView: View {
             }
             }
 
-            talkSurface
+            // Recognition partials arrive many times per sentence. Their own
+            // observer redraws this composer closure without invalidating the
+            // conversation and rebuilding every MarkdownView above it.
+            ComposerUpdateScope(partial: talk.livePartial) {
+                talkSurface
+            }
         }
         .background(Palette.bg)
         .onChange(of: pickedPhoto) { _, item in
@@ -242,8 +251,11 @@ struct SessionView: View {
         // Only while this session is on screen AND actually working, so a
         // ledger of idle sessions costs nothing. Task cancellation on
         // disappear stops it; there is no timer to leak.
-        .task(id: "poll|\(sessionId)|\(row?.status ?? "")") {
-            while !Task.isCancelled, row?.status == "working" {
+        // Off screen it also stops: the connection is closed while backgrounded,
+        // so every poll would be a request against a socket that is not there.
+        // Including the phase in the id restarts it when you come back.
+        .task(id: "poll|\(sessionId)|\(row?.status ?? "")|\(scenePhase == .active)") {
+            while !Task.isCancelled, scenePhase == .active, row?.status == "working" {
                 try? await Task.sleep(for: .milliseconds(1500))
                 if Task.isCancelled { return }
                 guard let whole = await bridge.fetchReply(sessionId: sessionId),
@@ -330,15 +342,24 @@ struct SessionView: View {
                     HStack(spacing: 8) {
                         ForEach(attachments) { attachment in
                             ZStack(alignment: .topTrailing) {
-                                if let thumbnail = attachment.thumbnail {
-                                    Image(uiImage: thumbnail)
-                                        .resizable()
-                                        .aspectRatio(contentMode: .fill)
-                                        .frame(width: 64, height: 64)
-                                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                                Group {
+                                    if let thumbnail = attachment.thumbnail {
+                                        Image(uiImage: thumbnail)
+                                            .resizable()
+                                            .aspectRatio(contentMode: .fill)
+                                    } else {
+                                        Image(systemName: "photo")
+                                            .foregroundStyle(Palette.textDim)
+                                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    }
                                 }
+                                // ImageUpload retains only a 192 px first frame
+                                // for this 64 pt tile, never the agent-sized data.
+                                .frame(width: 64, height: 64)
+
                                 Button {
                                     attachments.removeAll { $0.id == attachment.id }
+                                    attachError = nil
                                 } label: {
                                     Image(systemName: "xmark.circle.fill")
                                         .font(.system(size: 16))
@@ -347,6 +368,9 @@ struct SessionView: View {
                                 .buttonStyle(.plain)
                                 .padding(3)
                             }
+                            .frame(width: 64, height: 64)
+                            .background(Palette.raised)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
                         }
                     }
                     .padding(.horizontal, 16)
@@ -506,6 +530,11 @@ struct SessionView: View {
     /// retry. Now the picture rides the send, which already knows how to fail
     /// and keep your words.
     private func attach(_ item: PhotosPickerItem) async {
+        guard attachments.count < Self.attachmentLimit else {
+            attachError = "You can attach up to 4 pictures at a time."
+            pickedPhoto = nil
+            return
+        }
         attaching = true
         attachError = nil
         defer { attaching = false; pickedPhoto = nil }
@@ -516,7 +545,7 @@ struct SessionView: View {
         }
         // Sized for the agent that will actually read it — the ceiling differs
         // between Claude and Codex.
-        guard let prepared = ImageUpload.prepare(
+        guard let prepared = await ImageUpload.prepare(
             data: raw,
             type: item.supportedContentTypes.first,
             backend: row?.backend
@@ -524,10 +553,16 @@ struct SessionView: View {
             attachError = "That picture is too large to send."
             return
         }
+        // A picker task should be serial, but enforce the bound again after
+        // suspension so two overlapping callbacks can never exceed it.
+        guard attachments.count < Self.attachmentLimit else {
+            attachError = "You can attach up to 4 pictures at a time."
+            return
+        }
         attachments.append(PendingAttachment(
             data: prepared.data,
             ext: prepared.ext,
-            thumbnail: UIImage(data: prepared.data)
+            thumbnail: prepared.previewData.flatMap(UIImage.init(data:))
         ))
     }
 
@@ -574,6 +609,28 @@ struct SessionView: View {
         } else {
             talk.open(session: sessionId)
         }
+    }
+}
+
+/// The hot recognition hypothesis has its own invalidation boundary. The
+/// stable controller still belongs to the app and SessionView still observes
+/// phase, failures, target and committed text; only the many-times-per-second
+/// partial publication stops at the composer.
+private struct ComposerUpdateScope<Content: View>: View {
+    @ObservedObject private var partial: TalkController.LivePartial
+    private let content: () -> Content
+
+    init(
+        partial: TalkController.LivePartial,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.partial = partial
+        self.content = content
+    }
+
+    var body: some View {
+        _ = partial.text
+        return content()
     }
 }
 
