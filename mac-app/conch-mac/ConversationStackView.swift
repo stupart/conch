@@ -110,9 +110,15 @@ struct ConversationStackView: View {
                 if expanded { expandedToolIDs.remove(item.id) } else { expandedToolIDs.insert(item.id) }
             } label: {
                 HStack(spacing: 8) {
-                    Circle()
-                        .fill(statusColor(item.tool?.status))
-                        .frame(width: 6, height: 6)
+                    // The dot carried status; the glyph carries what KIND of
+                    // work this was. A stripe of identical dots is what made a
+                    // Codex session read as an undifferentiated string of tool
+                    // calls — you could not tell an edit from a shell command
+                    // without reading every line.
+                    Image(systemName: (item.tool?.kind ?? .unknown).symbol)
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(statusColor(item.tool?.status))
+                        .frame(width: 12)
                     Text(item.tool?.name ?? "tool")
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .foregroundStyle(ConchPalette.textDim)

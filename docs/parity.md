@@ -66,11 +66,14 @@ test → iterate pass, in order.
 Their vocabulary and their fold semantics; our stack, our look, our voice loop.
 Not their renderer — their own mobile app didn't reuse it either.
 
-1. **Mac composer** — type, attach images, see dictation land in the field.
-   Ours to build regardless of t3code; it is the current blocker.
-2. **Item-kind split** — adopt `CanonicalItemType` in `ConversationItem`.
-   One enum change; every rendering complaint traces back to it.
-3. **Per-kind tool rows** — command, file change, search, image, MCP, subagent.
+1. ~~**Mac composer**~~ — DONE. Type, attach images by picker or drag, and
+   dictation appears in the field while you speak.
+2. ~~**Item-kind split**~~ — DONE as `ToolKind`, mapping both agents' names for
+   the same operation onto one vocabulary in the daemon, so neither app learns
+   either agent's spelling.
+3. ~~**Per-kind tool rows**~~ — DONE for glyphs: terminal, pencil, doc, glass,
+   globe, wrench, checklist. Still to do: a file change should render its DIFF
+   rather than its filename (item 9).
 4. **Plans as first-class rows** — agents emit todo lists constantly and we
    render them as noise.
 5. **Interrupt** — stop a running turn from any device.

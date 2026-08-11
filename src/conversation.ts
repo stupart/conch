@@ -33,6 +33,8 @@ export type ConversationItemKind =
   | "review";
 
 export interface ConversationToolDetail {
+  /** What sort of operation this was, so a viewer can render it as one. */
+  kind?: ToolKind;
   name: string;
   status: "running" | "done" | "error";
   /** Tool output, kept separate so a viewer can collapse it. */
@@ -229,7 +231,11 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
       kind: "tool",
       text: summariseToolInput(call.input),
       at,
-      tool: { name: toolDisplayName(String(call.name ?? "tool")), status: "running" },
+      tool: {
+          name: toolDisplayName(String(call.name ?? "tool")),
+          kind: toolKind(String(call.name ?? "")),
+          status: "running",
+        },
     });
   }
 }
@@ -253,6 +259,57 @@ function claudeResultText(content: unknown): string {
  * it is the useful half (figma vs linear vs chrome tells you what happened),
  * just separated from the plumbing.
  */
+/**
+ * What KIND of thing a tool call is, independent of which agent ran it.
+ *
+ * conch filed every tool call under one `tool` kind, so a session rendered as
+ * an undifferentiated stripe of rows — Tyler's "i just see a string of tools
+ * calls on them". A shell command, a file edit and a web search are not the
+ * same event and should not look the same: only once they are told apart can an
+ * edit render as a diff and a command as a terminal line.
+ *
+ * The vocabulary is t3code's `CanonicalItemType`, which is worth adopting
+ * verbatim — it is the same set of distinctions any agent UI converges on, and
+ * sharing the names makes their handling of each a usable reference.
+ *
+ * Claude and Codex name their tools differently for identical operations
+ * (`Bash` vs `exec_command`, `Edit` vs `apply_patch`), which is exactly why the
+ * mapping belongs here rather than in a renderer: one table, both backends, and
+ * the apps never learn either vocabulary.
+ */
+export type ToolKind =
+  | "command_execution"
+  | "file_change"
+  | "file_read"
+  | "search"
+  | "web_search"
+  | "subagent"
+  | "plan"
+  | "mcp_tool_call"
+  | "unknown";
+
+const TOOL_KINDS: ReadonlyArray<readonly [ToolKind, RegExp]> = [
+  ["command_execution", /^(bash|shell|exec_command|run_command|local_shell)$/i],
+  ["file_change", /^(edit|write|multiedit|notebookedit|apply_patch|str_replace\w*)$/i],
+  ["file_read", /^(read|notebookread|view|cat_file)$/i],
+  ["search", /^(glob|grep|ls|find|list_dir|codebase_search)$/i],
+  ["web_search", /^(websearch|webfetch|web_search|fetch|browse)$/i],
+  ["subagent", /^(task|agent|workflow|dispatch_agent)$/i],
+  ["plan", /^(todowrite|update_plan|exit_plan_mode|todoread)$/i],
+];
+
+export function toolKind(name: string): ToolKind {
+  if (!name) return "unknown";
+  // MCP first: an MCP server may expose a tool called `read` or `search`, and
+  // it is still someone else's integration rather than the agent touching this
+  // machine. Where it came from matters more than what it is called.
+  if (name.startsWith("mcp__")) return "mcp_tool_call";
+  for (const [kind, pattern] of TOOL_KINDS) {
+    if (pattern.test(name)) return kind;
+  }
+  return "unknown";
+}
+
 export function toolDisplayName(name: string): string {
   const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
   if (!mcp) return name;
@@ -456,7 +513,11 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
         kind: "tool",
         text: summariseToolInput(parseMaybeJson(payload.arguments ?? payload.input)),
         at,
-        tool: { name: toolDisplayName(String(payload.name ?? "tool")), status: "running" },
+        tool: {
+          name: toolDisplayName(String(payload.name ?? "tool")),
+          kind: toolKind(String(payload.name ?? "")),
+          status: "running",
+        },
       });
       return;
     }

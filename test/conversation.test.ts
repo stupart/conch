@@ -9,6 +9,7 @@ import {
   reduceCodexLine,
   summariseToolInput,
   toolDisplayName,
+  toolKind,
   upsertConversationItem,
 } from "../src/conversation.ts";
 
@@ -443,5 +444,44 @@ describe("Codex says everything twice", () => {
       });
     }
     expect(conversation.order.length).toBe(2);
+  });
+});
+
+describe("telling one kind of tool call from another", () => {
+  // Every tool call was filed under one `tool` kind, so a session rendered as
+  // an undifferentiated stripe — Tyler's "i just see a string of tools calls".
+  // The two agents also name identical operations differently, which is why
+  // the mapping lives in the daemon and not in a renderer.
+  test("both agents' names for running a command agree", () => {
+    expect(toolKind("Bash")).toBe("command_execution");
+    expect(toolKind("exec_command")).toBe("command_execution");
+    expect(toolKind("local_shell")).toBe("command_execution");
+  });
+
+  test("both agents' names for changing a file agree", () => {
+    expect(toolKind("Edit")).toBe("file_change");
+    expect(toolKind("Write")).toBe("file_change");
+    expect(toolKind("apply_patch")).toBe("file_change");
+  });
+
+  test("reading is not changing", () => {
+    expect(toolKind("Read")).toBe("file_read");
+    expect(toolKind("Grep")).toBe("search");
+    expect(toolKind("WebSearch")).toBe("web_search");
+    expect(toolKind("Task")).toBe("subagent");
+    expect(toolKind("TodoWrite")).toBe("plan");
+  });
+
+  // Where a tool came from outranks what it is called: an MCP server may well
+  // expose something named `read`, and it is still someone else's integration
+  // rather than the agent touching this machine.
+  test("an MCP tool stays an MCP tool whatever it is named", () => {
+    expect(toolKind("mcp__plugin_figma_figma__get_screenshot")).toBe("mcp_tool_call");
+    expect(toolKind("mcp__whatever__read")).toBe("mcp_tool_call");
+  });
+
+  test("an unrecognised tool is not a crash", () => {
+    expect(toolKind("SomethingNew")).toBe("unknown");
+    expect(toolKind("")).toBe("unknown");
   });
 });

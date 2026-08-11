@@ -281,15 +281,49 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     }
 
     struct Tool: Decodable, Equatable, Sendable {
+        /// What sort of operation this was. The daemon maps both agents' tool
+        /// names onto one vocabulary, so the app never learns either — it only
+        /// decides how a "file change" or a "command" should look.
+        enum Kind: String, Decodable, Sendable {
+            case commandExecution = "command_execution"
+            case fileChange = "file_change"
+            case fileRead = "file_read"
+            case search
+            case webSearch = "web_search"
+            case subagent
+            case plan
+            case mcpToolCall = "mcp_tool_call"
+            case unknown
+
+            var symbol: String {
+                switch self {
+                case .commandExecution: return "terminal"
+                case .fileChange: return "square.and.pencil"
+                case .fileRead: return "doc.text"
+                case .search: return "magnifyingglass"
+                case .webSearch: return "globe"
+                case .subagent: return "person.2"
+                case .plan: return "checklist"
+                case .mcpToolCall: return "wrench.adjustable"
+                case .unknown: return "circle.dashed"
+                }
+            }
+        }
+
         var name = ""
+        var kind = Kind.unknown
         var status = "running"
         var result: String?
 
-        private enum CodingKeys: String, CodingKey { case name, status, result }
+        private enum CodingKeys: String, CodingKey { case name, kind, status, result }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? ""
+            // An unrecognised kind is not a decode failure. A newer daemon may
+            // name a kind this build has never heard of, and one unknown tool
+            // must not cost the whole conversation.
+            kind = (try? c.decodeIfPresent(Kind.self, forKey: .kind)) ?? .unknown
             status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? "running"
             result = try? c.decodeIfPresent(String.self, forKey: .result)
         }
