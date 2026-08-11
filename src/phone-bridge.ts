@@ -423,6 +423,20 @@ export class PhoneBridgeApplication {
         }
         try {
           const reply = await this.#dependencies.forwardControl(body);
+          // Say that the PHONE did this. Controls from every surface arrive on
+          // one socket, so when conch "unpaused itself" there was no way to
+          // tell a tap on the phone from a click on the Mac from a stray key
+          // in the terminal — the question could only be answered by guessing.
+          // Injects are logged in full elsewhere and would only be noise here.
+          try {
+            const parsed = JSON.parse(body);
+            const kind = String(parsed?.type ?? parsed?.kind ?? "");
+            if (kind && kind !== "inject" && kind !== "phone-speaking") {
+              this.#dependencies.log(
+                `phone → ${kind}${parsed?.label ? ` "${parsed.label}"` : ""}`,
+              );
+            }
+          } catch {}
           return new Response(reply, {
             headers: { "content-type": "application/json" },
           });
