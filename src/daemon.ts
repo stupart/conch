@@ -1657,9 +1657,49 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // would have stopped rather than when the phone actually does. The phone
     // reporting its own speech is the honest fix and is not this change.
     setState("speaking", label);
-    if (audioLease.sink === "phone") return;
+    if (audioLease.sink === "phone") {
+      armPhoneSpeechLatch(text);
+      return;
+    }
+    clearPhoneSpeechLatch();
     await speech.speak(speechCfg, text, label);
   };
+
+  /**
+   * Bound how long conch will claim the phone is reading.
+   *
+   * When the phone owns the audio this Mac stays quiet and cannot hear when the
+   * reading ends, so the phone reports it. That report is the honest signal and
+   * stays the primary one — but it arrives over a relay that drops
+   * ("heartbeat expired", "disconnected (4002)" repeatedly in one afternoon),
+   * and a dropped stop-report latched the dashboard at "speaking" forever.
+   * Tyler saw it as the app insisting it was reading aloud when nothing was.
+   *
+   * So: an upper bound, generous enough never to cut a real reading short, and
+   * cancelled the moment the phone says it finished. A safety net, not a timer.
+   */
+  let phoneSpeechLatch: ReturnType<typeof setTimeout> | null = null;
+
+  function clearPhoneSpeechLatch(): void {
+    if (!phoneSpeechLatch) return;
+    clearTimeout(phoneSpeechLatch);
+    phoneSpeechLatch = null;
+  }
+
+  function armPhoneSpeechLatch(text: string): void {
+    clearPhoneSpeechLatch();
+    // ~8 characters per second is roughly half real speaking pace, so this only
+    // fires when a report genuinely went missing.
+    const estimateMs = Math.min(120_000, 5_000 + (text.length / 8) * 1_000);
+    phoneSpeechLatch = setTimeout(() => {
+      phoneSpeechLatch = null;
+      if (getLiveState().state !== "speaking") return;
+      log("phone never reported finishing — clearing the speaking state");
+      setState("idle");
+      void renderSessionPanel();
+    }, estimateMs);
+    phoneSpeechLatch.unref?.();
+  }
 
   /**
    * Raise a session window unless you're actively typing right now. Read at call
@@ -1893,6 +1933,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
           onClientsChanged: (count) => {
             if (audioLease.clientsChanged(count)) {
               log("phone disconnected — audio back on this Mac");
+              // The phone that was reading is gone, so its finish report is
+              // never coming. Leaving the latch armed would keep the dashboard
+              // claiming something is being read aloud by a device that is no
+              // longer here.
+              clearPhoneSpeechLatch();
+              if (getLiveState().state === "speaking") setState("idle");
               void renderSessionPanel();
             }
           },
@@ -4521,7 +4567,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
           // a backgrounded phone must not silence or mislabel this Mac.
           if (audioLease.isPhone()) {
             if (speaking && label) setState("speaking", label);
-            else if (!speaking) setState("idle");
+            else if (!speaking) {
+              clearPhoneSpeechLatch();
+              setState("idle");
+            }
             void renderSessionPanel();
           }
           sock.end(JSON.stringify({ kind: "phone-speaking-ack", speaking }) + "\n");
