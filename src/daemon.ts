@@ -2991,7 +2991,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
         ...(reason ? { reason } : {}),
       });
       if (beforeInject && !(await beforeInject())) return false;
-      await speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.", event.label);
+      // Name the actual obstacle. A modal dialog on the Mac blocks every
+      // AppleScript call for as long as it is up, so this is not a session
+      // problem and not something retrying fixes — it stays broken until
+      // someone dismisses the popup, and saying so is the difference between
+      // a fixable minute and a baffling one.
+      await speak(
+        cfg,
+        reason === "system-dialog-blocking"
+          ? "A system dialog is open on the Mac and it's blocking me. Dismiss it and send again."
+          : "Couldn't reach the session's window — your words are on the clipboard, just paste.",
+        event.label,
+      );
       // NOT delivered. The words are on a clipboard, not in the session, and
       // saying otherwise is the failure that cost Tyler a real message: the
       // phone was told "delivered", cleared his draft, and the text existed

@@ -7,7 +7,12 @@ export interface InjectTextResult {
   via: InjectRoute;
   interrupted?: true;
   /** Why we fell back to the clipboard — the two causes need different fixes. */
-  reason?: "keystroke-fallback-off" | "window-not-focusable" | "session-not-routable";
+  reason?:
+    | "keystroke-fallback-off"
+    | "window-not-focusable"
+    | "session-not-routable"
+    /** A modal dialog on the Mac is swallowing every AppleScript call. */
+    | "system-dialog-blocking";
 }
 
 export interface InjectTextOptions {
@@ -99,14 +104,33 @@ export async function injectText(
       // front — typing would land somewhere unknowable. Clipboard instead.
       if (!(await mayInject())) return interrupted();
       await copyToClipboard(text);
-      return { via: "clipboard", reason: "window-not-focusable" };
+      // "Not focusable" and "a dialog ate the request" look identical from
+      // here but mean completely different things to the person holding the
+      // phone: one is a session conch cannot reach, the other is a popup on
+      // the Mac that will keep blocking every send until it is dismissed.
+      return {
+        via: "clipboard",
+        reason: osaLastTimedOut() ? "system-dialog-blocking" : "window-not-focusable",
+      };
     }
     if (focused) await Bun.sleep(300); // let the window raise settle
     if (!(await mayInject())) return interrupted();
-    await Bun.spawn(
+    const typist = Bun.spawn(
       ["osascript", "-e", "on run argv", "-e", 'tell application "System Events" to keystroke (item 1 of argv)', "-e", "end run", "--", text],
       { stdout: "ignore", stderr: "ignore" },
-    ).exited;
+    );
+    const typed = await Promise.race([
+      typist.exited.then(() => "done" as const),
+      Bun.sleep(OSA_TIMEOUT_MS).then(() => "timeout" as const),
+    ]);
+    if (typed === "timeout") {
+      try {
+        typist.kill();
+      } catch {}
+      step("osascript keystroke TIMED OUT — something modal is in front");
+      await copyToClipboard(text);
+      return { via: "clipboard", reason: "system-dialog-blocking" };
+    }
     step("osascript keystroke returned");
     if (submit) {
       // Separate, delayed Return: bundling it with the text arrived before the
@@ -132,8 +156,70 @@ export async function injectText(
 }
 
 /** Run osascript with one or more `-e` statements, output discarded. */
-function osa(...lines: string[]): Promise<number> {
-  return Bun.spawn(["osascript", ...lines.flatMap((l) => ["-e", l])], { stdout: "ignore", stderr: "ignore" }).exited;
+/**
+ * How long any AppleScript may take before we give up on it.
+ *
+ * A modal system dialog — a TCC permission prompt, a security agent — freezes
+ * every System Events call for as long as it is on screen. Measured on Tyler's
+ * Mac while a permission popup was showing: `focusSessionWindow` took 122,891
+ * milliseconds and then failed anyway, three sends in a row, with the daemon's
+ * whole queue stacked up behind it ("blocked behind inject:conch"). From the
+ * phone that looked like conch silently refusing to send.
+ *
+ * Nothing here is worth two minutes. Focusing a window either works in about a
+ * second or something is in the way, and knowing that quickly is what lets the
+ * caller say something useful instead of hanging.
+ */
+const OSA_TIMEOUT_MS = 4_000;
+
+/** True when the last AppleScript gave up rather than finished. */
+let lastOsaTimedOut = false;
+
+export function osaLastTimedOut(): boolean {
+  return lastOsaTimedOut;
+}
+
+/**
+ * Run an AppleScript and read its output, but never wait forever.
+ *
+ * Reading the child's stdout is precisely where a blocked System Events call
+ * parks: a stack sample of the wedged daemon sat in `__read_nocancel`, which is
+ * this read waiting on an osascript that a modal dialog had frozen.
+ */
+async function osaText(script: string): Promise<{ text: string; timedOut: boolean }> {
+  const child = Bun.spawn(["osascript", "-e", script], { stdout: "pipe", stderr: "ignore" });
+  const read = new Response(child.stdout).text().then((text) => ({ text, timedOut: false }));
+  const timeout = Bun.sleep(OSA_TIMEOUT_MS).then(() => ({ text: "", timedOut: true }));
+  const result = await Promise.race([read, timeout]);
+  if (result.timedOut) {
+    lastOsaTimedOut = true;
+    try {
+      child.kill();
+    } catch {}
+    return result;
+  }
+  lastOsaTimedOut = false;
+  return result;
+}
+
+async function osa(...lines: string[]): Promise<number> {
+  const child = Bun.spawn(["osascript", ...lines.flatMap((l) => ["-e", l])], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  const timeout = Bun.sleep(OSA_TIMEOUT_MS).then(() => "timeout" as const);
+  const result = await Promise.race([child.exited, timeout]);
+  if (result === "timeout") {
+    lastOsaTimedOut = true;
+    // Kill it, or the stuck osascript outlives the daemon's interest in it and
+    // a long session accumulates one blocked process per attempt.
+    try {
+      child.kill();
+    } catch {}
+    return 1;
+  }
+  lastOsaTimedOut = false;
+  return result;
 }
 
 /** Press a single key in the session — Enter accepts a permission dialog's highlighted option, Escape dismisses it. */
@@ -201,9 +287,7 @@ tell application "Terminal"
   end repeat
 end tell
 return "notfound"`;
-    const proc = Bun.spawn(["osascript", "-e", script], { stdout: "pipe", stderr: "ignore" });
-    const out = await new Response(proc.stdout).text();
-    await proc.exited;
+    const { text: out } = await osaText(script);
     return out.trim() === "ok";
   } catch {
     return false;
