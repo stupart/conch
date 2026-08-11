@@ -53,6 +53,8 @@ export interface ConversationItem {
   tool?: ConversationToolDetail;
   /** Present when this row IS a plan, so viewers render a checklist. */
   plan?: PlanStep[];
+  /** Present when the agent is WAITING on you to choose. */
+  question?: AgentQuestion;
   review?: { summary: string; link?: string };
 }
 
@@ -229,10 +231,13 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
   for (const call of parts.filter((part) => part?.type === "tool_use")) {
     const callId = typeof call.id === "string" ? call.id : `${id}:${call.name}`;
     const steps = planSteps(call.input);
+    const asked = agentQuestion(call.input);
     upsertConversationItem(conversation, {
       id: `tool:${callId}`,
       kind: "tool",
-      text: summariseToolInput(call.input),
+      // The question itself, not "AskUserQuestion(...)" — this row is the one
+      // thing on screen a person has to act on, so it says what it is asking.
+      text: asked ? asked.question : summariseToolInput(call.input),
       at,
       tool: {
         name: toolDisplayName(String(call.name ?? "tool")),
@@ -240,6 +245,7 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
         status: "running",
       },
       ...(steps.length ? { plan: steps } : {}),
+      ...(asked ? { question: asked } : {}),
     });
   }
 }
@@ -289,6 +295,7 @@ export type ToolKind =
   | "web_search"
   | "subagent"
   | "plan"
+  | "question"
   | "mcp_tool_call"
   | "unknown";
 
@@ -300,6 +307,7 @@ const TOOL_KINDS: ReadonlyArray<readonly [ToolKind, RegExp]> = [
   ["web_search", /^(websearch|webfetch|web_search|fetch|browse)$/i],
   ["subagent", /^(task|agent|workflow|dispatch_agent)$/i],
   ["plan", /^(todowrite|update_plan|exit_plan_mode|todoread)$/i],
+  ["question", /^(askuserquestion|ask_user_question|user_input)$/i],
 ];
 
 /**
@@ -344,6 +352,60 @@ function classifyName(name: string): ToolKind {
     if (pattern.test(name)) return kind;
   }
   return "unknown";
+}
+
+/**
+ * A question an agent is waiting on you to answer.
+ *
+ * This is the one place conch's interaction model beats a screen outright. A
+ * multiple-choice question is exactly the shape a voice loop answers well —
+ * it can be read aloud with its options and answered by saying one, from
+ * across the room, which is the whole point of the thing.
+ *
+ * The shape is Claude Code's `AskUserQuestion` and t3code's
+ * `UserInputQuestion`, which agree: a header, the question, and options that
+ * each carry a label and an explanation of what choosing it means.
+ */
+export interface AgentQuestion {
+  /** A few words naming the decision, for a row that must stay one line. */
+  header: string;
+  question: string;
+  options: Array<{ label: string; description?: string }>;
+  /** More than one answer may be chosen. */
+  multiSelect: boolean;
+}
+
+/**
+ * Pull the questions out of an `AskUserQuestion` call.
+ *
+ * Returns the FIRST question only. The tool accepts an array, but a person
+ * being read a queue of questions aloud cannot answer the third one first, and
+ * every real call observed carries exactly one.
+ */
+export function agentQuestion(input: unknown): AgentQuestion | null {
+  if (!input || typeof input !== "object") return null;
+  const questions = (input as any).questions;
+  const first = Array.isArray(questions) ? questions[0] : questions;
+  if (!first || typeof first !== "object") return null;
+  const question = typeof first.question === "string" ? first.question.trim() : "";
+  if (!question) return null;
+  const options = Array.isArray(first.options)
+    ? first.options
+      .map((option: any) => ({
+        label: String(option?.label ?? "").trim(),
+        ...(typeof option?.description === "string" && option.description.trim()
+          ? { description: option.description.trim() }
+          : {}),
+      }))
+      .filter((option: { label: string }) => option.label)
+    : [];
+  if (!options.length) return null;
+  return {
+    header: typeof first.header === "string" ? first.header.trim() : "",
+    question,
+    options,
+    multiSelect: first.multiSelect === true,
+  };
 }
 
 /** One line of a plan, in the only two states that matter to a reader. */

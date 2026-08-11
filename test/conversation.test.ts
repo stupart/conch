@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  agentQuestion,
   applyConversationDelta,
   buildConversation,
   conversationDelta,
@@ -7,6 +8,7 @@ import {
   emptyConversation,
   planSteps,
   publishedConversation,
+  reduceClaudeLine,
   reduceCodexLine,
   summariseToolInput,
   toolDisplayName,
@@ -541,5 +543,52 @@ describe("Codex hides the real tool inside an exec call", () => {
   test("exec with an unreadable argument is still code running", () => {
     expect(toolKind("exec", "something we have no rule for")).toBe("command_execution");
     expect(toolKind("exec")).toBe("command_execution");
+  });
+});
+
+describe("a question the agent is waiting on", () => {
+  // The one place conch's model beats a screen outright: a multiple-choice
+  // question is exactly the shape a voice loop answers well — read aloud with
+  // its options and answered by saying one, from across the room.
+  const real = {
+    questions: [{
+      question: "Where should this readout land?",
+      header: "Deliver",
+      multiSelect: true,
+      options: [
+        { label: "Linear subtask", description: "New subtask under the ticket." },
+        { label: "Export PDF", description: "Headless-Chrome PDF." },
+      ],
+    }],
+  };
+
+  test("a real AskUserQuestion call becomes a question", () => {
+    const asked = agentQuestion(real)!;
+    expect(asked.question).toBe("Where should this readout land?");
+    expect(asked.header).toBe("Deliver");
+    expect(asked.multiSelect).toBe(true);
+    expect(asked.options.map((o) => o.label)).toEqual(["Linear subtask", "Export PDF"]);
+  });
+
+  test("the row reads as the question, not as a tool call", () => {
+    const conversation = emptyConversation("s");
+    reduceClaudeLine(conversation, {
+      type: "assistant",
+      message: {
+        content: [{ type: "tool_use", id: "t1", name: "AskUserQuestion", input: real }],
+      },
+    });
+    const item = conversation.items[conversation.order[0]!]!;
+    expect(item.text).toBe("Where should this readout land?");
+    expect(item.tool?.kind).toBe("question");
+    expect(item.question?.options.length).toBe(2);
+  });
+
+  // A question with nothing to choose from cannot be answered by voice and
+  // must not pretend to be answerable.
+  test("a malformed question is not a question", () => {
+    expect(agentQuestion({ questions: [{ question: "hi", options: [] }] })).toBeNull();
+    expect(agentQuestion({ questions: [{ options: [{ label: "a" }] }] })).toBeNull();
+    expect(agentQuestion({ cmd: "ls" })).toBeNull();
   });
 });

@@ -405,3 +405,96 @@ export function classifyPermissionDecision(
   }
   return heard ? decision : null;
 }
+
+/** Spoken ordinals, so "the third one" can pick option three. */
+const ORDINALS = [
+  "first", "second", "third", "fourth", "fifth",
+  "sixth", "seventh", "eighth", "ninth", "tenth",
+];
+
+/** Spoken cardinals, for "number four". */
+const CARDINALS = [
+  "one", "two", "three", "four", "five",
+  "six", "seven", "eight", "nine", "ten",
+];
+
+/** Filler that carries no choice, stripped before matching. */
+const CHOICE_FILLER = /\b(the|a|an|one|option|choice|number|let'?s|go|with|do|pick|choose|i|want|would|like|please|just|yeah|yes|um|uh)\b/gi;
+
+function normalizeChoice(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Which option did you just say?
+ *
+ * An agent's multiple-choice question is the shape a voice loop answers best,
+ * but only if saying the answer the way a person says it actually works. Nobody
+ * reads a label back verbatim: they say "the second one", or "PDF", or "let's
+ * do the Linear one". So this matches in descending order of certainty and
+ * refuses when two options are equally plausible — a wrong pick here commits
+ * the agent down a path you did not choose, which is worse than asking again.
+ *
+ * Returns the chosen index, or null when nothing clearly won.
+ */
+export function classifySpokenChoice(
+  heard: string,
+  options: ReadonlyArray<{ label: string }>,
+): number | null {
+  const said = normalizeChoice(heard);
+  if (!said || options.length === 0) return null;
+
+  // 1. The label, said outright. Longest first, so "Export PDF as draft" is not
+  //    beaten by a shorter label that happens to be contained in it.
+  const byLength = options
+    .map((option, index) => ({ index, label: normalizeChoice(option.label) }))
+    .filter((entry) => entry.label)
+    .sort((a, b) => b.label.length - a.label.length);
+  const spoken = byLength.filter((entry) => said.includes(entry.label));
+  if (spoken.length === 1) return spoken[0]!.index;
+  if (spoken.length > 1) return spoken[0]!.index; // the longest match is the specific one
+
+  // 2. A position: "the third one", "option 2", "number two".
+  const digit = /\b([1-9][0-9]?)\b/.exec(said);
+  if (digit) {
+    const index = Number(digit[1]) - 1;
+    if (index >= 0 && index < options.length) return index;
+  }
+  // Ordinals BEFORE cardinals, because "the third one" contains "one" and a
+  // cardinal pass would answer with option one for a question you answered
+  // with option three.
+  for (let index = 0; index < Math.min(ORDINALS.length, options.length); index++) {
+    if (new RegExp(`\\b${ORDINALS[index]}\\b`).test(said)) return index;
+  }
+  // A spoken cardinal counts only when it is being used as a position —
+  // announced by "option"/"number"/"choice", or said on its own. Otherwise
+  // "two" in "two of them look right" would pick option two.
+  for (let index = 0; index < Math.min(CARDINALS.length, options.length); index++) {
+    const word = CARDINALS[index]!;
+    if (
+      new RegExp(`\\b(option|number|choice)\\s+${word}\\b`).test(said)
+      || said === word
+    ) {
+      return index;
+    }
+  }
+
+  // 3. Distinctive words from one label and no other. "PDF" picks "Export PDF"
+  //    only while no other option also mentions PDF.
+  const saidWords = new Set(said.replace(CHOICE_FILLER, " ").split(/\s+/).filter(Boolean));
+  if (saidWords.size === 0) return null;
+  const scored = options.map((option, index) => {
+    const labelWords = normalizeChoice(option.label)
+      .replace(CHOICE_FILLER, " ")
+      .split(/\s+/)
+      .filter(Boolean);
+    const hits = labelWords.filter((word) => saidWords.has(word)).length;
+    return { index, hits };
+  });
+  const best = scored.reduce((a, b) => (b.hits > a.hits ? b : a));
+  if (best.hits === 0) return null;
+  // A tie is an ambiguity, and guessing between two readings of what you said
+  // is exactly the case where asking again is cheaper than being wrong.
+  const tied = scored.filter((entry) => entry.hits === best.hits).length > 1;
+  return tied ? null : best.index;
+}

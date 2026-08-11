@@ -262,15 +262,66 @@ func relativeAge(epochMilliseconds: Double, now: Date = Date()) -> String? {
 /// happens to be showing.
 struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     struct Tool: Decodable, Equatable, Sendable {
+        /// What sort of operation this was. The daemon maps both agents' tool
+        /// names onto one vocabulary, so the phone never learns either — it
+        /// only decides how a "file change" or a "command" should look.
+        enum Kind: String, Decodable, Sendable {
+            case commandExecution = "command_execution"
+            case fileChange = "file_change"
+            case fileRead = "file_read"
+            case search
+            case webSearch = "web_search"
+            case subagent
+            case plan
+            case mcpToolCall = "mcp_tool_call"
+            case unknown
+
+            /// The Mac's per-kind glyph vocabulary, one for one.
+            var symbol: String {
+                switch self {
+                case .commandExecution: "terminal"
+                case .fileChange: "square.and.pencil"
+                case .fileRead: "doc.text"
+                case .search: "magnifyingglass"
+                case .webSearch: "globe"
+                case .subagent: "person.2"
+                case .plan: "checklist"
+                case .mcpToolCall: "wrench.adjustable"
+                case .unknown: "circle.dashed"
+                }
+            }
+        }
+
         var name = ""
+        var kind = Kind.unknown
         var status = "running"
         var result: String?
-        private enum CodingKeys: String, CodingKey { case name, status, result }
+        private enum CodingKeys: String, CodingKey { case name, kind, status, result }
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? ""
+            // An unrecognised kind is not a decode failure. A newer daemon may
+            // name a kind this build has never heard of, and one unknown tool
+            // must not cost the whole conversation.
+            kind = (try? c.decodeIfPresent(Kind.self, forKey: .kind)) ?? .unknown
             status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? "running"
             result = try? c.decodeIfPresent(String.self, forKey: .result)
+        }
+    }
+
+    /// One line of a plan. Agents emit these constantly; as a generic tool row
+    /// they were noise, as a checklist they are the clearest answer on screen
+    /// to "what is it actually doing".
+    struct PlanStep: Decodable, Equatable, Sendable, Identifiable {
+        enum Status: String, Decodable, Sendable { case pending, running, done }
+        var text = ""
+        var status = Status.pending
+        var id: String { "\(status.rawValue):\(text)" }
+        private enum CodingKeys: String, CodingKey { case text, status }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            text = (try? c.decodeIfPresent(String.self, forKey: .text)) ?? ""
+            status = (try? c.decodeIfPresent(Status.self, forKey: .status)) ?? .pending
         }
     }
 
@@ -280,8 +331,10 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     var kind = "assistant"
     var text = ""
     var tool: Tool?
+    /// Present when this item IS a plan, so the stack renders a checklist.
+    var plan: [PlanStep]?
 
-    private enum CodingKeys: String, CodingKey { case id, rev, kind, text, tool }
+    private enum CodingKeys: String, CodingKey { case id, rev, kind, text, tool, plan }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? UUID().uuidString
@@ -289,6 +342,7 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         kind = (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? "assistant"
         text = (try? c.decodeIfPresent(String.self, forKey: .text)) ?? ""
         tool = try? c.decodeIfPresent(Tool.self, forKey: .tool)
+        plan = try? c.decodeIfPresent([PlanStep].self, forKey: .plan)
     }
 }
 
