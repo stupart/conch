@@ -1329,18 +1329,30 @@ private struct ConversationPane: View {
     }
 
     @ViewBuilder
+    /// A RESERVED slot, blank when there is nothing to say.
+    ///
+    /// This used to appear only when it had text, so the moment conch started
+    /// speaking or listening a 32pt bar materialised under the composer and
+    /// shoved the whole conversation upward — while you were reading it, and
+    /// several times a minute during a voice exchange. Tyler: "obviously in
+    /// violation of common sense UX".
+    ///
+    /// conch's own terminal dashboard already got this right, and says so in
+    /// its comments: the transcription line is "always present so it never
+    /// shifts the layout". The hint fades instead of displacing anything.
     private var noteBar: some View {
-        if let note {
-            Text(note)
-                .font(ConchTypography.font(size: 10.5))
-                .foregroundStyle(ConchPalette.textFaint)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .frame(height: 32)
-                .accessibilityLabel(note)
-        }
+        Text(note ?? " ")
+            .font(ConchTypography.font(size: 10.5))
+            .foregroundStyle(ConchPalette.textFaint)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .frame(height: 32)
+            .opacity(note == nil ? 0 : 1)
+            .animation(.easeOut(duration: 0.15), value: note)
+            .accessibilityHidden(note == nil)
+            .accessibilityLabel(note ?? "")
     }
 }
 

@@ -109,6 +109,7 @@ final class SpeechController: NSObject, ObservableObject {
         let utterance = AVSpeechUtterance(
             string: label.map { "\($0): \(spokenText)" } ?? spokenText
         )
+        utterance.voice = Self.bestVoice
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 1.08
         utterance.postUtteranceDelay = 0.1
         isSpeaking = true
@@ -207,6 +208,50 @@ final class SpeechController: NSObject, ObservableObject {
                 return false
             }
         }
+    }
+
+    /// The best voice actually installed on this phone.
+    ///
+    /// Nothing set a voice at all, so every utterance used the system default —
+    /// the *compact* voice, which is the robotic one everybody recognises. iOS
+    /// ships far better neural voices under the same API; they just have to be
+    /// asked for by name, and Apple will not pick them for you.
+    ///
+    /// Resolved once. `speechVoices()` walks every installed voice and this is
+    /// on the path of every reply.
+    ///
+    /// Premium beats enhanced beats default, and among equals the shortest
+    /// identifier wins — Apple's own voices have plain identifiers while
+    /// third-party and novelty ones are longer, so this lands on Ava or Samantha
+    /// rather than something comic.
+    static let bestVoice: AVSpeechSynthesisVoice? = {
+        let language = AVSpeechSynthesisVoice.currentLanguageCode()
+        let candidates = AVSpeechSynthesisVoice.speechVoices().filter { voice in
+            // Same language family, not the same region: an en-GB phone should
+            // still find en-US premium voices rather than fall back to compact.
+            voice.language.prefix(2) == language.prefix(2)
+        }
+        func rank(_ voice: AVSpeechSynthesisVoice) -> Int {
+            switch voice.quality {
+            case .premium: return 3
+            case .enhanced: return 2
+            default: return 1
+            }
+        }
+        return candidates.max { a, b in
+            rank(a) != rank(b)
+                ? rank(a) < rank(b)
+                : a.identifier.count > b.identifier.count
+        }
+    }()
+
+    /// True when the phone has nothing better than the compact voice installed.
+    ///
+    /// Worth surfacing rather than silently sounding bad: the better voices are
+    /// a free download, but they live in Settings under Accessibility where
+    /// nobody would think to look for them.
+    var usingCompactVoice: Bool {
+        (Self.bestVoice?.quality ?? .default) == .default
     }
 
     /// Markdown is written to be read, not spoken. Strip what would be recited

@@ -2287,6 +2287,33 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
   }
 
+  /**
+   * What a session actually wants from you.
+   *
+   * This used to print the notification's internal type with the underscores
+   * swapped for spaces, so a session sat there saying "permission prompt". It
+   * is wrong twice over: Claude Code fires `permission_prompt` for an
+   * `AskUserQuestion` as well, so a plain multiple-choice question announced
+   * itself as a permission request — Tyler saw exactly that and said so — and
+   * even when it IS a permission prompt, the internal name is not the words a
+   * person would use.
+   *
+   * "Needs an answer" is true of both, which is the point: one honest phrase
+   * beats two guesses at which kind of asking this is.
+   */
+  function describeNeed(ntype: string | undefined): string | undefined {
+    switch (ntype) {
+      case "permission_prompt":
+      case "elicitation_dialog":
+        return "needs an answer";
+      case "idle_prompt":
+        // Already covered by the row being idle; saying it twice adds nothing.
+        return undefined;
+      default:
+        return ntype ? ntype.replace(/_/g, " ") : undefined;
+    }
+  }
+
   function setSessionState(
     sessionId: string,
     label: string,
@@ -2613,7 +2640,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (!audibleTurn) return;
     }
     if (event.type === "needs-you") {
-      const kind = event.ntype && event.ntype !== "idle_prompt" ? event.ntype.replace(/_/g, " ") : undefined;
+      const kind = describeNeed(event.ntype);
       setSessionState(event.sessionId, event.label, "needs", kind, event.eventAt);
       return; // stripped: no bell, no announcement, no permission mic
     }

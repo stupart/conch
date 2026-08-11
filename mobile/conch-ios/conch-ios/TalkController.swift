@@ -440,7 +440,44 @@ final class TalkController: NSObject, ObservableObject {
         if recognizer.supportsOnDeviceRecognition {
             request.requiresOnDeviceRecognition = true
         }
+        // Punctuation, because these words are going to an AGENT, not into a
+        // notes field. An unpunctuated wall of dictation changes how a model
+        // reads an instruction — where a sentence ends is where a clause stops
+        // applying.
+        request.addsPunctuation = true
+        // Dictation, not search or short commands: it tells the recogniser to
+        // expect connected speech rather than a few keywords.
+        request.taskHint = .dictation
+        // Words this recogniser has no reason to know and every reason to meet.
+        // Apple's on-device model mangles technical vocabulary — it has never
+        // heard "Codex" as a proper noun, and "conch" it hears as "cotch",
+        // "conk", or "conscious". Naming them costs nothing per utterance.
+        request.contextualStrings = Self.vocabulary
         return request
+    }
+
+    /// Terms conch's own conversations are full of, plus whatever the sessions
+    /// happen to be called right now. Session names matter most: they are how
+    /// you address a session out loud, so mishearing one sends your words to
+    /// the wrong agent — or to none.
+    private static let baseVocabulary = [
+        "conch", "Codex", "Claude", "tmux", "Kokoro", "whisper", "daemon",
+        "TestFlight", "Xcode", "SwiftUI", "TypeScript", "repo", "commit",
+        "diff", "merge", "branch", "PR", "linter", "telemetry",
+    ]
+
+    /// Rebuilt when the session list changes, so a newly named session is
+    /// recognisable the moment it appears.
+    static var vocabulary: [String] = baseVocabulary
+
+    static func learnSessionNames(_ names: [String]) {
+        // Split on non-letters: "client-dashboard" is two words to a speech
+        // recogniser, and offering it whole helps neither half.
+        let words = names
+            .flatMap { $0.split(whereSeparator: { !$0.isLetter }) }
+            .map(String.init)
+            .filter { $0.count > 2 }
+        vocabulary = Array(Set(baseVocabulary + names + words))
     }
 
     private func startRecognition(

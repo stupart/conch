@@ -79,6 +79,14 @@ final class BridgeClient: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self,
                       let decoded = try? JSONDecoder().decode(PublishedState.self, from: data) else { return }
+                // Teach the recogniser what the sessions are called before it
+                // has to hear one. Only on a real change: the labels move far
+                // less often than the state does.
+                let names = decoded.rows.map(\.label).filter { !$0.isEmpty }
+                if names != self.knownSessionNames {
+                    self.knownSessionNames = names
+                    TalkController.learnSessionNames(names)
+                }
                 self.state = decoded
             }
         }
@@ -109,6 +117,9 @@ final class BridgeClient: ObservableObject {
         transport.stop()
         isConnected = false
     }
+
+    /// Session labels last handed to the speech recogniser.
+    private var knownSessionNames: [String] = []
 
     /// The Mac this phone is paired to, for the connection popover.
     var pairedHost: String { pairing.displayHost }
