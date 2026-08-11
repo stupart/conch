@@ -24,16 +24,28 @@ describe("the phone can speak with the screen off", () => {
     expect(modes.slice(0, 200)).toContain("<string>audio</string>");
   });
 
-  // Off screen, an active audio session is the only thing keeping conch alive.
-  // Releasing it after every utterance means a pocket goes quiet after exactly
-  // one reply.
-  test("the session is only handed back while the app is on screen", () => {
+  // Tyler chose queue-until-you-open over read-from-a-pocket: "make sure it
+  // like pauses or what not the phone app when I background it and new ones
+  // are queued and dont start until I open it". Holding an audio session to
+  // stay resident is the most expensive thing a phone app can do, so the
+  // session is released on every path — the entitlement above is what lets an
+  // utterance ALREADY under way finish when the screen locks.
+  test("the audio session is released even in the background", () => {
     const finish = speech.slice(speech.indexOf("Hand audio back FIRST"));
     const branch = finish.slice(0, 1400);
-    expect(branch).toContain("UIApplication.shared.applicationState == .active");
-    const deactivate = branch.indexOf("setActive(");
-    const guard = branch.indexOf("applicationState == .active");
-    expect(guard).toBeGreaterThan(-1);
-    expect(guard).toBeLessThan(deactivate); // the guard wraps it, not the reverse
+    expect(branch).toContain("setActive(");
+    expect(branch).not.toContain("applicationState == .active");
+  });
+
+  // Not marking it spoken is what makes this a queue rather than a silent
+  // drop: the same state republishes when the app comes forward.
+  test("a reply arriving off screen waits instead of being read or dropped", () => {
+    const consider = speech.slice(speech.indexOf("func consider(state:"));
+    const body = consider.slice(0, consider.indexOf("func speak("));
+    const gate = body.indexOf("applicationState == .active");
+    const marked = body.indexOf("spoken[reply.sessionId] = text", gate);
+    expect(gate).toBeGreaterThan(-1);
+    // The gate must come BEFORE the line that would mark it already read.
+    expect(marked).toBeGreaterThan(gate);
   });
 });

@@ -431,7 +431,10 @@ export class PhoneBridgeApplication {
           try {
             const parsed = JSON.parse(body);
             const kind = String(parsed?.type ?? parsed?.kind ?? "");
-            if (kind && kind !== "inject" && kind !== "phone-speaking") {
+            if (
+              kind && kind !== "inject" && kind !== "phone-speaking"
+              && kind !== "phone-device"
+            ) {
               this.#dependencies.log(
                 `phone → ${kind}${parsed?.label ? ` "${parsed.label}"` : ""}`,
               );

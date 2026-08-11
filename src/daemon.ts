@@ -4559,6 +4559,29 @@ export async function runDaemon(cfg: Config): Promise<void> {
         // — the glyph flashes and the ledger says "Waiting for you" for a
         // session being read aloud. Tyler: "the reason I can't tell which one
         // is speaking is cause the state is broken."
+        // What conch costs the phone it runs on. Logged rather than acted on:
+        // the point is to be able to answer "is this draining my phone" with a
+        // reading instead of an opinion, and a trend across a session is what
+        // answers it. Low Power Mode is called out because it throttles the
+        // CPU and has already been mistaken for a conch bug once.
+        if (
+          typeof value === "object" && value !== null
+          && (value as { kind?: unknown }).kind === "phone-device"
+        ) {
+          const sample = value as Record<string, unknown>;
+          const mb = Number(sample.footprintMB ?? 0).toFixed(0);
+          const battery = typeof sample.battery === "number"
+            ? `${Math.round(sample.battery * 100)}% ${String(sample.batteryState ?? "")}`
+            : String(sample.batteryState ?? "unknown");
+          const minutes = Math.round(Number(sample.uptime ?? 0) / 60);
+          const flags = [
+            sample.thermal !== "nominal" ? `thermal ${sample.thermal}` : "",
+            sample.lowPower === true ? "LOW POWER MODE" : "",
+          ].filter(Boolean).join(", ");
+          log(`phone: ${mb}MB · battery ${battery} · up ${minutes}m${flags ? ` · ${flags}` : ""}`);
+          sock.end(JSON.stringify({ kind: "phone-device-ack" }) + "\n");
+          return;
+        }
         if (
           typeof value === "object" && value !== null
           && (value as { kind?: unknown }).kind === "phone-speaking"

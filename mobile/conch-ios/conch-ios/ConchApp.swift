@@ -26,6 +26,7 @@ struct ConchApp: App {
     /// reachable by a redraw.
     @StateObject private var talk = TalkController()
     @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var telemetry = DeviceTelemetry()
 
     var body: some Scene {
         WindowGroup {
@@ -65,6 +66,10 @@ struct ConchApp: App {
                 speech.reportSpeaking = { speaking, label in
                     Task { await bridge?.reportSpeaking(speaking, label: label) }
                 }
+                telemetry.report = { sample in
+                    Task { await bridge?.reportDevice(sample) }
+                }
+                telemetry.start()
             }
             .onChange(of: scenePhase) { _, phase in
                 guard let bridge else { return }

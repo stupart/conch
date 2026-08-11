@@ -204,6 +204,19 @@ final class BridgeClient: ObservableObject {
         await post(control: ["type": "interrupt", "sessionId": sessionId, "label": label])
     }
 
+    /// Report what conch is costing this phone. Fire-and-forget: a dropped
+    /// sample is worth nothing and must never be retried into the send path
+    /// that carries your words.
+    @discardableResult
+    func reportDevice(_ sample: DeviceSample) async -> Bool {
+        guard let encoded = try? JSONEncoder().encode(sample),
+              let fields = (try? JSONSerialization.jsonObject(with: encoded)) as? [String: Any]
+        else { return false }
+        var message: [String: Any] = ["kind": "phone-device"]
+        message.merge(fields) { current, _ in current }
+        return await post(control: message)
+    }
+
     func send(mode action: String) async -> Bool {
         await post(control: ["type": action, "sessionId": "", "label": "", "announce": ""])
     }

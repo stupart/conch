@@ -75,6 +75,15 @@ final class SpeechController: NSObject, ObservableObject {
             return
         }
         guard spoken[reply.sessionId] != text else { return }
+        // Off screen, a reply WAITS rather than being read or discarded.
+        //
+        // Tyler: "new ones are queued and dont start until I open it". Not
+        // marking it spoken is what makes that a queue instead of a silent
+        // drop — the same state republishes when the app comes forward, and it
+        // is read then. Only the newest per session survives, which is the
+        // right amount of catch-up: hearing a backlog recited from the top is
+        // what the priming guard above already exists to prevent.
+        guard UIApplication.shared.applicationState == .active else { return }
         // Defer rather than drop, and deliberately do NOT mark it spoken: this
         // same state republishes, so the reply is read the moment you send.
         guard !captureOwnsAudio() else { return }
@@ -233,20 +242,24 @@ extension SpeechController: AVSpeechSynthesizerDelegate {
             // `onFinishedReading` had just started — killing the utterance on
             // the auto-open path, the one the whole loop rests on.
             //
-            // But ONLY while the app is on screen. Off screen, an active audio
-            // session is the only thing keeping conch running: release it and
-            // iOS suspends the app, so the NEXT reply is never spoken and the
-            // "stopped speaking" report for the one after it never sends. A
-            // phone in your pocket would go quiet after exactly one reply,
-            // which is the shape of the bug Tyler hit — "saying it's speaking
-            // and not speaking and also not hearing it speak". Nothing is
-            // playing, so holding the session does not duck anyone's music.
-            if UIApplication.shared.applicationState == .active {
-                try? AVAudioSession.sharedInstance().setActive(
-                    false,
-                    options: .notifyOthersOnDeactivation
-                )
-            }
+            // Released on every path, including in the background.
+            //
+            // An earlier version held the session off screen so iOS would keep
+            // conch alive and reading from a pocket. Tyler chose the opposite:
+            // "make sure it like pauses or what not the phone app when I
+            // background it and new ones are queued and dont start until I
+            // open it". Holding an audio session to stay resident is the single
+            // most expensive thing a phone app can do, and backgrounding
+            // already hands the audio lease back so the Mac reads instead.
+            //
+            // The background-audio entitlement stays: it is what lets an
+            // utterance ALREADY under way finish when the screen locks, rather
+            // than being cut mid-sentence. Starting a new one is the part that
+            // waits for you to come back.
+            try? AVAudioSession.sharedInstance().setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
             // The loop's whole shape: it finishes reading, then listens. Making
             // you tap Talk after every reply is the difference between a voice
             // loop and a dictation box — and on a treadmill it is the
