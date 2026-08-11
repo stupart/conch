@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		A10000000000000000000901 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000901 /* Assets.xcassets */; };
 		A10000000000000000000902 /* ConversationStackView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000902 /* ConversationStackView.swift */; };
+		A10000000000000000000931 /* DaemonHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000931 /* DaemonHost.swift */; };
 		A10000000000000000000903 /* DebugSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000903 /* DebugSnapshot.swift */; };
 		A10000000000000000000001 /* ConchMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* ConchMacApp.swift */; };
 		A10000000000000000000002 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* Models.swift */; };
@@ -38,6 +39,7 @@
 		A20000000000000000000007 /* WebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebView.swift; sourceTree = "<group>"; };
 		A20000000000000000000901 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A20000000000000000000902 /* ConversationStackView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStackView.swift; sourceTree = "<group>"; };
+		A20000000000000000000931 /* DaemonHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonHost.swift; sourceTree = "<group>"; };
 		A20000000000000000000903 /* DebugSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugSnapshot.swift; sourceTree = "<group>"; };
 		A20000000000000000000009 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A2000000000000000000000A /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
@@ -89,6 +91,7 @@
 				B20000000000000000000001 /* SettingsProtocol.swift */,
 				B20000000000000000000002 /* SettingsView.swift */,
 				A20000000000000000000902 /* ConversationStackView.swift */,
+				A20000000000000000000931 /* DaemonHost.swift */,
 				A20000000000000000000903 /* DebugSnapshot.swift */,
 				A20000000000000000000009 /* Info.plist */,
 				A20000000000000000000901 /* Assets.xcassets */,
@@ -182,6 +185,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000001 /* ConchMacApp.swift in Sources */,
+				A10000000000000000000931 /* DaemonHost.swift in Sources */,
 				A10000000000000000000903 /* DebugSnapshot.swift in Sources */,
 				A10000000000000000000902 /* ConversationStackView.swift in Sources */,
 				A10000000000000000000002 /* Models.swift in Sources */,

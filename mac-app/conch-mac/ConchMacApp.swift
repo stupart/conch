@@ -12,6 +12,7 @@ struct ConchMacApp: App {
         WindowGroup("conch") {
             ContentView()
                 .environmentObject(store)
+                .environmentObject(appDelegate.daemon)
                 .frame(minWidth: 640, minHeight: 400)
                 .preferredColorScheme(.dark)
                 .background(WindowBackgroundConfigurator())
@@ -66,15 +67,28 @@ struct ConchMacApp: App {
     }
 }
 
+@MainActor
 private final class ConchAppDelegate: NSObject,
     NSApplicationDelegate,
     UNUserNotificationCenterDelegate
 {
+    /// The daemon is a child of this app, not a separate install.
+    let daemon = DaemonHost()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         registerLoginItemIfNeeded()
         ReviewNotifications.shared.requestAuthorizationAtLaunch()
+        // Adopts an already-listening daemon rather than starting a rival one.
+        daemon.start()
+    }
+
+    /// Quitting conch stops conch. That is the whole point of folding the
+    /// daemon into the app: there is no second thing left running that the
+    /// person has to know about, find, and stop separately.
+    func applicationWillTerminate(_ notification: Notification) {
+        daemon.stop()
     }
 
     /// Closing the window must not strand the app with no way back.

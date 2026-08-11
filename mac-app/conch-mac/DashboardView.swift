@@ -141,6 +141,7 @@ struct DashboardActions {
 
 struct DashboardView: View {
     @EnvironmentObject private var store: StateStore
+    @EnvironmentObject private var daemon: DaemonHost
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let state: PublishedState?
@@ -148,6 +149,18 @@ struct DashboardView: View {
     let renamingSessionID: SessionRow.ID?
     @Binding var renameDraft: String
     let actions: DashboardActions
+
+    /// Nil while conch is working, so the bar only appears when it earns its
+    /// space. A daemon we adopted from a terminal is working fine and needs no
+    /// banner — it is simply not ours to stop.
+    private var daemonTrouble: String? {
+        switch daemon.state {
+        case .running, .adopted: return nil
+        case .starting: return "Starting conch…"
+        case .stopped: return "conch is off."
+        case .failed(let reason): return reason
+        }
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -177,6 +190,32 @@ struct DashboardView: View {
                             .font(ConchTypography.font(size: 11.5))
                         Spacer(minLength: 8)
                         Button("Relaunch", action: store.relaunchForNewBuild)
+                            .buttonStyle(.plain)
+                            .font(ConchTypography.font(size: 11, weight: .medium))
+                            .foregroundStyle(ConchPalette.statusWorking)
+                    }
+                    .foregroundStyle(ConchPalette.statusWaiting)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ConchPalette.raised)
+
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(height: 1)
+                }
+
+                // The daemon runs inside this app, so when it is down the app
+                // is the only place that can say so. Silence here is what
+                // "couldn't reach your Mac" looked like from the outside.
+                if let trouble = daemonTrouble {
+                    HStack(spacing: 10) {
+                        Image(systemName: "bolt.horizontal.circle")
+                            .font(.system(size: 10.5, weight: .medium))
+                        Text(trouble)
+                            .font(ConchTypography.font(size: 11.5))
+                        Spacer(minLength: 8)
+                        Button("Start", action: daemon.start)
                             .buttonStyle(.plain)
                             .font(ConchTypography.font(size: 11, weight: .medium))
                             .foregroundStyle(ConchPalette.statusWorking)

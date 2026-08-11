@@ -214,7 +214,9 @@ final class ConchPairingStore: ObservableObject {
                 self.error = "Could not read the daemon's pairing reply."
             }
         case .connectFailed:
-            error = "conch isn't running. Start it with `conch service install`."
+            // The daemon is part of this app now, so there is no separate
+            // install to tell anyone about — it is a switch in the window.
+            error = "conch isn't running. Turn it on in the conch window."
         case .timeout:
             error = "The daemon didn't answer in time."
         }

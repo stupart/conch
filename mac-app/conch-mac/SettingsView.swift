@@ -2,10 +2,20 @@ import SwiftUI
 
 struct ConchSettingsView: View {
     @StateObject private var store = ConchSettingsStore()
+    @EnvironmentObject private var daemon: DaemonHost
 
     var body: some View {
         VStack(spacing: 0) {
             header
+
+            Rectangle()
+                .fill(ConchPalette.divider)
+                .frame(height: 1)
+
+            // Deliberately NOT one of the rows below: those are read from the
+            // daemon over its socket, so the one control that can turn the
+            // daemon off cannot be among the things that disappear when it is.
+            DaemonPowerRow(daemon: daemon)
 
             Rectangle()
                 .fill(ConchPalette.divider)
@@ -551,5 +561,74 @@ private func feedbackColor(_ tone: ConchSettingsFeedback.Tone) -> Color {
         return ConchPalette.statusWaiting
     case .error:
         return ConchPalette.statusNeeds
+    }
+}
+
+
+/// The one switch that turns conch on and off.
+///
+/// Before this, conch was an app plus a launchd agent, and stopping it meant
+/// knowing that `conch service off` existed. The daemon is a child of the app
+/// now, so this is the whole story: one switch, and quitting the app.
+private struct DaemonPowerRow: View {
+    @ObservedObject var daemon: DaemonHost
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(indicator)
+                .frame(width: 7, height: 7)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("conch")
+                    .font(ConchTypography.font(size: 12.5, weight: .medium))
+                    .foregroundStyle(ConchPalette.textPrimary)
+                Text(detail)
+                    .font(ConchTypography.font(size: 11))
+                    .foregroundStyle(ConchPalette.textDim)
+            }
+
+            Spacer(minLength: 12)
+
+            // An adopted daemon belongs to a terminal or an old launchd agent.
+            // Offering a switch that cannot honestly turn it off would be worse
+            // than saying plainly where it came from.
+            if case .adopted = daemon.state {
+                Text("started elsewhere")
+                    .font(ConchTypography.font(size: 11))
+                    .foregroundStyle(ConchPalette.textDim)
+            } else {
+                Toggle("", isOn: Binding(
+                    get: { daemon.isOurs || daemon.state == .starting },
+                    set: { wanted in wanted ? daemon.start() : daemon.stop() }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ConchPalette.raised)
+    }
+
+    private var indicator: Color {
+        switch daemon.state {
+        case .running, .adopted: return ConchPalette.brandCyan
+        case .starting: return ConchPalette.statusWorking
+        case .stopped: return ConchPalette.textDim
+        case .failed: return ConchPalette.statusWaiting
+        }
+    }
+
+    private var detail: String {
+        switch daemon.state {
+        case .running(let pid): return "Running · pid \(pid)"
+        case .adopted: return "Running — started outside this app"
+        case .starting: return "Starting…"
+        case .stopped: return "Off — voice, hooks, and the phone are all asleep"
+        case .failed(let reason): return reason
+        }
     }
 }
