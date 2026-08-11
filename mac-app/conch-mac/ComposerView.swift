@@ -22,8 +22,12 @@ struct ComposerView: View {
     /// True while the agent is mid-turn, which is the only time stopping means
     /// anything.
     let isWorking: Bool
+    /// What conch's microphone is doing right now: "", "listening", "recording",
+    /// "transcribing", "speaking".
+    let voiceState: String
     let onSend: (String) -> Void
     let onInterrupt: () -> Void
+    let onTalk: () -> Void
 
     /// Seeded from the environment so the composer can be photographed with
     /// text in it. A text field only misbehaves once there is text — the
@@ -54,6 +58,27 @@ struct ComposerView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(ConchPalette.textDim)
                 .help("Attach an image")
+
+                // Speech belongs HERE, not in a bar at the far edge of the
+                // window. Talking is what conch is for, and the control for it
+                // was further from the text field than the button that attaches
+                // a picture. It also carries the state: the only feedback that
+                // dictation was working at all used to be a hint appearing
+                // somewhere else entirely.
+                Button(action: onTalk) {
+                    Image(systemName: micSymbol)
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(width: 28, height: 28)
+                        .background(Circle().fill(micBackground))
+                        .foregroundStyle(micForeground)
+                        .symbolEffect(
+                            .variableColor.iterative,
+                            isActive: voiceState == "listening" || voiceState == "recording"
+                        )
+                }
+                .buttonStyle(.plain)
+                .help(micHelp)
+                .accessibilityLabel(micHelp)
 
                 composerField
 
@@ -140,6 +165,16 @@ struct ComposerView: View {
                     .focused($fieldFocused)
                     .conchTextViewInsets()
                     .frame(height: fieldHeight)
+                    // Return SENDS. Tyler kept "trying to send and making a new
+                    // line accidentally instead", which is the wrong default for
+                    // a chat composer: the common act should be the unmodified
+                    // key. Shift-Return still breaks a line for the rare
+                    // multi-paragraph message.
+                    .onKeyPress(keys: [.return], phases: .down) { press in
+                        if press.modifiers.contains(.shift) { return .ignored }
+                        send()
+                        return .handled
+                    }
                     .padding(.vertical, Self.fieldInsetY)
                     .padding(.horizontal, Self.fieldInsetX)
 
@@ -165,6 +200,43 @@ struct ComposerView: View {
                     }
             }
         )
+    }
+
+    /// The mic, said three ways. A person mid-sentence needs to know conch is
+    /// hearing them without reading a word.
+    private var micSymbol: String {
+        switch voiceState {
+        case "listening", "recording": return "waveform"
+        case "transcribing": return "ellipsis"
+        case "speaking": return "speaker.wave.2.fill"
+        default: return "mic.fill"
+        }
+    }
+
+    private var micBackground: Color {
+        switch voiceState {
+        case "listening", "recording": return ConchPalette.brandCyan
+        case "transcribing": return ConchPalette.statusWorking
+        case "speaking": return ConchPalette.hover
+        default: return ConchPalette.hover
+        }
+    }
+
+    private var micForeground: Color {
+        switch voiceState {
+        case "listening", "recording": return .black
+        case "transcribing": return .black
+        default: return ConchPalette.textDim
+        }
+    }
+
+    private var micHelp: String {
+        switch voiceState {
+        case "listening", "recording": return "Listening — click to stop"
+        case "transcribing": return "Transcribing…"
+        case "speaking": return "Reading aloud — click to cut in"
+        default: return "Talk to this session"
+        }
     }
 
     private var canSend: Bool {

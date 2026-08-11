@@ -1154,6 +1154,13 @@ private struct ConversationPane: View {
     /// Only the session actually being dictated to shows the live transcript.
     /// Without the label check every open composer would mirror the same words,
     /// which reads as though conch is about to send them everywhere.
+    /// What conch's voice loop is doing for the session in front of you.
+    private var voiceStateForFocusedRow: String {
+        guard let state, let row = focusedRow else { return "" }
+        guard state.live.label.isEmpty || state.live.label == row.label else { return "" }
+        return state.live.state
+    }
+
     private var dictationForFocusedRow: String {
         guard let state, let row = focusedRow else { return "" }
         guard state.live.label.isEmpty || state.live.label == row.label else { return "" }
@@ -1307,6 +1314,7 @@ private struct ConversationPane: View {
                             sessionLabel: row.label,
                             dictation: dictationForFocusedRow,
                             isWorking: row.status == .working,
+                            voiceState: voiceStateForFocusedRow,
                             onSend: { text in
                                 store.send(
                                     .inject(sessionId: row.id, label: row.label, text: text)
@@ -1314,11 +1322,18 @@ private struct ConversationPane: View {
                             },
                             onInterrupt: {
                                 store.send(.interrupt(sessionId: row.id, label: row.label))
+                            },
+                            onTalk: {
+                                // Wake points the mic at THIS session, which is
+                                // what a mic button beside its text field can
+                                // only sensibly mean.
+                                store.send(.wake(sessionId: row.id, label: row.label))
                             }
                         )
+                        .overlay(alignment: .top) {
+                            noteOverlay.offset(y: -26)
+                        }
                     }
-
-                    noteBar
                 }
             }
         }
@@ -1329,17 +1344,42 @@ private struct ConversationPane: View {
     }
 
     @ViewBuilder
-    /// A RESERVED slot, blank when there is nothing to say.
+    /// The hint, floating over the conversation rather than under the composer.
     ///
-    /// This used to appear only when it had text, so the moment conch started
-    /// speaking or listening a 32pt bar materialised under the composer and
-    /// shoved the whole conversation upward — while you were reading it, and
-    /// several times a minute during a voice exchange. Tyler: "obviously in
-    /// violation of common sense UX".
+    /// Reserving a row stopped the layout jumping but left a permanent empty
+    /// black bar — Tyler: "this jank black bar below the input box". Both
+    /// problems come from the same premise, that a transient hint deserves
+    /// permanent layout. It does not: it now sits ON the conversation's bottom
+    /// edge, so it costs no space when silent and displaces nothing when it
+    /// appears.
     ///
-    /// conch's own terminal dashboard already got this right, and says so in
-    /// its comments: the transcription line is "always present so it never
-    /// shifts the layout". The hint fades instead of displacing anything.
+    /// The state it describes also has a home now — the mic button in the
+    /// composer changes shape and colour — so this line is a detail, not the
+    /// only signal.
+    private var noteOverlay: some View {
+        Group {
+            if let note {
+                Text(note)
+                    .font(ConchTypography.font(size: 10.5))
+                    .foregroundStyle(ConchPalette.textFaint)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule().fill(ConchPalette.raised.opacity(0.92))
+                    )
+                    .padding(.bottom, 6)
+                    .transition(.opacity)
+                    .accessibilityLabel(note)
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: note)
+    }
+
+    /// Kept for the review pane, which has no composer to hang a hint on. A
+    /// reserved row is right THERE, where nothing else moves; it was only wrong
+    /// under the composer, where it was a permanent empty bar.
     private var noteBar: some View {
         Text(note ?? " ")
             .font(ConchTypography.font(size: 10.5))

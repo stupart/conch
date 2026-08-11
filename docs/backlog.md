@@ -13,6 +13,16 @@ delete as they go. Newest at the top of each section.
 
 ### Fixed
 
+- [x] **Return made a newline instead of sending.** The common act should be the
+      unmodified key; Shift-Return breaks a line now.
+- [x] **A permanent empty black bar under the composer.** Reserving a row fixed
+      the layout shift and created this. A transient hint does not deserve
+      permanent layout — it floats over the conversation instead.
+- [x] **No speech controls near the composer, and no sign dictation was
+      working.** Talking is what conch is for, and its control was further from
+      the text field than the button that attaches a picture. The mic now sits
+      in the composer and carries the state — listening, transcribing,
+      speaking.
 - [x] **Text sent from the Mac app never arrives at a Codex session.** Codex
       publishes no pid, so those rows arrived `pid=0` and every message fell
       through to the clipboard as "session-not-routable" — while Claude
@@ -54,6 +64,31 @@ delete as they go. Newest at the top of each section.
 ## Features
 
 ### Wanted
+
+- [ ] **Errors should find us, not the other way round.** Nothing in either app
+      reports a failure anywhere a person or an agent could later read. The
+      daemon logs to `/tmp/conch-daemon.log`; the Mac app writes to NSLog, and
+      the phone writes nowhere at all. Order of work: (1) both apps report
+      errors to the daemon over the channel telemetry already uses, (2) the
+      daemon appends them to a structured file with the state at the time, (3)
+      an agent watches that file and investigates unprompted. Step 3 is
+      worthless before step 1.
+      Two things are already errors we swallow: a message landing on the
+      clipboard instead of in a session, and a Codex row with no pid.
+- [ ] **Context window per session.** How full is this session? It is the number
+      that decides whether to keep going or start fresh, and conch reads the
+      transcripts already — token counts are in Codex's `event_msg:token_count`
+      and derivable for Claude.
+- [ ] **Turn plugins, skills and MCP servers on and off** from conch, per
+      session. Currently means editing config by hand and restarting.
+- [ ] **Subagents as children of their session** in the ledger — a disclosure
+      triangle under the parent, their transcripts readable, ideally talkable-to.
+      conch already classifies `subagent` as a tool kind, so the signal is there.
+- [ ] **Reclaim the top of the Mac window.** A 42pt header carrying a wordmark
+      and little else, above a list that is the actual content.
+- [ ] **A design pass on the Mac app once it is fluid.** Tyler: "i just want the
+      design to be much better overall but i guess its even more important that
+      it works fluidly so lets nail that first".
 
 - [ ] **Better phone transcription.** `tools/transcription-bench.ts` measures
       the options on Tyler's own voice — awaiting a recording to decide between
