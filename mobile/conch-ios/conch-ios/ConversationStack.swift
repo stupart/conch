@@ -46,11 +46,19 @@ struct ConversationStack: View {
                 .foregroundStyle(Palette.textFaint)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case "tool":
+            // A question outranks every other shape a tool row can take: the
+            // rest of the stack reports what already happened, this one is
+            // blocked on a person. It must never look like something to skim.
+            if let asked = item.question, !asked.options.isEmpty {
+                questionRow(asked)
+            }
             // A plan is not a tool call you might expand — it is the answer to
             // "what is it doing", so it renders as itself rather than as a
             // collapsed row you would have to think to open.
-            if let plan = item.plan, !plan.isEmpty {
+            else if let plan = item.plan, !plan.isEmpty {
                 planRow(plan)
+            } else if let change = item.change {
+                changeRow(item, change)
             } else {
                 toolRow(item)
             }
@@ -110,6 +118,136 @@ struct ConversationStack: View {
         case "done": return Palette.textFaint
         default: return Palette.working
         }
+    }
+
+    /// A file change, as a count you can scan and lines you can open. The
+    /// collapsed line answers "what happened to that file" without a tap;
+    /// reading the lines is a different activity from scanning for them, so
+    /// they stay behind the same tap the other tool rows use.
+    private func changeRow(_ item: ConversationItem, _ change: ConversationItem.FileChange) -> some View {
+        let expanded = expandedToolIDs.contains(item.id)
+        return VStack(alignment: .leading, spacing: 6) {
+            Button {
+                if expanded { expandedToolIDs.remove(item.id) } else { expandedToolIDs.insert(item.id) }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: ConversationItem.Tool.Kind.fileChange.symbol)
+                        .font(Type.caption)
+                        .foregroundStyle(statusColor(item.tool?.status))
+                        .frame(width: 16)
+                    Text(change.file)
+                        .font(Type.mono)
+                        .foregroundStyle(Palette.textDim)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if !change.added.isEmpty {
+                        Text("+\(change.added.count)")
+                            .font(Type.mono)
+                            .foregroundStyle(Palette.working)
+                    }
+                    if !change.removed.isEmpty {
+                        Text("−\(change.removed.count)")
+                            .font(Type.mono)
+                            .foregroundStyle(Palette.needs)
+                    }
+                    // The counts stop at the daemon's cap, so without this a
+                    // capped refactor would scan as a complete small edit.
+                    if change.truncated {
+                        Text("…")
+                            .font(Type.mono)
+                            .foregroundStyle(Palette.textFaint)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+            .buttonStyle(.plain)
+            if expanded {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(Array(change.removed.enumerated()), id: \.offset) { _, line in
+                        diffLine(line, sign: "−", tint: Palette.needs)
+                    }
+                    ForEach(Array(change.added.enumerated()), id: \.offset) { _, line in
+                        diffLine(line, sign: "+", tint: Palette.working)
+                    }
+                    if change.truncated {
+                        Text("… longer than this view shows")
+                            .font(Type.caption)
+                            .foregroundStyle(Palette.textFaint)
+                            .padding(.top, 2)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Palette.raised, in: RoundedRectangle(cornerRadius: 10))
+            }
+        }
+    }
+
+    /// Added lines tint `working`, not the Mac's brand cyan: this palette
+    /// reserves full cyan for the open mic (see stepColor), and the calm
+    /// machine-busy teal is the honest colour for work the agent did.
+    private func diffLine(_ text: String, sign: String, tint: Color) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(sign)
+                .font(Type.mono)
+                .foregroundStyle(tint)
+            // A blank line keeps its height, or a whitespace-only edit
+            // collapses into nothing and looks like a decode failure.
+            Text(text.isEmpty ? " " : text)
+                .font(Type.mono)
+                .foregroundStyle(Palette.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// The agent's question, drawn with the presence of the thing actually
+    /// blocking the session — the same `needs` tint the ledger uses for
+    /// "blocked on an answer" frames the question doing the blocking.
+    ///
+    /// The options only LOOK choosable for now: answering from the phone rides
+    /// daemon plumbing that does not exist yet, so no tap target is wired.
+    private func questionRow(_ asked: ConversationItem.AgentQuestion) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !asked.header.isEmpty {
+                Text(asked.header)
+                    .font(Type.caption.weight(.semibold))
+                    .foregroundStyle(Palette.needs)
+            }
+            Text(inlineMarkdown(asked.question))
+                .font(Type.body)
+                .foregroundStyle(Palette.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(Array(asked.options.enumerated()), id: \.offset) { _, option in
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    // The mark's shape is how every form teaches pick-one
+                    // versus pick-many — no caption spells it out.
+                    Image(systemName: asked.multiSelect ? "square" : "circle")
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.textDim)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(option.label)
+                            .font(Type.body.weight(.medium))
+                            .foregroundStyle(Palette.textPrimary)
+                        if let description = option.description, !description.isEmpty {
+                            Text(description)
+                                .font(Type.caption)
+                                .foregroundStyle(Palette.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Palette.raised, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.needs.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Palette.needs.opacity(0.35)))
     }
 
     /// A plan, as a checklist. Done steps recede — struck through and faint —

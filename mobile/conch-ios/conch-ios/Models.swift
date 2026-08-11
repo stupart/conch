@@ -327,6 +327,55 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         }
     }
 
+    /// The lines an edit moved. Not a unified diff: in a stack you scan rather
+    /// than review, the changed lines ARE the story, and context lines would
+    /// multiply what crosses the relay for something nobody reads here.
+    struct FileChange: Decodable, Equatable, Sendable {
+        var file = ""
+        var removed: [String] = []
+        var added: [String] = []
+        /// The daemon caps how many lines it carries, so the counts above are
+        /// a floor, not the size of the change.
+        var truncated = false
+        private enum CodingKeys: String, CodingKey { case file, removed, added, truncated }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            file = (try? c.decodeIfPresent(String.self, forKey: .file)) ?? ""
+            removed = (try? c.decodeIfPresent([String].self, forKey: .removed)) ?? []
+            added = (try? c.decodeIfPresent([String].self, forKey: .added)) ?? []
+            truncated = (try? c.decodeIfPresent(Bool.self, forKey: .truncated)) ?? false
+        }
+    }
+
+    /// A question the agent is blocked on: a header naming the decision, the
+    /// question, and options the person picks between. The one row in a
+    /// conversation that is waiting on YOU rather than reporting what happened.
+    struct AgentQuestion: Decodable, Equatable, Sendable {
+        struct Option: Decodable, Equatable, Sendable {
+            var label = ""
+            var description: String?
+            private enum CodingKeys: String, CodingKey { case label, description }
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                label = (try? c.decodeIfPresent(String.self, forKey: .label)) ?? ""
+                description = try? c.decodeIfPresent(String.self, forKey: .description)
+            }
+        }
+        var header = ""
+        var question = ""
+        var options: [Option] = []
+        /// More than one answer may be chosen.
+        var multiSelect = false
+        private enum CodingKeys: String, CodingKey { case header, question, options, multiSelect }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            header = (try? c.decodeIfPresent(String.self, forKey: .header)) ?? ""
+            question = (try? c.decodeIfPresent(String.self, forKey: .question)) ?? ""
+            options = (try? c.decodeIfPresent([Option].self, forKey: .options)) ?? []
+            multiSelect = (try? c.decodeIfPresent(Bool.self, forKey: .multiSelect)) ?? false
+        }
+    }
+
     var id = ""
     var rev = 0
     /// Unknown kinds render as plain text rather than vanishing.
@@ -335,8 +384,12 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     var tool: Tool?
     /// Present when this item IS a plan, so the stack renders a checklist.
     var plan: [PlanStep]?
+    /// Present when this item changed a file, so the stack can show the lines.
+    var change: FileChange?
+    /// Present when the agent is WAITING on you to choose.
+    var question: AgentQuestion?
 
-    private enum CodingKeys: String, CodingKey { case id, rev, kind, text, tool, plan }
+    private enum CodingKeys: String, CodingKey { case id, rev, kind, text, tool, plan, change, question }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? UUID().uuidString
@@ -345,6 +398,8 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         text = (try? c.decodeIfPresent(String.self, forKey: .text)) ?? ""
         tool = try? c.decodeIfPresent(Tool.self, forKey: .tool)
         plan = try? c.decodeIfPresent([PlanStep].self, forKey: .plan)
+        change = try? c.decodeIfPresent(FileChange.self, forKey: .change)
+        question = try? c.decodeIfPresent(AgentQuestion.self, forKey: .question)
     }
 }
 
