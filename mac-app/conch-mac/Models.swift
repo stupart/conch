@@ -292,6 +292,7 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
             case webSearch = "web_search"
             case subagent
             case plan
+            case question
             case mcpToolCall = "mcp_tool_call"
             case unknown
 
@@ -304,6 +305,7 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
                 case .webSearch: return "globe"
                 case .subagent: return "person.2"
                 case .plan: return "checklist"
+                case .question: return "questionmark.circle"
                 case .mcpToolCall: return "wrench.adjustable"
                 case .unknown: return "circle.dashed"
                 }

@@ -408,6 +408,25 @@ export function agentQuestion(input: unknown): AgentQuestion | null {
   };
 }
 
+/**
+ * A question, as something to say out loud.
+ *
+ * Read as written, an option list is unusable by ear: descriptions are written
+ * for a screen and are far too long to hold in your head while the next one is
+ * being read. So only the labels are spoken, joined the way a person would say
+ * them, with the header first because it names the decision before you are
+ * asked to make one.
+ */
+export function spokenQuestion(asked: AgentQuestion): string {
+  const labels = asked.options.map((option) => option.label);
+  const choices = labels.length > 1
+    ? `${labels.slice(0, -1).join(", ")}, or ${labels[labels.length - 1]}`
+    : labels[0] ?? "";
+  const lead = asked.header ? `${asked.header}. ` : "";
+  const plural = asked.multiSelect ? "You can pick more than one." : "";
+  return `${lead}${asked.question} Your options are: ${choices}.${plural ? ` ${plural}` : ""}`;
+}
+
 /** One line of a plan, in the only two states that matter to a reader. */
 export interface PlanStep {
   text: string;

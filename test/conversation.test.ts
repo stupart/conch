@@ -10,6 +10,7 @@ import {
   publishedConversation,
   reduceClaudeLine,
   reduceCodexLine,
+  spokenQuestion,
   summariseToolInput,
   toolDisplayName,
   toolKind,
@@ -590,5 +591,36 @@ describe("a question the agent is waiting on", () => {
     expect(agentQuestion({ questions: [{ question: "hi", options: [] }] })).toBeNull();
     expect(agentQuestion({ questions: [{ options: [{ label: "a" }] }] })).toBeNull();
     expect(agentQuestion({ cmd: "ls" })).toBeNull();
+  });
+});
+
+describe("a question said out loud", () => {
+  // Descriptions are written for a screen and are far too long to hold in your
+  // head while the next option is read, so only labels are spoken.
+  test("the header leads and the labels are joined as speech", () => {
+    const spoken = spokenQuestion({
+      header: "Deliver",
+      question: "Where should this readout land?",
+      multiSelect: false,
+      options: [
+        { label: "Linear subtask", description: "A very long screen-shaped explanation." },
+        { label: "Export PDF", description: "Another one." },
+        { label: "Save to wiki" },
+      ],
+    });
+    expect(spoken).toBe(
+      "Deliver. Where should this readout land? Your options are: Linear subtask, Export PDF, or Save to wiki.",
+    );
+    expect(spoken).not.toContain("explanation");
+  });
+
+  test("being allowed more than one answer is said, because it changes the answer", () => {
+    const spoken = spokenQuestion({
+      header: "",
+      question: "Which?",
+      multiSelect: true,
+      options: [{ label: "A" }, { label: "B" }],
+    });
+    expect(spoken).toBe("Which? Your options are: A, or B. You can pick more than one.");
   });
 });
