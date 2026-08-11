@@ -467,51 +467,37 @@ async function downloadModel(url: string, dest: string, minBytes: number): Promi
 }
 
 /**
- * Install (or remove) a launchd agent that supervises the daemon: it keeps
- * a detached tmux session alive, starting it at login and resurrecting it
- * within ~15s of any crash. tmux hosting matters on macOS: Terminal.app has
- * a recursive process-tree walk that can segfault on a churning tab tree
- * (observed live, three crashes) — the daemon must never live in a Terminal
- * window. View the dashboard anytime with `tmux attach -t conch`.
+ * Install (or remove) a launchd agent that runs the daemon directly.
+ *
+ * This used to be a shell loop that polled every five seconds and kept the
+ * daemon inside a detached tmux session. Both halves are gone. launchd's
+ * KeepAlive already restarts a dead job, so the polling loop was a second
+ * supervisor competing with the first — racing it produced three simultaneous
+ * daemons and most of one day's instability.
+ *
+ * The tmux host was worse than redundant: a detached pane is a terminal with
+ * no reader, so the daemon's own dashboard would eventually block inside
+ * write(2) with the socket accept loop stuck behind it. conch stayed alive in
+ * `ps` while every phone request timed out as "couldn't reach your Mac". The
+ * original reason for tmux still holds — Terminal.app can segfault walking a
+ * churning process tree, so the daemon must never live in a Terminal window —
+ * but launchd gives us no terminal at all, which satisfies that constraint
+ * more completely than tmux did.
+ *
+ * With no TTY the daemon selects the headless renderer and draws nothing. To
+ * watch it, run `conch` in a terminal or open the Mac app: both are viewers
+ * that attach over the socket, which is what they were always meant to be.
  */
-export function renderSupervisorScript(tmux: string, daemonCmd: string): string {
-  return `#!/bin/zsh
-# conch supervisor — keeps the daemon alive (installed by \`conch service\`)
-#
-# Liveness is the DAEMON PROCESS, not the tmux session. A session outlives a
-# dead pane, so \`has-session\` reported healthy while conch was gone — a silent
-# outage that survives indefinitely because the check can never fail. Killing
-# the stale session first is what lets new-session run at all.
-while true; do
-  # Match how the daemon ACTUALLY runs, not one spelling of it. This read
-  # \`bun run src/cli.ts daemon\`, but \`conch service install\` starts it as
-  # \`bun /abs/path/src/cli.ts daemon\` — no \`run\` — so the pattern never
-  # matched, the supervisor believed conch was dead, and it killed and
-  # recreated the session every 5 seconds. Observed live: the socket owner
-  # changed four times in twelve seconds.
-  #
-  # \`cli.ts daemon\` covers every spelling; filtering to a bun process is what
-  # keeps a tmux wrapper carrying the same words in its argv from counting as
-  # the daemon it is merely launching.
-  if ! pgrep -f 'cli\.ts daemon' 2>/dev/null | xargs -I{} ps -o comm= -p {} 2>/dev/null | grep -q bun; then
-    # Clear a stale session and create on the NEXT pass. Killing the last
-    # session stops the tmux server, and a new-session issued in the same
-    # breath races that shutdown — measured healing at 30-45s instead of one
-    # interval, sometimes not at all. has-session is sound for "is there
-    # something to clear"; it was only ever wrong as a liveness test.
-    if "${tmux}" has-session -t conch 2>/dev/null; then
-      "${tmux}" kill-session -t conch 2>/dev/null
-    else
-      "${tmux}" new-session -d -s conch '${daemonCmd}'
-    fi
-  fi
-  sleep 5
-done
-`;
+export function renderSupervisorScript(_tmux: string, _daemonCmd: string): string {
+  // Retained only so an older installed copy can still be recognised and
+  // replaced; nothing generates a supervisor script any more.
+  return "#!/bin/zsh\n# obsolete — conch is supervised by launchd directly\n";
 }
 
 export function serviceRestartCommands(tmux: string, uid: number): string[][] {
   return [
+    // Clear a session left by an older tmux-hosted install, so its daemon
+    // cannot keep the socket while launchd starts the replacement.
     [tmux, "kill-session", "-t", "conch"],
     ["launchctl", "kickstart", "-k", `gui/${uid}/${SERVICE_LABEL}`],
   ];
@@ -526,27 +512,32 @@ export async function runService(cfg: Config, action: "install" | "off"): Promis
     try {
       unlinkSync(plistPath);
     } catch {}
-    console.log("[conch] service removed (daemon left running if it was up — `tmux kill-session -t conch` to stop it)");
+    console.log("[conch] service removed — the daemon it was running has stopped");
     return;
   }
 
   const conchRoot = dirname(import.meta.dir); // src/.. (real only when run via bun)
-  const tmux = Bun.which("tmux");
-  if (!tmux) {
-    console.error("[conch] tmux is required for the service (brew install tmux)");
-    process.exit(1);
-  }
+  // tmux is still how the daemon types into a session's pane; it just no longer
+  // hosts the daemon itself. An install without it is degraded, not broken.
+  const tmux = Bun.which("tmux") ?? "/opt/homebrew/bin/tmux";
 
-  // The daemon launch line + where the supervisor script lives both depend on
-  // whether we're a compiled binary (no repo on disk) or a bun checkout.
-  const daemonCmd = IS_COMPILED
-    ? `CONCH_KEYSTROKE_FALLBACK=1 ${conchInvocation()} daemon`
-    : `cd "${conchRoot}" && CONCH_KEYSTROKE_FALLBACK=1 ${conchInvocation()} daemon`;
-  const supervisorDir = IS_COMPILED ? join(homedir(), ".config", "conch") : join(conchRoot, "bin");
-  const supervisorPath = join(supervisorDir, "conch-supervisor.sh");
-  mkdirSync(supervisorDir, { recursive: true });
-  await Bun.write(supervisorPath, renderSupervisorScript(tmux, daemonCmd));
-  chmodSync(supervisorPath, 0o755);
+  // A launchd job inherits none of the shell you installed from, so settings
+  // that live only in the environment would silently revert to their defaults
+  // at login. CONCH_TTS is the one that matters in practice: the MLX voice
+  // model needs several gigabytes, and on a machine already swapping it stalls
+  // the daemon in page-fault waits — alive in `ps`, never reading its socket,
+  // which is what "couldn't reach your Mac" actually was. Installing with
+  // `CONCH_TTS=say conch service install` has to stick.
+  const carriedEnv = ["CONCH_TTS", "CONCH_TTS_MODEL", "CONCH_TTS_VOICES", "CONCH_SEASHELL_ROOT"]
+    .filter((key) => process.env[key])
+    .map((key) => `\n    <key>${key}</key><string>${process.env[key]}</string>`)
+    .join("");
+
+  // launchd exec's this directly — no shell, so every word is its own argv
+  // entry and nothing needs quoting.
+  const daemonArgv = IS_COMPILED
+    ? [conchInvocation(), "daemon"]
+    : [process.execPath, join(conchRoot, "src", "cli.ts"), "daemon"];
 
   const path = [
     "/opt/homebrew/bin",
@@ -562,11 +553,15 @@ export async function runService(cfg: Config, action: "install" | "off"): Promis
 <dict>
   <key>Label</key><string>${SERVICE_LABEL}</string>
   <key>ProgramArguments</key>
-  <array><string>/bin/zsh</string><string>${supervisorPath}</string></array>
+  <array>${daemonArgv.map((arg) => `<string>${arg}</string>`).join("")}</array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>WorkingDirectory</key><string>${conchRoot}</string>
   <key>EnvironmentVariables</key>
-  <dict><key>PATH</key><string>${path}</string></dict>
+  <dict>
+    <key>PATH</key><string>${path}</string>
+    <key>CONCH_KEYSTROKE_FALLBACK</key><string>1</string>${carriedEnv}
+  </dict>
   <key>StandardOutPath</key><string>/tmp/conch-supervisor.log</string>
   <key>StandardErrorPath</key><string>/tmp/conch-supervisor.log</string>
 </dict>
@@ -585,9 +580,8 @@ export async function runService(cfg: Config, action: "install" | "off"): Promis
   // tmux. Drop that session first, then kick the managed supervisor so it
   // recreates the daemon immediately with the regenerated launch environment.
   for (const restart of serviceRestartCommands(tmux, uid)) Bun.spawnSync(restart);
-  const viewHint = IS_COMPILED ? "tmux attach -t conch" : `tmux attach -t conch   (or open ${conchRoot}/dashboard.command)`;
-  console.log(`[conch] service installed — daemon restarted, starts at login, and self-heals within ~15s.
-  view:      ${viewHint}
+  console.log(`[conch] service installed — daemon restarted, starts at login, and restarts if it dies.
+  view:      open the conch app, or run \`conch\` in a terminal
   logs:      /tmp/conch-supervisor.log
   remove:    conch service off`);
 }

@@ -309,7 +309,9 @@ describe("buildPublishedState — external session snapshot", () => {
         print: () => {},
       },
     );
-    expect(selection.kind).toBe("footer");
+    // A daemon with no TTY draws nothing at all now; what matters here is that
+    // publishing to the apps is independent of whatever the terminal is doing.
+    expect(selection.kind).toBe("headless");
 
     try {
       setTranscriptPrefix("committed words");

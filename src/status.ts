@@ -1201,7 +1201,7 @@ export function createTheaterRenderer(
 }
 
 export interface RendererSelection {
-  kind: "footer" | "theater";
+  kind: "footer" | "theater" | "headless";
   renderer: Renderer;
 }
 
@@ -1225,14 +1225,102 @@ export function shouldUseTheater(
   return stdoutTTY && stdinTTY && env.CONCH_TUI !== "footer";
 }
 
+/**
+ * A renderer that draws nothing, for a daemon with no one watching.
+ *
+ * The daemon is a server that happens to be able to draw a dashboard, and the
+ * drawing is the part that can wedge it. Painting a full frame into a terminal
+ * whose reader has gone away blocks in the kernel — the process sits in `Us+`
+ * inside write(2) with the socket accept loop stuck behind it, so every phone
+ * request times out as "couldn't reach your Mac" while the daemon looks alive
+ * in `ps`. That is not a hypothetical: it is what cost most of one day's
+ * debugging, and it is why the daemon is currently running unmanaged instead of
+ * under launchd.
+ *
+ * Nothing about serving sessions needs a frame buffer, so when no one can see
+ * the output we skip drawing entirely rather than trying to make the write
+ * safe. Logs still go to LOG_FILE, which is where a headless daemon's history
+ * belongs anyway.
+ */
+function createHeadlessRenderer(): Renderer {
+  return {
+    panel: () => {},
+    live: () => {},
+    keybar: () => {},
+    log: () => {},
+    resize: () => {},
+    enter: () => {},
+    shutdown: () => {},
+  };
+}
+
+/**
+ * Is anyone actually looking at this terminal?
+ *
+ * A tmux pane stays a TTY after its client detaches, so `isTTY` alone says
+ * nothing about whether a human can see the output — and a detached pane is
+ * exactly the surface that blocks. tmux knows the answer, so ask it, but cache
+ * the answer: renders are driven by turn events rather than a frame clock, so a
+ * few seconds of staleness costs nothing and one subprocess per frame would.
+ */
+let attachedCheckedAt = 0;
+let attachedCached = true;
+const ATTACH_TTL_MS = 3000;
+export function terminalIsWatched(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  now: number = Date.now(),
+): boolean {
+  if (!env.TMUX) return true; // a plain terminal is watched or it is gone
+  if (now - attachedCheckedAt < ATTACH_TTL_MS) return attachedCached;
+  attachedCheckedAt = now;
+  try {
+    const out = Bun.spawnSync(["tmux", "display-message", "-p", "#{session_attached}"], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    // Trust the pane on any doubt: a failed probe must not blank a live TUI.
+    attachedCached = out.exitCode !== 0 || Number(out.stdout.toString().trim() || "1") > 0;
+  } catch {
+    attachedCached = true;
+  }
+  return attachedCached;
+}
+
 /** Select once at daemon startup; importing status.ts never enters alt-screen. */
 export function configureRenderer(
   env: Readonly<Record<string, string | undefined>> = process.env,
   io: RendererIO = processRendererIO(),
 ): RendererSelection {
+  // No TTY at all — launchd, a pipe, a log file — means no dashboard to draw.
+  // This is the daemon's real deployment shape, and the reason it can go back
+  // under launchd and survive a reboot.
+  if (!io.stdoutTTY || env.CONCH_HEADLESS === "1") {
+    activeRendererKind = "headless";
+    activeRenderer = createHeadlessRenderer();
+    return { kind: activeRendererKind, renderer: activeRenderer };
+  }
   const theater = shouldUseTheater(env, io.stdoutTTY, io.stdinTTY);
   activeRendererKind = theater ? "theater" : "footer";
-  activeRenderer = theater ? createTheaterRenderer(io, env) : createFooterRenderer(io);
+  const drawn = theater ? createTheaterRenderer(io, env) : createFooterRenderer(io);
+  const blank = createHeadlessRenderer();
+  // A detached tmux pane is a TTY with no reader, so route every draw through
+  // the attachment check and fall back to drawing nothing while it is away.
+  const visible = () => (terminalIsWatched(env) ? drawn : blank);
+  activeRenderer = {
+    panel: (m) => visible().panel(m),
+    live: (s) => visible().live(s),
+    keybar: (l) => visible().keybar(l),
+    log: (l) => visible().log(l),
+    // Lifecycle and interaction always reach the real renderer: they are rare,
+    // and skipping `enter` while detached would leave a reattached client
+    // looking at a half-built screen.
+    resize: () => drawn.resize(),
+    enter: () => drawn.enter(),
+    shutdown: () => drawn.shutdown(),
+    scrollPane: drawn.scrollPane?.bind(drawn),
+    pointerEvent: drawn.pointerEvent?.bind(drawn),
+    clearSelection: drawn.clearSelection?.bind(drawn),
+  };
   return { kind: activeRendererKind, renderer: activeRenderer };
 }
 
