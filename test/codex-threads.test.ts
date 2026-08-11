@@ -10,6 +10,7 @@ import {
   isInterAgentEnvelope,
   readCodexOpenThreadIds,
   readCodexRolloutTail,
+  readCodexThreadPid,
   readCodexThreads,
   readCodexTurnSnapshots,
   type CodexTurnMemory,
@@ -443,5 +444,26 @@ describe("an open Codex thread stays listed however idle", () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe("a Codex session is addressable, not just visible", () => {
+  // Codex publishes no pid, so its rows arrived pid=0 and every message typed
+  // at one fell through to the clipboard as "session-not-routable" — while
+  // Claude sessions worked. Same composer, same button, silently different
+  // outcome depending on which agent you happened to be talking to.
+  test("no lock file means no owner, not a wrong one", () => {
+    const home = mkdtempSync(join(tmpdir(), "conch-codex-pid-"));
+    expect(readCodexThreadPid(home, "nothing-here")).toBeUndefined();
+  });
+
+  // The answer is cached because a thread's owner cannot change without the
+  // lock being released, and lsof is far too expensive to run per row per
+  // render.
+  test("the answer is cached rather than re-derived every render", () => {
+    const home = mkdtempSync(join(tmpdir(), "conch-codex-pid-"));
+    const first = readCodexThreadPid(home, "cached", 1_000);
+    const second = readCodexThreadPid(home, "cached", 1_100);
+    expect(first).toBe(second);
   });
 });

@@ -162,6 +162,51 @@ export function readCodexOpenThreadIds(codexHome: string): Set<string> {
 }
 
 /**
+ * Which process is running a Codex thread.
+ *
+ * Codex publishes no pid anywhere conch can read, so a Codex row arrived with
+ * `pid=0` and injection had no pane to aim at: every message typed at a Codex
+ * session fell through to the clipboard as "session-not-routable", while
+ * Claude sessions worked. Same composer, same button, silently different
+ * outcome depending on which agent you happened to be talking to.
+ *
+ * The lock the live process holds on its own thread file answers it. Codex
+ * takes an exclusive lock in `thread-writer-locks/<id>.lock` for as long as the
+ * session is alive, so whoever holds it IS the session — read, never taken, so
+ * conch cannot interfere with a session it is only observing.
+ *
+ * Cached: a thread's owner cannot change without the lock being released, and
+ * `lsof` is far too expensive to run per row per render.
+ */
+const threadPidCache = new Map<string, { pid: number; at: number }>();
+const PID_CACHE_MS = 30_000;
+
+export function readCodexThreadPid(
+  codexHome: string,
+  threadId: string,
+  now = Date.now(),
+): number | undefined {
+  const cached = threadPidCache.get(threadId);
+  if (cached && now - cached.at < PID_CACHE_MS) {
+    return cached.pid || undefined;
+  }
+  try {
+    const lock = join(codexHome, "thread-writer-locks", `${threadId}.lock`);
+    if (!existsSync(lock)) {
+      threadPidCache.set(threadId, { pid: 0, at: now });
+      return undefined;
+    }
+    const out = Bun.spawnSync(["lsof", "-t", lock], { stdout: "pipe", stderr: "ignore" });
+    const pid = Number(out.stdout.toString().trim().split("\n")[0]);
+    const valid = Number.isFinite(pid) && pid > 0 ? pid : 0;
+    threadPidCache.set(threadId, { pid: valid, at: now });
+    return valid || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Busy or idle, preferring the authoritative signal and falling back to recency.
  *
  * `thread_turns` states it outright, but only covers some threads. For the rest
@@ -451,10 +496,13 @@ export function readCodexThreads(
       .map((row) => ({
       sessionId: String(row.id),
       cwd: String(row.cwd ?? ""),
-      // No pid exists on disk. These rows are observable, not yet addressable —
-      // conch injects into a pane by pid, so a v1 Codex row can be SEEN but not
-      // talked to. Better an honest read-only row than none at all.
-      pid: 0,
+      // The live process, resolved from the lock it holds on its own thread
+      // file. Codex publishes no pid anywhere, so these rows used to arrive
+      // with pid 0 — observable but not addressable. Every message typed at a
+      // Codex session fell through to the clipboard as "session-not-routable"
+      // while Claude sessions worked: same composer, same button, silently
+      // different outcome depending on which agent you were talking to.
+      pid: readCodexThreadPid(codexHome, String(row.id), now) ?? 0,
       // `thread_turns` is authoritative but SPARSE — a projection that only
       // covers some threads (7 of them on this machine; "humain" has no rows at
       // all). Without a fallback those threads sit on "waiting" forever, even
