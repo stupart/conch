@@ -12,7 +12,9 @@ export interface InjectTextResult {
     | "window-not-focusable"
     | "session-not-routable"
     /** A modal dialog on the Mac is swallowing every AppleScript call. */
-    | "system-dialog-blocking";
+    | "system-dialog-blocking"
+    /** macOS is refusing to let conch drive other apps. Needs a person. */
+    | "automation-permission-denied";
 }
 
 export interface InjectTextOptions {
@@ -110,7 +112,11 @@ export async function injectText(
       // the Mac that will keep blocking every send until it is dismissed.
       return {
         via: "clipboard",
-        reason: osaLastTimedOut() ? "system-dialog-blocking" : "window-not-focusable",
+        reason: osaLastDenied()
+          ? "automation-permission-denied"
+          : osaLastTimedOut()
+            ? "system-dialog-blocking"
+            : "window-not-focusable",
       };
     }
     if (focused) await Bun.sleep(300); // let the window raise settle
@@ -186,9 +192,33 @@ export function osaLastTimedOut(): boolean {
  * parks: a stack sample of the wedged daemon sat in `__read_nocancel`, which is
  * this read waiting on an osascript that a modal dialog had frozen.
  */
+/**
+ * True when macOS is refusing to let conch drive other apps at all.
+ *
+ * This is not a transient failure and no retry touches it: someone has to
+ * grant the permission. It became reachable the day the daemon moved inside
+ * the Mac app — TCC decides per responsible process, so conch.app was asked
+ * fresh for permission it had never needed while launchd was its parent, and
+ * the answer that came back was no.
+ */
+let lastOsaDenied = false;
+
+export function osaLastDenied(): boolean {
+  return lastOsaDenied;
+}
+
+/** macOS: "Not authorized to send Apple events to <app>". */
+const OSA_NOT_AUTHORIZED = /-1743|not authori[sz]ed|Not allowed to send Apple events/i;
+
 async function osaText(script: string): Promise<{ text: string; timedOut: boolean }> {
-  const child = Bun.spawn(["osascript", "-e", script], { stdout: "pipe", stderr: "ignore" });
-  const read = new Response(child.stdout).text().then((text) => ({ text, timedOut: false }));
+  const child = Bun.spawn(["osascript", "-e", script], { stdout: "pipe", stderr: "pipe" });
+  const read = Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]).then(([text, err]) => {
+    lastOsaDenied = OSA_NOT_AUTHORIZED.test(err);
+    return { text, timedOut: false };
+  });
   const timeout = Bun.sleep(OSA_TIMEOUT_MS).then(() => ({ text: "", timedOut: true }));
   const result = await Promise.race([read, timeout]);
   if (result.timedOut) {

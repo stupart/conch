@@ -2998,9 +2998,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // a fixable minute and a baffling one.
       await speak(
         cfg,
-        reason === "system-dialog-blocking"
-          ? "A system dialog is open on the Mac and it's blocking me. Dismiss it and send again."
-          : "Couldn't reach the session's window — your words are on the clipboard, just paste.",
+        reason === "automation-permission-denied"
+          ? "macOS is blocking conch from controlling Terminal. Turn conch on under Privacy and Security, Automation."
+          : reason === "system-dialog-blocking"
+            ? "A system dialog is open on the Mac and it's blocking me. Dismiss it and send again."
+            : "Couldn't reach the session's window — your words are on the clipboard, just paste.",
         event.label,
       );
       // NOT delivered. The words are on a clipboard, not in the session, and
