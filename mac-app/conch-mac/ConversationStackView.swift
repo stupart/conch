@@ -194,7 +194,7 @@ struct ConversationStackView: View {
 extension AttributedString {
     static func conchMarkdown(_ source: String) -> AttributedString {
         (try? AttributedString(
-            markdown: promoteHeadings(source),
+            markdown: promoteHeadings(flattenTables(source)),
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         )) ?? AttributedString(source)
     }
@@ -203,6 +203,42 @@ extension AttributedString {
     /// write in headings constantly. Rewriting them as bold keeps the emphasis
     /// the author intended without switching to a block parse, which would
     /// collapse every newline in the message.
+    /// Flatten a markdown table into lines a person can read.
+    ///
+    /// Inline parsing cannot lay out a table, so one arrives as a wall of pipes
+    /// and dashes — and the divider row (`|---|---|`) is pure noise once there
+    /// are no columns. Agents reach for tables constantly to summarise work, so
+    /// this is not a rare case: it is the shape a summary usually takes.
+    ///
+    /// Each row becomes "first cell — the rest", which is what a table of two
+    /// or three columns is actually saying, and is how you would read it aloud.
+    private static func flattenTables(_ source: String) -> String {
+        guard source.contains("|") else { return source }
+        return source
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .compactMap { line -> String? in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard trimmed.hasPrefix("|"), trimmed.hasSuffix("|"), trimmed.count > 1 else {
+                    return String(line)
+                }
+                let cells = trimmed
+                    .dropFirst()
+                    .dropLast()
+                    .split(separator: "|", omittingEmptySubsequences: false)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                // The alignment row carries no content once the grid is gone.
+                let isDivider = cells.allSatisfy { cell in
+                    !cell.isEmpty && cell.allSatisfy { ":-".contains($0) }
+                }
+                if isDivider { return nil }
+                let filled = cells.filter { !$0.isEmpty }
+                if filled.isEmpty { return nil }
+                if filled.count == 1 { return filled[0] }
+                return "**\(filled[0])** — \(filled.dropFirst().joined(separator: " · "))"
+            }
+            .joined(separator: "\n")
+    }
+
     private static func promoteHeadings(_ source: String) -> String {
         guard source.contains("#") else { return source }
         return source

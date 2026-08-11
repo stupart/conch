@@ -85,8 +85,38 @@ Not their renderer — their own mobile app didn't reuse it either.
    session cannot do, so a message that queued fine was reported as failed.
 7. **Questions** — answer an agent's multiple-choice question by voice. This is
    the one where our interaction model beats theirs outright.
-8. **Approvals** — the four-way decision. Earns nothing for a bypass-permissions
-   user; it is the difference between a tool for Tyler and a product.
-9. **Diffs** — a file change should render as a diff, not a filename.
-10. **Checkpoint / revert** — undo N turns.
-11. **Thread management** — archive, pin, snooze.
+9. ~~**Diffs**~~ — DONE. `card.tsx +12 −4`, expanding to the lines that moved,
+   with the anchor lines an edit restates on both sides trimmed away.
+
+## Deferred, and why
+
+Not abandoned — each is real, and each is worth doing if conch becomes
+something other people run. None is worth guessing at.
+
+8. **Approvals — the four-way decision.** conch already answers permission
+   prompts by voice; the gap is only "yes, and don't ask again". Selecting that
+   means pressing keys through a menu whose layout cannot be verified on a
+   machine running bypass permissions, where no prompt ever appears. A wrong
+   guess does not fail safely — it picks a different option, which can approve
+   something nobody intended. Unblocked by one look at a real prompt.
+10. **Checkpoint / revert.** Undoing N turns means driving `/rewind` or an
+    escape sequence against a live session, where being wrong destroys work
+    rather than merely failing. Same shape as approvals: cheap once the
+    behaviour has been observed once, reckless before that.
+11. **Thread management** — archive, pin, snooze. Safe and real, just low value
+    next to everything above; conch already has dismiss and restore, which
+    covers most of what pinning would.
+
+## Found along the way
+
+Not on the original list, and worth more than most of it:
+
+- The daemon was sending a full state frame at up to 10Hz even when nothing had
+  changed. The phone decodes each one as a complete state on the main actor, so
+  every redundant frame was a full re-render of a busy screen.
+- An open mic survived backgrounding once the app declared background audio,
+  with no listening timeout — the clearest path to heat and battery drain.
+- A modal dialog on the Mac froze every AppleScript call for 122 seconds at a
+  time, with the daemon's whole queue stacked behind it.
+- Folding the daemon into the app reset its Apple-events permission, because
+  macOS decides that per responsible process.

@@ -33,6 +33,8 @@ struct ComposerView: View {
     @State private var draft = ProcessInfo.processInfo.environment["CONCH_COMPOSER_TEXT"] ?? ""
     @State private var attachments: [URL] = []
     @State private var isTargetedForDrop = false
+    /// The field's real width, so height can be measured rather than guessed.
+    @State private var fieldWidth: CGFloat = 0
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
@@ -155,6 +157,14 @@ struct ComposerView: View {
         .background(
             RoundedRectangle(cornerRadius: 8).fill(ConchPalette.bg)
         )
+        .background(
+            GeometryReader { proxy in
+                Color.clear.onAppear { fieldWidth = proxy.size.width - Self.fieldInsetX * 2 }
+                    .onChange(of: proxy.size.width) { _, width in
+                        fieldWidth = width - Self.fieldInsetX * 2
+                    }
+            }
+        )
     }
 
     private var canSend: Bool {
@@ -167,17 +177,31 @@ struct ComposerView: View {
     static let fieldInsetY: CGFloat = 6
     static let fieldInsetX: CGFloat = 8
 
-    /// One line until there is more, then up to six.
+    /// One line until the text genuinely needs two, then up to six.
+    ///
+    /// This used to guess at 110 characters per line, which wrapped the field
+    /// early on a wide window and late on a narrow one — Tyler noticed it
+    /// breaking "earlier than it needs to". A guess cannot be right at two
+    /// window widths, so measure: AppKit already knows how tall this string is
+    /// at this width, and asking costs one text layout per keystroke against a
+    /// draft that is a line or two long.
     private var fieldHeight: CGFloat {
-        let lines = draft.isEmpty ? 1 : draft.reduce(into: 1) { total, character in
-            if character == "\n" { total += 1 }
-        }
-        // Wrapped long lines still need room; approximate rather than measure,
-        // since being a few pixels generous costs nothing and measuring costs a
-        // layout pass on every keystroke.
-        let wrapped = max(lines, Int(ceil(Double(draft.count) / 110.0)))
-        return CGFloat(min(6, max(1, wrapped))) * 16
+        guard fieldWidth > 1 else { return Self.lineHeight }
+        let text = draft.isEmpty ? " " : draft
+        let font = NSFont.systemFont(ofSize: 12.5)
+        let attributed = NSAttributedString(string: text, attributes: [.font: font])
+        let bounds = attributed.boundingRect(
+            with: NSSize(width: fieldWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+        // A trailing newline has no glyphs, so AppKit measures it as no line at
+        // all and the caret would sit below the box you can see.
+        let trailing = draft.hasSuffix("\n") ? Self.lineHeight : 0
+        let measured = ceil(bounds.height) + trailing
+        return min(Self.lineHeight * 6, max(Self.lineHeight, measured))
     }
+
+    private static let lineHeight: CGFloat = 16
 
     /// Paths first, then the words.
     ///
