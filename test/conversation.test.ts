@@ -5,6 +5,7 @@ import {
   conversationDelta,
   conversationWindow,
   emptyConversation,
+  planSteps,
   publishedConversation,
   reduceCodexLine,
   summariseToolInput,
@@ -483,5 +484,62 @@ describe("telling one kind of tool call from another", () => {
   test("an unrecognised tool is not a crash", () => {
     expect(toolKind("SomethingNew")).toBe("unknown");
     expect(toolKind("")).toBe("unknown");
+  });
+});
+
+describe("plans render as plans, not as tool calls", () => {
+  // Agents emit todo lists constantly. As a generic tool row they were noise;
+  // as a checklist they are the clearest answer on screen to "what is it
+  // actually doing right now".
+  test("Claude's TodoWrite becomes steps", () => {
+    const steps = planSteps({
+      todos: [
+        { content: "Map the architecture", status: "completed" },
+        { content: "Implement the boundary", status: "in_progress" },
+        { content: "Verify end to end", status: "pending" },
+      ],
+    });
+    expect(steps.map((step) => step.status)).toEqual(["done", "running", "pending"]);
+    expect(steps[0]!.text).toBe("Map the architecture");
+  });
+
+  // Codex does not send an object at all: it sends a line of JavaScript with
+  // the plan inline, and its keys are sometimes quoted and sometimes not.
+  test("Codex's inline update_plan becomes the same steps", () => {
+    const steps = planSteps(
+      'const r = await tools.update_plan({explanation:"x","plan":['
+      + '{"step":"Map Humain and Sea Shell architecture","status":"completed"},'
+      + '{"step":"Define the boundary","status":"in_progress"}]}); text(r)',
+    );
+    expect(steps.length).toBe(2);
+    expect(steps[0]!.text).toBe("Map Humain and Sea Shell architecture");
+    expect(steps[1]!.status).toBe("running");
+  });
+
+  test("anything that is not a plan yields no steps", () => {
+    expect(planSteps({ cmd: "ls" })).toEqual([]);
+    expect(planSteps("const r = await tools.exec_command({cmd:\"ls\"})")).toEqual([]);
+  });
+});
+
+describe("Codex hides the real tool inside an exec call", () => {
+  // Codex sends one `exec` whose argument is JavaScript, so classifying on the
+  // name alone filed every Codex action under one label — most of why a Codex
+  // session looked like undifferentiated noise.
+  test("the inner tools.* call decides the kind", () => {
+    expect(toolKind("exec", 'const r = await tools.update_plan({plan:[]})')).toBe("plan");
+    expect(toolKind("exec", 'const r = await tools.exec_command({cmd:"ls"})'))
+      .toBe("command_execution");
+    expect(toolKind("exec", 'const r = await tools.apply_patch("*** Begin Patch")'))
+      .toBe("file_change");
+  });
+
+  test("a bare patch envelope is still a file change", () => {
+    expect(toolKind("exec", "*** Begin Patch\n*** Add File: x.ts")).toBe("file_change");
+  });
+
+  test("exec with an unreadable argument is still code running", () => {
+    expect(toolKind("exec", "something we have no rule for")).toBe("command_execution");
+    expect(toolKind("exec")).toBe("command_execution");
   });
 });

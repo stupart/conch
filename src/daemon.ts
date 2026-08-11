@@ -569,6 +569,7 @@ export function dispatchControlMessage(
 
 const TURN_EVENT_TYPES = new Set<TurnEvent["type"]>([
   "inject",
+  "interrupt",
   "turn-end",
   "needs-you",
   "wake",
@@ -583,6 +584,9 @@ const TURN_EVENT_TYPES = new Set<TurnEvent["type"]>([
 ]);
 
 const SPARSE_TURN_EVENT_TYPES = new Set<TurnEvent["type"]>([
+  // Stopping a session needs only to know WHICH session; the label and the
+  // announce text every other event carries would be ceremony.
+  "interrupt",
   "wake",
   "recite",
   "spacebar",
@@ -745,7 +749,10 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
         return { ok: false, err: `${field} must not be empty for inject` };
       }
     }
-  } else if ((type === "wake" || type === "recite") && typeof value.sessionId !== "string") {
+  } else if (
+    (type === "wake" || type === "recite" || type === "interrupt")
+    && typeof value.sessionId !== "string"
+  ) {
     return { ok: false, err: `sessionId is required for ${type}` };
   }
 
@@ -2455,9 +2462,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // minute, the socket never replied, and the phone reported "Couldn't reach
     // the Mac". Restarting the daemon to pick up a fix re-armed the same trap,
     // which is why this looked intermittent and session-specific for hours.
-    if (event.type !== "inject") await ttsStartup;
+    // Neither an inject nor an interrupt speaks, and both are things a person
+    // is waiting on right now — an interrupt most of all, since its whole value
+    // is arriving before the agent does more of what you are stopping.
+    if (event.type !== "inject" && event.type !== "interrupt") await ttsStartup;
     stopKey = false; // a stale press from a past exchange must not skip this one
     micOpen = false; // no listen in flight yet for this event
+    if (event.type === "interrupt") return void (await interruptSession(event));
     if (event.type === "mute") return muted ? announceMuted(true) : undefined;
     if (event.type === "unmute") return !muted ? announceMuted(false) : undefined;
     if (event.type === "pause") return pause.paused ? pause.announcePaused() : undefined;
@@ -4276,6 +4287,30 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (interrupted || interruptedByPause()) return;
     if (via === "none") await speak(cfg, "Could not reach the session's window to answer — do it by hand.", event.label);
     else log(`sent ${verdict === "approve" ? "Enter" : "Escape"} via ${via}`);
+  }
+
+  /**
+   * Stop a session mid-turn.
+   *
+   * Escape is what a person presses, and it is the only signal both Claude Code
+   * and Codex agree on — neither exposes a "cancel" an outside process could
+   * call, so conch presses the key the same way you would. Watching an agent go
+   * down the wrong path with no way to stop it from your phone was the gap.
+   *
+   * The pid comes from the registry rather than the caller: a phone knows a
+   * session by its id, and nothing off-machine should be able to name a process
+   * to send keystrokes to.
+   */
+  async function interruptSession(event: TurnEvent): Promise<void> {
+    const known = panelSessions.get(event.sessionId);
+    const label = known?.name || event.label || event.sessionId.slice(0, 8);
+    const { via } = await injectKey(cfg, known?.pid, "Escape");
+    if (via === "none") {
+      log(`⚠ could not reach "${label}" to stop it`);
+      await speak(cfg, `Couldn't reach ${label} to stop it.`, label);
+      return;
+    }
+    log(`⏹ stopped "${label}" via ${via}`);
   }
 
   const daemonSettingsPath = settingsPathFor();

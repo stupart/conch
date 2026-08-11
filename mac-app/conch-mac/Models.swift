@@ -329,14 +329,33 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         }
     }
 
+    /// One line of a plan. Agents emit these constantly; as a generic tool row
+    /// they were noise, as a checklist they are the clearest answer on screen
+    /// to "what is it actually doing".
+    struct PlanStep: Decodable, Equatable, Sendable, Identifiable {
+        enum Status: String, Decodable, Sendable { case pending, running, done }
+        var text = ""
+        var status = Status.pending
+        var id: String { "\(status.rawValue):\(text)" }
+
+        private enum CodingKeys: String, CodingKey { case text, status }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            text = (try? c.decodeIfPresent(String.self, forKey: .text)) ?? ""
+            status = (try? c.decodeIfPresent(Status.self, forKey: .status)) ?? .pending
+        }
+    }
+
     let id: String
     let rev: Int
     let kind: Kind
     let text: String
     let at: TimeInterval?
     let tool: Tool?
+    let plan: [PlanStep]?
 
-    private enum CodingKeys: String, CodingKey { case id, rev, kind, text, at, tool }
+    private enum CodingKeys: String, CodingKey { case id, rev, kind, text, at, tool, plan }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -346,6 +365,7 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         text = (try? c.decodeIfPresent(String.self, forKey: .text)) ?? ""
         at = try? c.decodeIfPresent(TimeInterval.self, forKey: .at)
         tool = try? c.decodeIfPresent(Tool.self, forKey: .tool)
+        plan = try? c.decodeIfPresent([PlanStep].self, forKey: .plan)
     }
 }
 

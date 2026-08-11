@@ -19,9 +19,18 @@ struct ComposerView: View {
     /// What conch is hearing right now, so dictation appears where you would
     /// type it rather than somewhere else on screen.
     let dictation: String
+    /// True while the agent is mid-turn, which is the only time stopping means
+    /// anything.
+    let isWorking: Bool
     let onSend: (String) -> Void
+    let onInterrupt: () -> Void
 
-    @State private var draft = ""
+    /// Seeded from the environment so the composer can be photographed with
+    /// text in it. A text field only misbehaves once there is text — the
+    /// vertical centering bug Tyler found was invisible while the placeholder
+    /// was showing — and there is otherwise no way to look at that state
+    /// without a person typing into the window.
+    @State private var draft = ProcessInfo.processInfo.environment["CONCH_COMPOSER_TEXT"] ?? ""
     @State private var attachments: [URL] = []
     @State private var isTargetedForDrop = false
     @FocusState private var fieldFocused: Bool
@@ -46,6 +55,21 @@ struct ComposerView: View {
 
                 composerField
 
+                // Send becomes Stop while a turn is running. One control in
+                // one place: the button you reach for is always the one that
+                // acts on the turn in front of you, and a stray Return cannot
+                // queue text at the moment you meant to interrupt.
+                if isWorking && composed.isEmpty {
+                    Button(action: onInterrupt) {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(width: 28, height: 28)
+                            .background(Circle().fill(ConchPalette.statusWaiting))
+                            .foregroundStyle(Color.black)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Stop this turn")
+                } else {
                 Button(action: send) {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 13, weight: .semibold))
@@ -61,6 +85,7 @@ struct ComposerView: View {
                 .disabled(!canSend)
                 .keyboardShortcut(.return, modifiers: [])
                 .help("Send to \(sessionLabel)")
+                }
             }
         }
         .padding(.horizontal, 14)
@@ -97,25 +122,32 @@ struct ComposerView: View {
                     .padding(.vertical, 6)
                     .padding(.horizontal, 8)
             } else {
+                // TextEditor has no intrinsic content height on macOS — it
+                // fills whatever it is given, which turned the composer into a
+                // third of the window. Size it from the text instead, so it
+                // starts as one line and grows only as far as it earns.
+                //
+                // It also carries its own text-container inset, which is what
+                // made typed text sit high while the placeholder looked fine:
+                // the two were being positioned by different rules. Zeroing the
+                // inset puts both under the same padding below.
                 TextEditor(text: $draft)
                     .font(ConchTypography.font(size: 12.5))
                     .foregroundStyle(ConchPalette.textPrimary)
                     .scrollContentBackground(.hidden)
                     .focused($fieldFocused)
-                    .padding(.vertical, 2)
-                    .padding(.horizontal, 4)
-                    // TextEditor has no intrinsic content height on macOS — it
-                    // fills whatever it is given, which turned the composer into
-                    // a third of the window. Size it from the text instead, so
-                    // it starts as one line and grows only as far as it earns.
+                    .conchTextViewInsets()
                     .frame(height: fieldHeight)
+                    .padding(.vertical, Self.fieldInsetY)
+                    .padding(.horizontal, Self.fieldInsetX)
 
                 if draft.isEmpty {
                     Text("Message \(sessionLabel)")
                         .font(ConchTypography.font(size: 12.5))
                         .foregroundStyle(ConchPalette.textDim)
-                        .padding(.vertical, 6)
-                        .padding(.horizontal, 8)
+                        .frame(height: fieldHeight, alignment: .leading)
+                        .padding(.vertical, Self.fieldInsetY)
+                        .padding(.horizontal, Self.fieldInsetX)
                         .allowsHitTesting(false)
                 }
             }
@@ -129,6 +161,12 @@ struct ComposerView: View {
         !composed.isEmpty
     }
 
+    /// One shared inset, applied identically to the editor and the placeholder
+    /// so a line of text sits in exactly the same place whether or not you have
+    /// started typing.
+    static let fieldInsetY: CGFloat = 6
+    static let fieldInsetX: CGFloat = 8
+
     /// One line until there is more, then up to six.
     private var fieldHeight: CGFloat {
         let lines = draft.isEmpty ? 1 : draft.reduce(into: 1) { total, character in
@@ -138,7 +176,7 @@ struct ComposerView: View {
         // since being a few pixels generous costs nothing and measuring costs a
         // layout pass on every keystroke.
         let wrapped = max(lines, Int(ceil(Double(draft.count) / 110.0)))
-        return CGFloat(min(6, max(1, wrapped))) * 17 + 9
+        return CGFloat(min(6, max(1, wrapped))) * 16
     }
 
     /// Paths first, then the words.
@@ -220,5 +258,51 @@ private struct AttachmentStrip: View {
             }
         }
         .frame(maxHeight: 26)
+    }
+}
+
+private extension View {
+    /// Drop NSTextView's built-in padding so SwiftUI's padding is the only one
+    /// in play. Without this the editor applies its inset on top of ours and
+    /// typed text lands above centre while the placeholder does not.
+    func conchTextViewInsets() -> some View {
+        introspectTextView { view in
+            view.textContainerInset = .zero
+            view.textContainer?.lineFragmentPadding = 0
+        }
+    }
+}
+
+/// A minimal reach into the NSTextView behind a SwiftUI TextEditor.
+///
+/// SwiftUI exposes no way to change the text container inset, and the whole
+/// bug is that inset. This walks the view tree once on appear rather than
+/// taking a dependency for one property.
+private struct TextViewIntrospector: NSViewRepresentable {
+    let configure: (NSTextView) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let probe = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            guard let container = probe.superview?.superview else { return }
+            if let textView = Self.firstTextView(in: container) { configure(textView) }
+        }
+        return probe
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private static func firstTextView(in view: NSView) -> NSTextView? {
+        if let textView = view as? NSTextView { return textView }
+        for child in view.subviews {
+            if let found = firstTextView(in: child) { return found }
+        }
+        return nil
+    }
+}
+
+private extension View {
+    func introspectTextView(_ configure: @escaping (NSTextView) -> Void) -> some View {
+        background(TextViewIntrospector(configure: configure))
     }
 }

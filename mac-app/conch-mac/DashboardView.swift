@@ -1306,10 +1306,14 @@ private struct ConversationPane: View {
                             sessionID: row.id,
                             sessionLabel: row.label,
                             dictation: dictationForFocusedRow,
+                            isWorking: row.status == .working,
                             onSend: { text in
                                 store.send(
                                     .inject(sessionId: row.id, label: row.label, text: text)
                                 )
+                            },
+                            onInterrupt: {
+                                store.send(.interrupt(sessionId: row.id, label: row.label))
                             }
                         )
                     }

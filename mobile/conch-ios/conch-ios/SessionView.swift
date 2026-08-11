@@ -423,6 +423,23 @@ struct SessionView: View {
                     .disabled(talk.phase == .sending)
                     .accessibilityLabel(isTalkingHere ? "Close the microphone" : "Open the microphone")
 
+                    // Stop sits where send would be, but only while the agent
+                    // is mid-turn and you have nothing written. Noticing an
+                    // agent has gone the wrong way while away from the desk
+                    // used to mean watching it keep going.
+                    if isWorking, !canSend, talk.phase != .sending {
+                        Button(action: stopTurn) {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 15, weight: .bold))
+                                .frame(width: 38, height: 38)
+                                .background(Palette.waiting, in: Circle())
+                                .foregroundStyle(Palette.bg)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Stop this turn")
+                        .transition(.scale.combined(with: .opacity))
+                    }
+
                     if canSend || talk.phase == .sending {
                         Button(action: sendDraft) {
                             Group {
@@ -463,6 +480,16 @@ struct SessionView: View {
             get: { talk.draft(for: sessionId) },
             set: { talk.setDraft($0, for: sessionId) }
         )
+    }
+
+    /// Mid-turn, which is the only time stopping means anything.
+    private var isWorking: Bool {
+        row?.status == "working"
+    }
+
+    private func stopTurn() {
+        let label = row?.label ?? ""
+        Task { await bridge.interrupt(sessionId: sessionId, label: label) }
     }
 
     private var canSend: Bool {

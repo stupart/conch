@@ -12,6 +12,7 @@ struct ConchDaemonEvent: Encodable, Sendable {
         case mute
         case unmute
         case inject
+        case interrupt
     }
 
     let type: Kind
@@ -36,6 +37,13 @@ struct ConchDaemonEvent: Encodable, Sendable {
     /// delivery route with one set of failure modes, not a third.
     static func inject(sessionId: String, label: String, text: String) -> Self {
         Self(type: .inject, sessionId: sessionId, label: label, announce: text)
+    }
+
+    /// Stop a session mid-turn. The daemon presses Escape in its pane, which
+    /// is what a person would do — neither agent exposes a cancel an outside
+    /// process could call.
+    static func interrupt(sessionId: String, label: String) -> Self {
+        Self(type: .interrupt, sessionId: sessionId, label: label)
     }
 
     static func wake(sessionId: String, label: String) -> Self {

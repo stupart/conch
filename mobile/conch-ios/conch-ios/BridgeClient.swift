@@ -194,6 +194,16 @@ final class BridgeClient: ObservableObject {
         await post(control: ["kind": "phone-speaking", "speaking": speaking, "label": label])
     }
 
+    /// Stop a session mid-turn from the phone.
+    ///
+    /// This is the control that most needed to exist here rather than on the
+    /// Mac: noticing an agent has gone the wrong way, while away from the desk,
+    /// used to mean watching it keep going.
+    @discardableResult
+    func interrupt(sessionId: String, label: String) async -> Bool {
+        await post(control: ["type": "interrupt", "sessionId": sessionId, "label": label])
+    }
+
     func send(mode action: String) async -> Bool {
         await post(control: ["type": action, "sessionId": "", "label": "", "announce": ""])
     }

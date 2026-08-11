@@ -97,7 +97,14 @@ struct ConversationStackView: View {
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(ConchPalette.statusReview)
         case .tool:
-            toolRow(item)
+            // A plan is not a tool call you might expand — it is the answer to
+            // "what is it doing", so it renders as itself rather than as a
+            // collapsed row you would have to think to open.
+            if let plan = item.plan, !plan.isEmpty {
+                PlanRow(steps: plan)
+            } else {
+                toolRow(item)
+            }
         }
     }
 
@@ -175,8 +182,75 @@ struct ConversationStackView: View {
 extension AttributedString {
     static func conchMarkdown(_ source: String) -> AttributedString {
         (try? AttributedString(
-            markdown: source,
+            markdown: promoteHeadings(source),
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         )) ?? AttributedString(source)
+    }
+
+    /// Inline-only parsing leaves `## Heading` showing its hashes, and agents
+    /// write in headings constantly. Rewriting them as bold keeps the emphasis
+    /// the author intended without switching to a block parse, which would
+    /// collapse every newline in the message.
+    private static func promoteHeadings(_ source: String) -> String {
+        guard source.contains("#") else { return source }
+        return source
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> Substring in
+                guard line.hasPrefix("#") else { return line }
+                let hashes = line.prefix { $0 == "#" }
+                guard hashes.count <= 6 else { return line }
+                let rest = line.dropFirst(hashes.count).drop { $0 == " " }
+                // Bold needs something to wrap, and `**` alone parses as literal.
+                guard !rest.isEmpty else { return line }
+                return Substring("**\(rest)**")
+            }
+            .joined(separator: "\n")
+    }
+}
+
+/// A plan, as a checklist.
+private struct PlanRow: View {
+    let steps: [ConversationItem.PlanStep]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(steps) { step in
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Image(systemName: symbol(step.status))
+                        .font(.system(size: 10))
+                        .foregroundStyle(colour(step.status))
+                        .frame(width: 12)
+                    Text(step.text)
+                        .font(.system(size: 11.5))
+                        // Done steps recede: the eye should land on what is
+                        // happening now, not on the pile already finished.
+                        .foregroundStyle(
+                            step.status == .done ? ConchPalette.textFaint : ConchPalette.textDim
+                        )
+                        .strikethrough(step.status == .done, color: ConchPalette.textFaint)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(.leading, 2)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func symbol(_ status: ConversationItem.PlanStep.Status) -> String {
+        switch status {
+        case .done: return "checkmark.circle.fill"
+        case .running: return "circle.dotted"
+        case .pending: return "circle"
+        }
+    }
+
+    private func colour(_ status: ConversationItem.PlanStep.Status) -> Color {
+        switch status {
+        case .done: return ConchPalette.brandCyan
+        case .running: return ConchPalette.statusWorking
+        case .pending: return ConchPalette.textFaint
+        }
     }
 }

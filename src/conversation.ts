@@ -51,6 +51,8 @@ export interface ConversationItem {
   text: string;
   at?: number;
   tool?: ConversationToolDetail;
+  /** Present when this row IS a plan, so viewers render a checklist. */
+  plan?: PlanStep[];
   review?: { summary: string; link?: string };
 }
 
@@ -226,16 +228,18 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
   }
   for (const call of parts.filter((part) => part?.type === "tool_use")) {
     const callId = typeof call.id === "string" ? call.id : `${id}:${call.name}`;
+    const steps = planSteps(call.input);
     upsertConversationItem(conversation, {
       id: `tool:${callId}`,
       kind: "tool",
       text: summariseToolInput(call.input),
       at,
       tool: {
-          name: toolDisplayName(String(call.name ?? "tool")),
-          kind: toolKind(String(call.name ?? "")),
-          status: "running",
-        },
+        name: toolDisplayName(String(call.name ?? "tool")),
+        kind: toolKind(String(call.name ?? ""), call.input),
+        status: "running",
+      },
+      ...(steps.length ? { plan: steps } : {}),
     });
   }
 }
@@ -298,16 +302,99 @@ const TOOL_KINDS: ReadonlyArray<readonly [ToolKind, RegExp]> = [
   ["plan", /^(todowrite|update_plan|exit_plan_mode|todoread)$/i],
 ];
 
-export function toolKind(name: string): ToolKind {
-  if (!name) return "unknown";
+/**
+ * Codex calls almost everything `exec`.
+ *
+ * Where Claude names the tool it is using, Codex sends one `exec` call whose
+ * argument is a line of JavaScript — `await tools.update_plan({...})`,
+ * `await tools.exec_command({...})`, `await tools.apply_patch(...)`. Classifying
+ * on the name alone therefore files every Codex action under one label, which
+ * is most of why a Codex session looked like undifferentiated noise.
+ */
+const CODEX_INNER_TOOL = /\btools\.([a-z_]+)\s*\(/i;
+
+export function toolKind(name: string, input?: unknown): ToolKind {
   // MCP first: an MCP server may expose a tool called `read` or `search`, and
   // it is still someone else's integration rather than the agent touching this
   // machine. Where it came from matters more than what it is called.
   if (name.startsWith("mcp__")) return "mcp_tool_call";
+
+  if (typeof input === "string") {
+    const inner = CODEX_INNER_TOOL.exec(input);
+    if (inner) {
+      const resolved = classifyName(inner[1]!);
+      // `exec` running something we have no rule for is still code execution,
+      // which is more honest than "unknown".
+      if (resolved !== "unknown") return resolved;
+      return "command_execution";
+    }
+    // A raw patch envelope with no tools.* wrapper is still a file change.
+    if (input.includes("*** Begin Patch")) return "file_change";
+  }
+
+  const named = classifyName(name);
+  if (named !== "unknown") return named;
+  // `exec` with an argument shape we could not read is code running.
+  return /^(exec|custom_tool_call)$/i.test(name) ? "command_execution" : "unknown";
+}
+
+function classifyName(name: string): ToolKind {
+  if (!name) return "unknown";
   for (const [kind, pattern] of TOOL_KINDS) {
     if (pattern.test(name)) return kind;
   }
   return "unknown";
+}
+
+/** One line of a plan, in the only two states that matter to a reader. */
+export interface PlanStep {
+  text: string;
+  status: "pending" | "running" | "done";
+}
+
+const PLAN_STEP = /["']?step["']?\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*["']?status["']?\s*:\s*"([^"]*)"/g;
+
+function planStatus(raw: unknown): PlanStep["status"] {
+  const value = String(raw ?? "").toLowerCase();
+  if (value === "completed" || value === "done") return "done";
+  if (value === "in_progress" || value === "inprogress" || value === "running") return "running";
+  return "pending";
+}
+
+/**
+ * The steps of a plan, from either agent's way of writing one down.
+ *
+ * Claude sends `TodoWrite` with a `todos` array of objects; Codex sends a line
+ * of JavaScript with the plan inline, and its object keys are sometimes quoted
+ * and sometimes not. Extracting the pairs with a pattern rather than parsing
+ * the argument as JSON is what survives both spellings.
+ *
+ * Agents emit these constantly. Rendered as a generic tool row they were pure
+ * noise; rendered as a checklist they are the single most useful thing on
+ * screen for "what is it actually doing".
+ */
+export function planSteps(input: unknown): PlanStep[] {
+  if (input && typeof input === "object") {
+    const todos = (input as any).todos ?? (input as any).plan;
+    if (Array.isArray(todos)) {
+      return todos
+        .map((entry: any) => ({
+          text: String(entry?.content ?? entry?.step ?? entry?.text ?? "").trim(),
+          status: planStatus(entry?.status),
+        }))
+        .filter((step) => step.text);
+    }
+  }
+  if (typeof input === "string" && input.includes("update_plan")) {
+    const steps: PlanStep[] = [];
+    PLAN_STEP.lastIndex = 0;
+    for (let match = PLAN_STEP.exec(input); match; match = PLAN_STEP.exec(input)) {
+      const text = match[1]!.replace(/\\(["'\\])/g, "$1").trim();
+      if (text) steps.push({ text, status: planStatus(match[2]) });
+    }
+    return steps;
+  }
+  return [];
 }
 
 export function toolDisplayName(name: string): string {
@@ -508,16 +595,21 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
     case "function_call":
     case "custom_tool_call": {
       const callId = typeof payload.call_id === "string" ? payload.call_id : id;
+      // The RAW argument, not the parsed one: Codex's is a line of JavaScript
+      // whose text is what identifies the operation and carries the plan.
+      const raw = payload.arguments ?? payload.input;
+      const steps = planSteps(raw);
       upsertConversationItem(conversation, {
         id: `tool:${callId}`,
         kind: "tool",
-        text: summariseToolInput(parseMaybeJson(payload.arguments ?? payload.input)),
+        text: summariseToolInput(parseMaybeJson(raw)),
         at,
         tool: {
           name: toolDisplayName(String(payload.name ?? "tool")),
-          kind: toolKind(String(payload.name ?? "")),
+          kind: toolKind(String(payload.name ?? ""), raw),
           status: "running",
         },
+        ...(steps.length ? { plan: steps } : {}),
       });
       return;
     }
@@ -682,9 +774,11 @@ export function publishedConversation(
     .filter(Boolean);
   const items = ordered.map((item) => {
     // Keep the TAIL of a long message: the end is what was just said, and the
-    // beginning is what has already scrolled past.
+    // beginning is what has already scrolled past. Say so, though — an
+    // unmarked cut lands mid-word and reads as a rendering bug rather than a
+    // trim ("Serene digital vault…" arrived on screen as "erene digital").
     const text = item.text.length > itemChars
-      ? item.text.slice(item.text.length - itemChars)
+      ? `…${item.text.slice(item.text.length - itemChars)}`
       : item.text;
     const result = item.tool?.result;
     return {

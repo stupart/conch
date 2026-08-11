@@ -74,9 +74,11 @@ Not their renderer — their own mobile app didn't reuse it either.
 3. ~~**Per-kind tool rows**~~ — DONE for glyphs: terminal, pencil, doc, glass,
    globe, wrench, checklist. Still to do: a file change should render its DIFF
    rather than its filename (item 9).
-4. **Plans as first-class rows** — agents emit todo lists constantly and we
-   render them as noise.
-5. **Interrupt** — stop a running turn from any device.
+4. ~~**Plans as first-class rows**~~ — DONE. Both `TodoWrite` and Codex's
+   inline `update_plan` become one checklist, done steps struck through.
+5. ~~**Interrupt**~~ — DONE on Mac and phone. The daemon presses Escape in the
+   session's pane, which is what a person would do; neither agent exposes a
+   cancel an outside process could call.
 6. **Queued messages** — send while working, it lands next. No new command.
 7. **Questions** — answer an agent's multiple-choice question by voice. This is
    the one where our interaction model beats theirs outright.

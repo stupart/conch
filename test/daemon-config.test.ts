@@ -1324,7 +1324,11 @@ describe("an inject never waits for the voice engine", () => {
     expect(body).not.toContain("await ttsStartup");
   });
 
-  test("speaking events still wait for it", () => {
-    expect(source).toContain('if (event.type !== "inject") await ttsStartup;');
+  test("speaking events still wait for it, silent ones never do", () => {
+    // An interrupt is the other event nobody may be made to wait for: its whole
+    // value is arriving before the agent does more of what you are stopping.
+    expect(source).toContain(
+      'if (event.type !== "inject" && event.type !== "interrupt") await ttsStartup;',
+    );
   });
 });
