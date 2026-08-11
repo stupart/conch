@@ -225,7 +225,10 @@ describe("only one side of the phone owns the audio route", () => {
     // didFinish once opened the mic and then deactivated the session — that
     // deactivation could land on the recording it had just started, breaking
     // the auto-open path the whole loop rests on.
-    const deactivate = speech.indexOf("setActive(\n                false");
+    // Matched on order, not indentation: this broke once when the call was
+    // wrapped in a foreground check and only its leading whitespace moved.
+    const finish = speech.indexOf("Hand audio back FIRST");
+    const deactivate = speech.indexOf("setActive(", finish);
     const open = speech.indexOf("self.onFinishedReading?()");
     expect(deactivate).toBeGreaterThan(-1);
     expect(open).toBeGreaterThan(-1);
