@@ -49,3 +49,29 @@ describe("the phone can speak with the screen off", () => {
     expect(marked).toBeGreaterThan(gate);
   });
 });
+
+describe("nothing keeps running with the screen off", () => {
+  const root = new URL("../mobile/conch-ios/conch-ios/", import.meta.url);
+  const app = readFileSync(new URL("ConchApp.swift", root), "utf8");
+  const speech = readFileSync(new URL("SpeechController.swift", root), "utf8");
+
+  // Handing the audio lease back tells the Mac to speak; it does nothing about
+  // a recording session still running here. Declaring background audio removed
+  // the backstop that used to make that survivable — iOS suspending a silent
+  // app — so an open mic could keep capture, speech recognition and the socket
+  // alive indefinitely.
+  test("backgrounding closes the mic, not just the lease", () => {
+    const background = app.slice(app.indexOf("case .background:"));
+    const branch = background.slice(0, background.indexOf("case .inactive:"));
+    expect(branch).toContain("talk.closeMic()");
+    expect(branch).toContain("claimAudio(false)");
+  });
+
+  // Only didFinish released the route, so stopping by hand, cancelling, or the
+  // watchdog noticing a reading never started each left a session active.
+  test("every way a reading can end releases the audio route", () => {
+    expect(speech).toContain("private func releaseSession()");
+    // stop(), didCancel, the watchdog, and the definition itself.
+    expect(speech.split("releaseSession()").length - 1).toBeGreaterThanOrEqual(4);
+  });
+});

@@ -139,6 +139,7 @@ final class SpeechController: NSObject, ObservableObject {
                 guard let self, self.isSpeaking, !self.synthesizer.isSpeaking else { return }
                 self.isSpeaking = false
                 self.reportSpeaking(false, self.speakingLabel)
+                self.releaseSession()
                 self.speechFailure = "That didn't play — the phone never started reading."
             }
         }
@@ -154,6 +155,21 @@ final class SpeechController: NSObject, ObservableObject {
         synthesizer.stopSpeaking(at: .immediate)
         isSpeaking = false
         reportSpeaking(false, speakingLabel)
+        releaseSession()
+    }
+
+    /// Hand the audio route back.
+    ///
+    /// Only `didFinish` did this, so stopping a reading by hand, cancelling
+    /// one, or having the watchdog notice one never started all left an active
+    /// `.playback` session behind. Silent and cheap next to recording, but it
+    /// keeps other apps' audio ducked and — now that conch declares background
+    /// audio — needlessly prolongs the app's eligibility to keep running.
+    private func releaseSession() {
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: .notifyOthersOnDeactivation
+        )
     }
 
     /// Duck rather than interrupt: a workout has music playing, and conch
@@ -276,6 +292,7 @@ extension SpeechController: AVSpeechSynthesizerDelegate {
             self.clearSpeechWatchdog()
             self.isSpeaking = false
             self.reportSpeaking(false, self.speakingLabel)
+            self.releaseSession()
         }
     }
 }

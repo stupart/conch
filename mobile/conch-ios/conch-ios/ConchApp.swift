@@ -91,6 +91,21 @@ struct ConchApp: App {
                     bridge.reconnectNow()
                     Task { await bridge.claimAudio(true) }
                 case .background:
+                    // Close the MIC, not just the audio lease.
+                    //
+                    // Handing the lease back tells the Mac to speak; it does
+                    // nothing about a recording session still running here. On
+                    // its own that was survivable, because iOS suspends a
+                    // silent app — but declaring background audio today removed
+                    // that backstop, so an open mic could now keep capture,
+                    // on-device speech recognition and the socket alive with
+                    // the screen off, indefinitely. A Codex audit ranked it the
+                    // clearest path to heat and battery drain in the app, and
+                    // it is a regression the same change introduced.
+                    //
+                    // Nothing is lost: whatever was dictated stays in the draft,
+                    // which survives the app being backgrounded.
+                    talk.closeMic()
                     Task { await bridge.claimAudio(false) }
                 case .inactive:
                     // NOT a handback. iOS reports .inactive for anything that
