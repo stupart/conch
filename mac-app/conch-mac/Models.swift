@@ -349,6 +349,26 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         }
     }
 
+    /// The lines an edit moved. Not a unified diff: in a stack you are scanning
+    /// rather than reviewing, the changed lines ARE the story, and context lines
+    /// would multiply what crosses the relay for something nobody reads here.
+    struct FileChange: Decodable, Equatable, Sendable {
+        var file = ""
+        var removed: [String] = []
+        var added: [String] = []
+        var truncated = false
+
+        private enum CodingKeys: String, CodingKey { case file, removed, added, truncated }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            file = (try? c.decodeIfPresent(String.self, forKey: .file)) ?? ""
+            removed = (try? c.decodeIfPresent([String].self, forKey: .removed)) ?? []
+            added = (try? c.decodeIfPresent([String].self, forKey: .added)) ?? []
+            truncated = (try? c.decodeIfPresent(Bool.self, forKey: .truncated)) ?? false
+        }
+    }
+
     let id: String
     let rev: Int
     let kind: Kind
@@ -356,8 +376,9 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     let at: TimeInterval?
     let tool: Tool?
     let plan: [PlanStep]?
+    let change: FileChange?
 
-    private enum CodingKeys: String, CodingKey { case id, rev, kind, text, at, tool, plan }
+    private enum CodingKeys: String, CodingKey { case id, rev, kind, text, at, tool, plan, change }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -368,6 +389,7 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         at = try? c.decodeIfPresent(TimeInterval.self, forKey: .at)
         tool = try? c.decodeIfPresent(Tool.self, forKey: .tool)
         plan = try? c.decodeIfPresent([PlanStep].self, forKey: .plan)
+        change = try? c.decodeIfPresent(FileChange.self, forKey: .change)
     }
 }
 

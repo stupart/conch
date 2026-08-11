@@ -6,6 +6,7 @@ import {
   conversationDelta,
   conversationWindow,
   emptyConversation,
+  fileChange,
   planSteps,
   publishedConversation,
   reduceClaudeLine,
@@ -622,5 +623,64 @@ describe("a question said out loud", () => {
       options: [{ label: "A" }, { label: "B" }],
     });
     expect(spoken).toBe("Which? Your options are: A, or B. You can pick more than one.");
+  });
+});
+
+describe("a file change shows what changed", () => {
+  // A row reading `Edit /Users/.../card.tsx` names the file and says nothing
+  // about what happened to it — the least useful summary of the most
+  // consequential thing an agent does.
+  test("an edit yields the lines that moved", () => {
+    const change = fileChange({
+      file_path: "/Users/t/app/src/card.tsx",
+      old_string: "const a = 1;\nconst b = 2;\nconst c = 3;",
+      new_string: "const a = 1;\nconst b = 99;\nconst c = 3;",
+    })!;
+    expect(change.file).toBe("card.tsx");
+    // The unchanged anchor lines on both sides are noise that hides the one
+    // line that actually moved.
+    expect(change.removed).toEqual(["const b = 2;"]);
+    expect(change.added).toEqual(["const b = 99;"]);
+    expect(change.truncated).toBe(false);
+  });
+
+  test("a write is all addition", () => {
+    const change = fileChange({ file_path: "/tmp/new.ts", content: "one\ntwo" })!;
+    expect(change.removed).toEqual([]);
+    expect(change.added).toEqual(["one", "two"]);
+  });
+
+  // A big refactor must not push a thousand lines over a metered relay.
+  test("a large change is capped and says so", () => {
+    const change = fileChange({
+      file_path: "/tmp/big.ts",
+      old_string: "",
+      new_string: Array.from({ length: 500 }, (_, i) => `line ${i}`).join("\n"),
+    })!;
+    expect(change.added.length).toBe(40);
+    expect(change.truncated).toBe(true);
+  });
+
+  test("something that is not a file change yields nothing", () => {
+    expect(fileChange({ cmd: "ls" })).toBeNull();
+    expect(fileChange({ file_path: "/tmp/x" })).toBeNull();
+  });
+
+  test("an Edit row carries its change through the reducer", () => {
+    const conversation = emptyConversation("s");
+    reduceClaudeLine(conversation, {
+      type: "assistant",
+      message: {
+        content: [{
+          type: "tool_use",
+          id: "e1",
+          name: "Edit",
+          input: { file_path: "/a/b/x.ts", old_string: "old", new_string: "new" },
+        }],
+      },
+    });
+    const item = conversation.items[conversation.order[0]!]!;
+    expect(item.tool?.kind).toBe("file_change");
+    expect(item.change?.added).toEqual(["new"]);
   });
 });

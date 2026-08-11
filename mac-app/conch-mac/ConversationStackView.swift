@@ -102,6 +102,18 @@ struct ConversationStackView: View {
             // collapsed row you would have to think to open.
             if let plan = item.plan, !plan.isEmpty {
                 PlanRow(steps: plan)
+            } else if let change = item.change {
+                ChangeRow(
+                    change: change,
+                    expanded: expandedToolIDs.contains(item.id),
+                    toggle: {
+                        if expandedToolIDs.contains(item.id) {
+                            expandedToolIDs.remove(item.id)
+                        } else {
+                            expandedToolIDs.insert(item.id)
+                        }
+                    }
+                )
             } else {
                 toolRow(item)
             }
@@ -251,6 +263,86 @@ private struct PlanRow: View {
         case .done: return ConchPalette.brandCyan
         case .running: return ConchPalette.statusWorking
         case .pending: return ConchPalette.textFaint
+        }
+    }
+}
+
+/// A file change, as a count you can scan and lines you can open.
+///
+/// The collapsed line answers "what happened to that file" without a tap, which
+/// is what you want while scrolling. The lines themselves are one tap away
+/// because reading them is a different activity from scanning for them.
+private struct ChangeRow: View {
+    let change: ConversationItem.FileChange
+    let expanded: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Button(action: toggle) {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(ConchPalette.brandCyan)
+                        .frame(width: 12)
+                    Text(change.file)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(ConchPalette.textDim)
+                    if !change.added.isEmpty {
+                        Text("+\(change.added.count)")
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(ConchPalette.brandCyan)
+                    }
+                    if !change.removed.isEmpty {
+                        Text("−\(change.removed.count)")
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(ConchPalette.statusNeeds)
+                    }
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 8))
+                        .foregroundStyle(ConchPalette.textFaint)
+                }
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 1) {
+                    ForEach(Array(change.removed.enumerated()), id: \.offset) { _, line in
+                        DiffLine(text: line, sign: "−", tint: ConchPalette.statusNeeds)
+                    }
+                    ForEach(Array(change.added.enumerated()), id: \.offset) { _, line in
+                        DiffLine(text: line, sign: "+", tint: ConchPalette.brandCyan)
+                    }
+                    if change.truncated {
+                        Text("… longer than this view shows")
+                            .font(.system(size: 10))
+                            .foregroundStyle(ConchPalette.textFaint)
+                            .padding(.top, 2)
+                    }
+                }
+                .padding(.leading, 20)
+                .textSelection(.enabled)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct DiffLine: View {
+    let text: String
+    let sign: String
+    let tint: Color
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(sign)
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(tint)
+            Text(text.isEmpty ? " " : text)
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(ConchPalette.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
         }
     }
 }

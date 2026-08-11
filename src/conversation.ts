@@ -55,6 +55,8 @@ export interface ConversationItem {
   plan?: PlanStep[];
   /** Present when the agent is WAITING on you to choose. */
   question?: AgentQuestion;
+  /** Present when this row changed a file, so viewers can show the lines. */
+  change?: FileChange;
   review?: { summary: string; link?: string };
 }
 
@@ -232,6 +234,9 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
     const callId = typeof call.id === "string" ? call.id : `${id}:${call.name}`;
     const steps = planSteps(call.input);
     const asked = agentQuestion(call.input);
+    const changed = toolKind(String(call.name ?? ""), call.input) === "file_change"
+      ? fileChange(call.input)
+      : null;
     upsertConversationItem(conversation, {
       id: `tool:${callId}`,
       kind: "tool",
@@ -246,6 +251,7 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
       },
       ...(steps.length ? { plan: steps } : {}),
       ...(asked ? { question: asked } : {}),
+      ...(changed ? { change: changed } : {}),
     });
   }
 }
@@ -425,6 +431,71 @@ export function spokenQuestion(asked: AgentQuestion): string {
   const lead = asked.header ? `${asked.header}. ` : "";
   const plural = asked.multiSelect ? "You can pick more than one." : "";
   return `${lead}${asked.question} Your options are: ${choices}.${plural ? ` ${plural}` : ""}`;
+}
+
+/**
+ * What a file change actually changed.
+ *
+ * A row reading `Edit /Users/.../deliverable-card.tsx` tells you a file was
+ * touched and nothing about what happened to it, which is the least useful
+ * summary of the most consequential thing an agent does. The edit payload
+ * already carries both sides, so the lines are right there to be counted and
+ * shown.
+ *
+ * Deliberately not a unified diff with context. On a phone, and in a stack you
+ * are scanning rather than reviewing, the changed lines ARE the story — and
+ * carrying context lines would multiply what crosses the relay for something
+ * nobody reads in that position.
+ */
+export interface FileChange {
+  /** The basename. The full path is already the row's title. */
+  file: string;
+  removed: string[];
+  added: string[];
+  /** True when the payload was too large to carry whole. */
+  truncated: boolean;
+}
+
+/** Enough to read a change; far short of what a big refactor would send. */
+const DIFF_MAX_LINES = 40;
+
+export function fileChange(input: unknown): FileChange | null {
+  if (!input || typeof input !== "object") return null;
+  const record = input as Record<string, unknown>;
+  const path = typeof record.file_path === "string" ? record.file_path : "";
+  if (!path) return null;
+
+  const asLines = (value: unknown): string[] =>
+    typeof value === "string" && value.length ? value.split("\n") : [];
+
+  // A Write has no old side: the whole file is the addition.
+  const removed = asLines(record.old_string);
+  const added = asLines(record.new_string ?? record.content);
+  if (!removed.length && !added.length) return null;
+
+  // Trim the common head and tail. An edit usually restates several unchanged
+  // lines on both sides to anchor itself, and showing those as both removed
+  // and added is noise that hides the one line that moved.
+  let head = 0;
+  while (head < removed.length && head < added.length && removed[head] === added[head]) head++;
+  let tail = 0;
+  while (
+    tail < removed.length - head
+    && tail < added.length - head
+    && removed[removed.length - 1 - tail] === added[added.length - 1 - tail]
+  ) tail++;
+
+  const trimmedRemoved = removed.slice(head, removed.length - tail);
+  const trimmedAdded = added.slice(head, added.length - tail);
+  const truncated = trimmedRemoved.length > DIFF_MAX_LINES
+    || trimmedAdded.length > DIFF_MAX_LINES;
+
+  return {
+    file: path.split("/").pop() || path,
+    removed: trimmedRemoved.slice(0, DIFF_MAX_LINES),
+    added: trimmedAdded.slice(0, DIFF_MAX_LINES),
+    truncated,
+  };
 }
 
 /** One line of a plan, in the only two states that matter to a reader. */
