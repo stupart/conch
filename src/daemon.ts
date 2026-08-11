@@ -1686,11 +1686,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
     phoneSpeechLatch = null;
   }
 
-  function armPhoneSpeechLatch(text: string): void {
+  function armPhoneSpeechLatch(text?: string): void {
     clearPhoneSpeechLatch();
     // ~8 characters per second is roughly half real speaking pace, so this only
-    // fires when a report genuinely went missing.
-    const estimateMs = Math.min(120_000, 5_000 + (text.length / 8) * 1_000);
+    // fires when a report genuinely went missing. When the phone announces
+    // speech it started itself we never saw the text, so fall back to the cap.
+    const estimateMs = text === undefined
+      ? 120_000
+      : Math.min(120_000, 5_000 + (text.length / 8) * 1_000);
     phoneSpeechLatch = setTimeout(() => {
       phoneSpeechLatch = null;
       if (getLiveState().state !== "speaking") return;
@@ -4566,8 +4569,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
           // Only while the phone actually owns the audio: a stale report from
           // a backgrounded phone must not silence or mislabel this Mac.
           if (audioLease.isPhone()) {
-            if (speaking && label) setState("speaking", label);
-            else if (!speaking) {
+            if (speaking && label) {
+              setState("speaking", label);
+              // Bound it here too. This is the path that actually latched on
+              // Tyler's phone: it reported that it had STARTED reading and the
+              // matching stop never arrived, so the dashboard sat at "Reading
+              // aloud" with nothing playing. Every route into the speaking
+              // state needs a way back out that does not depend on a message
+              // crossing a relay that drops.
+              armPhoneSpeechLatch();
+            } else if (!speaking) {
               clearPhoneSpeechLatch();
               setState("idle");
             }

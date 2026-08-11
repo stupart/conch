@@ -42,6 +42,8 @@ final class SpeechController: NSObject, ObservableObject {
     /// pounce on it. That was the remaining loss.
     var captureOwnsAudio: () -> Bool = { false }
     private let synthesizer = AVSpeechSynthesizer()
+    /// Clears a "reading aloud" state the synthesizer never reports finishing.
+    private var speechWatchdog: Timer?
     /// What has already been read, per session, so a re-published state — which
     /// arrives at 10Hz — cannot make it read the same reply over and over.
     private var spoken: [String: String] = [:]
@@ -103,10 +105,43 @@ final class SpeechController: NSObject, ObservableObject {
         isSpeaking = true
         speakingLabel = label ?? ""
         reportSpeaking(true, speakingLabel)
+        armSpeechWatchdog(for: spokenText)
         synthesizer.speak(utterance)
     }
 
+    /// Bound how long this app will claim to be reading.
+    ///
+    /// `isSpeaking` is cleared by the synthesizer's didFinish/didCancel
+    /// delegate, which is the honest signal — but if an utterance never
+    /// actually starts, neither callback ever fires and the toolbar sits on
+    /// "Reading aloud" with a stop button and nothing playing. That is what
+    /// Tyler photographed. A synthesizer that silently declines to speak is
+    /// exactly the case a delegate cannot report.
+    ///
+    /// Generous on purpose: this must never cut a real reading short, only
+    /// notice one that never began.
+    private func armSpeechWatchdog(for text: String) {
+        speechWatchdog?.invalidate()
+        // ~6 characters per second is well under real speaking pace.
+        let bound = min(180, 8 + Double(text.count) / 6)
+        speechWatchdog = Timer.scheduledTimer(withTimeInterval: bound, repeats: false) {
+            [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.isSpeaking, !self.synthesizer.isSpeaking else { return }
+                self.isSpeaking = false
+                self.reportSpeaking(false, self.speakingLabel)
+                self.speechFailure = "That didn't play — the phone never started reading."
+            }
+        }
+    }
+
+    private func clearSpeechWatchdog() {
+        speechWatchdog?.invalidate()
+        speechWatchdog = nil
+    }
+
     func stop() {
+        clearSpeechWatchdog()
         synthesizer.stopSpeaking(at: .immediate)
         isSpeaking = false
         reportSpeaking(false, speakingLabel)
@@ -189,6 +224,7 @@ extension SpeechController: AVSpeechSynthesizerDelegate {
             // therefore ended the read while audio was still playing — and
             // opened the mic on top of it, which is how the loop hears itself.
             guard !synthesizer.isSpeaking else { return }
+            self.clearSpeechWatchdog()
             self.isSpeaking = false
             self.reportSpeaking(false, self.speakingLabel)
             // Hand audio back FIRST, so music returns to full volume and the
@@ -224,6 +260,7 @@ extension SpeechController: AVSpeechSynthesizerDelegate {
         didCancel utterance: AVSpeechUtterance
     ) {
         Task { @MainActor in
+            self.clearSpeechWatchdog()
             self.isSpeaking = false
             self.reportSpeaking(false, self.speakingLabel)
         }

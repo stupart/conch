@@ -21,7 +21,7 @@ describe("the speaking state is always bounded", () => {
 
   test("the phone reporting it finished cancels the bound", () => {
     const handler = source.slice(source.indexOf("const speaking = (value as"));
-    expect(handler.slice(0, 700)).toContain("clearPhoneSpeechLatch()");
+    expect(handler.slice(0, 1200)).toContain("clearPhoneSpeechLatch()");
   });
 
   // The phone that was reading is gone, so its finish report is never coming.
@@ -35,5 +35,26 @@ describe("the speaking state is always bounded", () => {
     const match = /Math\.min\((\d+)_000, 5_000 \+ \(text\.length \/ 8\)/.exec(source);
     expect(match).not.toBeNull();
     expect(Number(match![1])).toBeGreaterThanOrEqual(60);
+  });
+});
+
+describe("every route into speaking has a way back out", () => {
+  const source = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
+
+  // This is the one that latched in the wild. The phone reported that it had
+  // STARTED reading, the matching stop never arrived, and the dashboard sat at
+  // "Reading aloud" with nothing playing — while the first fix only bounded
+  // the path where the DAEMON initiates phone speech.
+  test("the phone announcing its own speech is bounded", () => {
+    const handler = source.slice(source.indexOf("if (speaking && label)"));
+    expect(handler.slice(0, 800)).toContain("armPhoneSpeechLatch()");
+  });
+
+  test("no speaking transition is left unbounded", () => {
+    // Three exist: the daemon speaking, the Mac's own playback (bounded by the
+    // playback itself), and the phone's report. Any NEW one is a latch waiting
+    // to happen, so this fails loudly when a fourth appears.
+    const transitions = source.split('setState("speaking"').length - 1;
+    expect(transitions).toBe(3);
   });
 });
