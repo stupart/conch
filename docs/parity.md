@@ -79,7 +79,10 @@ Not their renderer — their own mobile app didn't reuse it either.
 5. ~~**Interrupt**~~ — DONE on Mac and phone. The daemon presses Escape in the
    session's pane, which is what a person would do; neither agent exposes a
    cancel an outside process could call.
-6. **Queued messages** — send while working, it lands next. No new command.
+6. ~~**Queued messages**~~ — DONE, and it needed no queue: both agents accept
+   typed input mid-turn and queue it themselves. What was missing was that
+   conch confirmed delivery by watching the transcript grow, which a busy
+   session cannot do, so a message that queued fine was reported as failed.
 7. **Questions** — answer an agent's multiple-choice question by voice. This is
    the one where our interaction model beats theirs outright.
 8. **Approvals** — the four-way decision. Earns nothing for a bypass-permissions

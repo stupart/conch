@@ -3024,6 +3024,28 @@ export async function runDaemon(cfg: Config): Promise<void> {
       return true;
     }
 
+    // A busy session cannot be confirmed this way, and demanding it anyway is a
+    // trap. Both agents accept typed input mid-turn and queue it themselves,
+    // but neither writes the prompt to its transcript until it STARTS that
+    // turn — so the mark cannot move, every retry re-presses Return into a
+    // working session, and a message that queued perfectly gets reported as
+    // failed. The phone then keeps the draft and you send it twice.
+    //
+    // Only routes that put real keystrokes into a real pane qualify: a blind
+    // or clipboard fallback has no such evidence and must still be proven.
+    const keysLanded = via === "tmux" || via === "osascript-focused";
+    if (keysLanded && panelSessions.get(event.sessionId)?.status === "busy") {
+      log(`injected into "${event.label}" via ${via} — queued behind the running turn`);
+      recordTelemetry("inject", {
+        route: via,
+        confirmed: true,
+        queued: true,
+        chars: text.length,
+        latencyMs: Date.now() - injectStartedAt,
+      });
+      return true;
+    }
+
     // The osascript path can type the text without the Return landing ("typed but
     // didn't send"). Watch the transcript for a NEW user prompt; if it doesn't
     // appear, re-press Return (the text is sitting in the input) a couple of times;
