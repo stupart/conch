@@ -1,4 +1,5 @@
 import AVFoundation
+import UIKit
 import SwiftUI
 
 /// Reads finished turns aloud ON THE PHONE.
@@ -195,10 +196,21 @@ extension SpeechController: AVSpeechSynthesizerDelegate {
             // deactivation could land on the recording session that
             // `onFinishedReading` had just started — killing the utterance on
             // the auto-open path, the one the whole loop rests on.
-            try? AVAudioSession.sharedInstance().setActive(
-                false,
-                options: .notifyOthersOnDeactivation
-            )
+            //
+            // But ONLY while the app is on screen. Off screen, an active audio
+            // session is the only thing keeping conch running: release it and
+            // iOS suspends the app, so the NEXT reply is never spoken and the
+            // "stopped speaking" report for the one after it never sends. A
+            // phone in your pocket would go quiet after exactly one reply,
+            // which is the shape of the bug Tyler hit — "saying it's speaking
+            // and not speaking and also not hearing it speak". Nothing is
+            // playing, so holding the session does not duck anyone's music.
+            if UIApplication.shared.applicationState == .active {
+                try? AVAudioSession.sharedInstance().setActive(
+                    false,
+                    options: .notifyOthersOnDeactivation
+                )
+            }
             // The loop's whole shape: it finishes reading, then listens. Making
             // you tap Talk after every reply is the difference between a voice
             // loop and a dictation box — and on a treadmill it is the
