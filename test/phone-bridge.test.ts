@@ -213,14 +213,22 @@ describe("control forwarding", () => {
 
 describe("websocket push", () => {
   test("connects with token, gets the state immediately and on publish", async () => {
-    const b = startBridge();
+    // The state has to actually MOVE between the two deliveries. An identical
+    // frame is deliberately not resent — the phone decodes every frame as a
+    // complete state on the main actor, so a redundant one is a full re-render
+    // of a busy screen for no new information.
+    let status = "working";
+    const b = startBridge({ getState: () => ({ v: 1, rows: [{ id: "r1", status }] }) });
     const frames: string[] = [];
     const ws = new WebSocket(`ws://127.0.0.1:${b.port}/ws?token=${TOKEN}`);
     await new Promise<void>((resolve, reject) => {
       ws.onmessage = (event) => {
         frames.push(String(event.data));
         if (frames.length === 2) resolve();
-        else b.publish();
+        else {
+          status = "waiting";
+          b.publish();
+        }
       };
       ws.onerror = () => reject(new Error("ws error"));
       setTimeout(() => reject(new Error("timed out")), 3000);

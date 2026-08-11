@@ -78,6 +78,15 @@ export interface PhoneBridgeHandle {
   clientCount(): number;
 }
 
+/**
+ * A frame with its timestamp flattened, for comparing one publish to the last.
+ * `ts` moves on every publish by definition and would defeat the comparison on
+ * its own; everything else differing means something a viewer can see has moved.
+ */
+function normalisedFrame(frame: string): string {
+  return frame.replace(/"ts":\s*\d+/, '"ts":0');
+}
+
 /** One downstream state consumer, whether a Bun websocket or a relay stream. */
 export interface PhoneStateSink {
   send(data: string): number;
@@ -271,7 +280,12 @@ export class PhoneBridgeApplication {
       this.#dependencies.onClientsChanged?.(this.#stateSinks.size);
     }
     const state = this.#dependencies.getState();
-    if (state && !sendPhoneFrame(sink, JSON.stringify(state))) {
+    if (!state) return;
+    const frame = JSON.stringify(state);
+    // Remember what a joining client was just handed, so the next publish does
+    // not immediately resend the same state it already has.
+    this.#lastPublishedFrame = normalisedFrame(frame);
+    if (!sendPhoneFrame(sink, frame)) {
       this.unsubscribeState(sink);
     }
   }
@@ -285,11 +299,29 @@ export class PhoneBridgeApplication {
     return this.#stateSinks.size;
   }
 
+  #lastPublishedFrame = "";
+
   publish(): void {
     if (this.#stateSinks.size === 0) return;
     const state = this.#dependencies.getState();
     if (!state) return;
     const frame = JSON.stringify(state);
+    // Don't send a frame that says exactly what the last one said.
+    //
+    // The phone decodes every frame as a COMPLETE state on the main actor and
+    // republishes it, which invalidates the whole view tree and rebuilds every
+    // markdown body in the visible conversation. A Codex audit measured the
+    // live snapshot at ~112KB across six conversations, publishable at up to
+    // 10Hz — so a redundant frame is not free, it is a full re-render of a
+    // busy screen for no new information.
+    //
+    // Only the timestamp is normalised before comparing: it changes on every
+    // publish by definition and would defeat the check on its own, while
+    // everything else differing means something a viewer can actually see has
+    // moved.
+    const comparable = normalisedFrame(frame);
+    if (comparable === this.#lastPublishedFrame) return;
+    this.#lastPublishedFrame = comparable;
     let changed = false;
     for (const sink of this.#stateSinks) {
       // A sink that cannot be written to is gone; keeping it in the set makes

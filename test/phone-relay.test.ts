@@ -308,7 +308,11 @@ describe("Mac phone relay adapter", () => {
   });
 
   test("logical /ws uses the same auth route and contributes to aggregate audio presence", async () => {
-    const harness = await connectedHarness({ state: () => ({ v: 7, rows: [] }) });
+    // The state moves between the subscribe and the publish: an identical frame
+    // is deliberately not resent, so a fixed state would make the publish here
+    // a no-op and test nothing about the relay's delivery path.
+    let rows: Array<{ id: string }> = [];
+    const harness = await connectedHarness({ state: () => ({ v: 7, rows }) });
     const subscribe = await harness.phone.seal(
       { id: "state-subscription", method: "GET", kind: "request" },
       requestBody("/ws", harness.relay.secret),
@@ -323,6 +327,7 @@ describe("Mac phone relay adapter", () => {
     ]);
     expect(JSON.parse(new TextDecoder().decode(responseBody(initial, "state-subscription"))).v).toBe(7);
     expect(harness.clients()).toBe(1);
+    rows = [{ id: "appeared" }];
     harness.application.publish();
     await settle(() => harness.sent.length >= 3, "3 relay frames");
     expect((await openSent(harness.phone, harness.sent))[0]?.header.kind).toBe("response-head");
