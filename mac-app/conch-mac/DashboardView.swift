@@ -1148,7 +1148,17 @@ private struct ConversationPane: View {
     let selectedSessionID: SessionRow.ID?
     let onExpandReview: (SessionRow) -> Void
 
+    @EnvironmentObject private var store: StateStore
     @StateObject private var transcriptContent = TranscriptContentModel()
+
+    /// Only the session actually being dictated to shows the live transcript.
+    /// Without the label check every open composer would mirror the same words,
+    /// which reads as though conch is about to send them everywhere.
+    private var dictationForFocusedRow: String {
+        guard let state, let row = focusedRow else { return "" }
+        guard state.live.label.isEmpty || state.live.label == row.label else { return "" }
+        return state.live.partial
+    }
 
     private var selectedRow: SessionRow? {
         guard let selectedSessionID else { return nil }
@@ -1286,6 +1296,22 @@ private struct ConversationPane: View {
                         )
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+
+                    // Typing belongs where you are reading. Putting the composer
+                    // here rather than in a separate panel means the reply you
+                    // are answering is directly above the field you answer in.
+                    if let row = focusedRow {
+                        ComposerView(
+                            sessionID: row.id,
+                            sessionLabel: row.label,
+                            dictation: dictationForFocusedRow,
+                            onSend: { text in
+                                store.send(
+                                    .inject(sessionId: row.id, label: row.label, text: text)
+                                )
+                            }
+                        )
                     }
 
                     noteBar

@@ -11,6 +11,7 @@ struct ConchDaemonEvent: Encodable, Sendable {
         case resume
         case mute
         case unmute
+        case inject
     }
 
     let type: Kind
@@ -28,6 +29,13 @@ struct ConchDaemonEvent: Encodable, Sendable {
         self.sessionId = sessionId
         self.label = label
         self.announce = announce
+    }
+
+    /// Type into a session. The daemon puts `announce` into the session's
+    /// input, so this is the same path the phone and the voice loop use — one
+    /// delivery route with one set of failure modes, not a third.
+    static func inject(sessionId: String, label: String, text: String) -> Self {
+        Self(type: .inject, sessionId: sessionId, label: label, announce: text)
     }
 
     static func wake(sessionId: String, label: String) -> Self {

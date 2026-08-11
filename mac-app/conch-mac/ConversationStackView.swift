@@ -72,7 +72,7 @@ struct ConversationStackView: View {
             // findable while scrolling past without reading a word.
             HStack {
                 Spacer(minLength: 48)
-                Text(item.text)
+                Text(AttributedString.conchMarkdown(item.text))
                     .font(.system(size: 13))
                     .foregroundStyle(ConchPalette.textPrimary)
                     .textSelection(.enabled)
@@ -81,13 +81,13 @@ struct ConversationStackView: View {
                     .background(ConchPalette.raised, in: RoundedRectangle(cornerRadius: 12))
             }
         case .assistant:
-            Text(item.text)
+            Text(AttributedString.conchMarkdown(item.text))
                 .font(.system(size: 13))
                 .foregroundStyle(ConchPalette.textPrimary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .thinking:
-            Text(item.text)
+            Text(AttributedString.conchMarkdown(item.text))
                 .font(.system(size: 12).italic())
                 .foregroundStyle(ConchPalette.textFaint)
                 .textSelection(.enabled)
@@ -152,5 +152,25 @@ struct ConversationStackView: View {
         case "done": return ConchPalette.textFaint
         default: return ConchPalette.statusWorking
         }
+    }
+}
+
+/// Agent replies are markdown, and until now the stack showed the source.
+///
+/// `**Storage moved**` rendered with its asterisks and `` `path/to/file` ``
+/// with its backticks, which is most of what an agent's summary is made of —
+/// so the most important messages read the worst.
+///
+/// `.inlineOnlyPreservingWhitespace` is the parse that fits a chat stack. The
+/// default markdown parse COLLAPSES newlines, which would run every bulleted
+/// list into one paragraph; this one keeps the line breaks exactly as written
+/// and still resolves bold, italic, code spans and links. Block constructs stay
+/// literal, which is fine — a leading "- " already reads as a bullet.
+extension AttributedString {
+    static func conchMarkdown(_ source: String) -> AttributedString {
+        (try? AttributedString(
+            markdown: source,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(source)
     }
 }

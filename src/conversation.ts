@@ -322,6 +322,37 @@ export function summariseToolInput(input: unknown): string {
  * agent_message / reasoning / function_call / custom_tool_call and their
  * outputs, where Claude uses content parts on a message.
  */
+/**
+ * One id for one thing Codex said, wherever it says it.
+ *
+ * A rollout records the same message twice: once as `response_item:message`
+ * and again as `event_msg:agent_message`. Keying those on their position in
+ * the file gave them two different ids, so every Codex reply and every one of
+ * Tyler's own messages rendered TWICE in the stack — visible on screen as the
+ * same paragraph repeated back to back.
+ *
+ * Deriving the id from the text collapses the mirror without having to pick a
+ * winning stream, which matters because neither stream is complete: some turns
+ * carry `message` and no `agent_message`, and the index counted more replies in
+ * the event stream than the response stream. Reading both and de-duplicating
+ * gets every message exactly once.
+ *
+ * The tradeoff is that two identical messages in one session become one row.
+ * Sending the same words twice is rare; seeing everything twice was constant.
+ */
+function codexMessageId(kind: string, text: string): string {
+  // Trimmed, because the two streams are not byte-identical: the response item
+  // carries a trailing newline the event does not. Hashing raw text left every
+  // message still doubled, differing only in that one character.
+  const normalized = text.trim();
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < normalized.length; index++) {
+    hash ^= normalized.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `${kind}:${hash.toString(36)}`;
+}
+
 export function reduceCodexLine(conversation: Conversation, entry: any): void {
   if (!entry || typeof entry !== "object") return;
   const at = Date.parse(entry.timestamp ?? "") || undefined;
@@ -340,7 +371,7 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
       && payload.message.trim()
     ) {
       upsertConversationItem(conversation, {
-        id: `agent:${ordinal}`,
+        id: codexMessageId("assistant", payload.message),
         kind: "assistant",
         text: payload.message,
         at,
@@ -349,7 +380,7 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
     }
     if (payload.type === "user_message" && typeof payload.message === "string") {
       upsertConversationItem(conversation, {
-        id: `user:${ordinal}`,
+        id: codexMessageId("user", payload.message),
         kind: "user",
         text: payload.message,
         at,
@@ -368,7 +399,12 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
           ? payload.content.map((part: any) => part?.text ?? "").join("")
           : "";
       if (text) {
-        upsertConversationItem(conversation, { id, kind: "assistant", text, at });
+        upsertConversationItem(conversation, {
+          id: codexMessageId("assistant", text),
+          kind: "assistant",
+          text,
+          at,
+        });
       }
       return;
     }
@@ -386,7 +422,14 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
         : typeof payload.text === "string"
           ? payload.text
           : "";
-      if (text) upsertConversationItem(conversation, { id, kind: role, text, at });
+      if (text) {
+        upsertConversationItem(conversation, {
+          id: codexMessageId(role, text),
+          kind: role,
+          text,
+          at,
+        });
+      }
       return;
     }
     case "reasoning": {

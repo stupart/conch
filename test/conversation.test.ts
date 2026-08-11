@@ -6,6 +6,7 @@ import {
   conversationWindow,
   emptyConversation,
   publishedConversation,
+  reduceCodexLine,
   summariseToolInput,
   toolDisplayName,
   upsertConversationItem,
@@ -369,5 +370,78 @@ describe("types found by indexing every transcript, not by noticing one", () => 
       payload: { type: "agent_message", phase: "commentary", message: "thinking out loud" },
     }), "codex");
     expect(conversation.order).toEqual([]);
+  });
+});
+
+describe("Codex says everything twice", () => {
+  // A rollout records one message as BOTH `response_item:message` and
+  // `event_msg:agent_message`. Keyed on file position those became two rows,
+  // so the stack showed every reply — and every one of Tyler's own messages —
+  // repeated back to back.
+  test("one reply mirrored across both streams renders once", () => {
+    const conversation = emptyConversation("s");
+    const text = "Yep — this is the precise version.";
+    reduceCodexLine(conversation, {
+      type: "response_item",
+      ordinal: 1,
+      payload: { type: "message", role: "assistant", content: [{ text }] },
+    });
+    reduceCodexLine(conversation, {
+      type: "event_msg",
+      ordinal: 2,
+      payload: { type: "agent_message", message: text },
+    });
+    expect(conversation.order.length).toBe(1);
+    expect(conversation.items[conversation.order[0]!]!.text).toBe(text);
+  });
+
+  // The two streams are not byte-identical: the response item carries a
+  // trailing newline the event does not, which is what defeated the first fix.
+  test("a trailing newline does not defeat the match", () => {
+    const conversation = emptyConversation("s");
+    reduceCodexLine(conversation, {
+      type: "event_msg",
+      ordinal: 1,
+      payload: { type: "user_message", message: "bruh why not use the nice scale one" },
+    });
+    reduceCodexLine(conversation, {
+      type: "response_item",
+      ordinal: 2,
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ text: "bruh why not use the nice scale one\n" }],
+      },
+    });
+    expect(conversation.order.length).toBe(1);
+  });
+
+  test("a user message mirrored across both streams renders once", () => {
+    const conversation = emptyConversation("s");
+    const text = "bruh why not use the nice scale one";
+    reduceCodexLine(conversation, {
+      type: "event_msg",
+      ordinal: 1,
+      payload: { type: "user_message", message: text },
+    });
+    reduceCodexLine(conversation, {
+      type: "response_item",
+      ordinal: 2,
+      payload: { type: "message", role: "user", content: [{ text }] },
+    });
+    expect(conversation.order.length).toBe(1);
+    expect(conversation.items[conversation.order[0]!]!.kind).toBe("user");
+  });
+
+  test("genuinely different replies still both appear", () => {
+    const conversation = emptyConversation("s");
+    for (const message of ["first thing", "second thing"]) {
+      reduceCodexLine(conversation, {
+        type: "event_msg",
+        ordinal: 1,
+        payload: { type: "agent_message", message },
+      });
+    }
+    expect(conversation.order.length).toBe(2);
   });
 });
