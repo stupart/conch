@@ -4574,11 +4574,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
             ? `${Math.round(sample.battery * 100)}% ${String(sample.batteryState ?? "")}`
             : String(sample.batteryState ?? "unknown");
           const minutes = Math.round(Number(sample.uptime ?? 0) / 60);
+          const free = typeof sample.freeGB === "number" ? sample.freeGB : null;
           const flags = [
             sample.thermal !== "nominal" ? `thermal ${sample.thermal}` : "",
             sample.lowPower === true ? "LOW POWER MODE" : "",
+            // Called out rather than merely reported. A nearly full phone slows
+            // everything on it, and nothing else conch measures can say so —
+            // memory, battery and thermal all read healthy while Tyler's phone
+            // was crawling for exactly this reason.
+            free !== null && free < 5 ? `ONLY ${free.toFixed(1)}GB FREE` : "",
           ].filter(Boolean).join(", ");
-          log(`phone: ${mb}MB · battery ${battery} · up ${minutes}m${flags ? ` · ${flags}` : ""}`);
+          const disk = free !== null ? ` · ${free.toFixed(1)}GB free` : "";
+          log(`phone: ${mb}MB · battery ${battery}${disk} · up ${minutes}m${flags ? ` · ${flags}` : ""}`);
           sock.end(JSON.stringify({ kind: "phone-device-ack" }) + "\n");
           return;
         }

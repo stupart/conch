@@ -27,6 +27,14 @@ struct DeviceSample: Encodable, Equatable, Sendable {
     /// True while iOS is conserving power, which throttles the CPU and is the
     /// single most common cause of a phone-side slowdown that looks like a bug.
     let lowPower: Bool
+    /// Free space on the device, in gigabytes.
+    ///
+    /// Not about conch's own size — it is the reading that explains the phone
+    /// AROUND conch. A nearly full iPhone slows everything down, and when
+    /// Tyler's phone was crawling this was the answer: he freed space and it
+    /// was quick again. Memory, battery and thermal all looked healthy the
+    /// whole time and could not have told him that.
+    let freeGB: Double?
     /// Seconds since the app launched, so a footprint can be read as a trend
     /// rather than a snapshot.
     let uptime: Double
@@ -38,6 +46,7 @@ struct DeviceSample: Encodable, Equatable, Sendable {
             batteryState: Self.batteryStateName(),
             thermal: Self.thermalName(),
             lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            freeGB: Self.freeGB(),
             uptime: uptime
         )
     }
@@ -56,6 +65,18 @@ struct DeviceSample: Encodable, Equatable, Sendable {
         }
         guard result == KERN_SUCCESS else { return 0 }
         return Double(info.phys_footprint) / 1_048_576
+    }
+
+    /// `volumeAvailableCapacityForImportantUsage` rather than the raw free
+    /// bytes: it is what iOS will actually let an app have, counting space it
+    /// would purge to make room, so it matches what the device feels like
+    /// rather than what `df` would say.
+    private static func freeGB() -> Double? {
+        let url = URL(fileURLWithPath: NSHomeDirectory())
+        guard let values = try? url.resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey]
+        ), let bytes = values.volumeAvailableCapacityForImportantUsage else { return nil }
+        return Double(bytes) / 1_073_741_824
     }
 
     private static func batteryLevel() -> Double? {

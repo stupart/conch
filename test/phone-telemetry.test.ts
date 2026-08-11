@@ -39,6 +39,17 @@ describe("phone telemetry", () => {
     }
   });
 
+  // The reading that explains the phone AROUND conch. When Tyler's phone was
+  // crawling, memory, battery and thermal all read healthy the entire time —
+  // it was nearly out of storage, and nothing conch measured could say so.
+  test("free storage is carried, and called out when it is low", () => {
+    expect(telemetry).toContain("freeGB");
+    // What iOS will actually let an app have, counting space it would purge,
+    // rather than the raw free bytes.
+    expect(telemetry).toContain("volumeAvailableCapacityForImportantUsage");
+    expect(daemon).toContain("GB FREE");
+  });
+
   test("the daemon logs a sample rather than acting on it", () => {
     expect(daemon).toContain('kind === "phone-device"');
     expect(daemon).toContain("LOW POWER MODE");
