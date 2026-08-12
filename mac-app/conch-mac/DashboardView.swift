@@ -167,9 +167,12 @@ struct DashboardView: View {
             VStack(spacing: 0) {
                 DashboardHeader(
                     state: state,
+                    selectedSessionID: selectedSessionID,
+                    isLogDrawerOpen: store.isLogDrawerOpen,
                     daemonMessage: store.daemonMessage,
                     newerDaemonWarningVisible: store.newerDaemonWarningVisible,
-                    onDismissNewerDaemonWarning: actions.onDismissNewerDaemonWarning
+                    onDismissNewerDaemonWarning: actions.onDismissNewerDaemonWarning,
+                    actions: actions
                 )
 
                 Rectangle()
@@ -278,16 +281,6 @@ struct DashboardView: View {
                         .frame(height: min(220, max(132, proxy.size.height * 0.27)))
                 }
 
-                Rectangle()
-                    .fill(ConchPalette.divider)
-                    .frame(height: 1)
-
-                DashboardKeybar(
-                    state: state,
-                    selectedSessionID: selectedSessionID,
-                    isLogDrawerOpen: store.isLogDrawerOpen,
-                    actions: actions
-                )
             }
         }
         .background(ConchPalette.bg)
@@ -350,9 +343,29 @@ private struct PluginHintBar: View {
 
 private struct DashboardHeader: View {
     let state: PublishedState?
+    let selectedSessionID: SessionRow.ID?
+    let isLogDrawerOpen: Bool
     let daemonMessage: String?
     let newerDaemonWarningVisible: Bool
     let onDismissNewerDaemonWarning: () -> Void
+    let actions: DashboardActions
+
+    private var selectedRow: SessionRow? {
+        guard let selectedSessionID else { return nil }
+        return state?.rows.first { $0.id == selectedSessionID }
+    }
+
+    /// A session inside a paused conch is paused, whatever its own flag says —
+    /// which is why this reads the global state as well as the row's.
+    private var pauseLabel: String {
+        let paused = state?.mode.paused == true || selectedRow?.paused == true
+        return (paused ? "Resume" : "Pause") + (selectedRow == nil ? " all" : "")
+    }
+
+    private var muteLabel: String {
+        let muted = state?.mode.muted == true || selectedRow?.muted == true
+        return (muted ? "Unmute" : "Mute") + (selectedRow == nil ? " all" : "")
+    }
 
     private var doingText: String? {
         guard let state else { return nil }
@@ -426,11 +439,93 @@ private struct DashboardHeader: View {
                     .truncationMode(.tail)
                     .contentTransition(.opacity)
             }
+            // The global controls, moved up out of a bar of their own.
+            //
+            // The bottom strip held Talk — a duplicate of the mic now sitting in
+            // the composer — plus pause, mute, Settings, Logs and ?. Two of
+            // those are per-session and belong beside the session; the rest are
+            // app-level and belong in the app's own chrome. Deleting the strip
+            // gives the ledger and the composer the full height of the window,
+            // and stops the header being 42pt of wordmark.
+            HeaderControls(
+                pauseLabel: pauseLabel,
+                muteLabel: muteLabel,
+                isLogDrawerOpen: isLogDrawerOpen,
+                actions: actions
+            )
         }
         .lineLimit(1)
-        .padding(.horizontal, 16)
-        .frame(height: 42)
+        .padding(.leading, 16)
+        .padding(.trailing, 8)
+        .frame(height: 38)
         .background(ConchPalette.bg)
+    }
+}
+
+/// Pause, mute, settings, logs, shortcuts — the things that act on conch itself
+/// rather than on one session.
+private struct HeaderControls: View {
+    let pauseLabel: String
+    let muteLabel: String
+    let isLogDrawerOpen: Bool
+    let actions: DashboardActions
+
+    var body: some View {
+        HStack(spacing: 2) {
+            HeaderButton(
+                symbol: pauseLabel.hasPrefix("Resume") ? "play.fill" : "pause.fill",
+                help: pauseLabel,
+                action: actions.onPauseOrResume
+            )
+            HeaderButton(
+                symbol: muteLabel.hasPrefix("Unmute") ? "speaker.slash.fill" : "speaker.wave.2.fill",
+                help: muteLabel,
+                action: actions.onMuteOrUnmute
+            )
+            HeaderButton(
+                symbol: "gearshape",
+                help: "Settings — connect a phone, and everything else",
+                action: actions.onConnectPhone
+            )
+            HeaderButton(
+                symbol: "text.alignleft",
+                help: isLogDrawerOpen ? "Hide logs" : "Show logs",
+                isSelected: isLogDrawerOpen,
+                action: actions.onToggleLogs
+            )
+            HeaderButton(
+                symbol: "questionmark",
+                help: "Keyboard shortcuts",
+                action: actions.onShowKeyboardShortcuts
+            )
+        }
+    }
+}
+
+private struct HeaderButton: View {
+    let symbol: String
+    let help: String
+    var isSelected = false
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .medium))
+                .frame(width: 26, height: 26)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isSelected || isHovered ? ConchPalette.hover : .clear)
+                )
+                .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(help)
+        .accessibilityLabel(help)
     }
 }
 
@@ -1346,6 +1441,9 @@ private struct ConversationPane: View {
             },
             onTalk: {
                 store.send(.wake(sessionId: row.id, label: row.label))
+            },
+            onRecite: {
+                store.send(.recite(sessionId: row.id, label: row.label))
             }
         )
         .overlay(alignment: .top) {

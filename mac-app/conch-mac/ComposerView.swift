@@ -28,6 +28,7 @@ struct ComposerView: View {
     let onSend: (String) -> Void
     let onInterrupt: () -> Void
     let onTalk: () -> Void
+    let onRecite: () -> Void
 
     /// Seeded from the environment so the composer can be photographed with
     /// text in it. A text field only misbehaves once there is text — the
@@ -79,6 +80,24 @@ struct ComposerView: View {
                 .buttonStyle(.plain)
                 .help(micHelp)
                 .accessibilityLabel(micHelp)
+
+                // Read that back to me.
+                //
+                // `r` used to do this, and stopped working the day a text field
+                // appeared: the key monitor disables itself whenever something
+                // editable has focus, which is correct — you cannot have a
+                // composer and single-letter shortcuts at once — but it silently
+                // took the feature with it. A button cannot be shadowed by a
+                // text field.
+                Button(action: onRecite) {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(ConchPalette.textDim)
+                .help("Read the last reply again")
+                .accessibilityLabel("Read the last reply again")
 
                 composerField
 
