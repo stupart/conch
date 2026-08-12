@@ -134,6 +134,13 @@ export function classifyInjectedUserText(
   // Claude Code writes this itself when you interrupt; it is an artifact of the
   // interruption, not a thing you said.
   if (/^\[Request interrupted by user/.test(head)) return { kind: "drop" };
+  // The note Claude Code attaches after an agent READS an image — it describes
+  // the file that was just looked at, and is filed under the user's name
+  // because that is where tool results live. Tyler saw his own conversation
+  // claiming he had said "[Image: original 2880x1640, displayed at 2000x1139...]".
+  // Same shape as the task-notification bug: machine text wearing a person's
+  // voice.
+  if (/^\[Image: /.test(head)) return { kind: "drop" };
   return null;
 }
 

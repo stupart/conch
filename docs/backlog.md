@@ -110,6 +110,20 @@ forced to take all of it at once was.
 
 ### Wanted
 
+- [ ] **Render materials inline instead of dropping them one pattern at a
+      time.** Claude Code files tool results and its own notes under
+      `type:"user"`, so conch has to decide what each one IS. Today that is a
+      growing list of things to DROP — `<task-notification>`,
+      `<system-reminder>`, `[Request interrupted…]`, `[Image: original 2880x…]`
+      — each added after Tyler saw it quoted back at him as something he said.
+      That list will never be finished, and dropping is the wrong verb anyway:
+      an image an agent looked at, a file it read, a screenshot it took are all
+      MATERIALS, and the conversation should show them as what they are.
+      Two parts: classify by shape rather than by an ever-growing pattern list,
+      and render each material as itself — an image as an image, not as a path.
+      Tyler's suggestion of a conch-specific convention for handing over a
+      material is the clean version of this, and it is the same primitive the
+      feed needs: `review_to_front` already does it for one artifact per turn.
 - [ ] **Errors should find us, not the other way round.** Nothing in either app
       reports a failure anywhere a person or an agent could later read. The
       daemon logs to `/tmp/conch-daemon.log`; the Mac app writes to NSLog, and

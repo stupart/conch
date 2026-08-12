@@ -3,6 +3,7 @@ import {
   agentQuestion,
   applyConversationDelta,
   buildConversation,
+  classifyInjectedUserText,
   conversationDelta,
   conversationWindow,
   emptyConversation,
@@ -682,5 +683,21 @@ describe("a file change shows what changed", () => {
     const item = conversation.items[conversation.order[0]!]!;
     expect(item.tool?.kind).toBe("file_change");
     expect(item.change?.added).toEqual(["new"]);
+  });
+});
+
+describe("machine text never wears the user's voice", () => {
+  // Claude Code files tool results and its own notes under type:"user", so
+  // anything that lands there has to be classified rather than trusted. Tyler
+  // has now seen two of these quoted back at him as things he said.
+  test("an image-dimensions note is not something Tyler said", () => {
+    expect(classifyInjectedUserText(
+      "[Image: original 2880x1640, displayed at 2000x1139. Multiply coordinates by 1.44 to map to original image.]",
+    )).toEqual({ kind: "drop" });
+  });
+
+  test("a sentence that merely mentions an image is still his", () => {
+    expect(classifyInjectedUserText("the [Image: ...] note keeps showing up")).toBeNull();
+    expect(classifyInjectedUserText("look at this image")).toBeNull();
   });
 });

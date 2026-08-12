@@ -381,9 +381,21 @@ private struct DashboardHeader: View {
         selectedRow == nil ? "everything" : "this session"
     }
 
+    /// What conch is DOING, which is not the same as what mode it is in.
+    ///
+    /// The daemon's at-rest live state is the mode itself — it publishes
+    /// "muted" or "paused" when nothing is happening — so reporting live.state
+    /// verbatim printed the mode a second time, three inches from the toggle
+    /// that already says it. Removing the separate mode branch below did not
+    /// help, because this one returns first. Only genuine activity belongs
+    /// here.
+    private static let activityStates: Set<String> = [
+        "speaking", "listening", "recording", "transcribing",
+    ]
+
     private var doingText: String? {
         guard let state else { return nil }
-        if state.live.state != "idle" {
+        if Self.activityStates.contains(state.live.state) {
             return state.live.label.isEmpty
                 ? state.live.state
                 : "\(state.live.state) ‹\(state.live.label)›"
