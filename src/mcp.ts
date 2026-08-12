@@ -176,7 +176,7 @@ export const MCP_TOOLS = [
   },
   {
     name: "conch_mode",
-    description: "Mute, unmute, pause, or resume conch.",
+    description: "Switch conch between auto and manual. Auto reads finished turns aloud and opens the mic on its own; manual does neither, while everything else keeps working and the user reads instead. `pause` means manual, `resume` means auto. `mute` and `unmute` are retired aliases for the same two.",
     inputSchema: {
       type: "object",
       properties: {

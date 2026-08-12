@@ -1486,7 +1486,16 @@ private struct ConversationPane: View {
                 store.send(.interrupt(sessionId: row.id, label: row.label))
             },
             onTalk: {
-                store.send(.wake(sessionId: row.id, label: row.label))
+                // The same button both ways. It showed a live waveform and
+                // still only ever OPENED the mic, so the one control that
+                // looks like it is running had no way to stop the thing it
+                // was showing — you had to find the spacebar, which a text
+                // field now swallows anyway.
+                if voiceStateForFocusedRow.isEmpty || voiceStateForFocusedRow == "idle" {
+                    store.send(.wake(sessionId: row.id, label: row.label))
+                } else {
+                    store.send(.stop())
+                }
             },
             onRecite: {
                 store.send(.recite(sessionId: row.id, label: row.label))

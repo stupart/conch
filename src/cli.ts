@@ -405,8 +405,23 @@ switch (command) {
   case "unmute":
   case "pause":
   case "resume": {
-    const ok = await sendToDaemon(cfg.socketPath, { type: command, sessionId: "", label: "", announce: "" });
-    console.log(ok ? `[conch] ${command}d` : "[conch] daemon not running");
+    // Mute is retired, and these are its last two callers.
+    //
+    // Mute and pause were two names for "not right now" with one difference:
+    // mute FORGOT the turns it silenced, which cost Tyler two of them, while
+    // pause holds and replays. Worse, they were independent — he ended up
+    // muted AND paused at once, with the dashboard reporting a session as
+    // speaking while nothing could make a sound. A state nobody would choose
+    // on purpose, reachable by pressing two buttons that sound alike.
+    //
+    // They are one control now: auto (turns read themselves aloud, the mic
+    // opens itself) and manual (neither, while everything else keeps working).
+    // Mapping the old verbs onto it keeps every script and habit working and
+    // makes the contradictory state unreachable.
+    const mapped = command === "mute" ? "pause" : command === "unmute" ? "resume" : command;
+    const ok = await sendToDaemon(cfg.socketPath, { type: mapped, sessionId: "", label: "", announce: "" });
+    const said = mapped === "pause" ? "manual mode" : "auto mode";
+    console.log(ok ? `[conch] ${said}` : "[conch] daemon not running");
     if (!ok) process.exit(1);
     break;
   }
