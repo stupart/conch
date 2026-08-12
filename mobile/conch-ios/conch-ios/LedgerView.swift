@@ -191,15 +191,20 @@ struct LedgerView: View {
             // A toolbar Image gets the platform's own button metrics, which is
             // why the laptop menu opposite has always worked first try. Same
             // 10pt dot on screen, full glass tappable, nothing added.
-            Image(systemName: "circle.fill")
-                .font(.system(size: 10))
-                .foregroundStyle(passive ? Palette.textDim : Palette.needs)
+            // Auto or manual, not paused or playing. These were never two
+            // features: auto reads finished turns aloud and opens the mic on
+            // its own, manual does neither while everything else keeps working
+            // — you read, and press recite on what you want to hear. A dot
+            // said neither of those things; a word says both.
+            Image(systemName: passive ? "hand.raised.fill" : "waveform.circle.fill")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(passive ? Palette.textDim : Palette.micOpen)
                 .animation(.easeOut(duration: 0.12), value: passive)
         }
         .accessibilityLabel(
             passive
-                ? "Paused — finished turns are being held. Resume."
-                : "Active — announcing finished turns. Pause."
+                ? "Manual — conch stays quiet and waits. Switch to auto."
+                : "Auto — finished turns read aloud and the mic opens itself. Switch to manual."
         )
         .onChange(of: bridge.state?.mode.paused) { _, actual in
             // The daemon has caught up (or something else changed it); stop

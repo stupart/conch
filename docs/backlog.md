@@ -10,13 +10,15 @@ Where we are, so it does not get lost between sessions.
 1. **Nail the basics.** Nearly there — sends work on both agents, speech no
    longer talks over you, sessions no longer block each other, and the composer
    is on every pane.
-2. **The mic should fill the composer** instead of injecting past it, so typed
-   and spoken text combine. Next up.
-3. **Auto / manual mode** — remove mute, rename pause to what it actually is
-   (see below).
+2. **Auto / manual mode** — remove mute, rename pause to what it actually is
+   (see below). FIRST, because the words chosen here run through the apps, the
+   CLI and the plugin's vocabulary, and everything after would have to be
+   rewritten around them.
+3. **The mic should fill the composer** instead of injecting past it, so typed
+   and spoken text combine.
 4. **Write the behaviour rules for both apps** and make them agree.
-5. **Audit the plugin as an AI experience** — is conch discoverable from inside
-   a session at all?
+5. **Act on the plugin audit** — the findings are in, the fixes are partly
+   done; the rest wants the vocabulary settled first.
 6. **Then the vision**, which Tyler is going to describe, and which everything
    above is groundwork for.
 
@@ -44,6 +46,12 @@ forced to take all of it at once was.
 
 ### Open
 
+- [ ] **A conversation can render empty until you scroll it.** Tyler opened
+      asset generator, saw nothing while the row said it was waiting for him,
+      and the content appeared only once he scrolled. He waved it off, but an
+      empty pane over a session with content is indistinguishable from a broken
+      one — and in the feed it would be the whole screen. Likely the lazy stack
+      not laying out until the scroll view is touched.
 - [ ] **Mac audio degraded.** `say` — macOS's own TTS — timed out after 18s, and
       Kokoro hard-restarts on synthesis timeouts. Tracks the machine's memory
       pressure rather than conch; revisit when the Mac is healthy.

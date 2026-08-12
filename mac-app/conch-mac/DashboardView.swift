@@ -356,16 +356,29 @@ private struct DashboardHeader: View {
         return state?.rows.first { $0.id == selectedSessionID }
     }
 
-    /// A session inside a paused conch is paused, whatever its own flag says —
+    /// Auto or manual, for what used to be called pause.
+    ///
+    /// These were never two features. Auto reads finished turns aloud and opens
+    /// the mic on its own; manual does neither, while everything else keeps
+    /// working — you read, and press recite on what you want to hear. That is
+    /// exactly what pause always did, named for what it does rather than for
+    /// the button being pressed.
+    ///
+    /// A session inside a manual conch is manual whatever its own flag says,
     /// which is why this reads the global state as well as the row's.
-    private var pauseLabel: String {
-        let paused = state?.mode.paused == true || selectedRow?.paused == true
-        return (paused ? "Resume" : "Pause") + (selectedRow == nil ? " all" : "")
+    private var isManual: Bool {
+        state?.mode.paused == true || selectedRow?.paused == true
     }
 
-    private var muteLabel: String {
-        let muted = state?.mode.muted == true || selectedRow?.muted == true
-        return (muted ? "Unmute" : "Mute") + (selectedRow == nil ? " all" : "")
+    /// Mute is no longer offered, but it is still reachable from the CLI and
+    /// from older clients — and a state you can enter without a way out is a
+    /// trap. When something IS muted the toggle says so and unmutes it.
+    private var isMuted: Bool {
+        state?.mode.muted == true || selectedRow?.muted == true
+    }
+
+    private var modeScope: String {
+        selectedRow == nil ? "everything" : "this session"
     }
 
     private var doingText: String? {
@@ -375,13 +388,11 @@ private struct DashboardHeader: View {
                 ? state.live.state
                 : "\(state.live.state) ‹\(state.live.label)›"
         }
-        if state.mode.muted {
-            return "muted"
-        }
-        if state.mode.paused {
-            return state.mode.holding > 0
-                ? "paused · holding \(state.mode.holding)"
-                : "paused"
+        // The MODE is the toggle's job now — saying "muted" here as well put
+        // the same word on screen twice, three inches apart. What the toggle
+        // cannot show is the consequence: how much work is waiting for you.
+        if state.mode.paused, state.mode.holding > 0 {
+            return "holding \(state.mode.holding)"
         }
         return nil
     }
@@ -449,8 +460,9 @@ private struct DashboardHeader: View {
             // gives the ledger and the composer the full height of the window,
             // and stops the header being 42pt of wordmark.
             HeaderControls(
-                pauseLabel: pauseLabel,
-                muteLabel: muteLabel,
+                isManual: isManual,
+                isMuted: isMuted,
+                modeScope: modeScope,
                 isLogDrawerOpen: isLogDrawerOpen,
                 actions: actions
             )
@@ -466,22 +478,25 @@ private struct DashboardHeader: View {
 /// Pause, mute, settings, logs, shortcuts — the things that act on conch itself
 /// rather than on one session.
 private struct HeaderControls: View {
-    let pauseLabel: String
-    let muteLabel: String
+    let isManual: Bool
+    let isMuted: Bool
+    let modeScope: String
     let isLogDrawerOpen: Bool
     let actions: DashboardActions
 
     var body: some View {
         HStack(spacing: 2) {
-            HeaderButton(
-                symbol: pauseLabel.hasPrefix("Resume") ? "play.fill" : "pause.fill",
-                help: pauseLabel,
-                action: actions.onPauseOrResume
-            )
-            HeaderButton(
-                symbol: muteLabel.hasPrefix("Unmute") ? "speaker.slash.fill" : "speaker.wave.2.fill",
-                help: muteLabel,
-                action: actions.onMuteOrUnmute
+            // One control, two modes, and the word for the mode you are IN.
+            //
+            // Pause and mute sat side by side doing almost the same thing, and
+            // the more dangerous of the two wore the friendlier icon: mute
+            // FORGETS finished turns and has cost Tyler two of them. Mute is
+            // gone, and its only unique behaviour with it.
+            ModeToggle(
+                isManual: isManual,
+                isMuted: isMuted,
+                scope: modeScope,
+                action: isMuted ? actions.onMuteOrUnmute : actions.onPauseOrResume
             )
             HeaderButton(
                 symbol: "gearshape",
@@ -2216,115 +2231,6 @@ private struct DaemonLogTextView: NSViewRepresentable {
     }
 }
 
-private struct DashboardKeybar: View {
-    let state: PublishedState?
-    let selectedSessionID: SessionRow.ID?
-    let isLogDrawerOpen: Bool
-    let actions: DashboardActions
-
-    private var selectedRow: SessionRow? {
-        guard let selectedSessionID else { return nil }
-        return state?.rows.first { $0.id == selectedSessionID }
-    }
-
-    // A long session label used to be spelled out in BOTH the pause and mute
-    // buttons — once middle-truncated, once not — consuming the whole bar with
-    // the same name twice. What the buttons target is already stated by the
-    // ledger highlight and the pane header, so "all" is the only qualifier that
-    // adds anything: it's the case where the scope is NOT what's highlighted.
-    private var talkLabel: String {
-        state?.live.isExchangeActive == true ? "Stop" : "Talk"
-    }
-
-    private var scopeSuffix: String {
-        selectedRow == nil ? " all" : ""
-    }
-
-    /// Pause's scope word, which differs from the others: while conch is
-    /// paused globally the button resumes EVERYTHING, whatever is selected,
-    /// because one session cannot be lifted out of a global pause.
-    private var pauseScopeSuffix: String {
-        // Only "all" when the action really is global — nothing selected.
-        // With a row selected the command now scopes to it, even under a
-        // global pause, because the daemon can exempt one session.
-        scopeSuffix
-    }
-
-    // EFFECTIVE state, not just the row's own flag.
-    //
-    // `selectedRow?.paused ?? global` made global pause invisible whenever a
-    // session was selected: everything was paused, that row was not
-    // INDIVIDUALLY paused, and the button still read "Pause". Tyler hit this
-    // twice — "the pause button should say resume when paused not pause
-    // still", and earlier, having to move the selector off a session before
-    // pause-all made any sense. A session inside a paused conch is paused,
-    // whatever its own flag says.
-    private var pauseLabel: String {
-        let paused = state?.mode.paused == true || selectedRow?.paused == true
-        return (paused ? "Resume" : "Pause") + pauseScopeSuffix
-    }
-
-    private var muteLabel: String {
-        let muted = state?.mode.muted == true || selectedRow?.muted == true
-        return (muted ? "Unmute" : "Mute") + scopeSuffix
-    }
-
-    var body: some View {
-        HStack(spacing: 5) {
-            KeybarActionButton(
-                label: talkLabel,
-                // Prominence is a claim that this is the thing to do next. With
-                // no sessions there is nothing to talk to, so it stops shouting.
-                isProminent: !(state?.rows.isEmpty ?? true),
-                action: actions.onTalkOrStop
-            )
-            .disabled(state?.rows.isEmpty ?? true)
-            KeybarActionButton(
-                label: pauseLabel,
-                isDisabled: state?.rows.isEmpty ?? true,
-                action: actions.onPauseOrResume
-            )
-            KeybarActionButton(
-                label: muteLabel,
-                isDisabled: state?.rows.isEmpty ?? true,
-                action: actions.onMuteOrUnmute
-            )
-
-            Spacer(minLength: 0)
-
-            // Pairing a phone had no visible affordance at all: you had to
-            // know the app must be frontmost, know to press ⌘, and know the
-            // QR lives behind a tab. Tyler, watching me open it for him:
-            // "users need to be able to open it themselves too tho — how do
-            // they do that?" They could not. Now it is a button, next to the
-            // other things you press.
-            KeybarActionButton(
-                label: "Settings",
-                action: actions.onConnectPhone
-            )
-            .help("Settings — connect a phone, and everything else")
-            .accessibilityLabel("Settings")
-
-            KeybarActionButton(
-                label: "Logs",
-                isSelected: isLogDrawerOpen,
-                action: actions.onToggleLogs
-            )
-            .accessibilityValue(isLogDrawerOpen ? "shown" : "hidden")
-
-            KeybarActionButton(
-                label: "?",
-                action: actions.onShowKeyboardShortcuts
-            )
-            .help("Keyboard Shortcuts")
-            .accessibilityLabel("Keyboard Shortcuts")
-        }
-        .padding(.horizontal, 10)
-        .frame(height: 47)
-        .background(ConchPalette.bg)
-    }
-}
-
 private struct KeybarActionButton: View {
     let label: String
     var isProminent = false
@@ -2483,5 +2389,57 @@ private struct AllSessionsRow: View {
         .help("Act on every session — pause, mute and talk apply to all")
         .accessibilityLabel("All sessions")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+}
+
+/// Auto ⇄ manual. Named for what conch is doing, not for what the button does.
+private struct ModeToggle: View {
+    let isManual: Bool
+    var isMuted = false
+    let scope: String
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    private var help: String {
+        if isMuted {
+            return "Muted — finished turns are being FORGOTTEN, not held. Unmute."
+        }
+        return isManual
+            ? "Manual — conch stays quiet and waits. Switch \(scope) to auto."
+            : "Auto — finished turns read aloud and the mic opens itself. Switch \(scope) to manual."
+    }
+
+    private var symbol: String {
+        if isMuted { return "speaker.slash.fill" }
+        return isManual ? "hand.raised.fill" : "waveform.circle.fill"
+    }
+
+    private var tint: Color {
+        if isMuted { return ConchPalette.statusNeeds }
+        return isManual ? ConchPalette.textDim : ConchPalette.brandCyan
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .medium))
+                Text(isMuted ? "Muted" : (isManual ? "Manual" : "Auto"))
+                    .font(ConchTypography.font(size: 11, weight: .medium))
+            }
+            .foregroundStyle(tint)
+            .padding(.horizontal, 8)
+            .frame(height: 26)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isHovered ? ConchPalette.hover : .clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(help)
+        .accessibilityLabel(help)
     }
 }
