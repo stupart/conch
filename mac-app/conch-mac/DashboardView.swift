@@ -567,6 +567,23 @@ private struct SessionLedger: View {
                     TimelineView(.periodic(from: .now, by: 10)) { timeline in
                         ScrollView {
                             LazyVStack(spacing: 2) {
+                                // The way back to "everything".
+                                //
+                                // Escape released a selection, and Escape stops
+                                // reaching the dashboard the moment a composer
+                                // holds focus — which is now most of the time.
+                                // With no way to deselect, pause and mute stayed
+                                // scoped to one session forever: Tyler "seem[ed]
+                                // to lose the ability to pause the entire app
+                                // once I've started using it". A keystroke that
+                                // a text field can swallow is not an adequate
+                                // home for the only exit from a mode.
+                                AllSessionsRow(
+                                    isSelected: selectedSessionID == nil,
+                                    count: state.rows.count,
+                                    action: actions.onReleaseSelection
+                                )
+
                                 ForEach(
                                     state.rows,
                                     id: \.id
@@ -2427,4 +2444,44 @@ private func splitAtUTF16Offset(
 
     let boundary = stringIndex ?? text.startIndex
     return (String(text[..<boundary]), String(text[boundary...]))
+}
+
+/// "All sessions" — selected when nothing else is, and the way back when
+/// something is.
+private struct AllSessionsRow: View {
+    let isSelected: Bool
+    let count: Int
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: "square.stack")
+                    .font(.system(size: 10.5))
+                    .frame(width: 14)
+                Text("All sessions")
+                    .font(ConchTypography.font(size: 12.5, weight: .medium))
+                Spacer(minLength: 8)
+                Text("\(count)")
+                    .font(ConchTypography.font(size: 11))
+                    .foregroundStyle(ConchPalette.textFaint)
+            }
+            .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(isSelected ? ConchPalette.raised : (isHovered ? ConchPalette.hover : .clear))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("Act on every session — pause, mute and talk apply to all")
+        .accessibilityLabel("All sessions")
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
 }

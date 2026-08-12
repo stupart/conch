@@ -38,3 +38,19 @@ describe("silent user actions bypass the audio barrier", () => {
     expect(handler.slice(0, 1200)).toContain("speech.cancelCurrent()");
   });
 });
+
+describe("conch never talks over you", () => {
+  const source = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
+
+  // conch has always guarded the other direction — the mic must not open while
+  // TTS is speaking, or the loop hears itself. Nothing stopped speech STARTING
+  // while a mic was already open: Tyler was mid-dictation when another
+  // session's turn ended and conch read it over the top of him.
+  test("speech does not start while a mic is open", () => {
+    const speak = source.slice(source.indexOf("const speak = async ("));
+    const body = speak.slice(0, speak.indexOf("await speech.speak("));
+    expect(body).toContain("normalMicOpen()");
+    // Before the state is set, or the dashboard claims to be reading while silent.
+    expect(body.indexOf("normalMicOpen()")).toBeLessThan(body.indexOf('setState("speaking"'));
+  });
+});

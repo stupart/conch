@@ -1656,6 +1656,23 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // reads, the Mac cannot see when it finishes, so this clears when the Mac
     // would have stopped rather than when the phone actually does. The phone
     // reporting its own speech is the honest fix and is not this change.
+    // Never talk over someone who is talking.
+    //
+    // conch has always guarded the other direction — the mic must not open
+    // while TTS is speaking, or the loop hears itself — but nothing stopped
+    // speech STARTING while a mic was already open. Tyler was mid-dictation
+    // when another session's turn ended and conch began reading it to him,
+    // over the top of the sentence he was still speaking.
+    //
+    // Dropped rather than deferred. The turn stays latched on its row and can
+    // be recited whenever he wants it, so nothing is lost that cannot be asked
+    // for again — whereas holding audio behind an open mic invites the deadlock
+    // where each is waiting on the other.
+    if (normalMicOpen()) {
+      log(`held "${label || "announcement"}" — the mic is open`);
+      return;
+    }
+
     setState("speaking", label);
     if (audioLease.sink === "phone") {
       armPhoneSpeechLatch(text);

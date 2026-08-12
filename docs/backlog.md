@@ -75,6 +75,14 @@ delete as they go. Newest at the top of each section.
       worthless before step 1.
       Two things are already errors we swallow: a message landing on the
       clipboard instead of in a session, and a Codex row with no pid.
+- [ ] **The mic button should FILL the composer, not send past it.** Tyler
+      pressed it expecting to add to what he had already typed: "intended
+      behaviour is that it would append to the input box here and send". Today
+      it wakes the session and conch injects the transcript directly, so typed
+      text and spoken text cannot be combined and the spoken half appears to
+      vanish. The phone already treats the draft as shared between typing and
+      dictation; the Mac should do the same, which means a dictation mode that
+      publishes its final transcript instead of injecting it.
 - [ ] **Close a session from either app** — properly, so it can be resumed
       later from conch or from a terminal. A clean exit, never a kill: both
       agents leave a resumable transcript when they shut down normally
