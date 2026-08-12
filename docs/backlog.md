@@ -75,6 +75,17 @@ delete as they go. Newest at the top of each section.
       worthless before step 1.
       Two things are already errors we swallow: a message landing on the
       clipboard instead of in a session, and a Codex row with no pid.
+- [ ] **Write down the behaviour rules for both apps, then make them true.** An
+      audit of every surface: what each control does, what it does on the other
+      device, and whether that is what we want. Two apps have drifted into
+      subtly different answers for the same question — what the mic does, what
+      backgrounding means, whether a draft is shared — and the drift is invisible
+      until someone uses both in one afternoon.
+- [ ] **Audit the plugin as an AI experience.** What is in it, how it feels to
+      USE as an agent, and whether conch is discoverable at all from inside a
+      session. The skill reads reactively ("when the user asks, call
+      conch_sessions") and hedges `review_to_front` with "surface sparingly",
+      which may be why nothing reaches for it unprompted.
 - [ ] **The mic button should FILL the composer, not send past it.** Tyler
       pressed it expecting to add to what he had already typed: "intended
       behaviour is that it would append to the input box here and send". Today

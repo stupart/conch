@@ -93,8 +93,12 @@ struct ComposerView: View {
                 // took the feature with it. A button cannot be shadowed by a
                 // text field.
                 Button(action: onRecite) {
-                    Image(systemName: "arrow.counterclockwise")
-                        .font(.system(size: 11.5, weight: .medium))
+                    // A counterclockwise arrow reads as UNDO, which beside a
+                    // mic is an alarming thing to offer by accident — Tyler had
+                    // to ask twice what it did. This one says "sound", which is
+                    // what it does.
+                    Image(systemName: "speaker.wave.2.circle")
+                        .font(.system(size: 13, weight: .medium))
                         .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.plain)
