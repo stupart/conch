@@ -12,29 +12,35 @@ Where we are, so it does not get lost between sessions.
    is on every pane.
 2. **The mic should fill the composer** instead of injecting past it, so typed
    and spoken text combine. Next up.
-3. **Decide mute vs pause** (below) and remove whichever earns nothing.
+3. **Auto / manual mode** — remove mute, rename pause to what it actually is
+   (see below).
 4. **Write the behaviour rules for both apps** and make them agree.
 5. **Audit the plugin as an AI experience** — is conch discoverable from inside
    a session at all?
 6. **Then the vision**, which Tyler is going to describe, and which everything
    above is groundwork for.
 
-### Open question: does mute deserve to exist?
+### Decided: mute goes, and pause becomes a MODE
 
-Tyler's proposal is to replace mute with pause. The case for it is strong:
+Tyler's reframe, which is better than either name: these were never two
+features, they are two modes of the same one.
 
-- **Mute FORGETS finished turns.** It has already cost him two. Pause holds them
-  and replays on resume, which is what "not right now" should ever mean.
-- If you do not want to hear anything, you can read the reply and press recite
-  on the one you want aloud — so silence does not need its own mode.
+- **Auto** (today's "unpaused") — finished turns read themselves aloud and the
+  mic opens on its own. Hands-free.
+- **Manual** (today's "paused") — everything still works and updates; it simply
+  does not speak first or open the mic on its own. You read, and press recite
+  on anything you want aloud.
 
-The case against collapsing them: pause holds a BACKLOG, and resuming dumps all
-of it at once. Someone who wants quiet for an hour wants silence, not a
-twenty-turn recital when they come back. That is a third behaviour — silent, but
-nothing queued and nothing forgotten — and it may be the one that should replace
-both.
+That is what pause already IS, described honestly, and it makes mute redundant:
+mute's only unique property is FORGETTING finished turns, which has already
+cost Tyler two of them. A mode nobody would choose on purpose is not a mode.
 
-## Bugs
+The backlog objection — that resuming dumps the whole backlog at once — has its
+own answer, also his: resume ONE session, or the ones you choose, using the
+per-session controls that already exist. The queue is not the problem; being
+forced to take all of it at once was.
+
+## Bugs## Bugs
 
 ### Open
 
@@ -125,6 +131,14 @@ both.
       vanish. The phone already treats the draft as shared between typing and
       dictation; the Mac should do the same, which means a dictation mode that
       publishes its final transcript instead of injecting it.
+- [ ] **Start a session from conch** — brand new, or from a resume command,
+      on either device. Without it conch can only ever attend to work someone
+      else began at a desk.
+- [ ] **Which agent is this?** A quiet Claude / Codex mark beside each session
+      name. The backend is already on the wire; nothing shows it.
+- [ ] **Context meter on the conversation pane** — tokens used against the
+      limit. Things get bad when a session fills up, and right now the only
+      warning is behaviour getting worse.
 - [ ] **Close a session from either app** — properly, so it can be resumed
       later from conch or from a terminal. A clean exit, never a kill: both
       agents leave a resumable transcript when they shut down normally
