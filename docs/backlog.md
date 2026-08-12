@@ -110,6 +110,27 @@ forced to take all of it at once was.
 
 ### Wanted
 
+- [ ] **One pane, two perspectives.** Not a conversation pane and an artifact
+      pane — the SAME pane, with a swap button. Artifacts appear inline in the
+      conversation where they happen, as a full-width rounded thumbnail; click
+      it or hit swap to make it the main thing. Then experiment with overlaying
+      the live conversation on top of the artifact, TikTok-comment style, with
+      hide/unhide. The simplicity stays exactly as it is: a session list and
+      ONE content pane per session. You are only choosing whether you are
+      looking at it conversation-first or content-first. This is the feed's
+      shape arriving inside today's app.
+- [ ] **PIN the artifact and keep it live.** The agent should declare what the
+      artifact IS, once — not re-send it on every change. conch can watch a file
+      and re-render, reload a URL, or accept a replacement when the type needs
+      one. This corrects the instruction currently in the plugin ("send it again
+      as it changes"), which puts the burden in the wrong place and only updates
+      as often as an agent remembers to.
+- [ ] **Sessions messaging each other through conch.** A tool that lets one
+      session send another a message the same way Tyler does — `session-name:`
+      followed by the message. conch already owns delivery, addressing and the
+      transcript, so the machinery exists; what is missing is letting an agent
+      use it. Needs care around loops and around a session speaking for another,
+      which the artifact rules already refuse.
 - [ ] **Rename `review_to_front`.** The name assumes everything else is hidden
       and that the tool is an approval gate; both are wrong. It is how an
       artifact gets into the pane the user is looking at, review or not. The
