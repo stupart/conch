@@ -1292,6 +1292,13 @@ private struct ConversationPane: View {
     @EnvironmentObject private var store: StateStore
     @StateObject private var transcriptContent = TranscriptContentModel()
 
+    /// False = the deliverable in front, which is the pane's long-standing
+    /// default: a session that produced an artifact is showing it to you.
+    /// This state only ever loses to that default — a NEW artifact resets it
+    /// (see the onChange below), because a fresh deliverable is the agent
+    /// asking to be looked at, not background noise to read past.
+    @State private var showsConversation = false
+
     /// Only the session actually being dictated to shows the live transcript.
     /// Without the label check every open composer would mirror the same words,
     /// which reads as though conch is about to send them everywhere.
@@ -1395,8 +1402,14 @@ private struct ConversationPane: View {
 
     var body: some View {
         Group {
-            if let selectedReview, let reviewRow = reviewOwnerRow {
+            if let selectedReview, let reviewRow = reviewOwnerRow, !showsConversation {
                 VStack(spacing: 0) {
+                    perspectiveBar
+
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(height: 1)
+
                     InlineReviewView(
                         item: selectedReview,
                         onExpand: { onExpandReview(reviewRow) }
@@ -1422,6 +1435,18 @@ private struct ConversationPane: View {
                 }
             } else {
                 VStack(spacing: 0) {
+                    // Only when there is a deliverable to swap back to. With
+                    // nothing on the other side the control is a promise the
+                    // pane can't keep, and the pane already reads fine as
+                    // plain conversation without a mode label.
+                    if selectedReview != nil {
+                        perspectiveBar
+
+                        Rectangle()
+                            .fill(ConchPalette.divider)
+                            .frame(height: 1)
+                    }
+
                     // The stack when the daemon has one FOR THIS SESSION, and
                     // the old single-reply document otherwise. The session check
                     // is not paranoia: the daemon publishes one conversation at
@@ -1461,6 +1486,41 @@ private struct ConversationPane: View {
         .task(id: TranscriptWatchID(row: watchesTranscriptForRow)) {
             await transcriptContent.monitor(row: watchesTranscriptForRow)
         }
+        .onChange(of: selectedReview?.id) { _, current in
+            // Keyed off the review's IDENTITY (row + timestamp), not the
+            // published state: the daemon republishes constantly, and
+            // re-asserting the deliverable on every publish would fight any
+            // attempt to actually read the conversation.
+            if current != nil { showsConversation = false }
+        }
+    }
+
+    /// Two labelled segments rather than one button naming the destination.
+    /// Lone controls in this app keep getting read as their opposite (the
+    /// counterclockwise arrow as undo, the dim speaker as idle); a pair shows
+    /// where you are AND where you can go without decoding anything, which is
+    /// also what makes this read as two perspectives on one session rather
+    /// than navigation away from it — same pane, same composer underneath.
+    private var perspectiveBar: some View {
+        HStack(spacing: 2) {
+            PerspectiveOption(
+                label: "Deliverable",
+                symbol: "doc.richtext",
+                isSelected: !showsConversation,
+                help: "What the session produced",
+                action: { showsConversation = false }
+            )
+            PerspectiveOption(
+                label: "Conversation",
+                symbol: "text.bubble",
+                isSelected: showsConversation,
+                help: "The exchange that produced it",
+                action: { showsConversation = true }
+            )
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
     }
 
     /// The composer, wherever you are.
@@ -1561,6 +1621,40 @@ private struct ConversationPane: View {
             .animation(.easeOut(duration: 0.15), value: note)
             .accessibilityHidden(note == nil)
             .accessibilityLabel(note ?? "")
+    }
+}
+
+private struct PerspectiveOption: View {
+    let label: String
+    let symbol: String
+    let isSelected: Bool
+    let help: String
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .medium))
+                Text(label)
+                    .font(ConchTypography.font(size: 11, weight: .medium))
+            }
+            .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
+            .padding(.horizontal, 8)
+            .frame(height: 26)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isSelected ? ConchPalette.raised : (isHovered ? ConchPalette.hover : .clear))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(help)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }
 

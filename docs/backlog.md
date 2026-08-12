@@ -42,7 +42,7 @@ own answer, also his: resume ONE session, or the ones you choose, using the
 per-session controls that already exist. The queue is not the problem; being
 forced to take all of it at once was.
 
-## Bugs## Bugs
+## Bugs
 
 ### Open
 
@@ -108,150 +108,117 @@ forced to take all of it at once was.
 
 ## Features
 
-### Wanted
+Deduplicated — several of these were the same thing in different words, and a
+few "features" are bugs wearing a polite name. Ranked by how much they annoy
+Tyler against how hard they are, so the top of the list is what to cut a batch
+from.
 
-- [ ] **One pane, two perspectives.** Not a conversation pane and an artifact
-      pane — the SAME pane, with a swap button. Artifacts appear inline in the
-      conversation where they happen, as a full-width rounded thumbnail; click
-      it or hit swap to make it the main thing. Then experiment with overlaying
-      the live conversation on top of the artifact, TikTok-comment style, with
-      hide/unhide. The simplicity stays exactly as it is: a session list and
-      ONE content pane per session. You are only choosing whether you are
-      looking at it conversation-first or content-first. This is the feed's
-      shape arriving inside today's app.
-- [ ] **PIN the artifact and keep it live.** The agent should declare what the
-      artifact IS, once — not re-send it on every change. conch can watch a file
-      and re-render, reload a URL, or accept a replacement when the type needs
-      one. This corrects the instruction currently in the plugin ("send it again
-      as it changes"), which puts the burden in the wrong place and only updates
-      as often as an agent remembers to.
-- [ ] **Sessions messaging each other through conch.** A tool that lets one
-      session send another a message the same way Tyler does — `session-name:`
-      followed by the message. conch already owns delivery, addressing and the
-      transcript, so the machinery exists; what is missing is letting an agent
-      use it. Needs care around loops and around a session speaking for another,
-      which the artifact rules already refuse.
-- [ ] **Rename `review_to_front`.** The name assumes everything else is hidden
-      and that the tool is an approval gate; both are wrong. It is how an
-      artifact gets into the pane the user is looking at, review or not. The
-      description and skill now say so, but the NAME still teaches the old
-      idea every time an agent reads the tool list. `show`, `present` or
-      `artifact` all say it better. Deferred only because renaming an MCP tool
-      breaks callers mid-flight — worth doing deliberately, with the text
-      marker kept as an alias.
-- [ ] **Render materials inline instead of dropping them one pattern at a
-      time.** Claude Code files tool results and its own notes under
-      `type:"user"`, so conch has to decide what each one IS. Today that is a
-      growing list of things to DROP — `<task-notification>`,
-      `<system-reminder>`, `[Request interrupted…]`, `[Image: original 2880x…]`
-      — each added after Tyler saw it quoted back at him as something he said.
-      That list will never be finished, and dropping is the wrong verb anyway:
-      an image an agent looked at, a file it read, a screenshot it took are all
-      MATERIALS, and the conversation should show them as what they are.
-      Two parts: classify by shape rather than by an ever-growing pattern list,
-      and render each material as itself — an image as an image, not as a path.
-      Tyler's suggestion of a conch-specific convention for handing over a
-      material is the clean version of this, and it is the same primitive the
-      feed needs: `review_to_front` already does it for one artifact per turn.
-- [ ] **Errors should find us, not the other way round.** Nothing in either app
-      reports a failure anywhere a person or an agent could later read. The
-      daemon logs to `/tmp/conch-daemon.log`; the Mac app writes to NSLog, and
-      the phone writes nowhere at all. Order of work: (1) both apps report
-      errors to the daemon over the channel telemetry already uses, (2) the
-      daemon appends them to a structured file with the state at the time, (3)
-      an agent watches that file and investigates unprompted. Step 3 is
-      worthless before step 1.
-      Two things are already errors we swallow: a message landing on the
-      clipboard instead of in a session, and a Codex row with no pid.
-- [ ] **Write down the behaviour rules for both apps, then make them true.** An
-      audit of every surface: what each control does, what it does on the other
-      device, and whether that is what we want. Two apps have drifted into
-      subtly different answers for the same question — what the mic does, what
-      backgrounding means, whether a draft is shared — and the drift is invisible
-      until someone uses both in one afternoon.
-- [ ] **Shrink AGENTS.md.** It is byte-identical to SKILL.md, but SKILL.md loads
-      on demand while AGENTS.md is ALWAYS resident for Codex — so every Codex
-      session permanently carries a twenty-line Homebrew install pitch it will
-      never use. The generator enforces the duplication and a test enforces the
-      generator, so the bug is load-bearing. Always-on should be about five
-      lines: what conch is, the review_to_front trigger, and "load the skill for
-      the rest."
-- [ ] **Document the contract, not the conversation.** A fresh session reviewing
-      the plugin found no return shapes, no enum values for `conch_mode`, no
-      units for `conch_config` (is `end-silence` seconds or milliseconds?), and
-      no example calls anywhere — while the one thing specified verbatim is the
-      sentence to say when offering a Homebrew install. It also flagged
-      `conch_speak` as the tool it would misuse first, since nothing says a
-      final reply is already spoken aloud.
-- [x] **Audit the plugin as an AI experience.** What is in it, how it feels to
-      USE as an agent, and whether conch is discoverable at all from inside a
-      session. The skill reads reactively ("when the user asks, call
-      conch_sessions") and hedges `review_to_front` with "surface sparingly",
-      which may be why nothing reaches for it unprompted.
-- [ ] **The mic button should FILL the composer, not send past it.** Tyler
-      pressed it expecting to add to what he had already typed: "intended
-      behaviour is that it would append to the input box here and send". Today
-      it wakes the session and conch injects the transcript directly, so typed
-      text and spoken text cannot be combined and the spoken half appears to
-      vanish. The phone already treats the draft as shared between typing and
-      dictation; the Mac should do the same, which means a dictation mode that
-      publishes its final transcript instead of injecting it.
-- [ ] **Start a session from conch** — brand new, or from a resume command,
-      on either device. Without it conch can only ever attend to work someone
-      else began at a desk.
+Merged along the way: "one pane, two perspectives" + "artifacts inline" are one
+item; "context meter" + "context window per session" are one; "start a session
+from conch" + "spawn sessions from the phone" are one.
+
+### Batch 1 — annoying and cheap. Do these together.
+
+- [ ] **The mic must FILL the composer, not send past it.** Press it expecting
+      to add to what you typed and the spoken half vanishes into the session
+      instead. Typed and spoken text cannot be combined at all. The phone
+      already treats the draft as shared; the Mac injects the transcript
+      directly. Needs a dictation mode that publishes its final text back to the
+      app rather than injecting it.
 - [ ] **Which agent is this?** A quiet Claude / Codex mark beside each session
-      name. The backend is already on the wire; nothing shows it.
-- [ ] **Context meter on the conversation pane** — tokens used against the
-      limit. Things get bad when a session fills up, and right now the only
-      warning is behaviour getting worse.
-- [ ] **Close a session from either app** — properly, so it can be resumed
-      later from conch or from a terminal. A clean exit, never a kill: both
-      agents leave a resumable transcript when they shut down normally
-      (`claude --resume <id>`, `codex resume <id>`) and leave a mess when they
-      are killed. Needs a confirmation, and must not sit anywhere a thumb lands
-      by accident — ending a session by mistake is the most expensive misclick
-      the app could offer.
-- [ ] **Artifacts inline in the conversation**, the way a document appears in a
-      chat, expanding on click rather than replacing the pane. The pane swap is
-      why there was nowhere to type while looking at one; a composer on both
-      panes fixes the symptom, inline artifacts remove the mode entirely.
-- [ ] **Context window per session.** How full is this session? It is the number
-      that decides whether to keep going or start fresh, and conch reads the
-      transcripts already — token counts are in Codex's `event_msg:token_count`
-      and derivable for Claude.
-- [ ] **Turn plugins, skills and MCP servers on and off** from conch, per
-      session. Currently means editing config by hand and restarting.
-- [ ] **Subagents as children of their session** in the ledger — a disclosure
-      triangle under the parent, their transcripts readable, ideally talkable-to.
-      conch already classifies `subagent` as a tool kind, so the signal is there.
-- [ ] **Reclaim the top of the Mac window.** A 42pt header carrying a wordmark
-      and little else, above a list that is the actual content.
-- [ ] **A design pass on the Mac app once it is fluid.** Tyler: "i just want the
-      design to be much better overall but i guess its even more important that
-      it works fluidly so lets nail that first".
+      name. The backend is already on the wire and nothing shows it.
+- [ ] **Context meter per session.** Tokens used against the limit, on the
+      conversation pane. It is the number that decides whether to keep going or
+      start fresh, and today the only warning is the answers getting worse.
+      Codex publishes `event_msg:token_count`; Claude's is derivable.
+- [ ] **A conversation can render empty until you scroll it.** An empty pane
+      over a session that says it is waiting for you is indistinguishable from a
+      broken one — and in the feed it would be the whole screen. Likely the lazy
+      stack not laying out until the scroll view is touched.
+- [ ] **Reclaim the top of the Mac window.** 42pt of header carrying a wordmark,
+      above the list that is the actual content.
+- [ ] **Shrink AGENTS.md.** Byte-identical to SKILL.md, but SKILL loads on
+      demand while AGENTS is ALWAYS resident for Codex — so every Codex session
+      permanently carries a twenty-line Homebrew install pitch. The generator
+      enforces the duplication and a test enforces the generator, so the bug is
+      load-bearing. Always-on wants five lines: what conch is, the artifact
+      trigger, and "load the skill for the rest".
 
-- [ ] **Better phone transcription.** `tools/transcription-bench.ts` measures
-      the options on Tyler's own voice — awaiting a recording to decide between
-      on-device, Apple's servers, Mac-side whisper, and a paid API.
-- [ ] **Better phone reading, configurable.** Best installed Apple voice ships
-      now; Kokoro streamed from the Mac or a paid API as an option, since one
-      person's laptop has RAM to spare and another's is suffocating.
-- [ ] **Spawn sessions from the phone.** "not really free from the desk without
-      that feature." Terminal for Claude, tmux for Codex; agents must not live
-      in conch's own tmux session.
+### Batch 2 — annoying, more work
+
+- [ ] **Start and close sessions from conch**, on either device. New, or from a
+      resume command. Closing must be a clean exit rather than a kill, so it
+      stays resumable (`claude --resume <id>`, `codex resume <id>`), behind a
+      confirmation, and nowhere a thumb lands by accident. Without starting,
+      conch can only ever attend to work begun at a desk — which is most of the
+      point.
+- [ ] **One pane, two perspectives.** The conversation and the artifact are the
+      same pane with a swap button. Artifacts appear inline where they happen,
+      full-width and rounded; click or swap to make one the main thing. Then the
+      experiment: overlay the live conversation on the artifact, TikTok-comment
+      style, hide and unhide. The constraint that stays: a session list and ONE
+      content pane per session. This is the feed's shape inside today's app.
+      *(A swap button is being built now as the first step.)*
+- [ ] **PIN the artifact and keep it live.** The agent declares what the
+      artifact IS once; conch keeps it current — watch the file and re-render,
+      reload the URL, accept a replacement where the type needs it. Corrects the
+      plugin's current "send it again as it changes", which puts the burden in
+      the wrong place.
+- [ ] **Errors should find us.** Neither app reports a failure anywhere a person
+      or an agent could later read: the Mac writes to NSLog, the phone writes
+      nowhere. (1) both apps report to the daemon over the channel telemetry
+      already uses, (2) the daemon appends them structured with the state at the
+      time, (3) an agent watches and investigates unprompted. Step 3 is
+      worthless before step 1. Two we already swallow: a message landing on the
+      clipboard, and a Codex row with no pid.
+- [ ] **Render materials inline instead of dropping them one pattern at a
+      time.** Claude Code files its own notes under `type:"user"`, so conch must
+      decide what each one IS. Today that is a growing DROP list —
+      `<task-notification>`, `<system-reminder>`, `[Request interrupted…]`,
+      `[Image: …]` — each added after Tyler saw it quoted back as something he
+      said. Classify by shape, and render each material as itself: an image as
+      an image, not a path.
+
+### Batch 3 — worth doing, not urgent
+
+- [ ] **Behaviour rules for both apps, written down and made true.** *(Codex is
+      auditing all three surfaces now; the audit is the input to this.)*
+- [ ] **Document the plugin contract, not the conversation.** No return shapes,
+      no enum for `conch_mode`, no units for `conch_config`, no example calls —
+      while the one thing specified verbatim is the Homebrew sales pitch.
+- [ ] **Rename `review_to_front`.** The name teaches "approval gate" every time
+      an agent reads the tool list, whatever the description says. Renaming an
+      MCP tool breaks callers mid-flight, so it wants doing deliberately with
+      the text marker kept as an alias.
+- [ ] **Sessions messaging each other through conch**, addressed the way Tyler
+      addresses them. conch already owns delivery, addressing and the
+      transcript; agents just cannot use any of it.
+- [ ] **Subagents as children of their session** in the ledger, transcripts
+      readable, ideally talkable-to. `subagent` is already a tool kind.
+- [ ] **Turn plugins, skills and MCP servers on and off** from conch, per
+      session.
+- [ ] **Better phone transcription.** `tools/transcription-bench.ts` is written
+      and waiting on one recording to settle on-device vs Apple's servers vs
+      Mac-side whisper vs a paid API.
+- [ ] **Better phone reading, configurable** — Kokoro from the Mac or a paid
+      API, since one person's laptop has RAM to spare and another's is
+      suffocating.
+- [ ] **A design pass on the Mac app**, once it is fluid.
+
+### Batch 4 — blocked, or genuinely low value
+
+- [ ] **Approvals — the four-way decision.** Blocked: selecting "don't ask
+      again" means pressing keys through a menu that cannot be verified on a
+      machine running bypass permissions. Ten seconds with permissions on
+      unblocks it.
+- [ ] **Checkpoint / revert.** Blocked the same way: driving `/rewind` against a
+      live session, where being wrong destroys work.
 - [ ] **One universal adapter shape**, so a third backend is a table entry
       rather than a fork through the daemon.
-- [ ] **conch Channel MCP server** — protocol-level delivery instead of
-      keystrokes, and phone-side permission relay.
-- [ ] **Approvals — the four-way decision.** Deferred: selecting "don't ask
-      again" means pressing keys through a menu that cannot be verified on a
-      machine running bypass permissions. Needs one look at a real prompt.
-- [ ] **Checkpoint / revert.** Deferred for the same reason: driving `/rewind`
-      against a live session, where being wrong destroys work.
-- [ ] **Thread management** — archive, pin, snooze. Safe, low value next to the
-      above; dismiss and restore already cover most of it.
-- [ ] **Live Activities** on the phone, so a session's state shows on the lock
-      screen without the app running.
+- [ ] **conch Channel MCP server** — protocol delivery instead of keystrokes.
+- [ ] **Live Activities** on the phone.
+- [ ] **Thread management** — archive, pin, snooze. Dismiss and restore already
+      cover most of it.
 
 ### Done
 
