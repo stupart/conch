@@ -3,6 +3,37 @@
 Everything Tyler has reported or asked for, and where it stands. Cross off or
 delete as they go. Newest at the top of each section.
 
+## Short-term plan
+
+Where we are, so it does not get lost between sessions.
+
+1. **Nail the basics.** Nearly there — sends work on both agents, speech no
+   longer talks over you, sessions no longer block each other, and the composer
+   is on every pane.
+2. **The mic should fill the composer** instead of injecting past it, so typed
+   and spoken text combine. Next up.
+3. **Decide mute vs pause** (below) and remove whichever earns nothing.
+4. **Write the behaviour rules for both apps** and make them agree.
+5. **Audit the plugin as an AI experience** — is conch discoverable from inside
+   a session at all?
+6. **Then the vision**, which Tyler is going to describe, and which everything
+   above is groundwork for.
+
+### Open question: does mute deserve to exist?
+
+Tyler's proposal is to replace mute with pause. The case for it is strong:
+
+- **Mute FORGETS finished turns.** It has already cost him two. Pause holds them
+  and replays on resume, which is what "not right now" should ever mean.
+- If you do not want to hear anything, you can read the reply and press recite
+  on the one you want aloud — so silence does not need its own mode.
+
+The case against collapsing them: pause holds a BACKLOG, and resuming dumps all
+of it at once. Someone who wants quiet for an hour wants silence, not a
+twenty-turn recital when they come back. That is a third behaviour — silent, but
+nothing queued and nothing forgotten — and it may be the one that should replace
+both.
+
 ## Bugs
 
 ### Open

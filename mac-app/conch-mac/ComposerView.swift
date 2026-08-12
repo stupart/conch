@@ -84,6 +84,14 @@ struct ComposerView: View {
                 .help(micHelp)
                 .accessibilityLabel(micHelp)
 
+                if let micCaption {
+                    Text(micCaption)
+                        .font(ConchTypography.font(size: 10.5, weight: .medium))
+                        .foregroundStyle(micCaptionColor)
+                        .transition(.opacity)
+                        .fixedSize()
+                }
+
                 // Read that back to me.
                 //
                 // `r` used to do this, and stopped working the day a text field
@@ -260,6 +268,29 @@ struct ComposerView: View {
         switch voiceState {
         case "listening", "recording": return .black
         case "transcribing": return .black
+        default: return ConchPalette.textDim
+        }
+    }
+
+    /// The word for what is happening, beside the button.
+    ///
+    /// Colour alone asks you to remember a legend. One word does not, and this
+    /// is the place in the app where knowing the state changes what you do next
+    /// — keep talking, wait, or cut in.
+    private var micCaption: String? {
+        switch voiceState {
+        case "listening", "recording": return "listening"
+        case "transcribing": return "transcribing"
+        case "speaking": return "reading"
+        default: return nil
+        }
+    }
+
+    private var micCaptionColor: Color {
+        switch voiceState {
+        case "listening", "recording": return ConchPalette.brandCyan
+        case "transcribing": return ConchPalette.statusWorking
+        case "speaking": return ConchPalette.statusReview
         default: return ConchPalette.textDim
         }
     }
