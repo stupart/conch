@@ -240,7 +240,7 @@ export const MCP_TOOLS = [
   },
   {
     name: "review_to_front",
-    description: "File a deliverable for the user to review — the tool form of `conch:review`, and the one to prefer. Pass a one-line spoken summary and, when there is one, a link or file path; conch RENDERS it (page, image, PDF, video, document) in the Mac and phone apps rather than printing the path. Preferred over the text marker because a tool call happens during the turn, while the text form is parsed after it and can be missed. Defaults to the calling session; a session may only surface its own work.",
+    description: "Put the artifact you are working on into conch's artifact pane, where the user actually looks at it. conch's apps show ONE artifact per session beside the conversation; this is what fills it, and it stays there until you send another. Send whatever the turn produced that has to be LOOKED at — a page, a screenshot, a render, a PDF, a diff, a document, a video — and send it again as it changes, not only when it is finished. conch renders it inline on the Mac and the phone rather than printing a path. Always send one when you want the user to review something. Pass a one-line spoken summary plus the link or file path. Defaults to the calling session; a session may only surface its own work.",
     inputSchema: {
       type: "object",
       properties: {

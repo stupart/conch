@@ -47,21 +47,36 @@ https://brew.sh rather than trying to install Homebrew yourself.
 - **Bring one forward** — `conch_recite {session}` reads a session's latest reply aloud again; `conch_wake {session}` reopens the mic pointed at it so the user can talk to it. `session` is a label or id — "dayloop", "the one that needs me".
 - **Speak** — `conch_speak {text}` says something aloud in conch's voice. Use it to confirm an action or read a short answer, not to narrate.
 - **Answer from a transcript** — `conch_transcript_tail {session}` gives you the tail of a session's last reply, so you can answer "did the tests pass?" without switching to it.
-- **Put your finished work in front of them** — `review_to_front {summary, link?}`.
-  **The test is mechanical, and it is about the ARTIFACT, not about you: did this
-  turn produce something the user has to LOOK at?** A URL, a rendered page, a
-  screenshot, a diff, a built app, a chart, a file they asked for. If yes, call
-  it with a link. If your turn produced only prose, don't — your reply is already
-  spoken aloud.
-  Do not ask yourself whether the work is good enough, finished enough, or worth
-  their time. Those are judgement calls under uncertainty and they resolve to
-  "stay silent", which is the wrong answer: a user away from their desk cannot
-  discover what you made, so unsurfaced work is invisible work. Filing early and
-  again later is fine and expected.
+- **Put the artifact you are working on where the user looks** —
+  `review_to_front {summary, link?}`.
+
+  **What the user sees.** conch's apps show a session as a conversation with an
+  ARTIFACT PANE beside it. The pane holds one artifact per session, it renders
+  the thing rather than printing its path, and it stays until you send another.
+  An empty pane is a session whose work is invisible from a phone.
+
+  **What to send.** Whatever this turn produced that has to be LOOKED at, and
+  send it again as it changes rather than only when it is finished:
+
+  - a site or page → the URL (`http://localhost:3000/pricing`)
+  - a design or render → the image (`/tmp/hero-v3.png`)
+  - a document or spec → the file (`docs/proposal.md`, a PDF)
+  - a change → a rendered diff or the file you changed
+  - a build, a chart, a recording → the artifact itself
+
+  Always send one when you want the user to review something. If the turn
+  produced only prose, don't — your reply is already spoken aloud.
+
+  Do not weigh whether it is good enough or finished enough. Those are
+  judgement calls under uncertainty and they resolve to "stay silent", which is
+  the wrong answer: a user away from their desk cannot discover what you made,
+  so unsurfaced work is invisible work. Sending again later replaces what is
+  there; that is the intended way to use it.
+
   `session` is optional and defaults to you. A session may only surface its own
   work; naming a different session is refused, because the dashboard attributes
-  the review to whoever is named and putting words in a sibling's mouth is worse
-  than not filing at all. `link` must be an http(s) URL or an existing,
+  the artifact to whoever is named and putting words in a sibling's mouth is
+  worse than not filing at all. `link` must be an http(s) URL or an existing,
   non-executable file path. If the tool isn't available to you at all, end your
   final reply with its own line instead: `conch:review <one-line spoken summary> | <link-or-path>`.
 - **Quiet / hold** — `conch_mode {action}` mutes, unmutes, pauses (holds finished turns to replay on resume), or resumes everything.

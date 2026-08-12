@@ -110,6 +110,14 @@ forced to take all of it at once was.
 
 ### Wanted
 
+- [ ] **Rename `review_to_front`.** The name assumes everything else is hidden
+      and that the tool is an approval gate; both are wrong. It is how an
+      artifact gets into the pane the user is looking at, review or not. The
+      description and skill now say so, but the NAME still teaches the old
+      idea every time an agent reads the tool list. `show`, `present` or
+      `artifact` all say it better. Deferred only because renaming an MCP tool
+      breaks callers mid-flight — worth doing deliberately, with the text
+      marker kept as an alias.
 - [ ] **Render materials inline instead of dropping them one pattern at a
       time.** Claude Code files tool results and its own notes under
       `type:"user"`, so conch has to decide what each one IS. Today that is a
