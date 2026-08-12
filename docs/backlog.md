@@ -118,7 +118,21 @@ forced to take all of it at once was.
       subtly different answers for the same question — what the mic does, what
       backgrounding means, whether a draft is shared — and the drift is invisible
       until someone uses both in one afternoon.
-- [ ] **Audit the plugin as an AI experience.** What is in it, how it feels to
+- [ ] **Shrink AGENTS.md.** It is byte-identical to SKILL.md, but SKILL.md loads
+      on demand while AGENTS.md is ALWAYS resident for Codex — so every Codex
+      session permanently carries a twenty-line Homebrew install pitch it will
+      never use. The generator enforces the duplication and a test enforces the
+      generator, so the bug is load-bearing. Always-on should be about five
+      lines: what conch is, the review_to_front trigger, and "load the skill for
+      the rest."
+- [ ] **Document the contract, not the conversation.** A fresh session reviewing
+      the plugin found no return shapes, no enum values for `conch_mode`, no
+      units for `conch_config` (is `end-silence` seconds or milliseconds?), and
+      no example calls anywhere — while the one thing specified verbatim is the
+      sentence to say when offering a Homebrew install. It also flagged
+      `conch_speak` as the tool it would misuse first, since nothing says a
+      final reply is already spoken aloud.
+- [x] **Audit the plugin as an AI experience.** What is in it, how it feels to
       USE as an agent, and whether conch is discoverable at all from inside a
       session. The skill reads reactively ("when the user asks, call
       conch_sessions") and hedges `review_to_front` with "surface sparingly",

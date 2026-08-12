@@ -131,7 +131,7 @@ describe("plugin installer helpers", () => {
       ),
     ).toBe(`---
 name: conch-control
-description: Control conch — see and steer your other sessions by voice.
+description: Put finished work in front of the user when a turn produces something to look at (a page, a diff, a screenshot, a built app), and see or steer their other Claude Code and Codex sessions. Use when you have made something viewable, or when asked what the other sessions are doing.
 ---
 
 ${prose}`);
@@ -179,7 +179,7 @@ ${prose}`);
       ),
     ).toBe(`---
 name: conch-control
-description: Control conch — see and steer your other sessions by voice.
+description: Put finished work in front of the user when a turn produces something to look at (a page, a diff, a screenshot, a built app), and see or steer their other Claude Code and Codex sessions. Use when you have made something viewable, or when asked what the other sessions are doing.
 ---
 
 ${prose}`);

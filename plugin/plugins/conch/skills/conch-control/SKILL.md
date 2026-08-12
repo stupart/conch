@@ -1,11 +1,25 @@
 ---
 name: conch-control
-description: Control conch — see and steer your other sessions by voice.
+description: Put finished work in front of the user when a turn produces something to look at (a page, a diff, a screenshot, a built app), and see or steer their other Claude Code and Codex sessions. Use when you have made something viewable, or when asked what the other sessions are doing.
 ---
 
 # conch control
 
-You can see and steer the user's other Claude Code / Codex sessions through conch — a voice loop running on this machine. Those sessions announce their finished turns aloud; you are the one the user talks to *about* them. Use these tools to answer "what's going on?" and to act on it. Prefer showing over telling: pull real state, then do the one thing asked.
+conch is a voice loop running on this machine. The user is running several
+Claude Code and Codex sessions at once and is **not at the desk** — they are
+listening on a phone, or glancing at a Mac app. conch exists so they can act on
+your work without coming back to the keyboard. When a judgement call below is
+ambiguous, that is the thing to optimise for.
+
+**You are in one of two roles, and you can be in both in one session.**
+
+- **You are a worker.** You are one of the sessions conch is watching. Your
+  finished turns are announced aloud to the user right now. When your work
+  produces something to LOOK at, put it in front of them with
+  `review_to_front` — see below, it is the most valuable thing here.
+- **You are also the fleet's control panel**, when asked. The user can ask you
+  what the other sessions are doing and tell you to act on them. Then: pull real
+  state first, do the one thing asked, and stop.
 
 ## If the conch tools aren't there
 
@@ -33,7 +47,23 @@ https://brew.sh rather than trying to install Homebrew yourself.
 - **Bring one forward** — `conch_recite {session}` reads a session's latest reply aloud again; `conch_wake {session}` reopens the mic pointed at it so the user can talk to it. `session` is a label or id — "dayloop", "the one that needs me".
 - **Speak** — `conch_speak {text}` says something aloud in conch's voice. Use it to confirm an action or read a short answer, not to narrate.
 - **Answer from a transcript** — `conch_transcript_tail {session}` gives you the tail of a session's last reply, so you can answer "did the tests pass?" without switching to it.
-- **Surface YOUR finished work for the user's sign-off** — Call `review_to_front {summary, link?}` when a deliverable is DONE, you have already critiqued it yourself (with design/review agents if you have them), and it's ready for the user's *final approval before it goes live* — a page, a diff, a rendered result, a build they should actually look at. It brings the work to the front of the user's screen and opens `link` (an http(s) URL or an existing, non-executable file path). This is an approval gate, NOT routine "I finished" and NOT every iteration — conch already announces finished turns, so surface sparingly: only what you'd stake your own approval on. **`session` is optional and defaults to you.** A session may only surface its own work; naming a different session is refused, because the dashboard attributes the review to whoever is named and putting words in a sibling's mouth is worse than not filing at all. If the tool isn't available to you at all, end your final reply with its own line instead: `conch:review <one-line spoken summary> | <link-or-path>`.
+- **Put your finished work in front of them** — `review_to_front {summary, link?}`.
+  **The test is mechanical, and it is about the ARTIFACT, not about you: did this
+  turn produce something the user has to LOOK at?** A URL, a rendered page, a
+  screenshot, a diff, a built app, a chart, a file they asked for. If yes, call
+  it with a link. If your turn produced only prose, don't — your reply is already
+  spoken aloud.
+  Do not ask yourself whether the work is good enough, finished enough, or worth
+  their time. Those are judgement calls under uncertainty and they resolve to
+  "stay silent", which is the wrong answer: a user away from their desk cannot
+  discover what you made, so unsurfaced work is invisible work. Filing early and
+  again later is fine and expected.
+  `session` is optional and defaults to you. A session may only surface its own
+  work; naming a different session is refused, because the dashboard attributes
+  the review to whoever is named and putting words in a sibling's mouth is worse
+  than not filing at all. `link` must be an http(s) URL or an existing,
+  non-executable file path. If the tool isn't available to you at all, end your
+  final reply with its own line instead: `conch:review <one-line spoken summary> | <link-or-path>`.
 - **Quiet / hold** — `conch_mode {action}` mutes, unmutes, pauses (holds finished turns to replay on resume), or resumes everything.
 - **Rename** — `conch_rename {session, label}` gives a session a name the user actually uses ("call that one 'the api work'").
 - **Tune** — `conch_config {key, value}` reads or changes a conch setting live (e.g. `end-silence`, `voice-speed`, `haiku-timeout`). Only touch a setting the user named.
@@ -43,4 +73,7 @@ https://brew.sh rather than trying to install Homebrew yourself.
 - **Do the one thing, then stop.** "Wake dayloop" → `conch_wake`, confirm in one line. Don't chain extra actions the user didn't ask for.
 - **Side-effects are the user's.** Muting, pausing, renaming, and settings changes alter their live environment — do exactly what was asked, name what you did, and never pause/mute/reconfigure on your own initiative.
 - **A tool failure is honest, not fatal.** If a tool returns an error (conch's daemon may be down or a session may have closed), say so plainly and offer the next step — never invent a result.
-- **You are not the worker sessions.** You observe and steer them; you don't do their coding. If the user wants work done, point them at (or wake) the right session.
+- **Steering a sibling is not the same as doing its work.** When the user asks
+  you to act on ANOTHER session, act on it and stop — don't start doing that
+  session's job for it. This says nothing about your own work: you are a worker
+  session too, and requests aimed at you are yours to do.
