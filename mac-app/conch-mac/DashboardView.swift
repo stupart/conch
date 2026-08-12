@@ -266,7 +266,8 @@ struct DashboardView: View {
                     ConversationPane(
                         state: state,
                         selectedSessionID: selectedSessionID,
-                        onExpandReview: actions.onExpandReview
+                        onExpandReview: actions.onExpandReview,
+                        onSelectSession: actions.onSelectSession
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -1242,6 +1243,7 @@ private struct ConversationPane: View {
     let state: PublishedState?
     let selectedSessionID: SessionRow.ID?
     let onExpandReview: (SessionRow) -> Void
+    let onSelectSession: (SessionRow) -> Void
 
     @EnvironmentObject private var store: StateStore
     @StateObject private var transcriptContent = TranscriptContentModel()
@@ -1444,6 +1446,12 @@ private struct ConversationPane: View {
             },
             onRecite: {
                 store.send(.recite(sessionId: row.id, label: row.label))
+            },
+            onDraftStarted: {
+                // Selecting is what pins the pane: `focusedRow` prefers an
+                // explicit selection over the live session, so this is the
+                // existing mechanism rather than a new one.
+                onSelectSession(row)
             }
         )
         .overlay(alignment: .top) {

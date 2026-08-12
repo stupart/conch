@@ -1767,6 +1767,30 @@ export async function runDaemon(cfg: Config): Promise<void> {
       restoreDismissedSession(event.sessionId);
     }
     if (!eventOrder.accept(event)) return;
+
+    // Answering a session must not wait for a DIFFERENT session to finish
+    // being read aloud.
+    //
+    // The queue drains one event at a time, which is right for anything that
+    // speaks — two turns talking over each other is unusable. But an inject
+    // and an interrupt make no sound, and both are someone waiting with a
+    // finger still on the key. Behind the barrier they inherited the whole
+    // length of another session's spoken announcement: Tyler watched a message
+    // sit unsent until an unrelated session stopped talking, and reasonably
+    // read it as "the sessions might be blocking each other". They were.
+    //
+    // Running them off the queue is safe precisely because they are silent: the
+    // barrier exists to serialise AUDIO, and neither of these produces any. An
+    // inject cancels whatever is being read first, so it cannot race the very
+    // speech it is meant to cut off.
+    if (event.type === "inject" || event.type === "interrupt") {
+      traceQueue(`immediate ${event.type}:${event.label}`);
+      void handle(event).catch((error) => {
+        log(`error handling ${event.type} "${event.label}": ${error}`);
+      });
+      return;
+    }
+
     const forgetOnArrival = shouldForgetMutedArrival(
       event,
       muted,
@@ -2558,6 +2582,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
       return pause.announceResumed(result);
     }
     if (event.type === "inject") {
+      // Answering STOPS the reading.
+      //
+      // Typing into Claude Code directly interrupts a read, because conch
+      // watches the transcript for a manual reply. A message sent through conch
+      // did not: the reading paused while the keystrokes went in and then
+      // carried on, so the one route conch fully controls behaved worse than
+      // the one it merely observes. Tyler: "if i send a message via text to a
+      // session it should stop reading".
+      //
+      // Sending IS the interruption — you have already moved on, and no answer
+      // to the previous turn is worth hearing over your own next question.
+      speech.cancelCurrent();
+
       // The phone's voice path: text transcribed ON the phone, delivered into
       // the named session through the exact machinery Mac dictation uses —
       // exact-pane focus, confirm-by-transcript, clipboard fallback, telemetry.

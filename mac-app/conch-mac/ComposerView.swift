@@ -29,6 +29,9 @@ struct ComposerView: View {
     let onInterrupt: () -> Void
     let onTalk: () -> Void
     let onRecite: () -> Void
+    /// Called the moment a draft becomes non-empty, so the pane can stop
+    /// following whichever session happens to be busiest.
+    let onDraftStarted: () -> Void
 
     /// Seeded from the environment so the composer can be photographed with
     /// text in it. A text field only misbehaves once there is text — the
@@ -178,6 +181,14 @@ struct ComposerView: View {
                 // the two were being positioned by different rules. Zeroing the
                 // inset puts both under the same padding below.
                 TextEditor(text: $draft)
+                    // Typing here is a claim on this session. Without it the
+                    // pane keeps following the live session, so starting a
+                    // sentence to one agent and having another begin working
+                    // moves the window out from under you mid-word — with the
+                    // draft still attached to the session you have just left.
+                    .onChange(of: draft) { previous, current in
+                        if previous.isEmpty, !current.isEmpty { onDraftStarted() }
+                    }
                     .font(ConchTypography.font(size: 12.5))
                     .foregroundStyle(ConchPalette.textPrimary)
                     .scrollContentBackground(.hidden)
