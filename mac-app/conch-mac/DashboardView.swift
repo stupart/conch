@@ -1275,7 +1275,9 @@ private struct ConversationPane: View {
                         .frame(minHeight: 96, idealHeight: 150, maxHeight: 190)
                     }
 
-                    noteBar
+                    Spacer(minLength: 0)
+
+                    composer(for: reviewRow)
                 }
             } else {
                 VStack(spacing: 0) {
@@ -1309,30 +1311,7 @@ private struct ConversationPane: View {
                     // here rather than in a separate panel means the reply you
                     // are answering is directly above the field you answer in.
                     if let row = focusedRow {
-                        ComposerView(
-                            sessionID: row.id,
-                            sessionLabel: row.label,
-                            dictation: dictationForFocusedRow,
-                            isWorking: row.status == .working,
-                            voiceState: voiceStateForFocusedRow,
-                            onSend: { text in
-                                store.send(
-                                    .inject(sessionId: row.id, label: row.label, text: text)
-                                )
-                            },
-                            onInterrupt: {
-                                store.send(.interrupt(sessionId: row.id, label: row.label))
-                            },
-                            onTalk: {
-                                // Wake points the mic at THIS session, which is
-                                // what a mic button beside its text field can
-                                // only sensibly mean.
-                                store.send(.wake(sessionId: row.id, label: row.label))
-                            }
-                        )
-                        .overlay(alignment: .top) {
-                            noteOverlay.offset(y: -26)
-                        }
+                        composer(for: row)
                     }
                 }
             }
@@ -1343,7 +1322,37 @@ private struct ConversationPane: View {
         }
     }
 
+    /// The composer, wherever you are.
+    ///
+    /// It used to exist only on the conversation pane, so opening an artifact
+    /// left you looking at work you could not respond to — no text field, no
+    /// mic, and no way back. That inverts the product: conch is meant to hand
+    /// you something and let you react to it. Tyler: "the user just gets
+    /// presented with artifacts and verbally or via writing reacts to them and
+    /// that's all".
     @ViewBuilder
+    private func composer(for row: SessionRow) -> some View {
+        ComposerView(
+            sessionID: row.id,
+            sessionLabel: row.label,
+            dictation: dictationForFocusedRow,
+            isWorking: row.status == .working,
+            voiceState: voiceStateForFocusedRow,
+            onSend: { text in
+                store.send(.inject(sessionId: row.id, label: row.label, text: text))
+            },
+            onInterrupt: {
+                store.send(.interrupt(sessionId: row.id, label: row.label))
+            },
+            onTalk: {
+                store.send(.wake(sessionId: row.id, label: row.label))
+            }
+        )
+        .overlay(alignment: .top) {
+            noteOverlay.offset(y: -26)
+        }
+    }
+
     /// The hint, floating over the conversation rather than under the composer.
     ///
     /// Reserving a row stopped the layout jumping but left a permanent empty

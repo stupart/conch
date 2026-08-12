@@ -75,6 +75,17 @@ delete as they go. Newest at the top of each section.
       worthless before step 1.
       Two things are already errors we swallow: a message landing on the
       clipboard instead of in a session, and a Codex row with no pid.
+- [ ] **Close a session from either app** — properly, so it can be resumed
+      later from conch or from a terminal. A clean exit, never a kill: both
+      agents leave a resumable transcript when they shut down normally
+      (`claude --resume <id>`, `codex resume <id>`) and leave a mess when they
+      are killed. Needs a confirmation, and must not sit anywhere a thumb lands
+      by accident — ending a session by mistake is the most expensive misclick
+      the app could offer.
+- [ ] **Artifacts inline in the conversation**, the way a document appears in a
+      chat, expanding on click rather than replacing the pane. The pane swap is
+      why there was nowhere to type while looking at one; a composer on both
+      panes fixes the symptom, inline artifacts remove the mode entirely.
 - [ ] **Context window per session.** How full is this session? It is the number
       that decides whether to keep going or start fresh, and conch reads the
       transcripts already — token counts are in Codex's `event_msg:token_count`
