@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import {
+  AGENTS_ALWAYS_ON,
   buildInstallCommands,
   buildMcpInvocation,
   buildMcpJson,
@@ -123,7 +124,10 @@ describe("plugin installer helpers", () => {
       join(repoRoot, "docs", "conch-control-skill.md"),
       "utf8",
     );
-    expect(readFileSync(join(pluginRoot, "AGENTS.md"), "utf8")).toBe(prose);
+    // NOT the prose. AGENTS.md is always-on context for Codex while the skill
+    // loads on demand, so shipping the same bytes to both made every Codex
+    // session permanently carry a Homebrew install pitch.
+    expect(readFileSync(join(pluginRoot, "AGENTS.md"), "utf8")).toBe(AGENTS_ALWAYS_ON);
     expect(
       readFileSync(
         join(pluginRoot, "skills", "conch-control", "SKILL.md"),
@@ -171,7 +175,7 @@ ${prose}`);
       "utf8",
     );
     expect(readFileSync(join(distDir, "plugins", "conch", "AGENTS.md"), "utf8"))
-      .toBe(prose);
+      .toBe(AGENTS_ALWAYS_ON);
     expect(
       readFileSync(
         join(distDir, "plugins", "conch", "skills", "conch-control", "SKILL.md"),
@@ -258,8 +262,8 @@ describe("the two install paths ship the same prose", () => {
   const prose = readFileSync(join(repoRoot, "docs", "conch-control-skill.md"), "utf8");
   const pluginRoot = join(repoRoot, "plugin", "plugins", "conch");
 
-  test("the checked-in AGENTS.md is the generated prose", () => {
-    expect(readFileSync(join(pluginRoot, "AGENTS.md"), "utf8")).toBe(prose);
+  test("the checked-in AGENTS.md is the short always-on text", () => {
+    expect(readFileSync(join(pluginRoot, "AGENTS.md"), "utf8")).toBe(AGENTS_ALWAYS_ON);
   });
 
   test("the checked-in SKILL.md is the generated prose under its frontmatter", () => {

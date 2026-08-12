@@ -68,6 +68,36 @@ interface SmokeResult {
 
 const EXPECTED_MCP_TOOL_COUNT = 9;
 
+/**
+ * What every Codex session carries FOREVER.
+ *
+ * AGENTS.md is always-on context; the skill body is loaded on demand. They were
+ * byte-identical, so every Codex session on the machine permanently held a
+ * twenty-line Homebrew install pitch for software it either has or does not —
+ * a branch that is read constantly and taken almost never.
+ *
+ * Always-on earns only what changes behaviour when nothing has been asked yet:
+ * that conch exists, that the user is probably not at the desk, and the ONE
+ * thing an agent should do unprompted. Everything else is a load away.
+ */
+export const AGENTS_ALWAYS_ON = `# conch
+
+A voice loop runs on this machine. The user is running several Claude Code and
+Codex sessions at once and is often NOT at the desk — they are listening on a
+phone or glancing at a Mac app. Your finished turns are announced aloud to them.
+
+**When a turn produces something to LOOK at — a page, a screenshot, a render, a
+PDF, a diff, a document — call \`review_to_front {summary, link}\`.** It puts
+that artifact in the pane the user is actually looking at, on both devices, and
+it stays there until you send another. An empty pane is a session whose work is
+invisible from a phone. If the turn produced only prose, don't: your reply is
+already spoken.
+
+For anything else — seeing what the other sessions are doing, waking one,
+reading a transcript, changing a conch setting — load the \`conch-control\`
+skill.
+`;
+
 const SKILL_FRONTMATTER = `---
 name: conch-control
 description: Put finished work in front of the user when a turn produces something to look at (a page, a diff, a screenshot, a built app), and see or steer their other Claude Code and Codex sessions. Use when you have made something viewable, or when asked what the other sessions are doing.
@@ -178,7 +208,7 @@ async function writeGeneratedPluginFiles(
     join(pluginRoot, ".mcp.json"),
     `${JSON.stringify(buildMcpJson(absBun, absCli, compiled), null, 2)}\n`,
   );
-  await writeFileWithParents(join(pluginRoot, "AGENTS.md"), prose);
+  await writeFileWithParents(join(pluginRoot, "AGENTS.md"), AGENTS_ALWAYS_ON);
   await writeFileWithParents(
     join(pluginRoot, "skills", "conch-control", "SKILL.md"),
     `${SKILL_FRONTMATTER}${prose}`,
