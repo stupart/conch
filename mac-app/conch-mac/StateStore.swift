@@ -130,6 +130,20 @@ final class StateStore: ObservableObject {
         }
     }
 
+    /// Tell the daemon the machine woke.
+    ///
+    /// The app gets `NSWorkspace.didWakeNotification`; the daemon, being a Bun
+    /// process, gets nothing. Its relay socket died during sleep without a
+    /// close frame ever arriving, so without being told it sits inside a
+    /// backoff of up to thirty seconds having noticed nothing — which is what
+    /// "a tough time connecting" after a lid-open actually was.
+    ///
+    /// Fire and forget: a failed notification just means the daemon falls back
+    /// to noticing the gap itself, a little later.
+    func reportSystemWake() {
+        Task { await socketClient.notify(["kind": "system-woke"]) }
+    }
+
     func forceLivenessProbe() {
         scheduleProbe(force: true)
     }

@@ -22,6 +22,7 @@ struct ConchMacApp: App {
                     )
                 ) { _ in
                     store.forceLivenessProbe()
+                    store.reportSystemWake()
                 }
                 .onReceive(
                     NSWorkspace.shared.notificationCenter.publisher(

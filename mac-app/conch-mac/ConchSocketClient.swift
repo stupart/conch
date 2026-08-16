@@ -171,6 +171,20 @@ struct ConchSocketClient: Sendable {
         }.value
     }
 
+    /// Send a control message and don't wait for an answer.
+    ///
+    /// `request` expects a reply and holds a deadline open for it; a wake
+    /// notification has nothing worth waiting for and must never delay the
+    /// thing that woke it.
+    func notify(_ message: [String: String]) async {
+        guard var payload = try? JSONSerialization.data(withJSONObject: message) else { return }
+        payload.append(0x0A)
+        let socketPath = socketPath
+        _ = await Task.detached(priority: .utility) {
+            Self.transact(payload, with: socketPath, deadline: Self.makeDeadline(after: Self.nanoseconds(for: 1)))
+        }.value
+    }
+
     func request<Request: Encodable>(
         _ request: Request,
         timeout: TimeInterval = 1

@@ -2066,15 +2066,21 @@ export async function runDaemon(cfg: Config): Promise<void> {
    * without us — which is sleep, a suspended process, or a machine so wedged
    * that reconnecting is the right response anyway.
    */
-  const WAKE_TICK_MS = 10_000;
-  const WAKE_GAP_MS = 45_000;
+  // A BACKSTOP, not the mechanism. The Mac app sends `system-woke` the moment
+  // it wakes, which is instant and costs nothing; this only covers a daemon
+  // running with no app to tell it — launchd, or a terminal. So it ticks
+  // rarely: the worst case it protects against is the relay's own backoff,
+  // which caps at thirty seconds, and paying a wakeup every ten seconds
+  // forever to shave that is the trade conch refuses everywhere else.
+  const WAKE_TICK_MS = 60_000;
+  const WAKE_GAP_MS = 180_000;
   let lastWakeTick = Date.now();
   const wakeWatch = setInterval(() => {
     const now = Date.now();
     const gap = now - lastWakeTick;
     lastWakeTick = now;
     if (gap < WAKE_GAP_MS) return;
-    log(`woke after ${Math.round(gap / 1000)}s asleep — re-dialling`);
+    log(`woke after ${Math.round(gap / 1000)}s asleep — re-dialling (no app told us)`);
     // The phone's own socket is equally stale; it reconnects itself when its
     // app comes forward. This end is the one nobody was going to fix.
     try {
@@ -4705,6 +4711,30 @@ export async function runDaemon(cfg: Config): Promise<void> {
           const disk = free !== null ? ` · ${free.toFixed(1)}GB free` : "";
           log(`phone: ${mb}MB · battery ${battery}${disk} · up ${minutes}m${flags ? ` · ${flags}` : ""}`);
           sock.end(JSON.stringify({ kind: "phone-device-ack" }) + "\n");
+          return;
+        }
+        // The Mac app telling us the machine woke.
+        //
+        // This is the honest signal: the app receives
+        // NSWorkspace.didWakeNotification and the daemon is its child, so the
+        // fact travels one socket write instead of being inferred. The polling
+        // version of this asked the process to wake ten times a minute forever
+        // to notice an event that happens twice a day, which is the shape of
+        // thing conch keeps deciding not to do elsewhere.
+        if (
+          typeof value === "object" && value !== null
+          && (value as { kind?: unknown }).kind === "system-woke"
+        ) {
+          log("the Mac woke — re-dialling the relay");
+          try {
+            phoneRelay?.reconnectNow();
+          } catch (error) {
+            log(`relay re-dial failed: ${error}`);
+          }
+          // Sessions may have come and gone while the lid was shut, and the
+          // panel is the only thing that would notice.
+          void renderSessionPanel();
+          sock.end(JSON.stringify({ kind: "system-woke-ack" }) + "\n");
           return;
         }
         if (
