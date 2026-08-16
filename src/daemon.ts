@@ -2073,7 +2073,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // which caps at thirty seconds, and paying a wakeup every ten seconds
   // forever to shave that is the trade conch refuses everywhere else.
   const WAKE_TICK_MS = 60_000;
-  const WAKE_GAP_MS = 180_000;
+  const WAKE_GAP_MS = 240_000;
   let lastWakeTick = Date.now();
   const wakeWatch = setInterval(() => {
     const now = Date.now();
