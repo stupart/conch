@@ -20,6 +20,10 @@ struct SessionView: View {
     @State private var attachments: [PendingAttachment] = []
     @State private var attaching = false
     @State private var attachError: String?
+    /// An image-only send in flight. TalkController's `.sending` phase covers
+    /// only sends that carry words; this is the same signal for the send that
+    /// carries none.
+    @State private var sendingImagesOnly = false
     @State private var fetchedReply: String?
     @State private var loadingReply = false
     /// Four API-sized images put a 20 MB ceiling on retained upload payloads;
@@ -123,6 +127,21 @@ struct SessionView: View {
                 .padding(20)
                 .padding(.bottom, 12)
             }
+            // Focus used to be a trap: once the cursor entered the field there
+            // was no way out short of sending or discarding, and the keyboard
+            // sat over the conversation you wanted to re-read before deciding.
+            // Tyler: "i want to be able to deselect the input box ... by
+            // swiping down on it and or tapping outside of it so that i can
+            // scroll and read the content before sending or if i change my
+            // mind". Both escapes: a drag on the conversation walks the
+            // keyboard out with the finger, and a tap on it drops focus
+            // outright — controls in the conversation still win their tap, so
+            // only inert content defocuses. Neither touches the draft: it
+            // lives in TalkController per session, and losing focus is not on
+            // the short list of things allowed to clear it.
+            .scrollDismissesKeyboard(.interactively)
+            .contentShape(Rectangle())
+            .onTapGesture { typing = false }
             }
 
             // Recognition partials arrive many times per sentence. Their own
@@ -413,7 +432,7 @@ struct SessionView: View {
                     .disabled(attaching)
                     .accessibilityLabel("Attach a picture")
 
-                    if canSend, talk.phase != .sending {
+                    if canSend, !isSending {
                         // Deliberate deletion, kept. Everything else in the draft
                         // machinery refuses to lose your words, and that only
                         // works as a promise if you can throw them away yourself.
@@ -444,14 +463,14 @@ struct SessionView: View {
                             .foregroundStyle(Palette.bg)
                     }
                     .buttonStyle(.plain)
-                    .disabled(talk.phase == .sending)
+                    .disabled(isSending)
                     .accessibilityLabel(isTalkingHere ? "Close the microphone" : "Open the microphone")
 
                     // Stop sits where send would be, but only while the agent
                     // is mid-turn and you have nothing written. Noticing an
                     // agent has gone the wrong way while away from the desk
                     // used to mean watching it keep going.
-                    if isWorking, !canSend, talk.phase != .sending {
+                    if isWorking, !canSend, !isSending {
                         Button(action: stopTurn) {
                             Image(systemName: "stop.fill")
                                 .font(.system(size: 15, weight: .bold))
@@ -464,10 +483,10 @@ struct SessionView: View {
                         .transition(.scale.combined(with: .opacity))
                     }
 
-                    if canSend || talk.phase == .sending {
+                    if canSend || isSending {
                         Button(action: sendDraft) {
                             Group {
-                                if talk.phase == .sending {
+                                if isSending {
                                     ProgressView().controlSize(.small).tint(Palette.bg)
                                 } else {
                                     Image(systemName: "arrow.up")
@@ -479,7 +498,7 @@ struct SessionView: View {
                             .foregroundStyle(Palette.bg)
                         }
                         .buttonStyle(.plain)
-                        .disabled(talk.phase == .sending)
+                        .disabled(isSending)
                         .accessibilityLabel("Send")
                         .transition(.scale.combined(with: .opacity))
                     }
@@ -492,6 +511,7 @@ struct SessionView: View {
             .padding(.bottom, 8)
             .animation(.easeOut(duration: 0.16), value: canSend)
             .animation(.easeOut(duration: 0.16), value: talk.phase)
+            .animation(.easeOut(duration: 0.16), value: sendingImagesOnly)
         }
         .padding(.top, 10)
         .background(.ultraThinMaterial.opacity(0.06))
@@ -519,6 +539,12 @@ struct SessionView: View {
     private var canSend: Bool {
         !attachments.isEmpty
             || !talk.draft(for: sessionId).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// A send in flight on either path — the controller's, or the direct one
+    /// an image-only message takes.
+    private var isSending: Bool {
+        talk.phase == .sending || sendingImagesOnly
     }
 
     /// Prepare a picked photo and hold it. Nothing is sent yet.
@@ -571,29 +597,48 @@ struct SessionView: View {
         attachError = nil
         let label = row?.label ?? ""
         let pending = attachments
+        // A picture with no words is an ordinary message — "look at this". It
+        // cannot go through the controller: TalkController.send exists to
+        // shepherd a DRAFT through delivery and rightly refuses an empty one,
+        // which made an image-only send a silent no-op. With no words to
+        // protect there is nothing for it to guard, so this send goes direct,
+        // its own flag standing in for the controller's `.sending`.
+        if talk.draft(for: sessionId).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard !pending.isEmpty, !isSending else { return }
+            sendingImagesOnly = true
+            Task {
+                _ = await deliver(text: "", pending: pending, label: label)
+                sendingImagesOnly = false
+            }
+            return
+        }
         // Route through the controller so a typed message takes exactly the
         // path a spoken one does: the mic closes, the draft is cleared only on
         // a CONFIRMED delivery, and a failure leaves your words on screen.
         talk.send(session: sessionId) { text in
-            // Pictures first, because the message references their paths. If one
-            // fails the whole send fails, which keeps the words AND the images —
-            // half a message is worse than none.
-            var paths: [String] = []
-            for attachment in pending {
-                guard let path = await bridge.uploadImage(
-                    data: attachment.data,
-                    ext: attachment.ext
-                ) else {
-                    attachError = "Couldn't send the picture — try again."
-                    return false
-                }
-                paths.append(path)
-            }
-            let body = (paths + [text]).filter { !$0.isEmpty }.joined(separator: "\n")
-            let delivered = await bridge.inject(sessionId: sessionId, label: label, text: body)
-            if delivered { attachments = [] } else { sendFailed = true }
-            return delivered
+            await deliver(text: text, pending: pending, label: label)
         }
+    }
+
+    /// Pictures first, because the message references their paths. If one
+    /// fails the whole send fails, which keeps the words AND the images —
+    /// half a message is worse than none.
+    private func deliver(text: String, pending: [PendingAttachment], label: String) async -> Bool {
+        var paths: [String] = []
+        for attachment in pending {
+            guard let path = await bridge.uploadImage(
+                data: attachment.data,
+                ext: attachment.ext
+            ) else {
+                attachError = "Couldn't send the picture — try again."
+                return false
+            }
+            paths.append(path)
+        }
+        let body = (paths + [text]).filter { !$0.isEmpty }.joined(separator: "\n")
+        let delivered = await bridge.inject(sessionId: sessionId, label: label, text: body)
+        if delivered { attachments = [] } else { sendFailed = true }
+        return delivered
     }
 
     /// Open the mic, or close it. Never send — that is the other button now.
