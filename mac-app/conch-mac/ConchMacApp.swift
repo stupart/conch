@@ -21,8 +21,13 @@ struct ConchMacApp: App {
                         for: NSApplication.didBecomeActiveNotification
                     )
                 ) { _ in
+                    // Becoming active is NOT waking. This is every click back
+                    // into the app, many times an hour; reporting it as a wake
+                    // tore down a live relay connection and re-dialled on each
+                    // one — visible in the log as "the Mac woke" four times in
+                    // five minutes. A worse version of the polling it replaced,
+                    // since that at least did not drop a working socket.
                     store.forceLivenessProbe()
-                    store.reportSystemWake()
                 }
                 .onReceive(
                     NSWorkspace.shared.notificationCenter.publisher(
@@ -30,6 +35,8 @@ struct ConchMacApp: App {
                     )
                 ) { _ in
                     store.forceLivenessProbe()
+                    // The actual wake, which fires once per lid-open.
+                    store.reportSystemWake()
                 }
         }
         .defaultSize(width: 1_040, height: 720)

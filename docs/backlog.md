@@ -164,6 +164,19 @@ implement materially different products." Highest-value items lifted out:
 
 ### Newly reported
 
+- [ ] **A failed send SPEAKS while conch is in manual mode.** Confirmed from
+      the log: a send fell back to the clipboard with
+      `system-dialog-blocking`, and conch then said "A system dialog is open on
+      the Mac and it's blocking me" out loud — in manual mode, which exists
+      precisely so it does not speak first. Manual gates the announcement queue;
+      these failure lines call `speak()` directly and bypass it entirely. Every
+      direct `speak()` call in the daemon needs the same gate the queue has, or
+      this recurs the next time a new one is added.
+      Also from the same incident: the failure took 9 seconds to say because
+      Kokoro hard-restarted mid-sentence and the `say` fallback timed out, so
+      the session looked like it was "speaking" for the whole of it while
+      nothing was audible.
+
 - [ ] **The conversation goes black, then glitches back when you scroll, and
       snaps to the end on its own.** Reading a long reply is currently not
       possible on the Mac. Almost certainly the same family as "renders empty

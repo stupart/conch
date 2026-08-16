@@ -23,6 +23,21 @@ describe("waking up", () => {
     expect(handler.slice(0, 700)).toContain("reconnectNow()");
   });
 
+  // Becoming active is not waking. Wired to didBecomeActive, this fired on
+  // every click back into the app and tore down a live relay connection each
+  // time — "the Mac woke" four times in five minutes in the log.
+  test("only the wake notification reports a wake", () => {
+    const app = readFileSync(
+      new URL("../mac-app/conch-mac/ConchMacApp.swift", import.meta.url),
+      "utf8",
+    );
+    const active = app.slice(app.indexOf("didBecomeActiveNotification"));
+    const untilWake = active.slice(0, active.indexOf("didWakeNotification"));
+    expect(untilWake).not.toContain("reportSystemWake");
+    const wake = app.slice(app.indexOf("didWakeNotification"));
+    expect(wake.slice(0, 400)).toContain("reportSystemWake");
+  });
+
   test("a gap in wall-clock is treated as sleep", () => {
     expect(source).toContain("WAKE_GAP_MS");
     const detector = source.slice(source.indexOf("const WAKE_TICK_MS"));
