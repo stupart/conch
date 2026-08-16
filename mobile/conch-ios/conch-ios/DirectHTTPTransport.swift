@@ -44,10 +44,21 @@ final class DirectHTTPTransport: BridgeTransport, @unchecked Sendable {
         publishConnection(false, nil)
     }
 
+    /// Connect now — including after a stop.
+    ///
+    /// `stop()` used to be permanent: it set `stopped` and this refused to act
+    /// on it, so the app's own lifecycle killed the connection for good.
+    /// Backgrounding calls stop (deliberately — an idle socket the Mac expires
+    /// costs an encrypted handshake on every return), and foregrounding calls
+    /// this, which quietly did nothing. The FIRST background disconnected the
+    /// phone until it was relaunched or re-paired.
+    ///
+    /// An explicit request to reconnect is an explicit request to be running
+    /// again; refusing it because of an earlier stop is the surprising reading.
     func reconnectNow() {
         let current: URLSessionWebSocketTask?
         lock.lock()
-        guard !stopped else { lock.unlock(); return }
+        stopped = false
         generation += 1
         reconnectDelay = 0.5
         reconnectTask?.cancel()

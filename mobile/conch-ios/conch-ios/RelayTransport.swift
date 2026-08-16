@@ -290,8 +290,12 @@ private actor RelayTransportEngine {
         }
     }
 
+    /// Connect now — including after a stop. See DirectHTTPTransport for the
+    /// full story: backgrounding stops the transport on purpose and
+    /// foregrounding calls this, so refusing after a stop meant the first
+    /// background disconnected the phone permanently.
     func reconnectNow() {
-        guard !stopped else { return }
+        stopped = false
         reconnectSuppressed = false
         reconnectDelay = 0.5
         reconnectTask?.cancel()
