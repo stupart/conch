@@ -53,6 +53,16 @@ struct ComposerView: View {
                 }
             }
 
+            // The field first, controls beneath — the phone's layout, adopted.
+            //
+            // Everything used to sit in one row, so as the text grew the
+            // buttons stayed vertically centred in a column several lines tall
+            // and floated in the middle of empty space, with send drifting down
+            // the right. A row of controls under the text keeps them where your
+            // hand left them however tall the message gets, and gives the text
+            // the full width instead of the gap between two button clusters.
+            composerField
+
             HStack(alignment: .center, spacing: 8) {
                 Button(action: chooseFiles) {
                     Image(systemName: "plus")
@@ -114,7 +124,7 @@ struct ComposerView: View {
                 .help("Read the last reply again")
                 .accessibilityLabel("Read the last reply again")
 
-                composerField
+                Spacer(minLength: 8)
 
                 // Send becomes Stop while a turn is running. One control in
                 // one place: the button you reach for is always the one that
