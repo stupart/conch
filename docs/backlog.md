@@ -164,6 +164,23 @@ implement materially different products." Highest-value items lifted out:
 
 ### Newly reported
 
+- [ ] **The conversation goes black, then glitches back when you scroll, and
+      snaps to the end on its own.** Reading a long reply is currently not
+      possible on the Mac. Almost certainly the same family as "renders empty
+      until you scroll": a lazy stack plus a scroll-to-bottom that re-fires on
+      every publish. The daemon republishes often, so anything keyed off "state
+      changed" rather than "the conversation actually grew" will yank the view
+      out from under a reader. Highest-priority bug on the list — an app you
+      cannot read is not usable.
+- [ ] **Links are not clickable.** They render blue and underlined, which is a
+      promise. Possibly just the machine being slow, so confirm before
+      rewriting anything.
+- [ ] **The Mac composer keeps its draft when you change session.** Type to one
+      session, switch, and your words are still sitting there addressed to the
+      wrong agent. The phone gets this right — its draft is persisted PER
+      SESSION — and the audit flagged the same thing: "the composer is not
+      keyed per session".
+
 - [ ] **The phone cannot dismiss its keyboard.** Once the cursor is in the
       input there is no way out — no swipe-down, no tap-outside — so you cannot
       scroll and read before sending, or change your mind. Nothing to do with
