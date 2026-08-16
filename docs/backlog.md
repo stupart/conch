@@ -123,6 +123,36 @@ Merged along the way: "one pane, two perspectives" + "artifacts inline" are one
 item; "context meter" + "context window per session" are one; "start a session
 from conch" + "spawn sessions from the phone" are one.
 
+### From the UI audit — findings worth acting on
+
+The full audit is `docs/ui-audit.md` (650 lines). Its verdict: "The three
+surfaces are not three presentations of one interaction model. They currently
+implement materially different products." Highest-value items lifted out:
+
+- [x] **The phone disconnected permanently on first background** — stop() was
+      final and reconnectNow() refused after it. FIXED.
+- [ ] **Mute is still live in two places** despite being retired: the terminal
+      exposes both pause and mute, and the Mac still has a hidden `M` path.
+      Retiring it in one surface and not the others is worse than not retiring
+      it.
+- [ ] **The footer keybar is entirely dead.** It paints a keyboard bar while
+      input dispatch is disabled, and stdin is still raw — so every advertised
+      key is swallowed, including `q` and Ctrl-C. A bar that lists keys none of
+      which work.
+- [ ] **The Mac mic, the phone mic and the terminal Space key do three
+      different things.** Mac sends wake/stop to the daemon's microphone; the
+      phone starts LOCAL recognition and never sends; the terminal wakes the
+      daemon mic but only in theater mode.
+- [ ] **A Mac draft can be lost on an unacknowledged send.**
+- [ ] **An image-only send does nothing on the phone.**
+- [ ] **Question options are inert** on both apps — they render and cannot be
+      answered. Known, but the audit rates it higher than I did: it is the one
+      row that exists to be acted on.
+- [ ] **Dismiss/restore is three different features**: complete on Mac,
+      dismiss-only in the terminal (restore code exists but nothing can reach
+      it), absent on the phone — which drops `dismissedRows` while decoding.
+- [ ] **The terminal never consumes the artifact link** it is sent.
+
 ### Batch 1 — annoying and cheap. Do these together.
 
 - [ ] **The mic must FILL the composer, not send past it.** Press it expecting
