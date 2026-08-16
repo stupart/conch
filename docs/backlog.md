@@ -3,46 +3,55 @@
 Everything Tyler has reported or asked for, and where it stands. Cross off or
 delete as they go. Newest at the top of each section.
 
-## Short-term plan
+## Roadmap
 
-Where we are, so it does not get lost between sessions.
+Rewritten from scratch — the previous plan was written before the audit and
+before half of it was done. Each phase ends somewhere worth stopping.
 
-1. **Nail the basics.** Nearly there — sends work on both agents, speech no
-   longer talks over you, sessions no longer block each other, and the composer
-   is on every pane.
-2. **Auto / manual mode** — remove mute, rename pause to what it actually is
-   (see below). FIRST, because the words chosen here run through the apps, the
-   CLI and the plugin's vocabulary, and everything after would have to be
-   rewritten around them.
-3. **The mic should fill the composer** instead of injecting past it, so typed
-   and spoken text combine.
-4. **Write the behaviour rules for both apps** and make them agree.
-5. **Act on the plugin audit** — the findings are in, the fixes are partly
-   done; the rest wants the vocabulary settled first.
-6. **Then the vision**, which Tyler is going to describe, and which everything
-   above is groundwork for.
+### Phase 1 — make one interaction model (in progress)
 
-### Decided: mute goes, and pause becomes a MODE
+The audit's verdict is the problem statement: *"the three surfaces are not
+three presentations of one interaction model. They currently implement
+materially different products."* Everything here is that sentence being false.
 
-Tyler's reframe, which is better than either name: these were never two
-features, they are two modes of the same one.
+1. **The mic must mean one thing.** Mac sends wake/stop to the daemon's mic;
+   the phone runs LOCAL recognition and never sends; the terminal wakes the
+   daemon mic but only in theater mode. Settle it — dictation fills the
+   composer, on every surface — and the "mic fills the composer" item is the
+   same work.
+2. **Retire mute everywhere.** It is still live in the terminal and behind a
+   hidden `M` on the Mac. Half-retired is worse than not retired.
+3. **The composer, on every surface.** Including the layout fix below.
+4. **Dismiss/restore, one feature.** Complete on Mac, dismiss-only in the
+   terminal with unreachable restore code, absent on the phone — which drops
+   `dismissedRows` while decoding.
+5. **The dead footer keybar** — it advertises keys that are all swallowed,
+   including `q` and Ctrl-C.
 
-- **Auto** (today's "unpaused") — finished turns read themselves aloud and the
-  mic opens on its own. Hands-free.
-- **Manual** (today's "paused") — everything still works and updates; it simply
-  does not speak first or open the mic on its own. You read, and press recite
-  on anything you want aloud.
+### Phase 2 — the things that make it usable daily
 
-That is what pause already IS, described honestly, and it makes mute redundant:
-mute's only unique property is FORGETTING finished turns, which has already
-cost Tyler two of them. A mode nobody would choose on purpose is not a mode.
+6. Start and close sessions from either app.
+7. Context meter per session.
+8. Claude / Codex mark beside each name.
+9. Question options that can actually be answered.
+10. Errors that report themselves.
 
-The backlog objection — that resuming dumps the whole backlog at once — has its
-own answer, also his: resume ONE session, or the ones you choose, using the
-per-session controls that already exist. The queue is not the problem; being
-forced to take all of it at once was.
+### Phase 3 — the feed
 
-## Bugs
+11. Artifacts inline in the conversation; one pane, two perspectives.
+12. Pinned artifacts that stay live without being re-sent.
+13. Then the feed proper — see `vision.md`.
+
+### Terminal parity, deliberately scoped
+
+The terminal is not a third app to bring to parity feature-for-feature; it is
+the surface you use while your hands are already on the keyboard. It should be
+able to do everything the OTHER two can do to a session — read, answer,
+interrupt, dismiss, restore, switch mode — and it does not need image
+attachment, artifact rendering, or a phone's audio lease. What it must not do
+is advertise controls that do nothing, which is what it does today.
+
+## Bugs## Bugs
 
 ### Open
 
@@ -152,6 +161,25 @@ implement materially different products." Highest-value items lifted out:
       dismiss-only in the terminal (restore code exists but nothing can reach
       it), absent on the phone — which drops `dismissedRows` while decoding.
 - [ ] **The terminal never consumes the artifact link** it is sent.
+
+### Newly reported
+
+- [ ] **The phone cannot dismiss its keyboard.** Once the cursor is in the
+      input there is no way out — no swipe-down, no tap-outside — so you cannot
+      scroll and read before sending, or change your mind. Nothing to do with
+      dismiss/restore, which is about hiding a SESSION from the ledger; this is
+      focus, and it is the more annoying of the two.
+- [ ] **The Mac composer wastes its height as it grows.** The buttons stay
+      vertically centred in a row that is now several lines tall, so they float
+      in an empty column while send drifts down the right. The phone already
+      solves this: field on top, controls in a row beneath, one container.
+      Adopt it.
+- [ ] **Images added to the Mac composer show as filenames, not images.** A
+      picture you are about to send should look like the picture.
+- [ ] **conch should know about skills and plugins** — which are available to a
+      session, and ideally turning them on and off. Related to the existing
+      "toggle plugins, skills and MCP servers" item; this is the read half,
+      which has to come first.
 
 ### Batch 1 — annoying and cheap. Do these together.
 
