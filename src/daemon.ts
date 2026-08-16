@@ -2051,6 +2051,43 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
   }
 
+  /**
+   * Notice that this Mac was asleep, and re-dial rather than wait out a backoff.
+   *
+   * The daemon is a Bun process, so it gets no `NSWorkspace.didWakeNotification`
+   * — only the app does, and only for its own UI. Meanwhile the relay socket
+   * dies during sleep without a close frame ever arriving, so on wake the
+   * daemon is sitting inside an exponential backoff that can be thirty seconds
+   * long, having noticed nothing. Tyler: "i let my computer sleep and turned it
+   * back on and the app is having a tough time connecting".
+   *
+   * A timer is the honest detector available here. One that should fire every
+   * ten seconds and fires after a much longer gap means wall-clock moved
+   * without us — which is sleep, a suspended process, or a machine so wedged
+   * that reconnecting is the right response anyway.
+   */
+  const WAKE_TICK_MS = 10_000;
+  const WAKE_GAP_MS = 45_000;
+  let lastWakeTick = Date.now();
+  const wakeWatch = setInterval(() => {
+    const now = Date.now();
+    const gap = now - lastWakeTick;
+    lastWakeTick = now;
+    if (gap < WAKE_GAP_MS) return;
+    log(`woke after ${Math.round(gap / 1000)}s asleep — re-dialling`);
+    // The phone's own socket is equally stale; it reconnects itself when its
+    // app comes forward. This end is the one nobody was going to fix.
+    try {
+      phoneRelay?.reconnectNow();
+    } catch (error) {
+      log(`relay re-dial failed: ${error}`);
+    }
+    // Sessions may have come and gone while the lid was shut, and the panel is
+    // the only thing that would notice.
+    void renderSessionPanel();
+  }, WAKE_TICK_MS);
+  wakeWatch.unref?.();
+
   const publishedStateWriter = createPublishThrottle(() => {
     if (lastPublishedPanelState) publishSessionsFile(lastPublishedPanelState);
     phoneApplication?.publish();

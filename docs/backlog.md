@@ -52,6 +52,12 @@ forced to take all of it at once was.
       empty pane over a session with content is indistinguishable from a broken
       one — and in the feed it would be the whole screen. Likely the lazy stack
       not laying out until the scroll view is touched.
+- [ ] **The relay drops every 100 minutes, exactly.** 13:42, 15:22, 17:02,
+      18:42, 20:23 — five disconnects, all code 1006 (abnormal closure), all
+      100 minutes apart. That regularity is a timer somewhere, not a network:
+      most likely a relay-side idle or token lifetime that nothing refreshes
+      ahead of. It reconnects within seconds so it has been invisible, but a
+      message arriving in that window is a message that does not arrive.
 - [ ] **Mac audio degraded.** `say` — macOS's own TTS — timed out after 18s, and
       Kokoro hard-restarts on synthesis timeouts. Tracks the machine's memory
       pressure rather than conch; revisit when the Mac is healthy.
