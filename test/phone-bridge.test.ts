@@ -525,7 +525,7 @@ describe("client presence", () => {
 
   test("reports connect and disconnect so the Mac can reclaim audio", async () => {
     // A phone that walks out of the room must not leave the Mac permanently
-    // mute — the daemon needs to know the moment the last one goes away.
+    // silence — the daemon needs to know the moment the last one goes away.
     const counts: number[] = [];
     const b = startBridge({ onClientsChanged: (n: number) => counts.push(n) });
     const ws = new WebSocket(`ws://127.0.0.1:${b.port}/ws?token=${TOKEN}`);
@@ -578,7 +578,7 @@ describe("the audio lease", () => {
     });
     expect(counts.at(-1)).toBe(1);
     // Turning the bridge off must release the lease; otherwise disabling the
-    // phone leaves the Mac mute with nothing left to speak for it.
+    // phone leaves the Mac silent with nothing left to speak for it.
     b.stop();
     expect(counts.at(-1)).toBe(0);
     bridge = null;

@@ -24,7 +24,7 @@ test → iterate pass, in order.
 - Voice out via Kokoro MLX, an mlx_audio server, or `say`.
 - Phone: LAN bridge plus a relay for when you're away, QR pairing, voice input,
   image upload, per-session reply.
-- Per-session pause and mute; settings read live from the daemon.
+- Per-session auto/manual mode; settings read live from the daemon.
 
 **What we are missing that is table stakes.**
 - No composer on the Mac app. You cannot type or attach an image — the thing

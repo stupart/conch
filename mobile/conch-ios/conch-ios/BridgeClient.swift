@@ -236,6 +236,39 @@ final class BridgeClient: ObservableObject {
         await post(control: ["type": action, "sessionId": "", "label": "", "announce": ""])
     }
 
+    enum SessionCommand: String {
+        case dismiss
+        case restore
+    }
+
+    /// Hide or restore one ledger row through the daemon's shared session
+    /// command contract. The enum keeps arbitrary commands off this convenience
+    /// path, and the echoed id/action prevents a mismatched response from being
+    /// mistaken for confirmation.
+    func send(sessionCommand command: SessionCommand, sessionId: String) async -> Bool {
+        guard !sessionId.isEmpty,
+              let reply = await postControlRaw([
+                  "kind": "session-command",
+                  "sessionId": sessionId,
+                  "command": command.rawValue,
+              ]) else {
+            lastError = "Couldn't reach your Mac."
+            return false
+        }
+        if let error = reply["error"] as? String {
+            lastError = error
+            return false
+        }
+        guard reply["kind"] as? String == "session-ack",
+              reply["sessionId"] as? String == sessionId,
+              reply["command"] as? String == command.rawValue else {
+            lastError = "The Mac sent something unexpected."
+            return false
+        }
+        lastError = nil
+        return true
+    }
+
     private func post(control message: [String: Any]) async -> Bool {
         guard let body = try? JSONSerialization.data(withJSONObject: message) else {
             return false

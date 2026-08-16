@@ -5,7 +5,6 @@ import WebKit
 enum DashboardKey: Equatable {
     case talkOrStop
     case pauseOrResume
-    case muteOrUnmute
     case recite
     case showKeyboardShortcuts
     case moveUp
@@ -138,8 +137,6 @@ struct DashboardInputMonitor: NSViewRepresentable {
                 return .talkOrStop
             case "p":
                 return .pauseOrResume
-            case "m":
-                return .muteOrUnmute
             case "r":
                 return .recite
             default:
@@ -173,7 +170,7 @@ private extension DashboardKey {
         switch self {
         case .talkOrStop, .releaseSelection:
             return true
-        case .pauseOrResume, .muteOrUnmute, .recite, .showKeyboardShortcuts,
+        case .pauseOrResume, .recite, .showKeyboardShortcuts,
              .moveUp, .moveDown:
             return false
         }

@@ -9,8 +9,6 @@ struct ConchDaemonEvent: Encodable, Sendable {
         case spacebar
         case pause
         case resume
-        case mute
-        case unmute
         case inject
         case interrupt
     }

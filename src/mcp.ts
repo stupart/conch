@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import { loadConfig, type Config } from "./config.ts";
 import { CONCH_VERSION } from "./version.ts";
 import { sendToDaemon, type TurnEvent } from "./hook.ts";
+import { normalizeLegacyModeControl } from "./instant-controls.ts";
 import { registryToPanel } from "./panel.ts";
 import {
   findSessionByName,
@@ -176,13 +177,13 @@ export const MCP_TOOLS = [
   },
   {
     name: "conch_mode",
-    description: "Switch conch between auto and manual. Auto reads finished turns aloud and opens the mic on its own; manual does neither, while everything else keeps working and the user reads instead. `pause` means manual, `resume` means auto. `mute` and `unmute` are retired aliases for the same two.",
+    description: "Switch conch between auto and manual. Auto reads finished turns aloud and opens the mic on its own; manual does neither, while everything else keeps working and the user reads instead. `pause` means manual and `resume` means auto.",
     inputSchema: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["mute", "unmute", "pause", "resume"],
+          enum: ["pause", "resume"],
         },
       },
       required: ["action"],
@@ -656,10 +657,10 @@ export function createMcpToolHandlers(
         && action !== "pause"
         && action !== "resume"
       ) {
-        throw new ToolInputError("action must be mute, unmute, pause, or resume");
+        throw new ToolInputError("action must be pause or resume");
       }
       return sendTurn(config, dependencies, {
-        type: action,
+        type: normalizeLegacyModeControl(action),
         sessionId: "",
         label: "",
         announce: "",

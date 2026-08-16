@@ -24,7 +24,7 @@ describe("phone-backed audio ownership", () => {
     expect(lease.sink).toBe("phone");
     expect(lease.clientsChanged(0)).toBeTrue();
     expect(lease.sink).toBe("mac");
-    // A delayed claim from the just-closed phone must not re-mute the Mac.
+    // A delayed claim from the just-closed phone must not silence the Mac again.
     expect(lease.request("phone", 0)).toBe("mac");
   });
 
@@ -239,7 +239,7 @@ describe("every Mac speech path is gated on the audio lease", () => {
   }
 
   test("`speak` returns before synthesising when the phone owns the voice", () => {
-    const speak = bodyOf("const speak = async (speechCfg", "await speech.speak(");
+    const speak = bodyOf("const speak = async (", "await speech.speak(");
     expect(speak).toMatch(/audioLease\.(isPhone\(\)|sink === "phone")/);
   });
 

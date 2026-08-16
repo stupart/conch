@@ -56,7 +56,7 @@ describe("buildPanelModel — renderer seam", () => {
       at: 40,
       detail: "permission",
       paused: false,
-      muted: true,
+      muted: false,
     });
     expect(model.rows[1]).toMatchObject({
       at: 30,
@@ -110,7 +110,7 @@ describe("buildPanelModel — renderer seam", () => {
     expect(dashboardRowsForModel(model)[0]?.startsWith("\x1b[36m▸\x1b[0m ")).toBe(true);
   });
 
-  test("renders per-session mute ahead of pause without legacy snooze wording", () => {
+  test("legacy row state is rendered as the lossless manual mode", () => {
     const model = buildPanelModel({
       sessions: [{ sessionId: "quiet", name: "Quiet", status: "idle", statusUpdatedAt: 30 }],
       sessionStates: new Map(),
@@ -124,8 +124,8 @@ describe("buildPanelModel — renderer seam", () => {
 
     const row = dashboardRowsForModel(model)[0]!;
     expect(row).toContain("\x1b[2m");
-    expect(row).toContain("🔇 muted");
-    expect(row).not.toContain("⏸ paused");
+    expect(row).toContain("⏸ manual");
+    expect(row).not.toContain("muted");
     expect(row.toLowerCase()).not.toContain("snooz");
   });
 });
@@ -210,7 +210,7 @@ describe("buildPublishedState — external session snapshot", () => {
           needsResponse: true,
           detail: "permission",
           paused: true,
-          muted: true,
+          muted: false,
           live: "speaking",
           active: true,
           snippet: "Need: latest reply",
@@ -474,23 +474,21 @@ describe("dashboard global mode banner", () => {
   });
 
   test("shows pause with the held-session count", () => {
-    expect(paused[2]).toContain("⏸ PAUSED");
+    expect(paused[2]).toContain("⏸ MANUAL");
     expect(paused[2]).toContain("holding 3");
-    expect(paused[2]).toContain("no parked cursor: p to resume");
+    expect(paused[2]).toContain("no parked cursor: p for auto");
   });
 
-  test("shows mute and gives it precedence over a simultaneous pause", () => {
-    expect(muted[2]).toContain("🔇 MUTED");
-    expect(muted[2]).toContain("no parked cursor: m to unmute");
+  test("ignores the retired compatibility field", () => {
+    expect(muted[2]).toBe("");
     const both = dashboardPanelLines([], 80, { muted: true, paused: true, holding: 2 });
-    expect(both[2]).toContain("MUTED");
-    expect(both[2]).not.toContain("PAUSED");
+    expect(both[2]).toContain("MANUAL");
   });
 
   test("remains visible with no session rows", () => {
     const lines = dashboardPanelLines([], 80, { muted: false, paused: true, holding: 0 });
     expect(lines).toHaveLength(4);
-    expect(lines[2]).toContain("PAUSED");
+    expect(lines[2]).toContain("MANUAL");
   });
 });
 

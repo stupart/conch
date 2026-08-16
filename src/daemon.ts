@@ -140,10 +140,8 @@ import {
 import {
   gateTurnForControls,
   InstantControls,
-  markQueuedTurnsForMute,
   markQueuedWakesForControl,
-  muteAcknowledgement,
-  shouldForgetMutedArrival,
+  normalizeLegacyModeControl,
   type InstantAudioCommand,
 } from "./instant-controls.ts";
 import {
@@ -209,6 +207,7 @@ import {
 import { SettingsOverlay } from "./settings-overlay.ts";
 import {
   invokeSessionAction,
+  RestoreSessionsOverlay,
   SessionActionsOverlay,
   type SessionActionsController,
   type SessionActionsTarget,
@@ -229,22 +228,31 @@ import { createPublishThrottle } from "./publish-throttle.ts";
  * "wake" event (conch wake, or spacebar when the daemon runs in a terminal)
  * reopens the mic for the last announced session.
  */
-// Mute + pause are persisted so a daemon restart (launchd/supervisor respawn)
-// doesn't silently turn conch back ON — "muted for the night" / "paused while
-// away" must survive.
+// Manual mode survives launchd/supervisor restarts. Old state files used a
+// destructive flag, so reading one upgrades it into the lossless setting.
 const STATE_FILE = join(homedir(), ".config/conch/state.json");
 
 interface DaemonState {
-  muted: boolean;
   paused: boolean;
+}
+
+/** Legacy quiet state upgrades to the only lossless mode before runtime sees it. */
+export function daemonStateFromUnknown(value: unknown): DaemonState {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return { paused: false };
+  }
+  const state = value as { paused?: unknown; muted?: unknown };
+  return { paused: state.paused === true || state.muted === true };
 }
 
 function readState(): DaemonState {
   try {
-    const s = JSON.parse(readFileSync(STATE_FILE, "utf8"));
-    return { muted: s.muted === true, paused: s.paused === true };
+    const decoded: unknown = JSON.parse(readFileSync(STATE_FILE, "utf8"));
+    const state = daemonStateFromUnknown(decoded);
+    if (typeof decoded === "object" && decoded !== null && "muted" in decoded) writeState(state);
+    return state;
   } catch {
-    return { muted: false, paused: false };
+    return { paused: false };
   }
 }
 
@@ -711,7 +719,8 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
   if (typeof value.type !== "string" || !TURN_EVENT_TYPES.has(value.type as TurnEvent["type"])) {
     return { ok: false, err: "turn event type is missing or unknown" };
   }
-  const type = value.type as TurnEvent["type"];
+  const wireType = value.type as TurnEvent["type"];
+  const type = normalizeLegacyModeControl(wireType);
 
   for (const field of ["sessionId", "label", "cwd", "announce", "transcriptPath", "ntype", "voice"] as const) {
     if (value[field] !== undefined && typeof value[field] !== "string") {
@@ -740,7 +749,7 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
 
   // Hook/state traffic and explicit speech retain the original complete shape.
   // Dashboard controls are intentionally sparse and normalized for the daemon.
-  if (!SPARSE_TURN_EVENT_TYPES.has(type)) {
+  if (!SPARSE_TURN_EVENT_TYPES.has(wireType)) {
     for (const field of ["sessionId", "label", "announce"] as const) {
       if (typeof value[field] !== "string") {
         return { ok: false, err: `${field} is required for ${type}` };
@@ -802,7 +811,7 @@ export function shouldHandleTurnAudibly(
 
 /**
  * A daemon-time background-work check may learn more than the hook-time scan.
- * Mutate the queued object itself: ordering, mute-forget, and pause replay all
+ * Mutate the queued object itself: ordering and manual-mode replay both
  * retain this exact reference.
  */
 export function downgradeTurnWithLiveBackgroundWork(
@@ -860,7 +869,7 @@ export interface SocketTurnEventCallbacks {
   busy(): boolean;
   stopSpacebar(): void;
   setSessionPaused(sessionId: string, paused: boolean): void;
-  setSessionMuted(sessionId: string, muted: boolean): void;
+  isDismissedSession?(sessionId: string): boolean;
   enrichAudioCommand(event: InstantAudioCommand): InstantAudioCommand;
   enqueueInstant(event: InstantAudioCommand): void;
   enqueue(event: TurnEvent): void;
@@ -876,21 +885,21 @@ export function isLightweightTargetedAudioCommand(event: InstantAudioCommand): b
 
 /** Route dashboard/CLI socket commands through the same instant seams as terminal keys. */
 export function dispatchSocketTurnEvent(
-  event: TurnEvent,
+  incoming: TurnEvent,
   callbacks: SocketTurnEventCallbacks,
 ): void {
+  const event = incoming.type === normalizeLegacyModeControl(incoming.type)
+    ? incoming
+    : { ...incoming, type: normalizeLegacyModeControl(incoming.type) };
   if (event.type === "spacebar") {
     if (callbacks.busy()) callbacks.stopSpacebar();
     return;
   }
 
   if (event.sessionId) {
+    if (callbacks.isDismissedSession?.(event.sessionId)) return;
     if (event.type === "pause" || event.type === "resume") {
       callbacks.setSessionPaused(event.sessionId, event.type === "pause");
-      return;
-    }
-    if (event.type === "mute" || event.type === "unmute") {
-      callbacks.setSessionMuted(event.sessionId, event.type === "mute");
       return;
     }
     if (event.type === "wake" || event.type === "recite") {
@@ -1130,15 +1139,12 @@ export function withoutDismissedSessions<T extends Pick<SessionInfo, "sessionId"
   return sessions.filter((session) => !dismissedSessionIds.has(session.sessionId));
 }
 
-/** The dismiss operation couples mute; restoration must always clear both sets. */
+/** Restoration only changes visibility; quiet mode is an independent choice. */
 export function restoreDismissedSessionState(
   sessionId: string,
   dismissedSessionIds: Set<string>,
-  mutedSessionIds: Set<string>,
 ): boolean {
-  if (!dismissedSessionIds.delete(sessionId)) return false;
-  mutedSessionIds.delete(sessionId);
-  return true;
+  return dismissedSessionIds.delete(sessionId);
 }
 
 /** Transient command state dies only when a complete registry proves the session exited. */
@@ -1346,7 +1352,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let busyLabel = "none";
   let lastTurn: TurnEvent | null = null;
   const persisted = readState(); // survives restarts — see STATE_FILE
-  let muted = persisted.muted;
   let pause!: PauseController; // "away" mode: quiet, but HOLD finished sessions to replay on resume
   let stopKey = false; // spacebar pressed while reciting — the guaranteed interrupt
   let micOpen = false; // true while a dictation/permission listen is in flight — spacebar closes it
@@ -1396,23 +1401,23 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const mouseParser = new SgrMouseParser();
   let settingsOverlay: SettingsOverlay | null = null;
   let sessionActionsOverlay: SessionActionsOverlay | null = null;
+  let restoreSessionsOverlay: RestoreSessionsOverlay | null = null;
   let meetingMic: MicClaimPoller | null = null;
-  // Per-session modes are transient dashboard state. Pause holds only the newest
-  // turn for replay; mute deliberately forgets.
+  // Per-session manual mode holds only the newest turn for replay.
   const pausedSessionIds = new Set<string>();
   // Sessions resumed by name out of a global pause. Cleared on every global
   // edge: a new pause pauses everything, and a global resume makes the
   // exemption meaningless.
   const resumedSessionIds = new Set<string>();
-  const mutedSessionIds = new Set<string>();
   const prioritizedSessionIds = new Set<string>();
   const dismissedSessionIds = new Set<string>();
   const sessionHeldTurns = new Map<string, TurnEvent>();
+  const dismissedHeldTurns = new Map<string, TurnEvent>();
   const latestTurnBySession = new Map<string, TurnEvent>();
-  const forgottenTurns = new WeakSet<TurnEvent>();
+  const cancelledAudioCommands = new WeakSet<TurnEvent>();
   const instantQueueBarriers = new WeakSet<TurnEvent>();
-  const forgetQueuedAudioCommand = (event: TurnEvent): void => {
-    forgottenTurns.add(event);
+  const cancelQueuedAudioCommand = (event: TurnEvent): void => {
+    cancelledAudioCommands.add(event);
     instantQueueBarriers.delete(event);
   };
   // The turn currently being handled, used by PauseController's scoped edge.
@@ -1436,9 +1441,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
       || latestTurnBySession.has(id)
       || dismissedSessionIds.has(id)
       || pausedSessionIds.has(id)
-      || mutedSessionIds.has(id)
       || prioritizedSessionIds.has(id)
       || sessionHeldTurns.has(id)
+      || dismissedHeldTurns.has(id)
       || pending.has(id)
       || recitingEvent?.sessionId === id
       || handlingEvent?.sessionId === id;
@@ -1449,7 +1454,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
       : null;
   }
   const sessionModalOpen = (): boolean =>
-    Boolean(settingsOverlay?.isOpen() || sessionActionsOverlay?.isOpen());
+    Boolean(
+      settingsOverlay?.isOpen()
+      || sessionActionsOverlay?.isOpen()
+      || restoreSessionsOverlay?.isOpen()
+    );
   const explicitQuietOverrideBlocked = (): boolean =>
     sessionModalOpen() || Boolean(meetingMic?.claimed);
 
@@ -1498,9 +1507,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     activeSession: () => activeDictation?.session ?? null,
     cancelCurrentSpeech: () => speech.cancelCurrent(),
     cancelPendingAudio: () => speech.cancelPendingAudio(),
-    persist: (paused) => writeState({ muted, paused }),
+    persist: (paused) => writeState({ paused }),
     render: () => void renderSessionPanel(),
-    setModeState: (paused) => setState(muted ? "muted" : paused ? "paused" : "idle"),
+    setModeState: (paused) => setState(paused ? "paused" : "idle"),
     log,
     speak: (text) => speak(cfg, text),
     liveSessionIds: async () => (await registrySnapshot(cfg.claudeDir))?.liveIds ?? null,
@@ -1541,21 +1550,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
     globalHeldTurns: pending,
     pausedSessionIds,
     resumedSessionIds,
-    mutedSessionIds,
     sessionHeldTurns,
-    setMuted,
     enqueue,
     markInstantQueued: (event) => instantQueueBarriers.add(event),
-    forgetQueued: (sessionId) =>
-      markQueuedTurnsForMute(queue, (event) => forgottenTurns.add(event), sessionId),
-    forgetLatest: (sessionId) => {
-      if (sessionId === undefined) latestTurnBySession.clear();
-      else latestTurnBySession.delete(sessionId);
-    },
     cancelQueuedWakes: (sessionId) =>
       markQueuedWakesForControl(
         queue,
-        forgetQueuedAudioCommand,
+        cancelQueuedAudioCommand,
         sessionId,
       ),
     labelFor: labelForSessionId,
@@ -1577,17 +1578,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
       activeDictation?.requestExternal("spacebar", reason);
     } catch (error) {
       log(`resume digest mic cancellation failed: ${error}`);
-    }
-  };
-  const setSessionMutedWithDigest = (sessionId: string, next: boolean): void => {
-    let digestWasConsuming = false;
-    if (next) {
-      const forgotten = resumeDigestEscrow.forget(sessionId);
-      digestWasConsuming = forgotten.consuming;
-    }
-    instantControls.setSessionMuted(sessionId, next);
-    if (digestWasConsuming) {
-      cancelConsumingResumeDigest("resume-digest-session-muted");
     }
   };
   const setSessionPausedWithDigest = (sessionId: string, next: boolean): void => {
@@ -1638,10 +1628,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
     });
   };
 
-  const speak = async (speechCfg: Config, text: string, label = ""): Promise<void> => {
+  const speak = async (
+    speechCfg: Config,
+    text: string,
+    label = "",
+    // True when a person asked for this sound directly — a recite, an explicit
+    // `conch speak`. Those are answers, not conch volunteering, so manual mode
+    // does not silence them.
+    volunteered = false,
+  ): Promise<void> => {
     // The phone owning the voice has to mean it HERE, at the one place every
     // path funnels through. Gating the announce path alone left wake, recite,
-    // explicit speak, mute/pause acknowledgements and every error fallback
+    // explicit speak, mode acknowledgements and every error fallback
     // still talking — Tyler heard the Mac and the phone reading the same reply
     // simultaneously. A per-call-site gate is a list you can forget to add to;
     // this is not.
@@ -1670,6 +1668,23 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // where each is waiting on the other.
     if (normalMicOpen()) {
       log(`held "${label || "announcement"}" — the mic is open`);
+      return;
+    }
+
+    // Manual mode means conch does not speak FIRST. That has to be true here,
+    // at the funnel, not only in the announcement queue.
+    //
+    // The queue is gated, so turn-ends hold correctly — but every direct
+    // speak() call went around it: failure lines, acknowledgements, error
+    // fallbacks. Tyler heard a session announce "a system dialog is open on the
+    // Mac and it's blocking me" while in manual, and diagnosed it exactly:
+    // "might be the clipboard thing doesn't listen to being in manual mode?"
+    //
+    // Deliberately not gated on `spoken`: an explicit `conch speak` and a
+    // recite are things a person just asked for out loud, and manual is about
+    // conch volunteering, not about refusing to answer.
+    if (pause.paused && !volunteered) {
+      log(`held "${label || "announcement"}" — manual mode`);
       return;
     }
 
@@ -1765,24 +1780,25 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   function restoreDismissedSession(sessionId: string): boolean {
     const label = labelForSessionId(sessionId);
-    if (!restoreDismissedSessionState(
-      sessionId,
-      dismissedSessionIds,
-      mutedSessionIds,
-    )) return false;
+    if (!restoreDismissedSessionState(sessionId, dismissedSessionIds)) return false;
+    const held = dismissedHeldTurns.get(sessionId);
+    dismissedHeldTurns.delete(sessionId);
     log(`▶ restored "${label}" after dismiss`);
     void renderSessionPanel();
+    if (held) enqueue(held);
     return true;
   }
 
-  function enqueue(event: TurnEvent): void {
+  /** An unscoped audio command must never reopen the conversation the user hid. */
+  function latestVisibleTurn(): TurnEvent | null {
+    return lastTurn && !dismissedSessionIds.has(lastTurn.sessionId) ? lastTurn : null;
+  }
+
+  function enqueue(incoming: TurnEvent): void {
     if (shuttingDown) return;
-    // A named wake is the deliberate escape hatch from safe dismiss. Clear the
-    // hidden/muted state before arrival stamping so the wake and future turns
-    // are both usable again; an unnamed wake cannot identify a dismissed owner.
-    if (event.type === "wake" && event.sessionId) {
-      restoreDismissedSession(event.sessionId);
-    }
+    const event = incoming.type === normalizeLegacyModeControl(incoming.type)
+      ? incoming
+      : { ...incoming, type: normalizeLegacyModeControl(incoming.type) };
     if (!eventOrder.accept(event)) return;
 
     // Answering a session must not wait for a DIFFERENT session to finish
@@ -1808,14 +1824,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       return;
     }
 
-    const forgetOnArrival = shouldForgetMutedArrival(
-      event,
-      muted,
-      Boolean(event.sessionId && mutedSessionIds.has(event.sessionId)),
-    );
-    if (forgetOnArrival) {
-      forgottenTurns.add(event);
-    } else if (shouldHandleTurnAudibly(event, cfg.workingMic)) {
+    if (shouldHandleTurnAudibly(event, cfg.workingMic)) {
       latestTurnBySession.set(event.sessionId, event);
     }
     if (event.type === "resume") {
@@ -1826,8 +1835,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (
       event.type === "pause"
       || event.type === "resume"
-      || event.type === "mute"
-      || event.type === "unmute"
     ) {
       // Apply every mode edge synchronously. The queued event owns only its
       // spoken acknowledgement after the aborted exchange closes its barrier.
@@ -1840,19 +1847,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
         restorePreparedResumeDigest();
         resumeDigestArm = { owner: event, generation: null };
         silentPause.recordManualState(false);
-      } else if (event.type === "pause") {
+      } else {
         restorePreparedResumeDigest();
         resumeDigestArm = null;
         silentPause.recordManualState(true);
-      } else if (event.type === "mute") {
-        // Global mute deliberately forgets every held turn.
-        resumeDigestEscrow.restore();
-        resumeDigestArm = null;
-      } else {
-        // An intervening global edge makes a not-yet-started model plan stale.
-        resumeDigestArm = null;
       }
-      const transition = instantControls.applyGlobal(event.type);
+      const transition = instantControls.applyGlobal(event.type as "pause" | "resume");
       if (transition) {
         if (resumeDigestArm?.owner === event) {
           resumeDigestArm.generation = pause.capture();
@@ -1910,8 +1910,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
   }
 
-  // The at-rest status when nothing's in flight: muted wins over paused for display.
-  const restState = (): ConchState => (muted ? "muted" : pause.paused ? "paused" : "idle");
+  // The at-rest status reflects the one lossless quiet mode.
+  const restState = (): ConchState => (pause.paused ? "paused" : "idle");
 
   let panelRenderVersion = 0;
   let lastPublishedPanelState: PublishedState | null = null;
@@ -1934,7 +1934,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
    * dashboard still updates, and the phone speaks and listens instead.
    *
    * It ALWAYS returns to the Mac when the phone disconnects. A phone that walks
-   * out of the room must not leave the Mac permanently mute.
+   * out of the room must not leave the Mac permanently silent.
    */
   const phoneUploads = new PhoneUploads(join(CONCH_DATA, "uploads"));
   let phoneApplication: PhoneBridgeApplication | null = null;
@@ -2127,10 +2127,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const trackedIds = new Set([
         ...sessionStates.keys(),
         ...pausedSessionIds,
-        ...mutedSessionIds,
         ...prioritizedSessionIds,
         ...dismissedSessionIds,
         ...sessionHeldTurns.keys(),
+        ...dismissedHeldTurns.keys(),
         ...latestTurnBySession.keys(),
         ...pending.keys(),
       ]);
@@ -2140,10 +2140,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
         eventOrder.forget(id);
         pausedSessionIds.delete(id);
         resumedSessionIds.delete(id);
-        mutedSessionIds.delete(id);
         prioritizedSessionIds.delete(id);
         dismissedSessionIds.delete(id);
         sessionHeldTurns.delete(id);
+        dismissedHeldTurns.delete(id);
         latestTurnBySession.delete(id);
         pending.delete(id);
       }
@@ -2155,9 +2155,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       sessions: live,
       sessionStates,
       pausedSessionIds,
-      mutedSessionIds,
       live: liveState,
-      mode: { muted, paused: pause.paused, holding: pending.size },
+      mode: { muted: false, paused: pause.paused, holding: pending.size },
       activeSessionId: null,
       navSelectedId: null,
     });
@@ -2276,9 +2275,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
         sessions: live,
         sessionStates,
         pausedSessionIds,
-        mutedSessionIds,
         live: committedLiveState,
-        mode: { muted, paused: pause.paused, holding: pending.size },
+        mode: { muted: false, paused: pause.paused, holding: pending.size },
         activeSessionId: nextActiveSessionId,
         navSelectedId,
         reply: contentEvent && shownReply.text
@@ -2301,6 +2299,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       model.conversations = conversationsBySession;
       model.settingsOverlay = settingsOverlay?.model() ?? null;
       model.sessionActionsOverlay = sessionActionsOverlay?.model() ?? null;
+      model.restoreSessionsOverlay = restoreSessionsOverlay?.model() ?? null;
       panelOrder = model.rows.map((row) => row.sessionId);
       panelLabels = new Map(model.rows.map((row) => [row.sessionId, row.label]));
       // Keep dismissed metadata available for restore clients; visible rows and
@@ -2314,8 +2313,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
       numberedSessionRows = numberPanelSessionRows(model.rows, live);
       // Read mode state after the async registry snapshot so a slow older redraw
-      // cannot repaint a stale pause/mute banner over a newer toggle.
-      model.mode = { muted, paused: pause.paused, holding: pending.size };
+      // cannot repaint a stale manual banner over a newer toggle.
+      model.mode = { muted: false, paused: pause.paused, holding: pending.size };
       renderPanel(model);
       lastPublishedPanelState = buildDaemonPublishedState(
         cfg,
@@ -2458,18 +2457,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
     );
   }
 
-  function setMuted(next: boolean): void {
-    muted = next;
-    writeState({ muted, paused: pause.paused }); // persist so a restart doesn't un-mute
-    void renderSessionPanel(); // visual feedback must not wait on fallible audio
-    log(muted ? "muted — announcements and mic off (m or `conch unmute` to resume)" : "unmuted");
-    setState(restState());
-  }
-
-  async function announceMuted(next: boolean): Promise<void> {
-    await speak(cfg, muteAcknowledgement(next));
-  }
-
   async function listenForResumeDigest(
     generation: number,
     canContinue: () => boolean,
@@ -2545,9 +2532,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
     for (const sessionId of pausedSessionIds) {
       resumeDigestEscrow.invalidate(sessionId);
     }
-    for (const sessionId of mutedSessionIds) {
-      resumeDigestEscrow.forget(sessionId);
-    }
     const events = plan.events;
     let digestStopRequested = false;
     const digestInterrupted = (): boolean => {
@@ -2569,7 +2553,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (
         !digestStopRequested
         && !pause.paused
-        && !muted
         && !shuttingDown
       ) {
         await pause.announceResumed({
@@ -2629,8 +2612,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
     stopKey = false; // a stale press from a past exchange must not skip this one
     micOpen = false; // no listen in flight yet for this event
     if (event.type === "interrupt") return void (await interruptSession(event));
-    if (event.type === "mute") return muted ? announceMuted(true) : undefined;
-    if (event.type === "unmute") return !muted ? announceMuted(false) : undefined;
     if (event.type === "pause") return pause.paused ? pause.announcePaused() : undefined;
     if (event.type === "resume") {
       if (sessionModalOpen() || pause.paused) return;
@@ -2675,7 +2656,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const speechCfg = event.voice ? { ...cfg, ttsVoices: [event.voice] } : cfg;
       // Explicit previews bypass both modal pause gating and a label-keyed
       // persisted pin; an empty selection label makes the one-item ring win.
-      return speak(speechCfg, event.announce, event.voice ? "" : event.label);
+      // Asked for out loud, so manual does not silence it.
+      return speak(speechCfg, event.announce, event.voice ? "" : event.label, true);
     }
     handlingEvent = event;
     handlingPauseGeneration = pause.capture();
@@ -2702,8 +2684,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
       log(`"${event.label}" still has live background work — downgrading to working`);
     }
 
-    const audibleTurn = shouldHandleTurnAudibly(event, cfg.workingMic)
-      && audioLease.sink === "mac";
+    // Quiet state belongs to the conversation, not the device currently
+    // speaking it. The phone owns playback only; it must not bypass a scoped
+    // manual/dismiss gate and make that session audible from another surface.
+    const controlledTurn = shouldHandleTurnAudibly(event, cfg.workingMic);
+    const audibleTurn = controlledTurn && audioLease.sink === "mac";
     if (
       audibleTurn
       && sessionGoneFromSnapshot(
@@ -2717,10 +2702,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
       latestTurnBySession.delete(event.sessionId);
       pausedSessionIds.delete(event.sessionId);
       resumedSessionIds.delete(event.sessionId);
-      mutedSessionIds.delete(event.sessionId);
       prioritizedSessionIds.delete(event.sessionId);
       dismissedSessionIds.delete(event.sessionId);
       sessionHeldTurns.delete(event.sessionId);
+      dismissedHeldTurns.delete(event.sessionId);
       pending.delete(event.sessionId);
       if (lastTurn?.sessionId === event.sessionId) lastTurn = null;
       void renderSessionPanel();
@@ -2729,7 +2714,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (shuttingDown || interruptedByPause() || consumeStopKey()) return;
     if (!eventOrder.isCurrent(event)) return;
 
-    // Dashboard status — visual, and updated even while muted/paused. Ordinary
+    // Dashboard status — visual, and updated even while manual. Ordinary
     // `working` and all `needs-you` events are visual-only. A Stop reclassified
     // as background-working may opt back into the normal bell/voice/mic path.
     if (event.type === "working") {
@@ -2750,60 +2735,51 @@ export async function runDaemon(cfg: Config): Promise<void> {
       event.review,
     )) return;
 
-    // Mute stamps at enqueue/control time, so a quick unmute cannot resurrect a
-    // turn that completed while quiet. Keep the status update above visible.
-    if (forgottenTurns.delete(event)) {
-      if (event.type === "wake" || event.type === "recite") {
-        return log(`cancelled queued ${event.type} for "${event.label}"`);
-      }
-      if (audibleTurn) lastTurn = event;
-      return log(`muted — forgot queued turn for "${event.label}"`);
+    if (cancelledAudioCommands.delete(event)) {
+      return log(`cancelled queued ${event.type} for "${event.label}"`);
     }
 
-    const controlDisposition = gateTurnForControls(event, audibleTurn, {
-      globalMuted: muted,
+    const controlDisposition = gateTurnForControls(event, controlledTurn, {
       globalPaused: pause.paused,
       settingsOpen: explicitQuietOverrideBlocked(),
       globalHeldTurns: pending,
       pausedSessionIds,
       resumedSessionIds,
-      mutedSessionIds,
       sessionHeldTurns,
+      dismissedSessionIds,
+      dismissedHeldTurns,
     });
     if (controlDisposition) {
-      if (audibleTurn || event.ntype === "idle_prompt") lastTurn = event;
-      if (controlDisposition === "session-muted") {
-        return log(`🔇 "${event.label}" muted — staying quiet`);
+      if (controlDisposition === "session-dismissed") {
+        return log(`dismissed — holding latest turn for "${event.label}"`);
       }
-      if (controlDisposition === "global-muted") {
-        return log(`muted — staying quiet for "${event.label}"`);
-      }
+      if (controlledTurn || event.ntype === "idle_prompt") lastTurn = event;
       if (controlDisposition === "session-paused") {
-        return log(`⏸ "${event.label}" paused — park it and press p to resume`);
+        return log(`⏸ "${event.label}" is manual — park it and press p for auto`);
       }
       void renderSessionPanel();
-      return log(`paused — holding "${event.label}" (${pending.size} waiting)`);
+      return log(`manual — holding "${event.label}" (${pending.size} waiting)`);
     }
 
     // Nobody's there: don't announce to an empty room, don't open the mic,
     // don't burn battery on sox/whisper. Telegram (the other hook) still
     // pings the phone. `conch wake` always cuts through.
     // Only reach for ioreg when the away-timer is actually armed (default off) —
-    // muted short-circuits without spawning anything.
-    if (event.type !== "wake" && event.type !== "recite" && (muted || cfg.awayAfterSecs)) {
-      const idle = muted ? 0 : (await idleSeconds() ?? 0); // null probe → 0 → not away (fail safe)
-      if (muted || idle >= cfg.awayAfterSecs) {
-        log(`${muted ? "muted" : `away (idle ${Math.round(idle / 60)}m)`} — staying quiet for "${event.label}"`);
+    if (event.type !== "wake" && event.type !== "recite" && cfg.awayAfterSecs) {
+      const idle = await idleSeconds() ?? 0; // null probe → 0 → not away (fail safe)
+      if (idle >= cfg.awayAfterSecs) {
+        log(`away (idle ${Math.round(idle / 60)}m) — staying quiet for "${event.label}"`);
         if (audibleTurn || event.ntype === "idle_prompt") lastTurn = event; // wake still finds it
         return;
       }
     }
 
     if (event.type === "recite") {
+      const rememberedTurn = latestVisibleTurn();
       const target: TurnEvent | null = event.sessionId
         ? event
-        : lastTurn
-          ? { ...lastTurn, type: "recite", announce: "" }
+        : rememberedTurn
+          ? { ...rememberedTurn, type: "recite", announce: "" }
           : null;
       if (!target) {
         log("nothing to recite — no session has spoken yet");
@@ -2839,7 +2815,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         log(`recite -> "${target.label}"`);
         if (cfg.revealOnTurn && target.pid) void revealSessionWindow(target.pid);
         resetReadingProgress();
-        await speak(cfg, `${target.label}:`, target.label);
+        await speak(cfg, `${target.label}:`, target.label, true);
         if (shuttingDown || interruptedByPause()) return;
         // event.announce is intentionally empty, so conversationLoop starts at
         // sentence zero. autoTurn=false avoids the keyboard-activity mic gate.
@@ -2862,10 +2838,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
 
     if (event.type === "wake") {
-      const target = resolveWakeTarget(event, lastTurn); // named wake carries its own session
+      const target = resolveWakeTarget(event, latestVisibleTurn()); // named wake carries its own session
       if (!target) {
         log("wake with nothing to wake — no session has announced yet");
-        return void (await speak(cfg, "Nothing to wake. No session has spoken yet."));
+        return void (await speak(cfg, "Nothing to wake. No session has spoken yet.", "", true));
       }
       recitingEvent = target;
       try {
@@ -2878,12 +2854,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
         if (targetGone) {
           if (lastTurn?.sessionId === target.sessionId) lastTurn = null;
           log("wake target closed");
-          return void (await speak(cfg, "That session is closed."));
+          return void (await speak(cfg, "That session is closed.", "", true));
         }
         log(`wake -> "${target.label}"`);
         if (cfg.revealOnTurn && target.pid) void revealSessionWindow(target.pid); // surface it, no focus steal
         resetReadingProgress();
-        await speak(cfg, `Mic open for ${target.label}.`, target.label);
+        await speak(cfg, `Mic open for ${target.label}.`, target.label, true);
         if (interruptedByPause()) return;
         await conversationLoop(target, "", undefined, undefined, undefined, undefined, undefined, undefined, false, pauseGeneration);
       } finally {
@@ -4585,25 +4561,37 @@ export async function runDaemon(cfg: Config): Promise<void> {
       return renamed.label;
     },
     dismiss: (target) => {
-      // Hide before the mute helper repaints, so no intermediate
-      // muted-but-visible row flashes behind the closing modal.
       dismissedSessionIds.add(target.sessionId);
+      if (lastTurn?.sessionId === target.sessionId) lastTurn = null;
       panelOrder = panelOrder.filter((sessionId) => sessionId !== target.sessionId);
       panelLabels.delete(target.sessionId);
-      speech.cancelCurrent();
+      const digestWasConsuming = resumeDigestEscrow.invalidate(target.sessionId).consuming;
+      pause.interrupt({
+        sessionId: target.sessionId,
+        hold: dismissedHeldTurns,
+        preserveHeld: true,
+      });
+      if (digestWasConsuming) cancelConsumingResumeDigest("resume-digest-session-dismissed");
       for (let index = queue.length - 1; index >= 0; index--) {
         const queued = queue[index]!;
         if (queued.type === "speak" && queued.sessionId === target.sessionId) {
           queue.splice(index, 1);
         }
       }
+      markQueuedWakesForControl(queue, cancelQueuedAudioCommand, target.sessionId);
       theaterNavigation.release();
-      setSessionMutedWithDigest(target.sessionId, true);
       log(`dismissed "${target.label}" — announcements stopped; session keeps running`);
+      void renderSessionPanel();
     },
     restore: restoreDismissedSession,
   };
   sessionActionsOverlay = new SessionActionsOverlay({
+    controller: sessionActions,
+    onOpen: () => settingsPause.open(),
+    onClose: () => settingsPause.close(),
+    onChange: () => void renderSessionPanel(),
+  });
+  restoreSessionsOverlay = new RestoreSessionsOverlay({
     controller: sessionActions,
     onOpen: () => settingsPause.open(),
     onClose: () => settingsPause.close(),
@@ -4625,7 +4613,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     busy: () => busy,
     stopSpacebar: () => stopReciting("spacebar"),
     setSessionPaused: setSessionPausedWithDigest,
-    setSessionMuted: setSessionMutedWithDigest,
+    isDismissedSession: (sessionId) => dismissedSessionIds.has(sessionId),
     enrichAudioCommand: enrichSocketAudioCommand,
     enqueueInstant: (event) => instantControls.enqueueInstant(event),
     enqueue,
@@ -5011,8 +4999,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     chmodSync(cfg.socketPath, 0o600);
   } catch {}
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);
-  if (muted) log("resuming muted (persisted) — m or `conch unmute` to turn on");
-  if (pause.paused) log("resuming paused (persisted) — p or `conch resume` to turn on");
+  if (pause.paused) log("starting in manual mode (persisted) — p or `conch resume` turns auto on");
   rendererLifecycle.enter();
   setState(restState());
   void renderSessionPanel(); // show the dashboard immediately
@@ -5105,20 +5092,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
   /** Audition every live session in its assigned voice — `conch voice <session> <voice>` reassigns. */
   async function auditionVoices(): Promise<void> {
     if (busy) return log("busy — audition after the current exchange");
-    if (muted || pause.paused) return log("quiet mode — unmute/resume before auditioning voices");
+    if (pause.paused) return log("manual mode — resume before auditioning voices");
     busy = true;
     const controlGeneration = pause.capture();
     try {
       const rows = await numberedSessions();
-      if (pause.interrupted(controlGeneration) || muted || pause.paused) return;
+      if (pause.interrupted(controlGeneration) || pause.paused) return;
       if (!rows.length) return log("no live sessions");
       for (const r of rows) {
-        if (pause.interrupted(controlGeneration) || muted || pause.paused) break;
+        if (pause.interrupted(controlGeneration) || pause.paused) break;
         logAbove(`  \x1b[36m${r.n}\x1b[0m ${r.label} — \x1b[35m${voiceFor(cfg, r.label)}\x1b[0m`);
         await speak(cfg, `${r.label} sounds like this.`, r.label);
-        if (pause.interrupted(controlGeneration) || muted || pause.paused) break;
+        if (pause.interrupted(controlGeneration) || pause.paused) break;
       }
-      if (!pause.interrupted(controlGeneration) && !muted && !pause.paused) {
+      if (!pause.interrupted(controlGeneration) && !pause.paused) {
         logAbove('  \x1b[2mreassign: conch voice <session> <kokoro-voice>\x1b[0m');
       }
     } finally {
@@ -5221,7 +5208,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     speech.cancelPendingAudio();
     // Space remains the guaranteed stop even when an instant takeover is
     // queued behind the old exchange's deliberately un-killed Whisper job.
-    markQueuedWakesForControl(queue, forgetQueuedAudioCommand);
+    markQueuedWakesForControl(queue, cancelQueuedAudioCommand);
     activeDictation?.requestExternal("spacebar");
     log(activeDictation?.session.micOpen || micOpen ? `⏹ ${src} — closing mic` : `⏹ ${src} — stopped`);
   }
@@ -5231,30 +5218,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
       ? theaterNavigation.manualControlTarget()
       : cursorAuto ? null : selectedId,
     globalPaused: () => pause.paused,
-    globalMuted: () => muted,
     sessionPaused: (id) => pausedSessionIds.has(id),
-    sessionMuted: (id) => mutedSessionIds.has(id),
     setGlobalPaused: (next) => enqueue({
       type: next ? "pause" : "resume",
       sessionId: "",
       label: "",
       announce: "",
     }),
-    setGlobalMuted: (next) => enqueue({
-      type: next ? "mute" : "unmute",
-      sessionId: "",
-      label: "",
-      announce: "",
-    }),
     setSessionPaused: setSessionPausedWithDigest,
-    setSessionMuted: setSessionMutedWithDigest,
   };
 
   // Interactive keys when running in a terminal.
   const dispatchTerminalInput = shouldDispatchTerminalInput(rendererSelection.kind);
-  // Keep any attached maintenance pane raw so typed Ctrl-C is harmless data,
-  // not SIGINT. Only the chosen theater renderer may dispatch those bytes as
-  // controls; all other renderer panes deliberately drain them read-only.
+  // Raw input keeps Ctrl-C in the same explicit shutdown path as q. Both
+  // rendered dashboards dispatch their advertised controls; headless does not.
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
     process.stdin.resume();
@@ -5265,6 +5242,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         theaterMode
         && !settingsOverlay?.isOpen()
         && !sessionActionsOverlay?.isOpen()
+        && !restoreSessionsOverlay?.isOpen()
       ) {
         let wheel = 0;
         for (const event of events) {
@@ -5281,6 +5259,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // fallthrough so terminal-safe daemon shutdown can always run.
       if (settingsOverlay?.handleKey(c)) return;
       if (sessionActionsOverlay?.handleKey(c)) return;
+      if (restoreSessionsOverlay?.handleKey(c)) return;
       if (theaterMode && c === ",") {
         settingsOverlay?.open();
         return;
@@ -5294,6 +5273,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
           });
           return;
         }
+      }
+      if (theaterMode && c === "u") {
+        restoreSessionsOverlay?.open(
+          [...dismissedSessionIds].map((sessionId) => ({
+            sessionId,
+            label: labelForSessionId(sessionId),
+          })),
+        );
+        return;
       }
       if (c === " ") {
         if (busy) stopReciting("spacebar");
@@ -5343,7 +5331,7 @@ function log(msg: string): void {
 
 /** Seconds since the user last touched keyboard or mouse (macOS HID idle time). */
 /** Seconds since the last keyboard/mouse/trackpad event, or `null` if the HID probe
- *  couldn't be read — callers must fail SAFE (don't gate / don't auto-mute) on null. */
+ *  couldn't be read — callers must fail SAFE (don't gate / don't auto-silence) on null. */
 async function idleSeconds(): Promise<number | null> {
   try {
     const proc = Bun.spawn(["ioreg", "-c", "IOHIDSystem"], { stdout: "pipe", stderr: "ignore" });

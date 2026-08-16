@@ -15,6 +15,8 @@ struct LedgerView: View {
     @State private var showingSettings = false
     /// What the user just asked for, shown until the daemon's own state agrees.
     @State private var pendingPassive: Bool?
+    @State private var sessionActionError: String?
+    @State private var showingSessionActionError = false
 
     /// The running binary's own build time — the only claim about which
     /// build this is that cannot be stale.
@@ -31,7 +33,8 @@ struct LedgerView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if let state = bridge.state, !state.rows.isEmpty {
+                if let state = bridge.state,
+                   !state.rows.isEmpty || !state.dismissedRows.isEmpty {
                     List {
                         // A dead connection must be LEGIBLE, not a private 8px
                         // dot: these rows are a snapshot, and their ages keep
@@ -53,6 +56,51 @@ struct LedgerView: View {
                             .listRowBackground(Palette.bg)
                             .listRowSeparatorTint(Palette.divider)
                             .opacity(bridge.isConnected ? 1 : 0.55)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button(role: .destructive) {
+                                    runSessionCommand(.dismiss, id: row.id, label: row.label)
+                                } label: {
+                                    Label("Dismiss", systemImage: "eye.slash")
+                                }
+                                .disabled(!bridge.isConnected)
+                                .accessibilityLabel("Dismiss \(row.label)")
+                            }
+                        }
+
+                        if !state.dismissedRows.isEmpty {
+                            Section {
+                                ForEach(state.dismissedRows) { row in
+                                    HStack(spacing: 12) {
+                                        Image(systemName: "eye.slash")
+                                            .font(.system(size: 14))
+                                            .foregroundStyle(Palette.textFaint)
+                                            .frame(width: 22)
+                                            .accessibilityHidden(true)
+                                        Text(row.label)
+                                            .font(Type.sessionName)
+                                            .foregroundStyle(Palette.textDim)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                        Spacer(minLength: 8)
+                                        Button("Restore") {
+                                            runSessionCommand(.restore, id: row.id, label: row.label)
+                                        }
+                                        .font(Type.caption.weight(.medium))
+                                        .foregroundStyle(Palette.micOpen)
+                                        .buttonStyle(.borderless)
+                                        .disabled(!bridge.isConnected)
+                                        .accessibilityLabel("Restore \(row.label)")
+                                    }
+                                    .listRowBackground(Palette.bg)
+                                    .listRowSeparatorTint(Palette.divider)
+                                }
+                            } header: {
+                                Text("Dismissed")
+                                    .foregroundStyle(Palette.textFaint)
+                            } footer: {
+                                Text("Dismissed sessions keep running on your Mac.")
+                                    .foregroundStyle(Palette.textFaint)
+                            }
                         }
                     }
                     .listStyle(.plain)
@@ -139,6 +187,27 @@ struct LedgerView: View {
         } message: {
             Text("You'll need to run conch pair on the Mac again to reconnect.")
         }
+        .alert("Couldn't update that session", isPresented: $showingSessionActionError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(sessionActionError ?? "Your Mac may have gone away.")
+        }
+    }
+
+    private func runSessionCommand(
+        _ command: BridgeClient.SessionCommand,
+        id: String,
+        label: String
+    ) {
+        Task {
+            guard await bridge.send(sessionCommand: command, sessionId: id) else {
+                let verb = command == .dismiss ? "dismiss" : "restore"
+                sessionActionError = bridge.lastError
+                    ?? "Couldn't \(verb) \(label). Your Mac may have gone away."
+                showingSessionActionError = true
+                return
+            }
+        }
     }
 
     /// Active or passive, in one tap.
@@ -163,10 +232,6 @@ struct LedgerView: View {
             pendingPassive = next
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             Task {
-                // PAUSE, not mute. Mute FORGETS finished turns — Tyler pressed
-                // this and lost two. Pause holds them and replays on resume,
-                // which is what "not right now" should ever mean.
-                //
                 // And it does NOT hand the Mac back: which machine is primary
                 // is decided by whether this app is open, not by a button that
                 // would then mean two things at once.
@@ -305,6 +370,6 @@ struct SessionRowView: View {
             }
         }
         .padding(.vertical, 8)
-        .opacity(row.muted || row.paused ? 0.72 : 1)
+        .opacity(row.paused ? 0.72 : 1)
     }
 }

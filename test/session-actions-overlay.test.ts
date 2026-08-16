@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  RestoreSessionsOverlay,
   SessionActionsOverlay,
   type SessionActionsController,
   type SessionActionsTarget,
@@ -17,6 +18,7 @@ class FakeController implements SessionActionsController {
   priorityWrites: Array<{ sessionId: string; prioritized: boolean }> = [];
   renames: Array<{ target: SessionActionsTarget; label: string }> = [];
   dismissals: SessionActionsTarget[] = [];
+  restorations: string[] = [];
 
   voiceCandidates(): readonly string[] {
     return this.candidates;
@@ -59,7 +61,9 @@ class FakeController implements SessionActionsController {
     this.dismissals.push({ ...target });
   }
 
-  restore(): void {}
+  restore(sessionId: string): void {
+    this.restorations.push(sessionId);
+  }
 }
 
 function moveTo(overlay: SessionActionsOverlay, key: SessionActionKey): void {
@@ -234,5 +238,49 @@ describe("SessionActionsOverlay", () => {
     expect(controller.dismissals).toEqual([{ sessionId: "a", label: "Alpha" }]);
     expect(overlay.isOpen()).toBe(false);
     expect(lifecycle).toEqual(["open", "close"]);
+  });
+});
+
+describe("RestoreSessionsOverlay", () => {
+  test("selects and restores any dismissed session, then stays open for the rest", () => {
+    const controller = new FakeController();
+    const lifecycle: string[] = [];
+    let changes = 0;
+    const overlay = new RestoreSessionsOverlay({
+      controller,
+      onOpen: () => lifecycle.push("open"),
+      onClose: () => lifecycle.push("close"),
+      onChange: () => changes++,
+    });
+    overlay.open([
+      { sessionId: "a", label: "Alpha" },
+      { sessionId: "b", label: "Beta" },
+      { sessionId: "c", label: "Gamma" },
+    ]);
+    overlay.handleKey("\x1b[B");
+    overlay.handleKey("\r");
+    expect(controller.restorations).toEqual(["b"]);
+    expect(overlay.model()?.rows.map((row) => row.id)).toEqual(["a", "c"]);
+    expect(overlay.isOpen()).toBeTrue();
+    overlay.handleKey("\r");
+    overlay.handleKey("\r");
+    expect(controller.restorations).toEqual(["b", "c", "a"]);
+    expect(overlay.isOpen()).toBeFalse();
+    expect(lifecycle).toEqual(["open", "close"]);
+    expect(changes).toBeGreaterThan(3);
+  });
+
+  test("does not open an empty tray and lets Ctrl-C reach shutdown", () => {
+    const overlay = new RestoreSessionsOverlay({
+      controller: new FakeController(),
+      onChange() {},
+    });
+    overlay.open([]);
+    expect(overlay.isOpen()).toBeFalse();
+    overlay.open([{ sessionId: "a", label: "Alpha" }]);
+    expect(overlay.handleKey("\u0003")).toBeFalse();
+    expect(overlay.isOpen()).toBeTrue();
+    expect(overlay.handleKey("\x1b")).toBeTrue();
+    expect(overlay.isOpen()).toBeFalse();
   });
 });

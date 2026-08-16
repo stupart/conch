@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import {
   createConfigController,
+  daemonStateFromUnknown,
   downgradeTurnWithLiveBackgroundWork,
   dispatchControlMessage,
   insertQueuedEvent,
@@ -34,6 +35,13 @@ function fixture(settings: Record<string, unknown> = {}): { path: string } {
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+test("legacy persisted quiet state migrates into lossless manual mode", () => {
+  expect(daemonStateFromUnknown({ muted: true, paused: false })).toEqual({ paused: true });
+  expect(daemonStateFromUnknown({ muted: false, paused: true })).toEqual({ paused: true });
+  expect(daemonStateFromUnknown({ muted: false, paused: false })).toEqual({ paused: false });
+  expect(daemonStateFromUnknown(null)).toEqual({ paused: false });
 });
 
 describe("daemon listen status hooks", () => {
@@ -515,10 +523,20 @@ describe("daemon config controller", () => {
     expect(completePrune).toContain("pending.delete(id)");
     expect(completePrune).toContain("eventOrder.prune(liveIds)");
     expect(closedCleanup).toContain("pending.delete(event.sessionId)");
-    expect(dismiss.indexOf("dismissedSessionIds.add(target.sessionId)")).toBeLessThan(
-      dismiss.indexOf("setSessionMutedWithDigest(target.sessionId, true)"),
-    );
+    expect(dismiss).toContain("dismissedSessionIds.add(target.sessionId)");
+    expect(dismiss).toContain("if (lastTurn?.sessionId === target.sessionId) lastTurn = null");
+    expect(dismiss).toContain("hold: dismissedHeldTurns");
+    expect(dismiss).not.toContain("setSessionMutedWithDigest");
     expect(daemonSource).toContain("dismissedSessionIds.delete(event.sessionId)");
+
+    const quietGate = daemonSource.slice(
+      daemonSource.indexOf("const controlDisposition = gateTurnForControls"),
+      daemonSource.indexOf("// Nobody's there:"),
+    );
+    expect(quietGate.indexOf('controlDisposition === "session-dismissed"'))
+      .toBeLessThan(quietGate.indexOf("lastTurn = event"));
+    expect(daemonSource).toContain("resolveWakeTarget(event, latestVisibleTurn())");
+    expect(daemonSource).toContain("const rememberedTurn = latestVisibleTurn()");
   });
 
   test("recite routes through the existing reader without a bell or responded guard", () => {
@@ -528,7 +546,7 @@ describe("daemon config controller", () => {
     );
 
     expect(branch).toContain("lastAssistantText(target.transcriptPath)");
-    expect(branch).toContain("await speak(cfg, `${target.label}:`, target.label)");
+    expect(branch).toContain("await speak(cfg, `${target.label}:`, target.label, true)");
     expect(branch).toContain("await conversationLoop(");
     expect(branch).toContain("false,\n          pauseGeneration");
     expect(branch).not.toContain("ringBell");
@@ -604,7 +622,7 @@ describe("daemon config controller", () => {
     );
   });
 
-  test("resume digest escrow rejects stale ownership and scoped mute invalidates it", () => {
+  test("resume digest escrow rejects stale ownership and scoped manual mode invalidates it", () => {
     const setup = daemonSource.slice(
       daemonSource.indexOf("const resumeDigestEscrow"),
       daemonSource.indexOf("const settingsPause"),
@@ -619,9 +637,7 @@ describe("daemon config controller", () => {
     );
 
     expect(setup).toContain("new ResumeDigestEscrow<TurnEvent>()");
-    expect(setup).toContain("resumeDigestEscrow.forget(sessionId)");
     expect(setup).toContain("resumeDigestEscrow.invalidate(sessionId)");
-    expect(setup).toContain("setSessionMutedWithDigest");
     expect(setup).toContain("setSessionPausedWithDigest");
     expect(setup).toContain("shouldUseResumeDigest(cfg.resumeDigest, events, pausedSessionIds)");
     expect(modeEdges).toContain("resumeDigestEscrow.settle(event, result.digested === true)");
@@ -638,6 +654,18 @@ describe("daemon config controller", () => {
     expect(shouldHandleTurnAudibly(background, false)).toBe(false);
     expect(shouldHandleTurnAudibly(background, true)).toBe(true);
     expect(shouldHandleTurnAudibly(submitted, true)).toBe(false);
+  });
+
+  test("conversation quiet gates do not depend on which device owns playback", () => {
+    const turnHandler = daemonSource.slice(
+      daemonSource.indexOf("const controlledTurn = shouldHandleTurnAudibly"),
+      daemonSource.indexOf("// Nobody's there:"),
+    );
+    expect(turnHandler).toContain(
+      'const audibleTurn = controlledTurn && audioLease.sink === "mac"',
+    );
+    expect(turnHandler).toContain("gateTurnForControls(event, controlledTurn");
+    expect(turnHandler).not.toContain("gateTurnForControls(event, audibleTurn");
   });
 
   test("live background work downgrades a turn end by mutating the same event", () => {
@@ -670,7 +698,7 @@ describe("daemon config controller", () => {
       daemonSource.indexOf("/**\n   * Speak with the barge-in recorder"),
     );
     const refreshAt = handleTurn.indexOf("sessionHasLiveBackgroundWork(event.transcriptPath)");
-    const audibleAt = handleTurn.indexOf("const audibleTurn = shouldHandleTurnAudibly");
+    const audibleAt = handleTurn.indexOf("const controlledTurn = shouldHandleTurnAudibly");
     expect(refreshAt).toBeGreaterThan(-1);
     expect(audibleAt).toBeGreaterThan(refreshAt);
     expect(handleTurn).toContain("downgradeTurnWithLiveBackgroundWork(event, true)");
@@ -722,7 +750,7 @@ describe("daemon config controller", () => {
 
     const turnEndStatus = daemonSource.slice(
       daemonSource.indexOf('if (event.type === "turn-end" && !setSessionState('),
-      daemonSource.indexOf("// Mute stamps", daemonSource.indexOf('if (event.type === "turn-end" && !setSessionState(')),
+      daemonSource.indexOf("if (cancelledAudioCommands.delete(event))", daemonSource.indexOf('if (event.type === "turn-end" && !setSessionState(')),
     );
     expect(turnEndStatus).toContain('"waiting"');
     expect(turnEndStatus).not.toContain('"review" : "waiting"');

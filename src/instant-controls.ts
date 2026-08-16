@@ -4,14 +4,20 @@ import {
   type PauseResumeResult,
 } from "./pause-controller.ts";
 
-export type GlobalModeControl = "pause" | "resume" | "mute" | "unmute";
+export type GlobalModeControl = "pause" | "resume";
 export type InstantAudioCommand = TurnEvent & { type: "wake" | "recite" };
 export type TurnControlDisposition =
-  | "session-muted"
-  | "global-muted"
+  | "session-dismissed"
   | "session-paused"
   | "global-paused"
   | null;
+
+/** Old clients may keep their verbs; the daemon never keeps their destructive meaning. */
+export function normalizeLegacyModeControl(type: TurnEvent["type"]): TurnEvent["type"] {
+  if (type === "mute") return "pause";
+  if (type === "unmute") return "resume";
+  return type;
+}
 
 export interface InstantControlsOptions {
   pause: PauseController;
@@ -23,16 +29,10 @@ export interface InstantControlsOptions {
    * everything is paused, and a global resume makes exemptions meaningless.
    */
   resumedSessionIds: Set<string>;
-  mutedSessionIds: Set<string>;
   sessionHeldTurns: Map<string, TurnEvent>;
-  setMuted(next: boolean): void;
   enqueue(event: TurnEvent): void;
   /** Mark this exact event as the protected replacement in the daemon queue. */
   markInstantQueued(event: InstantAudioCommand): void;
-  /** Permanently stamp already-queued turns as forgotten without hiding status. */
-  forgetQueued(sessionId?: string): void;
-  /** Remove muted work from the latest-turn replay index. */
-  forgetLatest(sessionId?: string): void;
   /** A queued wake/recite command must not restart audio after an instant edge. */
   cancelQueuedWakes(sessionId?: string): void;
   labelFor(sessionId: string): string;
@@ -63,18 +63,6 @@ export class InstantControls {
           preserveHeld: true,
         });
         return this.#options.pause.beginResume();
-      case "mute":
-      case "unmute":
-        if (control === "mute") {
-          this.#options.pause.forgetHeld();
-          this.#options.globalHeldTurns.clear();
-          this.#options.sessionHeldTurns.clear();
-          this.#options.forgetQueued();
-          this.#options.forgetLatest();
-        }
-        this.#options.pause.interrupt();
-        this.#options.setMuted(control === "mute");
-        return null;
     }
   }
 
@@ -103,7 +91,7 @@ export class InstantControls {
       this.#options.resumedSessionIds?.delete(sessionId);
       sessionHeldTurns.delete(sessionId);
       pause.interrupt({ sessionId, hold: sessionHeldTurns });
-      this.#options.log(`⏸ paused "${label}" — its latest turn will replay when you press p`);
+      this.#options.log(`⏸ manual for "${label}" — its latest turn will replay when you press p`);
     } else {
       // An explicit wake may run through pause. Stop and hold it before taking
       // the latest-only replay snapshot.
@@ -118,9 +106,9 @@ export class InstantControls {
       // global gate runs first.
       if (pause.paused) {
         this.#options.resumedSessionIds?.add(sessionId);
-        this.#options.log(`▶ resumed "${label}" — the rest stay paused`);
+        this.#options.log(`▶ auto for "${label}" — the rest stay manual`);
       } else {
-        this.#options.log(`▶ resumed "${label}"`);
+        this.#options.log(`▶ auto for "${label}"`);
       }
       const latest = sessionHeldTurns.get(sessionId);
       sessionHeldTurns.delete(sessionId);
@@ -129,66 +117,6 @@ export class InstantControls {
     this.#options.render();
   }
 
-  setSessionMuted(sessionId: string, next: boolean): void {
-    const {
-      pause,
-      mutedSessionIds,
-      sessionHeldTurns,
-    } = this.#options;
-    const label = this.#options.labelFor(sessionId);
-    this.#options.cancelQueuedWakes(sessionId);
-
-    if (next) {
-      mutedSessionIds.add(sessionId);
-      pause.forgetHeld(sessionId);
-      this.#options.globalHeldTurns.delete(sessionId);
-      sessionHeldTurns.delete(sessionId);
-      this.#options.forgetQueued(sessionId);
-      this.#options.forgetLatest(sessionId);
-    } else {
-      mutedSessionIds.delete(sessionId);
-    }
-    pause.interrupt({ sessionId });
-    this.#options.log(next
-      ? `🔇 muted "${label}" — it stays quiet and forgets finished turns`
-      : `▶ unmuted "${label}"`);
-    this.#options.render();
-  }
-}
-
-/** Events accepted while mute is active stay forgotten after a fast unmute. */
-export function shouldForgetMutedArrival(
-  event: Pick<TurnEvent, "type">,
-  globalMuted: boolean,
-  sessionMuted: boolean,
-): boolean {
-  if (!globalMuted && !sessionMuted) return false;
-  return event.type !== "wake"
-    && event.type !== "recite"
-    && event.type !== "speak"
-    && event.type !== "mute"
-    && event.type !== "unmute"
-    && event.type !== "pause"
-    && event.type !== "resume";
-}
-
-const GLOBAL_MODE_CONTROLS = new Set<TurnEvent["type"]>([
-  "mute",
-  "unmute",
-  "pause",
-  "resume",
-]);
-
-/** Stamp queued session work at a mute edge while leaving it available for UI status. */
-export function markQueuedTurnsForMute(
-  queue: readonly TurnEvent[],
-  mark: (event: TurnEvent) => void,
-  sessionId?: string,
-): void {
-  for (const event of queue) {
-    if (sessionId !== undefined && event.sessionId !== sessionId) continue;
-    if (!GLOBAL_MODE_CONTROLS.has(event.type) && event.type !== "speak") mark(event);
-  }
 }
 
 /** Explicit audio commands requested before a mode edge cannot restart afterward. */
@@ -212,20 +140,20 @@ export function markQueuedWakesForControl(
 }
 
 /**
- * Apply quiet-mode semantics to a future turn at the point the daemon handles
- * it. Pause keeps only the newest event; mute deletes any held event.
+ * Apply non-destructive quiet semantics when the daemon handles a future turn.
+ * Both manual mode and dismissal retain the newest event for replay.
  */
 export function gateTurnForControls(
   event: TurnEvent,
   audible: boolean,
   options: {
-    globalMuted: boolean;
     globalPaused: boolean;
     settingsOpen: boolean;
     globalHeldTurns: Map<string, TurnEvent>;
     pausedSessionIds: ReadonlySet<string>;
-    mutedSessionIds: ReadonlySet<string>;
     sessionHeldTurns: Map<string, TurnEvent>;
+    dismissedSessionIds?: ReadonlySet<string>;
+    dismissedHeldTurns?: Map<string, TurnEvent>;
     /**
      * Sessions resumed BY NAME while conch is paused globally.
      *
@@ -240,15 +168,10 @@ export function gateTurnForControls(
   // Explicit user commands cut through quiet modes. Settings remains a modal
   // pause: it traps input itself, and a queued command must not pierce it.
   const explicitQuietOverride = event.type === "wake" || event.type === "recite";
-  if (
-    audible
-    && !explicitQuietOverride
-    && options.mutedSessionIds.has(event.sessionId)
-  ) {
-    options.sessionHeldTurns.delete(event.sessionId);
-    return "session-muted";
+  if (audible && options.dismissedSessionIds?.has(event.sessionId)) {
+    if (!explicitQuietOverride) options.dismissedHeldTurns?.set(event.sessionId, event);
+    return "session-dismissed";
   }
-  if (!explicitQuietOverride && options.globalMuted) return "global-muted";
   if (
     audible
     && !explicitQuietOverride
@@ -265,8 +188,4 @@ export function gateTurnForControls(
     return "global-paused";
   }
   return null;
-}
-
-export function muteAcknowledgement(next: boolean): string {
-  return next ? "Muted." : "Back on.";
 }

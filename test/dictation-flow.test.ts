@@ -188,10 +188,6 @@ describe("controller/reducer integration contracts", () => {
     { label: "global resume", command: "resume", scoped: false, holds: false },
     { label: "session pause", command: "pause", scoped: true, holds: true },
     { label: "session resume", command: "resume", scoped: true, holds: false },
-    { label: "global mute", command: "mute", scoped: false, holds: false },
-    { label: "global unmute", command: "unmute", scoped: false, holds: false },
-    { label: "session mute", command: "mute", scoped: true, holds: false },
-    { label: "session unmute", command: "unmute", scoped: true, holds: false },
     { label: "instant recite", command: "recite", scoped: false, holds: false },
   ] as const) {
     test(`${control.label} lets an active Whisper finish but drops every result`, async () => {
@@ -228,10 +224,8 @@ describe("controller/reducer integration contracts", () => {
       };
       const globalHeldTurns = new Map<string, TurnEvent>();
       const pausedSessionIds = new Set<string>();
-      const mutedSessionIds = new Set<string>();
       const sessionHeldTurns = new Map<string, TurnEvent>();
       const enqueued: TurnEvent[] = [];
-      let muted = !control.scoped && control.command === "unmute";
       let abortCalls = 0;
       let abortTicket: ReturnType<DictationController["requestBarrier"]> | null = null;
       const pause = new PauseController({
@@ -263,15 +257,11 @@ describe("controller/reducer integration contracts", () => {
         globalHeldTurns,
         pausedSessionIds,
         resumedSessionIds: new Set<string>(),
-        mutedSessionIds,
         sessionHeldTurns,
-        setMuted: (next) => void (muted = next),
         enqueue(event) {
           enqueued.push(event);
         },
         markInstantQueued() {},
-        forgetQueued() {},
-        forgetLatest() {},
         cancelQueuedWakes() {},
         labelFor: () => "alpha",
         log() {},
@@ -281,20 +271,13 @@ describe("controller/reducer integration contracts", () => {
         pausedSessionIds.add("session-a");
         sessionHeldTurns.set("session-a", current);
       }
-      if (control.scoped && control.command === "unmute") {
-        mutedSessionIds.add("session-a");
-      }
       const capturedGeneration = pause.capture();
 
       const recite = { ...current, type: "recite" as const, announce: "" };
       if (control.command === "recite") {
         controls.enqueueInstant(recite);
       } else if (control.scoped) {
-        if (control.command === "pause" || control.command === "resume") {
-          controls.setSessionPaused("session-a", control.command === "pause");
-        } else {
-          controls.setSessionMuted("session-a", control.command === "mute");
-        }
+        controls.setSessionPaused("session-a", control.command === "pause");
       } else {
         controls.applyGlobal(control.command);
       }
@@ -305,9 +288,7 @@ describe("controller/reducer integration contracts", () => {
       expect(completed).toEqual([]);
       expect(backend.recorders[1]!.stopReasons).toEqual(["manual-reply"]);
       expect(pause.paused).toBe(!control.scoped && control.command === "pause");
-      expect(muted).toBe(!control.scoped && control.command === "mute");
       expect(pausedSessionIds.has("session-a")).toBe(control.scoped && control.command === "pause");
-      expect(mutedSessionIds.has("session-a")).toBe(control.scoped && control.command === "mute");
       if (control.command === "recite") expect(enqueued).toEqual([recite]);
 
       backend.recorders[1]!.finish("aborted successor");

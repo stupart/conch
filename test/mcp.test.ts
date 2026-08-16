@@ -409,7 +409,7 @@ describe("MCP tool discovery", () => {
     }
 
     expect(MCP_TOOLS[4].inputSchema.properties.action.enum)
-      .toEqual(["mute", "unmute", "pause", "resume"]);
+      .toEqual(["pause", "resume"]);
     expect(MCP_TOOLS[7].inputSchema.properties.sentences)
       .toMatchObject({ type: "integer", minimum: 1, default: 3 });
   });

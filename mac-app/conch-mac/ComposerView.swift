@@ -1,6 +1,84 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Unsent work belongs to the session it addresses, not to whichever row is
+/// currently occupying the composer. Keeping the whole entry here also makes
+/// text and files switch atomically; splitting them lets an attachment follow a
+/// different draft and recreates the same wrong-agent failure in another form.
+@MainActor
+final class ComposerDraftStore: ObservableObject {
+    private struct Entry: Codable {
+        var text = ""
+        var attachments: [URL] = []
+
+        var isEmpty: Bool { text.isEmpty && attachments.isEmpty }
+    }
+
+    private static let defaultsKey = "conch.mac.composerDrafts.v1"
+
+    @Published private var drafts: [String: Entry]
+    private let defaults: UserDefaults
+    private var previewSeed: String?
+
+    init(
+        defaults: UserDefaults = .standard,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) {
+        self.defaults = defaults
+        previewSeed = environment["CONCH_COMPOSER_TEXT"]
+        if let data = defaults.data(forKey: Self.defaultsKey),
+           let saved = try? JSONDecoder().decode([String: Entry].self, from: data) {
+            drafts = saved.filter { !$0.value.isEmpty }
+        } else {
+            drafts = [:]
+        }
+    }
+
+    func textBinding(for sessionID: String) -> Binding<String> {
+        Binding(
+            get: { [weak self] in self?.drafts[sessionID]?.text ?? "" },
+            set: { [weak self] text in
+                self?.update(sessionID) { $0.text = text }
+            }
+        )
+    }
+
+    func attachmentsBinding(for sessionID: String) -> Binding<[URL]> {
+        Binding(
+            get: { [weak self] in self?.drafts[sessionID]?.attachments ?? [] },
+            set: { [weak self] attachments in
+                self?.update(sessionID) { $0.attachments = attachments }
+            }
+        )
+    }
+
+    /// Screenshot automation needs non-empty text to exercise field layout. It
+    /// may seed only the first presented session; showing it under every session
+    /// would teach the preview path the exact ownership bug this store prevents.
+    func claimPreviewSeed(for sessionID: String) {
+        guard let previewSeed else { return }
+        self.previewSeed = nil
+        guard !previewSeed.isEmpty, drafts[sessionID] == nil else { return }
+        update(sessionID) { $0.text = previewSeed }
+    }
+
+    private func update(_ sessionID: String, mutate: (inout Entry) -> Void) {
+        var entry = drafts[sessionID] ?? Entry()
+        mutate(&entry)
+        if entry.isEmpty {
+            drafts[sessionID] = nil
+        } else {
+            drafts[sessionID] = entry
+        }
+        persist()
+    }
+
+    private func persist() {
+        guard let data = try? JSONEncoder().encode(drafts) else { return }
+        defaults.set(data, forKey: Self.defaultsKey)
+    }
+}
+
 /// Type to a session from the Mac, with images.
 ///
 /// conch could speak to an agent and the phone could type to one, but the Mac
@@ -16,6 +94,8 @@ import UniformTypeIdentifiers
 struct ComposerView: View {
     let sessionID: String
     let sessionLabel: String
+    @Binding var draft: String
+    @Binding var attachments: [URL]
     /// What conch is hearing right now, so dictation appears where you would
     /// type it rather than somewhere else on screen.
     let dictation: String
@@ -25,7 +105,7 @@ struct ComposerView: View {
     /// What conch's microphone is doing right now: "", "listening", "recording",
     /// "transcribing", "speaking".
     let voiceState: String
-    let onSend: (String) -> Void
+    let onSend: (String) -> Task<Bool, Never>
     let onInterrupt: () -> Void
     let onTalk: () -> Void
     let onRecite: () -> Void
@@ -33,14 +113,8 @@ struct ComposerView: View {
     /// following whichever session happens to be busiest.
     let onDraftStarted: () -> Void
 
-    /// Seeded from the environment so the composer can be photographed with
-    /// text in it. A text field only misbehaves once there is text — the
-    /// vertical centering bug Tyler found was invisible while the placeholder
-    /// was showing — and there is otherwise no way to look at that state
-    /// without a person typing into the window.
-    @State private var draft = ProcessInfo.processInfo.environment["CONCH_COMPOSER_TEXT"] ?? ""
-    @State private var attachments: [URL] = []
     @State private var isTargetedForDrop = false
+    @State private var isSending = false
     /// The field's real width, so height can be measured rather than guessed.
     @State private var fieldWidth: CGFloat = 0
     @FocusState private var fieldFocused: Bool
@@ -315,7 +389,7 @@ struct ComposerView: View {
     }
 
     private var canSend: Bool {
-        !composed.isEmpty
+        !composed.isEmpty && !isSending
     }
 
     /// One shared inset, applied identically to the editor and the placeholder
@@ -366,10 +440,26 @@ struct ComposerView: View {
     private func send() {
         let payload = composed
         guard !payload.isEmpty else { return }
-        onSend(payload)
-        draft = ""
-        attachments = []
-        fieldFocused = true
+        let submittedDraft = draft
+        let submittedAttachments = attachments
+        isSending = true
+        let delivery = onSend(payload)
+        Task { @MainActor in
+            let delivered = await delivery.value
+            isSending = false
+            fieldFocused = true
+            guard delivered else { return }
+
+            // A slow socket write must not erase work typed while it was in
+            // flight. Remove only the exact submitted prefix and files; an edit
+            // to that prefix is ambiguous, so preserving it is the safe outcome.
+            if draft == submittedDraft {
+                draft = ""
+            } else if !submittedDraft.isEmpty, draft.hasPrefix(submittedDraft) {
+                draft.removeFirst(submittedDraft.count)
+            }
+            attachments.removeAll { submittedAttachments.contains($0) }
+        }
     }
 
     private func chooseFiles() {
@@ -378,7 +468,9 @@ struct ComposerView: View {
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [.image, .pdf, .plainText]
         guard panel.runModal() == .OK else { return }
+        let wasEmpty = attachments.isEmpty
         attachments.append(contentsOf: panel.urls.filter { !attachments.contains($0) })
+        if wasEmpty, !attachments.isEmpty { onDraftStarted() }
     }
 
     private func load(_ providers: [NSItemProvider]) {
@@ -387,7 +479,9 @@ struct ComposerView: View {
                 guard let url else { return }
                 Task { @MainActor in
                     guard !attachments.contains(url) else { return }
+                    let wasEmpty = attachments.isEmpty
                     attachments.append(url)
+                    if wasEmpty { onDraftStarted() }
                 }
             }
         }

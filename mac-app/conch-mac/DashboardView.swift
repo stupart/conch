@@ -132,7 +132,6 @@ struct DashboardActions {
     let onShowKeyboardShortcuts: () -> Void
     let onTalkOrStop: () -> Void
     let onPauseOrResume: () -> Void
-    let onMuteOrUnmute: () -> Void
     let onRecite: () -> Void
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
@@ -370,25 +369,15 @@ private struct DashboardHeader: View {
         state?.mode.paused == true || selectedRow?.paused == true
     }
 
-    /// Mute is no longer offered, but it is still reachable from the CLI and
-    /// from older clients — and a state you can enter without a way out is a
-    /// trap. When something IS muted the toggle says so and unmutes it.
-    private var isMuted: Bool {
-        state?.mode.muted == true || selectedRow?.muted == true
-    }
-
     private var modeScope: String {
         selectedRow == nil ? "everything" : "this session"
     }
 
     /// What conch is DOING, which is not the same as what mode it is in.
     ///
-    /// The daemon's at-rest live state is the mode itself — it publishes
-    /// "muted" or "paused" when nothing is happening — so reporting live.state
-    /// verbatim printed the mode a second time, three inches from the toggle
-    /// that already says it. Removing the separate mode branch below did not
-    /// help, because this one returns first. Only genuine activity belongs
-    /// here.
+    /// The daemon's at-rest live state can be the mode itself, so reporting it
+    /// verbatim prints the mode a second time, three inches from the toggle that
+    /// already says it. Only genuine activity belongs here.
     private static let activityStates: Set<String> = [
         "speaking", "listening", "recording", "transcribing",
     ]
@@ -400,9 +389,8 @@ private struct DashboardHeader: View {
                 ? state.live.state
                 : "\(state.live.state) ‹\(state.live.label)›"
         }
-        // The MODE is the toggle's job now — saying "muted" here as well put
-        // the same word on screen twice, three inches apart. What the toggle
-        // cannot show is the consequence: how much work is waiting for you.
+        // The MODE is the toggle's job now. What it cannot show is the
+        // consequence: how much work is waiting for you.
         if state.mode.paused, state.mode.holding > 0 {
             return "holding \(state.mode.holding)"
         }
@@ -466,14 +454,13 @@ private struct DashboardHeader: View {
             // The global controls, moved up out of a bar of their own.
             //
             // The bottom strip held Talk — a duplicate of the mic now sitting in
-            // the composer — plus pause, mute, Settings, Logs and ?. Two of
-            // those are per-session and belong beside the session; the rest are
-            // app-level and belong in the app's own chrome. Deleting the strip
-            // gives the ledger and the composer the full height of the window,
-            // and stops the header being 42pt of wordmark.
+            // the composer — plus mode, Settings, Logs and ?. The session
+            // actions belong beside the session; the rest belong in the app's
+            // own chrome. Deleting the strip gives the ledger and composer the
+            // full height of the window, and stops the header being 42pt of
+            // wordmark.
             HeaderControls(
                 isManual: isManual,
-                isMuted: isMuted,
                 modeScope: modeScope,
                 isLogDrawerOpen: isLogDrawerOpen,
                 actions: actions
@@ -487,11 +474,10 @@ private struct DashboardHeader: View {
     }
 }
 
-/// Pause, mute, settings, logs, shortcuts — the things that act on conch itself
-/// rather than on one session.
+/// Mode, settings, logs, shortcuts — the things that act on conch itself rather
+/// than on one session.
 private struct HeaderControls: View {
     let isManual: Bool
-    let isMuted: Bool
     let modeScope: String
     let isLogDrawerOpen: Bool
     let actions: DashboardActions
@@ -499,16 +485,10 @@ private struct HeaderControls: View {
     var body: some View {
         HStack(spacing: 2) {
             // One control, two modes, and the word for the mode you are IN.
-            //
-            // Pause and mute sat side by side doing almost the same thing, and
-            // the more dangerous of the two wore the friendlier icon: mute
-            // FORGETS finished turns and has cost Tyler two of them. Mute is
-            // gone, and its only unique behaviour with it.
             ModeToggle(
                 isManual: isManual,
-                isMuted: isMuted,
                 scope: modeScope,
-                action: isMuted ? actions.onMuteOrUnmute : actions.onPauseOrResume
+                action: actions.onPauseOrResume
             )
             HeaderButton(
                 symbol: "gearshape",
@@ -599,7 +579,7 @@ private struct SessionLedger: View {
                                 // Escape released a selection, and Escape stops
                                 // reaching the dashboard the moment a composer
                                 // holds focus — which is now most of the time.
-                                // With no way to deselect, pause and mute stayed
+                                // With no way to deselect, manual mode stayed
                                 // scoped to one session forever: Tyler "seem[ed]
                                 // to lose the ability to pause the entire app
                                 // once I've started using it". A keystroke that
@@ -756,7 +736,7 @@ private struct DashboardRow: View {
     }
 
     private var isDimmed: Bool {
-        row.paused || row.muted
+        row.paused
     }
 
     private var isLiveSession: Bool {
@@ -964,7 +944,7 @@ private struct DashboardRow: View {
             // of the line where the eye lands last — after the age, hard right.
             //
             // It is deliberately NOT dimmed with the rest of the row. Dimming a
-            // muted row used to fade the glyph too, dropping it to 2.45:1 — so
+            // manual row used to fade the glyph too, dropping it to 2.45:1 — so
             // the pixel answering "why is this one silent?" became the least
             // legible thing on screen, in a product whose failure mode IS
             // silence. The row recedes; its verdict does not.
@@ -1118,8 +1098,7 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
     case waiting
     case needs
     case review
-    case muted
-    case paused
+    case manual
     case speaking
     case listening
     case recording
@@ -1147,19 +1126,12 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             self = .review
             return
         }
-        // Muting silences ANNOUNCEMENTS; it is not a request to stop tracking
-        // the session. These checks used to run before status, so a muted
-        // session that had finished showed only the mute glyph and its waiting
-        // turn became invisible — the worst possible failure in a product whose
-        // failure mode IS silence. The row's dimmed label and age already say
-        // "silenced"; the glyph goes on saying what the session actually needs.
+        // A mode glyph must not hide work waiting on the person. The row's dimmed
+        // label already carries manual mode; waiting and needs-response keep the
+        // more consequential glyph.
         let wantsUser = row.status == .waiting || row.status == .needs
-        if row.muted, !wantsUser {
-            self = .muted
-            return
-        }
         if row.paused, !wantsUser {
-            self = .paused
+            self = .manual
             return
         }
         switch row.live {
@@ -1195,9 +1167,7 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             return "exclamationmark.circle.fill"
         case .review:
             return "star.fill"
-        case .muted:
-            return "speaker.slash.fill"
-        case .paused:
+        case .manual:
             return "pause.fill"
         case .speaking:
             return "play.fill"
@@ -1212,7 +1182,7 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
         switch self {
         case .needs, .review, .recording:
             return 10.5
-        case .muted, .paused, .speaking:
+        case .manual, .speaking:
             return 9
         case .transcribing:
             return 11
@@ -1248,7 +1218,7 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             return ConchPalette.statusWorking.opacity(0.78)
         case .idle:
             return ConchPalette.textFaint
-        case .muted, .paused:
+        case .manual:
             // "Why is this one silent?" is a question the user actually asks;
             // textFaint answered it at 2.63:1, below AA.
             return ConchPalette.textDim
@@ -1267,10 +1237,8 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             return "Needs a response"
         case .review:
             return "Needs review"
-        case .muted:
-            return "Muted"
-        case .paused:
-            return "Paused"
+        case .manual:
+            return "Manual"
         case .speaking:
             return "Speaking"
         case .listening:
@@ -1291,6 +1259,7 @@ private struct ConversationPane: View {
 
     @EnvironmentObject private var store: StateStore
     @StateObject private var transcriptContent = TranscriptContentModel()
+    @StateObject private var composerDrafts = ComposerDraftStore()
 
     /// False = the deliverable in front, which is the pane's long-standing
     /// default: a session that produced an artifact is showing it to you.
@@ -1536,6 +1505,8 @@ private struct ConversationPane: View {
         ComposerView(
             sessionID: row.id,
             sessionLabel: row.label,
+            draft: composerDrafts.textBinding(for: row.id),
+            attachments: composerDrafts.attachmentsBinding(for: row.id),
             dictation: dictationForFocusedRow,
             isWorking: row.status == .working,
             voiceState: voiceStateForFocusedRow,
@@ -1567,6 +1538,9 @@ private struct ConversationPane: View {
                 onSelectSession(row)
             }
         )
+        .onAppear {
+            composerDrafts.claimPreviewSeed(for: row.id)
+        }
         .overlay(alignment: .top) {
             noteOverlay.offset(y: -26)
         }
@@ -2501,7 +2475,7 @@ private struct AllSessionsRow: View {
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
-        .help("Act on every session — pause, mute and talk apply to all")
+        .help("Act on every session — auto/manual and talk apply to all")
         .accessibilityLabel("All sessions")
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
@@ -2510,28 +2484,22 @@ private struct AllSessionsRow: View {
 /// Auto ⇄ manual. Named for what conch is doing, not for what the button does.
 private struct ModeToggle: View {
     let isManual: Bool
-    var isMuted = false
     let scope: String
     let action: () -> Void
 
     @State private var isHovered = false
 
     private var help: String {
-        if isMuted {
-            return "Muted — finished turns are being FORGOTTEN, not held. Unmute."
-        }
         return isManual
             ? "Manual — conch stays quiet and waits. Switch \(scope) to auto."
             : "Auto — finished turns read aloud and the mic opens itself. Switch \(scope) to manual."
     }
 
     private var symbol: String {
-        if isMuted { return "speaker.slash.fill" }
         return isManual ? "hand.raised.fill" : "waveform.circle.fill"
     }
 
     private var tint: Color {
-        if isMuted { return ConchPalette.statusNeeds }
         return isManual ? ConchPalette.textDim : ConchPalette.brandCyan
     }
 
@@ -2540,7 +2508,7 @@ private struct ModeToggle: View {
             HStack(spacing: 5) {
                 Image(systemName: symbol)
                     .font(.system(size: 11, weight: .medium))
-                Text(isMuted ? "Muted" : (isManual ? "Manual" : "Auto"))
+                Text(isManual ? "Manual" : "Auto")
                     .font(ConchTypography.font(size: 11, weight: .medium))
             }
             .foregroundStyle(tint)

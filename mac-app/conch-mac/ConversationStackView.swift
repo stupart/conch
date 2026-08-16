@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The conversation as a stack of messages, rather than one replaced string.
@@ -17,13 +18,17 @@ struct ConversationStackView: View {
     /// yanked away by an arriving message.
     @State private var pinnedToBottom = true
     @State private var expandedToolIDs: Set<String> = []
+    @State private var scrollRequestGeneration = 0
 
     private static let bottomAnchor = "conversation-bottom"
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                // The daemon caps this window at thirty items. Eager layout is
+                // therefore bounded, and avoids leaving the viewport pointed at
+                // an unmaterialised region while a streaming row changes height.
+                VStack(alignment: .leading, spacing: 14) {
                     if conversation.truncated {
                         Text("Earlier messages not shown")
                             .font(.system(size: 11))
@@ -44,22 +49,65 @@ struct ConversationStackView: View {
                 .padding(.horizontal, 18)
                 .padding(.vertical, 14)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    ConversationScrollObserver { isAtBottom in
+                        pinnedToBottom = isAtBottom
+                    }
+                )
             }
             .background(ConchPalette.bg)
-            .onChange(of: conversation.items.last?.rev) { _, _ in
+            .onChange(of: revisionVector) { _, _ in
+                // Capture the position from before SwiftUI lays out the added
+                // height. Geometry measured after growth briefly says "not at
+                // bottom" even when the reader was following; user-driven
+                // AppKit scroll notifications make that distinction explicit.
                 guard pinnedToBottom else { return }
-                withAnimation(.easeOut(duration: 0.18)) {
-                    proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
-                }
+                requestBottomScroll(using: proxy)
             }
             .onChange(of: conversation.sessionId) { _, _ in
                 // A different session is a different conversation: start at its
                 // end, and re-arm the follow.
                 pinnedToBottom = true
                 expandedToolIDs = []
+                requestBottomScroll(using: proxy)
+            }
+            .onAppear { requestBottomScroll(using: proxy) }
+        }
+    }
+
+    private struct RevisionVector: Equatable {
+        struct Item: Equatable {
+            let id: String
+            let revision: Int
+        }
+
+        let sessionID: String
+        let items: [Item]
+    }
+
+    /// Every row revision matters: tool results and plans can update an earlier
+    /// row even when the final message is unchanged. Published timestamps do not.
+    private var revisionVector: RevisionVector {
+        RevisionVector(
+            sessionID: conversation.sessionId,
+            items: conversation.items.map { .init(id: $0.id, revision: $0.rev) }
+        )
+    }
+
+    private func requestBottomScroll(using proxy: ScrollViewProxy) {
+        scrollRequestGeneration &+= 1
+        let generation = scrollRequestGeneration
+        Task { @MainActor in
+            // ScrollViewReader cannot resolve a sentinel until the new stack has
+            // participated in layout. A synchronous request can silently land on
+            // the old document height and leave a fresh session apparently empty.
+            await Task.yield()
+            guard generation == scrollRequestGeneration else { return }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
                 proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
             }
-            .onAppear { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
         }
     }
 
@@ -176,6 +224,116 @@ struct ConversationStackView: View {
         case "error": return ConchPalette.statusNeeds
         case "done": return ConchPalette.textFaint
         default: return ConchPalette.statusWorking
+        }
+    }
+}
+
+/// SwiftUI exposes scrolling commands on macOS 14, but not whether the person
+/// has moved the underlying scroll view. Listening only to AppKit's live-scroll
+/// notifications avoids treating content growth as a user scroll: the document
+/// may get taller while its clip view stays still, and that must not disarm an
+/// already-following conversation before it can advance to the new bottom.
+private struct ConversationScrollObserver: NSViewRepresentable {
+    let onUserScroll: (Bool) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onUserScroll: onUserScroll)
+    }
+
+    func makeNSView(context: Context) -> ProbeView {
+        let view = ProbeView()
+        view.onMoveToWindow = { [weak coordinator = context.coordinator, weak view] in
+            guard let view else { return }
+            coordinator?.attach(toAncestorOf: view)
+        }
+        DispatchQueue.main.async { [weak coordinator = context.coordinator, weak view] in
+            guard let view else { return }
+            coordinator?.attach(toAncestorOf: view)
+        }
+        return view
+    }
+
+    func updateNSView(_ view: ProbeView, context: Context) {
+        context.coordinator.onUserScroll = onUserScroll
+        DispatchQueue.main.async { [weak coordinator = context.coordinator, weak view] in
+            guard let view else { return }
+            coordinator?.attach(toAncestorOf: view)
+        }
+    }
+
+    static func dismantleNSView(_ view: ProbeView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    final class ProbeView: NSView {
+        var onMoveToWindow: (() -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            onMoveToWindow?()
+        }
+    }
+
+    final class Coordinator {
+        var onUserScroll: (Bool) -> Void
+        private weak var scrollView: NSScrollView?
+        private var observations: [NSObjectProtocol] = []
+
+        init(onUserScroll: @escaping (Bool) -> Void) {
+            self.onUserScroll = onUserScroll
+        }
+
+        deinit {
+            detach()
+        }
+
+        func attach(toAncestorOf view: NSView) {
+            var ancestor = view.superview
+            while let candidate = ancestor, !(candidate is NSScrollView) {
+                ancestor = candidate.superview
+            }
+            guard let scrollView = ancestor as? NSScrollView,
+                  scrollView !== self.scrollView else {
+                return
+            }
+
+            detach()
+            self.scrollView = scrollView
+            let center = NotificationCenter.default
+            for name in [
+                NSScrollView.didLiveScrollNotification,
+                NSScrollView.didEndLiveScrollNotification,
+            ] {
+                observations.append(
+                    center.addObserver(
+                        forName: name,
+                        object: scrollView,
+                        queue: .main
+                    ) { [weak self] _ in
+                        self?.publishPosition()
+                    }
+                )
+            }
+        }
+
+        func detach() {
+            let center = NotificationCenter.default
+            observations.forEach(center.removeObserver)
+            observations = []
+            scrollView = nil
+        }
+
+        private func publishPosition() {
+            guard let scrollView, let documentView = scrollView.documentView else { return }
+            let visible = scrollView.contentView.documentVisibleRect
+            let document = documentView.bounds
+            let distance: CGFloat
+            if documentView.isFlipped {
+                distance = document.maxY - visible.maxY
+            } else {
+                distance = visible.minY - document.minY
+            }
+            onUserScroll(document.height <= visible.height || distance <= 8)
         }
     }
 }

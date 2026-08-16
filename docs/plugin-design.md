@@ -30,7 +30,7 @@ SAFE tools (this scaffold — map to EXISTING socket sends / imports, no protoco
 - `conch_wake { session? }` — TurnEvent `wake`
 - `conch_recite { session? }` — TurnEvent `recite` + transcriptPath/mark
 - `conch_speak { text, voice? }` — TurnEvent `speak`
-- `conch_mode { action: mute|unmute|pause|resume }` — bare TurnEvent
+- `conch_mode { action: pause|resume }` — bare TurnEvent; old aliases normalize at the compatibility boundary
 - `conch_rename { session, label }` — `renameSessionLabel` import
 - `conch_config { key?, value?, unset? }` — `sendControlMessage`
 - `conch_transcript_tail { session, sentences? }` — `lastAssistantText`
@@ -49,4 +49,4 @@ DEFERRED tools (need a socket-protocol extension AND answers to open questions �
 4. `conch_close` destructiveness: inject `/exit` vs `kill <pid>`? spoken confirm?
 5. Review lifecycle: what clears a `review` latch — any prompt to that session, explicit dismiss, or both?
 6. `get-state` socket reply vs reading `/tmp/conch-sessions.json` (default: file-read first).
-7. Dismiss = mute coupling: keep it for the socket/phone path too?
+7. Dismiss/restore uses dedicated visibility state and preserves the latest turn for replay.

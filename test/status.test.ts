@@ -35,11 +35,11 @@ const ACTIVE_FOOTER_GOLDEN = "\n"
 
 const PAUSED_FOOTER_GOLDEN = "\n"
   + "  \x1b[1m🐚 conch\x1b[0m\n"
-  + "  \x1b[1;35m⏸ PAUSED · holding 2 · no parked cursor: p to resume\x1b[0m\n"
+  + "  \x1b[1;35m⏸ MANUAL · holding 2 · no parked cursor: p for auto\x1b[0m\n"
   + "  \x1b[2m────────────────────────────────────────────────────────────────────────────\x1b[0m\n"
   + "\x1b[36m▸\x1b[0m alpha                      \x1b[33m❗ needs a response\x1b[0m \x1b[2m(permission)\x1b[0m\n"
-  + "  \x1b[2mbeta                       ⏸ paused\x1b[0m\n"
-  + "  \x1b[2mgamma                      🔇 muted\x1b[0m\n";
+  + "  \x1b[2mbeta                       ⏸ manual\x1b[0m\n"
+  + "  \x1b[2mgamma                      ⏸ manual\x1b[0m\n";
 
 function sampleModel(overrides: Partial<PanelModel> = {}): PanelModel {
   return {
@@ -159,9 +159,8 @@ describe("theater status formatting", () => {
       mode: { muted: true, paused: true, holding: 2 },
       live: { state: "muted", label: "", partial: "" },
     })).replace(/\x1b\[[0-9;]*m/g, "");
-    expect(quiet).toBe("  conch · muted · paused · holding 2");
-    expect(quiet.match(/muted/g)).toHaveLength(1);
-    expect(quiet.match(/paused/g)).toHaveLength(1);
+    expect(quiet).toBe("  conch · manual · holding 2");
+    expect(quiet.match(/manual/g)).toHaveLength(1);
     expect(quiet.match(/holding 2/g)).toHaveLength(1);
   });
 });
@@ -359,7 +358,7 @@ describe("theater renderer lifecycle", () => {
     }));
 
     const plain = writes.at(-1)!.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-    expect(plain.match(/paused/g)).toHaveLength(1);
+    expect(plain.match(/manual/g)).toHaveLength(1);
     expect(plain.match(/holding 3/g)).toHaveLength(1);
     expect(plain).not.toContain("⏸");
     expect(plain.split("\n").at(-1)).toContain("keys");
@@ -540,9 +539,8 @@ describe("theater renderer lifecycle", () => {
     const frame = writes.at(-1)!;
     const plain = frame.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
     const mutedLine = plain.split("\n").find((line) => line.includes("muted-and-paused"));
-    expect(plain).toContain("⏸ paused");
-    expect(mutedLine).toContain("🔇 muted");
-    expect(mutedLine).not.toContain("⏸ paused");
+    expect(plain).toContain("⏸ manual");
+    expect(mutedLine).toContain("⏸ manual");
     expect(plain.toLowerCase()).not.toContain("snooz");
   });
 
@@ -1404,8 +1402,9 @@ test("theater is the default on a full TTY; footer is the opt-out", () => {
   expect(shouldUseTheater({}, false, true)).toBe(false);
 });
 
-test("only the selected theater renderer dispatches destructive terminal controls", () => {
+test("rendered terminal keybars dispatch controls", () => {
   expect(shouldDispatchTerminalInput("theater", true)).toBe(true);
   expect(shouldDispatchTerminalInput("theater", false)).toBe(false);
-  expect(shouldDispatchTerminalInput("footer", true)).toBe(false);
+  expect(shouldDispatchTerminalInput("footer", true)).toBe(true);
+  expect(shouldDispatchTerminalInput("headless", true)).toBe(false);
 });

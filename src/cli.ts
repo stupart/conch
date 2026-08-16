@@ -16,6 +16,7 @@ import { listenOnce } from "./listen.ts";
 import { speak, probeTtsServer, voiceFor, setVoiceOverride } from "./speak.ts";
 import { emitRecorderTraces } from "./diagnostics.ts";
 import { CONCH_VERSION } from "./version.ts";
+import { normalizeLegacyModeControl } from "./instant-controls.ts";
 import {
   SETTING_DESCRIPTORS,
   configSnapshotEntry,
@@ -45,7 +46,7 @@ Getting started:
 Everyday:
   conch wake [name] | recite [name]       talk again | reread the latest reply
   conch sessions | rename <session> <name> list sessions | save a display name
-  conch mute | unmute | pause | resume     silence or hold/replay finished turns
+  conch pause | resume                     manual (hold) | auto (read and listen)
 
 Voice and settings:
   conch voice <session> [voice] | voices   show/pin or audition voices
@@ -405,20 +406,8 @@ switch (command) {
   case "unmute":
   case "pause":
   case "resume": {
-    // Mute is retired, and these are its last two callers.
-    //
-    // Mute and pause were two names for "not right now" with one difference:
-    // mute FORGOT the turns it silenced, which cost Tyler two of them, while
-    // pause holds and replays. Worse, they were independent — he ended up
-    // muted AND paused at once, with the dashboard reporting a session as
-    // speaking while nothing could make a sound. A state nobody would choose
-    // on purpose, reachable by pressing two buttons that sound alike.
-    //
-    // They are one control now: auto (turns read themselves aloud, the mic
-    // opens itself) and manual (neither, while everything else keeps working).
-    // Mapping the old verbs onto it keeps every script and habit working and
-    // makes the contradictory state unreachable.
-    const mapped = command === "mute" ? "pause" : command === "unmute" ? "resume" : command;
+    // Old scripts keep working, but every path reaches the same lossless mode.
+    const mapped = normalizeLegacyModeControl(command);
     const ok = await sendToDaemon(cfg.socketPath, { type: mapped, sessionId: "", label: "", announce: "" });
     const said = mapped === "pause" ? "manual mode" : "auto mode";
     console.log(ok ? `[conch] ${said}` : "[conch] daemon not running");

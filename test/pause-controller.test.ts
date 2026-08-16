@@ -485,7 +485,7 @@ describe("PauseController", () => {
     await h.controller.setPaused(false);
 
     expect(h.spoken).toEqual([
-      "Paused. I'll hold your queue.",
+      "Manual mode. I'll hold your queue.",
       "Back. 1 session finished while you were away.",
     ]);
     expect(h.enqueued).toHaveLength(1);
@@ -655,56 +655,4 @@ describe("PauseController", () => {
     expect(h.spoken).toEqual([]);
   });
 
-  test("a scoped forget during an override is rechecked before fallback replay", async () => {
-    const alpha = turn();
-    const beta = turn({ sessionId: "session-b", label: "beta" });
-    const overrideStarted = deferred<void>();
-    const overrideResult = deferred<boolean>();
-    const h = harness({
-      initialPaused: true,
-      replayOverride: async () => {
-        overrideStarted.resolve();
-        return overrideResult.promise;
-      },
-    });
-    h.pending.set(alpha.sessionId, alpha);
-    h.pending.set(beta.sessionId, beta);
-
-    const resume = h.controller.beginResume();
-    await overrideStarted.promise;
-    h.controller.forgetHeld(beta.sessionId);
-    overrideResult.resolve(false);
-
-    expect(await resume).toEqual({ replayed: 1, dropped: 1, cancelled: false });
-    expect(h.enqueued).toEqual([alpha]);
-    expect(h.enqueued[0]).toBe(alpha);
-  });
-
-  test("a successful override is rejected if a scoped forget changes its event set", async () => {
-    const alpha = turn();
-    const beta = turn({ sessionId: "session-b", label: "beta" });
-    const overrideStarted = deferred<void>();
-    const overrideResult = deferred<boolean>();
-    const h = harness({
-      initialPaused: true,
-      replayOverride: async () => {
-        overrideStarted.resolve();
-        return overrideResult.promise;
-      },
-    });
-    h.pending.set(alpha.sessionId, alpha);
-    h.pending.set(beta.sessionId, beta);
-
-    const resume = h.controller.beginResume();
-    await overrideStarted.promise;
-    h.controller.forgetHeld(beta.sessionId);
-    overrideResult.resolve(true);
-
-    const result = await resume;
-    await h.controller.announceResumed(result);
-    expect(result).toEqual({ replayed: 1, dropped: 1, cancelled: false });
-    expect(h.enqueued).toEqual([alpha]);
-    expect(h.enqueued[0]).toBe(alpha);
-    expect(h.spoken).toEqual(["Back. 1 session finished while you were away."]);
-  });
 });

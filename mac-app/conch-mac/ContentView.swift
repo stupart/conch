@@ -98,7 +98,6 @@ struct ContentView: View {
                     onShowKeyboardShortcuts: showKeyboardShortcuts,
                     onTalkOrStop: talkOrStop,
                     onPauseOrResume: pauseOrResume,
-                    onMuteOrUnmute: muteOrUnmute,
                     onRecite: recite,
                     onMoveUp: { moveSelection(by: -1) },
                     onMoveDown: { moveSelection(by: 1) },
@@ -243,22 +242,6 @@ struct ContentView: View {
         store.send(.global(.pause))
     }
 
-    private func muteOrUnmute() {
-        if let selectedRow {
-            store.send(
-                .scoped(
-                    selectedRow.muted ? .unmute : .mute,
-                    sessionId: selectedRow.id,
-                    label: selectedRow.label
-                )
-            )
-            return
-        }
-
-        let muted = store.state?.mode.muted ?? false
-        store.send(.global(muted ? .unmute : .mute))
-    }
-
     private func recite() {
         guard let actionTarget else { return }
         store.send(
@@ -307,8 +290,6 @@ struct ContentView: View {
             talkOrStop()
         case .pauseOrResume:
             pauseOrResume()
-        case .muteOrUnmute:
-            muteOrUnmute()
         case .recite:
             recite()
         case .showKeyboardShortcuts:
@@ -335,8 +316,7 @@ private struct KeyboardShortcutsSheet: View {
 
     private let keyRows = [
         ShortcutHelpRow(command: "Space", result: "Talk / stop"),
-        ShortcutHelpRow(command: "P", result: "Pause"),
-        ShortcutHelpRow(command: "M", result: "Mute"),
+        ShortcutHelpRow(command: "P", result: "Auto / manual"),
         ShortcutHelpRow(command: "R", result: "Recite"),
         ShortcutHelpRow(command: "↑ / ↓", result: "Select"),
         ShortcutHelpRow(command: "Esc", result: "Release selection / close"),
@@ -428,8 +408,7 @@ private struct LedgerLegendSection: View {
         Entry(symbol: "circle.inset.filled", color: ConchPalette.statusWaiting, meaning: "Finished — waiting on you"),
         Entry(symbol: "exclamationmark.circle.fill", color: ConchPalette.statusNeeds, meaning: "Blocked — needs an answer"),
         Entry(symbol: "star.fill", color: ConchPalette.statusReview, meaning: "Has work for you to look at"),
-        Entry(symbol: "speaker.slash.fill", color: ConchPalette.textDim, meaning: "Muted — announcements dropped"),
-        Entry(symbol: "pause.fill", color: ConchPalette.textDim, meaning: "Paused — turns held for later"),
+        Entry(symbol: "pause.fill", color: ConchPalette.textDim, meaning: "Manual — turns held for later"),
         Entry(symbol: "record.circle.fill", color: ConchPalette.statusMicOpen, meaning: "Recording your reply"),
         Entry(symbol: "play.fill", color: ConchPalette.statusWorking, meaning: "Reading a reply aloud"),
         Entry(symbol: "ellipsis", color: ConchPalette.statusWorking, meaning: "Transcribing what you said"),

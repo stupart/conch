@@ -54,7 +54,7 @@ export interface Config {
   /**
    * OPT-IN: keyboard/mouse idle time after which conch stays silent, seconds.
    * Off by default — HID idle doesn't count VOICE activity, so any default
-   * would silence a hands-free session mid-conversation. Use `conch mute`.
+   * would silence a hands-free session mid-conversation. Use `conch pause`.
    */
   awayAfterSecs: number;
   /**

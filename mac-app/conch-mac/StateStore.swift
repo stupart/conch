@@ -40,7 +40,7 @@ final class StateStore: ObservableObject {
     private let socketClient: ConchSocketClient
     private var sourceState: PublishedState?
     private var pollingTask: Task<Void, Never>?
-    private var deliveryTask: Task<Void, Never>?
+    private var deliveryTask: Task<Bool, Never>?
     private var probeTask: Task<Void, Never>?
     private var sessionCommandTask: Task<Void, Never>?
     private var undoTask: Task<Void, Never>?
@@ -113,21 +113,24 @@ final class StateStore: ObservableObject {
         undoTask?.cancel()
     }
 
-    func send(_ event: ConchDaemonEvent) {
+    @discardableResult
+    func send(_ event: ConchDaemonEvent) -> Task<Bool, Never> {
         controlSequence &+= 1
         let sequence = controlSequence
         let socketClient = socketClient
         let previousDelivery = deliveryTask
 
-        deliveryTask = Task { @MainActor [weak self] in
-            await previousDelivery?.value
-            guard !Task.isCancelled else { return }
+        let task = Task { @MainActor [weak self] in
+            _ = await previousDelivery?.value
+            guard !Task.isCancelled else { return false }
             let delivered = await socketClient.send(event)
-            guard let self, controlSequence == sequence else { return }
-            if !delivered {
+            if let self, controlSequence == sequence, !delivered {
                 forceLivenessProbe()
             }
+            return delivered
         }
+        deliveryTask = task
+        return task
     }
 
     /// Tell the daemon the machine woke.
@@ -624,7 +627,7 @@ final class StateStore: ObservableObject {
             dismissed: sourceState.dismissed,
             dismissedRows: dismissedRows
         )
-        if next != state {
+        if state?.hasSamePresentation(as: next) != true {
             state = next
             updateDockBadge(for: next.rows)
         }

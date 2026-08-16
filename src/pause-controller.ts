@@ -18,7 +18,7 @@ export interface PauseDictationDisposition {
 export interface InstantControlOptions {
   /** Omit for an app-wide control; set for a single-session control. */
   sessionId?: string;
-  /** Pause supplies a latest-per-session hold map; mute omits it and forgets. */
+  /** Quiet features supply their own latest-per-session replay map. */
   hold?: Map<string, TurnEvent>;
   /** Keep an already-held newer turn instead of replacing it with an explicit wake. */
   preserveHeld?: boolean;
@@ -137,7 +137,7 @@ export class SettingsPauseLifecycle {
 
 /**
  * Owns global away-mode transitions and the instant-control generation shared
- * by global and per-session pause/mute controls.
+ * by global and per-session manual controls.
  *
  * A generation token outlives a quick pause/resume pair, so the old async turn
  * cannot continue after its replay has already been queued.
@@ -150,7 +150,6 @@ export class PauseController {
   #resumeInFlight: {
     held: TurnEvent[];
     cancelled: boolean;
-    forgottenSessionIds: Set<string>;
   } | null = null;
 
   constructor(options: PauseControllerOptions) {
@@ -249,26 +248,6 @@ export class PauseController {
     return true;
   }
 
-  /**
-   * Permanently forget paused work, including a snapshot already being filtered
-   * by beginResume(). Scoped mute removes only that session; global mute cancels
-   * the whole replay without restoring it to the pending map.
-   */
-  forgetHeld(sessionId?: string): void {
-    if (sessionId === undefined) {
-      this.#pending.clear();
-      const resume = this.#resumeInFlight;
-      if (resume) {
-        resume.cancelled = true;
-        this.#resumeInFlight = null;
-      }
-      return;
-    }
-
-    this.#pending.delete(sessionId);
-    this.#resumeInFlight?.forgottenSessionIds.add(sessionId);
-  }
-
   /** Synchronous global drop-and-hold edge for away mode. */
   beginPause(forceInterrupt = false): boolean {
     this.#cancelResume();
@@ -283,7 +262,7 @@ export class PauseController {
 
     if (!wasPaused) {
       this.#options.persist(true);
-      this.#options.log("paused — holding finished sessions until you resume (p or `conch resume`)");
+      this.#options.log("manual mode — holding finished sessions until auto (p or `conch resume`)");
     }
     this.#options.render();
     this.#options.setModeState(true);
@@ -306,14 +285,13 @@ export class PauseController {
     const resume = {
       held,
       cancelled: false,
-      forgottenSessionIds: new Set<string>(),
     };
     this.#resumeInFlight = resume;
     return this.#finishResume(resume);
   }
 
   async announcePaused(): Promise<void> {
-    await this.#options.speak("Paused. I'll hold your queue.");
+    await this.#options.speak("Manual mode. I'll hold your queue.");
   }
 
   async announceResumed(result: PauseResumeResult): Promise<void> {
@@ -339,7 +317,6 @@ export class PauseController {
     resume: {
       held: TurnEvent[];
       cancelled: boolean;
-      forgottenSessionIds: Set<string>;
     },
   ): Promise<PauseResumeResult> {
     const { held } = resume;
@@ -354,7 +331,6 @@ export class PauseController {
     if (resume.cancelled) return { replayed: 0, dropped: 0, cancelled: true };
     const fresh: TurnEvent[] = [];
     for (const event of held) {
-      if (resume.forgottenSessionIds.has(event.sessionId)) continue;
       if (liveIds && !liveIds.has(event.sessionId)) continue;
       let responded = false;
       try {
@@ -363,45 +339,27 @@ export class PauseController {
         // A transcript read failure is uncertainty, not evidence of a reply.
       }
       if (resume.cancelled) return { replayed: 0, dropped: 0, cancelled: true };
-      if (resume.forgottenSessionIds.has(event.sessionId)) continue;
       if (responded) continue;
       fresh.push(event);
     }
 
-    let replayable = fresh.filter(
-      (event) => !resume.forgottenSessionIds.has(event.sessionId),
-    );
+    const replayable = fresh;
     let digested = false;
     if (resume.cancelled) return { replayed: 0, dropped: 0, cancelled: true };
     if (this.#options.replayOverride) {
-      const offered = replayable;
       try {
-        digested = await this.#options.replayOverride(offered);
+        digested = await this.#options.replayOverride(replayable);
       } catch {
         // A failed digest must preserve the exact normal replay.
       }
       if (resume.cancelled) return { replayed: 0, dropped: 0, cancelled: true };
-      replayable = fresh.filter(
-        (event) => !resume.forgottenSessionIds.has(event.sessionId),
-      );
-      // A scoped mute can forget one session while the async override prepares.
-      // Only accept success if it still owns this exact replay snapshot.
-      if (
-        digested
-        && (
-          offered.length !== replayable.length
-          || offered.some((event, index) => replayable[index] !== event)
-        )
-      ) {
-        digested = false;
-      }
     }
 
     if (resume.cancelled) return { replayed: 0, dropped: 0, cancelled: true };
     if (this.#resumeInFlight === resume) this.#resumeInFlight = null;
     const dropped = held.length - replayable.length;
     this.#options.log(
-      `resumed — ${replayable.length} session(s) waited while you were away`
+      `auto mode — ${replayable.length} session(s) waited while you were away`
       + (dropped ? ` (${dropped} stale, dropped)` : ""),
     );
     if (digested) {
@@ -425,7 +383,6 @@ export class PauseController {
     this.#resumeInFlight = null;
     // A newer same-session event already held by the new pause wins.
     for (const event of resume.held) {
-      if (resume.forgottenSessionIds.has(event.sessionId)) continue;
       if (!this.#pending.has(event.sessionId)) this.#pending.set(event.sessionId, event);
     }
     this.#options.render();

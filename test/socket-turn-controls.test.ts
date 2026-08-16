@@ -38,14 +38,13 @@ function turn(overrides: Partial<TurnEvent> = {}): TurnEvent {
 function harness(options: { busy?: boolean } = {}) {
   let stopCalls = 0;
   const paused: Array<[string, boolean]> = [];
-  const muted: Array<[string, boolean]> = [];
   const instant: InstantAudioCommand[] = [];
   const queued: TurnEvent[] = [];
   const callbacks: SocketTurnEventCallbacks = {
     busy: () => options.busy === true,
     stopSpacebar: () => stopCalls++,
     setSessionPaused: (sessionId, next) => paused.push([sessionId, next]),
-    setSessionMuted: (sessionId, next) => muted.push([sessionId, next]),
+    isDismissedSession: () => false,
     enrichAudioCommand: (event) => ({ ...event, cwd: "/enriched" }),
     enqueueInstant: (event) => instant.push(event),
     enqueue: (event) => queued.push(event),
@@ -53,7 +52,6 @@ function harness(options: { busy?: boolean } = {}) {
   return {
     callbacks,
     paused,
-    muted,
     instant,
     queued,
     get stopCalls() {
@@ -131,21 +129,25 @@ describe("dispatchSocketTurnEvent", () => {
     expect(idle.queued).toEqual([]);
   });
 
-  test("nonempty mode targets are session-scoped and empty targets remain global", () => {
+  test("mode targets are scoped and legacy verbs normalize without forgetting", () => {
     const h = harness();
     dispatchSocketTurnEvent(turn({ type: "pause" }), h.callbacks);
     dispatchSocketTurnEvent(turn({ type: "resume" }), h.callbacks);
     dispatchSocketTurnEvent(turn({ type: "mute" }), h.callbacks);
     dispatchSocketTurnEvent(turn({ type: "unmute" }), h.callbacks);
-    expect(h.paused).toEqual([["session-a", true], ["session-a", false]]);
-    expect(h.muted).toEqual([["session-a", true], ["session-a", false]]);
+    expect(h.paused).toEqual([
+      ["session-a", true],
+      ["session-a", false],
+      ["session-a", true],
+      ["session-a", false],
+    ]);
     expect(h.queued).toEqual([]);
 
     const globalPause = turn({ type: "pause", sessionId: "", label: "" });
     const globalMute = turn({ type: "mute", sessionId: "", label: "" });
     dispatchSocketTurnEvent(globalPause, h.callbacks);
     dispatchSocketTurnEvent(globalMute, h.callbacks);
-    expect(h.queued).toEqual([globalPause, globalMute]);
+    expect(h.queued).toEqual([globalPause, { ...globalMute, type: "pause" }]);
   });
 
   test("lightweight targeted wake and recite are enriched instant takeovers", () => {
@@ -161,6 +163,17 @@ describe("dispatchSocketTurnEvent", () => {
     const unnamed = turn({ type: "wake", sessionId: "", label: "" });
     dispatchSocketTurnEvent(unnamed, h.callbacks);
     expect(h.queued).toEqual([unnamed]);
+  });
+
+  test("dismissed sessions are not audio or mode targets", () => {
+    const h = harness();
+    h.callbacks.isDismissedSession = (id) => id === "session-a";
+    for (const type of ["wake", "recite", "pause"] as const) {
+      dispatchSocketTurnEvent(turn({ type }), h.callbacks);
+    }
+    expect(h.instant).toEqual([]);
+    expect(h.paused).toEqual([]);
+    expect(h.queued).toEqual([]);
   });
 
   test("fully routed CLI/MCP wake and recite keep ordinary queue semantics", () => {
@@ -457,14 +470,12 @@ describe("session command dispatch", () => {
     expect(paused).toBeFalse();
   });
 
-  test("restore clears both the dismissed and dismiss-coupled muted state", () => {
+  test("restore changes visibility without coupling another mode", () => {
     const dismissed = new Set(["session-a"]);
-    const muted = new Set(["session-a"]);
 
-    expect(restoreDismissedSessionState("session-a", dismissed, muted)).toBeTrue();
+    expect(restoreDismissedSessionState("session-a", dismissed)).toBeTrue();
     expect(dismissed).toEqual(new Set());
-    expect(muted).toEqual(new Set());
-    expect(restoreDismissedSessionState("session-a", dismissed, muted)).toBeFalse();
+    expect(restoreDismissedSessionState("session-a", dismissed)).toBeFalse();
   });
 });
 

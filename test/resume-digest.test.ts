@@ -45,38 +45,6 @@ describe("resume digest escrow", () => {
     expect(restored[1]).toBe(dayLoop);
   });
 
-  test("scoped forget permanently invalidates a prepared briefing and keeps survivors", () => {
-    const owner = {};
-    const escrow = new ResumeDigestEscrow<object>();
-    escrow.prepare(owner, [alpha, dayLoop], "mentions both sessions", 2);
-    escrow.settle(owner, true);
-
-    expect(escrow.forget(dayLoop.sessionId)).toEqual({
-      changed: true,
-      consuming: false,
-    });
-    const plan = escrow.begin(owner);
-    expect(plan?.invalidated).toBeTrue();
-    expect(plan?.events).toEqual([alpha]);
-    expect(plan?.events[0]).toBe(alpha);
-  });
-
-  test("forget during consumption mutates the owned array used by fallback", () => {
-    const owner = {};
-    const escrow = new ResumeDigestEscrow<object>();
-    escrow.prepare(owner, [alpha, dayLoop], "mentions both sessions", 3);
-    escrow.settle(owner, true);
-    const plan = escrow.begin(owner)!;
-    const digestEvents = plan.events;
-
-    expect(escrow.forget(dayLoop.sessionId)).toEqual({
-      changed: true,
-      consuming: true,
-    });
-    expect(digestEvents).toEqual([alpha]);
-    expect(plan.invalidated).toBeTrue();
-  });
-
   test("scoped pause invalidates a consuming briefing without forgetting its event", () => {
     const owner = {};
     const escrow = new ResumeDigestEscrow<object>();

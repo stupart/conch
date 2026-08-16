@@ -98,6 +98,18 @@ export interface SessionActionsOverlayModel {
   error?: string;
 }
 
+export interface RestoreSessionsOverlayRowModel {
+  id: string;
+  label: string;
+  selected: boolean;
+}
+
+export interface RestoreSessionsOverlayModel {
+  rows: RestoreSessionsOverlayRowModel[];
+  selectedIndex: number;
+  error?: string;
+}
+
 export interface PanelModel {
   rows: PanelRowModel[];
   mode: DashboardMode;
@@ -117,6 +129,7 @@ export interface PanelModel {
   panelOpen: boolean;
   settingsOverlay?: SettingsOverlayModel | null;
   sessionActionsOverlay?: SessionActionsOverlayModel | null;
+  restoreSessionsOverlay?: RestoreSessionsOverlayModel | null;
 }
 
 export interface PublishedSessionRow {
@@ -376,7 +389,8 @@ export interface BuildPanelModelOptions {
   sessions: readonly SessionInfo[];
   sessionStates: ReadonlyMap<string, PanelSessionState>;
   pausedSessionIds: ReadonlySet<string>;
-  mutedSessionIds: ReadonlySet<string>;
+  /** Accepted while older model builders migrate; rows never expose destructive state. */
+  mutedSessionIds?: ReadonlySet<string>;
   live: PanelLiveState;
   mode: DashboardMode;
   activeSessionId: string | null;
@@ -426,7 +440,9 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
             : {}),
         ...(review ? { review } : {}),
         paused: options.pausedSessionIds.has(session.sessionId),
-        muted: options.mutedSessionIds.has(session.sessionId),
+        // Kept on the v1 wire until every installed viewer has moved past it.
+        // No runtime mode may make this true again.
+        muted: false,
         liveGlyph: active && ROW_LIVE_STATES.has(options.live.state) ? options.live.state : null,
         active,
         navSelected: session.sessionId === options.navSelectedId,
@@ -542,11 +558,8 @@ const LIVE_GLYPH: Partial<Record<PanelConchState, string>> = {
 export function dashboardRowsForModel(model: PanelModel): string[] {
   return model.rows.map((row) => {
     const cursor = row.navSelected ? "\x1b[36m▸\x1b[0m " : "  ";
-    if (row.muted) {
-      return `${cursor}\x1b[2m${row.label.slice(0, 26).padEnd(27)}🔇 muted\x1b[0m`;
-    }
     if (row.paused) {
-      return `${cursor}\x1b[2m${row.label.slice(0, 26).padEnd(27)}⏸ paused\x1b[0m`;
+      return `${cursor}\x1b[2m${row.label.slice(0, 26).padEnd(27)}⏸ manual\x1b[0m`;
     }
     // Footer mode historically keyed its live glyph by label. Keep that exact
     // behavior here; theater uses the unambiguous active/liveGlyph model fields.
@@ -564,8 +577,8 @@ export function dashboardRowsForModel(model: PanelModel): string[] {
 
 /** Global mode occupies one permanent slot so rows never jump on toggle. */
 export function dashboardModeBanner({ muted, paused, holding }: DashboardMode): string {
-  if (muted) return "  \x1b[1;33m🔇 MUTED · no parked cursor: m to unmute\x1b[0m";
-  if (paused) return `  \x1b[1;35m⏸ PAUSED · holding ${holding} · no parked cursor: p to resume\x1b[0m`;
+  void muted; // v1 wire compatibility; runtime mode is exclusively auto/manual.
+  if (paused) return `  \x1b[1;35m⏸ MANUAL · holding ${holding} · no parked cursor: p for auto\x1b[0m`;
   return "";
 }
 

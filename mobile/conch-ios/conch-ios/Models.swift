@@ -11,22 +11,21 @@ struct PublishedState: Decodable, Equatable {
     var mode = Mode()
     var live = Live()
     var rows: [Row] = []
+    var dismissedRows: [DismissedRow] = []
     var reply: Reply?
     /// Keyed by session id — the phone looks up whichever session it is showing.
     var conversations: [String: Conversation] = [:]
 
     struct Mode: Decodable, Equatable {
-        var muted = false
         var paused = false
         var holding = 0
 
-        private enum CodingKeys: String, CodingKey { case muted, paused, holding }
+        private enum CodingKeys: String, CodingKey { case paused, holding }
 
         init() {}
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
-            muted = (try? c.decodeIfPresent(Bool.self, forKey: .muted)) ?? false
             paused = (try? c.decodeIfPresent(Bool.self, forKey: .paused)) ?? false
             holding = (try? c.decodeIfPresent(Int.self, forKey: .holding)) ?? 0
         }
@@ -104,7 +103,6 @@ struct PublishedState: Decodable, Equatable {
         var detail: String?
         var at: Double = 0
         var live: String?
-        var muted = false
         var paused = false
         var review: Review?
 
@@ -124,7 +122,7 @@ struct PublishedState: Decodable, Equatable {
         }
 
         private enum CodingKeys: String, CodingKey {
-            case id, label, status, backend, detail, at, live, muted, paused, review
+            case id, label, status, backend, detail, at, live, paused, review
         }
 
         init() {}
@@ -138,13 +136,40 @@ struct PublishedState: Decodable, Equatable {
             detail = try? c.decodeIfPresent(String.self, forKey: .detail)
             at = (try? c.decodeIfPresent(Double.self, forKey: .at)) ?? 0
             live = try? c.decodeIfPresent(String.self, forKey: .live)
-            muted = (try? c.decodeIfPresent(Bool.self, forKey: .muted)) ?? false
             paused = (try? c.decodeIfPresent(Bool.self, forKey: .paused)) ?? false
             review = try? c.decodeIfPresent(Review.self, forKey: .review)
         }
     }
 
-    private enum CodingKeys: String, CodingKey { case v, ts, mode, live, rows, reply, conversations }
+    /// A session hidden from the ledger but still running on the Mac.
+    ///
+    /// Labels travel with ids because restoration is a human choice. An opaque
+    /// id is enough for the command and not enough to decide which session to
+    /// bring back.
+    struct DismissedRow: Decodable, Equatable, Identifiable {
+        var id: String
+        var label: String
+
+        private enum CodingKeys: String, CodingKey { case id, label }
+
+        init(id: String, label: String) {
+            self.id = id
+            self.label = label
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? ""
+            let decodedLabel = (try? c.decodeIfPresent(String.self, forKey: .label)) ?? ""
+            label = decodedLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? String(id.prefix(8))
+                : decodedLabel
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case v, ts, mode, live, rows, dismissed, dismissedRows, reply, conversations
+    }
 
     init() {}
 
@@ -166,6 +191,29 @@ struct PublishedState: Decodable, Equatable {
             }
             rows = decoded
         }
+        // Restore must remain reachable even if one entry from a newer daemon is
+        // malformed. Decode independently, then fill any ids supplied by older
+        // publishers that did not yet include labels.
+        var decodedDismissed: [DismissedRow] = []
+        if var dismissedContainer = try? c.nestedUnkeyedContainer(forKey: .dismissedRows) {
+            while !dismissedContainer.isAtEnd {
+                if let row = try? dismissedContainer.decode(DismissedRow.self) {
+                    if !row.id.isEmpty {
+                        decodedDismissed.append(row)
+                    }
+                    // A valid-but-empty row was consumed just as surely as a
+                    // useful one. Falling through would discard its successor.
+                    continue
+                }
+                _ = try? dismissedContainer.decode(AnyIgnored.self)
+            }
+        }
+        var seenDismissed = Set(decodedDismissed.map(\.id))
+        let legacyDismissed = (try? c.decodeIfPresent([String].self, forKey: .dismissed)) ?? []
+        for id in legacyDismissed where !id.isEmpty && seenDismissed.insert(id).inserted {
+            decodedDismissed.append(DismissedRow(id: id, label: String(id.prefix(8))))
+        }
+        dismissedRows = decodedDismissed
         reply = try? c.decodeIfPresent(Reply.self, forKey: .reply)
         conversations = (try? c.decodeIfPresent([String: Conversation].self, forKey: .conversations)) ?? [:]
     }
@@ -175,12 +223,11 @@ private struct AnyIgnored: Decodable {}
 
 /// The Mac ledger's glyph vocabulary, one for one.
 enum StatusMark {
-    case working, waiting, needs, review, muted, paused, micOpen, speaking, idle
+    case working, waiting, needs, review, paused, micOpen, speaking, idle
 
     init(row: PublishedState.Row) {
         let wantsUser = row.status == "waiting" || row.status == "needs"
         if row.review != nil { self = .review; return }
-        if row.muted, !wantsUser { self = .muted; return }
         if row.paused, !wantsUser { self = .paused; return }
         switch row.live {
         case "listening", "recording": self = .micOpen
@@ -200,7 +247,6 @@ enum StatusMark {
         case .waiting: "circle.inset.filled"
         case .needs: "exclamationmark.circle.fill"
         case .review: "star.fill"
-        case .muted: "speaker.slash.fill"
         case .paused: "pause.fill"
         case .micOpen: "mic.fill"
         case .speaking: "play.fill"
@@ -214,7 +260,7 @@ enum StatusMark {
         case .waiting: Palette.waiting
         case .needs: Palette.needs
         case .review: Palette.review
-        case .muted, .paused: Palette.textDim
+        case .paused: Palette.textDim
         case .micOpen: Palette.micOpen
         case .idle: Palette.textFaint
         }
@@ -229,7 +275,7 @@ enum StatusMark {
     var showsMeaningInLedger: Bool {
         switch self {
         case .working, .idle: false
-        case .waiting, .needs, .review, .micOpen, .speaking, .muted, .paused: true
+        case .waiting, .needs, .review, .micOpen, .speaking, .paused: true
         }
     }
 
@@ -239,8 +285,7 @@ enum StatusMark {
         case .waiting: "Waiting for you"
         case .needs: "Needs an answer"
         case .review: "Has work to look at"
-        case .muted: "Muted"
-        case .paused: "Paused"
+        case .paused: "Manual"
         case .micOpen: "Mic open"
         case .speaking: "Reading aloud"
         case .idle: "Idle"

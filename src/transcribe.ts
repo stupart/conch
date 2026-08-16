@@ -62,7 +62,6 @@ const PROTECTED_SHORT_REPLIES = new Set([
   "cancel",
   "continue",
   "go",
-  "mute",
   "no",
   "pause",
   "send",

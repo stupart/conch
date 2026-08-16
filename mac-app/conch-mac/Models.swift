@@ -103,6 +103,23 @@ struct PublishedState: Decodable, Equatable, Sendable {
         )
         return elements?.compactMap(\.value) ?? []
     }
+
+    /// `ts` proves the daemon is alive, but changes even when nothing a person
+    /// can see has changed. StateStore keeps the fresh source snapshot for
+    /// liveness and command reconciliation; this comparison keeps that heartbeat
+    /// from invalidating the entire SwiftUI dashboard four times a second.
+    func hasSamePresentation(as other: PublishedState) -> Bool {
+        v == other.v
+            && mode == other.mode
+            && live == other.live
+            && reply == other.reply
+            && preview == other.preview
+            && conversation == other.conversation
+            && conversations == other.conversations
+            && rows == other.rows
+            && dismissed == other.dismissed
+            && dismissedRows == other.dismissedRows
+    }
 }
 
 struct DismissedSessionRow: Decodable, Equatable, Identifiable, Sendable {
@@ -127,25 +144,21 @@ struct DismissedSessionRow: Decodable, Equatable, Identifiable, Sendable {
 }
 
 struct ModeState: Decodable, Equatable, Sendable {
-    let muted: Bool
     let paused: Bool
     let holding: Int
 
-    init(muted: Bool = false, paused: Bool = false, holding: Int = 0) {
-        self.muted = muted
+    init(paused: Bool = false, holding: Int = 0) {
         self.paused = paused
         self.holding = holding
     }
 
     private enum CodingKeys: String, CodingKey {
-        case muted
         case paused
         case holding
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        muted = (try? container.decodeIfPresent(Bool.self, forKey: .muted)) ?? false
         paused = (try? container.decodeIfPresent(Bool.self, forKey: .paused)) ?? false
         holding = (try? container.decodeIfPresent(Int.self, forKey: .holding)) ?? 0
     }
@@ -521,7 +534,6 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     let detail: String?
     let review: ReviewInfo?
     let paused: Bool
-    let muted: Bool
     let live: String?
     let active: Bool
     let snippet: String?
@@ -539,7 +551,6 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case detail
         case review
         case paused
-        case muted
         case live
         case active
         case snippet
@@ -558,7 +569,6 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         detail: String?,
         review: ReviewInfo?,
         paused: Bool,
-        muted: Bool,
         live: String?,
         active: Bool,
         snippet: String?,
@@ -575,7 +585,6 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.detail = detail
         self.review = review
         self.paused = paused
-        self.muted = muted
         self.live = live
         self.active = active
         self.snippet = snippet
@@ -597,7 +606,6 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         detail = try? container.decodeIfPresent(String.self, forKey: .detail)
         review = try? container.decodeIfPresent(ReviewInfo.self, forKey: .review)
         paused = (try? container.decodeIfPresent(Bool.self, forKey: .paused)) ?? false
-        muted = (try? container.decodeIfPresent(Bool.self, forKey: .muted)) ?? false
         live = try? container.decodeIfPresent(String.self, forKey: .live)
         active = (try? container.decodeIfPresent(Bool.self, forKey: .active)) ?? false
         snippet = try? container.decodeIfPresent(String.self, forKey: .snippet)
@@ -619,7 +627,6 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             detail: detail,
             review: review,
             paused: paused,
-            muted: muted,
             live: live,
             active: active,
             snippet: snippet,

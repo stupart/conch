@@ -1,4 +1,5 @@
 import type {
+  RestoreSessionsOverlayModel,
   SessionActionKey,
   SessionActionsOverlayModel,
 } from "./panel.ts";
@@ -26,7 +27,7 @@ export interface SessionActionsController {
    */
   rename(target: Readonly<SessionActionsTarget>, label: string): string | void;
   dismiss(target: Readonly<SessionActionsTarget>): boolean | void;
-  /** Restore a previously dismissed session, including dismiss-coupled mute. */
+  /** Restore a previously dismissed session to the active dashboard. */
   restore(sessionId: string): boolean | void;
 }
 
@@ -229,7 +230,7 @@ export class SessionActionsOverlay {
     }
 
     // A confirmation must be two consecutive Enters, but every key remains
-    // trapped so q/p/m/r/space cannot leak to a global action.
+    // trapped so q/p/r/space cannot leak to a global action.
     if (this.#disarmDismiss()) this.#onChange();
     return true;
   }
@@ -447,6 +448,122 @@ export class SessionActionsOverlay {
   #capturedTarget(): SessionActionsTarget {
     if (!this.#target) throw new Error("session actions target is unavailable");
     return this.#target;
+  }
+}
+
+export interface RestoreSessionsOverlayOptions {
+  controller: SessionActionsController;
+  onOpen?(): void;
+  onClose?(): void;
+  onChange(): void;
+}
+
+/** A stable snapshot makes every dismissed session reachable, not just the latest. */
+export class RestoreSessionsOverlay {
+  readonly #controller: SessionActionsController;
+  readonly #onOpen: () => void;
+  readonly #onClose: () => void;
+  readonly #onChange: () => void;
+  #opened = false;
+  #targets: SessionActionsTarget[] = [];
+  #selectedIndex = 0;
+  #error: string | undefined;
+
+  constructor(options: RestoreSessionsOverlayOptions) {
+    this.#controller = options.controller;
+    this.#onOpen = options.onOpen ?? (() => {});
+    this.#onClose = options.onClose ?? (() => {});
+    this.#onChange = options.onChange;
+  }
+
+  isOpen(): boolean {
+    return this.#opened;
+  }
+
+  open(targets: readonly SessionActionsTarget[]): void {
+    if (this.#opened) return;
+    const seen = new Set<string>();
+    this.#targets = [];
+    for (const target of targets) {
+      if (!target.sessionId || seen.has(target.sessionId)) continue;
+      seen.add(target.sessionId);
+      this.#targets.push({ ...target });
+    }
+    if (!this.#targets.length) return;
+    this.#opened = true;
+    this.#selectedIndex = 0;
+    this.#error = undefined;
+    this.#onOpen();
+    this.#onChange();
+  }
+
+  close(): void {
+    if (!this.#opened) return;
+    this.#opened = false;
+    this.#onClose();
+    this.#onChange();
+  }
+
+  model(): RestoreSessionsOverlayModel | null {
+    if (!this.#opened) return null;
+    return {
+      rows: this.#targets.map((target, index) => ({
+        id: target.sessionId,
+        label: target.label,
+        selected: index === this.#selectedIndex,
+      })),
+      selectedIndex: this.#selectedIndex,
+      ...(this.#error ? { error: this.#error } : {}),
+    };
+  }
+
+  /** Returns false only when closed or when raw Ctrl-C must reach shutdown. */
+  handleKey(input: string): boolean {
+    if (!this.#opened || input === "\u0003") return false;
+    if (input === "\x1b") {
+      this.close();
+      return true;
+    }
+    if (input === "\x1b[A" || input === "\x1bOA") return this.#move(-1);
+    if (input === "\x1b[B" || input === "\x1bOB") return this.#move(1);
+    if (input === "\r" || input === "\n") return this.#restoreSelected();
+    return true;
+  }
+
+  #move(delta: -1 | 1): true {
+    this.#selectedIndex = (
+      this.#selectedIndex + delta + this.#targets.length
+    ) % this.#targets.length;
+    this.#error = undefined;
+    this.#onChange();
+    return true;
+  }
+
+  #restoreSelected(): true {
+    const target = this.#targets[this.#selectedIndex];
+    if (!target) return true;
+    try {
+      const restored = invokeSessionAction(
+        this.#controller,
+        target,
+        { command: "restore" },
+      );
+      if (restored === false) {
+        this.#error = `could not restore ${target.label}`;
+      } else {
+        this.#targets.splice(this.#selectedIndex, 1);
+        if (!this.#targets.length) {
+          this.close();
+          return true;
+        }
+        this.#selectedIndex = Math.min(this.#selectedIndex, this.#targets.length - 1);
+        this.#error = undefined;
+      }
+    } catch (error) {
+      this.#error = `could not restore ${target.label}: ${errorMessage(error)}`;
+    }
+    this.#onChange();
+    return true;
   }
 }
 

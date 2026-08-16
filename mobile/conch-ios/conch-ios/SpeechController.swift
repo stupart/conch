@@ -8,7 +8,7 @@ import SwiftUI
 /// Mac and useless when you are not — the whole point of the phone is being
 /// away from it, and audio coming out of a laptop in another room is not a
 /// voice loop. This speaks locally instead: no audio crosses the network, it
-/// follows your AirPods, and it works while the Mac sits muted.
+/// follows your AirPods, and it keeps working in Manual when you ask explicitly.
 @MainActor
 final class SpeechController: NSObject, ObservableObject {
     @Published private(set) var isSpeaking = false
@@ -63,7 +63,7 @@ final class SpeechController: NSObject, ObservableObject {
     /// deliberate act, and mode only governs what happens on its own.
     func consider(state: PublishedState?) {
         guard let state, let reply = state.reply, !reply.sessionId.isEmpty else { return }
-        let passive = state.mode.paused || state.mode.muted
+        let passive = state.mode.paused
         let text = reply.displayText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
 
@@ -87,15 +87,28 @@ final class SpeechController: NSObject, ObservableObject {
         // Defer rather than drop, and deliberately do NOT mark it spoken: this
         // same state republishes, so the reply is read the moment you send.
         guard !captureOwnsAudio() else { return }
-        spoken[reply.sessionId] = text
         guard !passive else { return }
+        spoken[reply.sessionId] = text
 
         let label = state.rows.first { $0.id == reply.sessionId }?.label
-        lastSpokenSessionId = reply.sessionId
-        speak(text, from: label)
+        speak(text, from: label, followUpSessionId: reply.sessionId)
     }
 
     func speak(_ markdown: String, from label: String?) {
+        // Clear before any audio guard can return: even a manual request that
+        // cannot start must not leave an older automatic follow-up armed.
+        lastSpokenSessionId = nil
+        speak(markdown, from: label, followUpSessionId: nil)
+    }
+
+    /// Only an automatic reading is allowed to open the mic when it finishes.
+    /// Manual Recite used to inherit the last automatic session id and could
+    /// unexpectedly start recording after an explicitly requested playback.
+    private func speak(
+        _ markdown: String,
+        from label: String?,
+        followUpSessionId: String?
+    ) {
         // Backstop for every caller, not just `consider`: touching the audio
         // session while recording is what destroys the utterance.
         guard !captureOwnsAudio() else { return }
@@ -112,6 +125,7 @@ final class SpeechController: NSObject, ObservableObject {
         utterance.voice = Self.bestVoice
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 1.08
         utterance.postUtteranceDelay = 0.1
+        lastSpokenSessionId = followUpSessionId
         isSpeaking = true
         speakingLabel = label ?? ""
         reportSpeaking(true, speakingLabel)
@@ -139,6 +153,7 @@ final class SpeechController: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self, self.isSpeaking, !self.synthesizer.isSpeaking else { return }
                 self.isSpeaking = false
+                self.lastSpokenSessionId = nil
                 self.reportSpeaking(false, self.speakingLabel)
                 self.releaseSession()
                 self.speechFailure = "That didn't play — the phone never started reading."
@@ -155,6 +170,7 @@ final class SpeechController: NSObject, ObservableObject {
         clearSpeechWatchdog()
         synthesizer.stopSpeaking(at: .immediate)
         isSpeaking = false
+        lastSpokenSessionId = nil
         reportSpeaking(false, speakingLabel)
         releaseSession()
     }
@@ -326,6 +342,7 @@ extension SpeechController: AVSpeechSynthesizerDelegate {
             // loop and a dictation box — and on a treadmill it is the
             // difference between usable and not.
             self.onFinishedReading?()
+            self.lastSpokenSessionId = nil
         }
     }
 
@@ -336,6 +353,7 @@ extension SpeechController: AVSpeechSynthesizerDelegate {
         Task { @MainActor in
             self.clearSpeechWatchdog()
             self.isSpeaking = false
+            self.lastSpokenSessionId = nil
             self.reportSpeaking(false, self.speakingLabel)
             self.releaseSession()
         }

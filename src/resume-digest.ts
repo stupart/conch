@@ -29,8 +29,7 @@ export interface PreparedResumeDigest<Owner extends object> {
 
 /**
  * Keeps a prepared digest tied to the exact resume transition that earned it.
- * A plan is restorable only after PauseController accepts the override; scoped
- * forgets mutate the owned event array so a quick unmute cannot resurrect work.
+ * A plan is restorable only after PauseController accepts the override.
  */
 export class ResumeDigestEscrow<Owner extends object> {
   #plan: PreparedResumeDigest<Owner> | null = null;
@@ -95,19 +94,6 @@ export class ResumeDigestEscrow<Owner extends object> {
     plan.cancelled = true;
     this.#plan = null;
     return plan.accepted ? plan.events : [];
-  }
-
-  forget(sessionId: string): { changed: boolean; consuming: boolean } {
-    const plan = this.#plan;
-    if (!plan || plan.cancelled) return { changed: false, consuming: false };
-    let changed = false;
-    for (let index = plan.events.length - 1; index >= 0; index--) {
-      if (plan.events[index]!.sessionId !== sessionId) continue;
-      plan.events.splice(index, 1);
-      changed = true;
-    }
-    if (changed) plan.invalidated = true;
-    return { changed, consuming: changed && plan.consuming };
   }
 
   invalidate(sessionId: string): { changed: boolean; consuming: boolean } {
