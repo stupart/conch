@@ -586,12 +586,10 @@ private struct SessionLedger: View {
                                 // once I've started using it". A keystroke that
                                 // a text field can swallow is not an adequate
                                 // home for the only exit from a mode.
-                                NewSessionRow(action: actions.onStartSession)
-
                                 AllSessionsRow(
                                     isSelected: selectedSessionID == nil,
-                                    count: state.rows.count,
-                                    action: actions.onReleaseSelection
+                                    onSelect: actions.onReleaseSelection,
+                                    onStart: actions.onStartSession
                                 )
 
                                 ForEach(
@@ -1007,23 +1005,27 @@ private struct AgentBadge: View {
     /// something you only need peripherally. A glyph is recognised without
     /// being read.
     ///
-    /// Drawn from SF Symbols rather than shipping either company's artwork:
-    /// Anthropic's mark is a radiating burst, which `asterisk` carries at this
-    /// size, and OpenAI's is a six-fold knot, which `hexagon` stands in for.
-    /// Close enough to identify at 11pt, and nobody's trademark in the bundle.
-    private var symbol: String {
-        switch backend?.lowercased() {
-        case "codex": return "hexagon"
-        default: return "asterisk"
-        }
+    /// The real marks, as template images.
+    ///
+    /// SF Symbols stand-ins — an asterisk and a hexagon — were close enough to
+    /// describe and not close enough to recognise, which defeats the point of a
+    /// glyph. These are the actual burst and knot, lifted from the installed
+    /// apps' own icons and reduced to alpha, so SwiftUI tints them like any
+    /// symbol and one asset serves grey here and any colour later.
+    private var asset: String {
+        backend?.lowercased() == "codex" ? "AgentCodex" : "AgentClaude"
     }
 
     var body: some View {
-        Image(systemName: symbol)
-            .font(.system(size: 9, weight: .medium))
+        Image(asset)
+            .renderingMode(.template)
+            .resizable()
+            .scaledToFit()
             .foregroundStyle(ConchPalette.textFaint)
-            .frame(width: 14, height: 14)
-            .fixedSize()
+            // Fixed box so both marks occupy identical space: the burst is
+            // square and the knot is not, and letting each size itself left
+            // the gap to the session name visibly different per row.
+            .frame(width: 11, height: 11)
             .help(label)
             .accessibilityLabel("Agent: \(label)")
     }
@@ -2627,39 +2629,55 @@ private func splitAtUTF16Offset(
 /// something is.
 private struct AllSessionsRow: View {
     let isSelected: Bool
-    let count: Int
-    let action: () -> Void
+    let onSelect: () -> Void
+    let onStart: () -> Void
 
     @State private var isHovered = false
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: "square.stack")
-                    .font(.system(size: 10.5))
-                    .frame(width: 14)
-                Text("All sessions")
-                    .font(ConchTypography.font(size: 12.5, weight: .medium))
-                Spacer(minLength: 8)
-                Text("\(count)")
-                    .font(ConchTypography.font(size: 11))
-                    .foregroundStyle(ConchPalette.textFaint)
+        HStack(spacing: 0) {
+            Button(action: onSelect) {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.stack")
+                        .font(.system(size: 10.5))
+                        .frame(width: 14)
+                    Text("All sessions")
+                        .font(ConchTypography.font(size: 12.5, weight: .medium))
+                    Spacer(minLength: 8)
+                }
+                .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
+                .contentShape(Rectangle())
             }
-            .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(isSelected ? ConchPalette.raised : (isHovered ? ConchPalette.hover : .clear))
-            )
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .help("Act on every session — pause and mode apply to all")
+
+            // A plus where the count was.
+            //
+            // The count restated something the list already shows by being a
+            // list. This is the one thing you would reach for at the top of a
+            // session list and could not do from here — and it sits where the
+            // sessions are, not in the app's chrome beside settings and logs,
+            // because starting one acts on the LIST.
+            Button(action: onStart) {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .medium))
+                    .frame(width: 20, height: 20)
+                    .foregroundStyle(isHovered ? ConchPalette.textPrimary : ConchPalette.textFaint)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovered = $0 }
+            .help("Start a Claude or Codex session, new or resumed")
+            .accessibilityLabel("New session")
         }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
-        .help("Act on every session — auto/manual and talk apply to all")
-        .accessibilityLabel("All sessions")
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 7)
+                .fill(isSelected ? ConchPalette.raised : .clear)
+        )
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -2709,40 +2727,3 @@ private struct ModeToggle: View {
     }
 }
 
-/// Start a session, at the foot of the list of sessions.
-///
-/// It lived in the header beside settings and logs, which are things you do to
-/// CONCH. Starting a session is a thing you do to the list — so it belongs at
-/// the list, where the row it creates will appear, rather than in the app's
-/// chrome three inches away.
-private struct NewSessionRow: View {
-    let action: () -> Void
-
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: "plus")
-                    .font(.system(size: 10.5, weight: .medium))
-                    .frame(width: 14)
-                Text("New session")
-                    .font(ConchTypography.font(size: 12.5))
-                Spacer(minLength: 0)
-            }
-            .foregroundStyle(isHovered ? ConchPalette.textPrimary : ConchPalette.textDim)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 7)
-                    .fill(isHovered ? ConchPalette.hover : .clear)
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
-        .help("Start a Claude or Codex session, new or resumed")
-        .accessibilityLabel("New session")
-    }
-}
