@@ -5,10 +5,14 @@ delete as they go. Newest at the top of each section.
 
 ## Roadmap
 
-Phases 1 and 2 are DONE, and most of Phase 3 with them. This section was
-rewritten on 2026-08-17 after it drifted badly enough to mislead: it still
-listed questions, errors, the black conversation and the footer keybar as open
-weeks after they shipped, and reporting from it wasted Tyler's time.
+Phases 1 and 2 are DONE. Phases 3 and 4 are not started.
+
+Rewritten on 2026-08-17 after drifting badly enough to mislead twice in one
+day. It had listed questions, errors, the black conversation and the footer
+keybar as open weeks after they shipped — and then, correcting that, I
+overshot and called Phase 3 mostly done off the strength of a commit message.
+Both errors have the same cause: reporting from prose instead of checking the
+source. Every claim below was verified against code, and says which file.
 
 ### Phase 1 — one interaction model (DONE, 3651aa0)
 
@@ -67,6 +71,32 @@ where conch's own resident footprint was 1.3GB of it.
   because each voice is 512KB against a 312MB model.
 - Not yet investigated: whether conch's own daemon, TUI and app footprints are
   reasonable, and the relay's 100-minute reconnect.
+
+### What is actually left, ranked
+
+Phases 1 and 2 are finished. This is everything else.
+
+1. **Phase 3, the feed** (`vision.md`) — the whole remaining product idea. One
+   swap button of it exists.
+2. **The mic must fill the composer.** Press it expecting to add to what you
+   typed and the spoken half vanishes into the session instead. Needs a
+   dictation mode that publishes final text back to the app rather than
+   injecting it. The last Phase-1 idea, deferred because it is the biggest.
+3. **Phase 4, performance** — Kokoro by mode, whisper pre-warmed on a signal.
+4. **The Mac app does not respawn a dead daemon** — and hides the start toggle
+   when it happens, so there is no recovery but relaunching.
+5. **Images in the Mac composer show as filenames, not pictures**
+   (`ComposerView.swift:491` says so in its own comment).
+6. **A new session in an untrusted folder never appears** — Claude Code holds
+   it on its trust prompt and never registers it.
+7. **Renaming only renames inside conch** — route to Claude Code's `/rename`,
+   which is local and costs no model turn. No Codex equivalent found.
+8. **conch should know about skills and plugins**, then toggle them.
+9. **Render materials inline** instead of growing a DROP list.
+10. **Links may not be clickable** — markdown becomes AttributedString, which
+    should carry link attributes; confirm before rewriting anything.
+11. Blocked on ten seconds with permissions on: **approvals** (the four-way
+    decision) and **checkpoint/revert**.
 
 ### Terminal parity, deliberately scoped
 
