@@ -5,59 +5,71 @@ delete as they go. Newest at the top of each section.
 
 ## Roadmap
 
-Rewritten from scratch — the previous plan was written before the audit and
-before half of it was done. Each phase ends somewhere worth stopping.
+Phases 1 and 2 are DONE, and most of Phase 3 with them. This section was
+rewritten on 2026-08-17 after it drifted badly enough to mislead: it still
+listed questions, errors, the black conversation and the footer keybar as open
+weeks after they shipped, and reporting from it wasted Tyler's time.
 
-### Phase 1 — make one interaction model (in progress)
+### Phase 1 — one interaction model (DONE, 3651aa0)
 
-The audit's verdict is the problem statement: *"the three surfaces are not
-three presentations of one interaction model. They currently implement
-materially different products."* Everything here is that sentence being false.
+Every item closed. The unreadable Mac conversation turned out not to be the
+daemon's republishing as guessed but `pinnedToBottom` never becoming false, so
+each streaming revision restarted an animated scroll while the lazy stack
+exposed unmaterialised rows in the gaps. Fixed with bounded eager layout, real
+scroll tracking through NSScrollView, growth followed only while already at the
+bottom, and timestamp-only snapshots no longer republishing at all.
 
-1. **The mic must mean one thing.** ← NEXT. Mac sends wake/stop to the daemon's
-   mic; the phone runs LOCAL recognition and never sends; the terminal wakes the
-   daemon mic but only in theater mode. Settle it — dictation fills the
-   composer, on every surface — and the "mic fills the composer" item is the
-   same work.
-2. ~~**Retire mute everywhere.**~~ DONE — gone from every surface; `muted`
-   survives only as an internal state name that renders as "manual".
-3. **The composer, on every surface.** Mac and phone have one; the layout fix
-   (field on top, controls beneath) is still owed on the Mac.
-4. **Dismiss/restore, one feature.** Complete on Mac, dismiss-only in the
-   terminal with unreachable restore code, absent on the phone — which drops
-   `dismissedRows` while decoding.
-5. **The dead footer keybar** — it advertises keys that are all swallowed,
-   including `q` and Ctrl-C.
+Also closed there: the per-session composer draft, mute retired across all
+three surfaces plus socket/MCP/CLI/persistence, the footer keybar's keys made
+to work rather than removed, dismiss/restore unified, and manual mode gated at
+the funnel so conch never speaks first.
 
-Added by use, not by audit — the controls have to be trustworthy before the
-model they express is worth unifying:
+### Phase 2 — usable daily (DONE, 02b8aa0)
 
-6. ~~**A mic that always closes**~~ and ~~**a manual mode that means it**~~ —
-   DONE. See Bugs/Fixed; both were "conch reported an intent and never checked
-   whether it happened", which is the same defect Phase 1 is about.
+All five. Start and close sessions from conch (Terminal, clean Ctrl-D with
+pid-verified exit, never a kill). Context meter per session, absent when
+unknown rather than guessed. The agent's mark beside each name. Questions
+answerable by tap or voice, converging on one classifier in the daemon.  And
+errors that report themselves, from both apps into the daemon's log.
 
-### Phase 2 — the things that make it usable daily
+### Phase 3 — the feed (mostly done)
 
-7. ~~Start and close sessions from either app.~~ DONE on the Mac; phone owed.
-8. ~~Context meter per session.~~ DONE.
-9. ~~Claude / Codex mark beside each name.~~ DONE.
-10. Question options that can actually be answered.
-11. Errors that report themselves.
+11. ~~Artifacts inline; one pane, two perspectives~~ DONE (bc11272).
+12. ~~Pinned artifacts that stay live~~ DONE (bc11272).
+13. **The feed proper — see `vision.md`. This is the open one.**
 
-### Phase 3 — the feed
+### What is actually left
 
-11. Artifacts inline in the conversation; one pane, two perspectives.
-12. Pinned artifacts that stay live without being re-sent.
-13. Then the feed proper — see `vision.md`.
+Ranked. Everything above this line is finished.
+
+1. **The feed** (`vision.md`) — the whole remaining product idea.
+2. **The mic must fill the composer.** Press it expecting to add to what you
+   typed and the spoken half vanishes into the session instead. Needs a
+   dictation mode that publishes final text back to the app rather than
+   injecting. The last real Phase-1 idea, deferred because it is the biggest.
+3. **The Mac app does not respawn a dead daemon** — and hides the start toggle
+   when it happens, so there is no recovery but relaunching.
+4. **Stop holding 1.3GB for a shut mic** — Kokoro by mode, whisper pre-warmed
+   on a signal. Details in Batch 3.
+5. **Images in the Mac composer show as filenames, not pictures**
+   (`ComposerView.swift:491` says so in a comment).
+6. **A new session in an untrusted folder never appears** — Claude Code holds
+   it on its trust prompt and never registers it.
+7. **Renaming only renames inside conch** — route to Claude Code's `/rename`,
+   which is local and costs no model turn.
+8. **conch should know about skills and plugins**, then toggle them.
+9. **Render materials inline** instead of growing a DROP list.
+10. **Links may not be clickable** — markdown becomes AttributedString, which
+    should carry link attributes; confirm before touching anything.
+11. Blocked on ten seconds with permissions on: **approvals** (the four-way
+    decision) and **checkpoint/revert**.
 
 ### Terminal parity, deliberately scoped
 
-The terminal is not a third app to bring to parity feature-for-feature; it is
-the surface you use while your hands are already on the keyboard. It should be
-able to do everything the OTHER two can do to a session — read, answer,
-interrupt, dismiss, restore, switch mode — and it does not need image
-attachment, artifact rendering, or a phone's audio lease. What it must not do
-is advertise controls that do nothing, which is what it does today.
+The terminal is the surface you use while your hands are already on the
+keyboard. It should be able to do everything the other two can do to a session
+— read, answer, interrupt, dismiss, restore, switch mode — and it does not need
+image attachment, artifact rendering, or a phone's audio lease.
 
 ## Bugs
 
@@ -82,12 +94,6 @@ is advertise controls that do nothing, which is what it does today.
       delivery re-presses Return twice before falling back exactly once
       (`daemon.ts:3386,3420`). There is no retry loop. If nobody was selecting
       text, the thing to investigate is duplicated mouse-up, not delivery.
-- [ ] **A conversation can render empty until you scroll it.** Tyler opened
-      asset generator, saw nothing while the row said it was waiting for him,
-      and the content appeared only once he scrolled. He waved it off, but an
-      empty pane over a session with content is indistinguishable from a broken
-      one — and in the feed it would be the whole screen. Likely the lazy stack
-      not laying out until the scroll view is touched.
 - [ ] **The relay drops every 100 minutes, exactly.** 13:42, 15:22, 17:02,
       18:42, 20:23 — five disconnects, all code 1006 (abnormal closure), all
       100 minutes apart. That regularity is a timer somewhere, not a network:
@@ -100,6 +106,15 @@ is advertise controls that do nothing, which is what it does today.
 
 ### Fixed
 
+- [x] **The Mac conversation went black, glitched back only on scroll, and
+      snapped to the end while being read.** The highest-priority bug on the
+      list for weeks. Not the daemon's republishing as guessed: `pinnedToBottom`
+      never became false, so every streaming revision restarted an animated
+      scroll, and the lazy stack exposed unmaterialised rows in the gaps. Fixed
+      in 3651aa0 with bounded eager layout, real scroll tracking through
+      NSScrollView, growth followed only while already at the bottom, and
+      scrolling deferred until layout completes. Takes "renders empty until you
+      scroll" with it — same cause.
 - [x] **The mic could not be closed.** A `sox` recorder wedged on CoreAudio
       ignored SIGINT *and* SIGTERM and held the device for 8m36s writing a
       zero-byte file, while the daemon logged "closing mic" six times. Every
@@ -351,14 +366,23 @@ implement materially different products." Highest-value items lifted out:
       and the Kokoro worker (650MB) are resident full time — ~8% of a 16GB
       machine — on a Mac already at 57MB free with `kernel_task` pegged.
 
-      **Kokoro: tie it to MODE, not to a button.** Manual mode unloads it and
-      uses `say`; auto mode warms it. This costs nothing in practice because
-      `say` is *already* what speaks: 124 fallbacks to it in one log while
-      Kokoro hard-restarted on synthesis timeouts. 650MB is currently held by a
-      voice that is not talking. On-demand loading is NOT the answer for this
-      one — measured warmups today were 18.4s, 14.9s, 10.5s and 30.6s, and they
-      are slow *because* of the memory pressure they add to, so a cold start
-      lands exactly when the machine can least afford it.
+      **Kokoro: tie it to MODE.** Manual mode unloads it entirely; auto mode
+      warms it.
+
+      The rule this follows, in Tyler's words: *"manual has no voice... the
+      only time manual should make any sound is if i press the play button on a
+      response."* Manual is silent, full stop — not "silent except failures",
+      not "silent except a courtesy line". Measured against the current run:
+      zero TTS calls since the daemon started in manual at 15:50. It already
+      behaves correctly; it is simply holding 650MB to do so.
+
+      So in manual, Kokoro is needed for exactly one thing: pressing play on a
+      response. That is deliberate, user-initiated, and rare — which makes it
+      the same **pre-warm on a signal** problem as whisper below, not a
+      keep-it-resident problem. Warm it when a response is on screen and the
+      app is frontmost; do not make the person who pressed play wait through a
+      cold start. Measured warmups: 5.4s to 30.6s, and slow *because* of the
+      memory pressure they contribute to.
 
       **Whisper: pre-warm on the signal, not on a timer.** Tyler: "maybe
       whisper start on in auto mode tho, or it pre-warms itself when it knows
