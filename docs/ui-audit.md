@@ -248,7 +248,6 @@ These are all published rows—not a sample. The action semantics are implemente
 | `reveal-typing-grace` (number) | suppress window raise after input | field/stepper | stepper | numeric |
 | `working-mic` (boolean) | open mic during remaining work | switch | switch | Space |
 | `voice-qa` (boolean) | answer Conch-prefixed questions without injection | switch | switch | Space |
-| `resume-digest` (boolean) | one resume briefing vs replay | switch | switch | Space |
 | `announce-summary` (boolean) | synthesize short spoken summary | switch | switch | Space |
 | `haiku-timeout` (number) | fast-model summary/QA timeout | field/stepper | stepper | numeric |
 | `meeting-autopause` (boolean) | pause when another app owns default mic | switch | switch | Space |
@@ -611,7 +610,7 @@ The retirement has reached only one entry point: the top-level CLI maps legacy `
 - Daemon persists mute across restart, restores it, announces/logs it, routes control events, stamps/forgets queued arrivals, makes it win display precedence, and blocks voice audition (`src/daemon.ts:232-247,1349-1503,1544-1590,1811-1850,1913-1914,2418-2427,2589-2590,2710-2753,4947,5041-5054`).
 - Dismiss is still explicitly coupled to session mute, and restore clears both (`src/session-actions-overlay.ts:29`; `src/daemon.ts:1133-1141,4544-4560`).
 - Mac and iPhone artifact video code still starts playback silent when daemon mute is active (`mac-app/conch-mac/ReviewView.swift:179-208,619-639`; `mobile/conch-ios/conch-ios/DeliverableSheet.swift:103-127`).
-- Other authored runtime references remain in away-mode guidance (`src/config.ts:57`), resume-digest ownership comments (`src/resume-digest.ts:33`), MCP public types/schema/default fixtures (`src/mcp.ts:39-82,179-185,376-387,649-666`), and the review harness's published-state fixture (`scripts/review-harness.sh:34-38`).
+- Other authored runtime references remain in away-mode guidance (`src/config.ts:57`), MCP public types/schema/default fixtures (`src/mcp.ts:39-82,179-185,376-387,649-666`), and the review harness's published-state fixture (`scripts/review-harness.sh:34-38`).
 
 ### Documentation and contract remnants
 
@@ -628,7 +627,7 @@ A repository-wide case-insensitive scan, excluding generated build/dependency tr
 - Product/UI/docs: `README.md` (`README.md:134,166-174,192-197`); `mac-app/README.md:5`; `docs/backlog.md:13,25,36-37`; `docs/conch-control-skill.md:41,77,84`; `docs/parity.md:27`; `docs/plugin-design.md:33,52`; `plugin/plugins/conch/skills/conch-control/SKILL.md:46,82,89`; `scripts/review-harness.sh:34-38`.
 - Mac source: `ConchSocketClient.swift`, `ContentView.swift`, `DashboardInputMonitor.swift`, `DashboardView.swift`, `Models.swift`, and `ReviewView.swift` at the line groups in the preceding Mac/UI/runtime bullets.
 - iPhone source: `DeliverableSheet.swift`, `LedgerView.swift`, `Models.swift`, and `SpeechController.swift` at the line groups in the preceding iPhone/UI/runtime bullets.
-- Shared runtime: `src/cli.ts:48,404-424`; `src/config.ts:57`; `src/daemon.ts:232-247,578-594,805,863,892-893,995,1133-1140,1349,1401-1503,1544-1590,1811-1850,1913-1914,2418-2427,2589-2590,2710-2753,4544-4560,4947,5041-5054,5167-5183`; `src/hook.ts:27`; `src/instant-controls.ts:7-78,132-190,216-271`; `src/mcp.ts:39-82,179-185,376-387,649-666`; `src/panel.ts:4,26,42,147,342,379,429,545-567`; `src/pause-controller.ts:21,140,254,387`; `src/resume-digest.ts:33`; `src/session-actions-overlay.ts:29`; `src/status.ts:105-106,346,378-419,510`; `src/theater-controls.ts:4-63`; `src/transcribe.ts:65`.
+- Shared runtime: `src/cli.ts:48,404-424`; `src/config.ts:57`; `src/daemon.ts:232-247,578-594,805,863,892-893,995,1133-1140,1349,1401-1503,1544-1590,1811-1850,1913-1914,2418-2427,2589-2590,2710-2753,4544-4560,4947,5041-5054,5167-5183`; `src/hook.ts:27`; `src/instant-controls.ts:7-78,132-190,216-271`; `src/mcp.ts:39-82,179-185,376-387,649-666`; `src/panel.ts:4,26,42,147,342,379,429,545-567`; `src/pause-controller.ts:21,140,254,387`; `src/session-actions-overlay.ts:29`; `src/status.ts:105-106,346,378-419,510`; `src/theater-controls.ts:4-63`; `src/transcribe.ts:65`.
 - Tests enforcing behavior/copy: `test/daemon-config.test.ts:519,607-624,725,1222`; `test/dictation-flow.test.ts:191-194,231-310`; `test/instant-controls.test.ts:352-487,513-668`; `test/mcp.test.ts:412,502-566`; `test/panel.test.ts:113-127,462-491`; `test/settings.test.ts:381`; `test/socket-turn-controls.test.ts:138-148,460-467`; `test/status.test.ts:42-213,509-545`; `test/theater-controls.test.ts:90-109,123-180,317-325`.
 - Tests with model fixtures or comments only: `test/daemon-boundaries.test.ts:27`; `test/phone-bridge.test.ts:528,581`; `test/publish-throttle.test.ts:51-59`; `test/sessions.test.ts:93-95`; `test/status-publish.test.ts:21-29`.
 

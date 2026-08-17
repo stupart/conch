@@ -143,7 +143,6 @@ describe("daemon listen status hooks", () => {
       "() => reducer.snapshot.buffer.map((segment) => segment.text).join(\" \")",
     );
     expect(conversationWiring).not.toContain("theaterMode");
-    expect(daemonSource).toContain('listenHooks("who first", () => "")');
     expect(daemonSource).toContain('listenHooks(event.label, () => "")');
   });
 
@@ -589,60 +588,6 @@ describe("daemon config controller", () => {
     expect(injector).toContain("await injectText(");
     expect(reading).toContain("await deliver(event, text");
     expect(action).toContain("await deliver(");
-  });
-
-  test("resume digest audio is serialized in the resume handler with exact replay fallback", () => {
-    const wiring = daemonSource.slice(
-      daemonSource.indexOf("pause = new PauseController"),
-      daemonSource.indexOf("const instantControls"),
-    );
-    const handler = daemonSource.slice(
-      daemonSource.indexOf("async function listenForResumeDigest"),
-      daemonSource.indexOf("async function handle(event"),
-    );
-    const settingsPause = daemonSource.slice(
-      daemonSource.indexOf("const settingsPause"),
-      daemonSource.indexOf("// Hooks may connect while model startup"),
-    );
-
-    expect(wiring).toContain("replayOverride: async (events)");
-    expect(wiring).toContain(
-      "shouldUseResumeDigest(cfg.resumeDigest, events, pausedSessionIds)",
-    );
-    expect(settingsPause).toContain("resumeDigestArm = null");
-    expect(handler).toContain("await runResumeDigest(");
-    expect(handler).toContain("for (const event of fallbackEvents) enqueue(event)");
-    expect(handler).toContain("if (plan.cancelled) return");
-    expect(handler).toContain("plan.cancelled");
-    expect(handler).toContain("plan.invalidated");
-    expect(handler).toContain("if (consumeStopKey()) digestStopRequested = true");
-    expect(handler).toContain("await listenOnce(");
-    expect(handler.indexOf("await speak(cfg, text)")).toBeLessThan(
-      handler.indexOf("return listenForResumeDigest"),
-    );
-  });
-
-  test("resume digest escrow rejects stale ownership and scoped manual mode invalidates it", () => {
-    const setup = daemonSource.slice(
-      daemonSource.indexOf("const resumeDigestEscrow"),
-      daemonSource.indexOf("const settingsPause"),
-    );
-    const modeEdges = daemonSource.slice(
-      daemonSource.indexOf("// Apply every mode edge synchronously"),
-      daemonSource.indexOf("insertQueuedEvent(queue", daemonSource.indexOf("// Apply every mode edge synchronously")),
-    );
-    const resumeHandler = daemonSource.slice(
-      daemonSource.indexOf('if (event.type === "resume") {', daemonSource.indexOf("async function handle(event")),
-      daemonSource.indexOf('if (event.type === "speak")'),
-    );
-
-    expect(setup).toContain("new ResumeDigestEscrow<TurnEvent>()");
-    expect(setup).toContain("resumeDigestEscrow.invalidate(sessionId)");
-    expect(setup).toContain("setSessionPausedWithDigest");
-    expect(setup).toContain("shouldUseResumeDigest(cfg.resumeDigest, events, pausedSessionIds)");
-    expect(modeEdges).toContain("resumeDigestEscrow.settle(event, result.digested === true)");
-    expect(resumeHandler).toContain("handlePreparedResumeDigest(event, result)");
-    expect(daemonSource).toContain("setSessionPaused: setSessionPausedWithDigest");
   });
 
   test("working-mic only makes Stop-reclassified working events audible", () => {

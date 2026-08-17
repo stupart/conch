@@ -108,8 +108,6 @@ export interface Config {
   workingMic: boolean;
   /** answer conch-prefixed questions from the current session without injecting them */
   voiceQa: boolean;
-  /** on resume, speak one composed briefing instead of replaying each held turn */
-  resumeDigest: boolean;
   /** summarize long replies in one spoken sentence for hook announcements */
   announceSummary: boolean;
   /** seconds the fast model (Haiku) may run before a voice feature falls back */
@@ -206,7 +204,6 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     revealTypingGraceSecs: settings["reveal-typing-grace"].value as number,
     workingMic: settings["working-mic"].value as boolean,
     voiceQa: settings["voice-qa"].value as boolean,
-    resumeDigest: settings["resume-digest"].value as boolean,
     announceSummary: settings["announce-summary"].value as boolean,
     haikuTimeoutSecs: settings["haiku-timeout"].value as number,
     meetingAutopause: settings["meeting-autopause"].value as boolean,

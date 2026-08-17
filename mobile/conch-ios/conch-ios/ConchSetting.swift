@@ -43,7 +43,6 @@ struct ConchSetting: Identifiable, Equatable {
         "reveal-typing-grace": "Don't raise while typing",
         "working-mic": "Open the mic while working",
         "voice-qa": "Voice Q&A",
-        "resume-digest": "Digest on resume",
         "announce-summary": "Announce a summary",
         "haiku-timeout": "Haiku timeout",
         "meeting-autopause": "Auto-pause in meetings",

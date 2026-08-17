@@ -38,7 +38,6 @@ export const SETTING_KEYS = [
   "reveal-typing-grace",
   "working-mic",
   "voice-qa",
-  "resume-digest",
   "announce-summary",
   "haiku-timeout",
   "meeting-autopause",
@@ -68,7 +67,6 @@ export type SettingField =
   | "revealTypingGraceSecs"
   | "workingMic"
   | "voiceQa"
-  | "resumeDigest"
   | "announceSummary"
   | "haikuTimeoutSecs"
   | "meetingAutopause"
@@ -386,17 +384,6 @@ export const SETTING_DESCRIPTORS = [
     help: "answer conch-prefixed questions from the current session without injecting them",
   },
   {
-    key: "resume-digest",
-    field: "resumeDigest",
-    env: "CONCH_RESUME_DIGEST",
-    kind: "boolean",
-    default: false,
-    parse: parseBoolean,
-    bounds: null,
-    apply: "live",
-    help: "on resume, speak one composed briefing instead of replaying each held turn",
-  },
-  {
     key: "announce-summary",
     field: "announceSummary",
     env: "CONCH_ANNOUNCE_SUMMARY",
@@ -416,7 +403,7 @@ export const SETTING_DESCRIPTORS = [
     parse: numberParser(haikuTimeout, "a number from 1 to 60"),
     bounds: haikuTimeout,
     apply: "live",
-    help: "seconds the fast model (Haiku) may take for a spoken summary, voice answer, or resume briefing before falling back",
+    help: "seconds the fast model (Haiku) may take for a spoken summary or voice answer before falling back",
   },
   {
     key: "meeting-autopause",

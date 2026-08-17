@@ -74,12 +74,6 @@ import {
 import { askClaude, type AskClaude } from "./model.ts";
 import { routeVoicePrompt } from "./voice-qa.ts";
 import {
-  composeResumeBriefing,
-  ResumeDigestEscrow,
-  runResumeDigest,
-  shouldUseResumeDigest,
-} from "./resume-digest.ts";
-import {
   whisperServerClient,
   type WhisperRecoveryReason,
 } from "./transcribe.ts";
@@ -993,18 +987,12 @@ export function choiceReplyForConversation(heard: string, conversation: Conversa
   return selected === null ? heard : question.options[selected]!.label;
 }
 
-export type NameAddressRoute =
-  | {
-    kind: "deliver";
-    event: TurnEvent;
-    text: string;
-    addressed?: { name: string; label: string };
-  }
-  | {
-    kind: "wake";
-    event: TurnEvent;
-    addressed: { name: string; label: string };
-  };
+export type NameAddressRoute = {
+  kind: "deliver";
+  event: TurnEvent;
+  text: string;
+  addressed?: { name: string; label: string };
+};
 
 export interface NameAddressRouteOptions {
   findSession?: (claudeDir: string, name: string) => Promise<SessionInfo | null>;
@@ -1031,27 +1019,11 @@ export async function resolveNameAddressRoute(
       continue;
     }
     if (!session) continue;
+    if (!candidate.rest) continue;
 
     const label = labelFor(session, session.cwd);
     const transcriptPath = transcriptFor(claudeDir, session.sessionId);
     const addressed = { name: candidate.name, label };
-    if (!candidate.rest) {
-      return {
-        kind: "wake",
-        addressed,
-        event: {
-          type: "wake",
-          sessionId: session.sessionId,
-          label,
-          cwd: session.cwd,
-          pid: session.pid,
-          announce: "",
-          transcriptPath,
-          // You said its name out loud. That is a person asking.
-          origin: "user",
-        },
-      };
-    }
 
     return {
       kind: "deliver",
@@ -1466,16 +1438,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const injectedAt = new Map<string, number>(); // session -> last time conch drove it
   const pending = new Map<string, TurnEvent>(); // sessions that finished while paused — latest per session
   const resumeTransitions = new WeakMap<TurnEvent, Promise<PauseResumeResult>>();
-  const resumeDigestEscrow = new ResumeDigestEscrow<TurnEvent>();
-  let resumeDigestArm: {
-    owner: TurnEvent;
-    generation: number | null;
-  } | null = null;
-  const restorePreparedResumeDigest = (): void => {
-    for (const event of resumeDigestEscrow.restore()) {
-      if (!pending.has(event.sessionId)) pending.set(event.sessionId, event);
-    }
-  };
   // Live session status for the dashboard panel — replaces the spoken "needs you"
   // nag with a glanceable visual: working (you submitted a prompt) / waiting (turn
   // ended, ready for you) / needs (a permission/idle notification fired).
@@ -1613,31 +1575,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
     speak: (text) => speak(cfg, text),
     liveSessionIds: async () => (await registrySnapshot(cfg.claudeDir))?.liveIds ?? null,
     userRespondedSince: (event) => userRespondedSince(event.transcriptPath, event.mark),
-    replayOverride: async (events) => {
-      const arm = resumeDigestArm;
-      resumeDigestArm = null;
-      if (
-        !arm
-        || arm.generation === null
-        || pause.interrupted(arm.generation)
-        || !shouldUseResumeDigest(cfg.resumeDigest, events, pausedSessionIds)
-      ) {
-        return false;
-      }
-      const briefing = await composeResumeBriefing(events, askHaiku);
-      if (
-        pause.interrupted(arm.generation)
-        || !shouldUseResumeDigest(cfg.resumeDigest, events, pausedSessionIds)
-      ) {
-        return false;
-      }
-      return Boolean(resumeDigestEscrow.prepare(
-        arm.owner,
-        events,
-        briefing,
-        arm.generation,
-      ));
-    },
     enqueue,
     onHold: (event) => {
       lastTurn = event;
@@ -1662,48 +1599,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     log,
     render: () => void renderSessionPanel(),
   });
-  const cancelConsumingResumeDigest = (reason: string): void => {
-    try {
-      speech.cancelCurrent();
-    } catch (error) {
-      log(`resume digest speech cancellation failed: ${error}`);
-    }
-    try {
-      speech.cancelPendingAudio();
-    } catch (error) {
-      log(`resume digest pending-audio cancellation failed: ${error}`);
-    }
-    try {
-      activeDictation?.requestExternal("spacebar", reason);
-    } catch (error) {
-      log(`resume digest mic cancellation failed: ${error}`);
-    }
-  };
-  const setSessionPausedWithDigest = (sessionId: string, next: boolean): void => {
-    const digestWasConsuming = next
-      ? resumeDigestEscrow.invalidate(sessionId).consuming
-      : false;
-    instantControls.setSessionPaused(sessionId, next);
-    if (digestWasConsuming) {
-      cancelConsumingResumeDigest("resume-digest-session-paused");
-    }
-  };
-  // Meeting-mode's silent auto-pause and settings-pause share one coordinator;
-  // wrapping the digest-aware target here means EVERY pause path (manual,
-  // settings, or meeting auto-pause) also clears a prepared resume digest.
+  // Meeting-mode's silent auto-pause and settings-pause share one coordinator.
   const silentPause = new SilentPauseCoordinator(
-    {
-      get paused() {
-        return pause.paused;
-      },
-      setPaused(next, options) {
-        if (next) {
-          resumeDigestArm = null;
-          restorePreparedResumeDigest();
-        }
-        return pause.setPaused(next, options);
-      },
-    },
+    pause,
     (error) => log(`settings pause transition failed: ${error}`),
   );
   const settingsPause = new SettingsPauseLifecycle(silentPause);
@@ -1941,33 +1839,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // pauses everything, and a global resume makes an exemption meaningless.
       if (!event.sessionId) resumedSessionIds.clear();
       if (event.type === "resume") {
-        // A second resume can overtake a prepared-but-not-yet-spoken digest.
-        // Put its exact work back under PauseController before snapshotting.
-        restorePreparedResumeDigest();
-        resumeDigestArm = { owner: event, generation: null };
         silentPause.recordManualState(false);
       } else {
-        restorePreparedResumeDigest();
-        resumeDigestArm = null;
         silentPause.recordManualState(true);
       }
       const transition = instantControls.applyGlobal(event.type as "pause" | "resume");
-      if (transition) {
-        if (resumeDigestArm?.owner === event) {
-          resumeDigestArm.generation = pause.capture();
-        }
-        const tracked = transition.then(
-          (result) => {
-            resumeDigestEscrow.settle(event, result.digested === true);
-            return result;
-          },
-          (error) => {
-            resumeDigestEscrow.settle(event, false);
-            throw error;
-          },
-        );
-        resumeTransitions.set(event, tracked);
-      }
+      if (transition) resumeTransitions.set(event, transition);
     }
     insertQueuedEvent(queue, event, instantQueueBarriers);
     void drain();
@@ -2575,7 +2452,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
       ...(lastTurn ? [lastTurn] : []),
       ...(recitingEvent ? [recitingEvent] : []),
       ...(handlingEvent ? [handlingEvent] : []),
-      ...resumeDigestEscrow.events(),
     ]);
     const oldPrefix = `${oldLabel}:`;
     for (const event of events) {
@@ -2593,144 +2469,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
     numberedSessionRows = numberedSessionRows.map((row) =>
       row.s.sessionId === sessionId ? { ...row, label: newLabel } : row
     );
-  }
-
-  async function listenForResumeDigest(
-    generation: number,
-    canContinue: () => boolean,
-  ): Promise<{ text: string; error?: string }> {
-    let digestActive: typeof activeDictation = null;
-    let closing = false;
-    let resolveDone!: () => void;
-    const done = new Promise<void>((resolve) => {
-      resolveDone = resolve;
-    });
-
-    if (!canContinue() || !(await reserveNormalMic())) {
-      return { text: "", error: "daemon is shutting down" };
-    }
-    if (!canContinue() || pause.interrupted(generation)) {
-      normalMicReserved = false;
-      return { text: "", error: "resume was interrupted" };
-    }
-
-    resetConversationTranscriptPrefix();
-    setState("listening", "who first");
-    micOpen = true;
-    try {
-      return await listenOnce(
-        {
-          ...cfg,
-          listenWindowSecs: Math.min(cfg.listenWindowSecs, 10),
-        },
-        listenHooks("who first", () => ""),
-        {
-          tag: "digest",
-          onSessionStarted(session) {
-            digestActive = {
-              session,
-              requestExternal(_action, barrierReason) {
-                if (closing || session.state !== "running") return;
-                closing = true;
-                session.requestBarrier(barrierReason ?? "resume-digest-spacebar");
-              },
-              done,
-            };
-            activeDictation = digestActive;
-            normalMicReserved = false;
-            micOpen = true;
-          },
-        },
-      );
-    } catch (error) {
-      return {
-        text: "",
-        error: error instanceof Error ? error.message : String(error),
-      };
-    } finally {
-      normalMicReserved = false;
-      if (activeDictation === digestActive) activeDictation = null;
-      micOpen = false;
-      resolveDone();
-    }
-  }
-
-  async function handlePreparedResumeDigest(
-    owner: TurnEvent,
-    result: PauseResumeResult,
-  ): Promise<void> {
-    const plan = resumeDigestEscrow.begin(owner);
-    if (!plan) {
-      // A newer pause/resume or settings modal already restored/consumed this
-      // stale resume's escrow. Its acknowledgement must not speak twice.
-      log("resume digest plan already restored or consumed");
-      return;
-    }
-
-    for (const sessionId of pausedSessionIds) {
-      resumeDigestEscrow.invalidate(sessionId);
-    }
-    const events = plan.events;
-    let digestStopRequested = false;
-    const digestInterrupted = (): boolean => {
-      if (consumeStopKey()) digestStopRequested = true;
-      return digestStopRequested
-        || plan.cancelled
-        || plan.invalidated
-        || shuttingDown
-        || pause.interrupted(plan.generation);
-    };
-    const enqueueFullReplay = async (fallbackEvents: readonly TurnEvent[]) => {
-      // A newer pause/resume restored this same plan to pending; it now owns
-      // the work, so this stale handler must neither duplicate nor announce it.
-      if (plan.cancelled) return;
-      resumeDigestEscrow.finish(plan);
-      // Queue first: even if the spoken count fails, the exact held work stays
-      // reachable and will resume after this handler unwinds.
-      for (const event of fallbackEvents) enqueue(event);
-      if (
-        !digestStopRequested
-        && !pause.paused
-        && !shuttingDown
-      ) {
-        await pause.announceResumed({
-          replayed: fallbackEvents.length,
-          dropped: result.dropped + (result.replayed - fallbackEvents.length),
-          cancelled: false,
-        });
-      }
-    };
-
-    try {
-      if (
-        digestInterrupted()
-        || !shouldUseResumeDigest(cfg.resumeDigest, events, pausedSessionIds)
-      ) {
-        await enqueueFullReplay(events);
-        return;
-      }
-
-      await runResumeDigest(events, plan.briefing, {
-        speak: async (text) => {
-          await speak(cfg, text);
-        },
-        listen: async () => {
-          await micCue(cfg, "open");
-          if (digestInterrupted()) {
-            return { text: "", error: "resume was interrupted" };
-          }
-          return listenForResumeDigest(
-            plan.generation,
-            () => !digestInterrupted(),
-          );
-        },
-        enqueue,
-        fallback: enqueueFullReplay,
-        interrupted: digestInterrupted,
-      });
-    } finally {
-      resumeDigestEscrow.finish(plan);
-    }
   }
 
   async function handle(event: TurnEvent): Promise<void> {
@@ -2757,7 +2495,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const result = transition
         ? await transition
         : { replayed: 0, dropped: 0, cancelled: false };
-      if (result.digested) return handlePreparedResumeDigest(event, result);
       return pause.announceResumed(result);
     }
     if (event.type === "inject") {
@@ -3248,11 +2985,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const addressed = await resolveNameAddressRoute(cfg.claudeDir, event, text);
       if (addressed.addressed) {
         log(`addressed "${addressed.addressed.name}" -> "${addressed.addressed.label}"`);
-      }
-      if (addressed.kind === "wake") {
-        if (beforeInject && !(await beforeInject())) return false;
-        enqueue(addressed.event);
-        return true;
       }
       event = addressed.event;
       text = addressed.text;
@@ -4763,13 +4495,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (lastTurn?.sessionId === target.sessionId) lastTurn = null;
       panelOrder = panelOrder.filter((sessionId) => sessionId !== target.sessionId);
       panelLabels.delete(target.sessionId);
-      const digestWasConsuming = resumeDigestEscrow.invalidate(target.sessionId).consuming;
       pause.interrupt({
         sessionId: target.sessionId,
         hold: dismissedHeldTurns,
         preserveHeld: true,
       });
-      if (digestWasConsuming) cancelConsumingResumeDigest("resume-digest-session-dismissed");
       for (let index = queue.length - 1; index >= 0; index--) {
         const queued = queue[index]!;
         if (queued.type === "speak" && queued.sessionId === target.sessionId) {
@@ -4810,7 +4540,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const socketTurnCallbacks: SocketTurnEventCallbacks = {
     busy: () => busy,
     stopSpacebar: () => stopReciting("spacebar"),
-    setSessionPaused: setSessionPausedWithDigest,
+    setSessionPaused: (sessionId, paused) => instantControls.setSessionPaused(sessionId, paused),
     isDismissedSession: (sessionId) => dismissedSessionIds.has(sessionId),
     enrichAudioCommand: enrichSocketAudioCommand,
     enqueueInstant: (event) => instantControls.enqueueInstant(event),
@@ -5485,7 +5215,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       label: "",
       announce: "",
     }),
-    setSessionPaused: setSessionPausedWithDigest,
+    setSessionPaused: (sessionId, paused) => instantControls.setSessionPaused(sessionId, paused),
   };
 
   // Interactive keys when running in a terminal.

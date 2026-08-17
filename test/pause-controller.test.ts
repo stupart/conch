@@ -43,7 +43,6 @@ interface HarnessOptions {
   cancelPendingAudio?: () => void;
   liveSessionIds?: PauseControllerOptions["liveSessionIds"];
   userRespondedSince?: PauseControllerOptions["userRespondedSince"];
-  replayOverride?: PauseControllerOptions["replayOverride"];
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -93,7 +92,6 @@ function harness(options: HarnessOptions = {}) {
     },
     liveSessionIds: options.liveSessionIds ?? (async () => null),
     userRespondedSince: options.userRespondedSince ?? (async () => false),
-    replayOverride: options.replayOverride,
     enqueue(event) {
       enqueued.push(event);
     },
@@ -492,7 +490,7 @@ describe("PauseController", () => {
     expect(h.enqueued[0]).toBe(original);
   });
 
-  test("resume without an override preserves the existing result, replay, and announcement", async () => {
+  test("resume preserves the existing result, replay, and announcement", async () => {
     const original = turn();
     const h = harness({
       initialPaused: true,
@@ -509,19 +507,14 @@ describe("PauseController", () => {
     expect(h.spoken).toEqual(["Back. 1 session finished while you were away."]);
   });
 
-  test("resume override receives the exact post-filter replayable events", async () => {
+  test("resume replays only exact post-filter events", async () => {
     const fresh = turn();
     const responded = turn({ sessionId: "session-b", label: "beta" });
     const stale = turn({ sessionId: "session-c", label: "gamma" });
-    let overridden: TurnEvent[] | null = null;
     const h = harness({
       initialPaused: true,
       liveSessionIds: async () => new Set([fresh.sessionId, responded.sessionId]),
       userRespondedSince: async (event) => event === responded,
-      replayOverride: async (events) => {
-        overridden = events;
-        return false;
-      },
     });
     h.pending.set(fresh.sessionId, fresh);
     h.pending.set(responded.sessionId, responded);
@@ -529,73 +522,9 @@ describe("PauseController", () => {
 
     const result = await h.controller.beginResume();
 
-    const received: TurnEvent[] = overridden ?? [];
-    expect(received).toEqual([fresh]);
-    expect(received[0]).toBe(fresh);
     expect(h.enqueued).toEqual([fresh]);
     expect(h.enqueued[0]).toBe(fresh);
     expect(result).toEqual({ replayed: 1, dropped: 2, cancelled: false });
-  });
-
-  test("a successful resume override consumes replay and suppresses the resumed announcement", async () => {
-    const original = turn();
-    const h = harness({
-      initialPaused: true,
-      replayOverride: async () => true,
-    });
-    h.pending.set(original.sessionId, original);
-
-    const result = await h.controller.beginResume();
-    await h.controller.announceResumed(result);
-
-    expect(result).toEqual({
-      replayed: 1,
-      dropped: 0,
-      cancelled: false,
-      digested: true,
-    });
-    expect(h.enqueued).toEqual([]);
-    expect(h.spoken).toEqual([]);
-  });
-
-  test("a declined resume override falls back to the full exact-object replay", async () => {
-    const alpha = turn();
-    const beta = turn({ sessionId: "session-b", label: "beta" });
-    const h = harness({
-      initialPaused: true,
-      replayOverride: async () => false,
-    });
-    h.pending.set(alpha.sessionId, alpha);
-    h.pending.set(beta.sessionId, beta);
-
-    const result = await h.controller.beginResume();
-    await h.controller.announceResumed(result);
-
-    expect(result).toEqual({ replayed: 2, dropped: 0, cancelled: false });
-    expect(h.enqueued).toEqual([alpha, beta]);
-    expect(h.enqueued[0]).toBe(alpha);
-    expect(h.enqueued[1]).toBe(beta);
-    expect(h.spoken).toEqual(["Back. 2 sessions finished while you were away."]);
-  });
-
-  test("a throwing resume override falls back to the full exact-object replay", async () => {
-    const alpha = turn();
-    const beta = turn({ sessionId: "session-b", label: "beta" });
-    const h = harness({
-      initialPaused: true,
-      replayOverride: async () => {
-        throw new Error("digest failed");
-      },
-    });
-    h.pending.set(alpha.sessionId, alpha);
-    h.pending.set(beta.sessionId, beta);
-
-    const result = await h.controller.beginResume();
-
-    expect(result).toEqual({ replayed: 2, dropped: 0, cancelled: false });
-    expect(h.enqueued).toEqual([alpha, beta]);
-    expect(h.enqueued[0]).toBe(alpha);
-    expect(h.enqueued[1]).toBe(beta);
   });
 
   test.each(["liveness", "response-check"] as const)(
@@ -624,35 +553,5 @@ describe("PauseController", () => {
       expect(h.enqueued[0]).toBe(original);
     },
   );
-
-  test("a new pause cancels an in-flight override and restores held events", async () => {
-    const original = turn();
-    const overrideStarted = deferred<void>();
-    const overrideResult = deferred<boolean>();
-    const h = harness({
-      initialPaused: true,
-      replayOverride: async () => {
-        overrideStarted.resolve();
-        return overrideResult.promise;
-      },
-    });
-    h.pending.set(original.sessionId, original);
-
-    const staleResume = h.controller.beginResume();
-    await overrideStarted.promise;
-    expect(h.pending.size).toBe(0);
-
-    h.controller.beginPause();
-    expect(h.pending.get(original.sessionId)).toBe(original);
-
-    overrideResult.resolve(false);
-    const result = await staleResume;
-    await h.controller.announceResumed(result);
-
-    expect(result).toEqual({ replayed: 0, dropped: 0, cancelled: true });
-    expect(h.pending.get(original.sessionId)).toBe(original);
-    expect(h.enqueued).toEqual([]);
-    expect(h.spoken).toEqual([]);
-  });
 
 });

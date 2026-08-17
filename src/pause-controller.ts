@@ -28,7 +28,6 @@ export interface PauseResumeResult {
   replayed: number;
   dropped: number;
   cancelled: boolean;
-  digested?: boolean;
 }
 
 export interface PauseControllerOptions {
@@ -49,8 +48,6 @@ export interface PauseControllerOptions {
   speak(text: string): Promise<void>;
   liveSessionIds(): Promise<ReadonlySet<string> | null>;
   userRespondedSince(event: TurnEvent): Promise<boolean>;
-  /** May consume the filtered replay. False or failure preserves normal replay. */
-  replayOverride?(events: TurnEvent[]): Promise<boolean>;
   enqueue(event: TurnEvent): void;
   onHold?(event: TurnEvent): void;
   onInterruptError?(error: unknown): void;
@@ -295,7 +292,7 @@ export class PauseController {
   }
 
   async announceResumed(result: PauseResumeResult): Promise<void> {
-    if (result.cancelled || result.digested) return;
+    if (result.cancelled) return;
     await this.#options.speak(result.replayed
       ? `Back. ${result.replayed} session${result.replayed === 1 ? "" : "s"} finished while you were away.`
       : "Back on.");
@@ -343,37 +340,17 @@ export class PauseController {
       fresh.push(event);
     }
 
-    const replayable = fresh;
-    let digested = false;
-    if (resume.cancelled) return { replayed: 0, dropped: 0, cancelled: true };
-    if (this.#options.replayOverride) {
-      try {
-        digested = await this.#options.replayOverride(replayable);
-      } catch {
-        // A failed digest must preserve the exact normal replay.
-      }
-      if (resume.cancelled) return { replayed: 0, dropped: 0, cancelled: true };
-    }
-
     if (resume.cancelled) return { replayed: 0, dropped: 0, cancelled: true };
     if (this.#resumeInFlight === resume) this.#resumeInFlight = null;
-    const dropped = held.length - replayable.length;
+    const dropped = held.length - fresh.length;
     this.#options.log(
-      `auto mode — ${replayable.length} session(s) waited while you were away`
+      `auto mode — ${fresh.length} session(s) waited while you were away`
       + (dropped ? ` (${dropped} stale, dropped)` : ""),
     );
-    if (digested) {
-      return {
-        replayed: replayable.length,
-        dropped,
-        cancelled: false,
-        digested: true,
-      };
-    }
-    // Replay before the optional summary. This preserves the existing race:
+    // This preserves the existing race:
     // a newer same-session event accepted during filtering supersedes this one.
-    for (const event of replayable) this.#options.enqueue(event);
-    return { replayed: replayable.length, dropped, cancelled: false };
+    for (const event of fresh) this.#options.enqueue(event);
+    return { replayed: fresh.length, dropped, cancelled: false };
   }
 
   #cancelResume(): void {

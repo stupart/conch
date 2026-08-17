@@ -164,9 +164,7 @@ Commands only match as the *entire* utterance — "continue working on the login
 
 **Leaving or reading instead?** `conch pause` switches to manual: replies remain visible, announcements and automatic mic opening stop, and conch **holds** the latest finished turn per session. `conch resume` returns to auto and replays what was held. In the dashboard, **p** toggles the same mode. `CONCH_AWAY_AFTER_SECS` adds opt-in auto-silence after N seconds of keyboard/mouse idle, but it is off by default because idle time does not count voice activity. Joining meetings often? `conch set meeting-autopause true` enables a default-off CoreAudio watcher that silently enters manual mode when another app takes the default microphone, then restores your prior mode when it releases.
 
-With the default-off `resume-digest` setting enabled, two or more held sessions are composed into one short Haiku briefing, followed by one "Who first?" listen. If Haiku is unavailable, conch uses a deterministic label briefing; a failed listen or session match falls back to the normal full replay, so held work is never discarded.
-
-The three default-off fast-model features (`announce-summary`, `voice-qa`, and `resume-digest`) shell out to your installed, authenticated `claude` CLI; conch adds no model SDK or runtime package.
+The two default-off fast-model features (`announce-summary` and `voice-qa`) shell out to your installed, authenticated `claude` CLI; conch adds no model SDK or runtime package.
 
 **Want to focus on one thing?** Use **↑↓** to park the cursor on a session. Its latest output follows into the pane and stays there; **esc** releases the cursor back to automatic follow. Press **r** to read that output aloud, or **Enter** for its actions menu: preview/pin a voice, prioritize its next hand-off, rename it, or safely dismiss it from conch while leaving the agent process running. Press **u** to open the restore list and bring back any dismissed session. Recite is immediate and read-only: it cuts any active read or mic, reads the latest reply from the top, then returns to rest. While a session is parked, **p** toggles manual/auto just for it, holding only its latest turn and replaying that turn from the top on auto; with no parked cursor, **p** changes the whole app. These controls take effect instantly: an active read stops, the mic closes, and its in-flight capture is dropped.
 
@@ -224,7 +222,6 @@ The full environment-variable surface remains available (put overrides in the ho
 | `CONCH_SPEAK_MAX_CHARS` | `350` | hard cap on spoken length |
 | `CONCH_ANNOUNCE_SUMMARY` | `0` | summarize long hook announcements with Haiku; falls back to the literal snippet |
 | `CONCH_VOICE_QA` | `0` | answer "conch, …" from the active session's last reply without injecting it |
-| `CONCH_RESUME_DIGEST` | `0` | brief two or more held sessions once, then ask who should go first |
 | `CONCH_BELL` / `CONCH_SPEAK` | `1` | disable the ding / the voice |
 | `CONCH_BELL_SOUND` | Glass.aiff | any afplay-able file |
 | `CONCH_LISTEN_WINDOW_SECS` | `30` | how long the mic waits for you to *start* talking |
