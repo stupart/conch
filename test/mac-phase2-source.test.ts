@@ -58,13 +58,25 @@ describe("Mac Phase 2 session signals", () => {
     expect(models).toMatch(/Double\(usedTokens\) \/ Double\(limitTokens\)/);
   });
 
-  test("the ledger and conversation both show agent identity and proportional context", () => {
+  // Agent identity belongs everywhere a session is named; context pressure
+  // belongs only where you have committed to looking at one.
+  test("both surfaces identify the agent", () => {
     expect(dashboard.match(/AgentBadge\(backend: row\.backend\)/g)?.length).toBeGreaterThanOrEqual(2);
+    // Claude sessions predate the backend field, so absence must read as
+    // Claude rather than leaving half the fleet unmarked.
     expect(dashboard).toMatch(/case nil, "", "claude": return "Claude"/);
-    expect(dashboard).toContain("SessionContextMeter(context: context, compact: true)");
+  });
+
+  // Rewritten from "proportional context everywhere". Tyler: the bar "adds
+  // visual clutter and a lot of importance to a not super important piece of
+  // data". A capsule beside every session name gave context pressure the same
+  // weight as the session itself, on the surface you scan constantly.
+  test("context is a number, in the conversation only", () => {
     expect(dashboard).toContain("SessionContextMeter(context: context)");
-    expect(dashboard).toContain('Text("\\(Int((context.fraction * 100).rounded()))%")');
-    expect(dashboard).toContain("proxy.size.width * context.fraction");
+    expect(dashboard).not.toContain("compact: true");
+    // No bar: nothing scales a width by the fraction any more.
+    expect(dashboard).not.toContain("proxy.size.width * context.fraction");
+    // Colour still carries the warning, which is the part worth interrupting for.
     expect(dashboard).toContain("context.fraction >= 0.85");
     expect(dashboard).toContain("context.fraction >= 0.97");
   });

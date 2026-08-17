@@ -2987,7 +2987,22 @@ export async function runDaemon(cfg: Config): Promise<void> {
         log(`wake -> "${target.label}"`);
         if (cfg.revealOnTurn && target.pid) void revealSessionWindow(target.pid); // surface it, no focus steal
         resetReadingProgress();
-        await speak(cfg, `Mic open for ${target.label}.`, target.label, true);
+        // The courtesy line must never delay the thing it is announcing.
+        //
+        // The mic opens AFTER this resolves, so a sick TTS holds it shut:
+        // Kokoro has been hard-restarting on this machine and falling back to
+        // `say`, which itself has timed out at eighteen seconds. Tyler pressed
+        // the mic button and "nothing happened" — the wake had arrived and been
+        // handled, and conch was still busy telling him the mic was open.
+        //
+        // Bounded rather than dropped, and still awaited: opening the mic while
+        // the confirmation plays is what makes the loop hear itself, which is
+        // the one thing the audio gate exists to prevent. Three seconds is long
+        // enough for four words and short enough to feel like a button.
+        await Promise.race([
+          speak(cfg, `Mic open for ${target.label}.`, target.label, true),
+          Bun.sleep(3_000),
+        ]);
         if (interruptedByPause()) return;
         await conversationLoop(target, "", undefined, undefined, undefined, undefined, undefined, undefined, false, pauseGeneration);
       } finally {

@@ -164,6 +164,13 @@ implement materially different products." Highest-value items lifted out:
 
 ### Newly reported
 
+- [ ] **Manual mode should turn wake words off.** Manual means conch does not
+      act on its own — it does not read finished turns aloud and does not open
+      the mic by itself. A spoken wake word is conch acting on its own by
+      definition, so it belongs on the same switch. The BUTTON must keep
+      working in manual: that is a person asking, which is the whole
+      distinction.
+
 - [ ] **A failed send SPEAKS while conch is in manual mode.** Confirmed from
       the log: a send fell back to the clipboard with
       `system-dialog-blocking`, and conch then said "A system dialog is open on

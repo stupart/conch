@@ -226,11 +226,11 @@ describe("instant takeover, which mute's retirement took the tests for", () => {
 
   test("going manual while already manual still cuts an active read", () => {
     const h = harness();
-    h.controls.enqueueInstant({ ...turn(), type: "pause", sessionId: "" });
+    void h.controls.applyGlobal("pause");
     h.setCurrent(turn());
     const generation = h.pause.capture();
 
-    h.controls.enqueueInstant({ ...turn(), type: "pause", sessionId: "" });
+    void h.controls.applyGlobal("pause");
 
     // Pressing it twice is what a person does when the first press appeared to
     // do nothing — which is exactly when something IS still talking.

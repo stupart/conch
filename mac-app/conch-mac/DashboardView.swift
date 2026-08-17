@@ -485,11 +485,6 @@ private struct HeaderControls: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            HeaderButton(
-                symbol: "plus",
-                help: "Start a Claude or Codex session",
-                action: actions.onStartSession
-            )
             // One control, two modes, and the word for the mode you are IN.
             ModeToggle(
                 isManual: isManual,
@@ -591,6 +586,8 @@ private struct SessionLedger: View {
                                 // once I've started using it". A keystroke that
                                 // a text field can swallow is not an adequate
                                 // home for the only exit from a mode.
+                                NewSessionRow(action: actions.onStartSession)
+
                                 AllSessionsRow(
                                     isSelected: selectedSessionID == nil,
                                     count: state.rows.count,
@@ -930,11 +927,6 @@ private struct DashboardRow: View {
             // this row has a summary.
             Spacer(minLength: 0)
 
-            if let context = row.context, context.limitTokens > 0 {
-                SessionContextMeter(context: context, compact: true)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .opacity(isDimmed ? 0.58 : 1)
-            }
 
             if let age {
                 Text(age)
@@ -1008,25 +1000,37 @@ private struct AgentBadge: View {
         }
     }
 
+    /// A mark, not a word in a box.
+    ///
+    /// The name in a stroked pill read as a label to be parsed — two of them in
+    /// a list and you are reading "Claude" and "Codex" over and over to learn
+    /// something you only need peripherally. A glyph is recognised without
+    /// being read.
+    ///
+    /// Drawn from SF Symbols rather than shipping either company's artwork:
+    /// Anthropic's mark is a radiating burst, which `asterisk` carries at this
+    /// size, and OpenAI's is a six-fold knot, which `hexagon` stands in for.
+    /// Close enough to identify at 11pt, and nobody's trademark in the bundle.
+    private var symbol: String {
+        switch backend?.lowercased() {
+        case "codex": return "hexagon"
+        default: return "asterisk"
+        }
+    }
+
     var body: some View {
-        Text(label)
-            .font(ConchTypography.font(size: 8.5, weight: .medium))
-            .tracking(0.3)
+        Image(systemName: symbol)
+            .font(.system(size: 9, weight: .medium))
             .foregroundStyle(ConchPalette.textFaint)
-            .padding(.horizontal, 5)
-            .frame(height: 16)
-            .background(
-                Capsule().stroke(ConchPalette.divider, lineWidth: 1)
-            )
-            .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
+            .frame(width: 14, height: 14)
+            .fixedSize()
+            .help(label)
             .accessibilityLabel("Agent: \(label)")
     }
 }
 
 private struct SessionContextMeter: View {
     let context: SessionContext
-    var compact = false
 
     private var fill: Color {
         // A routine session stays quiet. Colour starts carrying urgency only
@@ -1041,38 +1045,19 @@ private struct SessionContextMeter: View {
     }
 
     var body: some View {
-        HStack(spacing: compact ? 4 : 7) {
-            if compact {
-                Text("\(Int((context.fraction * 100).rounded()))%")
-                    .font(ConchTypography.font(size: 9.5))
-                    .foregroundStyle(
-                        context.fraction >= 0.85
-                            ? fill
-                            : ConchPalette.textFaint
-                    )
-                    .monospacedDigit()
-                    .fixedSize()
-            } else {
-                Text(label)
-                    .font(ConchTypography.font(size: 10.5))
-                    .foregroundStyle(
-                        context.fraction >= 0.85
-                            ? fill
-                            : ConchPalette.textFaint
-                    )
-                    .monospacedDigit()
-                    .fixedSize()
-            }
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(ConchPalette.hover)
-                    Capsule()
-                        .fill(fill)
-                        .frame(width: proxy.size.width * context.fraction)
-                }
-            }
-            .frame(width: compact ? 30 : 88, height: compact ? 4 : 5)
-        }
+        // A number, not a bar, and only where you have already committed to
+        // looking at one session.
+        //
+        // Tyler: "it adds visual clutter and a lot of importance to a not super
+        // important piece of data". A filled capsule beside every session name
+        // gave context pressure the same weight as the session itself, on the
+        // one surface you scan constantly. Colour still carries the warning,
+        // because that is the part worth interrupting for.
+        Text(label)
+            .font(ConchTypography.font(size: 10.5))
+            .foregroundStyle(context.fraction >= 0.85 ? fill : ConchPalette.textFaint)
+            .monospacedDigit()
+            .fixedSize()
         .help("Context \(label) tokens · \(Int((context.fraction * 100).rounded()))% full")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Context \(label) tokens")
@@ -2721,5 +2706,43 @@ private struct ModeToggle: View {
         .onHover { isHovered = $0 }
         .help(help)
         .accessibilityLabel(help)
+    }
+}
+
+/// Start a session, at the foot of the list of sessions.
+///
+/// It lived in the header beside settings and logs, which are things you do to
+/// CONCH. Starting a session is a thing you do to the list — so it belongs at
+/// the list, where the row it creates will appear, rather than in the app's
+/// chrome three inches away.
+private struct NewSessionRow: View {
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: "plus")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .frame(width: 14)
+                Text("New session")
+                    .font(ConchTypography.font(size: 12.5))
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(isHovered ? ConchPalette.textPrimary : ConchPalette.textDim)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(isHovered ? ConchPalette.hover : .clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("Start a Claude or Codex session, new or resumed")
+        .accessibilityLabel("New session")
     }
 }
