@@ -791,6 +791,14 @@ private struct DashboardRow: View {
             }
         }
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        // Double-click renames, because renaming a thing by double-clicking its
+        // name is what every file list has taught. It was reachable only from
+        // the context menu, which means it was reachable only by someone who
+        // already suspected it existed — Tyler asked for a feature conch has
+        // had all along.
+        //
+        // Before the context menu, so the gesture wins over the row's own tap.
+        .onTapGesture(count: 2, perform: onBeginRename)
         .contextMenu {
             Button("Rename", action: onBeginRename)
             Button("Dismiss", action: onDismiss)
@@ -2660,8 +2668,12 @@ private struct AllSessionsRow: View {
             // because starting one acts on the LIST.
             Button(action: onStart) {
                 Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .medium))
-                    .frame(width: 20, height: 20)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .frame(width: 22, height: 22)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(isHovered ? ConchPalette.hover : .clear)
+                    )
                     .foregroundStyle(isHovered ? ConchPalette.textPrimary : ConchPalette.textFaint)
                     .contentShape(Rectangle())
             }
@@ -2670,7 +2682,13 @@ private struct AllSessionsRow: View {
             .help("Start a Claude or Codex session, new or resumed")
             .accessibilityLabel("New session")
         }
-        .padding(.horizontal, 12)
+        .padding(.leading, 12)
+        // 7, not 12, so the plus lands on the same vertical line as the status
+        // glyphs below it: those sit in a 16pt frame with 10pt of trailing
+        // padding, putting their centres 18pt in. An 22pt chip needs 7 to
+        // match. Two things in a column that are ALMOST aligned read as a
+        // mistake in a way that being obviously apart does not.
+        .padding(.trailing, 7)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
