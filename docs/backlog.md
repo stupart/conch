@@ -32,37 +32,41 @@ unknown rather than guessed. The agent's mark beside each name. Questions
 answerable by tap or voice, converging on one classifier in the daemon.  And
 errors that report themselves, from both apps into the daemon's log.
 
-### Phase 3 — the feed (mostly done)
+### Phase 3 — the feed (NOT STARTED)
 
-11. ~~Artifacts inline; one pane, two perspectives~~ DONE (bc11272).
-12. ~~Pinned artifacts that stay live~~ DONE (bc11272).
-13. **The feed proper — see `vision.md`. This is the open one.**
+Tyler, correcting me: *"i don't think we started phase 3 so be careful with
+that."* He is right, and the way I got it wrong is worth recording — I read
+bc11272's commit message as shipped code. Checked against the source instead:
 
-### What is actually left
+- The **swap button** exists (`perspectiveBar`, `DashboardView.swift:1668`).
+  That came from a standalone request (6fc1a0c), not from the phase.
+- **Artifacts inline where they happen** — does NOT exist. `artifact` appears
+  in `DashboardView.swift` only, never in `ConversationStackView.swift`. The
+  artifact is a separate pane you swap to, not something rendered in place.
+- **Pinned artifacts kept live** — does NOT exist. Every `pin` in the daemon is
+  VOICE pinning. The plugin exposes no pinning to agents at all.
 
-Ranked. Everything above this line is finished.
+So the phase is: 11. artifacts inline · 12. pinned and live · 13. the feed
+proper (`vision.md`). One swap button of it is built.
 
-1. **The feed** (`vision.md`) — the whole remaining product idea.
-2. **The mic must fill the composer.** Press it expecting to add to what you
-   typed and the spoken half vanishes into the session instead. Needs a
-   dictation mode that publishes final text back to the app rather than
-   injecting. The last real Phase-1 idea, deferred because it is the biggest.
-3. **The Mac app does not respawn a dead daemon** — and hides the start toggle
-   when it happens, so there is no recovery but relaunching.
-4. **Stop holding 1.3GB for a shut mic** — Kokoro by mode, whisper pre-warmed
-   on a signal. Details in Batch 3.
-5. **Images in the Mac composer show as filenames, not pictures**
-   (`ComposerView.swift:491` says so in a comment).
-6. **A new session in an untrusted folder never appears** — Claude Code holds
-   it on its trust prompt and never registers it.
-7. **Renaming only renames inside conch** — route to Claude Code's `/rename`,
-   which is local and costs no model turn.
-8. **conch should know about skills and plugins**, then toggle them.
-9. **Render materials inline** instead of growing a DROP list.
-10. **Links may not be clickable** — markdown becomes AttributedString, which
-    should carry link attributes; confirm before touching anything.
-11. Blocked on ten seconds with permissions on: **approvals** (the four-way
-    decision) and **checkpoint/revert**.
+### Phase 4 — performance (NOT STARTED)
+
+Tyler's framing: the memory work is its own phase, not a stray backlog item.
+The trigger was a 16GB Mac at 57MB free with `kernel_task` pegged at 100-147%,
+where conch's own resident footprint was 1.3GB of it.
+
+- **Kokoro by mode** — manual unloads it entirely; auto warms it. Manual is
+  silent by design ("manual has no voice"), and measurement agrees: zero TTS
+  calls this run. It is holding 650MB to stay quiet. Pressing play on a
+  response is the one thing that needs it, so warm on that signal rather than
+  keeping it resident.
+- **whisper pre-warmed on a signal** — a turn ending in auto, the composer
+  focused, a wake in flight. Cold start is genuinely quick; idle-unload after.
+  Measure a real cold start first, away from a thrashing machine.
+- Rejected with the measurement: trimming Kokoro's 8 voices to 1 saves ~3.5MB,
+  because each voice is 512KB against a 312MB model.
+- Not yet investigated: whether conch's own daemon, TUI and app footprints are
+  reasonable, and the relay's 100-minute reconnect.
 
 ### Terminal parity, deliberately scoped
 
