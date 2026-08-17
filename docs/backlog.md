@@ -347,6 +347,30 @@ implement materially different products." Highest-value items lifted out:
 - [ ] **Better phone transcription.** `tools/transcription-bench.ts` is written
       and waiting on one recording to settle on-device vs Apple's servers vs
       Mac-side whisper vs a paid API.
+- [ ] **Stop holding 1.3GB for a mic that is shut.** `whisper-server` (628MB)
+      and the Kokoro worker (650MB) are resident full time — ~8% of a 16GB
+      machine — on a Mac already at 57MB free with `kernel_task` pegged.
+
+      **Kokoro: tie it to MODE, not to a button.** Manual mode unloads it and
+      uses `say`; auto mode warms it. This costs nothing in practice because
+      `say` is *already* what speaks: 124 fallbacks to it in one log while
+      Kokoro hard-restarted on synthesis timeouts. 650MB is currently held by a
+      voice that is not talking. On-demand loading is NOT the answer for this
+      one — measured warmups today were 18.4s, 14.9s, 10.5s and 30.6s, and they
+      are slow *because* of the memory pressure they add to, so a cold start
+      lands exactly when the machine can least afford it.
+
+      **Whisper: pre-warm on the signal, not on a timer.** Tyler: "maybe
+      whisper start on in auto mode tho, or it pre-warms itself when it knows
+      its going to have to be on soon? i think its cold start is actually
+      pretty quick." Right on both counts — it adopts an existing server in
+      ~0s, and conch already knows a mic is coming (a turn ending in auto mode,
+      the composer focused, a wake in flight). Warm on those, idle-unload
+      after. Measure a genuine cold start first; every timing taken today is
+      polluted by the thrash.
+
+      Rejected, with the measurement: trimming the 8 loaded voices to 1. Each
+      voice is 512KB against a 312MB model — it saves ~3.5MB of 650MB.
 - [ ] **Better phone reading, configurable** — Kokoro from the Mac or a paid
       API, since one person's laptop has RAM to spare and another's is
       suffocating.
