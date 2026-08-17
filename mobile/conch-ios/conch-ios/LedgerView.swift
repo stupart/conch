@@ -13,6 +13,7 @@ struct LedgerView: View {
     let talk: TalkController
     @State private var confirmingUnpair = false
     @State private var showingSettings = false
+    @State private var showingStartSession = false
     /// What the user just asked for, shown until the daemon's own state agrees.
     @State private var pendingPassive: Bool?
     @State private var sessionActionError: String?
@@ -132,6 +133,13 @@ struct LedgerView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     modeToggle
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showingStartSession = true } label: {
+                        Image(systemName: "plus")
+                    }
+                    .disabled(!bridge.isConnected)
+                    .accessibilityLabel("Start a session")
+                }
                 ToolbarItem(placement: .topBarLeading) {
                     // Everything about THIS Mac lives here: whether we are
                     // connected, to what, how to retry, and how to forget it.
@@ -177,6 +185,9 @@ struct LedgerView: View {
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView(bridge: bridge)
+        }
+        .sheet(isPresented: $showingStartSession) {
+            StartSessionSheet(bridge: bridge)
         }
         .confirmationDialog(
             "Unpair from this Mac?",
@@ -294,7 +305,7 @@ struct LedgerView: View {
                 .foregroundStyle(Palette.textDim)
             Text(
                 bridge.isConnected
-                    ? "Start a Claude Code or Codex session on your Mac and it appears here."
+                    ? "Start a Claude Code or Codex session here and it opens in Terminal on your Mac."
                     // Over the relay, Wi-Fi is irrelevant advice — Tyler was on
                     // cellular, correctly, and being told to check the thing
                     // that could not be the cause. What actually has to be true
@@ -312,6 +323,14 @@ struct LedgerView: View {
             .foregroundStyle(Palette.textFaint)
             .multilineTextAlignment(.center)
             .frame(maxWidth: 260)
+
+            if bridge.isConnected {
+                Button("Start a session") { showingStartSession = true }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Palette.micOpen)
+                    .foregroundStyle(Palette.bg)
+                    .padding(.top, 6)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Geometric centre reads low; optical centre sits a little above it.
@@ -333,17 +352,25 @@ struct SessionRowView: View {
                 .accessibilityLabel(mark.meaning)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(row.label)
-                    .font(Type.sessionName)
-                    .foregroundStyle(Palette.textPrimary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                HStack(spacing: 7) {
+                    Text(row.label)
+                        .font(Type.sessionName)
+                        .foregroundStyle(Palette.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    AgentBadge(backend: row.backend)
+                }
 
                 if let summary = row.review?.summary ?? row.detail, !summary.isEmpty {
                     Text(summary)
                         .font(Type.summary)
                         .foregroundStyle(Palette.textDim)
                         .lineLimit(2)
+                }
+
+                if let context = row.context, context.limitTokens > 0 {
+                    ContextMeter(usage: context, compact: true)
+                        .padding(.top, 2)
                 }
             }
 
@@ -371,5 +398,164 @@ struct SessionRowView: View {
         }
         .padding(.vertical, 8)
         .opacity(row.paused ? 0.72 : 1)
+    }
+}
+
+struct AgentBadge: View {
+    let backend: String?
+
+    var body: some View {
+        if let name = backendName {
+            Text(name)
+                .font(Type.caption.weight(.medium))
+                .foregroundStyle(Palette.textFaint)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.white.opacity(0.045), in: Capsule())
+                .accessibilityLabel("\(name) session")
+        }
+    }
+
+    private var backendName: String? {
+        switch backend?.lowercased() {
+        // Legacy Claude registry rows omit the field; absence has always been
+        // the wire-level Claude value, not an unknown agent.
+        case nil, "claude": "Claude"
+        case "codex": "Codex"
+        default: nil
+        }
+    }
+}
+
+struct ContextMeter: View {
+    let usage: PublishedState.Row.ContextUsage
+    var compact = false
+
+    private var tint: Color {
+        if usage.proportion >= 0.95 { return Palette.needs }
+        if usage.proportion >= 0.80 { return Palette.waiting }
+        return Palette.textFaint
+    }
+
+    private var tokenLabel: String {
+        "\(abbreviate(usage.usedTokens)) / \(abbreviate(usage.limitTokens)) tokens"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 3 : 5) {
+            HStack(spacing: 6) {
+                if !compact {
+                    Text("Context")
+                        .font(Type.caption.weight(.medium))
+                        .foregroundStyle(Palette.textDim)
+                }
+                Spacer(minLength: 0)
+                Text("\(Int((usage.proportion * 100).rounded()))%")
+                    .font(Type.caption.monospacedDigit())
+                    .foregroundStyle(tint)
+                if !compact {
+                    Text(tokenLabel)
+                        .font(Type.caption.monospacedDigit())
+                        .foregroundStyle(Palette.textFaint)
+                }
+            }
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.07))
+                    Capsule()
+                        .fill(tint)
+                        .frame(width: geometry.size.width * usage.proportion)
+                }
+            }
+            .frame(height: compact ? 3 : 5)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Context \(Int((usage.proportion * 100).rounded())) percent, \(tokenLabel)")
+    }
+
+    private func abbreviate(_ value: Int) -> String {
+        guard value >= 1_000 else { return "\(value)" }
+        let thousands = Double(value) / 1_000
+        return thousands >= 100
+            ? "\(Int(thousands.rounded()))k"
+            : String(format: "%.1fk", thousands)
+    }
+}
+
+private struct StartSessionSheet: View {
+    @ObservedObject var bridge: BridgeClient
+    @Environment(\.dismiss) private var dismiss
+    @State private var backend = BridgeClient.AgentBackend.claude
+    @State private var resuming = false
+    @State private var resumeSessionId = ""
+    @State private var starting = false
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Agent") {
+                    Picker("Agent", selection: $backend) {
+                        ForEach(BridgeClient.AgentBackend.allCases) { backend in
+                            Text(backend.title).tag(backend)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                Section {
+                    Toggle("Resume an existing session", isOn: $resuming)
+                    if resuming {
+                        TextField("Session ID", text: $resumeSessionId)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                } footer: {
+                    Text(resuming
+                        ? "The agent resumes this transcript in a new Terminal window on your Mac."
+                        : "The agent starts in a new Terminal window on your Mac.")
+                }
+
+                if let error {
+                    Section {
+                        Text(error)
+                            .foregroundStyle(Palette.needs)
+                    }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Palette.bg)
+            .navigationTitle(resuming ? "Resume session" : "New session")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(starting)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(resuming ? "Resume" : "Start") { start() }
+                        .disabled(starting || (resuming && trimmedResumeID.isEmpty))
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private var trimmedResumeID: String {
+        resumeSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func start() {
+        starting = true
+        error = nil
+        Task {
+            let started = await bridge.startSession(
+                backend: backend,
+                resumeSessionId: resuming ? trimmedResumeID : nil
+            )
+            starting = false
+            if started { dismiss() }
+            else { error = bridge.lastError ?? "Couldn't start that session." }
+        }
     }
 }

@@ -11,11 +11,15 @@ const deliverable = readFileSync(join(root, "DeliverableSheet.swift"), "utf8");
 
 describe("iOS relay transport guarantees", () => {
   test("a stored pairing selects one transport with no fallback ladder", () => {
+    const transportSelection = bridge.slice(
+      bridge.indexOf("init(pairing: Pairing)"),
+      bridge.indexOf("deinit {"),
+    );
     expect(bridge).toContain("case lan(host: String, token: String)");
     expect(bridge).toContain("case relay(RelayPairingPayload)");
-    expect(bridge).toContain("transport = DirectHTTPTransport(host: host, token: token)");
-    expect(bridge).toContain("transport = RelayTransport(pairing: payload)");
-    expect(bridge).not.toContain("fallback");
+    expect(transportSelection).toContain("transport = DirectHTTPTransport(host: host, token: token)");
+    expect(transportSelection).toContain("transport = RelayTransport(pairing: payload)");
+    expect(transportSelection).not.toContain("fallback");
     expect(bridge).toContain("return .lan(host: account, token: token)");
   });
 

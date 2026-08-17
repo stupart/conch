@@ -132,6 +132,14 @@ private final class ConchAppDelegate: NSObject,
             try loginItem.register()
         } catch {
             NSLog("Conch login item registration failed: %@", error.localizedDescription)
+            let message = error.localizedDescription
+            Task {
+                await ConchSocketClient().reportAppError(
+                    operation: "login-item.register",
+                    message: message,
+                    state: ["bundlePath": Bundle.main.bundlePath]
+                )
+            }
         }
     }
 

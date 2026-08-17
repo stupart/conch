@@ -80,6 +80,71 @@ struct ConchGetConfigRequest: Encodable, Sendable {
     let kind = "get-config"
 }
 
+enum ConchAgentBackend: String, CaseIterable, Identifiable, Encodable, Sendable {
+    case claude
+    case codex
+
+    var id: String { rawValue }
+    var label: String { rawValue.capitalized }
+}
+
+struct ConchSessionStartRequest: Encodable, Sendable {
+    let kind = "session-start"
+    let backend: ConchAgentBackend
+    let resumeSessionId: String?
+    let cwd: String?
+}
+
+struct ConchSessionCloseRequest: Encodable, Sendable {
+    let kind = "session-close"
+    let sessionId: String
+}
+
+struct ConchSessionStartedReply: Decodable, Equatable, Sendable {
+    let backend: String
+    let resumed: Bool
+}
+
+struct ConchSessionClosedReply: Decodable, Equatable, Sendable {
+    let sessionId: String
+}
+
+enum ConchSessionLifecycleReply: Decodable, Equatable, Sendable {
+    case started(ConchSessionStartedReply)
+    case closed(ConchSessionClosedReply)
+    case error(ConchSessionErrorReply)
+    case unknown(kind: String?)
+
+    private enum CodingKeys: String, CodingKey { case kind }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try? container.decodeIfPresent(String.self, forKey: .kind)
+        switch kind {
+        case "session-started":
+            self = .started(try ConchSessionStartedReply(from: decoder))
+        case "session-closed":
+            self = .closed(try ConchSessionClosedReply(from: decoder))
+        case "session-error":
+            self = .error(try ConchSessionErrorReply(from: decoder))
+        default:
+            self = .unknown(kind: kind)
+        }
+    }
+}
+
+/// Failures belong beside the daemon state that made them possible, not in a
+/// transient Console line. The daemon owns the durable JSONL record; the app
+/// supplies the UI state only it can see at the moment of failure.
+struct ConchAppErrorReport: Encodable, Sendable {
+    let kind = "app-error"
+    let source = "mac"
+    let operation: String
+    let message: String
+    let sessionId: String?
+    let state: [String: String]
+}
+
 enum ConchSessionCommand: String, Encodable, Sendable {
     case rename
     case dismiss
@@ -202,6 +267,25 @@ struct ConchSocketClient: Sendable {
                 deadline: deadline
             )
         }.value
+    }
+
+    /// Reporting cannot itself become another user-visible failure. A daemon
+    /// that is unreachable cannot record the incident, but the original action
+    /// still returns its honest result to the caller.
+    func reportAppError(
+        operation: String,
+        message: String,
+        sessionId: String? = nil,
+        state: [String: String] = [:]
+    ) async {
+        _ = await request(
+            ConchAppErrorReport(
+                operation: operation,
+                message: message,
+                sessionId: sessionId,
+                state: state
+            )
+        )
     }
 
     private static func write(_ event: ConchDaemonEvent, to path: String) -> Bool {

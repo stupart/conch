@@ -382,6 +382,40 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         }
     }
 
+    /// Keeping options structured lets every surface answer the same prompt
+    /// without scraping labels back out of rendered prose.
+    struct AgentQuestion: Decodable, Equatable, Sendable {
+        struct Option: Decodable, Equatable, Sendable {
+            var label = ""
+            var description: String?
+
+            private enum CodingKeys: String, CodingKey { case label, description }
+
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                label = (try? c.decodeIfPresent(String.self, forKey: .label)) ?? ""
+                description = try? c.decodeIfPresent(String.self, forKey: .description)
+            }
+        }
+
+        var header = ""
+        var question = ""
+        var options: [Option] = []
+        var multiSelect = false
+
+        private enum CodingKeys: String, CodingKey {
+            case header, question, options, multiSelect
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            header = (try? c.decodeIfPresent(String.self, forKey: .header)) ?? ""
+            question = (try? c.decodeIfPresent(String.self, forKey: .question)) ?? ""
+            options = (try? c.decodeIfPresent([Option].self, forKey: .options)) ?? []
+            multiSelect = (try? c.decodeIfPresent(Bool.self, forKey: .multiSelect)) ?? false
+        }
+    }
+
     let id: String
     let rev: Int
     let kind: Kind
@@ -390,8 +424,11 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     let tool: Tool?
     let plan: [PlanStep]?
     let change: FileChange?
+    let question: AgentQuestion?
 
-    private enum CodingKeys: String, CodingKey { case id, rev, kind, text, at, tool, plan, change }
+    private enum CodingKeys: String, CodingKey {
+        case id, rev, kind, text, at, tool, plan, change, question
+    }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -403,6 +440,7 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         tool = try? c.decodeIfPresent(Tool.self, forKey: .tool)
         plan = try? c.decodeIfPresent([PlanStep].self, forKey: .plan)
         change = try? c.decodeIfPresent(FileChange.self, forKey: .change)
+        question = try? c.decodeIfPresent(AgentQuestion.self, forKey: .question)
     }
 }
 
@@ -527,6 +565,10 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
 struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     let id: String
     let label: String
+    /// This is presentation metadata, not an implementation choice: it answers
+    /// which agent the person is about to address.
+    let backend: String?
+    let context: SessionContext?
     let status: RowStatus?
     /// Epoch milliseconds for the status currently visible on this row.
     let at: Double?
@@ -545,6 +587,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id
         case label
+        case backend
+        case context
         case status
         case at
         case needsResponse
@@ -563,6 +607,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     init(
         id: String,
         label: String,
+        backend: String? = nil,
+        context: SessionContext? = nil,
         status: RowStatus?,
         at: Double?,
         needsResponse: Bool,
@@ -579,6 +625,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     ) {
         self.id = id
         self.label = label
+        self.backend = backend
+        self.context = context
         self.status = status
         self.at = at
         self.needsResponse = needsResponse
@@ -599,6 +647,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
 
         id = try container.decode(String.self, forKey: .id)
         label = (try? container.decodeIfPresent(String.self, forKey: .label)) ?? id
+        backend = try? container.decodeIfPresent(String.self, forKey: .backend)
+        context = try? container.decodeIfPresent(SessionContext.self, forKey: .context)
         status = try? container.decodeIfPresent(RowStatus.self, forKey: .status)
         at = Timestamp.decode(from: container, forKey: .at)
         needsResponse =
@@ -621,6 +671,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         SessionRow(
             id: id,
             label: label,
+            backend: backend,
+            context: context,
             status: status,
             at: at,
             needsResponse: needsResponse,
@@ -635,6 +687,24 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             prioritized: prioritized,
             navSelected: navSelected
         )
+    }
+}
+
+struct SessionContext: Decodable, Equatable, Sendable {
+    let usedTokens: Int
+    let limitTokens: Int
+
+    var fraction: Double {
+        guard limitTokens > 0 else { return 0 }
+        return min(1, max(0, Double(usedTokens) / Double(limitTokens)))
+    }
+
+    private enum CodingKeys: String, CodingKey { case usedTokens, limitTokens }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        usedTokens = max(0, (try? container.decodeIfPresent(Int.self, forKey: .usedTokens)) ?? 0)
+        limitTokens = max(0, (try? container.decodeIfPresent(Int.self, forKey: .limitTokens)) ?? 0)
     }
 }
 

@@ -147,13 +147,21 @@ final class BridgeClient: ObservableObject {
 
     /// Deliver spoken text into a session. Returns true when the daemon took it.
     func inject(sessionId: String, label: String, text: String) async -> Bool {
-        await post(control: [
+        let delivered = await post(control: [
             "type": "inject",
             "sessionId": sessionId,
             "label": label,
             "announce": text,
             "eventAt": Date().timeIntervalSince1970 * 1000,
         ])
+        if !delivered {
+            _ = await reportAppError(
+                operation: "message-delivery",
+                message: lastError ?? "The daemon did not confirm delivery.",
+                sessionId: sessionId
+            )
+        }
+        return delivered
     }
 
     /// Send one image, in pieces, and get back the path it landed at.
@@ -165,7 +173,13 @@ final class BridgeClient: ObservableObject {
         let id = ImageUpload.newUploadID()
         let chunks = ImageUpload.chunks(data)
         let total = chunks.count
-        guard total > 0 else { return nil }
+        guard total > 0 else {
+            _ = await reportAppError(
+                operation: "image-upload",
+                message: "The prepared image had no upload chunks."
+            )
+            return nil
+        }
         // Chunks is a sequence, not an array: each base64 string is created
         // immediately before its request and released before the next one.
         for (index, part) in chunks.enumerated() {
@@ -175,12 +189,34 @@ final class BridgeClient: ObservableObject {
                 "total": total,
                 "extension": ext,
                 "data": part,
-            ]) else { return nil }
-            guard let response = try? await transport.request(authorizedRequest(
-                method: "POST",
-                path: "/image",
-                body: body
-            )), response.status == 200 else { return nil }
+            ]) else {
+                _ = await reportAppError(
+                    operation: "image-upload",
+                    message: "The phone couldn't encode image chunk \(index + 1) of \(total)."
+                )
+                return nil
+            }
+            let response: BridgeResponse
+            do {
+                response = try await transport.request(authorizedRequest(
+                    method: "POST",
+                    path: "/image",
+                    body: body
+                ))
+            } catch {
+                _ = await reportAppError(
+                    operation: "image-upload",
+                    message: error.localizedDescription
+                )
+                return nil
+            }
+            guard response.status == 200 else {
+                _ = await reportAppError(
+                    operation: "image-upload",
+                    message: "The Mac returned HTTP \(response.status) for chunk \(index + 1) of \(total)."
+                )
+                return nil
+            }
             // The last chunk answers with the path; the others report progress.
             if index == total - 1,
                let decoded = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any],
@@ -188,6 +224,10 @@ final class BridgeClient: ObservableObject {
                 return path
             }
         }
+        _ = await reportAppError(
+            operation: "image-upload",
+            message: "The Mac accepted every image chunk but returned no file path."
+        )
         return nil
     }
 
@@ -241,6 +281,131 @@ final class BridgeClient: ObservableObject {
         case restore
     }
 
+    enum AgentBackend: String, CaseIterable, Identifiable {
+        case claude
+        case codex
+
+        var id: String { rawValue }
+        var title: String { rawValue.capitalized }
+    }
+
+    /// Process launch belongs to the daemon because doing it from the phone
+    /// would bypass the rule that agents never start inside conch's own tmux.
+    func startSession(backend: AgentBackend, resumeSessionId: String?) async -> Bool {
+        let resumeID = resumeSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var message: [String: Any] = [
+            "kind": "session-start",
+            "backend": backend.rawValue,
+        ]
+        if !resumeID.isEmpty {
+            message["resumeSessionId"] = resumeID
+        }
+        guard let reply = await postControlRaw(message) else {
+            let failure = "The Mac didn't confirm that \(backend.title) started."
+            lastError = failure
+            _ = await reportAppError(operation: "session-start", message: failure)
+            return false
+        }
+        if reply["kind"] as? String == "session-error",
+           let failure = reply["error"] as? String {
+            lastError = failure
+            _ = await reportAppError(operation: "session-start", message: failure)
+            return false
+        }
+        guard reply["kind"] as? String == "session-started",
+              reply["backend"] as? String == backend.rawValue,
+              reply["resumed"] as? Bool == !resumeID.isEmpty else {
+            let failure = "The Mac didn't confirm that \(backend.title) started."
+            lastError = failure
+            _ = await reportAppError(operation: "session-start", message: failure)
+            return false
+        }
+        lastError = nil
+        return true
+    }
+
+    /// There is deliberately no kill fallback: a missing acknowledgement is
+    /// cheaper than corrupting the resumable transcript this control protects.
+    func closeSession(sessionId: String) async -> Bool {
+        guard !sessionId.isEmpty,
+              let reply = await postControlRaw([
+                  "kind": "session-close",
+                  "sessionId": sessionId,
+              ]) else {
+            let failure = "The Mac didn't confirm a clean session exit."
+            lastError = failure
+            _ = await reportAppError(
+                operation: "session-close",
+                message: failure,
+                sessionId: sessionId
+            )
+            return false
+        }
+        if reply["kind"] as? String == "session-error",
+           let failure = reply["error"] as? String {
+            lastError = failure
+            _ = await reportAppError(
+                operation: "session-close",
+                message: failure,
+                sessionId: sessionId
+            )
+            return false
+        }
+        guard reply["kind"] as? String == "session-closed",
+              reply["sessionId"] as? String == sessionId else {
+            let failure = "The Mac didn't confirm a clean session exit."
+            lastError = failure
+            _ = await reportAppError(
+                operation: "session-close",
+                message: failure,
+                sessionId: sessionId
+            )
+            return false
+        }
+        lastError = nil
+        return true
+    }
+
+    /// Failures observed only on the phone need durable evidence on the Mac.
+    /// Reporting stays best effort and non-recursive because an unavailable
+    /// channel is already represented by the phone's connection journal.
+    @discardableResult
+    func reportAppError(operation: String, message: String, sessionId: String? = nil) async -> Bool {
+        var snapshot: [String: Any] = [
+            "connected": isConnected,
+            "pairedHost": pairedHost,
+        ]
+        if let state {
+            snapshot["publishedAt"] = state.ts
+            snapshot["liveState"] = state.live.state
+            snapshot["mode"] = ["paused": state.mode.paused, "holding": state.mode.holding]
+            snapshot["rowCount"] = state.rows.count
+            if let sessionId,
+               let row = state.rows.first(where: { $0.id == sessionId }) {
+                var rowState: [String: Any] = [
+                    "id": row.id,
+                    "label": row.label,
+                    "status": row.status,
+                    "paused": row.paused,
+                ]
+                if let backend = row.backend { rowState["backend"] = backend }
+                if let live = row.live { rowState["live"] = live }
+                snapshot["row"] = rowState
+            }
+        }
+        var control: [String: Any] = [
+            "kind": "app-error",
+            "source": "ios",
+            "operation": operation,
+            "message": message,
+            "at": Date().timeIntervalSince1970 * 1000,
+            "state": snapshot,
+        ]
+        if let sessionId { control["sessionId"] = sessionId }
+        guard let reply = await postControlRaw(control) else { return false }
+        return reply["kind"] as? String == "app-error-ack"
+    }
+
     /// Hide or restore one ledger row through the daemon's shared session
     /// command contract. The enum keeps arbitrary commands off this convenience
     /// path, and the echoed id/action prevents a mismatched response from being
@@ -253,16 +418,31 @@ final class BridgeClient: ObservableObject {
                   "command": command.rawValue,
               ]) else {
             lastError = "Couldn't reach your Mac."
+            _ = await reportAppError(
+                operation: "session-\(command.rawValue)",
+                message: lastError ?? "The session command failed.",
+                sessionId: sessionId
+            )
             return false
         }
         if let error = reply["error"] as? String {
             lastError = error
+            _ = await reportAppError(
+                operation: "session-\(command.rawValue)",
+                message: error,
+                sessionId: sessionId
+            )
             return false
         }
         guard reply["kind"] as? String == "session-ack",
               reply["sessionId"] as? String == sessionId,
               reply["command"] as? String == command.rawValue else {
             lastError = "The Mac sent something unexpected."
+            _ = await reportAppError(
+                operation: "session-\(command.rawValue)",
+                message: lastError ?? "The session acknowledgement was invalid.",
+                sessionId: sessionId
+            )
             return false
         }
         lastError = nil
@@ -271,6 +451,7 @@ final class BridgeClient: ObservableObject {
 
     private func post(control message: [String: Any]) async -> Bool {
         guard let body = try? JSONSerialization.data(withJSONObject: message) else {
+            lastError = "The phone couldn't encode that request."
             return false
         }
         do {
@@ -279,7 +460,10 @@ final class BridgeClient: ObservableObject {
                 path: "/control",
                 body: body
             ))
-            guard response.status == 200 else { return false }
+            guard response.status == 200 else {
+                lastError = "The Mac returned HTTP \(response.status)."
+                return false
+            }
             // Turn-event success is an empty daemon reply. A scoped inject can
             // instead return session-error; do not tell TalkController to erase
             // the user's words when the daemon rejected the target.
@@ -289,6 +473,7 @@ final class BridgeClient: ObservableObject {
                 lastError = decoded["error"] as? String
                 return false
             }
+            lastError = nil
             return true
         } catch {
             lastError = error.localizedDescription

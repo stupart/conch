@@ -1,5 +1,6 @@
 import { sessionLabel, type SessionInfo } from "./sessions.ts";
 import type { PublishedConversation } from "./conversation.ts";
+import type { SessionContextUsage } from "./context-meter.ts";
 
 export type PanelConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
 
@@ -143,6 +144,7 @@ export interface PublishedSessionRow {
    * the model would have used.
    */
   backend?: "claude" | "codex";
+  context?: SessionContextUsage;
   status: SessionStatus | null;
   /** Epoch-ms for the status currently visible on this row. */
   at?: number;
@@ -321,6 +323,7 @@ export function buildPublishedState(
     /** Resolve labels for dismissed sessions, which are intentionally absent from rows. */
     labelForSessionId?(sessionId: string): string | undefined;
     prioritizedSessionIds?: ReadonlySet<string>;
+    contextForSessionId?(sessionId: string): SessionContextUsage | undefined;
   } = {},
 ): PublishedState {
   return {
@@ -337,6 +340,7 @@ export function buildPublishedState(
     rows: model.rows.map((row) => {
       const transcriptPath = options.transcriptPathForSessionId?.(row.sessionId);
       const voice = options.voiceForLabel?.(row.label)?.trim();
+      const context = options.contextForSessionId?.(row.sessionId);
       return {
         id: row.sessionId,
         label: row.label,
@@ -345,6 +349,7 @@ export function buildPublishedState(
         ...(row.at !== undefined ? { at: row.at } : {}),
         ...(transcriptPath ? { transcriptPath } : {}),
         ...(voice ? { voice } : {}),
+        ...(context ? { context: { ...context } } : {}),
         ...(options.prioritizedSessionIds?.has(row.sessionId)
           ? { prioritized: true as const }
           : {}),

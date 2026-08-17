@@ -757,18 +757,21 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
       // The RAW argument, not the parsed one: Codex's is a line of JavaScript
       // whose text is what identifies the operation and carries the plan.
       const raw = payload.arguments ?? payload.input;
+      const parsed = parseMaybeJson(raw);
       const steps = planSteps(raw);
+      const asked = agentQuestion(parsed);
       upsertConversationItem(conversation, {
         id: `tool:${callId}`,
         kind: "tool",
-        text: summariseToolInput(parseMaybeJson(raw)),
+        text: asked ? asked.question : summariseToolInput(parsed),
         at,
         tool: {
           name: toolDisplayName(String(payload.name ?? "tool")),
-          kind: toolKind(String(payload.name ?? ""), raw),
+          kind: asked ? "question" : toolKind(String(payload.name ?? ""), parsed),
           status: "running",
         },
         ...(steps.length ? { plan: steps } : {}),
+        ...(asked ? { question: asked } : {}),
       });
       return;
     }
@@ -824,6 +827,15 @@ export function buildConversation(
     }
   }
   return conversation;
+}
+
+/** Only a still-running question may reinterpret a spoken ordinal as a choice. */
+export function latestAnswerableQuestion(conversation: Conversation): AgentQuestion | null {
+  for (let index = conversation.order.length - 1; index >= 0; index -= 1) {
+    const item = conversation.items[conversation.order[index]!];
+    if (item?.question && item.tool?.status === "running") return item.question;
+  }
+  return null;
 }
 
 /** The newest `count` items — what a bottom-anchored view actually shows. */

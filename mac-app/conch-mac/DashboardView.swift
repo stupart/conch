@@ -117,6 +117,7 @@ private extension SessionRow {
 }
 
 struct DashboardActions {
+    let onStartSession: () -> Void
     let onSelectSession: (SessionRow) -> Void
     let onExpandReview: (SessionRow) -> Void
     let onBeginRename: (SessionRow) -> Void
@@ -484,6 +485,11 @@ private struct HeaderControls: View {
 
     var body: some View {
         HStack(spacing: 2) {
+            HeaderButton(
+                symbol: "plus",
+                help: "Start a Claude or Codex session",
+                action: actions.onStartSession
+            )
             // One control, two modes, and the word for the mode you are IN.
             ModeToggle(
                 isManual: isManual,
@@ -891,6 +897,8 @@ private struct DashboardRow: View {
                     .help("Prioritized")
             }
 
+            AgentBadge(backend: row.backend)
+
             // NEITHER of these two may carry a maxWidth frame. A frame with a
             // maxWidth — 190 or .infinity alike — is GREEDY: it expands to
             // whatever it is offered and then may not use it. Capping the label
@@ -921,6 +929,12 @@ private struct DashboardRow: View {
             // Always trails, so the age and glyph stay hard right whether or not
             // this row has a summary.
             Spacer(minLength: 0)
+
+            if let context = row.context, context.limitTokens > 0 {
+                SessionContextMeter(context: context, compact: true)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .opacity(isDimmed ? 0.58 : 1)
+            }
 
             if let age {
                 Text(age)
@@ -977,6 +991,103 @@ private struct DashboardRow: View {
                 reviewPulseOpacity = 0
             }
         }
+    }
+}
+
+private struct AgentBadge: View {
+    let backend: String?
+
+    private var label: String {
+        switch backend?.lowercased() {
+        // Claude sessions predate the backend field. Treating absence as
+        // Claude keeps old live rows identified instead of making only Codex
+        // earn a mark after upgrading one half of the pair.
+        case nil, "", "claude": return "Claude"
+        case "codex": return "Codex"
+        default: return backend?.capitalized ?? "Claude"
+        }
+    }
+
+    var body: some View {
+        Text(label)
+            .font(ConchTypography.font(size: 8.5, weight: .medium))
+            .tracking(0.3)
+            .foregroundStyle(ConchPalette.textFaint)
+            .padding(.horizontal, 5)
+            .frame(height: 16)
+            .background(
+                Capsule().stroke(ConchPalette.divider, lineWidth: 1)
+            )
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .accessibilityLabel("Agent: \(label)")
+    }
+}
+
+private struct SessionContextMeter: View {
+    let context: SessionContext
+    var compact = false
+
+    private var fill: Color {
+        // A routine session stays quiet. Colour starts carrying urgency only
+        // once context pressure can plausibly change the next decision.
+        if context.fraction >= 0.97 { return ConchPalette.statusNeeds }
+        if context.fraction >= 0.85 { return ConchPalette.statusWaiting }
+        return ConchPalette.statusWorking.opacity(0.66)
+    }
+
+    private var label: String {
+        "\(Self.tokens(context.usedTokens)) / \(Self.tokens(context.limitTokens))"
+    }
+
+    var body: some View {
+        HStack(spacing: compact ? 4 : 7) {
+            if compact {
+                Text("\(Int((context.fraction * 100).rounded()))%")
+                    .font(ConchTypography.font(size: 9.5))
+                    .foregroundStyle(
+                        context.fraction >= 0.85
+                            ? fill
+                            : ConchPalette.textFaint
+                    )
+                    .monospacedDigit()
+                    .fixedSize()
+            } else {
+                Text(label)
+                    .font(ConchTypography.font(size: 10.5))
+                    .foregroundStyle(
+                        context.fraction >= 0.85
+                            ? fill
+                            : ConchPalette.textFaint
+                    )
+                    .monospacedDigit()
+                    .fixedSize()
+            }
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(ConchPalette.hover)
+                    Capsule()
+                        .fill(fill)
+                        .frame(width: proxy.size.width * context.fraction)
+                }
+            }
+            .frame(width: compact ? 30 : 88, height: compact ? 4 : 5)
+        }
+        .help("Context \(label) tokens · \(Int((context.fraction * 100).rounded()))% full")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Context \(label) tokens")
+        .accessibilityValue("\(Int((context.fraction * 100).rounded())) percent full")
+    }
+
+    private static func tokens(_ count: Int) -> String {
+        if count >= 1_000_000 {
+            return String(format: "%.1fm", Double(count) / 1_000_000)
+                .replacingOccurrences(of: ".0m", with: "m")
+        }
+        if count >= 1_000 {
+            return String(format: "%.0fk", Double(count) / 1_000)
+        }
+        return String(count)
     }
 }
 
@@ -1260,6 +1371,7 @@ private struct ConversationPane: View {
     @EnvironmentObject private var store: StateStore
     @StateObject private var transcriptContent = TranscriptContentModel()
     @StateObject private var composerDrafts = ComposerDraftStore()
+    @State private var sessionPendingClose: SessionRow?
 
     /// False = the deliverable in front, which is the pane's long-standing
     /// default: a session that produced an artifact is showing it to you.
@@ -1373,6 +1485,12 @@ private struct ConversationPane: View {
         Group {
             if let selectedReview, let reviewRow = reviewOwnerRow, !showsConversation {
                 VStack(spacing: 0) {
+                    sessionBar(for: reviewRow)
+
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(height: 1)
+
                     perspectiveBar
 
                     Rectangle()
@@ -1404,6 +1522,14 @@ private struct ConversationPane: View {
                 }
             } else {
                 VStack(spacing: 0) {
+                    if let row = focusedRow {
+                        sessionBar(for: row)
+
+                        Rectangle()
+                            .fill(ConchPalette.divider)
+                            .frame(height: 1)
+                    }
+
                     // Only when there is a deliverable to swap back to. With
                     // nothing on the other side the control is a promise the
                     // pane can't keep, and the pane already reads fine as
@@ -1426,11 +1552,22 @@ private struct ConversationPane: View {
                     // agree with it about which session is "showing" — the
                     // terminal dashboard holds its own cursor, and every attempt
                     // to reconcile them left the stack silently falling back.
-                    if let rowID = focusedRow?.id,
-                       let conversation = state?.conversations?[rowID] ?? state?.conversation,
+                    if let row = focusedRow,
+                       let conversation = state?.conversations?[row.id] ?? state?.conversation,
                        !conversation.items.isEmpty,
-                       conversation.sessionId == rowID {
-                        ConversationStackView(conversation: conversation)
+                       conversation.sessionId == row.id {
+                        ConversationStackView(
+                            conversation: conversation,
+                            onAnswer: { label in
+                                store.send(
+                                    .inject(
+                                        sessionId: row.id,
+                                        label: row.label,
+                                        text: label
+                                    )
+                                )
+                            }
+                        )
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         ConversationTextView(
@@ -1462,6 +1599,66 @@ private struct ConversationPane: View {
             // attempt to actually read the conversation.
             if current != nil { showsConversation = false }
         }
+        .alert(
+            "Close \(sessionPendingClose?.label ?? "session")?",
+            isPresented: Binding(
+                get: { sessionPendingClose != nil },
+                set: { if !$0 { sessionPendingClose = nil } }
+            )
+        ) {
+            Button("Cancel", role: .cancel) {
+                sessionPendingClose = nil
+            }
+            Button("Close Session", role: .destructive) {
+                guard let row = sessionPendingClose else { return }
+                sessionPendingClose = nil
+                store.closeSession(row)
+            }
+        } message: {
+            Text("conch will ask the agent to exit cleanly. Its transcript stays available to resume later.")
+        }
+    }
+
+    /// Close lives behind the least accidental control in the pane, while the
+    /// identity and context pressure remain visible without interaction.
+    private func sessionBar(for row: SessionRow) -> some View {
+        HStack(spacing: 8) {
+            Text(row.label)
+                .font(ConchTypography.font(size: 12.5, weight: .medium))
+                .foregroundStyle(ConchPalette.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            AgentBadge(backend: row.backend)
+
+            Spacer(minLength: 8)
+
+            if let context = row.context, context.limitTokens > 0 {
+                SessionContextMeter(context: context)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+
+            Menu {
+                Button("Close session…", role: .destructive) {
+                    sessionPendingClose = row
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(ConchPalette.textDim)
+                    .frame(width: 28, height: 26)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Session actions")
+            .accessibilityLabel("Actions for \(row.label)")
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 8)
+        .frame(height: 36)
+        .background(ConchPalette.bg)
     }
 
     /// Two labelled segments rather than one button naming the destination.

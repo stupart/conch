@@ -10,6 +10,7 @@ struct SessionView: View {
     /// Owned by the app, never by this view — see ConchApp.
     @ObservedObject var talk: TalkController
     let sessionId: String
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var showReview = false
     @State private var sendFailed = false
@@ -26,6 +27,11 @@ struct SessionView: View {
     @State private var sendingImagesOnly = false
     @State private var fetchedReply: String?
     @State private var loadingReply = false
+    @State private var optionReplyInFlight = false
+    @State private var confirmingClose = false
+    @State private var closingSession = false
+    @State private var closeError: String?
+    @State private var showingCloseError = false
     /// Four API-sized images put a 20 MB ceiling on retained upload payloads;
     /// without a count limit, the 5 MB per-image cap was not a memory bound.
     private static let attachmentLimit = 4
@@ -88,6 +94,12 @@ struct SessionView: View {
             ScrollViewReader { scroller in
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    if let context = row?.context, context.limitTokens > 0 {
+                        ContextMeter(usage: context)
+                            .padding(12)
+                            .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+                    }
+
                     if let review = row?.review {
                         ReviewCard(review: review) {
                             showReview = true
@@ -101,7 +113,11 @@ struct SessionView: View {
                     // does not speak for a session it merely observes.
                     if let conversation = bridge.state?.conversations[sessionId],
                        !conversation.items.isEmpty {
-                        ConversationStack(conversation: conversation)
+                        ConversationStack(
+                            conversation: conversation,
+                            optionReplyInFlight: optionReplyInFlight || isSending,
+                            onSelectOption: answerQuestion
+                        )
                     } else if let replyText {
                         MarkdownView(text: replyText)
                             .foregroundStyle(Palette.textPrimary)
@@ -156,9 +172,19 @@ struct SessionView: View {
             guard let item else { return }
             Task { await attach(item) }
         }
-        .navigationTitle(row?.label ?? "")
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                HStack(spacing: 7) {
+                    Text(row?.label ?? "")
+                        .font(Type.sessionName)
+                        .foregroundStyle(Palette.textPrimary)
+                        .lineLimit(1)
+                    AgentBadge(backend: row?.backend)
+                }
+            }
+
             // Read it to me. The Mac and terminal have always had `recite`;
             // without it the phone could only speak replies that happened to
             // arrive while you were watching, which is the opposite of the
@@ -240,11 +266,41 @@ struct SessionView: View {
                     }
                 }
             }
+
+            // Ending a resumable agent is the most expensive tap on this
+            // screen. It lives behind an overflow item AND a confirmation,
+            // never in the composer or a full-swipe gesture.
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("End session…", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
+                        confirmingClose = true
+                    }
+                    .disabled(closingSession || !bridge.isConnected)
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .accessibilityLabel("Session actions")
+            }
         }
         .sheet(isPresented: $showReview) {
             if let review = row?.review {
                 DeliverableSheet(bridge: bridge, review: review)
             }
+        }
+        .confirmationDialog(
+            "End this session cleanly?",
+            isPresented: $confirmingClose,
+            titleVisibility: .visible
+        ) {
+            Button("End session", role: .destructive, action: closeCleanly)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The agent exits normally and leaves this session resumable. Conch will never kill it.")
+        }
+        .alert("Couldn't end that session", isPresented: $showingCloseError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(closeError ?? "The Mac didn't confirm a clean exit, so conch left the agent running.")
         }
         .onAppear {
             // Auto-open the mic when a reply for THIS session finishes reading.
@@ -258,6 +314,26 @@ struct SessionView: View {
             }
         }
         .onDisappear { speech.onFinishedReading = nil }
+        .onChange(of: talk.failure) { _, failure in
+            guard let failure else { return }
+            Task {
+                _ = await bridge.reportAppError(
+                    operation: "speech-recognition",
+                    message: failure,
+                    sessionId: sessionId
+                )
+            }
+        }
+        .onChange(of: speech.speechFailure) { _, failure in
+            guard let failure else { return }
+            Task {
+                _ = await bridge.reportAppError(
+                    operation: "speech-playback",
+                    message: failure,
+                    sessionId: sessionId
+                )
+            }
+        }
         // Keep asking while the session is producing.
         //
         // The Mac app re-reads the transcript file continuously, which is why
@@ -534,6 +610,36 @@ struct SessionView: View {
     private func stopTurn() {
         let label = row?.label ?? ""
         Task { await bridge.interrupt(sessionId: sessionId, label: label) }
+    }
+
+    private func answerQuestion(_ label: String) {
+        guard !label.isEmpty, !optionReplyInFlight else { return }
+        optionReplyInFlight = true
+        sendFailed = false
+        let sessionLabel = row?.label ?? ""
+        Task {
+            let delivered = await bridge.inject(
+                sessionId: sessionId,
+                label: sessionLabel,
+                text: label
+            )
+            optionReplyInFlight = false
+            if !delivered { sendFailed = true }
+        }
+    }
+
+    private func closeCleanly() {
+        guard !closingSession else { return }
+        closingSession = true
+        Task {
+            let closed = await bridge.closeSession(sessionId: sessionId)
+            closingSession = false
+            if closed { dismiss() }
+            else {
+                closeError = bridge.lastError
+                showingCloseError = true
+            }
+        }
     }
 
     private var canSend: Bool {

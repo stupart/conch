@@ -14,6 +14,7 @@ import SwiftUI
 /// appending to the end leaves everything above it untouched and still.
 struct ConversationStackView: View {
     let conversation: Conversation
+    let onAnswer: (String) -> Void
     /// Sticks to the bottom only when already there, so reading history is not
     /// yanked away by an arriving message.
     @State private var pinnedToBottom = true
@@ -145,10 +146,17 @@ struct ConversationStackView: View {
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(ConchPalette.statusReview)
         case .tool:
+            // A question outranks the generic tool shell: this row exists only
+            // because the session is blocked on one of these choices.
+            if let asked = item.question, !asked.options.isEmpty {
+                questionRow(
+                    asked,
+                    answerable: item.tool?.status == "running"
+                )
             // A plan is not a tool call you might expand — it is the answer to
             // "what is it doing", so it renders as itself rather than as a
             // collapsed row you would have to think to open.
-            if let plan = item.plan, !plan.isEmpty {
+            } else if let plan = item.plan, !plan.isEmpty {
                 PlanRow(steps: plan)
             } else if let change = item.change {
                 ChangeRow(
@@ -166,6 +174,81 @@ struct ConversationStackView: View {
                 toolRow(item)
             }
         }
+    }
+
+    private func questionRow(
+        _ asked: ConversationItem.AgentQuestion,
+        answerable: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !asked.header.isEmpty {
+                Text(asked.header)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(ConchPalette.statusNeeds)
+            }
+            Text(AttributedString.conchMarkdown(asked.question))
+                .font(.system(size: 13))
+                .foregroundStyle(ConchPalette.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ForEach(Array(asked.options.enumerated()), id: \.offset) { _, option in
+                if answerable {
+                    Button {
+                        onAnswer(option.label)
+                    } label: {
+                        questionOption(option, multiSelect: asked.multiSelect)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Answer \(option.label)")
+                    .accessibilityHint("Sends this option to the session")
+                } else {
+                    // The question remains part of the transcript, but a
+                    // completed tool is no longer a valid destination. Leaving
+                    // it looking tappable is an invitation to answer a later
+                    // prompt with an earlier choice.
+                    questionOption(option, multiSelect: asked.multiSelect)
+                        .opacity(0.58)
+                        .accessibilityHint("This question is no longer waiting for an answer")
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(ConchPalette.statusNeeds.opacity(answerable ? 0.45 : 0.18), lineWidth: 1)
+        )
+    }
+
+    private func questionOption(
+        _ option: ConversationItem.AgentQuestion.Option,
+        multiSelect: Bool
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: multiSelect ? "square" : "circle")
+                .font(.system(size: 10.5))
+                .foregroundStyle(ConchPalette.textDim)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(option.label)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(ConchPalette.textPrimary)
+                if let description = option.description, !description.isEmpty {
+                    Text(description)
+                        .font(.system(size: 11))
+                        .foregroundStyle(ConchPalette.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 9)
+                .fill(ConchPalette.raised)
+        )
+        .contentShape(Rectangle())
     }
 
     private func toolRow(_ item: ConversationItem) -> some View {

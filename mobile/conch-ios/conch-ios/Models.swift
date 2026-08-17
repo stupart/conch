@@ -95,11 +95,32 @@ struct PublishedState: Decodable, Equatable {
     }
 
     struct Row: Decodable, Equatable, Identifiable {
+        struct ContextUsage: Decodable, Equatable {
+            var usedTokens = 0
+            var limitTokens = 0
+
+            private enum CodingKeys: String, CodingKey { case usedTokens, limitTokens }
+
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                usedTokens = max(0, (try? c.decodeIfPresent(Int.self, forKey: .usedTokens)) ?? 0)
+                limitTokens = max(0, (try? c.decodeIfPresent(Int.self, forKey: .limitTokens)) ?? 0)
+            }
+
+            var proportion: Double {
+                guard limitTokens > 0 else { return 0 }
+                return min(1, Double(usedTokens) / Double(limitTokens))
+            }
+        }
+
         var id = ""
         var label = ""
         var status = "working"
         /// Which agent runs this session; decides how an image is sized for it.
         var backend: String?
+        /// The quality boundary that decides whether this session should keep
+        /// going. Absent on older daemons rather than guessed by the client.
+        var context: ContextUsage?
         var detail: String?
         var at: Double = 0
         var live: String?
@@ -122,7 +143,7 @@ struct PublishedState: Decodable, Equatable {
         }
 
         private enum CodingKeys: String, CodingKey {
-            case id, label, status, backend, detail, at, live, paused, review
+            case id, label, status, backend, context, detail, at, live, paused, review
         }
 
         init() {}
@@ -133,6 +154,7 @@ struct PublishedState: Decodable, Equatable {
             label = (try? c.decodeIfPresent(String.self, forKey: .label)) ?? ""
             status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? "working"
             backend = try? c.decodeIfPresent(String.self, forKey: .backend)
+            context = try? c.decodeIfPresent(ContextUsage.self, forKey: .context)
             detail = try? c.decodeIfPresent(String.self, forKey: .detail)
             at = (try? c.decodeIfPresent(Double.self, forKey: .at)) ?? 0
             live = try? c.decodeIfPresent(String.self, forKey: .live)

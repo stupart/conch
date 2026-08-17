@@ -8,6 +8,8 @@ import SwiftUI
 /// a scroll view inside a scroll view fights both.
 struct ConversationStack: View {
     let conversation: Conversation
+    let optionReplyInFlight: Bool
+    let onSelectOption: (String) -> Void
     @State private var expandedToolIDs: Set<String> = []
 
     var body: some View {
@@ -50,7 +52,7 @@ struct ConversationStack: View {
             // rest of the stack reports what already happened, this one is
             // blocked on a person. It must never look like something to skim.
             if let asked = item.question, !asked.options.isEmpty {
-                questionRow(asked)
+                questionRow(asked, isActive: item.tool?.status == "running")
             }
             // A plan is not a tool call you might expand — it is the answer to
             // "what is it doing", so it renders as itself rather than as a
@@ -205,9 +207,10 @@ struct ConversationStack: View {
     /// blocking the session — the same `needs` tint the ledger uses for
     /// "blocked on an answer" frames the question doing the blocking.
     ///
-    /// The options only LOOK choosable for now: answering from the phone rides
-    /// daemon plumbing that does not exist yet, so no tap target is wired.
-    private func questionRow(_ asked: ConversationItem.AgentQuestion) -> some View {
+    private func questionRow(
+        _ asked: ConversationItem.AgentQuestion,
+        isActive: Bool
+    ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if !asked.header.isEmpty {
                 Text(asked.header)
@@ -219,35 +222,52 @@ struct ConversationStack: View {
                 .foregroundStyle(Palette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             ForEach(Array(asked.options.enumerated()), id: \.offset) { _, option in
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    // The mark's shape is how every form teaches pick-one
-                    // versus pick-many — no caption spells it out.
-                    Image(systemName: asked.multiSelect ? "square" : "circle")
-                        .font(Type.caption)
-                        .foregroundStyle(Palette.textDim)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(option.label)
-                            .font(Type.body.weight(.medium))
-                            .foregroundStyle(Palette.textPrimary)
-                        if let description = option.description, !description.isEmpty {
-                            Text(description)
-                                .font(Type.caption)
-                                .foregroundStyle(Palette.textDim)
-                                .fixedSize(horizontal: false, vertical: true)
+                Button {
+                    onSelectOption(option.label)
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        // The mark's shape is how every form teaches pick-one
+                        // versus pick-many — no caption spells it out.
+                        Image(systemName: asked.multiSelect ? "square" : "circle")
+                            .font(Type.caption)
+                            .foregroundStyle(Palette.textDim)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(option.label)
+                                .font(Type.body.weight(.medium))
+                                .foregroundStyle(Palette.textPrimary)
+                            if let description = option.description, !description.isEmpty {
+                                Text(description)
+                                    .font(Type.caption)
+                                    .foregroundStyle(Palette.textDim)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
+                        Spacer(minLength: 0)
                     }
-                    Spacer(minLength: 0)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Palette.raised, in: RoundedRectangle(cornerRadius: 12))
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Palette.raised, in: RoundedRectangle(cornerRadius: 12))
+                .buttonStyle(.plain)
+                // The transcript keeps completed questions for context, but
+                // their old choices must not inject a reply into a later turn.
+                .disabled(!isActive || optionReplyInFlight || option.label.isEmpty)
+                .accessibilityHint(
+                    isActive ? "Sends this option as your reply" : "This question is no longer active"
+                )
             }
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.needs.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Palette.needs.opacity(0.35)))
+        .background(
+            (isActive ? Palette.needs : Palette.textFaint).opacity(isActive ? 0.07 : 0.035),
+            in: RoundedRectangle(cornerRadius: 14)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder((isActive ? Palette.needs : Palette.textFaint).opacity(0.35))
+        )
     }
 
     /// A plan, as a checklist. Done steps recede — struck through and faint —

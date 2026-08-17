@@ -39,9 +39,14 @@ import { isCodexTranscriptPath, lastAssistantText, splitSentences, stripMarkdown
 import { PhoneUploads } from "./phone-uploads.ts";
 import { CONCH_DATA } from "./config.ts";
 import {
+  latestAnswerableQuestion,
   publishedConversation,
   readConversationTail,
+  type Conversation,
 } from "./conversation.ts";
+import { readSessionContextUsage, type SessionContextUsage } from "./context-meter.ts";
+import { appendConchError, clipboardFallbackError } from "./app-errors.ts";
+import { closeTerminalSession, startTerminalSession } from "./session-lifecycle.ts";
 import {
   detectCodexTurnEnds,
   isInterAgentEnvelope,
@@ -155,6 +160,7 @@ import {
 import {
   DictationReducer,
   classifyPermissionDecision,
+  classifySpokenChoice,
   type DictationActionReadyEffect,
   type DictationReducerEffect,
   type ExternalDictationAction,
@@ -190,6 +196,7 @@ import {
   settingsPathFor,
   unsetSetting,
   validateControlMessage,
+  validateRuntimeControlMessage,
   validateSessionControlMessage,
   writeSetting,
   type ControlResponse,
@@ -203,6 +210,7 @@ import {
   type HandoffOrder,
   type SessionControlMessage,
   type SessionControlResponse,
+  type RuntimeControlMessage,
 } from "./settings.ts";
 import { SettingsOverlay } from "./settings-overlay.ts";
 import {
@@ -547,6 +555,11 @@ export function dispatchControlMessage(
         : { kind: "session-error", error: "session commands are unavailable" },
     };
   }
+  if (
+    validated.value.kind === "session-start"
+    || validated.value.kind === "session-close"
+    || validated.value.kind === "app-error"
+  ) return { handled: false };
 
   if (validated.value.kind !== "get-config" && configPersistence) {
     try {
@@ -573,6 +586,54 @@ export function dispatchControlMessage(
     }
   }
   return { handled: true, response: controller.handle(validated.value) };
+}
+
+export interface RuntimeControlDispatchOptions {
+  start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | Promise<void>;
+  close(sessionId: string): void | Promise<void>;
+  report(message: Extract<RuntimeControlMessage, { kind: "app-error" }>): void | Promise<void>;
+}
+
+/** Process/UI controls stay outside the synchronous settings controller so AppleScript cannot block config reads. */
+export async function dispatchRuntimeControlMessage(
+  value: unknown,
+  options: RuntimeControlDispatchOptions,
+): Promise<SocketControlDispatch> {
+  if (!socketRecord(value) || (
+    value.kind !== "session-start"
+    && value.kind !== "session-close"
+    && value.kind !== "app-error"
+  )) return { handled: false };
+
+  const validated = validateRuntimeControlMessage(value);
+  if (!validated.ok) {
+    return { handled: true, response: { kind: "session-error", error: validated.err } };
+  }
+  const message = validated.value;
+  try {
+    if (message.kind === "session-start") {
+      await options.start(message);
+      return {
+        handled: true,
+        response: {
+          kind: "session-started",
+          backend: message.backend,
+          resumed: Boolean(message.resumeSessionId),
+        },
+      };
+    }
+    if (message.kind === "session-close") {
+      await options.close(message.sessionId);
+      return {
+        handled: true,
+        response: { kind: "session-closed", sessionId: message.sessionId },
+      };
+    }
+    await options.report(message);
+    return { handled: true, response: { kind: "app-error-ack" } };
+  } catch (error) {
+    return { handled: true, response: sessionCommandError(error) };
+  }
 }
 
 const TURN_EVENT_TYPES = new Set<TurnEvent["type"]>([
@@ -916,6 +977,14 @@ export function dispatchSocketTurnEvent(
   callbacks.enqueue(event);
 }
 
+/** Ordinals are safe to rewrite only while the transcript still contains an unanswered option row. */
+export function choiceReplyForConversation(heard: string, conversation: Conversation): string {
+  const question = latestAnswerableQuestion(conversation);
+  if (!question) return heard;
+  const selected = classifySpokenChoice(heard, question.options);
+  return selected === null ? heard : question.options[selected]!.label;
+}
+
 export type NameAddressRoute =
   | {
     kind: "deliver";
@@ -1161,6 +1230,20 @@ export function pruneSessionCommandSets(
   }
 }
 
+/** One record per unresolved interval preserves the signal without adding the same row every 20 seconds. */
+export function shouldReportMissingCodexPid(
+  session: Pick<SessionInfo, "sessionId" | "backend" | "pid">,
+  reported: Set<string>,
+): boolean {
+  if (session.backend === "codex" && !session.pid) {
+    if (reported.has(session.sessionId)) return false;
+    reported.add(session.sessionId);
+    return true;
+  }
+  reported.delete(session.sessionId);
+  return false;
+}
+
 /**
  * Wire listen-phase state and live partials into the status renderer.
  *
@@ -1228,6 +1311,10 @@ export function injectTimeoutFor(line: string): number {
   try {
     const kind = JSON.parse(line)?.type ?? JSON.parse(line)?.kind;
     if (kind === "inject") return 25_000;
+    // A truthful close waits for the agent pid to disappear after Ctrl-D; the
+    // bridge must not invent a failure while that clean shutdown is in flight.
+    if (kind === "session-close") return 12_000;
+    if (kind === "session-start") return 8_000;
   } catch {}
   return 4_000;
 }
@@ -1242,6 +1329,7 @@ export function buildDaemonPublishedState(
   labelForSessionId?: (sessionId: string) => string | undefined,
   /** Codex rollouts live at paths only its database knows; Claude's are found by id. */
   sessionTranscriptPaths?: ReadonlyMap<string, string>,
+  sessionContexts?: ReadonlyMap<string, SessionContextUsage>,
 ): PublishedState {
   return buildPublishedState(
     model,
@@ -1254,6 +1342,7 @@ export function buildDaemonPublishedState(
       voiceForLabel: (label) => voiceFor(cfg, label),
       labelForSessionId,
       prioritizedSessionIds,
+      contextForSessionId: (sessionId) => sessionContexts?.get(sessionId),
     },
   );
 }
@@ -1915,6 +2004,22 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   let panelRenderVersion = 0;
   let lastPublishedPanelState: PublishedState | null = null;
+  const reportedMissingCodexPid = new Set<string>();
+  const recordDaemonError = (
+    operation: string,
+    message: string,
+    sessionId?: string,
+    state?: Record<string, unknown>,
+  ): void => {
+    try {
+      appendConchError(
+        { source: "daemon", operation, message, ...(sessionId ? { sessionId } : {}), ...(state ? { state } : {}) },
+        lastPublishedPanelState,
+      );
+    } catch (error) {
+      log(`could not record daemon error: ${error}`);
+    }
+  };
   // Publication is always on, independent of the selected terminal renderer.
   // Full ledger rebuilds and cheap conversation refreshes share this writer so
   // neither path can bypass the 10 Hz leading/trailing throttle.
@@ -2119,6 +2224,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
       snap = await registrySnapshot(cfg.claudeDir);
     } catch {}
     const registryLive = snap?.infos ?? [];
+    for (const session of registryLive) {
+      if (shouldReportMissingCodexPid(session, reportedMissingCodexPid)) {
+        recordDaemonError(
+          "session-routing",
+          "Codex row has no pid",
+          session.sessionId,
+          { cwd: session.cwd ?? "", status: session.status ?? "unknown" },
+        );
+      }
+    }
     pruneSessionCommandSets(snap, prioritizedSessionIds, dismissedSessionIds);
     // Prune a latch only on a COMPLETE snapshot — a torn/unreadable file must not
     // delete a live session's latch (e.g. a pending "needs"), which never re-fires.
@@ -2245,6 +2360,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
         }),
       )).filter((entry): entry is NonNullable<typeof entry> => entry !== null),
     );
+    const sessionContexts = new Map(
+      (await Promise.all(live.map(async (session) => {
+        const path = session.transcriptPath
+          ?? findTranscript(cfg.claudeDir, session.sessionId);
+        if (!path) return null;
+        const context = await readSessionContextUsage(
+          path,
+          isCodexTranscriptPath(path) ? "codex" : "claude",
+        ).catch(() => null);
+        return context ? [session.sessionId, context] as const : null;
+      }))).filter((entry): entry is NonNullable<typeof entry> => entry !== null),
+    );
     const transcriptReplyText = stripMarkdown(transcriptReplyRaw);
     const previewText = stripMarkdown(previewRaw);
     if (shuttingDown) return;
@@ -2331,6 +2458,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
             session.transcriptPath ? [[session.sessionId, session.transcriptPath] as const] : []
           ),
         ),
+        sessionContexts,
       );
       publishedStateWriter.request();
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
@@ -3058,6 +3186,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
       allowBlindFallback?: boolean;
     } = {},
   ): Promise<boolean> {
+    if (event.transcriptPath) {
+      try {
+        const conversation = await readConversationTail(
+          event.transcriptPath,
+          event.sessionId,
+          isCodexTranscriptPath(event.transcriptPath) ? "codex" : "claude",
+        );
+        const reply = choiceReplyForConversation(text, conversation);
+        if (reply !== text) log(`matched spoken choice -> ${JSON.stringify(reply)}`);
+        text = reply;
+      } catch {}
+    }
     if (options.allowNameAddressing !== false) {
       const addressed = await resolveNameAddressRoute(cfg.claudeDir, event, text);
       if (addressed.addressed) {
@@ -3139,6 +3279,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
         chars: text.length,
         ...(reason ? { reason } : {}),
       });
+      const failure = clipboardFallbackError({
+        sessionId: event.sessionId,
+        label: event.label,
+        cwd: event.cwd,
+        reason,
+      });
+      recordDaemonError(
+        failure.operation,
+        failure.message,
+        failure.sessionId,
+        failure.state,
+      );
       if (beforeInject && !(await beforeInject())) return false;
       // Name the actual obstacle. A modal dialog on the Mac blocks every
       // AppleScript call for as long as it is up, so this is not a session
@@ -4624,16 +4776,62 @@ export async function runDaemon(cfg: Config): Promise<void> {
     targetForSessionId: sessionActionTarget,
     isDismissed: (sessionId) => dismissedSessionIds.has(sessionId),
   };
+  const runtimeControlDispatchOptions: RuntimeControlDispatchOptions = {
+    start: (message) => startTerminalSession(message),
+    close: async (sessionId) => {
+      let session = panelSessions.get(sessionId);
+      if (!session) {
+        session = (await registrySnapshot(cfg.claudeDir))?.infos.find(
+          (candidate) => candidate.sessionId === sessionId,
+        );
+      }
+      if (!session) throw new Error("session is not live");
+      if (!session.pid) {
+        if (session.backend === "codex") {
+          reportedMissingCodexPid.add(session.sessionId);
+          recordDaemonError(
+            "session-close",
+            "Codex row has no pid",
+            session.sessionId,
+            { cwd: session.cwd ?? "", status: session.status ?? "unknown" },
+          );
+        }
+        throw new Error("session has no routable pid");
+      }
+      await closeTerminalSession(session.pid);
+      void renderSessionPanel();
+    },
+    report: (message) => {
+      appendConchError(
+        {
+          source: message.source,
+          operation: message.operation,
+          message: message.message,
+          ...(message.sessionId ? { sessionId: message.sessionId } : {}),
+          state: message.state,
+        },
+        lastPublishedPanelState,
+      );
+    },
+  };
   const server = createServer({ allowHalfOpen: true }, (sock) => {
     let buf = "";
     let handled = false;
     sock.on("error", () => {}); // a hook killed mid-write (ECONNRESET) must not throw
-    const handleLine = (line: string): void => {
+    const handleLine = async (line: string): Promise<void> => {
       if (handled) return;
       handled = true;
       let response: ControlResponse | undefined;
       try {
         const value: unknown = JSON.parse(line);
+        const runtime = await dispatchRuntimeControlMessage(
+          value,
+          runtimeControlDispatchOptions,
+        );
+        if (runtime.handled) {
+          sock.end(JSON.stringify(runtime.response) + "\n");
+          return;
+        }
         // `conch pair` asks the RUNNING daemon to open a pairing window: the
         // bridge lives in that process, so only it can offer a code.
         if (
@@ -4824,10 +5022,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
       buf += data.toString();
       const newline = buf.indexOf("\n");
-      if (newline !== -1) handleLine(buf.slice(0, newline));
+      if (newline !== -1) void handleLine(buf.slice(0, newline));
     });
     sock.on("end", () => {
-      if (!handled && buf.trim()) handleLine(buf.trim());
+      if (!handled && buf.trim()) void handleLine(buf.trim());
       else if (!handled) sock.end();
     });
   });

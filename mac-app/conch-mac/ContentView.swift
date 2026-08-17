@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var renamingSessionID: SessionRow.ID?
     @State private var renameDraft = ""
     @State private var isShowingKeyboardShortcuts = false
+    @State private var isShowingSessionStart = false
     /// SwiftUI's own way to open the Settings scene. Doing it by sending
     /// showSettingsWindow: to nil is the usual hack and breaks between
     /// releases; this is the supported route on macOS 14+.
@@ -84,6 +85,7 @@ struct ContentView: View {
                 renamingSessionID: renamingSessionID,
                 renameDraft: $renameDraft,
                 actions: DashboardActions(
+                    onStartSession: { isShowingSessionStart = true },
                     onSelectSession: selectSession,
                     onExpandReview: expandReview,
                     onBeginRename: beginRename,
@@ -126,6 +128,9 @@ struct ContentView: View {
         )
         .sheet(isPresented: $isShowingKeyboardShortcuts) {
             KeyboardShortcutsSheet()
+        }
+        .sheet(isPresented: $isShowingSessionStart) {
+            StartSessionSheet()
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .showKeyboardShortcuts)
@@ -302,6 +307,125 @@ struct ContentView: View {
             releaseSelection()
         }
         return true
+    }
+}
+
+private struct StartSessionSheet: View {
+    private enum StartMode: String, CaseIterable, Identifiable {
+        case new = "New"
+        case resume = "Resume"
+        var id: String { rawValue }
+    }
+
+    @EnvironmentObject private var store: StateStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var backend = ConchAgentBackend.claude
+    @State private var mode = StartMode.new
+    @State private var resumeSessionId = ""
+    @State private var cwd = FileManager.default.homeDirectoryForCurrentUser.path
+    @State private var isStarting = false
+    @State private var error: String?
+
+    private var canStart: Bool {
+        !isStarting && (mode == .new || !resumeSessionId.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).isEmpty)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Start a session")
+                .font(ConchTypography.font(size: 19, weight: .medium))
+                .foregroundStyle(ConchPalette.textPrimary)
+
+            Picker("Agent", selection: $backend) {
+                ForEach(ConchAgentBackend.allCases) { backend in
+                    Text(backend.label).tag(backend)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Picker("Session", selection: $mode) {
+                ForEach(StartMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if mode == .resume {
+                TextField("Session ID", text: $resumeSessionId)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel("Session ID to resume")
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Working folder")
+                    .font(ConchTypography.font(size: 10.5, weight: .medium))
+                    .foregroundStyle(ConchPalette.textDim)
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+                HStack(spacing: 8) {
+                    TextField("Working folder", text: $cwd)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Choose…", action: chooseFolder)
+                }
+            }
+
+            Text("Opens \(backend.label) in Terminal, outside conch’s own tmux session.")
+                .font(ConchTypography.font(size: 11.5))
+                .foregroundStyle(ConchPalette.textDim)
+
+            if let error {
+                Text(error)
+                    .font(ConchTypography.font(size: 11.5))
+                    .foregroundStyle(ConchPalette.statusNeeds)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(isStarting ? "Starting…" : "Start") {
+                    start()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canStart)
+            }
+        }
+        .padding(24)
+        .frame(width: 430)
+        .background(ConchPalette.bg)
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: cwd, isDirectory: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        cwd = url.path
+    }
+
+    private func start() {
+        guard canStart else { return }
+        isStarting = true
+        error = nil
+        Task { @MainActor in
+            let failure = await store.startSession(
+                backend: backend,
+                resumeSessionId: mode == .resume ? resumeSessionId : nil,
+                cwd: cwd
+            )
+            isStarting = false
+            if let failure {
+                error = failure
+            } else {
+                dismiss()
+            }
+        }
     }
 }
 
