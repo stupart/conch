@@ -64,18 +64,24 @@ is advertise controls that do nothing, which is what it does today.
 ### Open
 
 - [ ] **The Mac app does not respawn a daemon that dies.** `DaemonHost` adopts a
-      running daemon at launch, and when that daemon exits nothing starts
-      another — conch is simply dead until the app is relaunched. Found while
-      deploying: killing the old daemon left the app connected to nothing.
+      running daemon at launch (`DaemonHost.swift:51`) without keeping a handle
+      or watching for its death; the restart logic only covers a child the app
+      launched (`:92`, `:134`). So the app stays `.adopted`, shows no failure,
+      and — worst part — *hides the start toggle* (`SettingsView.swift:593`),
+      leaving no way to recover but relaunching. The fix is to watch socket
+      liveness and start one only once the adopted owner is gone.
 - [ ] **A new session in an untrusted folder never appears.** Claude Code holds
       it on "Is this a project you trust?" and does not write
       `~/.claude/sessions/<pid>.json` until that is answered, so conch cannot
       see it and the app looks broken. conch should say it is waiting on the
       terminal rather than showing nothing.
-- [ ] **Delivery may retry in a loop.** The daemon log repeats
-      `copied 94 chars / copied 5 chars / copied 709 chars` over and over —
-      the same three clipboard fallbacks, many times. Not investigated; under
-      audit.
+- [ ] **Duplicate terminal mouse-up events?** The daemon log repeats
+      `copied 94 chars / copied 5 chars / copied 709 chars` many times. I read
+      these as clipboard delivery-fallbacks and was wrong: the only emitter is
+      terminal mouse-selection copy on pointer-up (`status.ts:1137,1197`), and
+      delivery re-presses Return twice before falling back exactly once
+      (`daemon.ts:3386,3420`). There is no retry loop. If nobody was selecting
+      text, the thing to investigate is duplicated mouse-up, not delivery.
 - [ ] **A conversation can render empty until you scroll it.** Tyler opened
       asset generator, saw nothing while the row said it was waiting for him,
       and the content appeared only once he scrolled. He waved it off, but an

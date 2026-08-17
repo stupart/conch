@@ -113,6 +113,9 @@ describe("spoken name routing", () => {
         pid: 202,
         announce: "",
         transcriptPath: "/transcripts/target.jsonl",
+        // Saying a session's name out loud is a person asking, so manual mode
+        // must let this one through.
+        origin: "user",
       },
     });
     expect(event).toEqual(originalEvent());

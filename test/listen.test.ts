@@ -82,6 +82,20 @@ test("a recorder that honours SIGINT is never killed", async () => {
   expect(signals).toEqual(["SIGINT"]);
 });
 
+test("shutdown kills without waiting, because nothing will be alive to wait", () => {
+  // The daemon calls process.exit(0) immediately after this, so a scheduled
+  // escalation would never fire and a SIGINT-resistant recorder would outlive
+  // the daemon still holding the microphone.
+  const signals: unknown[] = [];
+  stopSoxProcess({
+    kill(received: unknown) {
+      signals.push(received);
+    },
+    exited: new Promise<number>(() => {}), // never exits
+  } as never, { immediate: true });
+  expect(signals).toEqual(["SIGINT", "SIGKILL"]); // synchronous, not scheduled
+});
+
 test("a wedged recorder is killed rather than left holding the mic", async () => {
   // One sox stuck on CoreAudio held the device for eight minutes while the
   // daemon logged "closing mic" six times and every control appeared dead.

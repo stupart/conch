@@ -1047,6 +1047,8 @@ export async function resolveNameAddressRoute(
           pid: session.pid,
           announce: "",
           transcriptPath,
+          // You said its name out loud. That is a person asking.
+          origin: "user",
         },
       };
     }
@@ -2994,13 +2996,21 @@ export async function runDaemon(cfg: Config): Promise<void> {
         }
         // Manual mode is a promise that conch does nothing you did not ask
         // for, and opening the mic is the loudest thing it does. Anything conch
-        // cannot attribute to a person pressing something is held, exactly like
-        // an announcement — not just agent calls, because the whole complaint
-        // was a mic that opened with no visible cause. Default-deny is what
-        // makes that a guarantee rather than a list of known senders.
-        if (pause.paused && event.origin !== "user") {
+        // cannot attribute to a person pressing something is refused, exactly
+        // like an announcement — not just agent calls, because the whole
+        // complaint was a mic that opened with no visible cause. Default-deny
+        // is what makes that a guarantee rather than a list of known senders.
+        //
+        // Per-session manual counts as manual. Wakes are otherwise treated as
+        // explicit overrides that bypass `pausedSessionIds` entirely, which is
+        // right for a person and wrong for everyone else: without this an agent
+        // could open the mic on the one session you had specifically quieted.
+        const sessionIsManual = pause.paused
+          || pausedSessionIds.has(target.sessionId);
+        if (sessionIsManual && event.origin !== "user") {
+          // "refused", not "held": nothing is stored to replay later.
           log(
-            `manual — held wake for "${target.label}"`
+            `manual — refused wake for "${target.label}"`
             + ` (${event.origin ?? "no origin"}, not you)`,
           );
           return;
@@ -5088,7 +5098,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // recorder snapshot. No await is allowed before this request.
     const dictationAtShutdown = activeDictation;
     dictationAtShutdown?.requestExternal("spacebar", "shutdown");
-    const recorderDrain = killActiveRecorders(); // a live sox capture would keep the mic hot after we die
+    // A live sox capture would keep the mic hot after we die. Without
+    // diagnostics we `process.exit(0)` a few lines down, so there is no later
+    // moment in which a grace timer could fire — the kill has to land now.
+    const recorderDrain = killActiveRecorders({ immediate: !diagnosticsEnabled });
     if (server.listening) server.close();
     whisperServerClient.cancelWarmRequests();
     whisperSupervisor?.close();

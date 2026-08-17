@@ -206,6 +206,8 @@ function wakeFor(event: TurnEvent): TurnEvent {
     sessionId: event.sessionId,
     label: event.label,
     announce: "",
+    // Reached only by answering "who first?" out loud, so it is yours.
+    origin: "user",
     ...(event.cwd ? { cwd: event.cwd } : {}),
     ...(event.pid === undefined ? {} : { pid: event.pid }),
     ...(event.transcriptPath ? { transcriptPath: event.transcriptPath } : {}),
