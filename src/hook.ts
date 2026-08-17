@@ -44,6 +44,22 @@ export interface TurnEvent {
   backgroundWork?: true;
   /** Set when the final reply carried a conch:review marker. */
   review?: { summary: string; link?: string };
+  /**
+   * Who asked for this wake.
+   *
+   * The mic opened by itself in manual mode and the log could only say
+   * `wake -> "conch"` — Tyler: "why did the app just change to 'listening'
+   * state when im in manual mode and didn't hit the mic button?" Five different
+   * things enqueue an identical bare wake (the Mac button, the phone, the TUI
+   * spacebar, `conch wake`, and the `conch_wake` MCP tool an agent can call),
+   * so an unexplained one was unattributable after the fact.
+   *
+   * It also decides behaviour, not just logging: manual mode means conch does
+   * nothing you did not ask for, so only a wake you personally initiated may
+   * open the mic. An agent asking for attention gets held like any other
+   * announcement.
+   */
+  origin?: "user" | "agent";
 }
 
 // Notification types that actually need a human; everything else stays silent.

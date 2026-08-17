@@ -415,16 +415,25 @@ export function readCodexTurnSnapshots(
   return snapshots;
 }
 
+/**
+ * Where this process should read Codex from, or null when it must not read the
+ * real one.
+ *
+ * Redirection arrives two ways and both mean the same thing: this caller is not
+ * running against the real machine. `codex-sessions.ts` resolves its own
+ * directory from the env var, so honouring only the option would leave every
+ * test that sets CONCH_CONFIG_DIR still reading the developer's live Codex.
+ */
+export function codexHomeDir(options: CodexThreadsOptions = {}): string | null {
+  const redirected = options.configDir ?? process.env.CONCH_CONFIG_DIR;
+  return options.codexHome
+    ?? (redirected ? null : join(homedir(), ".codex"));
+}
+
 export function readCodexThreads(
   options: CodexThreadsOptions = {},
 ): CodexSessionRegistryRead {
-  // Redirection arrives two ways and both mean the same thing: this caller is
-  // not running against the real machine. `codex-sessions.ts` resolves its own
-  // directory from the env var, so honouring only the option would leave every
-  // test that sets CONCH_CONFIG_DIR still reading the developer's live Codex.
-  const redirected = options.configDir ?? process.env.CONCH_CONFIG_DIR;
-  const codexHome = options.codexHome
-    ?? (redirected ? undefined : join(homedir(), ".codex"));
+  const codexHome = codexHomeDir(options);
   if (!codexHome) return { entries: [], complete: true, available: false };
   const { state, history } = codexThreadDbPaths(codexHome);
   // A machine with no Codex at all is known-empty, not an error — the same

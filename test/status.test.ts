@@ -1131,9 +1131,9 @@ describe("theater renderer lifecycle", () => {
         expect(plain.match(/transcribing/g)).toHaveLength(1);
         expect(frame).not.toContain("transcribing…");
       } else {
-        expect(frame).toContain("pause to send · space to stop · say send to submit now");
+        expect(frame).toContain("stop talking to send · space to cancel · say send to submit now");
       }
-      expect(frame).not.toContain("‹project-one› · pause to send");
+      expect(frame).not.toContain("‹project-one› · stop talking to send");
       expect(frame.indexOf(reply)).toBeLessThan(frame.indexOf(partial));
     }
   });
@@ -1171,7 +1171,7 @@ describe("theater renderer lifecycle", () => {
     const conversationOnlyFrame = writes.at(-1)!;
     expect(conversationOnlyFrame).toContain("↪ replying to · quote-start");
     expect(conversationOnlyFrame).toContain("latest-live-tail▌");
-    expect(conversationOnlyFrame).not.toContain("pause to send");
+    expect(conversationOnlyFrame).not.toContain("stop talking to send");
 
     dimensions.rows = 4;
     renderer.resize();
@@ -1179,7 +1179,7 @@ describe("theater renderer lifecycle", () => {
     expect(transcriptOnlyFrame).toContain("latest-live-tail▌");
     expect(transcriptOnlyFrame).not.toContain("↪ replying to");
     expect(transcriptOnlyFrame).not.toContain("quote-start");
-    expect(transcriptOnlyFrame).not.toContain("pause to send");
+    expect(transcriptOnlyFrame).not.toContain("stop talking to send");
   });
 
   test("shows the reducer-kept transcript before the live partial through transcription", () => {

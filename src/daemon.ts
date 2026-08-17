@@ -48,11 +48,13 @@ import { readSessionContextUsage, type SessionContextUsage } from "./context-met
 import { appendConchError, clipboardFallbackError } from "./app-errors.ts";
 import { closeTerminalSession, startTerminalSession } from "./session-lifecycle.ts";
 import {
+  codexHomeDir,
   detectCodexTurnEnds,
   isInterAgentEnvelope,
   readCodexTurnSnapshots,
   type CodexTurnMemory,
 } from "./codex-threads.ts";
+import { watchSessionSources } from "./session-watch.ts";
 import { recordTelemetry } from "./telemetry.ts";
 import {
   createPhoneBridgeApplication,
@@ -824,6 +826,12 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
     && typeof value.sessionId !== "string"
   ) {
     return { ok: false, err: `sessionId is required for ${type}` };
+  }
+
+  // `origin` decides whether manual mode will open the mic, so it is the one
+  // field where a malformed value must not be carried through as truthy junk.
+  if (value.origin !== undefined && value.origin !== "user" && value.origin !== "agent") {
+    return { ok: false, err: "origin must be \"user\" or \"agent\"" };
   }
 
   return {
@@ -2984,7 +2992,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
           log("wake target closed");
           return void (await speak(cfg, "That session is closed.", "", true));
         }
-        log(`wake -> "${target.label}"`);
+        // Manual mode is a promise that conch does nothing you did not ask
+        // for, and opening the mic is the loudest thing it does. Anything conch
+        // cannot attribute to a person pressing something is held, exactly like
+        // an announcement — not just agent calls, because the whole complaint
+        // was a mic that opened with no visible cause. Default-deny is what
+        // makes that a guarantee rather than a list of known senders.
+        if (pause.paused && event.origin !== "user") {
+          log(
+            `manual — held wake for "${target.label}"`
+            + ` (${event.origin ?? "no origin"}, not you)`,
+          );
+          return;
+        }
+        log(`wake -> "${target.label}" (${event.origin ?? "unattributed"})`);
         if (cfg.revealOnTurn && target.pid) void revealSessionWindow(target.pid); // surface it, no focus steal
         resetReadingProgress();
         // The courtesy line must never delay the thing it is announcing.
@@ -5226,6 +5247,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // Refresh periodically so killed sessions drop off even with no new events.
   const panelTimer = setInterval(() => void renderSessionPanel(), 20_000);
   panelTimer.unref?.();
+  // ...but the timer is only the backstop. Both agents publish liveness in a
+  // directory, so a session opening or closing is an event conch can be told
+  // about rather than one it has to wait up to 20s to notice.
+  const codexHome = codexHomeDir();
+  watchSessionSources(
+    [
+      join(cfg.claudeDir, "sessions"),
+      ...(codexHome ? [join(codexHome, "thread-writer-locks")] : []),
+    ],
+    () => void renderSessionPanel(),
+  );
 
   // Announce Codex turns, which have no hook to announce themselves.
   //
@@ -5341,6 +5373,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       pid: row.s.pid,
       announce: "",
       transcriptPath: findTranscript(cfg.claudeDir, row.s.sessionId),
+      origin: "user",
     });
   }
 
@@ -5358,6 +5391,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       pid: s.pid,
       announce: "",
       transcriptPath: findTranscript(cfg.claudeDir, s.sessionId),
+      origin: "user",
     });
   }
 
@@ -5500,7 +5534,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         if (busy) stopReciting("spacebar");
         else if (theaterMode && theaterActionTarget()) wakeBySessionId(theaterActionTarget()!);
         else if (selectedId) wakeBySessionId(selectedId); // talk to the selected session
-        else enqueue({ type: "wake", sessionId: "", label: "", announce: "" }); // else the last-announced
+        else enqueue({ type: "wake", sessionId: "", label: "", announce: "", origin: "user" }); // else the last-announced
       }
       // ↑/↓ move the panel cursor (normal `[` and application `O` escape forms).
       else if (c === "\x1b[A" || c === "\x1bOA") moveSelection(-1);

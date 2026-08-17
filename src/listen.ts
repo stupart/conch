@@ -108,11 +108,38 @@ export function soxCaptureArgs(
   ];
 }
 
-/** SoX flushes its buffered capture tail on SIGINT; SIGTERM can drop it. */
+/**
+ * Close the mic, and make sure it actually closed.
+ *
+ * SIGINT rather than SIGTERM because SoX flushes its buffered capture tail on
+ * SIGINT and can drop it on SIGTERM — the last word of a sentence lives in that
+ * buffer, so the polite signal has to come first.
+ *
+ * But polite is not enough on its own. A recorder wedged on CoreAudio ignores
+ * both, and conch had no idea: the daemon logged `⏹ spacebar — closing mic` six
+ * times while one `sox` from eight minutes earlier held the device and wrote a
+ * zero-byte file. Every visible control — the app's mic button, the spacebar,
+ * the stop command — routes here, so all three appeared dead at once and the UI
+ * sat in "listening" with nothing able to move it.
+ *
+ * So: ask nicely, then verify, then insist. The grace window is long enough for
+ * a healthy SoX to flush and exit, and the escalation only ever fires for one
+ * that was never going to.
+ */
 export function stopSoxProcess(
-  proc: Pick<ReturnType<typeof Bun.spawn>, "kill">,
+  proc: Pick<ReturnType<typeof Bun.spawn>, "kill"> & { exited?: Promise<number> },
+  options: { graceMs?: number } = {},
 ): void {
   proc.kill("SIGINT");
+  const graceMs = options.graceMs ?? 1_500;
+  // Older callers (and tests) may hand over a bare `kill`; nothing to verify.
+  if (!proc.exited) return;
+  void Promise.race([
+    proc.exited.then(() => true),
+    Bun.sleep(graceMs).then(() => false),
+  ]).then((exited) => {
+    if (!exited) proc.kill("SIGKILL");
+  }).catch(() => {});
 }
 
 function spawnCapture(

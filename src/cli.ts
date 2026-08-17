@@ -279,7 +279,14 @@ switch (command) {
     break;
   case "wake": {
     const { findSessionByName, findTranscript, listSessions, sessionLabel } = await import("./sessions.ts");
-    let event = { type: "wake" as const, sessionId: "", label: "", announce: "" };
+    // Typed at a terminal by a person, so it opens the mic even in manual mode.
+    let event = {
+      type: "wake" as const,
+      sessionId: "",
+      label: "",
+      announce: "",
+      origin: "user" as const,
+    };
     const query = rest.join(" ").trim();
     if (query) {
       const s = await findSessionByName(cfg.claudeDir, query);

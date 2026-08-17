@@ -583,6 +583,7 @@ export function createMcpToolHandlers(
           sessionId: "",
           label: "",
           announce: "",
+          origin: "agent",
         });
       }
       const session = await resolveSession(query, config, dependencies);
@@ -597,6 +598,7 @@ export function createMcpToolHandlers(
           session.sessionId,
         ),
         announce: "",
+        origin: "agent",
       });
     },
 

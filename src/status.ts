@@ -694,7 +694,7 @@ function theaterContentLines(
   const note = state === "speaking"
     ? "space to cut in · the mic opens when it finishes"
     : capturing
-      ? "pause to send · space to stop · say send to submit now"
+      ? "stop talking to send · space to cancel · say send to submit now"
       : "";
 
   if (capturing || transcribing) {

@@ -1468,7 +1468,10 @@ private struct ConversationPane: View {
         case "speaking":
             return "space to cut in · the mic opens when it finishes"
         case "listening", "recording":
-            return "pause to send · space to stop · say \"send\" to submit now"
+            // "pause to send" meant a pause in your SPEECH, but conch also has
+            // a pause mode, so it read as a control — Tyler: "it also says
+            // 'pause to send' but idk what they means."
+            return "stop talking to send · space to cancel · say \"send\" to submit now"
         case "transcribing":
             return "transcribing…"
         default:

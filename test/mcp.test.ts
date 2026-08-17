@@ -601,6 +601,9 @@ describe("real MCP tool handlers with injected dependencies", () => {
           cwd: "/work/build",
           transcriptPath: "/virtual/session-123.jsonl",
           announce: "",
+          // An agent asked, not the person. Manual mode holds these rather
+          // than opening the mic on them.
+          origin: "agent",
         },
       },
       {

@@ -17,17 +17,23 @@ struct ConchDaemonEvent: Encodable, Sendable {
     let sessionId: String?
     let label: String?
     let announce: String?
+    /// Who asked. Everything this app sends is a button someone pressed, so the
+    /// daemon may act on it even in manual mode — where a wake it cannot
+    /// attribute to a person is held rather than opening the mic.
+    let origin: String?
 
     init(
         type: Kind,
         sessionId: String? = nil,
         label: String? = nil,
-        announce: String? = nil
+        announce: String? = nil,
+        origin: String? = nil
     ) {
         self.type = type
         self.sessionId = sessionId
         self.label = label
         self.announce = announce
+        self.origin = origin
     }
 
     /// Type into a session. The daemon puts `announce` into the session's
@@ -49,7 +55,8 @@ struct ConchDaemonEvent: Encodable, Sendable {
             type: .wake,
             sessionId: sessionId,
             label: label,
-            announce: ""
+            announce: "",
+            origin: "user"
         )
     }
 
