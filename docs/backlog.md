@@ -69,6 +69,15 @@ where conch's own resident footprint was 1.3GB of it.
   Measure a real cold start first, away from a thrashing machine.
 - Rejected with the measurement: trimming Kokoro's 8 voices to 1 saves ~3.5MB,
   because each voice is 512KB against a 312MB model.
+- **An orphaned whisper-server is adopted forever and never stopped.** Found
+  one running since Aug 10 with PPID 1, on conch's own port 8642, which every
+  daemon since had adopted rather than owned — so no shutdown, graceful or
+  otherwise, ever cleaned it up. Adoption is deliberate (conch must not kill a
+  terminal's or launchd's process), but it cannot currently tell "someone
+  else's" from "mine, outliving its parent". Same missing idea as the app not
+  respawning an adopted daemon, and quitting the app not stopping one. A pid
+  file, or checking whether the adopted process has a living owner, resolves
+  all three.
 - Not yet investigated: whether conch's own daemon, TUI and app footprints are
   reasonable, and the relay's 100-minute reconnect.
 
