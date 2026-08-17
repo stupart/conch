@@ -14,27 +14,35 @@ The audit's verdict is the problem statement: *"the three surfaces are not
 three presentations of one interaction model. They currently implement
 materially different products."* Everything here is that sentence being false.
 
-1. **The mic must mean one thing.** Mac sends wake/stop to the daemon's mic;
-   the phone runs LOCAL recognition and never sends; the terminal wakes the
+1. **The mic must mean one thing.** ← NEXT. Mac sends wake/stop to the daemon's
+   mic; the phone runs LOCAL recognition and never sends; the terminal wakes the
    daemon mic but only in theater mode. Settle it — dictation fills the
    composer, on every surface — and the "mic fills the composer" item is the
    same work.
-2. **Retire mute everywhere.** It is still live in the terminal and behind a
-   hidden `M` on the Mac. Half-retired is worse than not retired.
-3. **The composer, on every surface.** Including the layout fix below.
+2. ~~**Retire mute everywhere.**~~ DONE — gone from every surface; `muted`
+   survives only as an internal state name that renders as "manual".
+3. **The composer, on every surface.** Mac and phone have one; the layout fix
+   (field on top, controls beneath) is still owed on the Mac.
 4. **Dismiss/restore, one feature.** Complete on Mac, dismiss-only in the
    terminal with unreachable restore code, absent on the phone — which drops
    `dismissedRows` while decoding.
 5. **The dead footer keybar** — it advertises keys that are all swallowed,
    including `q` and Ctrl-C.
 
+Added by use, not by audit — the controls have to be trustworthy before the
+model they express is worth unifying:
+
+6. ~~**A mic that always closes**~~ and ~~**a manual mode that means it**~~ —
+   DONE. See Bugs/Fixed; both were "conch reported an intent and never checked
+   whether it happened", which is the same defect Phase 1 is about.
+
 ### Phase 2 — the things that make it usable daily
 
-6. Start and close sessions from either app.
-7. Context meter per session.
-8. Claude / Codex mark beside each name.
-9. Question options that can actually be answered.
-10. Errors that report themselves.
+7. ~~Start and close sessions from either app.~~ DONE on the Mac; phone owed.
+8. ~~Context meter per session.~~ DONE.
+9. ~~Claude / Codex mark beside each name.~~ DONE.
+10. Question options that can actually be answered.
+11. Errors that report themselves.
 
 ### Phase 3 — the feed
 
@@ -51,10 +59,23 @@ interrupt, dismiss, restore, switch mode — and it does not need image
 attachment, artifact rendering, or a phone's audio lease. What it must not do
 is advertise controls that do nothing, which is what it does today.
 
-## Bugs## Bugs
+## Bugs
 
 ### Open
 
+- [ ] **The Mac app does not respawn a daemon that dies.** `DaemonHost` adopts a
+      running daemon at launch, and when that daemon exits nothing starts
+      another — conch is simply dead until the app is relaunched. Found while
+      deploying: killing the old daemon left the app connected to nothing.
+- [ ] **A new session in an untrusted folder never appears.** Claude Code holds
+      it on "Is this a project you trust?" and does not write
+      `~/.claude/sessions/<pid>.json` until that is answered, so conch cannot
+      see it and the app looks broken. conch should say it is waiting on the
+      terminal rather than showing nothing.
+- [ ] **Delivery may retry in a loop.** The daemon log repeats
+      `copied 94 chars / copied 5 chars / copied 709 chars` over and over —
+      the same three clipboard fallbacks, many times. Not investigated; under
+      audit.
 - [ ] **A conversation can render empty until you scroll it.** Tyler opened
       asset generator, saw nothing while the row said it was waiting for him,
       and the content appeared only once he scrolled. He waved it off, but an
@@ -73,6 +94,29 @@ is advertise controls that do nothing, which is what it does today.
 
 ### Fixed
 
+- [x] **The mic could not be closed.** A `sox` recorder wedged on CoreAudio
+      ignored SIGINT *and* SIGTERM and held the device for 8m36s writing a
+      zero-byte file, while the daemon logged "closing mic" six times. Every
+      control — the app's mic button, the spacebar, the stop command — routes
+      through `stopSoxProcess`, so all three appeared dead at once and the UI
+      sat in "listening" with nothing able to move it. SIGINT still goes first
+      (it is what makes SoX flush the tail of your last word), now followed by
+      a verify and a SIGKILL for a recorder that was never going to answer.
+- [x] **The mic opened in manual mode with no user action**, and the log could
+      only say `wake -> "conch"` — five senders enqueue an identical bare wake,
+      so it was unattributable after the fact. Wakes now carry who asked, and
+      manual mode default-denies: only a wake conch can attribute to a person
+      opens the mic. NOTE: the original sender was never identified. This makes
+      a recurrence diagnosable; it does not explain the first one.
+- [x] **Sessions took up to 20 seconds to appear or disappear.** Both agents
+      publish liveness in a directory and both keep it honest, so the poll is
+      now an FSEvents watch with the timer demoted to a backstop.
+- [x] **"pause to send" read as a control.** It meant a pause in your *speech*,
+      next to a product that has a pause mode.
+- [x] **A failed send SPOKE in manual mode.** Every direct `speak()` now passes
+      the same gate the announcement queue does (`daemon.ts:1783`).
+- [x] **The Mac composer kept its draft across sessions.** Drafts are keyed per
+      session now, as the phone already did.
 - [x] **Return made a newline instead of sending.** The common act should be the
       unmodified key; Shift-Return breaks a line now.
 - [x] **A permanent empty black bar under the composer.** Reserving a row fixed
@@ -140,10 +184,9 @@ implement materially different products." Highest-value items lifted out:
 
 - [x] **The phone disconnected permanently on first background** — stop() was
       final and reconnectNow() refused after it. FIXED.
-- [ ] **Mute is still live in two places** despite being retired: the terminal
-      exposes both pause and mute, and the Mac still has a hidden `M` path.
-      Retiring it in one surface and not the others is worse than not retiring
-      it.
+- [x] **Mute is still live in two places** — retired from every surface. What
+      remains is internal: `muted` survives as a state name that renders as
+      "manual" (`status.ts:106,346,380`). A rename, not a bug.
 - [ ] **The footer keybar is entirely dead.** It paints a keyboard bar while
       input dispatch is disabled, and stdin is still raw — so every advertised
       key is swallowed, including `q` and Ctrl-C. A bar that lists keys none of
@@ -164,25 +207,19 @@ implement materially different products." Highest-value items lifted out:
 
 ### Newly reported
 
-- [ ] **Manual mode should turn wake words off.** Manual means conch does not
-      act on its own — it does not read finished turns aloud and does not open
-      the mic by itself. A spoken wake word is conch acting on its own by
-      definition, so it belongs on the same switch. The BUTTON must keep
-      working in manual: that is a person asking, which is the whole
-      distinction.
+- [x] **Manual mode should turn wake words off** — RESOLVED, and the premise was
+      wrong in a way worth recording: conch has no wake-word listener at all.
+      Nothing listens ambiently; the `"conch"` name-match only runs on speech
+      already transcribed during an open mic window, so a wake word could never
+      have opened one. The real hole was that manual mode did not gate wakes at
+      all, which the origin work closes. The BUTTON keeps working, which was
+      always the distinction that mattered.
 
-- [ ] **A failed send SPEAKS while conch is in manual mode.** Confirmed from
-      the log: a send fell back to the clipboard with
-      `system-dialog-blocking`, and conch then said "A system dialog is open on
-      the Mac and it's blocking me" out loud — in manual mode, which exists
-      precisely so it does not speak first. Manual gates the announcement queue;
-      these failure lines call `speak()` directly and bypass it entirely. Every
-      direct `speak()` call in the daemon needs the same gate the queue has, or
-      this recurs the next time a new one is added.
-      Also from the same incident: the failure took 9 seconds to say because
-      Kokoro hard-restarted mid-sentence and the `say` fallback timed out, so
-      the session looked like it was "speaking" for the whole of it while
-      nothing was audible.
+- [ ] **Renaming a session only renames it inside conch.** The label is a conch
+      override (`~/.config/conch/labels.json`) shadowing the agent's own name,
+      so the terminal title and `/resume` picker still show the old one. Claude
+      Code has `/rename <name>` — a local `immediate` command, so injecting it
+      costs no model turn — which is the route. No Codex equivalent found yet.
 
 - [ ] **The conversation goes black, then glitches back when you scroll, and
       snaps to the end on its own.** Reading a long reply is currently not
@@ -226,12 +263,11 @@ implement materially different products." Highest-value items lifted out:
       already treats the draft as shared; the Mac injects the transcript
       directly. Needs a dictation mode that publishes its final text back to the
       app rather than injecting it.
-- [ ] **Which agent is this?** A quiet Claude / Codex mark beside each session
-      name. The backend is already on the wire and nothing shows it.
-- [ ] **Context meter per session.** Tokens used against the limit, on the
-      conversation pane. It is the number that decides whether to keep going or
-      start fresh, and today the only warning is the answers getting worse.
-      Codex publishes `event_msg:token_count`; Claude's is derivable.
+- [x] **Which agent is this?** DONE — the real Claude and OpenAI marks, masked
+      out of the source logos and tinted to the faint text colour, beside each
+      session name.
+- [x] **Context meter per session.** DONE — a number, shown when you click into
+      a session. The progress bar it started as was more furniture than signal.
 - [ ] **A conversation can render empty until you scroll it.** An empty pane
       over a session that says it is waiting for you is indistinguishable from a
       broken one — and in the feed it would be the whole screen. Likely the lazy
@@ -247,7 +283,11 @@ implement materially different products." Highest-value items lifted out:
 
 ### Batch 2 — annoying, more work
 
-- [ ] **Start and close sessions from conch**, on either device. New, or from a
+- [~] **Start and close sessions from conch** — DONE on the Mac
+      (`src/session-lifecycle.ts`: Terminal `do script` to start, clean Ctrl-D
+      with pid-exit verification to close). Not on the phone yet. Two gaps found
+      in use: a session in an untrusted folder never registers (see Bugs), and
+      the ledger took 20s to notice (fixed). Original text: New, or from a
       resume command. Closing must be a clean exit rather than a kill, so it
       stays resumable (`claude --resume <id>`, `codex resume <id>`), behind a
       confirmation, and nowhere a thumb lands by accident. Without starting,
