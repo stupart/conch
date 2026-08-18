@@ -657,7 +657,20 @@ private actor RelayTransportEngine {
             await connectionFailed(URLError(.timedOut), generation: generation)
             return
         }
-        if let lastStateProgressAt,
+        // Only while a state response is actually IN FLIGHT.
+        //
+        // `lastStateProgressAt` is stamped when a snapshot COMPLETES, and this
+        // check then read that stamp as evidence of a stall — so a healthy,
+        // legitimately idle connection declared itself dead thirty seconds
+        // after its last update and reconnected. The Mac deliberately does not
+        // resend unchanged state, so sitting still is exactly when this fired:
+        // it manufactured reconnect churn, grew the backoff, and looked from
+        // the outside like "mobile app cant connect right now for some reason".
+        //
+        // A partly delivered snapshot still times out, because `stateStatus` is
+        // non-nil for exactly as long as one is arriving.
+        if stateStatus != nil,
+           let lastStateProgressAt,
            lastStateProgressAt.duration(to: .now) > Self.stateProgressTimeout {
             await connectionFailed(URLError(.timedOut), generation: generation)
             return
