@@ -128,8 +128,17 @@ Phases 1 and 2 are finished. This is everything else.
    holds the handle; the daemon watches stdin so parent death is EOF and it
    exits itself (orphans become structurally impossible, not merely
    discouraged); on launch, anything older or ownerless is REPLACED. Open
-   question for Tyler: retire `conch install`'s launchd service, since two
-   owners is what made "adopted" a permanent state.
+   **The TUI is what forces two owners, and it is not obvious.** `status.ts`
+   writes to `process.stdout` and is imported only by `daemon.ts` — the TUI is
+   the daemon's OWN stdout, not a client of it. So seeing the TUI means looking
+   at the daemon's terminal, which is why the tmux session and the launchd
+   service exist at all. An app that spawns the daemon as a child with piped
+   stdout leaves the TUI nowhere to draw.
+
+   Tyler wants the TUI kept (2026-08-17), so the resolution is to make it a
+   socket CLIENT like the other two, rendering from published state. Then one
+   app-owned daemon serves all three surfaces and the second owner disappears
+   on its own. Until then, A has to tolerate a terminal-hosted daemon.
 6. **Images in the Mac composer show as filenames, not pictures**
    (`ComposerView.swift:491` says so in its own comment).
 7. **A new session in an untrusted folder never appears** — Claude Code holds
