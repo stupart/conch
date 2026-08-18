@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.ts";
 import { runHook, sendToDaemon } from "./hook.ts";
@@ -65,9 +66,15 @@ Internal entrypoints: conch hook | codex-hook | daemon | mcp
 
 /**
  * Open the dashboard: attach to the daemon's detached tmux session, and if the
- * daemon restarts (launchd respawns it), wait and reattach so the window
- * survives restarts. Detaching on purpose (ctrl-b d) leaves the session alive,
- * so we exit cleanly. Mirrors dashboard.command as a first-class subcommand.
+ * daemon restarts, wait and reattach so the window survives restarts.
+ * Detaching on purpose (ctrl-b d) leaves the session alive, so we exit cleanly.
+ *
+ * This is the LAUNCHD way of running conch — `conch install` starts the daemon
+ * inside a tmux session named `conch`. The Mac app hosts its own daemon instead
+ * and never creates that session, so with the app there is nothing here to
+ * attach to and the app IS the dashboard. Say so rather than waiting forever:
+ * a `dashboard.command` login item spent every boot printing "daemon
+ * restarting… reattaching" at a session that was never coming.
  */
 async function runDashboard(): Promise<void> {
   const tmux = Bun.which("tmux") ?? "/opt/homebrew/bin/tmux";
@@ -78,7 +85,14 @@ async function runDashboard(): Promise<void> {
   while (true) {
     while (!hasSession()) {
       if (!warned) {
-        console.log("daemon not up yet — waiting for the conch session (launchd starts it)…");
+        if (existsSync(cfg.socketPath)) {
+          console.log(
+            "A daemon is already running without a tmux session — that is the Mac"
+            + " app hosting it, and the app is the dashboard. Nothing to attach to.",
+          );
+          return;
+        }
+        console.log("daemon not up yet — waiting for the conch session (`conch install` starts it)…");
         warned = true;
       }
       await Bun.sleep(1000);
