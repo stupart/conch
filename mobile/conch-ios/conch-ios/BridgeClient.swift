@@ -289,9 +289,36 @@ final class BridgeClient: ObservableObject {
         var title: String { rawValue.capitalized }
     }
 
+    /// Past sessions the daemon could restart, newest first, filtered by
+    /// `query` server-side — the history is over a thousand files, so
+    /// filtering belongs next to the reader, not after a full list has
+    /// crossed the LAN.
+    ///
+    /// Returns an empty list rather than surfacing an error: this feeds a
+    /// picker that already says "No past sessions found", and a modal error
+    /// on top of an empty list would tell you the same thing twice.
+    func resumableSessions(query: String) async -> [ResumableSession] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        var message: [String: Any] = ["kind": "resumable"]
+        if !trimmed.isEmpty { message["query"] = trimmed }
+        guard let reply = await postControlRaw(message),
+              let sessions = reply["sessions"] as? [[String: Any]],
+              let data = try? JSONSerialization.data(withJSONObject: sessions),
+              let decoded = try? JSONDecoder().decode([ResumableSession].self, from: data)
+        else {
+            _ = await reportAppError(operation: "resumable", message: "Could not read past sessions")
+            return []
+        }
+        return decoded
+    }
+
     /// Process launch belongs to the daemon because doing it from the phone
     /// would bypass the rule that agents never start inside conch's own tmux.
-    func startSession(backend: AgentBackend, resumeSessionId: String?) async -> Bool {
+    ///
+    /// `cwd` matters only when resuming: a picked session already knows where
+    /// it ran, and resuming it anywhere else reopens a conversation about
+    /// files that are not there.
+    func startSession(backend: AgentBackend, resumeSessionId: String?, cwd: String? = nil) async -> Bool {
         let resumeID = resumeSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         var message: [String: Any] = [
             "kind": "session-start",
@@ -299,6 +326,9 @@ final class BridgeClient: ObservableObject {
         ]
         if !resumeID.isEmpty {
             message["resumeSessionId"] = resumeID
+        }
+        if let cwd, !cwd.isEmpty {
+            message["cwd"] = cwd
         }
         guard let reply = await postControlRaw(message) else {
             let failure = "The Mac didn't confirm that \(backend.title) started."

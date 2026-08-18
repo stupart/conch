@@ -487,33 +487,41 @@ private struct StartSessionSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var backend = BridgeClient.AgentBackend.claude
     @State private var resuming = false
-    @State private var resumeSessionId = ""
     @State private var starting = false
     @State private var error: String?
+
+    // Resume
+    @State private var resumeQuery = ""
+    @State private var resumeSelection: ResumableSession?
+    @State private var resumable: [ResumableSession] = []
+    @State private var isLoadingResumable = false
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Agent") {
-                    Picker("Agent", selection: $backend) {
-                        ForEach(BridgeClient.AgentBackend.allCases) { backend in
-                            Text(backend.title).tag(backend)
+                // A resumed session brings its own agent — asking again is a
+                // question with a known answer and a wrong setting available.
+                if !resuming {
+                    Section("Agent") {
+                        Picker("Agent", selection: $backend) {
+                            ForEach(BridgeClient.AgentBackend.allCases) { backend in
+                                Text(backend.title).tag(backend)
+                            }
                         }
+                        .pickerStyle(.segmented)
                     }
-                    .pickerStyle(.segmented)
                 }
 
                 Section {
                     Toggle("Resume an existing session", isOn: $resuming)
-                    if resuming {
-                        TextField("Session ID", text: $resumeSessionId)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                    }
                 } footer: {
-                    Text(resuming
-                        ? "The agent resumes this transcript in a new Terminal window on your Mac."
-                        : "The agent starts in a new Terminal window on your Mac.")
+                    if !resuming {
+                        Text("The agent starts in a new Terminal window on your Mac.")
+                    }
+                }
+
+                if resuming {
+                    resumeSection
                 }
 
                 if let error {
@@ -534,15 +542,83 @@ private struct StartSessionSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(resuming ? "Resume" : "Start") { start() }
-                        .disabled(starting || (resuming && trimmedResumeID.isEmpty))
+                        .disabled(starting || (resuming && resumeSelection == nil))
                 }
             }
         }
         .preferredColorScheme(.dark)
+        // `task(id:)` rather than `onChange`, so this fires when the sheet
+        // APPEARS already in resume mode as well as when the toggle flips —
+        // keying it to the toggle alone left a sheet opened straight into
+        // resume mode with nothing loaded. Keyed on the query too: the daemon
+        // filters server-side and answers in milliseconds, so a keystroke can
+        // simply ask again rather than filtering a stale local copy.
+        .task(id: "\(resuming):\(resumeQuery)") {
+            guard resuming else { return }
+            isLoadingResumable = true
+            resumable = await bridge.resumableSessions(query: resumeQuery)
+            isLoadingResumable = false
+        }
     }
 
-    private var trimmedResumeID: String {
-        resumeSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    @ViewBuilder
+    private var resumeSection: some View {
+        Section {
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(Palette.textFaint)
+                TextField(searchPrompt, text: $resumeQuery)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+            .listRowBackground(Palette.bg)
+
+            if isLoadingResumable {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Reading your history…")
+                        .foregroundStyle(Palette.textFaint)
+                }
+                .listRowBackground(Palette.bg)
+            } else if resumable.isEmpty {
+                Text(resumeQuery.isEmpty
+                    ? "No past sessions found"
+                    : "Nothing matches \u{201C}\(resumeQuery)\u{201D}")
+                    .foregroundStyle(Palette.textFaint)
+                    .listRowBackground(Palette.bg)
+            } else {
+                ForEach(resumable) { session in
+                    Button {
+                        resumeSelection = session
+                    } label: {
+                        ResumableRow(session: session, isSelected: resumeSelection?.id == session.id)
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(
+                        resumeSelection?.id == session.id ? Palette.raised : Palette.bg
+                    )
+                }
+            }
+        } footer: {
+            Text(footnote)
+        }
+    }
+
+    /// The count is reassurance: it says the history is there before you've
+    /// typed anything that proves it.
+    private var searchPrompt: String {
+        resumable.isEmpty ? "Search past sessions" : "Search \(resumable.count) past sessions"
+    }
+
+    /// Say where it will actually land — the thing a resume can silently get
+    /// wrong: the same conversation reopened in the wrong folder is a
+    /// conversation about files that are not there.
+    private var footnote: String {
+        guard let picked = resumeSelection else {
+            return "Pick a session to restart. It reopens with its own agent, in its own folder."
+        }
+        let agent = picked.backend.lowercased() == "codex" ? "Codex" : "Claude"
+        return "Restarts \(agent) in \(picked.shortCwd), in a new Terminal window on your Mac."
     }
 
     private func start() {
@@ -550,12 +626,58 @@ private struct StartSessionSheet: View {
         error = nil
         Task {
             let started = await bridge.startSession(
-                backend: backend,
-                resumeSessionId: resuming ? trimmedResumeID : nil
+                backend: resuming
+                    ? (resumeSelection?.backend.lowercased() == "codex" ? .codex : .claude)
+                    : backend,
+                resumeSessionId: resuming ? resumeSelection?.sessionId : nil,
+                cwd: resuming ? resumeSelection?.cwd : nil
             )
             starting = false
             if started { dismiss() }
             else { error = bridge.lastError ?? "Couldn't start that session." }
         }
+    }
+}
+
+/// One row in the resume picker: agent mark, label, location under it, and
+/// how long ago the session was left — the same fields the Mac's picker
+/// shows, laid out with this app's own row idioms (`AgentBadge`, `Type`,
+/// `Palette`) instead of transplanted AppKit chrome.
+private struct ResumableRow: View {
+    let session: ResumableSession
+    let isSelected: Bool
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 7) {
+                    Text(session.label)
+                        .font(Type.sessionName)
+                        .foregroundStyle(Palette.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    AgentBadge(backend: session.backend)
+                }
+                Text(session.shortCwd)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textFaint)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 8)
+
+            Text(session.age)
+                .font(Type.caption.monospacedDigit())
+                .foregroundStyle(Palette.textFaint)
+
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Palette.micOpen)
+            }
+        }
+        .contentShape(Rectangle())
+        .padding(.vertical, 2)
     }
 }

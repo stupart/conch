@@ -24,8 +24,22 @@ describe("iPhone Phase 2 daily controls", () => {
 
     expect(ledger).toContain("StartSessionSheet(bridge: bridge)");
     expect(ledger).toContain('Toggle("Resume an existing session"');
-    expect(ledger).toContain('TextField("Session ID"');
     expect(ledger).toContain("ForEach(BridgeClient.AgentBackend.allCases)");
+
+    // Resuming is a PICKER, not a typed id. Tyler on the old field: "the
+    // feature is effectively useless for me on mobile without it (I dont know
+    // random chat ids off the top of my head)." Its absence is the feature.
+    expect(ledger).not.toContain('TextField("Session ID"');
+    expect(bridge).toContain("func resumableSessions(query: String)");
+    expect(bridge).toContain('"kind": "resumable"');
+    // The daemon wraps the rows; decoding the reply as a bare array silently
+    // yields nothing, and an empty picker looks deliberate rather than broken.
+    expect(bridge).toContain('reply["sessions"]');
+
+    // A picked session supplies its own folder. Resuming anywhere else reopens
+    // a conversation about files that are not there — and the phone never sent
+    // a cwd at all before this.
+    expect(bridge).toContain('message["cwd"]');
   });
 
   test("clean close is remote-only, behind an overflow menu and confirmation", () => {

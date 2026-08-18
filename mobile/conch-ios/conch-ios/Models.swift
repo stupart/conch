@@ -324,6 +324,52 @@ func relativeAge(epochMilliseconds: Double, now: Date = Date()) -> String? {
     return "\(Int(elapsed / 86_400))d"
 }
 
+/// One past session that could be restarted — a Claude or Codex transcript
+/// the daemon's `resumable` control message already knows how to list.
+///
+/// Mirrors the Mac app's `ResumableSession` (`mac-app/conch-mac/ResumePickerView.swift`)
+/// field for field and helper for helper, since both read the same wire shape.
+struct ResumableSession: Decodable, Identifiable, Hashable {
+    let sessionId: String
+    let backend: String
+    let label: String
+    let cwd: String
+    /// Epoch milliseconds. Used for "3h" and for ordering.
+    let updatedAt: Double
+
+    var id: String { sessionId }
+
+    /// "now", "31m", "2h", "2d" — deliberately not `relativeAge(epochMilliseconds:)`
+    /// above: that helper reads "<1m" for anything under a minute, where the Mac
+    /// picker this is ported from reads "now". Two different questions ("how
+    /// stale is this row?" vs "how long ago did I leave this?") that happen to
+    /// share a unit ladder are still two different answers.
+    var age: String {
+        let seconds = max(0, Date().timeIntervalSince1970 - updatedAt / 1000)
+        if seconds < 90 { return "now" }
+        if seconds < 3_600 { return "\(Int(seconds / 60))m" }
+        if seconds < 86_400 { return "\(Int(seconds / 3_600))h" }
+        return "\(Int(seconds / 86_400))d"
+    }
+
+    /// `cwd` is a path on the MAC that started this session, not on this phone
+    /// — the phone's own sandboxed home directory has nothing to do with it.
+    /// `/Users/<name>` is the one prefix every macOS user path carries, so it
+    /// stands in here for the home directory the Mac app reads from
+    /// `FileManager.default.homeDirectoryForCurrentUser`.
+    ///
+    /// Home itself is spelled out, same as the Mac: a bare "~" on its own line
+    /// reads as missing data rather than as a place.
+    var shortCwd: String {
+        guard let range = cwd.range(of: #"^/Users/[^/]+"#, options: .regularExpression) else {
+            return cwd
+        }
+        let home = String(cwd[range])
+        if cwd == home { return "Home" }
+        return "~" + cwd.dropFirst(home.count)
+    }
+}
+
 /// One message in a session's conversation — the shape the daemon publishes for
 /// every visible session, so the phone never depends on which one the Mac
 /// happens to be showing.
