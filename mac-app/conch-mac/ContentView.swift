@@ -197,18 +197,23 @@ struct ContentView: View {
         store.restoreSession(id: row.id, label: row.label)
     }
 
+    /// The spacebar STOPS. It never starts.
+    ///
+    /// It used to do both, and opening the microphone is not something a
+    /// spacebar should be able to do by accident. Space scrolls or types in
+    /// every other Mac app, so a stray press with the window focused and the
+    /// composer not focused opened the mic on a Mac explicitly set to manual —
+    /// Tyler: "the mic just opened for some reason even tho im in manual mode".
+    /// The wake was tagged `user` and the manual gate correctly let it through,
+    /// because a person really had pressed a key. The gate was right; this
+    /// binding was wrong.
+    ///
+    /// The app's own hint has always said "space to cancel", never "space to
+    /// talk", and there is a visible microphone button in the composer for
+    /// starting. This makes the hint true.
     private func talkOrStop() {
-        if store.state?.live.isExchangeActive == true {
-            store.send(.stop())
-            return
-        }
-
-        store.send(
-            .wake(
-                sessionId: actionTarget?.id ?? "",
-                label: actionTarget?.label ?? ""
-            )
-        )
+        guard store.state?.live.isExchangeActive == true else { return }
+        store.send(.stop())
     }
 
     private func pauseOrResume() {
