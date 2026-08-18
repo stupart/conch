@@ -30,7 +30,27 @@ export type ConversationItemKind =
   | "assistant"
   | "thinking"
   | "tool"
+  | "material"
   | "review";
+
+export type ConversationMaterialKind =
+  | "image"
+  | "document"
+  | "system_note"
+  | "interruption"
+  | "command_output"
+  | "task";
+
+export interface ConversationMaterial {
+  kind: ConversationMaterialKind;
+  title: string;
+  detail?: string;
+  /** Exact local Mac path; the phone bridge scopes downloads to published paths. */
+  path?: string;
+  /** Small transcript-embedded images can render without materialising a file. */
+  dataUrl?: string;
+  status?: "done" | "error";
+}
 
 export interface ConversationToolDetail {
   /** What sort of operation this was, so a viewer can render it as one. */
@@ -57,6 +77,8 @@ export interface ConversationItem {
   question?: AgentQuestion;
   /** Present when this row changed a file, so viewers can show the lines. */
   change?: FileChange;
+  /** Machine-authored context rendered as itself rather than as something the user said. */
+  material?: ConversationMaterial;
   review?: { summary: string; link?: string };
 }
 
@@ -87,7 +109,8 @@ export function upsertConversationItem(
   const unchanged = existing.text === item.text
     && existing.kind === item.kind
     && existing.tool?.status === item.tool?.status
-    && existing.tool?.result === item.tool?.result;
+    && existing.tool?.result === item.tool?.result
+    && JSON.stringify(existing.material) === JSON.stringify(item.material);
   if (unchanged) return;
   conversation.items[item.id] = { ...item, rev: existing.rev + 1 };
 }
@@ -108,40 +131,100 @@ function textFromClaudeParts(parts: any[], type: string): string {
  * a message YOU had sent — Tyler: "why is it showing that I'm sending messages
  * like <task-notification> ... when im not??"
  *
- * Returns what the row should be: a tool-shaped record for a task notification,
- * which is real information worth keeping, or null for the injected wrappers
- * that are pure plumbing.
+ * Returns an explicit material shape. Renderers can now distinguish an image,
+ * interruption, system note, command output, and task without either assigning
+ * it to the user or extending another suppression list.
  */
 export function classifyInjectedUserText(
   text: string,
-): { kind: "task"; name: string; summary: string; status: "done" | "error" } | { kind: "drop" } | null {
+): ConversationMaterial | null {
   const head = text.trimStart();
   if (head.startsWith("<task-notification>")) {
     const summary = /<summary>([\s\S]*?)<\/summary>/.exec(text)?.[1]?.trim() ?? "";
     const status = /<status>([\s\S]*?)<\/status>/.exec(text)?.[1]?.trim() ?? "";
     return {
       kind: "task",
-      name: "background task",
-      summary: summary || status || "background task finished",
+      title: "Background task",
+      detail: summary || status || "Background task finished",
       // "killed" and "failed" are not successes; anything else reads as done.
       status: /kill|fail|error/i.test(status) ? "error" : "done",
     };
   }
-  // Wrappers with no conversational content of their own.
-  if (/^<(system-reminder|local-command-stdout|local-command-stderr|command-name|command-message)>/.test(head)) {
-    return { kind: "drop" };
+  const wrapper = /^<(system-reminder|local-command-stdout|local-command-stderr|command-name|command-message)>([\s\S]*?)<\/\1>/.exec(head);
+  if (wrapper) {
+    const tag = wrapper[1]!;
+    const detail = wrapper[2]!.trim();
+    if (tag === "system-reminder") {
+      return { kind: "system_note", title: "System note", ...(detail ? { detail } : {}) };
+    }
+    const error = tag === "local-command-stderr";
+    return {
+      kind: "command_output",
+      title: tag === "command-name" ? "Local command" : error ? "Local command error" : "Local command output",
+      ...(detail ? { detail } : {}),
+      status: error ? "error" : "done",
+    };
   }
   // Claude Code writes this itself when you interrupt; it is an artifact of the
   // interruption, not a thing you said.
-  if (/^\[Request interrupted by user/.test(head)) return { kind: "drop" };
+  if (/^\[Request interrupted by user/.test(head)) {
+    return { kind: "interruption", title: "Request interrupted", detail: head };
+  }
   // The note Claude Code attaches after an agent READS an image — it describes
   // the file that was just looked at, and is filed under the user's name
   // because that is where tool results live. Tyler saw his own conversation
   // claiming he had said "[Image: original 2880x1640, displayed at 2000x1139...]".
   // Same shape as the task-notification bug: machine text wearing a person's
   // voice.
-  if (/^\[Image: /.test(head)) return { kind: "drop" };
+  if (/^\[Image: /.test(head)) {
+    return { kind: "image", title: "Image", detail: head };
+  }
   return null;
+}
+
+const IMAGE_EXTENSIONS = new Set([
+  "png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "tif", "tiff", "bmp", "svg",
+]);
+const DOCUMENT_EXTENSIONS = new Set(["pdf", "txt", "md", "markdown"]);
+const MAX_INLINE_IMAGE_BASE64 = 512 * 1024;
+
+function pathMaterial(line: string): ConversationMaterial | null {
+  const path = line.trim();
+  if (!path.startsWith("/") || /[\u0000-\u001f]/.test(path)) return null;
+  const extension = path.split(".").pop()?.toLowerCase() ?? "";
+  if (IMAGE_EXTENSIONS.has(extension)) {
+    return { kind: "image", title: path.split("/").pop() || "Image", path };
+  }
+  if (DOCUMENT_EXTENSIONS.has(extension)) {
+    return { kind: "document", title: path.split("/").pop() || "Document", path };
+  }
+  return null;
+}
+
+function splitMaterialPaths(text: string): { text: string; materials: ConversationMaterial[] } {
+  const kept: string[] = [];
+  const materials: ConversationMaterial[] = [];
+  for (const line of text.split("\n")) {
+    const material = pathMaterial(line);
+    if (material) materials.push(material);
+    else kept.push(line);
+  }
+  return { text: kept.join("\n").trim(), materials };
+}
+
+function attachmentMaterial(part: any): ConversationMaterial | null {
+  if (part?.type !== "image" && part?.type !== "document") return null;
+  const image = part.type === "image";
+  const source = part.source;
+  const mediaType = typeof source?.media_type === "string" ? source.media_type : "image/png";
+  const data = typeof source?.data === "string" ? source.data : "";
+  return {
+    kind: image ? "image" : "document",
+    title: image ? "Image attachment" : "Document attachment",
+    ...(image && data && data.length <= MAX_INLINE_IMAGE_BASE64
+      ? { dataUrl: `data:${mediaType};base64,${data}` }
+      : {}),
+  };
 }
 
 /**
@@ -179,41 +262,59 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
       }
       return;
     }
-    // Attachments you sent. Found by indexing every transcript on the machine
-    // rather than by noticing one missing: 14 `image` and 2 `document` parts
-    // were being dropped, so a turn where you sent a screenshot rendered as
-    // whatever text happened to accompany it — or as nothing at all.
-    const attachments = parts.filter((part) =>
-      part?.type === "image" || part?.type === "document"
-    );
-    const text = typeof entry.message?.content === "string"
+    const rawText = typeof entry.message?.content === "string"
       ? entry.message.content
       : textFromClaudeParts(parts, "text");
-    if (!text && attachments.length) {
+    const injected = rawText ? classifyInjectedUserText(rawText) : null;
+    if (injected) {
+      // Claude's dimensions note belongs to the image immediately above it,
+      // when there is one, rather than becoming a duplicate image row.
+      const previousImage = injected.kind === "image"
+        ? conversation.order
+          .slice()
+          .reverse()
+          .map((key) => conversation.items[key])
+          .find((item) => item?.material?.kind === "image")
+        : undefined;
+      if (previousImage?.material) {
+        upsertConversationItem(conversation, {
+          ...previousImage,
+          material: { ...previousImage.material, detail: injected.detail },
+        });
+      } else {
+        upsertConversationItem(conversation, {
+          id: id ?? `material:${conversation.order.length}`,
+          kind: "material",
+          text: injected.detail ?? injected.title,
+          at,
+          material: injected,
+        });
+      }
+      return;
+    }
+
+    const split = splitMaterialPaths(rawText);
+    const attachments = parts
+      .map(attachmentMaterial)
+      .filter((material): material is ConversationMaterial => material !== null);
+    const materials = [...split.materials, ...attachments];
+    if (split.text) {
       upsertConversationItem(conversation, {
         id: id ?? `user:${conversation.order.length}`,
         kind: "user",
-        text: attachments.length === 1
-          ? `[${attachments[0]!.type}]`
-          : `[${attachments.length} attachments]`,
+        text: split.text,
         at,
       });
-      return;
     }
-    if (!text) return;
-    const injected = classifyInjectedUserText(text);
-    if (injected?.kind === "drop") return;
-    if (injected?.kind === "task") {
+    for (const [index, material] of materials.entries()) {
       upsertConversationItem(conversation, {
-        id: id ?? `task:${conversation.order.length}`,
-        kind: "tool",
-        text: injected.summary,
+        id: `${id ?? `material:${conversation.order.length}`}:material:${index}`,
+        kind: "material",
+        text: material.detail ?? material.title,
         at,
-        tool: { name: injected.name, status: injected.status },
+        material,
       });
-      return;
     }
-    upsertConversationItem(conversation, { id: id ?? `user:${conversation.order.length}`, kind: "user", text, at });
     return;
   }
 
@@ -952,6 +1053,7 @@ export function publishedConversation(
       ? `…${item.text.slice(item.text.length - itemChars)}`
       : item.text;
     const result = item.tool?.result;
+    const materialDetail = item.material?.detail;
     return {
       ...item,
       text,
@@ -961,6 +1063,16 @@ export function publishedConversation(
             ...item.tool,
             ...(result && result.length > toolResultChars
               ? { result: result.slice(0, toolResultChars) }
+              : {}),
+          },
+        }
+        : {}),
+      ...(item.material
+        ? {
+          material: {
+            ...item.material,
+            ...(materialDetail && materialDetail.length > itemChars
+              ? { detail: `${materialDetail.slice(0, itemChars)}…` }
               : {}),
           },
         }

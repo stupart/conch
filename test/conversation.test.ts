@@ -313,25 +313,37 @@ describe("machine messages filed as 'user' are not you", () => {
     "</task-notification>",
   ].join("\n");
 
-  test("a task notification becomes a tool row carrying its summary", () => {
+  test("a task notification becomes a typed inline material", () => {
     const conversation = buildConversation("s", lines({
       type: "user", uuid: "u1", message: { content: [{ type: "text", text: notification }] },
     }), "claude");
     const items = conversationWindow(conversation, 5);
     expect(items).toHaveLength(1);
-    expect(items[0]!.kind).toBe("tool");
+    expect(items[0]!.kind).toBe("material");
     expect(items[0]!.text).toBe('Background command "Start dev server" was stopped');
     // "killed" is not a success.
-    expect(items[0]!.tool?.status).toBe("error");
+    expect(items[0]!.material).toMatchObject({
+      kind: "task",
+      title: "Background task",
+      status: "error",
+    });
   });
 
-  test("injected wrappers and interruption artifacts are dropped", () => {
+  test("injected wrappers and interruption artifacts render as themselves", () => {
     const conversation = buildConversation("s", lines(
       { type: "user", message: { content: [{ type: "text", text: "<system-reminder>be nice</system-reminder>" }] } },
       { type: "user", message: { content: [{ type: "text", text: "[Request interrupted by user for tool use]" }] } },
       { type: "user", message: { content: [{ type: "text", text: "<local-command-stdout>ok</local-command-stdout>" }] } },
     ), "claude");
-    expect(conversation.order).toEqual([]);
+    expect(conversationWindow(conversation, 5).map((item) => [
+      item.kind,
+      item.material?.kind,
+      item.material?.title,
+    ])).toEqual([
+      ["material", "system_note", "System note"],
+      ["material", "interruption", "Request interrupted"],
+      ["material", "command_output", "Local command output"],
+    ]);
   });
 
   test("a real message that merely mentions a tag is still yours", () => {
@@ -353,8 +365,8 @@ describe("types found by indexing every transcript, not by noticing one", () => 
       uuid: "u1",
       message: { content: [{ type: "image", source: { type: "base64", data: "..." } }] },
     }), "claude");
-    expect(conversationWindow(conversation, 5).map((i) => [i.kind, i.text]))
-      .toEqual([["user", "[image]"]]);
+    expect(conversationWindow(conversation, 5).map((i) => [i.kind, i.material?.kind]))
+      .toEqual([["material", "image"]]);
   });
 
   test("a Codex reply on the event stream counts", () => {
@@ -690,14 +702,57 @@ describe("machine text never wears the user's voice", () => {
   // Claude Code files tool results and its own notes under type:"user", so
   // anything that lands there has to be classified rather than trusted. Tyler
   // has now seen two of these quoted back at him as things he said.
-  test("an image-dimensions note is not something Tyler said", () => {
+  test("an image-dimensions note is a material, not something Tyler said", () => {
     expect(classifyInjectedUserText(
       "[Image: original 2880x1640, displayed at 2000x1139. Multiply coordinates by 1.44 to map to original image.]",
-    )).toEqual({ kind: "drop" });
+    )).toEqual({
+      kind: "image",
+      title: "Image",
+      detail: "[Image: original 2880x1640, displayed at 2000x1139. Multiply coordinates by 1.44 to map to original image.]",
+    });
   });
 
   test("a sentence that merely mentions an image is still his", () => {
     expect(classifyInjectedUserText("the [Image: ...] note keeps showing up")).toBeNull();
     expect(classifyInjectedUserText("look at this image")).toBeNull();
+  });
+
+  test("absolute image paths split out of a mixed user message and retain order", () => {
+    const conversation = buildConversation("s", lines({
+      type: "user",
+      uuid: "u3",
+      message: { content: "Please inspect this\n/Users/tyler/Desktop/state.png" },
+    }), "claude");
+
+    expect(conversationWindow(conversation, 5).map((item) => [
+      item.kind,
+      item.text,
+      item.material?.path,
+    ])).toEqual([
+      ["user", "Please inspect this", undefined],
+      ["material", "state.png", "/Users/tyler/Desktop/state.png"],
+    ]);
+  });
+
+  test("Claude image metadata annotates the preceding image instead of duplicating it", () => {
+    const conversation = buildConversation("s", lines(
+      {
+        type: "user",
+        uuid: "u4",
+        message: { content: "/Users/tyler/Desktop/state.png" },
+      },
+      {
+        type: "user",
+        uuid: "u5",
+        message: { content: "[Image: original 100x50, displayed at 100x50.]" },
+      },
+    ), "claude");
+
+    expect(conversation.order).toHaveLength(1);
+    expect(conversation.items[conversation.order[0]!]!.material).toMatchObject({
+      kind: "image",
+      path: "/Users/tyler/Desktop/state.png",
+      detail: "[Image: original 100x50, displayed at 100x50.]",
+    });
   });
 });

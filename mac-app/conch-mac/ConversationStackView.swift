@@ -149,6 +149,8 @@ struct ConversationStackView: View {
             Label(item.text, systemImage: "star.fill")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(ConchPalette.statusReview)
+        case .material:
+            MaterialRow(material: item.material, fallback: item.text)
         case .tool:
             // A question outranks the generic tool shell: this row exists only
             // because the session is blocked on one of these choices.
@@ -574,6 +576,79 @@ extension AttributedString {
                 return Substring("**\(rest)**")
             }
             .joined(separator: "\n")
+    }
+}
+
+private struct MaterialRow: View {
+    let material: ConversationItem.Material?
+    let fallback: String
+
+    private var image: NSImage? {
+        guard material?.kind == .image else { return nil }
+        if let path = material?.path, let image = NSImage(contentsOfFile: path) {
+            return image
+        }
+        guard let dataUrl = material?.dataUrl,
+              let comma = dataUrl.firstIndex(of: ","),
+              let data = Data(base64Encoded: String(dataUrl[dataUrl.index(after: comma)...]))
+        else { return nil }
+        return NSImage(data: data)
+    }
+
+    var body: some View {
+        if let image {
+            Image(nsImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: .infinity, maxHeight: 320, alignment: .leading)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(ConchPalette.divider, lineWidth: 0.5)
+                }
+                .help(material?.path ?? material?.title ?? "Image")
+        } else {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: symbol)
+                    .font(.system(size: 11))
+                    .foregroundStyle(tint)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(material?.title ?? "Material")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(ConchPalette.textDim)
+                    if !detail.isEmpty {
+                        Text(detail)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(ConchPalette.textFaint)
+                            .lineLimit(3)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(ConchPalette.raised.opacity(0.58), in: RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    private var detail: String { material?.detail ?? fallback }
+
+    private var symbol: String {
+        switch material?.kind {
+        case .image: return "photo"
+        case .document: return "doc"
+        case .systemNote: return "info.circle"
+        case .interruption: return "stop.circle"
+        case .commandOutput: return "terminal"
+        case .task: return "shippingbox"
+        case .unknown, nil: return "square.stack"
+        }
+    }
+
+    private var tint: Color {
+        material?.status == "error" ? ConchPalette.statusNeeds : ConchPalette.textFaint
     }
 }
 

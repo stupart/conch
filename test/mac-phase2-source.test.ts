@@ -113,6 +113,16 @@ describe("Mac Phase 2 questions and error reporting", () => {
     expect(dashboard).toMatch(/onAnswer: \{ label in[\s\S]*\.inject\([\s\S]*text: label/);
   });
 
+  test("machine-authored materials decode and render inline, including local images", () => {
+    expect(models).toContain("case user, assistant, thinking, tool, material, review");
+    expect(models).toContain("struct Material: Decodable");
+    expect(models).toContain("let material: Material?");
+    expect(conversation).toContain("case .material:");
+    expect(conversation).toContain("MaterialRow(material: item.material, fallback: item.text)");
+    expect(conversation).toContain("NSImage(contentsOfFile: path)");
+    expect(conversation).toContain("Image(nsImage: image)");
+  });
+
   test("Mac failures use the daemon control channel with app and UI state", () => {
     expect(socket).toContain('let kind = "app-error"');
     expect(socket).toContain('let source = "mac"');

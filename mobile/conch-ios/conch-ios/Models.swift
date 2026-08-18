@@ -424,6 +424,29 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         }
     }
 
+    struct Material: Decodable, Equatable, Sendable {
+        var kind = "unknown"
+        var title = "Material"
+        var detail: String?
+        var path: String?
+        var dataUrl: String?
+        var status: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case kind, title, detail, path, dataUrl, status
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            kind = (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? "unknown"
+            title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? "Material"
+            detail = try? c.decodeIfPresent(String.self, forKey: .detail)
+            path = try? c.decodeIfPresent(String.self, forKey: .path)
+            dataUrl = try? c.decodeIfPresent(String.self, forKey: .dataUrl)
+            status = try? c.decodeIfPresent(String.self, forKey: .status)
+        }
+    }
+
     /// One line of a plan. Agents emit these constantly; as a generic tool row
     /// they were noise, as a checklist they are the clearest answer on screen
     /// to "what is it actually doing".
@@ -501,8 +524,12 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     var change: FileChange?
     /// Present when the agent is WAITING on you to choose.
     var question: AgentQuestion?
+    /// Machine-authored context shown as itself rather than under the user's name.
+    var material: Material?
 
-    private enum CodingKeys: String, CodingKey { case id, rev, kind, text, tool, plan, change, question }
+    private enum CodingKeys: String, CodingKey {
+        case id, rev, kind, text, tool, plan, change, question, material
+    }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? UUID().uuidString
@@ -513,6 +540,7 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         plan = try? c.decodeIfPresent([PlanStep].self, forKey: .plan)
         change = try? c.decodeIfPresent(FileChange.self, forKey: .change)
         question = try? c.decodeIfPresent(AgentQuestion.self, forKey: .question)
+        material = try? c.decodeIfPresent(Material.self, forKey: .material)
     }
 }
 

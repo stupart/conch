@@ -403,19 +403,27 @@ export class PhoneBridgeApplication {
     }
 
     if (url.pathname === "/file") {
-      // Serve a LOCAL deliverable to the phone — but only a file that is,
-      // right now, a review link in the published state. That constraint is
-      // the whole security story: the token holder can see what the
-      // dashboard is currently showing, never read arbitrary files.
+      // Serve a LOCAL deliverable or inline material to the phone — but only a
+      // path that is present in the current published state. That exact-set
+      // constraint is the whole security story: never arbitrary file access.
       const requested = url.searchParams.get("path") ?? "";
       const state = this.#dependencies.getState() as
-        | { rows?: Array<{ review?: { link?: string } }> }
+        | {
+          rows?: Array<{ review?: { link?: string } }>;
+          conversations?: Record<string, {
+            items?: Array<{ material?: { path?: string } }>;
+          }>;
+        }
         | null;
-      const links = (state?.rows ?? [])
+      const reviewLinks = (state?.rows ?? [])
         .map((row) => row.review?.link)
         .filter((link): link is string => Boolean(link));
-      if (!requested || !links.includes(requested)) {
-        return new Response("not a current deliverable", { status: 403 });
+      const materialPaths = Object.values(state?.conversations ?? {})
+        .flatMap((conversation) => conversation.items ?? [])
+        .map((item) => item.material?.path)
+        .filter((path): path is string => Boolean(path));
+      if (!requested || !reviewLinks.includes(requested) && !materialPaths.includes(requested)) {
+        return new Response("not a current published file", { status: 403 });
       }
       const file = Bun.file(requested);
       return (async () => (await file.exists())

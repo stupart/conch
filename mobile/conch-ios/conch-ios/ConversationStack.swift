@@ -7,6 +7,7 @@ import SwiftUI
 /// screen already scrolls, already anchors to your live draft at the bottom, and
 /// a scroll view inside a scroll view fights both.
 struct ConversationStack: View {
+    @ObservedObject var bridge: BridgeClient
     let conversation: Conversation
     let optionReplyInFlight: Bool
     let onSelectOption: (String) -> Void
@@ -71,6 +72,8 @@ struct ConversationStack: View {
             } else {
                 toolRow(item)
             }
+        case "material":
+            MaterialRow(bridge: bridge, material: item.material, fallback: item.text)
         default:
             MarkdownView(text: item.text)
                 .foregroundStyle(Palette.textPrimary)
@@ -379,5 +382,112 @@ struct ConversationStack: View {
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         )) ?? AttributedString(text)
+    }
+}
+
+private struct MaterialRow: View {
+    @ObservedObject var bridge: BridgeClient
+    let material: ConversationItem.Material?
+    let fallback: String
+    @State private var image: UIImage?
+    @State private var temporaryURL: URL?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: 320, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Palette.divider, lineWidth: 0.5)
+                    }
+            } else {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: symbol)
+                        .font(Type.caption)
+                        .foregroundStyle(tint)
+                        .frame(width: 16)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(material?.title ?? "Material")
+                            .font(Type.caption.weight(.medium))
+                            .foregroundStyle(Palette.textDim)
+                        if !detail.isEmpty {
+                            Text(detail)
+                                .font(Type.caption)
+                                .foregroundStyle(Palette.textFaint)
+                                .lineLimit(3)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(Palette.raised.opacity(0.58), in: RoundedRectangle(cornerRadius: 8))
+            }
+        }
+        .task(id: sourceID) { await loadImage() }
+        .onDisappear { removeTemporaryFile() }
+    }
+
+    private var sourceID: String { material?.path ?? material?.dataUrl ?? "" }
+    private var detail: String { material?.detail ?? fallback }
+
+    private var symbol: String {
+        switch material?.kind {
+        case "image": return "photo"
+        case "document": return "doc"
+        case "system_note": return "info.circle"
+        case "interruption": return "stop.circle"
+        case "command_output": return "terminal"
+        case "task": return "shippingbox"
+        default: return "square.stack"
+        }
+    }
+
+    private var tint: Color {
+        material?.status == "error" ? Palette.needs : Palette.textFaint
+    }
+
+    @MainActor
+    private func loadImage() async {
+        removeTemporaryFile()
+        image = nil
+        guard material?.kind == "image" else { return }
+
+        if let path = material?.path {
+            guard let url = await bridge.downloadFile(path: path), !Task.isCancelled else { return }
+            temporaryURL = url
+            let preview = await ImageDownsampler.filePreview(
+                at: url,
+                maxBytes: 32 * 1024 * 1024,
+                maxPixelSize: 2048
+            )
+            guard !Task.isCancelled else { return }
+            if case let .image(decoded) = preview { image = UIImage(cgImage: decoded) }
+            return
+        }
+
+        guard let dataUrl = material?.dataUrl,
+              let comma = dataUrl.firstIndex(of: ","),
+              let data = Data(base64Encoded: String(dataUrl[dataUrl.index(after: comma)...])),
+              data.count <= 512 * 1024
+        else { return }
+        let preview = await Task.detached(priority: .userInitiated) {
+            guard let source = ImageDownsampler.source(data: data),
+                  let decoded = ImageDownsampler.thumbnail(source: source, maxPixelSize: 2048)
+            else { return ImageDownsampler.FilePreview.unreadable }
+            return ImageDownsampler.FilePreview.image(decoded)
+        }.value
+        guard !Task.isCancelled else { return }
+        if case let .image(decoded) = preview { image = UIImage(cgImage: decoded) }
+    }
+
+    @MainActor
+    private func removeTemporaryFile() {
+        if let temporaryURL { try? FileManager.default.removeItem(at: temporaryURL) }
+        temporaryURL = nil
     }
 }

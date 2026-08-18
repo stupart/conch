@@ -114,6 +114,7 @@ struct SessionView: View {
                     if let conversation = bridge.state?.conversations[sessionId],
                        !conversation.items.isEmpty {
                         ConversationStack(
+                            bridge: bridge,
                             conversation: conversation,
                             optionReplyInFlight: optionReplyInFlight || isSending,
                             onSelectOption: answerQuestion

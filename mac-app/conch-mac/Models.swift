@@ -307,7 +307,7 @@ struct ReadingProgress: Decodable, Equatable, Sendable {
 /// the stack append without disturbing what is already on screen.
 struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     enum Kind: String, Decodable, Sendable {
-        case user, assistant, thinking, tool, review
+        case user, assistant, thinking, tool, material, review
         /// A future daemon may add kinds; an unknown one renders as plain text
         /// rather than dropping the message.
         static func parse(_ raw: String?) -> Kind { Kind(rawValue: raw ?? "") ?? .assistant }
@@ -361,6 +361,39 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
             kind = (try? c.decodeIfPresent(Kind.self, forKey: .kind)) ?? .unknown
             status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? "running"
             result = try? c.decodeIfPresent(String.self, forKey: .result)
+        }
+    }
+
+    struct Material: Decodable, Equatable, Sendable {
+        enum Kind: String, Decodable, Sendable {
+            case image, document, systemNote = "system_note", interruption
+            case commandOutput = "command_output"
+            case task, unknown
+
+            static func parse(_ raw: String?) -> Kind {
+                Kind(rawValue: raw ?? "") ?? .unknown
+            }
+        }
+
+        var kind = Kind.unknown
+        var title = "Material"
+        var detail: String?
+        var path: String?
+        var dataUrl: String?
+        var status: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case kind, title, detail, path, dataUrl, status
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            kind = Kind.parse(try? c.decodeIfPresent(String.self, forKey: .kind))
+            title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? "Material"
+            detail = try? c.decodeIfPresent(String.self, forKey: .detail)
+            path = try? c.decodeIfPresent(String.self, forKey: .path)
+            dataUrl = try? c.decodeIfPresent(String.self, forKey: .dataUrl)
+            status = try? c.decodeIfPresent(String.self, forKey: .status)
         }
     }
 
@@ -445,9 +478,10 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     let plan: [PlanStep]?
     let change: FileChange?
     let question: AgentQuestion?
+    let material: Material?
 
     private enum CodingKeys: String, CodingKey {
-        case id, rev, kind, text, at, tool, plan, change, question
+        case id, rev, kind, text, at, tool, plan, change, question, material
     }
 
     init(from decoder: Decoder) throws {
@@ -461,6 +495,7 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         plan = try? c.decodeIfPresent([PlanStep].self, forKey: .plan)
         change = try? c.decodeIfPresent(FileChange.self, forKey: .change)
         question = try? c.decodeIfPresent(AgentQuestion.self, forKey: .question)
+        material = try? c.decodeIfPresent(Material.self, forKey: .material)
     }
 }
 

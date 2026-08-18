@@ -107,6 +107,16 @@ describe("iPhone Phase 2 daily controls", () => {
     expect(session).toMatch(/private func answerQuestion[\s\S]*text: label/);
   });
 
+  test("machine-authored materials decode and render inline, including Mac images", () => {
+    expect(models).toContain("struct Material: Decodable");
+    expect(models).toContain("var material: Material?");
+    expect(conversation).toContain('case "material":');
+    expect(conversation).toContain("MaterialRow(bridge: bridge, material: item.material");
+    expect(conversation).toContain("await bridge.downloadFile(path: path)");
+    expect(conversation).toContain("ImageDownsampler.filePreview(");
+    expect(session).toMatch(/ConversationStack\([\s\S]*bridge: bridge/);
+  });
+
   test("phone failures report structured state over the control channel", () => {
     expect(bridge).toContain('"kind": "app-error"');
     expect(bridge).toContain('"source": "ios"');

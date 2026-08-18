@@ -272,17 +272,22 @@ describe("socket forwarder", () => {
 });
 
 describe("file serving", () => {
-  test("serves only a path that is currently a review link", async () => {
+  test("serves only a path currently published as a review or inline material", async () => {
     const dir = mkdtempSync("/tmp/conch-phone-file-");
     const served = join(dir, "deliverable.txt");
     await Bun.write(served, "the deliverable body");
     const secret = join(dir, "secret.txt");
     await Bun.write(secret, "never served");
+    const material = join(dir, "material.png");
+    await Bun.write(material, "inline image bytes");
 
     const b = startBridge({
       getState: () => ({
         v: 1,
         rows: [{ id: "r1", review: { link: served, summary: "x" } }],
+        conversations: {
+          r1: { items: [{ material: { kind: "image", path: material } }] },
+        },
       }),
     });
     const auth = { authorization: `Bearer ${TOKEN}` };
@@ -293,6 +298,13 @@ describe("file serving", () => {
     );
     expect(ok.status).toBe(200);
     expect(await ok.text()).toBe("the deliverable body");
+
+    const inline = await fetch(
+      `http://127.0.0.1:${b.port}/file?path=${encodeURIComponent(material)}`,
+      { headers: auth },
+    );
+    expect(inline.status).toBe(200);
+    expect(await inline.text()).toBe("inline image bytes");
 
     const queryAuthenticated = await fetch(
       `http://127.0.0.1:${b.port}/file?path=${encodeURIComponent(served)}&token=${TOKEN}`,
