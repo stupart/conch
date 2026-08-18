@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// The conversation as a stack of messages, rather than one replaced string.
@@ -15,16 +14,6 @@ import SwiftUI
 struct ConversationStackView: View {
     let conversation: Conversation
     let onAnswer: (String) -> Void
-    /// Reports a link activation, so "are links even clickable" stops being a
-    /// question nobody can answer.
-    ///
-    /// The markdown parser does produce `.link` attributes — they render blue,
-    /// which is where that colour comes from — but `.textSelection(.enabled)`
-    /// on the same Text competes for the click on macOS, and there was no way
-    /// to tell a swallowed click from a working one by looking. Owning
-    /// `openURL` makes the difference observable, and conch should decide how
-    /// its own links open regardless.
-    var onOpenLink: (URL) -> Void = { _ in }
     /// Sticks to the bottom only when already there, so reading history is not
     /// yanked away by an arriving message.
     @State private var pinnedToBottom = true
@@ -34,15 +23,6 @@ struct ConversationStackView: View {
     private static let bottomAnchor = "conversation-bottom"
 
     var body: some View {
-        content
-            .environment(\.openURL, OpenURLAction { url in
-                onOpenLink(url)
-                NSWorkspace.shared.open(url)
-                return .handled
-            })
-    }
-
-    private var content: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 // The daemon caps this window at thirty items. Eager layout is
