@@ -89,10 +89,14 @@ describe("iPhone Phase 2 daily controls", () => {
     expect(session).toContain("ToolbarItem(placement: .principal)");
   });
 
-  test("question options are buttons that inject their exact labels", () => {
+  test("question options submit one choice immediately or an explicit ordered set", () => {
     expect(conversation).toContain("let onSelectOption: (String) -> Void");
-    expect(conversation).toContain('questionRow(asked, isActive: item.tool?.status == "running")');
-    expect(conversation).toContain("onSelectOption(option.label)");
+    expect(conversation).toMatch(/questionRow\([\s\S]*asked,[\s\S]*questionID: item\.id,[\s\S]*isActive: item\.tool\?\.status == "running"/);
+    expect(conversation).toContain("@State private var multiSelections: [String: Set<String>] = [:]");
+    expect(conversation).toContain("toggleSelection(option.label, for: questionID)");
+    expect(conversation).toMatch(/if asked\.multiSelect \{[\s\S]*toggleSelection[\s\S]*\} else \{[\s\S]*onSelectOption\(option\.label\)/);
+    expect(conversation).toContain('onSelectOption(selected.joined(separator: ", "))');
+    expect(conversation).toContain('selected.isEmpty ? "Submit selections"');
     expect(conversation).toContain(".disabled(!isActive || optionReplyInFlight || option.label.isEmpty)");
     expect(session).toContain("onSelectOption: answerQuestion");
     expect(session).toMatch(/private func answerQuestion[\s\S]*text: label/);

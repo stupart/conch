@@ -441,60 +441,93 @@ export function classifySpokenChoice(
   heard: string,
   options: ReadonlyArray<{ label: string }>,
 ): number | null {
+  const selected = classifySpokenChoices(heard, options);
+  if (!selected || selected.size !== 1) return null;
+  return selected.values().next().value ?? null;
+}
+
+/**
+ * Which options did you just say?
+ *
+ * A multi-select answer is deliberately represented as a set rather than as
+ * one "best" index. Full labels and explicit positions can name several
+ * options. The final word pass accepts only words unique to one label, so
+ * saying a shared word such as "export" cannot silently select every export
+ * format.
+ */
+export function classifySpokenChoices(
+  heard: string,
+  options: ReadonlyArray<{ label: string }>,
+): Set<number> | null {
   const said = normalizeChoice(heard);
   if (!said || options.length === 0) return null;
 
-  // 1. The label, said outright. Longest first, so "Export PDF as draft" is not
-  //    beaten by a shorter label that happens to be contained in it.
+  // 1. Labels said outright. Longest first, with overlapping shorter matches
+  //    ignored, so "Export PDF as draft" does not also pick "Export". A short
+  //    label said elsewhere in the same answer still counts.
   const byLength = options
     .map((option, index) => ({ index, label: normalizeChoice(option.label) }))
     .filter((entry) => entry.label)
     .sort((a, b) => b.label.length - a.label.length);
-  const spoken = byLength.filter((entry) => said.includes(entry.label));
-  if (spoken.length === 1) return spoken[0]!.index;
-  if (spoken.length > 1) return spoken[0]!.index; // the longest match is the specific one
+  const occupied: Array<{ start: number; end: number }> = [];
+  const labelMatches = new Set<number>();
+  for (const entry of byLength) {
+    let start = said.indexOf(entry.label);
+    while (start >= 0) {
+      const end = start + entry.label.length;
+      if (!occupied.some((range) => start < range.end && end > range.start)) {
+        occupied.push({ start, end });
+        labelMatches.add(entry.index);
+        break;
+      }
+      start = said.indexOf(entry.label, start + 1);
+    }
+  }
+  if (labelMatches.size > 0) return labelMatches;
 
-  // 2. A position: "the third one", "option 2", "number two".
-  const digit = /\b([1-9][0-9]?)\b/.exec(said);
-  if (digit) {
+  // 2. Positions: "the first and third", "options 2 and 4".
+  const positions = new Set<number>();
+  for (const digit of said.matchAll(/\b([1-9][0-9]?)\b/g)) {
     const index = Number(digit[1]) - 1;
-    if (index >= 0 && index < options.length) return index;
+    if (index >= 0 && index < options.length) positions.add(index);
   }
-  // Ordinals BEFORE cardinals, because "the third one" contains "one" and a
-  // cardinal pass would answer with option one for a question you answered
-  // with option three.
   for (let index = 0; index < Math.min(ORDINALS.length, options.length); index++) {
-    if (new RegExp(`\\b${ORDINALS[index]}\\b`).test(said)) return index;
+    if (new RegExp(`\\b${ORDINALS[index]}\\b`).test(said)) positions.add(index);
   }
-  // A spoken cardinal counts only when it is being used as a position —
-  // announced by "option"/"number"/"choice", or said on its own. Otherwise
-  // "two" in "two of them look right" would pick option two.
+  // Cardinals count only in a positional phrase, or alone. Otherwise "two" in
+  // "two of them look right" would select option two.
+  const positionalPhrase = /\b(options?|numbers?|choices?)\b/.test(said);
   for (let index = 0; index < Math.min(CARDINALS.length, options.length); index++) {
     const word = CARDINALS[index]!;
     if (
-      new RegExp(`\\b(option|number|choice)\\s+${word}\\b`).test(said)
+      positionalPhrase && new RegExp(`\\b${word}\\b`).test(said)
       || said === word
     ) {
-      return index;
+      positions.add(index);
     }
   }
+  if (positions.size > 0) return positions;
 
-  // 3. Distinctive words from one label and no other. "PDF" picks "Export PDF"
-  //    only while no other option also mentions PDF.
+  // 3. Distinctive words. A word contributes only when exactly one option owns
+  //    it; several unique words can therefore select several options safely.
   const saidWords = new Set(said.replace(CHOICE_FILLER, " ").split(/\s+/).filter(Boolean));
   if (saidWords.size === 0) return null;
-  const scored = options.map((option, index) => {
-    const labelWords = normalizeChoice(option.label)
+  const owners = new Map<string, Set<number>>();
+  options.forEach((option, index) => {
+    const labelWords = new Set(normalizeChoice(option.label)
       .replace(CHOICE_FILLER, " ")
       .split(/\s+/)
-      .filter(Boolean);
-    const hits = labelWords.filter((word) => saidWords.has(word)).length;
-    return { index, hits };
+      .filter(Boolean));
+    for (const word of labelWords) {
+      const indices = owners.get(word) ?? new Set<number>();
+      indices.add(index);
+      owners.set(word, indices);
+    }
   });
-  const best = scored.reduce((a, b) => (b.hits > a.hits ? b : a));
-  if (best.hits === 0) return null;
-  // A tie is an ambiguity, and guessing between two readings of what you said
-  // is exactly the case where asking again is cheaper than being wrong.
-  const tied = scored.filter((entry) => entry.hits === best.hits).length > 1;
-  return tied ? null : best.index;
+  const distinctive = new Set<number>();
+  for (const word of saidWords) {
+    const indices = owners.get(word);
+    if (indices?.size === 1) distinctive.add(indices.values().next().value!);
+  }
+  return distinctive.size > 0 ? distinctive : null;
 }

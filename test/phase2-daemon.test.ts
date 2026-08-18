@@ -178,6 +178,32 @@ describe("question replies", () => {
     expect(choiceReplyForConversation("what do you recommend", conversation)).toBe("what do you recommend");
   });
 
+  test("voice can submit an ordered set for a multi-select question", () => {
+    const conversation = buildConversation("s1", [JSON.stringify({
+      type: "assistant",
+      uuid: "a1",
+      message: { content: [{
+        type: "tool_use",
+        id: "ask1",
+        name: "AskUserQuestion",
+        input: { questions: [{
+          header: "Destinations",
+          question: "Where should it go?",
+          options: [
+            { label: "Linear" },
+            { label: "Export PDF" },
+            { label: "Save to wiki" },
+          ],
+          multiSelect: true,
+        }] },
+      }] },
+    })], "claude");
+    expect(choiceReplyForConversation("the first and third", conversation))
+      .toBe("Linear, Save to wiki");
+    expect(choiceReplyForConversation("what do you recommend", conversation))
+      .toBe("what do you recommend");
+  });
+
   test("Codex request_user_input becomes a canonical answerable question", () => {
     const conversation = buildConversation("c1", [JSON.stringify({
       type: "response_item",

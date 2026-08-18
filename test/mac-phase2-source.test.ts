@@ -99,13 +99,17 @@ describe("Mac Phase 2 questions and error reporting", () => {
   const socket = app("ConchSocketClient.swift");
   const macApp = app("ConchMacApp.swift");
 
-  test("a structured question option sends its label to the owning session", () => {
+  test("structured questions submit one choice immediately or an explicit ordered set", () => {
     expect(models).toContain("struct AgentQuestion: Decodable");
     expect(models).toContain("let question: AgentQuestion?");
     expect(conversation).toContain("let onAnswer: (String) -> Void");
     expect(conversation).toContain('answerable: item.tool?.status == "running"');
-    expect(conversation).toMatch(/if answerable \{[\s\S]*Button \{[\s\S]*onAnswer\(option\.label\)[\s\S]*\} else \{[\s\S]*questionOption/);
-    expect(conversation).toContain("onAnswer(option.label)");
+    expect(conversation).toContain("@State private var multiSelections: [String: Set<String>] = [:]");
+    expect(conversation).toContain("toggleSelection(option.label, for: questionID)");
+    expect(conversation).toMatch(/if asked\.multiSelect \{[\s\S]*toggleSelection[\s\S]*\} else \{[\s\S]*onAnswer\(option\.label\)/);
+    expect(conversation).toContain('onAnswer(selected.joined(separator: ", "))');
+    expect(conversation).toContain('selected.isEmpty ? "Submit selections"');
+    expect(conversation).toContain(".disabled(selected.isEmpty)");
     expect(dashboard).toMatch(/onAnswer: \{ label in[\s\S]*\.inject\([\s\S]*text: label/);
   });
 

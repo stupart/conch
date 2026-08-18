@@ -11,6 +11,9 @@ struct ConversationStack: View {
     let optionReplyInFlight: Bool
     let onSelectOption: (String) -> Void
     @State private var expandedToolIDs: Set<String> = []
+    /// Multi-select taps edit a retained set. Nothing crosses the bridge until
+    /// the explicit Submit button sends the complete, option-ordered answer.
+    @State private var multiSelections: [String: Set<String>] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -52,7 +55,11 @@ struct ConversationStack: View {
             // rest of the stack reports what already happened, this one is
             // blocked on a person. It must never look like something to skim.
             if let asked = item.question, !asked.options.isEmpty {
-                questionRow(asked, isActive: item.tool?.status == "running")
+                questionRow(
+                    asked,
+                    questionID: item.id,
+                    isActive: item.tool?.status == "running"
+                )
             }
             // A plan is not a tool call you might expand — it is the answer to
             // "what is it doing", so it renders as itself rather than as a
@@ -209,6 +216,7 @@ struct ConversationStack: View {
     ///
     private func questionRow(
         _ asked: ConversationItem.AgentQuestion,
+        questionID: String,
         isActive: Bool
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -222,15 +230,20 @@ struct ConversationStack: View {
                 .foregroundStyle(Palette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             ForEach(Array(asked.options.enumerated()), id: \.offset) { _, option in
+                let selected = multiSelections[questionID]?.contains(option.label) == true
                 Button {
-                    onSelectOption(option.label)
+                    if asked.multiSelect {
+                        toggleSelection(option.label, for: questionID)
+                    } else {
+                        onSelectOption(option.label)
+                    }
                 } label: {
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
                         // The mark's shape is how every form teaches pick-one
                         // versus pick-many — no caption spells it out.
-                        Image(systemName: asked.multiSelect ? "square" : "circle")
+                        Image(systemName: asked.multiSelect && selected ? "checkmark.square.fill" : (asked.multiSelect ? "square" : "circle"))
                             .font(Type.caption)
-                            .foregroundStyle(Palette.textDim)
+                            .foregroundStyle(selected ? Palette.needs : Palette.textDim)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(option.label)
                                 .font(Type.body.weight(.medium))
@@ -247,15 +260,42 @@ struct ConversationStack: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 10)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Palette.raised, in: RoundedRectangle(cornerRadius: 12))
+                    .background(
+                        selected ? Palette.needs.opacity(0.10) : Palette.raised,
+                        in: RoundedRectangle(cornerRadius: 12)
+                    )
                 }
                 .buttonStyle(.plain)
                 // The transcript keeps completed questions for context, but
                 // their old choices must not inject a reply into a later turn.
                 .disabled(!isActive || optionReplyInFlight || option.label.isEmpty)
                 .accessibilityHint(
-                    isActive ? "Sends this option as your reply" : "This question is no longer active"
+                    !isActive
+                        ? "This question is no longer active"
+                        : (asked.multiSelect
+                            ? "Toggles this option; Submit sends all selected options"
+                            : "Sends this option as your reply")
                 )
+            }
+
+            if asked.multiSelect && isActive {
+                let selected = selectedLabels(for: asked, questionID: questionID)
+                Button {
+                    onSelectOption(selected.joined(separator: ", "))
+                } label: {
+                    Text(selected.isEmpty ? "Submit selections" : "Submit \(selected.count) selected")
+                        .font(Type.caption.weight(.semibold))
+                        .foregroundStyle(selected.isEmpty ? Palette.textFaint : Palette.bg)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(
+                            selected.isEmpty ? Palette.raised : Palette.needs,
+                            in: RoundedRectangle(cornerRadius: 12)
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(selected.isEmpty || optionReplyInFlight)
+                .accessibilityHint("Sends all selected options as your reply")
             }
         }
         .padding(12)
@@ -268,6 +308,24 @@ struct ConversationStack: View {
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder((isActive ? Palette.needs : Palette.textFaint).opacity(0.35))
         )
+    }
+
+    private func toggleSelection(_ label: String, for questionID: String) {
+        var selected = multiSelections[questionID] ?? []
+        if selected.contains(label) {
+            selected.remove(label)
+        } else {
+            selected.insert(label)
+        }
+        multiSelections[questionID] = selected
+    }
+
+    private func selectedLabels(
+        for question: ConversationItem.AgentQuestion,
+        questionID: String
+    ) -> [String] {
+        let selected = multiSelections[questionID] ?? []
+        return question.options.map(\.label).filter(selected.contains)
     }
 
     /// A plan, as a checklist. Done steps recede — struck through and faint —

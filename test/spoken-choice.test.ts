@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { classifySpokenChoice } from "../src/dictation-reducer.ts";
+import {
+  classifySpokenChoice,
+  classifySpokenChoices,
+} from "../src/dictation-reducer.ts";
 
 /**
  * Answering an agent's multiple-choice question out loud.
@@ -57,5 +60,26 @@ describe("picking an option by voice", () => {
 
   test("no options means no answer", () => {
     expect(classifySpokenChoice("anything", [])).toBeNull();
+  });
+
+  test("multi-select returns every explicitly spoken label as a set", () => {
+    expect(classifySpokenChoices("linear subtask and save to wiki", options))
+      .toEqual(new Set([0, 2]));
+  });
+
+  test("multi-select accepts several positions", () => {
+    expect(classifySpokenChoices("the first and third", options))
+      .toEqual(new Set([0, 2]));
+    expect(classifySpokenChoices("options 2 and 4", options))
+      .toEqual(new Set([1, 3]));
+  });
+
+  test("multi-select refuses a word shared by several labels", () => {
+    const shared = [{ label: "Export PDF" }, { label: "Export markdown" }];
+    expect(classifySpokenChoices("export", shared)).toBeNull();
+  });
+
+  test("single-select refuses speech that names several choices", () => {
+    expect(classifySpokenChoice("linear subtask and save to wiki", options)).toBeNull();
   });
 });

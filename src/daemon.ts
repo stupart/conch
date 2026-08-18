@@ -161,6 +161,7 @@ import {
   DictationReducer,
   classifyPermissionDecision,
   classifySpokenChoice,
+  classifySpokenChoices,
   type DictationActionReadyEffect,
   type DictationReducerEffect,
   type ExternalDictationAction,
@@ -995,6 +996,14 @@ export function dispatchSocketTurnEvent(
 export function choiceReplyForConversation(heard: string, conversation: Conversation): string {
   const question = latestAnswerableQuestion(conversation);
   if (!question) return heard;
+  if (question.multiSelect) {
+    const selected = classifySpokenChoices(heard, question.options);
+    if (!selected) return heard;
+    return question.options
+      .filter((_, index) => selected.has(index))
+      .map((option) => option.label)
+      .join(", ");
+  }
   const selected = classifySpokenChoice(heard, question.options);
   return selected === null ? heard : question.options[selected]!.label;
 }

@@ -18,6 +18,10 @@ struct ConversationStackView: View {
     /// yanked away by an arriving message.
     @State private var pinnedToBottom = true
     @State private var expandedToolIDs: Set<String> = []
+    /// A multi-select question is a tiny form: taps edit this set and only the
+    /// explicit Submit button sends it. Keying by tool row keeps two questions
+    /// in the retained transcript from sharing checkmarks.
+    @State private var multiSelections: [String: Set<String>] = [:]
     @State private var scrollRequestGeneration = 0
 
     private static let bottomAnchor = "conversation-bottom"
@@ -69,6 +73,7 @@ struct ConversationStackView: View {
                 // end, and re-arm the follow.
                 pinnedToBottom = true
                 expandedToolIDs = []
+                multiSelections = [:]
                 requestBottomScroll(using: proxy)
             }
             .onAppear { requestBottomScroll(using: proxy) }
@@ -150,6 +155,7 @@ struct ConversationStackView: View {
             if let asked = item.question, !asked.options.isEmpty {
                 questionRow(
                     asked,
+                    questionID: item.id,
                     answerable: item.tool?.status == "running"
                 )
             // A plan is not a tool call you might expand — it is the answer to
@@ -177,6 +183,7 @@ struct ConversationStackView: View {
 
     private func questionRow(
         _ asked: ConversationItem.AgentQuestion,
+        questionID: String,
         answerable: Bool
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -191,24 +198,57 @@ struct ConversationStackView: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             ForEach(Array(asked.options.enumerated()), id: \.offset) { _, option in
+                let selected = multiSelections[questionID]?.contains(option.label) == true
                 if answerable {
                     Button {
-                        onAnswer(option.label)
+                        if asked.multiSelect {
+                            toggleSelection(option.label, for: questionID)
+                        } else {
+                            onAnswer(option.label)
+                        }
                     } label: {
-                        questionOption(option, multiSelect: asked.multiSelect)
+                        questionOption(
+                            option,
+                            multiSelect: asked.multiSelect,
+                            selected: selected
+                        )
                     }
                     .buttonStyle(.plain)
-                    .help("Answer \(option.label)")
-                    .accessibilityHint("Sends this option to the session")
+                    .help(asked.multiSelect ? "Select \(option.label)" : "Answer \(option.label)")
+                    .accessibilityHint(
+                        asked.multiSelect
+                            ? "Toggles this option; Submit sends all selected options"
+                            : "Sends this option to the session"
+                    )
                 } else {
                     // The question remains part of the transcript, but a
                     // completed tool is no longer a valid destination. Leaving
                     // it looking tappable is an invitation to answer a later
                     // prompt with an earlier choice.
-                    questionOption(option, multiSelect: asked.multiSelect)
+                    questionOption(option, multiSelect: asked.multiSelect, selected: false)
                         .opacity(0.58)
                         .accessibilityHint("This question is no longer waiting for an answer")
                 }
+            }
+
+            if asked.multiSelect && answerable {
+                let selected = selectedLabels(for: asked, questionID: questionID)
+                Button {
+                    onAnswer(selected.joined(separator: ", "))
+                } label: {
+                    Text(selected.isEmpty ? "Submit selections" : "Submit \(selected.count) selected")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(selected.isEmpty ? ConchPalette.textFaint : ConchPalette.bg)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: 9)
+                                .fill(selected.isEmpty ? ConchPalette.raised : ConchPalette.statusNeeds)
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(selected.isEmpty)
+                .accessibilityHint("Sends all selected options to the session")
             }
         }
         .padding(12)
@@ -221,12 +261,13 @@ struct ConversationStackView: View {
 
     private func questionOption(
         _ option: ConversationItem.AgentQuestion.Option,
-        multiSelect: Bool
+        multiSelect: Bool,
+        selected: Bool
     ) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Image(systemName: multiSelect ? "square" : "circle")
+            Image(systemName: multiSelect && selected ? "checkmark.square.fill" : (multiSelect ? "square" : "circle"))
                 .font(.system(size: 10.5))
-                .foregroundStyle(ConchPalette.textDim)
+                .foregroundStyle(selected ? ConchPalette.statusNeeds : ConchPalette.textDim)
             VStack(alignment: .leading, spacing: 2) {
                 Text(option.label)
                     .font(.system(size: 12.5, weight: .medium))
@@ -245,9 +286,27 @@ struct ConversationStackView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 9)
-                .fill(ConchPalette.raised)
+                .fill(selected ? ConchPalette.statusNeeds.opacity(0.10) : ConchPalette.raised)
         )
         .contentShape(Rectangle())
+    }
+
+    private func toggleSelection(_ label: String, for questionID: String) {
+        var selected = multiSelections[questionID] ?? []
+        if selected.contains(label) {
+            selected.remove(label)
+        } else {
+            selected.insert(label)
+        }
+        multiSelections[questionID] = selected
+    }
+
+    private func selectedLabels(
+        for question: ConversationItem.AgentQuestion,
+        questionID: String
+    ) -> [String] {
+        let selected = multiSelections[questionID] ?? []
+        return question.options.map(\.label).filter(selected.contains)
     }
 
     private func toolRow(_ item: ConversationItem) -> some View {
