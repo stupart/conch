@@ -113,6 +113,7 @@ import {
   renameSessionLabel,
   type RegistrySnapshot,
   type SessionInfo,
+  claudeFolderTrusted,
 } from "./sessions.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
 import {
@@ -563,6 +564,8 @@ export interface RuntimeControlDispatchOptions {
     message: Extract<RuntimeControlMessage, { kind: "resumable" }>,
   ): ResumableSessionsRead | Promise<ResumableSessionsRead>;
   start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | Promise<void>;
+  /** Whether Claude Code already trusts a folder; absent or null means unknown. */
+  folderTrusted?(cwd: string): boolean | null;
   close(sessionId: string): void | Promise<void>;
   report(message: Extract<RuntimeControlMessage, { kind: "app-error" }>): void | Promise<void>;
 }
@@ -597,6 +600,12 @@ export async function dispatchRuntimeControlMessage(
       };
     }
     if (message.kind === "session-start") {
+      // Answered BEFORE launching, because afterwards it is unanswerable: a
+      // session held on the trust prompt writes no registry file, so conch
+      // cannot tell "still deciding" from "never started" from the outside.
+      const awaitingTrust = message.backend === "claude"
+        && message.cwd !== undefined
+        && options.folderTrusted?.(message.cwd) === false;
       await options.start(message);
       return {
         handled: true,
@@ -604,6 +613,7 @@ export async function dispatchRuntimeControlMessage(
           kind: "session-started",
           backend: message.backend,
           resumed: Boolean(message.resumeSessionId),
+          ...(awaitingTrust ? { awaitingTrust: true } : {}),
         },
       };
     }
@@ -4575,6 +4585,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         : { claudeHome: cfg.claudeDir }),
     }),
     start: (message) => startTerminalSession(message),
+    folderTrusted: (cwd) => claudeFolderTrusted(cwd),
     close: async (sessionId) => {
       let session = panelSessions.get(sessionId);
       if (!session) {

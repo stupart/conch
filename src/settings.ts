@@ -796,7 +796,13 @@ export interface PairingOpen {
 
 export type RuntimeControlResponse =
   | { kind: "resumable"; sessions: ResumableSession[]; complete: boolean }
-  | { kind: "session-started"; backend: "claude" | "codex"; resumed: boolean }
+  | {
+    kind: "session-started";
+    backend: "claude" | "codex";
+    resumed: boolean;
+    /** The terminal will ask you to trust this folder before the agent starts. */
+    awaitingTrust?: boolean;
+  }
   | { kind: "session-closed"; sessionId: string }
   | { kind: "app-error-ack" };
 
@@ -1106,7 +1112,15 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
     if ((value.backend !== "claude" && value.backend !== "codex") || typeof value.resumed !== "boolean") {
       return { ok: false, err: "invalid session started response" };
     }
-    return { ok: true, value: { kind: "session-started", backend: value.backend, resumed: value.resumed } };
+    return {
+      ok: true,
+      value: {
+        kind: "session-started",
+        backend: value.backend,
+        resumed: value.resumed,
+        ...(value.awaitingTrust === true ? { awaitingTrust: true } : {}),
+      },
+    };
   }
   if (value.kind === "session-closed") {
     const sessionId = validateSessionId(value.sessionId);

@@ -218,6 +218,39 @@ export function renameSessionLabel(
   }
 }
 
+/**
+ * Will Claude Code stop and ask before it starts here?
+ *
+ * A session launched into a folder Claude Code has not seen sits on "Is this a
+ * project you trust?" and does NOT write its registry file until that is
+ * answered — so conch cannot see it, and the app looks broken. Tyler hit
+ * exactly this: "it sucessdully made a new session btu that session didn't
+ * then show in the conch app."
+ *
+ * `~/.claude.json` records `hasTrustDialogAccepted` per project, so this is
+ * knowable BEFORE launching rather than inferred from a session that never
+ * arrives. Returns null when the answer cannot be read, which must be treated
+ * as "say nothing" — warning about a folder that is actually fine is its own
+ * small lie.
+ */
+export function claudeFolderTrusted(
+  cwd: string,
+  configPath = join(homedir(), ".claude.json"),
+): boolean | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(configPath, "utf8"));
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const projects = (parsed as { projects?: unknown }).projects;
+    if (typeof projects !== "object" || projects === null) return null;
+    const entry = (projects as Record<string, unknown>)[cwd];
+    if (typeof entry !== "object" || entry === null) return false; // never opened here
+    const accepted = (entry as { hasTrustDialogAccepted?: unknown }).hasTrustDialogAccepted;
+    return accepted === true;
+  } catch {
+    return null;
+  }
+}
+
 /** Session label precedence: conch override, registry name, then project folder. */
 export function sessionLabel(
   info: SessionInfo | null,

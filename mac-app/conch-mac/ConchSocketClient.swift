@@ -146,6 +146,10 @@ struct ConchSessionCloseRequest: Encodable, Sendable {
 struct ConchSessionStartedReply: Decodable, Equatable, Sendable {
     let backend: String
     let resumed: Bool
+    /// Claude Code will ask you to trust this folder before it starts, and
+    /// writes no registry file until you answer — so conch cannot see the
+    /// session and the app looks broken.
+    let awaitingTrust: Bool?
 }
 
 struct ConchSessionClosedReply: Decodable, Equatable, Sendable {

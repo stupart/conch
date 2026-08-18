@@ -258,6 +258,11 @@ final class StateStore: ObservableObject {
         return reply.sessions
     }
 
+    /// Shown when a start succeeded but the agent is waiting on a person.
+    static let awaitingTrustNotice =
+        "Terminal is asking you to trust this folder. Answer it there and the "
+        + "session will appear here."
+
     func startSession(
         backend: ConchAgentBackend,
         resumeSessionId: String?,
@@ -289,7 +294,9 @@ final class StateStore: ObservableObject {
             case let .started(started)
                 where started.backend == backend.rawValue
                     && started.resumed == (resumed != nil):
-                return nil
+                // Not an error, but not nothing either: the session will not
+                // appear until the trust prompt in Terminal is answered.
+                return started.awaitingTrust == true ? Self.awaitingTrustNotice : nil
             case let .error(error):
                 let message = Self.nonempty(error.error) ?? "Could not start session"
                 reportAppError(operation: "session-start", message: message)
