@@ -36,7 +36,15 @@ unknown rather than guessed. The agent's mark beside each name. Questions
 answerable by tap or voice, converging on one classifier in the daemon.  And
 errors that report themselves, from both apps into the daemon's log.
 
-### Phase 3 — the feed (NOT STARTED)
+### Phase 3 — the feed (NOT STARTED, and deliberately LAST)
+
+Tyler, 2026-08-18: *"lets not do stage 3 yet then - lets perfect the rest and
+then stage 3 will be like an alt view of the current app."* So it is sequenced
+after everything below it, and it is an alternate VIEW over data the app
+already holds rather than a parallel product. See the note at the top of
+`docs/vision.md`: anything built before it should produce rankable items, not
+screens, or the feed becomes a rewrite instead of a lens.
+
 
 Tyler, correcting me: *"i don't think we started phase 3 so be careful with
 that."* He is right, and the way I got it wrong is worth recording — I read

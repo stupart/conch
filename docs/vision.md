@@ -57,6 +57,24 @@ a screenshot carries more than a paragraph would, and takes a second instead of
 a minute. The interface should collect that pointing rather than asking you to
 translate it into words.
 
+## Sequenced last, deliberately (2026-08-18)
+
+Tyler, after seeing how much of the groundwork exists: *"lets not do stage 3
+yet then - lets perfect the rest and then stage 3 will be like an alt view of
+the current app."*
+
+That is a decision about SHAPE as much as order. The feed is not a second
+product to be built beside this one; it is a second VIEW over the same data,
+reached from the app that already exists. Which sets a standard for everything
+built before it: every surface conch learns about — plugins that need
+attention, an MCP server that needs auth, a blocked subagent, a failed hook, a
+question waiting — should arrive as a rankable item with a subject, not as a
+screen. Build those as screens and the feed becomes a rewrite; build them as
+items and the feed becomes a lens.
+
+The section below still holds for what the feed IS. It just no longer implies
+it has to be built early to be built right.
+
 ## Why this is not a skin on the current app
 
 The current app asks: which session do you want to look at? The feed asks:
