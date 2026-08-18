@@ -23,9 +23,13 @@ struct ResumableSession: Decodable, Identifiable, Hashable, Sendable {
 
     /// `/Users/me/conch` reads as `~/conch`. The home prefix is the same on
     /// every row, so it is noise in a list whose job is to tell rows apart.
+    ///
+    /// Home itself is spelled out. A bare "~" on its own line read as missing
+    /// data rather than as a place — and with real history several rows are
+    /// home, so the list had three apparent glitches in it.
     var shortCwd: String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        if cwd == home { return "~" }
+        if cwd == home { return "Home" }
         if cwd.hasPrefix(home + "/") { return "~" + cwd.dropFirst(home.count) }
         return cwd
     }

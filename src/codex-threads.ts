@@ -106,7 +106,7 @@ export function codexThreadDbPaths(codexHome: string): { state: string; history:
   };
 }
 
-function openReadOnly(path: string): Database {
+export function openReadOnly(path: string): Database {
   // `readonly` is the whole safety story: Codex may be mid-write in another
   // process, and conch must never be the reason its database is locked.
   try {

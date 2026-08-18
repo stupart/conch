@@ -23,9 +23,19 @@ describe("Mac Phase 2 session lifecycle", () => {
     expect(content).toContain("ForEach(ConchAgentBackend.allCases)");
     expect(content).toContain('case new = "New"');
     expect(content).toContain('case resume = "Resume"');
-    expect(content).toContain('TextField("Session ID", text: $resumeSessionId)');
     expect(content).toContain('TextField("Working folder", text: $cwd)');
-    expect(content).toContain("resumeSessionId: mode == .resume ? resumeSessionId : nil");
+
+    // Resuming is a PICKER, not a typed id. The id field was the whole reason
+    // finding a session meant leaving conch for Codex, so its absence is the
+    // feature and worth pinning.
+    expect(content).not.toContain('TextField("Session ID"');
+    expect(content).toContain("ResumePickerView(");
+    expect(content).toContain("resumeSessionId: mode == .resume ? resumeSelection?.sessionId : nil");
+
+    // A resumed session brings its own agent and folder; asking again offers a
+    // wrong answer. Both must come from the picked row.
+    expect(content).toContain("backend: effectiveBackend");
+    expect(content).toContain("cwd: effectiveCwd");
   });
 
   test("close is isolated in an overflow menu and requires destructive confirmation", () => {

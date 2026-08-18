@@ -219,6 +219,10 @@ import {
   type SessionActionsTarget,
 } from "./session-actions-overlay.ts";
 import { createPublishThrottle } from "./publish-throttle.ts";
+import {
+  readResumableSessionsResult,
+  type ResumableSessionsRead,
+} from "./resumable.ts";
 
 /**
  * The turn-based voice loop.
@@ -520,7 +524,8 @@ export function dispatchControlMessage(
     };
   }
   if (
-    validated.value.kind === "session-start"
+    validated.value.kind === "resumable"
+    || validated.value.kind === "session-start"
     || validated.value.kind === "session-close"
     || validated.value.kind === "app-error"
   ) return { handled: false };
@@ -553,6 +558,9 @@ export function dispatchControlMessage(
 }
 
 export interface RuntimeControlDispatchOptions {
+  listResumable(
+    message: Extract<RuntimeControlMessage, { kind: "resumable" }>,
+  ): ResumableSessionsRead | Promise<ResumableSessionsRead>;
   start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | Promise<void>;
   close(sessionId: string): void | Promise<void>;
   report(message: Extract<RuntimeControlMessage, { kind: "app-error" }>): void | Promise<void>;
@@ -567,6 +575,7 @@ export async function dispatchRuntimeControlMessage(
     value.kind !== "session-start"
     && value.kind !== "session-close"
     && value.kind !== "app-error"
+    && value.kind !== "resumable"
   )) return { handled: false };
 
   const validated = validateRuntimeControlMessage(value);
@@ -575,6 +584,17 @@ export async function dispatchRuntimeControlMessage(
   }
   const message = validated.value;
   try {
+    if (message.kind === "resumable") {
+      const result = await options.listResumable(message);
+      return {
+        handled: true,
+        response: {
+          kind: "resumable",
+          sessions: result.sessions,
+          complete: result.complete,
+        },
+      };
+    }
     if (message.kind === "session-start") {
       await options.start(message);
       return {
@@ -4521,6 +4541,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
     isDismissed: (sessionId) => dismissedSessionIds.has(sessionId),
   };
   const runtimeControlDispatchOptions: RuntimeControlDispatchOptions = {
+    listResumable: (message) => readResumableSessionsResult({
+      ...(message.query === undefined ? {} : { query: message.query }),
+      ...(message.limit === undefined ? {} : { limit: message.limit }),
+      ...(process.env.CONCH_CONFIG_DIR === undefined
+        ? {}
+        : { configDir: process.env.CONCH_CONFIG_DIR }),
+      ...(process.env.CLAUDE_CONFIG_DIR === undefined
+        ? {}
+        : { claudeHome: cfg.claudeDir }),
+    }),
     start: (message) => startTerminalSession(message),
     close: async (sessionId) => {
       let session = panelSessions.get(sessionId);

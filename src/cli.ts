@@ -46,7 +46,7 @@ Getting started:
 
 Everyday:
   conch wake [name] | recite [name]       talk again | reread the latest reply
-  conch sessions | rename <session> <name> list sessions | save a display name
+  conch sessions | resumable [query] | rename <session> <name>  list live/past | save a name
   conch pause | resume                     manual (hold) | auto (read and listen)
 
 Voice and settings:
@@ -439,6 +439,26 @@ switch (command) {
     const { listSessions, sessionLabel } = await import("./sessions.ts");
     for (const s of await listSessions(cfg.claudeDir)) {
       console.log(`${sessionLabel(s, s.cwd).padEnd(30)} ${s.cwd ?? ""}  pid=${s.pid}`);
+    }
+    break;
+  }
+  case "resumable": {
+    const { readResumableSessions } = await import("./resumable.ts");
+    const query = rest.join(" ").trim();
+    const sessions = readResumableSessions({
+      ...(query ? { query } : {}),
+      ...(process.env.CONCH_CONFIG_DIR === undefined
+        ? {}
+        : { configDir: process.env.CONCH_CONFIG_DIR }),
+      ...(process.env.CLAUDE_CONFIG_DIR === undefined
+        ? {}
+        : { claudeHome: cfg.claudeDir }),
+    });
+    for (const session of sessions) {
+      console.log(
+        `${session.backend.padEnd(6)}  ${new Date(session.updatedAt).toISOString()}`
+        + `  ${session.label.padEnd(40)}  ${session.cwd}  ${session.sessionId}`,
+      );
     }
     break;
   }

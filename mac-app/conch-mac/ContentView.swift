@@ -315,8 +315,15 @@ struct ContentView: View {
     }
 }
 
+/// What a reload depends on. Two values, so `task(id:)` re-runs when either
+/// changes without needing a separate observer for each.
+private struct TaskKey: Equatable {
+    let mode: StartSessionSheet.StartMode
+    let query: String
+}
+
 private struct StartSessionSheet: View {
-    private enum StartMode: String, CaseIterable, Identifiable {
+    fileprivate enum StartMode: String, CaseIterable, Identifiable {
         case new = "New"
         case resume = "Resume"
         var id: String { rawValue }
@@ -425,12 +432,16 @@ private struct StartSessionSheet: View {
         .padding(24)
         .frame(width: 430)
         .background(ConchPalette.bg)
-        .onChange(of: mode) { _, current in
-            // Read the history when it is first asked for, not on every open of
-            // the sheet: it is over a thousand files on this machine.
-            if current == .resume && resumable.isEmpty { loadResumable() }
+        // `task(id:)` rather than `onChange`, so this fires when the sheet
+        // APPEARS already in resume mode as well as when you switch into it.
+        // Keyed on the query too, because searching is a re-read: the daemon
+        // filters next to the history rather than shipping all of it, and a
+        // full read measures 18ms against 1229 transcripts and 58 threads —
+        // cheap enough that a keystroke can simply ask again.
+        .task(id: TaskKey(mode: mode, query: resumeQuery)) {
+            guard mode == .resume else { return }
+            loadResumable()
         }
-        .onChange(of: resumeQuery) { _, _ in loadResumable() }
     }
 
     /// Say where it will actually land, since that is the thing a resume can

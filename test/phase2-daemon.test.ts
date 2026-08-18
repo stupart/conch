@@ -16,6 +16,8 @@ import {
 describe("Phase 2 runtime controls", () => {
   test("validates the app wire shapes and rejects hostile variants", () => {
     for (const message of [
+      { kind: "resumable" },
+      { kind: "resumable", query: "conch", limit: 25 },
       { kind: "session-start", backend: "claude" },
       { kind: "session-start", backend: "codex", resumeSessionId: "thread-1", cwd: "/tmp/repo" },
       { kind: "session-close", sessionId: "session-1" },
@@ -26,6 +28,9 @@ describe("Phase 2 runtime controls", () => {
       expect(validateControlMessage(message).ok).toBe(true);
     }
     for (const message of [
+      { kind: "resumable", query: 42 },
+      { kind: "resumable", limit: 0 },
+      { kind: "resumable", limit: 501 },
       { kind: "session-start", backend: "other" },
       { kind: "session-start", backend: "claude", cwd: "relative" },
       { kind: "session-close", sessionId: "" },
@@ -39,6 +44,7 @@ describe("Phase 2 runtime controls", () => {
     expect(await dispatchRuntimeControlMessage(
       { kind: "session-start", backend: "codex", resumeSessionId: "thread-1" },
       {
+        listResumable: () => ({ sessions: [], complete: true }),
         start: (message) => { calls.push(`start:${message.resumeSessionId}`); },
         close: () => {},
         report: () => {},
@@ -49,6 +55,7 @@ describe("Phase 2 runtime controls", () => {
     const closed = dispatchRuntimeControlMessage(
       { kind: "session-close", sessionId: "session-1" },
       {
+        listResumable: () => ({ sessions: [], complete: true }),
         start: () => {},
         close: () => new Promise<void>((resolve) => { release = resolve; }),
         report: () => {},
@@ -64,6 +71,7 @@ describe("Phase 2 runtime controls", () => {
     expect(await dispatchRuntimeControlMessage(
       { kind: "app-error", source: "mac", operation: "send", message: "failed", state: { draft: 4 } },
       {
+        listResumable: () => ({ sessions: [], complete: true }),
         start: () => {},
         close: () => {},
         report: (message) => { calls.push(`error:${message.source}`); },
@@ -72,10 +80,46 @@ describe("Phase 2 runtime controls", () => {
     expect(calls).toEqual(["start:thread-1", "error:mac"]);
   });
 
+  test("returns resumable rows and completeness through runtime dispatch", async () => {
+    const sessions = [{
+      sessionId: "thread-1",
+      backend: "codex" as const,
+      label: "Relay work",
+      cwd: "/tmp/conch",
+      updatedAt: 1_786_000_000_000,
+    }];
+    expect(await dispatchRuntimeControlMessage(
+      { kind: "resumable", query: "relay", limit: 20 },
+      {
+        listResumable: (message) => {
+          expect(message).toEqual({ kind: "resumable", query: "relay", limit: 20 });
+          return { sessions, complete: false };
+        },
+        start: () => {},
+        close: () => {},
+        report: () => {},
+      },
+    )).toEqual({
+      handled: true,
+      response: { kind: "resumable", sessions, complete: false },
+    });
+  });
+
   test("lifecycle acknowledgements round-trip through the control client validator", () => {
     expect(validateControlResponse({ kind: "session-started", backend: "claude", resumed: false }).ok).toBe(true);
     expect(validateControlResponse({ kind: "session-closed", sessionId: "s1" }).ok).toBe(true);
     expect(validateControlResponse({ kind: "app-error-ack" }).ok).toBe(true);
+    expect(validateControlResponse({
+      kind: "resumable",
+      sessions: [{
+        sessionId: "s1",
+        backend: "claude",
+        label: "Conch",
+        cwd: "/tmp/conch",
+        updatedAt: 1_786_000_000_000,
+      }],
+      complete: true,
+    }).ok).toBe(true);
   });
 
   test("the phone waits long enough for native Terminal lifecycle work", () => {

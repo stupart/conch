@@ -12,6 +12,7 @@ import {
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
+import type { ResumableSession } from "./resumable.ts";
 import { normalizeSessionLabel } from "./sessions.ts";
 import { isValidVoiceName } from "./speak.ts";
 
@@ -702,6 +703,7 @@ export type SessionControlMessage =
   | { kind: "session-command"; sessionId: string; command: "restore" };
 
 export type RuntimeControlMessage =
+  | { kind: "resumable"; query?: string; limit?: number }
   | {
     kind: "session-start";
     backend: "claude" | "codex";
@@ -793,6 +795,7 @@ export interface PairingOpen {
 }
 
 export type RuntimeControlResponse =
+  | { kind: "resumable"; sessions: ResumableSession[]; complete: boolean }
   | { kind: "session-started"; backend: "claude" | "codex"; resumed: boolean }
   | { kind: "session-closed"; sessionId: string }
   | { kind: "app-error-ack" };
@@ -840,6 +843,7 @@ export function isControlMessageCandidate(value: unknown): boolean {
     || value.kind === "get-config"
     || value.kind === "unset-config"
     || value.kind === "session-command"
+    || value.kind === "resumable"
     || value.kind === "session-start"
     || value.kind === "session-close"
     || value.kind === "app-error";
@@ -939,6 +943,33 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
   if (!record(value) || typeof value.kind !== "string") {
     return { ok: false, err: "runtime control message must be a JSON object with a kind" };
   }
+  if (value.kind === "resumable") {
+    let query: string | undefined;
+    if (value.query !== undefined) {
+      if (typeof value.query !== "string") return { ok: false, err: "resumable query must be a string" };
+      const trimmed = value.query.trim();
+      if (trimmed.length > 1_000) return { ok: false, err: "resumable query cannot exceed 1000 characters" };
+      if (SESSION_CONTROL_CHARS.test(trimmed)) {
+        return { ok: false, err: "resumable query cannot contain control characters" };
+      }
+      query = trimmed || undefined;
+    }
+    let limit: number | undefined;
+    if (value.limit !== undefined) {
+      if (!Number.isSafeInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 500) {
+        return { ok: false, err: "resumable limit must be an integer from 1 to 500" };
+      }
+      limit = value.limit as number;
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "resumable",
+        ...(query ? { query } : {}),
+        ...(limit === undefined ? {} : { limit }),
+      },
+    };
+  }
   if (value.kind === "session-close") {
     const sessionId = validateSessionId(value.sessionId);
     return sessionId.ok
@@ -1017,7 +1048,12 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
     return { ok: false, err: "control message kind is required" };
   }
   if (value.kind === "session-command") return validateSessionControlMessage(value);
-  if (value.kind === "session-start" || value.kind === "session-close" || value.kind === "app-error") {
+  if (
+    value.kind === "resumable"
+    || value.kind === "session-start"
+    || value.kind === "session-close"
+    || value.kind === "app-error"
+  ) {
     return validateRuntimeControlMessage(value);
   }
   if (value.kind === "get-config") return { ok: true, value: { kind: "get-config" } };
@@ -1037,6 +1073,34 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
 
 export function validateControlResponse(value: unknown): ParseResult<ControlResponse> {
   if (!record(value) || typeof value.kind !== "string") return { ok: false, err: "invalid control response" };
+  if (value.kind === "resumable") {
+    if (!Array.isArray(value.sessions) || value.sessions.length > 500 || typeof value.complete !== "boolean") {
+      return { ok: false, err: "invalid resumable sessions response" };
+    }
+    const sessions: ResumableSession[] = [];
+    for (const raw of value.sessions) {
+      if (!record(raw) || (raw.backend !== "claude" && raw.backend !== "codex")) {
+        return { ok: false, err: "invalid resumable session" };
+      }
+      const sessionId = validateSessionId(raw.sessionId);
+      if (!sessionId.ok) return { ok: false, err: `invalid resumable session: ${sessionId.err}` };
+      const label = boundedPrintable(raw.label, "resumable label", 4_096);
+      if (!label.ok) return { ok: false, err: label.err };
+      const cwd = boundedPrintable(raw.cwd, "resumable cwd", 4_096);
+      if (!cwd.ok) return { ok: false, err: cwd.err };
+      if (!Number.isSafeInteger(raw.updatedAt) || (raw.updatedAt as number) < 0) {
+        return { ok: false, err: "resumable updatedAt must be a non-negative epoch millisecond integer" };
+      }
+      sessions.push({
+        sessionId: sessionId.value,
+        backend: raw.backend,
+        label: label.value,
+        cwd: cwd.value,
+        updatedAt: raw.updatedAt as number,
+      });
+    }
+    return { ok: true, value: { kind: "resumable", sessions, complete: value.complete } };
+  }
   if (value.kind === "app-error-ack") return { ok: true, value: { kind: "app-error-ack" } };
   if (value.kind === "session-started") {
     if ((value.backend !== "claude" && value.backend !== "codex") || typeof value.resumed !== "boolean") {
