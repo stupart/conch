@@ -83,6 +83,14 @@ describe("the Mac composer belongs to one session", () => {
     expect(drop).toMatch(/attachments\.append\(url\)[\s\S]*onDraftStarted\(\)/);
   });
 
+  test("image attachments render a thumbnail instead of only a filename", () => {
+    expect(composer).toContain("private struct AttachmentPreview: View");
+    expect(composer).toContain("NSImage(contentsOf: url)");
+    expect(composer).toContain("Image(nsImage: image)");
+    expect(composer).toContain(".scaledToFill()");
+    expect(composer).toContain(".help(url.lastPathComponent)");
+  });
+
   test("a draft is cleared only after its socket delivery succeeds", () => {
     // Switching sessions and a failed send are the two moments a locally owned
     // draft is most vulnerable. The socket result must arrive before the store

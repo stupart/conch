@@ -502,9 +502,8 @@ struct ComposerView: View {
     }
 }
 
-/// Attached files, each removable. Shown as a name rather than a thumbnail:
-/// what you need to confirm before sending is *which* file, and a 40px preview
-/// of a screenshot is unreadable anyway.
+/// Attached images preview as images; other supported files keep the compact
+/// filename treatment. The path remains available as hover help for both.
 private struct AttachmentStrip: View {
     let attachments: [URL]
     let onRemove: (URL) -> Void
@@ -513,30 +512,66 @@ private struct AttachmentStrip: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 ForEach(attachments, id: \.self) { url in
-                    HStack(spacing: 5) {
-                        Image(systemName: "paperclip")
-                            .font(.system(size: 9.5))
-                        Text(url.lastPathComponent)
-                            .font(ConchTypography.font(size: 11))
-                            .lineLimit(1)
-                        Button {
-                            onRemove(url)
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 8, weight: .bold))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .foregroundStyle(ConchPalette.textDim)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6).fill(ConchPalette.hover)
-                    )
+                    AttachmentPreview(url: url) { onRemove(url) }
                 }
             }
         }
-        .frame(maxHeight: 26)
+        .frame(maxHeight: 48)
+    }
+}
+
+private struct AttachmentPreview: View {
+    let url: URL
+    let onRemove: () -> Void
+
+    private var image: NSImage? { NSImage(contentsOf: url) }
+
+    @ViewBuilder
+    var body: some View {
+        if let image {
+            ZStack(alignment: .topTrailing) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 54, height: 44)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(ConchPalette.divider, lineWidth: 0.5)
+                    }
+
+                removeButton
+                    .padding(3)
+            }
+            .help(url.lastPathComponent)
+        } else {
+            HStack(spacing: 5) {
+                Image(systemName: "paperclip")
+                    .font(.system(size: 9.5))
+                Text(url.lastPathComponent)
+                    .font(ConchTypography.font(size: 11))
+                    .lineLimit(1)
+                removeButton
+            }
+            .foregroundStyle(ConchPalette.textDim)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6).fill(ConchPalette.hover)
+            )
+            .help(url.path)
+        }
+    }
+
+    private var removeButton: some View {
+        Button(action: onRemove) {
+            Image(systemName: "xmark")
+                .font(.system(size: 8, weight: .bold))
+                .frame(width: 14, height: 14)
+                .background(Circle().fill(ConchPalette.bg.opacity(0.88)))
+        }
+        .buttonStyle(.plain)
+        .help("Remove \(url.lastPathComponent)")
     }
 }
 
