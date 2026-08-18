@@ -44,8 +44,21 @@ enum DebugSnapshot {
         }
 
         let candidates = NSApp.windows.filter { $0.isVisible && !$0.isMiniaturized }
-        guard let window = candidates.max(by: { lhs, rhs in
-            // The biggest visible window is the app, not a panel or a tooltip.
+        // Whatever is in FRONT is what someone wants a picture of.
+        //
+        // This used to take the largest visible window on the reasoning that
+        // the biggest one is the app rather than a panel or a tooltip. True,
+        // and it meant sheets and the Settings window could never be
+        // photographed at all — they are smaller than the window they sit on,
+        // so they always lost. That is precisely the UI that most needs
+        // looking at: Settings crashed the app today, and the resume picker is
+        // a sheet.
+        //
+        // A sheet or a settings window takes key status when it appears, so
+        // preferring the key window shows what is actually on screen. Size
+        // remains the fallback for when nothing is key.
+        let key = candidates.first { $0.isKeyWindow }
+        guard let window = key ?? candidates.max(by: { lhs, rhs in
             lhs.frame.width * lhs.frame.height < rhs.frame.width * rhs.frame.height
         }) else {
             return fail("no visible window (of \(NSApp.windows.count) total)")

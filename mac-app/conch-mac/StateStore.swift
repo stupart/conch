@@ -238,6 +238,26 @@ final class StateStore: ObservableObject {
 
     /// The daemon owns launch because it is the only layer that can guarantee a
     /// new agent stays outside conch's own tmux session.
+    /// Past sessions that could be restarted, newest first.
+    ///
+    /// Returns an empty list rather than an error on failure: this feeds a
+    /// picker that already says "No past sessions found", and a modal error on
+    /// top of an empty list tells you the same thing twice.
+    func resumableSessions(query: String) async -> [ResumableSession] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let outcome = await socketClient.request(
+            ConchResumableRequest(query: trimmed.isEmpty ? nil : trimmed),
+            timeout: Self.sessionLifecycleTimeout
+        )
+        guard case let .reply(data) = outcome,
+              let reply = try? JSONDecoder().decode(ConchResumableReply.self, from: data)
+        else {
+            reportAppError(operation: "resumable", message: "Could not read past sessions")
+            return []
+        }
+        return reply.sessions
+    }
+
     func startSession(
         backend: ConchAgentBackend,
         resumeSessionId: String?,

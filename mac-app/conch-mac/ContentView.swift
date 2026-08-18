@@ -327,15 +327,29 @@ private struct StartSessionSheet: View {
 
     @State private var backend = ConchAgentBackend.claude
     @State private var mode = StartMode.new
-    @State private var resumeSessionId = ""
     @State private var cwd = FileManager.default.homeDirectoryForCurrentUser.path
     @State private var isStarting = false
     @State private var error: String?
 
+    // Resume
+    @State private var resumable: [ResumableSession] = []
+    @State private var resumeQuery = ""
+    @State private var resumeSelection: ResumableSession?
+    @State private var isLoadingResumable = false
+
     private var canStart: Bool {
-        !isStarting && (mode == .new || !resumeSessionId.trimmingCharacters(
-            in: .whitespacesAndNewlines
-        ).isEmpty)
+        !isStarting && (mode == .new || resumeSelection != nil)
+    }
+
+    /// A resumed session brings its own agent and its own folder. Asking again
+    /// is a question with a known answer and a wrong setting available.
+    private var effectiveBackend: ConchAgentBackend {
+        guard mode == .resume, let picked = resumeSelection else { return backend }
+        return picked.backend.lowercased() == "codex" ? .codex : .claude
+    }
+
+    private var effectiveCwd: String {
+        mode == .resume ? (resumeSelection?.cwd ?? cwd) : cwd
     }
 
     var body: some View {
@@ -344,42 +358,51 @@ private struct StartSessionSheet: View {
                 .font(ConchTypography.font(size: 19, weight: .medium))
                 .foregroundStyle(ConchPalette.textPrimary)
 
-            Picker("Agent", selection: $backend) {
-                ForEach(ConchAgentBackend.allCases) { backend in
-                    Text(backend.label).tag(backend)
-                }
-            }
-            .pickerStyle(.segmented)
-
+            // Mode first: it decides which of the questions below are even
+            // worth asking.
             Picker("Session", selection: $mode) {
                 ForEach(StartMode.allCases) { mode in
                     Text(mode.rawValue).tag(mode)
                 }
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
 
-            if mode == .resume {
-                TextField("Session ID", text: $resumeSessionId)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityLabel("Session ID to resume")
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Working folder")
-                    .font(ConchTypography.font(size: 10.5, weight: .medium))
-                    .foregroundStyle(ConchPalette.textDim)
-                    .textCase(.uppercase)
-                    .tracking(0.5)
-                HStack(spacing: 8) {
-                    TextField("Working folder", text: $cwd)
-                        .textFieldStyle(.roundedBorder)
-                    Button("Choose…", action: chooseFolder)
+            if mode == .new {
+                Picker("Agent", selection: $backend) {
+                    ForEach(ConchAgentBackend.allCases) { backend in
+                        Text(backend.label).tag(backend)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Working folder")
+                        .font(ConchTypography.font(size: 10.5, weight: .medium))
+                        .foregroundStyle(ConchPalette.textDim)
+                        .textCase(.uppercase)
+                        .tracking(0.5)
+                    HStack(spacing: 8) {
+                        TextField("Working folder", text: $cwd)
+                            .textFieldStyle(.roundedBorder)
+                        Button("Choose…", action: chooseFolder)
+                    }
+                }
+            } else {
+                ResumePickerView(
+                    sessions: resumable,
+                    isLoading: isLoadingResumable,
+                    query: $resumeQuery,
+                    selection: $resumeSelection,
+                    onConfirm: start
+                )
             }
 
-            Text("Opens \(backend.label) in Terminal, outside conch’s own tmux session.")
+            Text(footnote)
                 .font(ConchTypography.font(size: 11.5))
                 .foregroundStyle(ConchPalette.textDim)
+                .fixedSize(horizontal: false, vertical: true)
 
             if let error {
                 Text(error)
@@ -402,6 +425,34 @@ private struct StartSessionSheet: View {
         .padding(24)
         .frame(width: 430)
         .background(ConchPalette.bg)
+        .onChange(of: mode) { _, current in
+            // Read the history when it is first asked for, not on every open of
+            // the sheet: it is over a thousand files on this machine.
+            if current == .resume && resumable.isEmpty { loadResumable() }
+        }
+        .onChange(of: resumeQuery) { _, _ in loadResumable() }
+    }
+
+    /// Say where it will actually land, since that is the thing a resume can
+    /// silently get wrong: the same conversation reopened in the wrong folder
+    /// is a conversation about files that are not there.
+    private var footnote: String {
+        if mode == .new {
+            return "Opens \(backend.label) in Terminal, outside conch\u{2019}s own tmux session."
+        }
+        guard let picked = resumeSelection else {
+            return "Pick a session to restart. It reopens with its own agent, in its own folder."
+        }
+        let agent = picked.backend.lowercased() == "codex" ? "Codex" : "Claude"
+        return "Restarts \(agent) in \(picked.shortCwd), in Terminal."
+    }
+
+    private func loadResumable() {
+        isLoadingResumable = true
+        Task { @MainActor in
+            resumable = await store.resumableSessions(query: resumeQuery)
+            isLoadingResumable = false
+        }
     }
 
     private func chooseFolder() {
@@ -420,9 +471,9 @@ private struct StartSessionSheet: View {
         error = nil
         Task { @MainActor in
             let failure = await store.startSession(
-                backend: backend,
-                resumeSessionId: mode == .resume ? resumeSessionId : nil,
-                cwd: cwd
+                backend: effectiveBackend,
+                resumeSessionId: mode == .resume ? resumeSelection?.sessionId : nil,
+                cwd: effectiveCwd
             )
             isStarting = false
             if let failure {

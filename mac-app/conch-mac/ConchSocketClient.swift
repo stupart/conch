@@ -102,6 +102,22 @@ struct ConchSessionStartRequest: Encodable, Sendable {
     let cwd: String?
 }
 
+/// Ask the daemon what past sessions could be restarted.
+///
+/// `query` is matched by the daemon rather than here: the history is over a
+/// thousand files, so filtering belongs next to the reader, not after a full
+/// list has crossed the socket.
+struct ConchResumableRequest: Encodable, Sendable {
+    let kind = "resumable"
+    let query: String?
+}
+
+struct ConchResumableReply: Decodable, Sendable {
+    let sessions: [ResumableSession]
+    /// False when the reader stopped early — the list is a page, not the truth.
+    let complete: Bool?
+}
+
 struct ConchSessionCloseRequest: Encodable, Sendable {
     let kind = "session-close"
     let sessionId: String
