@@ -34,6 +34,7 @@ import {
 } from "./listen.ts";
 import type { RecorderHandle } from "./dictation-controller.ts";
 import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
+import { renameProviderSession } from "./provider-rename.ts";
 import { classify, classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
 import { isCodexTranscriptPath, lastAssistantText, splitSentences, stripMarkdown, firstSentences, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
 import { PhoneUploads } from "./phone-uploads.ts";
@@ -1532,9 +1533,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
       || handlingEvent?.sessionId === id;
   }
   function sessionActionTarget(sessionId: string): SessionActionsTarget | null {
-    return isKnownSessionId(sessionId)
-      ? { sessionId, label: labelForSessionId(sessionId) }
-      : null;
+    if (!isKnownSessionId(sessionId)) return null;
+    const session = panelSessions.get(sessionId);
+    const known = latestTurnBySession.get(sessionId)
+      ?? (recitingEvent?.sessionId === sessionId ? recitingEvent : null)
+      ?? (handlingEvent?.sessionId === sessionId ? handlingEvent : null)
+      ?? (lastTurn?.sessionId === sessionId ? lastTurn : null);
+    const pid = session?.pid ?? known?.pid;
+    return {
+      sessionId,
+      label: labelForSessionId(sessionId),
+      backend: session?.backend ?? "claude",
+      ...(pid ? { pid } : {}),
+    };
   }
   const sessionModalOpen = (): boolean =>
     Boolean(
@@ -4569,6 +4580,27 @@ export async function runDaemon(cfg: Config): Promise<void> {
       log(`renamed "${target.label}" -> "${renamed.label}"${
         renamed.voiceMigrated ? " (voice pin migrated)" : ""
       }`);
+      void renameProviderSession(cfg, target, renamed.label).then((provider) => {
+        if (provider.kind === "delivered") {
+          log(`synced Claude Code label via ${provider.via}`);
+        } else if (provider.kind === "unroutable") {
+          recordDaemonError(
+            "session-rename",
+            `Conch renamed the session, but Claude Code did not: ${provider.reason}`,
+            target.sessionId,
+            { label: renamed.label, backend: target.backend ?? "claude" },
+          );
+        }
+      }).catch((error) => {
+        recordDaemonError(
+          "session-rename",
+          `Conch renamed the session, but Claude Code did not: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          target.sessionId,
+          { label: renamed.label, backend: target.backend ?? "claude" },
+        );
+      });
       void renderSessionPanel();
       return renamed.label;
     },

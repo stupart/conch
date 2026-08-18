@@ -187,7 +187,7 @@ describe("SessionActionsOverlay", () => {
 
   test("rename editing accepts the safe charset and Escape cancels editing, not the modal", () => {
     const { overlay, controller } = createOverlay();
-    overlay.open({ sessionId: "a", label: "Alpha" });
+    overlay.open({ sessionId: "a", label: "Alpha", backend: "claude", pid: 42 });
     moveTo(overlay, "rename");
 
     overlay.handleKey("\r");
@@ -209,7 +209,7 @@ describe("SessionActionsOverlay", () => {
     overlay.handleKey("Beta 2");
     overlay.handleKey("\r");
     expect(controller.renames).toEqual([{
-      target: { sessionId: "a", label: "Alpha" },
+      target: { sessionId: "a", label: "Alpha", backend: "claude", pid: 42 },
       label: "Beta 2",
     }]);
     expect(overlay.model()?.target.label).toBe("Beta 2");

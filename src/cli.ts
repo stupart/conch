@@ -394,6 +394,7 @@ switch (command) {
     });
     let renamedLabel: string;
     let voiceMigrated = false;
+    let providerWarning = "";
     if (!result.ok) {
       if (result.reason !== "daemon-down") {
         const diagnostic = result.diagnostic ? `: ${result.diagnostic}` : "";
@@ -403,6 +404,11 @@ switch (command) {
       const renamed = renameSessionLabel(session.sessionId, oldLabel, label);
       renamedLabel = renamed.label;
       voiceMigrated = renamed.voiceMigrated;
+      const { renameProviderSession } = await import("./provider-rename.ts");
+      const provider = await renameProviderSession(cfg, session, renamed.label);
+      if (provider.kind === "unroutable") {
+        providerWarning = `; Claude Code label not synced (${provider.reason})`;
+      }
     } else if (result.response.kind === "session-error") {
       console.error(`[conch] ${result.response.error}`);
       process.exit(1);
@@ -419,7 +425,7 @@ switch (command) {
     }
     console.log(`[conch] ${oldLabel} -> ${renamedLabel} (persisted to ~/.config/conch/labels.json)${
       voiceMigrated ? "; voice pin migrated" : ""
-    }`);
+    }${providerWarning}`);
     break;
   }
   case "pause":

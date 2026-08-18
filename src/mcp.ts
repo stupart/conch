@@ -4,6 +4,10 @@ import { CONCH_VERSION } from "./version.ts";
 import { sendToDaemon, type TurnEvent } from "./hook.ts";
 import { registryToPanel } from "./panel.ts";
 import {
+  renameProviderSession as deliverProviderRename,
+  type ProviderRenameResult,
+} from "./provider-rename.ts";
+import {
   findSessionByName,
   findTranscript,
   registrySnapshot,
@@ -279,6 +283,10 @@ export interface McpDependencies {
     oldLabel: string,
     newLabel: string,
   ): { label: string; voiceMigrated: boolean };
+  renameProviderSession?(
+    session: Readonly<SessionInfo>,
+    label: string,
+  ): Promise<ProviderRenameResult>;
   sendToDaemon(socketPath: string, event: TurnEvent): Promise<boolean>;
   sendControlMessage(
     socketPath: string,
@@ -304,6 +312,9 @@ export const defaultMcpDependencies: McpDependencies = {
   findTranscript,
   sessionLabel,
   renameSessionLabel,
+  renameProviderSession(session, label) {
+    return deliverProviderRename(loadConfig(), session, label);
+  },
   sendToDaemon,
   sendControlMessage,
   getSettingDescriptor,
@@ -685,6 +696,7 @@ export function createMcpToolHandlers(
           oldLabel,
           newLabel,
         );
+        await dependencies.renameProviderSession?.(session, renamed.label);
         return {
           kind: "session-ack",
           sessionId: session.sessionId,

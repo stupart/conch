@@ -7,6 +7,8 @@ import type {
 export interface SessionActionsTarget {
   sessionId: string;
   label: string;
+  backend?: "claude" | "codex";
+  pid?: number;
 }
 
 /**
@@ -129,7 +131,7 @@ export class SessionActionsOverlay {
   open(target: Readonly<SessionActionsTarget>): void {
     if (this.#opened) return;
     this.#opened = true;
-    this.#target = { sessionId: target.sessionId, label: target.label };
+    this.#target = { ...target };
     this.#selectedIndex = 0;
     this.#renameBuffer = null;
     this.#dismissArmed = false;

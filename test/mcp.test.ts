@@ -148,6 +148,7 @@ interface FakeCalls {
   transcripts: Array<{ claudeDir: string; sessionId: string }>;
   labels: Array<{ sessionId: string | null; cwd: string | undefined }>;
   renames: Array<{ sessionId: string; oldLabel: string; newLabel: string }>;
+  providerRenames: Array<{ sessionId: string; label: string }>;
   daemon: Array<{ socketPath: string; event: TurnEvent }>;
   control: Array<{ socketPath: string; message: ControlMessage }>;
   marks: string[];
@@ -208,6 +209,7 @@ function fakeHarness(options: FakeOptions = {}): {
     transcripts: [],
     labels: [],
     renames: [],
+    providerRenames: [],
     daemon: [],
     control: [],
     marks: [],
@@ -240,6 +242,10 @@ function fakeHarness(options: FakeOptions = {}): {
     renameSessionLabel(sessionId, oldLabel, newLabel) {
       calls.renames.push({ sessionId, oldLabel, newLabel });
       return { label: newLabel, voiceMigrated: true };
+    },
+    async renameProviderSession(found, label) {
+      calls.providerRenames.push({ sessionId: found.sessionId, label });
+      return { kind: "delivered", via: "tmux" };
     },
     async sendToDaemon(socketPath, event) {
       calls.daemon.push({ socketPath, event });
@@ -784,6 +790,10 @@ describe("real MCP tool handlers with injected dependencies", () => {
       sessionId: "session-123",
       oldLabel: "Build label",
       newLabel: "Release",
+    }]);
+    expect(h.calls.providerRenames).toEqual([{
+      sessionId: "session-123",
+      label: "Release",
     }]);
   });
 
