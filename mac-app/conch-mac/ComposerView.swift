@@ -62,6 +62,20 @@ final class ComposerDraftStore: ObservableObject {
         update(sessionID) { $0.text = previewSeed }
     }
 
+    /// Add spoken words to what is already typed, rather than replacing it.
+    ///
+    /// The whole point of dictating into a composer is that the two can be
+    /// combined — start typing, finish out loud, edit the join. Overwriting
+    /// would reproduce the bug from the other direction.
+    func appendDictation(_ text: String, to sessionID: String) {
+        let spoken = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !spoken.isEmpty else { return }
+        update(sessionID) { entry in
+            let existing = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            entry.text = existing.isEmpty ? spoken : existing + " " + spoken
+        }
+    }
+
     private func update(_ sessionID: String, mutate: (inout Entry) -> Void) {
         var entry = drafts[sessionID] ?? Entry()
         mutate(&entry)

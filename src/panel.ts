@@ -12,6 +12,20 @@ export interface PanelLiveState {
   transcriptPrefix?: string;
   /** Chunk-level reading progress. The audio backend does not expose word timing. */
   reading?: { text: string; spokenChars: number };
+  /**
+   * A finished dictation meant for the COMPOSER rather than the session.
+   *
+   * Pressing the mic beside a text field and watching the spoken half vanish
+   * into the agent is the bug this exists to fix: typed and spoken text could
+   * not be combined at all, because the daemon's only destination for a
+   * transcript was `deliver()`.
+   *
+   * `id` increments per dictation and is the whole mechanism. State is
+   * republished several times a second, so an app that appended on sight of
+   * text would append it again on every frame; it applies an id it has not
+   * seen and ignores the rest.
+   */
+  dictated?: { text: string; id: number };
 }
 
 /** The states a session row can show in the dashboard panel. */
@@ -182,6 +196,8 @@ export interface PublishedState {
     /// by looking. Declared on the PUBLISHED shape only — the in-memory model
     /// is never capped and must not imply it might be.
     reading?: { text: string; spokenChars: number; truncated?: boolean };
+    /// A finished dictation for the composer. Applied once, by `id`.
+    dictated?: { text: string; id: number };
   };
   reply?: PanelReplyModel & { truncated?: boolean };
   preview?: PanelReplyModel & { truncated?: boolean };
@@ -246,6 +262,7 @@ function publishedLiveState(live: PanelLiveState): PublishedState["live"] {
     ...(live.transcriptPrefix
       ? { transcriptPrefix: live.transcriptPrefix }
       : {}),
+    ...(live.dictated ? { dictated: live.dictated } : {}),
     ...(live.reading
       ? { reading: publishedReply(live.reading) }
       : {}),

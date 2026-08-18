@@ -102,6 +102,7 @@ import {
   shouldDispatchTerminalInput,
   theaterPointerEvent,
   type ConchState,
+  publishDictation,
 } from "./status.ts";
 import {
   registrySnapshot,
@@ -815,6 +816,9 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
   if (value.origin !== undefined && value.origin !== "user" && value.origin !== "agent") {
     return { ok: false, err: "origin must be \"user\" or \"agent\"" };
   }
+  if (value.compose !== undefined && value.compose !== true) {
+    return { ok: false, err: "compose must be true when present" };
+  }
 
   return {
     ok: true,
@@ -879,7 +883,17 @@ export function downgradeTurnWithLiveBackgroundWork(
 /** Resolve a wake without carrying a prior turn's read-aloud discriminator forward. */
 export function resolveWakeTarget(wake: TurnEvent, lastTurn: TurnEvent | null): TurnEvent | null {
   const target = wake.sessionId ? wake : lastTurn;
-  return target ? { ...target, type: "wake" } : null;
+  if (!target) return null;
+  // Intent belongs to the REQUEST, not to whichever session it resolves to.
+  // A bare wake resolves to the last session that spoke, and that remembered
+  // event knows nothing about the button just pressed — so asking for the
+  // composer and being answered into the session is exactly the confusion
+  // this whole change exists to remove.
+  return {
+    ...target,
+    type: "wake",
+    ...(wake.compose ? { compose: true as const } : {}),
+  };
 }
 
 /** Wake/adopted exchanges listen first; ordinary turns read the remaining response first. */
@@ -3196,6 +3210,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
         return "handled";
       case "prompt":
         for (const id of traceIds) updateRecorderTrace(id, { intent: "prompt", bufferCountAfterReduction: 0 });
+        // A composer dictation goes BACK to the app, not into the session.
+        // Same capture, same transcription, different destination — which is
+        // the whole feature: it lets spoken and typed text be one message
+        // instead of two, and lets you edit what you said before sending it.
+        if (event.compose) {
+          publishDictation(text);
+          log(`dictated → composer ${JSON.stringify(text)}`);
+          return "handled";
+        }
         await deliver(event, text, diagnosticIds ?? diagnosticId, beforeInject);
         return "handled";
       default:

@@ -170,19 +170,23 @@ struct LiveState: Decodable, Equatable, Sendable {
     let partial: String
     let transcriptPrefix: String
     let reading: ReadingProgress?
+    /// A finished dictation meant for the composer. Applied once, by `id`.
+    let dictated: Dictation?
 
     init(
         state: String = "idle",
         label: String = "",
         partial: String = "",
         transcriptPrefix: String = "",
-        reading: ReadingProgress? = nil
+        reading: ReadingProgress? = nil,
+        dictated: Dictation? = nil
     ) {
         self.state = state
         self.label = label
         self.partial = partial
         self.transcriptPrefix = transcriptPrefix
         self.reading = reading
+        self.dictated = dictated
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -191,6 +195,7 @@ struct LiveState: Decodable, Equatable, Sendable {
         case partial
         case transcriptPrefix
         case reading
+        case dictated
     }
 
     init(from decoder: Decoder) throws {
@@ -201,6 +206,7 @@ struct LiveState: Decodable, Equatable, Sendable {
         transcriptPrefix =
             (try? container.decodeIfPresent(String.self, forKey: .transcriptPrefix)) ?? ""
         reading = try? container.decodeIfPresent(ReadingProgress.self, forKey: .reading)
+        dictated = try? container.decodeIfPresent(Dictation.self, forKey: .dictated)
     }
 
     var isCapturing: Bool {
@@ -210,6 +216,16 @@ struct LiveState: Decodable, Equatable, Sendable {
     var isExchangeActive: Bool {
         isCapturing || state == "speaking" || state == "transcribing"
     }
+}
+
+/// Spoken text handed back for the composer.
+///
+/// `id` is the whole idempotency mechanism: state republishes several times a
+/// second, so appending on sight of `text` would append it on every frame. The
+/// app applies an id it has not seen and ignores every frame after.
+struct Dictation: Decodable, Equatable, Sendable {
+    let text: String
+    let id: Int
 }
 
 struct ReadingProgress: Decodable, Equatable, Sendable {

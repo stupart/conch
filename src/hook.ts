@@ -61,6 +61,19 @@ export interface TurnEvent {
    * announcement.
    */
   origin?: "user" | "agent";
+  /**
+   * Where this dictation should LAND: the composer, not the session.
+   *
+   * The mic beside a text field used to send straight past it — press it
+   * expecting to add to what you had typed and the spoken half went into the
+   * agent instead, so typed and spoken text could not be combined at all. A
+   * wake carrying this asks for the transcript back rather than delivered.
+   *
+   * Absent means the voice loop's own behaviour, which must not change: an
+   * announced turn opens the mic to REPLY, and that reply belongs in the
+   * session.
+   */
+  compose?: true;
 }
 
 // Notification types that actually need a human; everything else stays silent.

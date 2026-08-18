@@ -1516,6 +1516,26 @@ export function setTranscriptPrefix(prefix: string): void {
   onLiveData?.();
 }
 
+/**
+ * Hand a finished dictation to the apps instead of the session.
+ *
+ * Sticky, and never cleared. `setState` rebuilds the live model on every
+ * transition, so anything not explicitly carried forward vanishes on the next
+ * frame — and this has to outlive several: the daemon publishes at a few hertz
+ * and the app applies it whenever it next reads state.
+ *
+ * The id is what makes that safe. An app that appended on sight of text would
+ * append it again on every republish; it applies an id it has not seen yet and
+ * ignores every frame after.
+ */
+export function publishDictation(text: string): void {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  live = { ...live, dictated: { text: trimmed, id: (live.dictated?.id ?? 0) + 1 } };
+  activeRenderer.live(live);
+  onLiveData?.();
+}
+
 export function setState(state: ConchState, label = "", partial = ""): void {
   // Full panel reconstruction is transition-only; onLiveData below still sees
   // every meaningful same-state partial update.
@@ -1528,6 +1548,9 @@ export function setState(state: ConchState, label = "", partial = ""): void {
     partial,
     ...(transcriptPrefix !== undefined ? { transcriptPrefix } : {}),
     ...(reading ? { reading } : {}),
+    // Carried forward deliberately: a dictation the app has not applied yet
+    // must survive the state transitions that follow it.
+    ...(live.dictated ? { dictated: live.dictated } : {}),
   };
   const dataChanged = !sameLiveData(live, next);
   live = next;

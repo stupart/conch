@@ -21,19 +21,24 @@ struct ConchDaemonEvent: Encodable, Sendable {
     /// daemon may act on it even in manual mode — where a wake it cannot
     /// attribute to a person is held rather than opening the mic.
     let origin: String?
+    /// Ask for the transcript BACK, into the composer, rather than delivered
+    /// into the session. Absent means the voice loop's own behaviour.
+    let compose: Bool?
 
     init(
         type: Kind,
         sessionId: String? = nil,
         label: String? = nil,
         announce: String? = nil,
-        origin: String? = nil
+        origin: String? = nil,
+        compose: Bool? = nil
     ) {
         self.type = type
         self.sessionId = sessionId
         self.label = label
         self.announce = announce
         self.origin = origin
+        self.compose = compose
     }
 
     /// Type into a session. The daemon puts `announce` into the session's
@@ -50,6 +55,7 @@ struct ConchDaemonEvent: Encodable, Sendable {
         Self(type: .interrupt, sessionId: sessionId, label: label)
     }
 
+    /// Open the mic to REPLY to a session — the voice loop's own wake.
     static func wake(sessionId: String, label: String) -> Self {
         Self(
             type: .wake,
@@ -57,6 +63,20 @@ struct ConchDaemonEvent: Encodable, Sendable {
             label: label,
             announce: "",
             origin: "user"
+        )
+    }
+
+    /// Open the mic to fill the COMPOSER. Same capture, different destination:
+    /// what you say comes back as text you can edit and combine with what you
+    /// had already typed, instead of going straight to the agent.
+    static func dictate(sessionId: String, label: String) -> Self {
+        Self(
+            type: .wake,
+            sessionId: sessionId,
+            label: label,
+            announce: "",
+            origin: "user",
+            compose: true
         )
     }
 

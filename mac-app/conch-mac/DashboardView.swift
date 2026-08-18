@@ -1367,6 +1367,10 @@ private struct ConversationPane: View {
     @StateObject private var transcriptContent = TranscriptContentModel()
     @StateObject private var composerDrafts = ComposerDraftStore()
     @State private var sessionPendingClose: SessionRow?
+    /// The last dictation applied to a draft. State republishes several times a
+    /// second, so without this the same spoken sentence would be appended over
+    /// and over.
+    @State private var appliedDictationID = 0
 
     /// False = the deliverable in front, which is the pane's long-standing
     /// default: a session that produced an artifact is showing it to you.
@@ -1597,6 +1601,18 @@ private struct ConversationPane: View {
             // attempt to actually read the conversation.
             if current != nil { showsConversation = false }
         }
+        .onChange(of: state?.live.dictated?.id) { _, current in
+            // Spoken words land in the composer, added to whatever was typed.
+            // Keyed on the dictation's id for the same reason the review above
+            // is keyed on identity: the daemon republishes constantly, and
+            // anything keyed on the TEXT would re-append it every frame.
+            guard let current, current != appliedDictationID,
+                  let spoken = state?.live.dictated?.text,
+                  let row = focusedRow
+            else { return }
+            appliedDictationID = current
+            composerDrafts.appendDictation(spoken, to: row.id)
+        }
         .alert(
             "Close \(sessionPendingClose?.label ?? "session")?",
             isPresented: Binding(
@@ -1718,7 +1734,11 @@ private struct ConversationPane: View {
                 // was showing — you had to find the spacebar, which a text
                 // field now swallows anyway.
                 if voiceStateForFocusedRow.isEmpty || voiceStateForFocusedRow == "idle" {
-                    store.send(.wake(sessionId: row.id, label: row.label))
+                    // The mic BESIDE a text field fills that field. It used to
+                    // send the spoken half straight past the composer into the
+                    // session, so what you typed and what you said could not be
+                    // one message.
+                    store.send(.dictate(sessionId: row.id, label: row.label))
                 } else {
                     store.send(.stop())
                 }
