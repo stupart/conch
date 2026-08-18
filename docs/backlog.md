@@ -91,8 +91,18 @@ Phases 1 and 2 are finished. This is everything else.
    typed and the spoken half vanishes into the session instead. Needs a
    dictation mode that publishes final text back to the app rather than
    injecting it. The last Phase-1 idea, deferred because it is the biggest.
-3. **Phase 4, performance** — Kokoro by mode, whisper pre-warmed on a signal.
-4. **The app must own its daemon outright.** Decided 2026-08-17. Tyler, on the
+3. **Bring the phone up to the Mac.** Checked 2026-08-17, so this is a parity
+   list rather than a guess:
+   - Resume still means TYPING an id (`LedgerView.swift:544`,
+     `BridgeClient.swift:294`) — the exact gap the Mac just lost. The reader
+     and the control message are backend-side and already shared, so this is a
+     view, not new machinery.
+   - No working-folder field at all when starting a session, where the Mac has
+     one.
+   - Dismiss/restore decodes but has no restore path.
+   Tyler: "lets nail the Mac and iPhone first prob" — the TUI comes after.
+4. **Phase 4, performance** — Kokoro by mode, whisper pre-warmed on a signal.
+5. **The app must own its daemon outright.** Decided 2026-08-17. Tyler, on the
    daemon surviving an app crash: *"thats not a use-case having part of the app
    survive thats just more buggy spagetti."* So adoption goes — no courtesy for
    a daemon the app did not start.
@@ -125,17 +135,17 @@ Phases 1 and 2 are finished. This is everything else.
    socket CLIENT like the other two, rendering from published state. Then one
    app-owned daemon serves all three surfaces and the second owner disappears
    on its own. Until then, A has to tolerate a terminal-hosted daemon.
-5. **Images in the Mac composer show as filenames, not pictures**
+6. **Images in the Mac composer show as filenames, not pictures**
    (`ComposerView.swift:491` says so in its own comment).
-6. **A new session in an untrusted folder never appears** — Claude Code holds
+7. **A new session in an untrusted folder never appears** — Claude Code holds
    it on its trust prompt and never registers it.
-7. **Renaming only renames inside conch** — route to Claude Code's `/rename`,
+8. **Renaming only renames inside conch** — route to Claude Code's `/rename`,
    which is local and costs no model turn. No Codex equivalent found.
-8. **conch should know about skills and plugins**, then toggle them.
-9. **Render materials inline** instead of growing a DROP list.
-10. **Links may not be clickable** — markdown becomes AttributedString, which
+9. **conch should know about skills and plugins**, then toggle them.
+10. **Render materials inline** instead of growing a DROP list.
+11. **Links may not be clickable** — markdown becomes AttributedString, which
     should carry link attributes; confirm before rewriting anything.
-11. Blocked on ten seconds with permissions on: **approvals** (the four-way
+12. Blocked on ten seconds with permissions on: **approvals** (the four-way
     decision) and **checkpoint/revert**.
 
 ### Terminal parity, deliberately scoped
