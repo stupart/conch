@@ -25,6 +25,10 @@ describe("iPhone Phase 2 daily controls", () => {
     expect(ledger).toContain("StartSessionSheet(bridge: bridge)");
     expect(ledger).toContain('Toggle("Resume an existing session"');
     expect(ledger).toContain("ForEach(BridgeClient.AgentBackend.allCases)");
+    expect(ledger).toContain('Text("Working folder")');
+    expect(ledger).toContain('TextField("/Users/you/project", text: $workingFolder)');
+    expect(ledger).toContain("cwd: resuming ? resumeSelection?.cwd : freshWorkingFolder");
+    expect(ledger).toContain("trimmed.isEmpty ? nil : trimmed");
 
     // Resuming is a PICKER, not a typed id. Tyler on the old field: "the
     // feature is effectively useless for me on mobile without it (I dont know
@@ -40,6 +44,7 @@ describe("iPhone Phase 2 daily controls", () => {
     // a conversation about files that are not there — and the phone never sent
     // a cwd at all before this.
     expect(bridge).toContain('message["cwd"]');
+    expect(bridge).toContain("let workingDirectory = cwd?.trimmingCharacters");
   });
 
   test("clean close is remote-only, behind an overflow menu and confirmation", () => {

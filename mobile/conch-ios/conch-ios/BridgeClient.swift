@@ -315,11 +315,11 @@ final class BridgeClient: ObservableObject {
     /// Process launch belongs to the daemon because doing it from the phone
     /// would bypass the rule that agents never start inside conch's own tmux.
     ///
-    /// `cwd` matters only when resuming: a picked session already knows where
-    /// it ran, and resuming it anywhere else reopens a conversation about
-    /// files that are not there.
+    /// `cwd` is either the fresh folder the person typed or the folder carried
+    /// by a picked historical session.
     func startSession(backend: AgentBackend, resumeSessionId: String?, cwd: String? = nil) async -> Bool {
         let resumeID = resumeSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let workingDirectory = cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         var message: [String: Any] = [
             "kind": "session-start",
             "backend": backend.rawValue,
@@ -327,8 +327,8 @@ final class BridgeClient: ObservableObject {
         if !resumeID.isEmpty {
             message["resumeSessionId"] = resumeID
         }
-        if let cwd, !cwd.isEmpty {
-            message["cwd"] = cwd
+        if !workingDirectory.isEmpty {
+            message["cwd"] = workingDirectory
         }
         guard let reply = await postControlRaw(message) else {
             let failure = "The Mac didn't confirm that \(backend.title) started."

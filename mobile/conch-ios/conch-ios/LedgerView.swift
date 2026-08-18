@@ -480,6 +480,7 @@ private struct StartSessionSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var backend = BridgeClient.AgentBackend.claude
     @State private var resuming = false
+    @State private var workingFolder = ""
     @State private var starting = false
     @State private var error: String?
 
@@ -502,6 +503,16 @@ private struct StartSessionSheet: View {
                             }
                         }
                         .pickerStyle(.segmented)
+                    }
+
+                    Section {
+                        TextField("/Users/you/project", text: $workingFolder)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    } header: {
+                        Text("Working folder")
+                    } footer: {
+                        Text("An absolute folder on your Mac. Leave blank to start in your Mac home folder.")
                     }
                 }
 
@@ -623,12 +634,17 @@ private struct StartSessionSheet: View {
                     ? (resumeSelection?.backend.lowercased() == "codex" ? .codex : .claude)
                     : backend,
                 resumeSessionId: resuming ? resumeSelection?.sessionId : nil,
-                cwd: resuming ? resumeSelection?.cwd : nil
+                cwd: resuming ? resumeSelection?.cwd : freshWorkingFolder
             )
             starting = false
             if started { dismiss() }
             else { error = bridge.lastError ?? "Couldn't start that session." }
         }
+    }
+
+    private var freshWorkingFolder: String? {
+        let trimmed = workingFolder.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
