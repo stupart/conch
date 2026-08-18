@@ -71,6 +71,14 @@ struct ConchMacApp: App {
             // Each tab scrolls internally, which is what actually makes long
             // content reachable rather than relying on the window growing.
             .frame(minWidth: 620, idealWidth: 680, minHeight: 420, idealHeight: 560)
+            // `Settings` is its own SCENE. Environment objects injected into
+            // the WindowGroup above do not reach it, and SwiftUI answers a
+            // missing @EnvironmentObject with a trap rather than a nil — so
+            // opening Settings killed the app outright (EXC_BREAKPOINT in
+            // EnvironmentObject.error, straight out of ConchSettingsView.body).
+            // Every scene that reads these has to be handed them itself.
+            .environmentObject(store)
+            .environmentObject(appDelegate.daemon)
         }
     }
 }
