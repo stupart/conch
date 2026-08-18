@@ -50,6 +50,10 @@ export interface CodexThreadsOptions {
    */
   liveWithinMs?: number;
   now?: number;
+  /** Epoch-ms of the last boot; nothing older can still be running. */
+  bootedAt?: number | null;
+  /** Which lock paths are actually held. Injectable so tests can hold one. */
+  lockProbe?: (paths: string[]) => string | null;
 }
 
 /**
@@ -68,6 +72,28 @@ export interface CodexThreadsOptions {
  * work someone is in the middle of. `CODEX_ROW_LIMIT` bounds the noise.
  */
 const DEFAULT_LIVE_WITHIN_MS = 8 * 60 * 60 * 1000;
+
+/**
+ * When this machine last booted, in epoch-ms, or null if it cannot be read.
+ *
+ * Cached: it cannot change while this process lives.
+ */
+let bootedAtCache: number | null | undefined;
+export function machineBootedAtMs(): number | null {
+  if (bootedAtCache !== undefined) return bootedAtCache;
+  try {
+    const out = Bun.spawnSync(["sysctl", "-n", "kern.boottime"], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    // "{ sec = 1787012345, usec = 123456 } Mon Aug 17 20:40:12 2026"
+    const sec = new TextDecoder().decode(out.stdout).match(/sec\s*=\s*(\d+)/)?.[1];
+    bootedAtCache = sec ? Number(sec) * 1000 : null;
+  } catch {
+    bootedAtCache = null;
+  }
+  return bootedAtCache;
+}
 
 /** Most-recent Codex threads to list, so a heavy day cannot flood the ledger. */
 const CODEX_ROW_LIMIT = 6;
@@ -149,15 +175,52 @@ const ACTIVE_WITHIN_MS = 20_000;
  * The cost is that a crashed Codex leaves a stale lock and one dead row until it
  * next opens that thread, which is a far better failure than hiding live work.
  */
-export function readCodexOpenThreadIds(codexHome: string): Set<string> {
+export function readCodexOpenThreadIds(
+  codexHome: string,
+  probe: ((paths: string[]) => string | null) | undefined = probeHeldLocks,
+): Set<string> {
+  const dir = join(codexHome, "thread-writer-locks");
+  let names: string[];
   try {
-    return new Set(
-      readdirSync(join(codexHome, "thread-writer-locks"))
-        .filter((name) => name.endsWith(".lock") && !name.startsWith("."))
-        .map((name) => name.slice(0, -".lock".length)),
-    );
+    names = readdirSync(dir)
+      .filter((name) => name.endsWith(".lock") && !name.startsWith("."));
   } catch {
     return new Set();
+  }
+  if (!names.length) return new Set();
+  const idOf = (name: string) => name.slice(0, -".lock".length);
+
+  // A lock FILE is not a lock. Codex holds an exclusive lock for as long as the
+  // session lives and removes the file on a clean exit — but a reboot is not a
+  // clean exit, and the files it leaves behind made conch report sessions that
+  // died with the machine. Tyler saw six rows for one session; five were these
+  // and a stale recency window, every one already resolving to pid 0.
+  //
+  // One `lsof` for every lock at once, not one per file: this runs on the
+  // render path, and the count is small but the cost is not.
+  const held = (probe ?? probeHeldLocks)(names.map((name) => join(dir, name)));
+  if (held === null) {
+    // The probe itself failed — lsof missing, or something unexpected. Fall
+    // back to the old assumption rather than silently emptying the ledger:
+    // showing a session that has gone is a smaller failure than hiding one
+    // that has not.
+    return new Set(names.map(idOf));
+  }
+  return new Set(names.filter((name) => held.includes(join(dir, name))).map(idOf));
+}
+
+/** Names of the lock paths some process currently holds open, or null if unknown. */
+function probeHeldLocks(paths: string[]): string | null {
+  try {
+    const child = Bun.spawnSync(["lsof", "-F", "n", "--", ...paths], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    // Exit 1 means "none of these are open", which is an answer, not a failure.
+    if (child.exitCode !== 0 && child.exitCode !== 1) return null;
+    return new TextDecoder().decode(child.stdout);
+  } catch {
+    return null;
   }
 }
 
@@ -441,14 +504,26 @@ export function readCodexThreads(
   if (!existsSync(state)) return { entries: [], complete: true, available: false };
 
   const now = options.now ?? Date.now();
-  const cutoff = now - (options.liveWithinMs ?? DEFAULT_LIVE_WITHIN_MS);
+  // Floor the recency window at the last boot. Nothing that was last written
+  // before this machine started can still be running on it, however recent the
+  // timestamp looks — and after a reboot the whole 8h window is full of threads
+  // that died with the machine. Tyler saw six sessions for one real one.
+  // A caller supplying its own clock is not on this machine's timeline — every
+  // test does, with timestamps long predating the real boot — so the floor
+  // applies only when we are reading the real machine at the real time.
+  const bootedAt = options.bootedAt
+    ?? (options.now === undefined ? machineBootedAtMs() : null);
+  const cutoff = Math.max(
+    now - (options.liveWithinMs ?? DEFAULT_LIVE_WITHIN_MS),
+    bootedAt ?? 0,
+  );
 
   let db: Database | undefined;
   try {
     db = openReadOnly(state);
     // An open thread is live no matter how long ago it was last touched; the
     // window only has to catch threads Codex has since closed.
-    const openIds = readCodexOpenThreadIds(codexHome);
+    const openIds = readCodexOpenThreadIds(codexHome, options.lockProbe);
     const threads = db
       .query(
         // `source` separates a session from a script. On this machine: 354

@@ -405,8 +405,16 @@ describe("an open Codex thread stays listed however idle", () => {
       ["open"],
     );
     try {
-      expect(readCodexThreads({ codexHome: home, now: NOW }).entries.map((e) => e.sessionId))
-        .toEqual(["open"]);
+      // The premise is that Codex still HOLDS this lock — a bare file on disk
+      // is what a crashed or rebooted Codex leaves behind, and that is not an
+      // open thread.
+      expect(
+        readCodexThreads({
+          codexHome: home,
+          now: NOW,
+          lockProbe: (paths) => paths.join("\n"),
+        }).entries.map((e) => e.sessionId),
+      ).toEqual(["open"]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -419,6 +427,47 @@ describe("an open Codex thread stays listed however idle", () => {
     );
     try {
       expect(readCodexThreads({ codexHome: home, now: NOW }).entries).toEqual([]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a thread inside the recency window but older than boot is gone", () => {
+    // Tyler's six rows for one session. After a reboot the whole 8h window is
+    // full of threads that died with the machine: recent by timestamp, and
+    // impossible by physics.
+    const NOW = 1_700_000_000_000;
+    const home = homeWith(
+      [{ id: "before-boot", name: "yesterday's work", updated_at_ms: NOW - 3_600_000 }],
+      [],
+    );
+    try {
+      expect(
+        readCodexThreads({
+          codexHome: home,
+          now: NOW,
+          bootedAt: NOW - 600_000, // booted ten minutes ago
+        }).entries,
+      ).toEqual([]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a thread written since boot is still listed", () => {
+    const NOW = 1_700_000_000_000;
+    const home = homeWith(
+      [{ id: "since-boot", name: "this session", updated_at_ms: NOW - 60_000 }],
+      [],
+    );
+    try {
+      expect(
+        readCodexThreads({
+          codexHome: home,
+          now: NOW,
+          bootedAt: NOW - 600_000,
+        }).entries.map((e) => e.sessionId),
+      ).toEqual(["since-boot"]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -466,4 +515,34 @@ describe("a Codex session is addressable, not just visible", () => {
     const second = readCodexThreadPid(home, "cached", 1_100);
     expect(first).toBe(second);
   });
+});
+
+test("a lock file nobody holds is not an open thread", () => {
+  // A reboot is not a clean exit, so Codex's lock files outlive the processes
+  // that held them. Presence alone reported sessions that died with the machine.
+  const home = mkdtempSync(join(tmpdir(), "conch-locks-"));
+  mkdirSync(join(home, "thread-writer-locks"), { recursive: true });
+  const held = join(home, "thread-writer-locks", "alive.lock");
+  const stale = join(home, "thread-writer-locks", "dead.lock");
+  writeFileSync(held, "");
+  writeFileSync(stale, "");
+
+  // Probe reports only the first path as open.
+  const ids = readCodexOpenThreadIds(home, () => `n${held}\n`);
+  expect([...ids]).toEqual(["alive"]);
+
+  rmSync(home, { recursive: true, force: true });
+});
+
+test("an unusable probe falls back to presence rather than emptying the ledger", () => {
+  // Hiding a live session is worse than showing a dead one.
+  const home = mkdtempSync(join(tmpdir(), "conch-locks-"));
+  mkdirSync(join(home, "thread-writer-locks"), { recursive: true });
+  writeFileSync(join(home, "thread-writer-locks", "a.lock"), "");
+  writeFileSync(join(home, "thread-writer-locks", "b.lock"), "");
+
+  const ids = readCodexOpenThreadIds(home, () => null);
+  expect([...ids].sort()).toEqual(["a", "b"]);
+
+  rmSync(home, { recursive: true, force: true });
 });
