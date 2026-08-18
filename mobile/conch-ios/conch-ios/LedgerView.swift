@@ -368,10 +368,13 @@ struct SessionRowView: View {
                         .lineLimit(2)
                 }
 
-                if let context = row.context, context.limitTokens > 0 {
-                    ContextMeter(usage: context, compact: true)
-                        .padding(.top, 2)
-                }
+                // Deliberately NOT here. A bar plus a percentage under every
+                // row made the most incidental number on screen the most
+                // visually loud thing in the list, competing with the labels
+                // you are actually scanning. Tyler: "its a nice to have when u
+                // need it feature but not something thats like primary form of
+                // data". It lives on the session view, which is where the Mac
+                // puts it and where you go when you want to know.
             }
 
             Spacer(minLength: 8)
@@ -404,14 +407,24 @@ struct SessionRowView: View {
 struct AgentBadge: View {
     let backend: String?
 
+    /// The mark, not the word.
+    ///
+    /// This was a text pill because the iOS asset catalog had no agent art —
+    /// so the phone said "Claude" and "Codex" in capsules while the Mac showed
+    /// the actual marks. Tyler: "looks like the iphone app is missing the icons
+    /// for codex and claude code and has names instead." The assets are
+    /// universal and template-rendered, so they came straight across.
+    ///
+    /// A mark also costs a fraction of the width, which matters in a list where
+    /// the label is the thing you are reading and the badge was eating it.
     var body: some View {
         if let name = backendName {
-            Text(name)
-                .font(Type.caption.weight(.medium))
+            Image(name == "Codex" ? "AgentCodex" : "AgentClaude")
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
                 .foregroundStyle(Palette.textFaint)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.white.opacity(0.045), in: Capsule())
+                .frame(width: 11, height: 11)
                 .accessibilityLabel("\(name) session")
         }
     }
@@ -429,56 +442,36 @@ struct AgentBadge: View {
 
 struct ContextMeter: View {
     let usage: PublishedState.Row.ContextUsage
-    var compact = false
 
     private var tint: Color {
+        // A routine session stays quiet. Colour starts carrying urgency only
+        // once context pressure can plausibly change the next decision.
         if usage.proportion >= 0.95 { return Palette.needs }
         if usage.proportion >= 0.80 { return Palette.waiting }
         return Palette.textFaint
     }
 
-    private var tokenLabel: String {
-        "\(abbreviate(usage.usedTokens)) / \(abbreviate(usage.limitTokens)) tokens"
-    }
-
+    /// A number, not a bar, and only where you have already committed to
+    /// looking at one session — the same call the Mac made.
+    ///
+    /// A filled capsule under every ledger row gave context pressure the same
+    /// visual weight as the session itself, on the one surface you scan
+    /// constantly. Tyler: "its a nice to have when u need it feature but not
+    /// something thats like primary form of data". Colour still carries the
+    /// warning; it just stops shouting when there is nothing to warn about.
     var body: some View {
-        VStack(alignment: .leading, spacing: compact ? 3 : 5) {
-            HStack(spacing: 6) {
-                if !compact {
-                    Text("Context")
-                        .font(Type.caption.weight(.medium))
-                        .foregroundStyle(Palette.textDim)
-                }
-                Spacer(minLength: 0)
-                Text("\(Int((usage.proportion * 100).rounded()))%")
-                    .font(Type.caption.monospacedDigit())
-                    .foregroundStyle(tint)
-                if !compact {
-                    Text(tokenLabel)
-                        .font(Type.caption.monospacedDigit())
-                        .foregroundStyle(Palette.textFaint)
-                }
-            }
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.white.opacity(0.07))
-                    Capsule()
-                        .fill(tint)
-                        .frame(width: geometry.size.width * usage.proportion)
-                }
-            }
-            .frame(height: compact ? 3 : 5)
+        HStack(spacing: 6) {
+            Text("Context")
+                .font(Type.caption.weight(.medium))
+                .foregroundStyle(Palette.textDim)
+            Text("\(Int((usage.proportion * 100).rounded()))%")
+                .font(Type.caption.monospacedDigit())
+                .foregroundStyle(tint)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Context \(Int((usage.proportion * 100).rounded())) percent, \(tokenLabel)")
-    }
-
-    private func abbreviate(_ value: Int) -> String {
-        guard value >= 1_000 else { return "\(value)" }
-        let thousands = Double(value) / 1_000
-        return thousands >= 100
-            ? "\(Int(thousands.rounded()))k"
-            : String(format: "%.1fk", thousands)
+        .accessibilityLabel(
+            "Context \(Int((usage.proportion * 100).rounded())) percent used"
+        )
     }
 }
 
