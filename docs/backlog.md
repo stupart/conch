@@ -87,26 +87,12 @@ Phases 1 and 2 are finished. This is everything else.
 
 1. **Phase 3, the feed** (`vision.md`) — the whole remaining product idea. One
    swap button of it exists.
-2. **Search what you can resume, and restart it from conch.** Tyler: "the
-   ability to resume by searching the available codex and claude code sessions
-   that are available to resume (really restart from)... i want to do that
-   right now but the only way i know of is to go to codex."
-
-   The plumbing is already there — `resumeSessionId` runs from the socket
-   client through `session-lifecycle.ts` into `claude --resume <id>` /
-   `codex resume <id>`. What is missing is DISCOVERY: nothing lists or
-   searches what is resumable, so the field can only be filled by someone who
-   already knows the id. Both agents keep the history on disk (Claude's
-   transcripts, Codex's `threads` table — the same one the ledger reads, minus
-   the liveness filter), so this is a reader and a search field, not new
-   machinery. Note the distinction he draws: resuming here means RESTARTING a
-   finished session, not attaching to a live one.
-3. **The mic must fill the composer.** Press it expecting to add to what you
+2. **The mic must fill the composer.** Press it expecting to add to what you
    typed and the spoken half vanishes into the session instead. Needs a
    dictation mode that publishes final text back to the app rather than
    injecting it. The last Phase-1 idea, deferred because it is the biggest.
-4. **Phase 4, performance** — Kokoro by mode, whisper pre-warmed on a signal.
-5. **The app must own its daemon outright.** Decided 2026-08-17. Tyler, on the
+3. **Phase 4, performance** — Kokoro by mode, whisper pre-warmed on a signal.
+4. **The app must own its daemon outright.** Decided 2026-08-17. Tyler, on the
    daemon surviving an app crash: *"thats not a use-case having part of the app
    survive thats just more buggy spagetti."* So adoption goes — no courtesy for
    a daemon the app did not start.
@@ -139,17 +125,17 @@ Phases 1 and 2 are finished. This is everything else.
    socket CLIENT like the other two, rendering from published state. Then one
    app-owned daemon serves all three surfaces and the second owner disappears
    on its own. Until then, A has to tolerate a terminal-hosted daemon.
-6. **Images in the Mac composer show as filenames, not pictures**
+5. **Images in the Mac composer show as filenames, not pictures**
    (`ComposerView.swift:491` says so in its own comment).
-7. **A new session in an untrusted folder never appears** — Claude Code holds
+6. **A new session in an untrusted folder never appears** — Claude Code holds
    it on its trust prompt and never registers it.
-8. **Renaming only renames inside conch** — route to Claude Code's `/rename`,
+7. **Renaming only renames inside conch** — route to Claude Code's `/rename`,
    which is local and costs no model turn. No Codex equivalent found.
-9. **conch should know about skills and plugins**, then toggle them.
-10. **Render materials inline** instead of growing a DROP list.
-11. **Links may not be clickable** — markdown becomes AttributedString, which
+8. **conch should know about skills and plugins**, then toggle them.
+9. **Render materials inline** instead of growing a DROP list.
+10. **Links may not be clickable** — markdown becomes AttributedString, which
     should carry link attributes; confirm before rewriting anything.
-12. Blocked on ten seconds with permissions on: **approvals** (the four-way
+11. Blocked on ten seconds with permissions on: **approvals** (the four-way
     decision) and **checkpoint/revert**.
 
 ### Terminal parity, deliberately scoped
@@ -194,6 +180,12 @@ image attachment, artifact rendering, or a phone's audio lease.
 
 ### Fixed
 
+- [x] **Nothing listed what could be resumed.** conch could already restart a
+      past session, but only if you knew its id — so finding one meant leaving
+      conch for Codex. Now a searchable picker over both agents' history (101
+      sessions here), which also stops asking two questions the row already
+      answers: the agent, and the folder. `claude --resume` in the wrong
+      directory reopens a conversation about files that are not there.
 - [x] **The Mac conversation went black, glitched back only on scroll, and
       snapped to the end while being read.** The highest-priority bug on the
       list for weeks. Not the daemon's republishing as guessed: `pinnedToBottom`
