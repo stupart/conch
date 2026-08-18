@@ -63,11 +63,22 @@ describe("iPhone Phase 2 daily controls", () => {
     expect(models).toContain("Double(usedTokens) / Double(limitTokens)");
     expect(models).toContain("var context: ContextUsage?");
 
-    expect(ledger).toContain("ContextMeter(usage: context, compact: true)");
+    // Only where you have already committed to looking at one session — the
+    // same call the Mac made. A bar plus a percentage under every ledger row
+    // gave the most incidental number on screen the most visual weight, on the
+    // surface you scan constantly. Tyler: "its a nice to have when u need it
+    // feature but not something thats like primary form of data".
     expect(session).toContain("ContextMeter(usage: context)");
-    expect(ledger).toContain("geometry.size.width * usage.proportion");
+    expect(ledger).not.toContain("ContextMeter(usage: context, compact: true)");
+    expect(ledger).not.toContain("geometry.size.width * usage.proportion");
+    // Colour still carries the warning; it just stops shouting otherwise.
     expect(ledger).toContain("usage.proportion >= 0.80");
     expect(ledger).toContain("usage.proportion >= 0.95");
+
+    // The mark, not the word: the phone spelled out "Claude"/"Codex" in a pill
+    // because the iOS catalog had no agent art.
+    expect(ledger).toContain('Image(name == "Codex" ? "AgentCodex" : "AgentClaude")');
+    expect(ledger).not.toContain("background(Color.white.opacity(0.045), in: Capsule())");
   });
 
   test("Claude and Codex badges sit with names in ledger and conversation", () => {
