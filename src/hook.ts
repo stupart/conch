@@ -1,4 +1,5 @@
 import { connect } from "node:net";
+import { readState } from "./daemon-state.ts";
 import type { Config } from "./config.ts";
 import { bell, speak } from "./speak.ts";
 import {
@@ -262,6 +263,12 @@ export async function runHook(cfg: Config): Promise<void> {
   // standalone; worker mode intentionally reaches the awaited say fallback.
   const handedOff = await sendToDaemon(cfg.socketPath, turn);
   if (!handedOff) {
+    // Manual mode is a promise the daemon normally keeps, and with no daemon
+    // there was nobody keeping it: every hook announced its own turn aloud on a
+    // Mac explicitly set to silent. Tyler heard conch talking with the app shut
+    // and nothing running. The mode is one boolean on disk, so read it — a
+    // process speaking on conch's behalf answers to conch's mode.
+    if (readState().paused) return;
     // A reclassified Stop is visual-only by default. The opt-in can still bell
     // and announce without a daemon, though only the daemon owns a listening loop.
     if (turn.backgroundWork && !cfg.workingMic) return;

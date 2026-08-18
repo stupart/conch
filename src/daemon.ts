@@ -55,6 +55,8 @@ import {
   type CodexTurnMemory,
 } from "./codex-threads.ts";
 import { watchSessionSources } from "./session-watch.ts";
+import { daemonStateFromUnknown, readState, writeState } from "./daemon-state.ts";
+export { daemonStateFromUnknown } from "./daemon-state.ts";
 import { recordTelemetry } from "./telemetry.ts";
 import {
   createPhoneBridgeApplication,
@@ -233,40 +235,6 @@ import { createPublishThrottle } from "./publish-throttle.ts";
  * reopens the mic for the last announced session.
  */
 // Manual mode survives launchd/supervisor restarts. Old state files used a
-// destructive flag, so reading one upgrades it into the lossless setting.
-const STATE_FILE = join(homedir(), ".config/conch/state.json");
-
-interface DaemonState {
-  paused: boolean;
-}
-
-/** Legacy quiet state upgrades to the only lossless mode before runtime sees it. */
-export function daemonStateFromUnknown(value: unknown): DaemonState {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return { paused: false };
-  }
-  const state = value as { paused?: unknown; muted?: unknown };
-  return { paused: state.paused === true || state.muted === true };
-}
-
-function readState(): DaemonState {
-  try {
-    const decoded: unknown = JSON.parse(readFileSync(STATE_FILE, "utf8"));
-    const state = daemonStateFromUnknown(decoded);
-    if (typeof decoded === "object" && decoded !== null && "muted" in decoded) writeState(state);
-    return state;
-  } catch {
-    return { paused: false };
-  }
-}
-
-function writeState(state: DaemonState): void {
-  try {
-    mkdirSync(join(homedir(), ".config/conch"), { recursive: true });
-    writeFileSync(STATE_FILE, JSON.stringify(state) + "\n");
-  } catch {}
-}
-
 export interface ConfigControllerOptions {
   env?: Readonly<Record<string, string | undefined>>;
   settingsPath?: string;
