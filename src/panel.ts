@@ -48,6 +48,8 @@ export interface PanelRowModel {
   label: string;
   /** Which agent runs this session; absent means Claude. */
   backend?: "claude" | "codex";
+  /** Known context usage for the TUI row; absent is unknown, never zero. */
+  context?: SessionContextUsage;
   status: SessionStatus | null;
   /** Epoch-ms for the status currently visible on this row. */
   at?: number;
@@ -89,7 +91,7 @@ export interface SettingsOverlayModel {
   error?: string;
 }
 
-export type SessionActionKey = "voice" | "prioritize" | "rename" | "dismiss";
+export type SessionActionKey = "voice" | "prioritize" | "rename" | "dismiss" | "close";
 
 export interface SessionActionsOverlayRowModel {
   key: SessionActionKey;
@@ -125,6 +127,36 @@ export interface RestoreSessionsOverlayModel {
   error?: string;
 }
 
+export interface TerminalComposerModel {
+  target: { sessionId: string; label: string };
+  text: string;
+  error?: string;
+}
+
+export type SessionStartKey = "backend" | "cwd" | "start";
+
+export interface SessionStartOverlayRowModel {
+  key: SessionStartKey;
+  value: string;
+  help: string;
+  selected: boolean;
+  editing: boolean;
+}
+
+export interface SessionStartOverlayModel {
+  rows: SessionStartOverlayRowModel[];
+  selectedIndex: number;
+  starting: boolean;
+  error?: string;
+}
+
+export interface TerminalQuestionState {
+  sessionId: string;
+  itemId: string;
+  selectedIndices: number[];
+  submitted: boolean;
+}
+
 export interface PanelModel {
   rows: PanelRowModel[];
   mode: DashboardMode;
@@ -145,6 +177,9 @@ export interface PanelModel {
   settingsOverlay?: SettingsOverlayModel | null;
   sessionActionsOverlay?: SessionActionsOverlayModel | null;
   restoreSessionsOverlay?: RestoreSessionsOverlayModel | null;
+  terminalComposer?: TerminalComposerModel | null;
+  sessionStartOverlay?: SessionStartOverlayModel | null;
+  terminalQuestion?: TerminalQuestionState | null;
 }
 
 export interface PublishedSessionRow {
@@ -420,6 +455,7 @@ export interface BuildPanelModelOptions {
   navSelectedId: string | null;
   reply?: PanelReplyModel | null;
   panelOpen?: boolean;
+  contextBySessionId?: ReadonlyMap<string, SessionContextUsage>;
 }
 
 const ROW_LIVE_STATES = new Set<PanelConchState>(["listening", "recording", "speaking", "transcribing"]);
@@ -454,6 +490,9 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         sessionId: session.sessionId,
         label: sessionLabel(session, session.cwd),
         ...(session.backend ? { backend: session.backend } : {}),
+        ...(options.contextBySessionId?.get(session.sessionId)
+          ? { context: { ...options.contextBySessionId.get(session.sessionId)! } }
+          : {}),
         status,
         ...(visibleState?.at !== undefined ? { at: visibleState.at } : {}),
         ...(status === "needs" && latched?.detail

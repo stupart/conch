@@ -31,6 +31,7 @@ import {
   TheaterSelection,
   type SelectionDocumentLine,
 } from "./theater-selection.ts";
+import { answerableTerminalQuestion } from "./terminal-question.ts";
 
 export type ConchState = PanelConchState;
 export type LiveState = PanelLiveState;
@@ -455,18 +456,21 @@ function compactLedgerLeft(
   lead: string,
 ): string {
   const icon = THEATER_STATUS_ICON[rowState(row)] ?? THEATER_STATUS_ICON.idle!;
+  const identity = `${terminalAgentMark(row)} ${row.label}`;
+  const context = terminalContext(row);
+  const status = context ? `${icon} ${context}` : icon;
   const detail = inlineRowDetail(row);
   const leadWidth = visibleLength(lead);
-  const iconWidth = visibleLength(icon);
+  const statusWidth = visibleLength(status);
   if (!detail) {
-    const labelWidth = Math.max(1, width - leadWidth - iconWidth - 1);
-    return `${lead}${padVisible(row.label, labelWidth)} ${icon}`;
+    const labelWidth = Math.max(1, width - leadWidth - statusWidth - 1);
+    return `${lead}${padVisible(identity, labelWidth)} ${status}`;
   }
 
-  const fieldsWidth = Math.max(2, width - leadWidth - iconWidth - 2);
+  const fieldsWidth = Math.max(2, width - leadWidth - statusWidth - 2);
   const labelWidth = Math.max(1, Math.min(12, Math.floor(fieldsWidth / 2)));
   const detailWidth = Math.max(1, fieldsWidth - labelWidth);
-  return `${lead}${padVisible(row.label, labelWidth)} ${icon} ${fitTheaterLine(detail, detailWidth)}`;
+  return `${lead}${padVisible(identity, labelWidth)} ${status} ${fitTheaterLine(detail, detailWidth)}`;
 }
 
 function fullLedgerLeft(
@@ -475,14 +479,33 @@ function fullLedgerLeft(
   lead: string,
 ): string {
   const status = fullStatus(row);
+  const identity = `${terminalAgentMark(row)} ${row.label}`;
+  const context = terminalContext(row);
+  const statusAndContext = context ? `${status} ${context}` : status;
   const detail = inlineRowDetail(row);
   const labelWidth = Math.max(
     1,
-    Math.min(30, width - visibleLength(lead) - visibleLength(status) - 2),
+    Math.min(30, width - visibleLength(lead) - visibleLength(statusAndContext) - 2),
   );
-  return `${lead}${padVisible(row.label, labelWidth)} ${status}${
+  return `${lead}${padVisible(identity, labelWidth)} ${statusAndContext}${
     detail ? ` \x1b[2m(${detail})\x1b[22m` : ""
   }`;
+}
+
+/** Plain-terminal equivalents of the two app badges: C = Claude, X = Codex. */
+function terminalAgentMark(row: Pick<PanelRowModel, "backend">): string {
+  return `\x1b[2m${row.backend === "codex" ? "X" : "C"}\x1b[22m`;
+}
+
+/** Context is a number on every surface; unknown stays absent rather than becoming 0%. */
+function terminalContext(row: Pick<PanelRowModel, "context">): string {
+  const context = row.context;
+  if (!context || context.limitTokens <= 0) return "";
+  const fraction = Math.max(0, Math.min(1, context.usedTokens / context.limitTokens));
+  const text = `${Math.round(fraction * 100)}%`;
+  if (fraction >= 0.97) return `\x1b[91m${text}\x1b[39m`;
+  if (fraction >= 0.85) return `\x1b[33m${text}\x1b[39m`;
+  return `\x1b[2m${text}\x1b[22m`;
 }
 
 function theaterLedgerRow(
@@ -659,6 +682,46 @@ function theaterContentLines(
       paneOffset,
       selection,
       { bottomAnchored: true },
+    );
+  }
+
+  const terminalQuestion = answerableTerminalQuestion(model);
+  if (terminalQuestion) {
+    const questionState = model.terminalQuestion?.sessionId === terminalQuestion.sessionId
+      && model.terminalQuestion.itemId === terminalQuestion.itemId
+      ? model.terminalQuestion
+      : null;
+    const selected = new Set(questionState?.selectedIndices ?? []);
+    const asked = terminalQuestion.question;
+    const sourceLines = [
+      ...(asked.header ? [asked.header] : []),
+      asked.question,
+      ...asked.options.flatMap((option, index) => {
+        const marker = asked.multiSelect
+          ? `[${selected.has(index) ? "x" : " "}] ${index + 1}.`
+          : `${index + 1}.`;
+        return [
+          `${marker} ${option.label}`,
+          ...(option.description ? [`   ${option.description}`] : []),
+        ];
+      }),
+    ];
+    const doc = sourceLines.flatMap((line) =>
+      wrapPlainText(plainTheaterDocumentText(line), width).map(({ text }) => ({ text }))
+    );
+    const note = questionState?.submitted
+      ? "answer sent · waiting for the session"
+      : asked.multiSelect
+        ? "1-9 toggle · enter submit · esc clear"
+        : "1-9 answer";
+    return scrollableTheaterContent(
+      doc,
+      `question:${terminalQuestion.sessionId}:${terminalQuestion.itemId}:${terminalQuestion.rev}`,
+      width,
+      height,
+      paneOffset,
+      selection,
+      { note },
     );
   }
 
@@ -932,6 +995,76 @@ function theaterRestoreSessionsOverlay(
   return output.slice(0, height);
 }
 
+function theaterSessionStartOverlay(
+  base: string[],
+  overlay: NonNullable<PanelModel["sessionStartOverlay"]>,
+  width: number,
+  height: number,
+): string[] {
+  if (width < 12 || height < 4) {
+    const compact = [...base];
+    while (compact.length < height) compact.push("");
+    if (height) compact[Math.floor(height / 2)] = " new session · esc close";
+    return compact.slice(0, height);
+  }
+  const output = [...base];
+  while (output.length < height) output.push("");
+  const boxWidth = Math.max(12, Math.min(width - 2, 88));
+  const innerWidth = boxWidth - 2;
+  const lines = [
+    `\x1b[2m╭${"─".repeat(innerWidth)}╮\x1b[0m`,
+    `\x1b[2m│\x1b[0m${padVisible(" new fresh session · ↑↓ choose · enter edit/start · esc close", innerWidth)}\x1b[2m│\x1b[0m`,
+  ];
+  for (const row of overlay.rows) {
+    const cursor = row.selected ? "›" : " ";
+    const value = `${row.value}${row.editing ? "▌" : ""}`;
+    const fitted = padVisible(`${cursor} ${row.key.padEnd(8)} · ${value} · \x1b[2m${row.help}\x1b[22m`, innerWidth);
+    const styled = row.selected
+      ? `\x1b[38;2;88;201;212m\x1b[48;2;28;32;36m${fitted}\x1b[0m`
+      : fitted;
+    lines.push(`\x1b[2m│\x1b[0m${styled}\x1b[2m│\x1b[0m`);
+  }
+  if (overlay.error) {
+    lines.push(`\x1b[2m│\x1b[0m${padVisible(` ${overlay.error}`, innerWidth)}\x1b[2m│\x1b[0m`);
+  }
+  lines.push(`\x1b[2m╰${"─".repeat(innerWidth)}╯\x1b[0m`);
+  const top = Math.max(0, Math.floor((height - lines.length) / 2));
+  const left = " ".repeat(Math.max(0, Math.floor((width - boxWidth) / 2)));
+  for (let index = 0; index < lines.length && top + index < height; index++) {
+    output[top + index] = left + lines[index]!;
+  }
+  return output.slice(0, height);
+}
+
+/** A bottom prompt line, not a full-screen editor: the terminal's honest composer. */
+function theaterComposerOverlay(
+  base: string[],
+  composer: NonNullable<PanelModel["terminalComposer"]>,
+  live: PanelLiveState,
+  width: number,
+  height: number,
+): string[] {
+  const output = [...base];
+  while (output.length < height) output.push("");
+  if (height <= 1) {
+    if (height) output[0] = fitTheaterLine(`> ${composer.text}▌`, width);
+    return output.slice(0, height);
+  }
+  const partial = live.label === composer.target.label ? live.partial : "";
+  const composed = `${composer.text}${composer.text && partial ? " " : ""}${partial}`;
+  const lines = [
+    `\x1b[2m${"─".repeat(Math.max(1, width))}\x1b[0m`,
+    `\x1b[2mprompt → ${composer.target.label} · ctrl-t dictate · enter send · esc cancel\x1b[0m`,
+    `\x1b[38;2;88;201;212m>\x1b[39m ${composed}▌`,
+    ...(composer.error ? [`\x1b[91m${composer.error}\x1b[39m`] : []),
+  ];
+  const start = Math.max(0, height - lines.length);
+  for (let index = 0; index < lines.length && start + index < height; index++) {
+    output[start + index] = fitTheaterLine(lines[index]!, width);
+  }
+  return output.slice(0, height);
+}
+
 /** Full-frame alternate-screen renderer. Its tests assert invariants, not pixels. */
 export function createTheaterRenderer(
   io: RendererIO = processRendererIO(),
@@ -967,7 +1100,11 @@ export function createTheaterRenderer(
     const frameWidth = Math.max(1, columns - 1); // never arm the terminal's wrap column
     const frame: string[] = [];
     const overlayOpen = Boolean(
-      model?.settingsOverlay || model?.sessionActionsOverlay || model?.restoreSessionsOverlay
+      model?.settingsOverlay
+      || model?.sessionActionsOverlay
+      || model?.restoreSessionsOverlay
+      || model?.sessionStartOverlay
+      || model?.terminalComposer
     );
     // Forced logs/help must remain visible on narrow terminals; below the normal
     // split threshold they temporarily own the body, like a narrow modal.
@@ -1048,6 +1185,21 @@ export function createTheaterRenderer(
         contentWidth,
         bodyHeight,
       );
+    } else if (model?.sessionStartOverlay && paneOpen) {
+      content = theaterSessionStartOverlay(
+        content,
+        model.sessionStartOverlay,
+        contentWidth,
+        bodyHeight,
+      );
+    } else if (model?.terminalComposer && paneOpen) {
+      content = theaterComposerOverlay(
+        content,
+        model.terminalComposer,
+        model.live,
+        contentWidth,
+        bodyHeight,
+      );
     }
     const allLedgerRows = model?.rows ?? [];
     const navFocus = allLedgerRows.findIndex((row) => row.navSelected);
@@ -1083,6 +1235,10 @@ export function createTheaterRenderer(
             ? "  \x1b[2mactions · esc close · ↑↓ choose · ←→ adjust · enter select\x1b[0m"
             : model?.restoreSessionsOverlay
               ? "  \x1b[2mrestore · esc close · ↑↓ choose · enter restore\x1b[0m"
+            : model?.sessionStartOverlay
+              ? "  \x1b[2mnew session · esc close · ↑↓ choose · ←→ agent · enter edit/start\x1b[0m"
+            : model?.terminalComposer
+              ? "  \x1b[2mprompt line · ctrl-t dictate · enter send · backspace edit · esc cancel\x1b[0m"
             : keybar,
       );
     }

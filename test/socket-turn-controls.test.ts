@@ -95,6 +95,10 @@ function sessionCommandHarness(options: { throwOn?: SessionControlMessage["comma
       if (options.throwOn === "dismiss") throw new Error("dismiss failed");
       return true;
     },
+    close: async (target) => {
+      calls.push(["close", { ...target }]);
+      return true;
+    },
     restore: (sessionId) => {
       calls.push(["restore", sessionId]);
       if (options.throwOn === "restore") throw new Error("restore failed");

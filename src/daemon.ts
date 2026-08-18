@@ -47,6 +47,12 @@ import {
 import { readSessionContextUsage, type SessionContextUsage } from "./context-meter.ts";
 import { appendConchError, clipboardFallbackError } from "./app-errors.ts";
 import { closeTerminalSession, startTerminalSession } from "./session-lifecycle.ts";
+import { SessionStartOverlay } from "./session-start-overlay.ts";
+import { TerminalComposer } from "./terminal-composer.ts";
+import {
+  answerableTerminalQuestion,
+  TerminalQuestionController,
+} from "./terminal-question.ts";
 import {
   codexHomeDir,
   detectCodexTurnEnds,
@@ -1484,6 +1490,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let settingsOverlay: SettingsOverlay | null = null;
   let sessionActionsOverlay: SessionActionsOverlay | null = null;
   let restoreSessionsOverlay: RestoreSessionsOverlay | null = null;
+  let sessionStartOverlay: SessionStartOverlay | null = null;
+  let terminalComposer: TerminalComposer | null = null;
+  let terminalQuestionController: TerminalQuestionController | null = null;
   let meetingMic: MicClaimPoller | null = null;
   // Per-session manual mode holds only the newest turn for replay.
   const pausedSessionIds = new Set<string>();
@@ -1540,6 +1549,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       settingsOverlay?.isOpen()
       || sessionActionsOverlay?.isOpen()
       || restoreSessionsOverlay?.isOpen()
+      || sessionStartOverlay?.isOpen()
     );
   const explicitQuietOverrideBlocked = (): boolean =>
     sessionModalOpen() || Boolean(meetingMic?.claimed);
@@ -1912,6 +1922,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   let panelRenderVersion = 0;
   let lastPublishedPanelState: PublishedState | null = null;
+  let lastPanelModel: PanelModel | null = null;
   const reportedMissingCodexPid = new Set<string>();
   const recordDaemonError = (
     operation: string,
@@ -2290,6 +2301,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // or transcript is being read. Sample at commit so an older full render
       // cannot overwrite the lightweight publisher with stale conversation data.
       const committedLiveState = getLiveState();
+      terminalComposer?.applyDictation(committedLiveState.dictated);
       const shownReply = panelReplyText(committedLiveState, transcriptReplyText);
       // Absence is authoritative only for a complete registry read. A torn
       // per-session file must not release a cursor that was meant to stay put.
@@ -2323,6 +2335,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           }
           : null,
         panelOpen,
+        contextBySessionId: sessionContexts,
       });
       model.preview = previewForPanelSelection(
         navSelectedId,
@@ -2335,6 +2348,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
       model.settingsOverlay = settingsOverlay?.model() ?? null;
       model.sessionActionsOverlay = sessionActionsOverlay?.model() ?? null;
       model.restoreSessionsOverlay = restoreSessionsOverlay?.model() ?? null;
+      model.sessionStartOverlay = sessionStartOverlay?.model() ?? null;
+      model.terminalComposer = terminalComposer?.model() ?? null;
+      model.terminalQuestion = terminalQuestionController?.model(
+        answerableTerminalQuestion(model),
+      ) ?? null;
       panelOrder = model.rows.map((row) => row.sessionId);
       panelLabels = new Map(model.rows.map((row) => [row.sessionId, row.label]));
       // Keep dismissed metadata available for restore clients; visible rows and
@@ -2350,6 +2368,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // Read mode state after the async registry snapshot so a slow older redraw
       // cannot repaint a stale manual banner over a newer toggle.
       model.mode = { muted: false, paused: pause.paused, holding: pending.size };
+      lastPanelModel = model;
       renderPanel(model);
       lastPublishedPanelState = buildDaemonPublishedState(
         cfg,
@@ -4476,6 +4495,49 @@ export async function runDaemon(cfg: Config): Promise<void> {
     onClose: () => settingsPause.close(),
     onChange: () => void renderSessionPanel(),
   });
+  const injectTerminalPrompt = (
+    target: Readonly<{ sessionId: string; label: string }>,
+    text: string,
+  ): boolean => {
+    const session = panelSessions.get(target.sessionId);
+    if (!session || dismissedSessionIds.has(target.sessionId)) return false;
+    enqueue({
+      type: "inject",
+      sessionId: session.sessionId,
+      label: labelForSessionId(session.sessionId),
+      cwd: session.cwd,
+      pid: session.pid,
+      announce: text,
+      transcriptPath: session.transcriptPath
+        ?? findTranscript(cfg.claudeDir, session.sessionId),
+      origin: "user",
+    });
+    log(`terminal prompt → "${labelForSessionId(session.sessionId)}"`);
+    return true;
+  };
+  const closeLiveSession = async (sessionId: string): Promise<void> => {
+    let session = panelSessions.get(sessionId);
+    if (!session) {
+      session = (await registrySnapshot(cfg.claudeDir))?.infos.find(
+        (candidate) => candidate.sessionId === sessionId,
+      );
+    }
+    if (!session) throw new Error("session is not live");
+    if (!session.pid) {
+      if (session.backend === "codex") {
+        reportedMissingCodexPid.add(session.sessionId);
+        recordDaemonError(
+          "session-close",
+          "Codex row has no pid",
+          session.sessionId,
+          { cwd: session.cwd ?? "", status: session.status ?? "unknown" },
+        );
+      }
+      throw new Error("session has no routable pid");
+    }
+    await closeTerminalSession(session.pid);
+    void renderSessionPanel();
+  };
   const sessionActions: SessionActionsController = {
     voiceCandidates: () => availableVoiceRing(cfg),
     effectiveVoice: (target) => voiceFor(cfg, target.label),
@@ -4541,6 +4603,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
       log(`dismissed "${target.label}" — announcements stopped; session keeps running`);
       void renderSessionPanel();
     },
+    close: async (target) => {
+      await closeLiveSession(target.sessionId);
+      log(`closed "${target.label}" cleanly`);
+    },
     restore: restoreDismissedSession,
   };
   sessionActionsOverlay = new SessionActionsOverlay({
@@ -4555,6 +4621,26 @@ export async function runDaemon(cfg: Config): Promise<void> {
     onClose: () => settingsPause.close(),
     onChange: () => void renderSessionPanel(),
   });
+  sessionStartOverlay = new SessionStartOverlay({
+    controller: {
+      start: async (request) => {
+        await startTerminalSession(request);
+        log(`started fresh ${request.backend} session in ${request.cwd ?? homedir()}`);
+        void renderSessionPanel();
+      },
+    },
+    defaultCwd: homedir(),
+    onOpen: () => settingsPause.open(),
+    onClose: () => settingsPause.close(),
+    onChange: () => void renderSessionPanel(),
+  });
+  terminalComposer = new TerminalComposer({
+    controller: { submit: injectTerminalPrompt },
+    onChange: () => void renderSessionPanel(),
+  });
+  terminalQuestionController = new TerminalQuestionController(
+    () => void renderSessionPanel(),
+  );
   const enrichSocketAudioCommand = (event: InstantAudioCommand): InstantAudioCommand => {
     const session = panelSessions.get(event.sessionId);
     const known = latestTurnBySession.get(event.sessionId)
@@ -4595,29 +4681,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }),
     start: (message) => startTerminalSession(message),
     folderTrusted: (cwd) => claudeFolderTrusted(cwd),
-    close: async (sessionId) => {
-      let session = panelSessions.get(sessionId);
-      if (!session) {
-        session = (await registrySnapshot(cfg.claudeDir))?.infos.find(
-          (candidate) => candidate.sessionId === sessionId,
-        );
-      }
-      if (!session) throw new Error("session is not live");
-      if (!session.pid) {
-        if (session.backend === "codex") {
-          reportedMissingCodexPid.add(session.sessionId);
-          recordDaemonError(
-            "session-close",
-            "Codex row has no pid",
-            session.sessionId,
-            { cwd: session.cwd ?? "", status: session.status ?? "unknown" },
-          );
-        }
-        throw new Error("session has no routable pid");
-      }
-      await closeTerminalSession(session.pid);
-      void renderSessionPanel();
-    },
+    close: closeLiveSession,
     report: (message) => {
       appendConchError(
         {
@@ -5179,6 +5243,27 @@ export async function runDaemon(cfg: Config): Promise<void> {
     });
   }
 
+  /** The TUI mic has the same contract as both apps: return words to the draft. */
+  function dictateToTerminalComposer(id: string): void {
+    const s = panelSessions.get(id);
+    if (!s) return log("that session is gone — press s to list");
+    terminalComposer?.open({
+      sessionId: id,
+      label: labelForSessionId(id),
+    }, lastPanelModel?.live.dictated?.id ?? 0);
+    enqueue({
+      type: "wake",
+      sessionId: s.sessionId,
+      label: labelForSessionId(id),
+      cwd: s.cwd,
+      pid: s.pid,
+      announce: "",
+      transcriptPath: s.transcriptPath ?? findTranscript(cfg.claudeDir, id),
+      origin: "user",
+      compose: true,
+    });
+  }
+
   /** Read a target session's latest assistant output from sentence zero. */
   function reciteBySessionId(id: string | null): void {
     if (!id) return log("nothing to recite — no session is parked or active");
@@ -5274,6 +5359,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
         && !settingsOverlay?.isOpen()
         && !sessionActionsOverlay?.isOpen()
         && !restoreSessionsOverlay?.isOpen()
+        && !sessionStartOverlay?.isOpen()
+        && !terminalComposer?.isOpen()
       ) {
         let wheel = 0;
         for (const event of events) {
@@ -5291,8 +5378,43 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (settingsOverlay?.handleKey(c)) return;
       if (sessionActionsOverlay?.handleKey(c)) return;
       if (restoreSessionsOverlay?.handleKey(c)) return;
+      if (sessionStartOverlay?.handleKey(c)) return;
+      if (terminalComposer?.isOpen() && c === " " && busy) {
+        stopReciting("spacebar");
+        return;
+      }
+      if (terminalComposer?.isOpen() && c === "\x14") {
+        const sessionId = terminalComposer.model()?.target.sessionId;
+        if (sessionId) dictateToTerminalComposer(sessionId);
+        return;
+      }
+      if (terminalComposer?.handleKey(c)) return;
+      const terminalQuestion = answerableTerminalQuestion(lastPanelModel);
+      if (terminalQuestionController?.handleKey(
+        c,
+        terminalQuestion,
+        (text) => terminalQuestion
+          ? injectTerminalPrompt(terminalQuestion, text)
+          : false,
+      )) return;
       if (theaterMode && c === ",") {
         settingsOverlay?.open();
+        return;
+      }
+      if (theaterMode && c === "n") {
+        sessionStartOverlay?.open();
+        return;
+      }
+      if (theaterMode && c === "i") {
+        const sessionId = theaterActionTarget();
+        if (sessionId) {
+          terminalComposer?.open({
+            sessionId,
+            label: labelForSessionId(sessionId),
+          }, lastPanelModel?.live.dictated?.id ?? 0);
+        } else {
+          log("park a session before opening the prompt line");
+        }
         return;
       }
       if (theaterMode && c === "\r") {
@@ -5316,7 +5438,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
       if (c === " ") {
         if (busy) stopReciting("spacebar");
-        else if (theaterMode && theaterActionTarget()) wakeBySessionId(theaterActionTarget()!);
+        else if (theaterMode && theaterActionTarget()) dictateToTerminalComposer(theaterActionTarget()!);
         else if (selectedId) wakeBySessionId(selectedId); // talk to the selected session
         else enqueue({ type: "wake", sessionId: "", label: "", announce: "", origin: "user" }); // else the last-announced
       }
@@ -5341,6 +5463,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
       else if (c === "l") { const on = setLogsVisible(!logsShown()); log(on ? "logs on — press l to hide" : "logs off"); }
       else if (c === "v") void auditionVoices();
       else if (theaterMode && c === "r") reciteBySessionId(theaterActionTarget());
+      else if (theaterMode && c === "x") {
+        const sessionId = theaterActionTarget();
+        if (!sessionId) log("nothing to interrupt — park a session first");
+        else enqueue({
+          type: "interrupt",
+          sessionId,
+          label: labelForSessionId(sessionId),
+          announce: "",
+          origin: "user",
+        });
+      }
       else if (dispatchTheaterControlKey(c, theaterControls)) {}
       else if (c === "?" || c === "h") {
         revealLogPane();

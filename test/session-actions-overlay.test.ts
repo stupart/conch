@@ -18,6 +18,7 @@ class FakeController implements SessionActionsController {
   priorityWrites: Array<{ sessionId: string; prioritized: boolean }> = [];
   renames: Array<{ target: SessionActionsTarget; label: string }> = [];
   dismissals: SessionActionsTarget[] = [];
+  closures: SessionActionsTarget[] = [];
   restorations: string[] = [];
 
   voiceCandidates(): readonly string[] {
@@ -61,13 +62,17 @@ class FakeController implements SessionActionsController {
     this.dismissals.push({ ...target });
   }
 
+  async close(target: Readonly<SessionActionsTarget>): Promise<void> {
+    this.closures.push({ ...target });
+  }
+
   restore(sessionId: string): void {
     this.restorations.push(sessionId);
   }
 }
 
 function moveTo(overlay: SessionActionsOverlay, key: SessionActionKey): void {
-  for (let count = 0; count < 4; count++) {
+  for (let count = 0; count < 5; count++) {
     const model = overlay.model()!;
     if (model.rows[model.selectedIndex]?.key === key) return;
     overlay.handleKey("\x1b[B");
@@ -237,6 +242,30 @@ describe("SessionActionsOverlay", () => {
     overlay.handleKey("\r");
     expect(controller.dismissals).toEqual([{ sessionId: "a", label: "Alpha" }]);
     expect(overlay.isOpen()).toBe(false);
+    expect(lifecycle).toEqual(["open", "close"]);
+  });
+
+  test("close needs confirmation and waits for the clean asynchronous exit", async () => {
+    const lifecycle: string[] = [];
+    const controller = new FakeController();
+    const { overlay } = createOverlay(controller, lifecycle);
+    overlay.open({ sessionId: "a", label: "Alpha" });
+    moveTo(overlay, "close");
+    expect(overlay.model()?.rows[4]?.help).toContain("clean Ctrl-D");
+
+    overlay.handleKey("\r");
+    expect(overlay.model()?.rows[4]).toMatchObject({
+      value: "CONFIRM",
+      confirming: true,
+      ack: "press enter again to end cleanly",
+    });
+    expect(controller.closures).toEqual([]);
+
+    overlay.handleKey("\r");
+    expect(overlay.model()?.rows[4]).toMatchObject({ value: "closing…" });
+    await Bun.sleep(0);
+    expect(controller.closures).toEqual([{ sessionId: "a", label: "Alpha" }]);
+    expect(overlay.isOpen()).toBeFalse();
     expect(lifecycle).toEqual(["open", "close"]);
   });
 });

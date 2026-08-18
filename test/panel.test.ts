@@ -31,6 +31,28 @@ import {
 } from "../src/status.ts";
 
 describe("buildPanelModel — renderer seam", () => {
+  test("carries known context into terminal row models and leaves unknown absent", () => {
+    const model = buildPanelModel({
+      sessions: [
+        { sessionId: "known", name: "Known", backend: "claude" },
+        { sessionId: "unknown", name: "Unknown", backend: "codex" },
+      ],
+      sessionStates: new Map(),
+      pausedSessionIds: new Set(),
+      live: { state: "idle", label: "", partial: "" },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+      contextBySessionId: new Map([
+        ["known", { usedTokens: 42_000, limitTokens: 200_000 }],
+      ]),
+    });
+    expect(model.rows.find((row) => row.sessionId === "known")?.context)
+      .toEqual({ usedTokens: 42_000, limitTokens: 200_000 });
+    expect(model.rows.find((row) => row.sessionId === "unknown")?.context)
+      .toBeUndefined();
+  });
+
   test("builds sorted semantic rows with independent active and nav cursors", () => {
     const model = buildPanelModel({
       sessions: [
