@@ -226,6 +226,10 @@ struct LiveState: Decodable, Equatable, Sendable {
 struct Dictation: Decodable, Equatable, Sendable {
     let text: String
     let id: Int
+    /// The session that ASKED for this. Without it the app appended to
+    /// whatever happened to be focused when the result arrived, so changing
+    /// session mid-transcription put your words in someone else's draft.
+    let sessionId: String
 }
 
 struct ReadingProgress: Decodable, Equatable, Sendable {

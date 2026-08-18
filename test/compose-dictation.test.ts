@@ -38,7 +38,7 @@ test("a composer dictation is published, never delivered", () => {
   const source = readFileSync(join(import.meta.dir, "../src/daemon.ts"), "utf8");
   const prompt = source.slice(source.indexOf('case "prompt":'));
   const branch = prompt.indexOf("if (event.compose)");
-  const publish = prompt.indexOf("publishDictation(text)");
+  const publish = prompt.indexOf("publishDictation(text, event.sessionId)");
   const deliver = prompt.indexOf("await deliver(event, text");
 
   // The compose branch has to RETURN before deliver(), or the words land in
@@ -49,7 +49,17 @@ test("a composer dictation is published, never delivered", () => {
   expect(prompt.slice(branch, deliver)).toContain('return "handled"');
 });
 
-test("the Mac appends dictation to the draft, once, keyed on id", () => {
+test("dictation goes to the session that asked, not the one now focused", () => {
+  // An audit caught this one, and caught the ORIGINAL version of this test
+  // baking the bug in: it asserted append-to-`row.id` without asserting that
+  // the row was the intended target. Transcription takes seconds; someone who
+  // starts dictating to one session and clicks another while it runs was
+  // addressing the first, and putting the words in the second is worse than
+  // losing them.
+  const status = readFileSync(join(import.meta.dir, "../src/status.ts"), "utf8");
+  expect(status).toContain("export function publishDictation(text: string, sessionId: string)");
+  expect(status).toContain("sessionId }");
+
   const dashboard = readFileSync(
     join(import.meta.dir, "../mac-app/conch-mac/DashboardView.swift"),
     "utf8",
@@ -57,7 +67,9 @@ test("the Mac appends dictation to the draft, once, keyed on id", () => {
   // Keyed on the id, not the text: state republishes several times a second.
   expect(dashboard).toContain(".onChange(of: state?.live.dictated?.id)");
   expect(dashboard).toContain("current != appliedDictationID");
-  expect(dashboard).toContain("composerDrafts.appendDictation(spoken, to: row.id)");
+  // The target comes from the dictation, never from current focus.
+  expect(dashboard).toContain("composerDrafts.appendDictation(dictated.text, to: dictated.sessionId)");
+  expect(dashboard).not.toContain("appendDictation(spoken, to: row.id)");
   // The composer's own mic must ask for the composer.
   expect(dashboard).toContain(".dictate(sessionId: row.id, label: row.label)");
 

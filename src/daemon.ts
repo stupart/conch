@@ -3225,7 +3225,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         // the whole feature: it lets spoken and typed text be one message
         // instead of two, and lets you edit what you said before sending it.
         if (event.compose) {
-          publishDictation(text);
+          publishDictation(text, event.sessionId);
           log(`dictated → composer ${JSON.stringify(text)}`);
           return "handled";
         }

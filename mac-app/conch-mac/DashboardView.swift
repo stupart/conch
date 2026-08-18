@@ -1606,12 +1606,17 @@ private struct ConversationPane: View {
             // Keyed on the dictation's id for the same reason the review above
             // is keyed on identity: the daemon republishes constantly, and
             // anything keyed on the TEXT would re-append it every frame.
+            //
+            // Delivered to the session that ASKED, never to whatever is focused
+            // now. Transcription takes seconds; a person who starts dictating
+            // to one session and clicks another while it runs was addressing
+            // the first one, and putting the words in the second is worse than
+            // losing them.
             guard let current, current != appliedDictationID,
-                  let spoken = state?.live.dictated?.text,
-                  let row = focusedRow
+                  let dictated = state?.live.dictated
             else { return }
             appliedDictationID = current
-            composerDrafts.appendDictation(spoken, to: row.id)
+            composerDrafts.appendDictation(dictated.text, to: dictated.sessionId)
         }
         .alert(
             "Close \(sessionPendingClose?.label ?? "session")?",

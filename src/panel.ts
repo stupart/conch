@@ -25,7 +25,7 @@ export interface PanelLiveState {
    * text would append it again on every frame; it applies an id it has not
    * seen and ignores the rest.
    */
-  dictated?: { text: string; id: number };
+  dictated?: { text: string; id: number; sessionId: string };
 }
 
 /** The states a session row can show in the dashboard panel. */
@@ -196,8 +196,9 @@ export interface PublishedState {
     /// by looking. Declared on the PUBLISHED shape only — the in-memory model
     /// is never capped and must not imply it might be.
     reading?: { text: string; spokenChars: number; truncated?: boolean };
-    /// A finished dictation for the composer. Applied once, by `id`.
-    dictated?: { text: string; id: number };
+    /// A finished dictation for the composer. Applied once, by `id`, and only
+    /// to the session that ASKED for it.
+    dictated?: { text: string; id: number; sessionId: string };
   };
   reply?: PanelReplyModel & { truncated?: boolean };
   preview?: PanelReplyModel & { truncated?: boolean };

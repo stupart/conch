@@ -1528,10 +1528,13 @@ export function setTranscriptPrefix(prefix: string): void {
  * append it again on every republish; it applies an id it has not seen yet and
  * ignores every frame after.
  */
-export function publishDictation(text: string): void {
+export function publishDictation(text: string, sessionId: string): void {
   const trimmed = text.trim();
   if (!trimmed) return;
-  live = { ...live, dictated: { text: trimmed, id: (live.dictated?.id ?? 0) + 1 } };
+  live = {
+    ...live,
+    dictated: { text: trimmed, id: (live.dictated?.id ?? 0) + 1, sessionId },
+  };
   activeRenderer.live(live);
   onLiveData?.();
 }
