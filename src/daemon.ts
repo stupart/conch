@@ -152,7 +152,6 @@ import {
   gateTurnForControls,
   InstantControls,
   markQueuedWakesForControl,
-  normalizeLegacyModeControl,
   type InstantAudioCommand,
 } from "./instant-controls.ts";
 import {
@@ -646,8 +645,6 @@ const TURN_EVENT_TYPES = new Set<TurnEvent["type"]>([
   "wake",
   "recite",
   "spacebar",
-  "mute",
-  "unmute",
   "pause",
   "resume",
   "speak",
@@ -661,8 +658,6 @@ const SPARSE_TURN_EVENT_TYPES = new Set<TurnEvent["type"]>([
   "wake",
   "recite",
   "spacebar",
-  "mute",
-  "unmute",
   "pause",
   "resume",
 ]);
@@ -782,8 +777,7 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
   if (typeof value.type !== "string" || !TURN_EVENT_TYPES.has(value.type as TurnEvent["type"])) {
     return { ok: false, err: "turn event type is missing or unknown" };
   }
-  const wireType = value.type as TurnEvent["type"];
-  const type = normalizeLegacyModeControl(wireType);
+  const type = value.type as TurnEvent["type"];
 
   for (const field of ["sessionId", "label", "cwd", "announce", "transcriptPath", "ntype", "voice"] as const) {
     if (value[field] !== undefined && typeof value[field] !== "string") {
@@ -812,7 +806,7 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
 
   // Hook/state traffic and explicit speech retain the original complete shape.
   // Dashboard controls are intentionally sparse and normalized for the daemon.
-  if (!SPARSE_TURN_EVENT_TYPES.has(wireType)) {
+  if (!SPARSE_TURN_EVENT_TYPES.has(type)) {
     for (const field of ["sessionId", "label", "announce"] as const) {
       if (typeof value[field] !== "string") {
         return { ok: false, err: `${field} is required for ${type}` };
@@ -970,9 +964,7 @@ export function dispatchSocketTurnEvent(
   incoming: TurnEvent,
   callbacks: SocketTurnEventCallbacks,
 ): void {
-  const event = incoming.type === normalizeLegacyModeControl(incoming.type)
-    ? incoming
-    : { ...incoming, type: normalizeLegacyModeControl(incoming.type) };
+  const event = incoming;
   if (event.type === "spacebar") {
     if (callbacks.busy()) callbacks.stopSpacebar();
     return;
@@ -1079,7 +1071,7 @@ const HANDOFF_URGENCY: Partial<Record<TurnEvent["type"], number>> = {
   "turn-end": 2,
   "needs-you": 3,
 };
-const MODE_CONTROL_TYPES = new Set<TurnEvent["type"]>(["mute", "unmute", "pause", "resume"]);
+const MODE_CONTROL_TYPES = new Set<TurnEvent["type"]>(["pause", "resume"]);
 const NO_INSTANT_QUEUE_BARRIERS = { has: (_event: TurnEvent): boolean => false };
 
 /**
@@ -1824,9 +1816,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   function enqueue(incoming: TurnEvent): void {
     if (shuttingDown) return;
-    const event = incoming.type === normalizeLegacyModeControl(incoming.type)
-      ? incoming
-      : { ...incoming, type: normalizeLegacyModeControl(incoming.type) };
+    const event = incoming;
     if (!eventOrder.accept(event)) return;
 
     // Answering a session must not wait for a DIFFERENT session to finish

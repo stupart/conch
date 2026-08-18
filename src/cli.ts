@@ -17,7 +17,6 @@ import { listenOnce } from "./listen.ts";
 import { speak, probeTtsServer, voiceFor, setVoiceOverride } from "./speak.ts";
 import { emitRecorderTraces } from "./diagnostics.ts";
 import { CONCH_VERSION } from "./version.ts";
-import { normalizeLegacyModeControl } from "./instant-controls.ts";
 import {
   SETTING_DESCRIPTORS,
   configSnapshotEntry,
@@ -423,14 +422,10 @@ switch (command) {
     }`);
     break;
   }
-  case "mute":
-  case "unmute":
   case "pause":
   case "resume": {
-    // Old scripts keep working, but every path reaches the same lossless mode.
-    const mapped = normalizeLegacyModeControl(command);
-    const ok = await sendToDaemon(cfg.socketPath, { type: mapped, sessionId: "", label: "", announce: "" });
-    const said = mapped === "pause" ? "manual mode" : "auto mode";
+    const ok = await sendToDaemon(cfg.socketPath, { type: command, sessionId: "", label: "", announce: "" });
+    const said = command === "pause" ? "manual mode" : "auto mode";
     console.log(ok ? `[conch] ${said}` : "[conch] daemon not running");
     if (!ok) process.exit(1);
     break;

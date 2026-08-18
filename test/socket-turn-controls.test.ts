@@ -133,25 +133,19 @@ describe("dispatchSocketTurnEvent", () => {
     expect(idle.queued).toEqual([]);
   });
 
-  test("mode targets are scoped and legacy verbs normalize without forgetting", () => {
+  test("mode targets are scoped without destructive aliases", () => {
     const h = harness();
     dispatchSocketTurnEvent(turn({ type: "pause" }), h.callbacks);
     dispatchSocketTurnEvent(turn({ type: "resume" }), h.callbacks);
-    dispatchSocketTurnEvent(turn({ type: "mute" }), h.callbacks);
-    dispatchSocketTurnEvent(turn({ type: "unmute" }), h.callbacks);
     expect(h.paused).toEqual([
-      ["session-a", true],
-      ["session-a", false],
       ["session-a", true],
       ["session-a", false],
     ]);
     expect(h.queued).toEqual([]);
 
     const globalPause = turn({ type: "pause", sessionId: "", label: "" });
-    const globalMute = turn({ type: "mute", sessionId: "", label: "" });
     dispatchSocketTurnEvent(globalPause, h.callbacks);
-    dispatchSocketTurnEvent(globalMute, h.callbacks);
-    expect(h.queued).toEqual([globalPause, { ...globalMute, type: "pause" }]);
+    expect(h.queued).toEqual([globalPause]);
   });
 
   test("lightweight targeted wake and recite are enriched instant takeovers", () => {
@@ -254,6 +248,8 @@ describe("validateSocketTurnEvent", () => {
       [],
       {},
       { type: "bogus", sessionId: "session-a", label: "alpha", announce: "" },
+      { type: "mute", sessionId: "", label: "", announce: "" },
+      { type: "unmute", sessionId: "", label: "", announce: "" },
       { type: "turn-end", sessionId: "session-a", label: "alpha" },
       { type: "wake", sessionId: 42, label: "alpha" },
       { type: "pause", sessionId: null },

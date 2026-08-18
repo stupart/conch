@@ -2,7 +2,6 @@ import { stat } from "node:fs/promises";
 import { loadConfig, type Config } from "./config.ts";
 import { CONCH_VERSION } from "./version.ts";
 import { sendToDaemon, type TurnEvent } from "./hook.ts";
-import { normalizeLegacyModeControl } from "./instant-controls.ts";
 import { registryToPanel } from "./panel.ts";
 import {
   findSessionByName,
@@ -653,16 +652,11 @@ export function createMcpToolHandlers(
       const argumentsObject = toolArguments(argumentsValue);
       allowOnly(argumentsObject, ["action"]);
       const action = requiredString(argumentsObject, "action");
-      if (
-        action !== "mute"
-        && action !== "unmute"
-        && action !== "pause"
-        && action !== "resume"
-      ) {
+      if (action !== "pause" && action !== "resume") {
         throw new ToolInputError("action must be pause or resume");
       }
       return sendTurn(config, dependencies, {
-        type: normalizeLegacyModeControl(action),
+        type: action,
         sessionId: "",
         label: "",
         announce: "",

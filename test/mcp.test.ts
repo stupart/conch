@@ -641,6 +641,20 @@ describe("real MCP tool handlers with injected dependencies", () => {
     ]);
   });
 
+  test("mode rejects retired destructive aliases", async () => {
+    const handlers = createMcpToolHandlers({
+      claudeDir: "/virtual/claude",
+      socketPath: "/virtual/conch.sock",
+    }, fakeHarness().dependencies);
+
+    await expect(handlers.conch_mode({ action: "mute" })).rejects.toThrow(
+      "action must be pause or resume",
+    );
+    await expect(handlers.conch_mode({ action: "unmute" })).rejects.toThrow(
+      "action must be pause or resume",
+    );
+  });
+
   test("rename, config, and transcript tail route through their injected helpers", async () => {
     const h = fakeHarness();
     const handlers = createMcpToolHandlers({

@@ -75,7 +75,7 @@ function harness() {
 }
 
 describe("InstantControls", () => {
-  test("legacy verbs normalize to the lossless mode at the boundary", () => {
+  test("legacy persisted verbs normalize during migration", () => {
     expect(normalizeLegacyModeControl("mute")).toBe("pause");
     expect(normalizeLegacyModeControl("unmute")).toBe("resume");
     expect(normalizeLegacyModeControl("pause")).toBe("pause");

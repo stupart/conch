@@ -5,6 +5,7 @@ import {
 } from "./pause-controller.ts";
 
 export type GlobalModeControl = "pause" | "resume";
+export type LegacyModeControl = "mute" | "unmute";
 export type InstantAudioCommand = TurnEvent & { type: "wake" | "recite" };
 export type TurnControlDisposition =
   | "session-dismissed"
@@ -12,8 +13,10 @@ export type TurnControlDisposition =
   | "global-paused"
   | null;
 
-/** Old clients may keep their verbs; the daemon never keeps their destructive meaning. */
-export function normalizeLegacyModeControl(type: TurnEvent["type"]): TurnEvent["type"] {
+/** Migrate a mode verb read from legacy persisted data; public inputs reject it. */
+export function normalizeLegacyModeControl(
+  type: TurnEvent["type"] | LegacyModeControl,
+): TurnEvent["type"] {
   if (type === "mute") return "pause";
   if (type === "unmute") return "resume";
   return type;
