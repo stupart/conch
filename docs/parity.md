@@ -1,5 +1,17 @@
 # What we have, what t3code has, what we take
 
+> **Superseded in part by `docs/surfaces.md` (2026-08-17).** That study
+> re-read t3code at commit a4cc1367 and the current Claude/Codex docs, and
+> corrects this file in three places. Most importantly: **"Codex has no hook
+> mechanism" below is WRONG.** Codex now documents eleven lifecycle events with
+> a trust UI, `~/.codex/hooks.json` exists on this machine, and conch already
+> ships a Codex hook receiver — the rollout-polling observer is still needed
+> for sessions that did not start with those hooks, but it is no longer the
+> only option. The "table stakes" gaps here are also stale (Phases 1 and 2
+> shipped), and "neither agent exposes a cancel an outside process could call"
+> holds only for a session nobody owns: a host-owned Codex app-server does
+> expose turn interruption.
+
 t3code (pingdotgg/t3code, MIT) solves the same problem from the opposite end.
 It owns the agents it runs and gives them a rich, complete UI. conch attaches to
 agents you already started and gives them a voice. Their breadth is worth
