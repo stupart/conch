@@ -15,6 +15,16 @@ import SwiftUI
 struct ConversationStackView: View {
     let conversation: Conversation
     let onAnswer: (String) -> Void
+    /// Reports a link activation, so "are links even clickable" stops being a
+    /// question nobody can answer.
+    ///
+    /// The markdown parser does produce `.link` attributes — they render blue,
+    /// which is where that colour comes from — but `.textSelection(.enabled)`
+    /// on the same Text competes for the click on macOS, and there was no way
+    /// to tell a swallowed click from a working one by looking. Owning
+    /// `openURL` makes the difference observable, and conch should decide how
+    /// its own links open regardless.
+    var onOpenLink: (URL) -> Void = { _ in }
     /// Sticks to the bottom only when already there, so reading history is not
     /// yanked away by an arriving message.
     @State private var pinnedToBottom = true
@@ -24,6 +34,15 @@ struct ConversationStackView: View {
     private static let bottomAnchor = "conversation-bottom"
 
     var body: some View {
+        content
+            .environment(\.openURL, OpenURLAction { url in
+                onOpenLink(url)
+                NSWorkspace.shared.open(url)
+                return .handled
+            })
+    }
+
+    private var content: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 // The daemon caps this window at thirty items. Eager layout is
@@ -434,10 +453,32 @@ private struct ConversationScrollObserver: NSViewRepresentable {
 /// literal, which is fine — a leading "- " already reads as a bullet.
 extension AttributedString {
     static func conchMarkdown(_ source: String) -> AttributedString {
-        (try? AttributedString(
+        var parsed = (try? AttributedString(
             markdown: promoteHeadings(flattenTables(source)),
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
         )) ?? AttributedString(source)
+        underlineLinks(&parsed)
+        return parsed
+    }
+
+    /// Make a link LOOK like the link it already is.
+    ///
+    /// The links worked the whole time — Tyler tested one — but nothing said
+    /// so. They were blue against text that is also occasionally coloured, with
+    /// no underline and no hover state, so the only way to discover a link was
+    /// to click text on the off chance. "it's just a ui problem really, to show
+    /// me with an underline on hover that i can click on it."
+    ///
+    /// A permanent underline rather than a hover one, deliberately: SwiftUI's
+    /// `Text` draws an AttributedString as a single view and cannot hit-test
+    /// one run inside it, so there is no honest way to underline only the link
+    /// under the pointer. The web convention of always-underlined is the same
+    /// signal, available before the pointer arrives rather than after, and it
+    /// survives being read rather than hovered.
+    private static func underlineLinks(_ text: inout AttributedString) {
+        for run in text.runs where run.link != nil {
+            text[run.range].underlineStyle = .single
+        }
     }
 
     /// Inline-only parsing leaves `## Heading` showing its hashes, and agents
