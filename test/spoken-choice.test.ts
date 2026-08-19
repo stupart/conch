@@ -83,3 +83,43 @@ describe("picking an option by voice", () => {
     expect(classifySpokenChoice("linear subtask and save to wiki", options)).toBeNull();
   });
 });
+
+describe("talking about a question is not answering it", () => {
+  const options = [
+    { label: "Use Postgres" },
+    { label: "Use SQLite" },
+    { label: "Ask me later" },
+  ];
+
+  test("a sentence that merely contains a position is not a choice", () => {
+    // Found while looking at something else, and worse than the gap that led
+    // there: "actually neither, lets talk about it first" answered "Use
+    // Postgres", because any "first" anywhere selected option one. Answering on
+    // someone's behalf with an option they did not pick is the worst failure
+    // this classifier has, so it must refuse.
+    expect(classifySpokenChoice("actually neither, lets talk about it first", options)).toBeNull();
+    expect(classifySpokenChoice("lets discuss first", options)).toBeNull();
+    expect(classifySpokenChoice("can we do that first?", options)).toBeNull();
+    expect(classifySpokenChoice("wait a second", options)).toBeNull();
+    expect(classifySpokenChoice("give me a second to think", options)).toBeNull();
+    expect(classifySpokenChoice("give me 2 minutes", options)).toBeNull();
+    expect(classifySpokenChoice("that will take 3 days", options)).toBeNull();
+  });
+
+  test("the ways people actually pick one still work", () => {
+    // The guard has to be narrow. These are all real answers and all of them
+    // put the position inside a sentence.
+    expect(classifySpokenChoice("first", options)).toBe(0);
+    expect(classifySpokenChoice("the first one", options)).toBe(0);
+    expect(classifySpokenChoice("lets go with the first", options)).toBe(0);
+    expect(classifySpokenChoice("the second one please", options)).toBe(1);
+    expect(classifySpokenChoice("I would go with the third", options)).toBe(2);
+    expect(classifySpokenChoice("option two", options)).toBe(1);
+  });
+
+  test("a distinctive word still answers, positional or not", () => {
+    // The guard skips the POSITIONS step; it must not abort the classifier.
+    expect(classifySpokenChoice("use postgres", options)).toBe(0);
+    expect(classifySpokenChoice("lets talk about sqlite instead", options)).toBe(1);
+  });
+});

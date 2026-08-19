@@ -418,6 +418,36 @@ const CARDINALS = [
   "six", "seven", "eight", "nine", "ten",
 ];
 
+/** Words that join choices together rather than adding meaning. */
+const CHOICE_JOINERS = /\b(and|or|plus|also|both|too|then)\b/gi;
+/** Nouns naming the list itself, in either number. */
+const CHOICE_NOUNS = /\b(options?|numbers?|choices?)\b/gi;
+
+/**
+ * Is this utterance nothing BUT a positional reference?
+ *
+ * "the first one" is an answer; "let's talk about it first" is not, and the
+ * only difference is the words around it. Strip everything that carries no
+ * choice — filler, joiners, the words naming the list, the positions
+ * themselves — and if anything meaningful is left, the person was talking
+ * rather than choosing.
+ *
+ * Three letters is the bar for "meaningful", which keeps "I'd go with the
+ * third" (leaving only "'d") working while rejecting "lets discuss first"
+ * (leaving "discuss").
+ */
+function isPositionalUtterance(said: string): boolean {
+  let rest = said.toLowerCase()
+    .replace(CHOICE_FILLER, " ")
+    .replace(CHOICE_JOINERS, " ")
+    .replace(CHOICE_NOUNS, " ")
+    .replace(/\b[1-9][0-9]?\b/g, " ");
+  for (const word of [...ORDINALS, ...CARDINALS]) {
+    rest = rest.replace(new RegExp(`\\b${word}\\b`, "g"), " ");
+  }
+  return rest.split(/[^a-z0-9]+/).every((word) => word.length < 3);
+}
+
 /** Filler that carries no choice, stripped before matching. */
 const CHOICE_FILLER = /\b(the|a|an|one|option|choice|number|let'?s|go|with|do|pick|choose|i|want|would|like|please|just|yeah|yes|um|uh)\b/gi;
 
@@ -486,31 +516,54 @@ export function classifySpokenChoices(
   if (labelMatches.size > 0) return labelMatches;
 
   // 2. Positions: "the first and third", "options 2 and 4".
-  const positions = new Set<number>();
-  for (const digit of said.matchAll(/\b([1-9][0-9]?)\b/g)) {
-    const index = Number(digit[1]) - 1;
-    if (index >= 0 && index < options.length) positions.add(index);
-  }
-  for (let index = 0; index < Math.min(ORDINALS.length, options.length); index++) {
-    if (new RegExp(`\\b${ORDINALS[index]}\\b`).test(said)) positions.add(index);
-  }
-  // Cardinals count only in a positional phrase, or alone. Otherwise "two" in
-  // "two of them look right" would select option two.
-  const positionalPhrase = /\b(options?|numbers?|choices?)\b/.test(said);
-  for (let index = 0; index < Math.min(CARDINALS.length, options.length); index++) {
-    const word = CARDINALS[index]!;
-    if (
-      positionalPhrase && new RegExp(`\\b${word}\\b`).test(said)
-      || said === word
-    ) {
-      positions.add(index);
+  //
+  // Only when the utterance is ABOUT choosing. Cardinals were already guarded
+  // this way — the comment below explains why "two of them look right" must not
+  // pick option two — but ordinals and digits were not, so any sentence
+  // containing "first" answered the question with option one. Measured against
+  // a real three-option question: "actually neither, lets talk about it first"
+  // selected "Use Postgres", and "give me 2 minutes" would select option two.
+  // Answering on someone's behalf with an option they did not choose is far
+  // worse than not recognising an answer, so this refuses when anything is left
+  // over that carries meaning.
+  // Skipped, not aborted, when the utterance is doing something other than
+  // choosing: a distinctive word further down may still identify an option,
+  // and "do the linear one" is an answer even though it is not positional.
+  if (isPositionalUtterance(said)) {
+    const positions = new Set<number>();
+    for (const digit of said.matchAll(/\b([1-9][0-9]?)\b/g)) {
+      const index = Number(digit[1]) - 1;
+      if (index >= 0 && index < options.length) positions.add(index);
     }
+    for (let index = 0; index < Math.min(ORDINALS.length, options.length); index++) {
+      if (new RegExp(`\\b${ORDINALS[index]}\\b`).test(said)) positions.add(index);
+    }
+    // Cardinals count only in a positional phrase, or alone. Otherwise "two" in
+    // "two of them look right" would select option two.
+    const positionalPhrase = /\b(options?|numbers?|choices?)\b/.test(said);
+    for (let index = 0; index < Math.min(CARDINALS.length, options.length); index++) {
+      const word = CARDINALS[index]!;
+      if (
+        positionalPhrase && new RegExp(`\\b${word}\\b`).test(said)
+        || said === word
+      ) {
+        positions.add(index);
+      }
+    }
+    if (positions.size > 0) return positions;
   }
-  if (positions.size > 0) return positions;
 
   // 3. Distinctive words. A word contributes only when exactly one option owns
   //    it; several unique words can therefore select several options safely.
-  const saidWords = new Set(said.replace(CHOICE_FILLER, " ").split(/\s+/).filter(Boolean));
+  //
+  // Two-letter words are never distinctive enough to carry a choice, whatever
+  // the arithmetic says. "give me a second to think" selected "Ask me later",
+  // because "me" happened to belong to exactly one option — a pronoun deciding
+  // a question on someone's behalf. Same three-character bar as the positional
+  // check above, for the same reason.
+  const saidWords = new Set(
+    said.replace(CHOICE_FILLER, " ").split(/\s+/).filter((word) => word.length >= 3),
+  );
   if (saidWords.size === 0) return null;
   const owners = new Map<string, Set<number>>();
   options.forEach((option, index) => {
