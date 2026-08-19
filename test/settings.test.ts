@@ -49,6 +49,9 @@ const expected = {
   "barge-threshold": ["bargeThresholdPct", "CONCH_BARGE_THRESHOLD_PCT", "live", 0],
   "voice-speed": ["ttsSpeed", "CONCH_TTS_SPEED", "live", 1.35],
   "keystroke-fallback": ["keystrokeFallback", "CONCH_KEYSTROKE_FALLBACK", "live", false],
+  // Ships OFF. conch starts sessions on other people's machines; removing every
+  // confirmation from them is a thing you turn on, never something you inherit.
+  "bypass-permissions": ["bypassPermissions", "CONCH_BYPASS_PERMISSIONS", "live", false],
   "phone": ["phoneEnabled", "CONCH_PHONE", "live", false],
   "phone-port": ["phonePort", "CONCH_PHONE_PORT", "live", 8674],
   "phone-relay-url": ["phoneRelayURL", "CONCH_PHONE_RELAY_URL", "live", ""],
@@ -68,10 +71,10 @@ const expected = {
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 25 curated, default-bearing knobs", () => {
+  test("contains exactly the 26 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(25);
+    expect(SETTING_DESCRIPTORS).toHaveLength(26);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });

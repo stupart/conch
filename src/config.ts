@@ -96,6 +96,8 @@ export interface Config {
   recentInjectSuppressMs: number;
   /** allow blind osascript keystroke injection when no tmux pane is found */
   keystrokeFallback: boolean;
+  /** Start sessions with every permission prompt skipped. Off unless asked for. */
+  bypassPermissions: boolean;
   phoneEnabled: boolean;
   phonePort: number;
   /** Deployed Cloudflare Worker URL; empty keeps the unchanged LAN transport only. */
@@ -197,6 +199,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     holdSubmitSecs: settings["hold-submit-delay"].value as number,
     recentInjectSuppressMs: num(env.CONCH_INJECT_SUPPRESS_MS, 30_000),
     keystrokeFallback: settings["keystroke-fallback"].value as boolean,
+    bypassPermissions: settings["bypass-permissions"].value as boolean,
     phoneEnabled: settings["phone"].value as boolean,
     phonePort: settings["phone-port"].value as number,
     phoneRelayURL: settings["phone-relay-url"].value as string,

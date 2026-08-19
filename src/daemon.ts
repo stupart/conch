@@ -4701,7 +4701,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
         ? {}
         : { claudeHome: cfg.claudeDir }),
     }),
-    start: (message) => startTerminalSession(message),
+    start: (message) => startTerminalSession({
+      ...message,
+      // Read at start time, so changing the setting affects the next session
+      // you launch rather than needing a daemon restart.
+      bypassPermissions: cfg.bypassPermissions,
+    }),
     folderTrusted: (cwd) => claudeFolderTrusted(cwd),
     close: closeLiveSession,
     report: (message) => {

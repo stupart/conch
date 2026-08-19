@@ -7,6 +7,15 @@ export interface StartSessionRequest {
   backend: SessionBackend;
   resumeSessionId?: string;
   cwd?: string;
+  /**
+   * Start without permission prompts: `--dangerously-skip-permissions` for
+   * Claude Code, `--dangerously-bypass-approvals-and-sandbox` for Codex.
+   *
+   * Off unless asked for. conch ships to other people, and a tool that
+   * silently removes every confirmation from sessions it starts is not a
+   * default anyone should inherit — it has to be a thing you turned on.
+   */
+  bypassPermissions?: boolean;
 }
 
 export interface SessionLifecycleProcess {
@@ -43,7 +52,23 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
       ? ` --resume ${shellQuote(resume)}`
       : ` resume ${shellQuote(resume)}`
     : "";
-  return `cd -- ${shellQuote(cwd)} && exec ${executable}${args}`;
+  // Before the subcommand's own arguments, not after: `codex resume <id>` takes
+  // the id as a positional, and a global flag trailing it reads as a second one.
+  const bypass = request.bypassPermissions ? ` ${bypassFlag(request.backend)}` : "";
+  return `cd -- ${shellQuote(cwd)} && exec ${executable}${bypass}${args}`;
+}
+
+/**
+ * The verified flag for each agent, spelled the way each agent spells it.
+ *
+ * Read from `--help` on the installed binaries rather than from memory: Codex
+ * has renamed this more than once, and there is no `--yolo` alias in the
+ * current build despite the name people use for it.
+ */
+function bypassFlag(backend: SessionBackend): string {
+  return backend === "claude"
+    ? "--dangerously-skip-permissions"
+    : "--dangerously-bypass-approvals-and-sandbox";
 }
 
 function defaultSpawn(argv: string[]): SessionLifecycleProcess {

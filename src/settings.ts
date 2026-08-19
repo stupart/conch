@@ -29,6 +29,7 @@ export const SETTING_KEYS = [
   "barge-threshold",
   "voice-speed",
   "keystroke-fallback",
+  "bypass-permissions",
   "phone",
   "phone-port",
   "phone-relay-url",
@@ -49,6 +50,7 @@ export const SETTING_KEYS = [
 
 export type SettingKey = typeof SETTING_KEYS[number];
 export type SettingField =
+  | "bypassPermissions"
   | "endSilenceSecs"
   | "micGainDb"
   | "holdSubmitSecs"
@@ -244,6 +246,21 @@ export const SETTING_DESCRIPTORS = [
     bounds: positive,
     apply: "live",
     help: "Kokoro/voice synthesis speed",
+  },
+  {
+    key: "bypass-permissions",
+    field: "bypassPermissions",
+    env: "CONCH_BYPASS_PERMISSIONS",
+    kind: "boolean",
+    // Off, and it ships off. conch starts sessions on someone else's machine
+    // from a list they can scroll; a tool that quietly removes every
+    // confirmation from those sessions is not a default anyone should inherit.
+    // Turning it on has to be a thing you did.
+    default: false,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "start sessions with all permission prompts skipped (claude --dangerously-skip-permissions, codex --dangerously-bypass-approvals-and-sandbox)",
   },
   {
     key: "keystroke-fallback",
