@@ -311,3 +311,80 @@ describe("resumable session discovery", () => {
     expect(result.stdout).not.toContain("other-id");
   });
 });
+
+describe("Claude session names match what /resume shows", () => {
+  test("a renamed session shows the name, not its opening sentence", () => {
+    // Tyler: "The resume names i see in conch are weird - they don't match what
+    // i see when i run /resume in the apps". conch was labelling every row with
+    // the first thing ever said in that session, so the ones he recognises —
+    // conch, honeyb, arch site — each read as an ancient opening line.
+    const home = mkdtempSync(join(tmpdir(), "conch-title-"));
+    writeClaude(home, "proj", "s1", [
+      { type: "user", cwd: "/work/thing", entrypoint: "cli", message: { role: "user", content: "please look at the thing i mentioned" } },
+      { type: "ai-title", aiTitle: "Look at the mentioned thing" },
+      { type: "custom-title", customTitle: "arch site" },
+    ], Date.now());
+
+    const rows = readResumableSessions({ configDir: home, claudeHome: home, codexHome: join(home, "nope") });
+    expect(rows.map((r) => r.label)).toEqual(["arch site"]);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("the latest rename wins, because both are rewritten as they change", () => {
+    // Claude Code appends a fresh record on every rename — roughly two thousand
+    // in a long transcript — so the CURRENT name is the last one, not the first.
+    const home = mkdtempSync(join(tmpdir(), "conch-title-"));
+    writeClaude(home, "proj", "s1", [
+      { type: "user", cwd: "/work/thing", entrypoint: "cli", message: { role: "user", content: "hello" } },
+      { type: "custom-title", customTitle: "first name" },
+      { type: "custom-title", customTitle: "renamed later" },
+    ], Date.now());
+
+    const rows = readResumableSessions({ configDir: home, claudeHome: home, codexHome: join(home, "nope") });
+    expect(rows[0]?.label).toBe("renamed later");
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("a generated title is used when nothing was renamed", () => {
+    const home = mkdtempSync(join(tmpdir(), "conch-title-"));
+    writeClaude(home, "proj", "s1", [
+      { type: "user", cwd: "/work/thing", entrypoint: "cli", message: { role: "user", content: "some long opening request" } },
+      { type: "ai-title", aiTitle: "Generated Title" },
+    ], Date.now());
+
+    const rows = readResumableSessions({ configDir: home, claudeHome: home, codexHome: join(home, "nope") });
+    expect(rows[0]?.label).toBe("Generated Title");
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("headless routines are not sessions you resume", () => {
+    // Boaker's cron runs were 15 of the 25 most recent transcripts on this
+    // machine, so the list filled with rows reading "You are Boaker, Tyler's
+    // standing boat-market watcher". Same rule isEngageable applies to live
+    // sessions, and conservative in the same direction: only a positively
+    // non-cli entrypoint is dropped.
+    const home = mkdtempSync(join(tmpdir(), "conch-title-"));
+    writeClaude(home, "proj", "cron", [
+      { type: "user", cwd: "/work/thing", entrypoint: "sdk-cli", message: { role: "user", content: "You are Boaker, a standing watcher" } },
+    ], Date.now());
+    writeClaude(home, "proj", "human", [
+      { type: "user", cwd: "/work/thing", entrypoint: "cli", message: { role: "user", content: "a real session" } },
+    ], Date.now() - 1000);
+
+    const rows = readResumableSessions({ configDir: home, claudeHome: home, codexHome: join(home, "nope") });
+    expect(rows.map((r) => r.sessionId)).toEqual(["human"]);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  test("an unmarked transcript still lists, rather than being dropped", () => {
+    // Absence is not evidence of a routine. Over-dropping hides real work.
+    const home = mkdtempSync(join(tmpdir(), "conch-title-"));
+    writeClaude(home, "proj", "s1", [
+      { type: "user", cwd: "/work/thing", message: { role: "user", content: "no entrypoint recorded" } },
+    ], Date.now());
+
+    const rows = readResumableSessions({ configDir: home, claudeHome: home, codexHome: join(home, "nope") });
+    expect(rows).toHaveLength(1);
+    rmSync(home, { recursive: true, force: true });
+  });
+});
