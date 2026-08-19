@@ -14,6 +14,16 @@ import SwiftUI
 struct ConversationStackView: View {
     let conversation: Conversation
     let onAnswer: (String) -> Void
+    /// Take me to the text field — I want to answer in my own words.
+    ///
+    /// Claude Code's own question UI always offers an "Other" row, and conch
+    /// showed only the options the tool listed. Tyler: "it was missing the 4th
+    /// option where i coudl just write something and also the like ignore and
+    /// just chat about it option but maybe i could have just used the nromal
+    /// input bar for that?" He was right that the composer already does this —
+    /// so this points at it rather than growing a second text field inside the
+    /// question.
+    var onFreeform: () -> Void = {}
     /// Sticks to the bottom only when already there, so reading history is not
     /// yanked away by an arriving message.
     @State private var pinnedToBottom = true
@@ -231,6 +241,33 @@ struct ConversationStackView: View {
                         .opacity(0.58)
                         .accessibilityHint("This question is no longer waiting for an answer")
                 }
+            }
+
+            if answerable {
+                Button(action: onFreeform) {
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        // A pencil, not a circle: this is not a fourth choice,
+                        // it is the way out of choosing.
+                        Image(systemName: "square.and.pencil")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(ConchPalette.textDim)
+                        Text("Something else…")
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(ConchPalette.textDim)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 9)
+                            .strokeBorder(ConchPalette.textDim.opacity(0.22), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Answer in your own words")
+                .accessibilityHint("Moves to the message field so you can answer in your own words")
             }
 
             if asked.multiSelect && answerable {

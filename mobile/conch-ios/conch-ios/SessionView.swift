@@ -117,7 +117,8 @@ struct SessionView: View {
                             bridge: bridge,
                             conversation: conversation,
                             optionReplyInFlight: optionReplyInFlight || isSending,
-                            onSelectOption: answerQuestion
+                            onSelectOption: answerQuestion,
+                            onFreeform: { typing = true }
                         )
                     } else if let replyText {
                         MarkdownView(text: replyText)

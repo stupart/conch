@@ -126,6 +126,10 @@ struct ComposerView: View {
     /// Called the moment a draft becomes non-empty, so the pane can stop
     /// following whichever session happens to be busiest.
     let onDraftStarted: () -> Void
+    /// Bumped by anything that wants the cursor here — a question's "Something
+    /// else…" row, today. A counter rather than a Bool because the request is
+    /// an event, and the same request can arrive twice in a row.
+    var focusRequest: Int = 0
 
     @State private var isTargetedForDrop = false
     @State private var isSending = false
@@ -258,6 +262,12 @@ struct ComposerView: View {
         .onDrop(of: [.fileURL], isTargeted: $isTargetedForDrop) { providers in
             load(providers)
             return true
+        }
+        .onChange(of: focusRequest) { _, _ in
+            // Somewhere else asked for the cursor — the "Something else…" row
+            // on a question, today. Ignore the initial value so opening a
+            // session does not steal focus from whatever you were reading.
+            fieldFocused = true
         }
         .overlay {
             if isTargetedForDrop {

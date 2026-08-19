@@ -11,6 +11,14 @@ struct ConversationStack: View {
     let conversation: Conversation
     let optionReplyInFlight: Bool
     let onSelectOption: (String) -> Void
+    /// Take me to the text field — I want to answer in my own words.
+    ///
+    /// Claude Code's own question UI always offers an "Other" row and conch
+    /// showed only the listed options, so the way out of a question was to know
+    /// the composer already worked. Tyler: "it was missing the 4th option where
+    /// i coudl just write something". This points at the composer rather than
+    /// growing a second text field inside the question.
+    var onFreeform: () -> Void = {}
     @State private var expandedToolIDs: Set<String> = []
     /// Multi-select taps edit a retained set. Nothing crosses the bridge until
     /// the explicit Submit button sends the complete, option-ordered answer.
@@ -279,6 +287,35 @@ struct ConversationStack: View {
                             ? "Toggles this option; Submit sends all selected options"
                             : "Sends this option as your reply")
                 )
+            }
+
+            if isActive {
+                Button(action: onFreeform) {
+                    HStack(spacing: 10) {
+                        // A pencil, not a circle: this is not a fourth choice,
+                        // it is the way out of choosing.
+                        Image(systemName: "square.and.pencil")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Palette.textDim)
+                        Text("Something else…")
+                            .font(Type.caption.weight(.medium))
+                            .foregroundStyle(Palette.textDim)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .strokeBorder(
+                                Palette.textDim.opacity(0.22),
+                                style: StrokeStyle(lineWidth: 1, dash: [3, 3])
+                            )
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Moves to the message field so you can answer in your own words")
             }
 
             if asked.multiSelect && isActive {

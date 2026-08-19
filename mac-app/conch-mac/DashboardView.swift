@@ -1371,6 +1371,9 @@ private struct ConversationPane: View {
     /// second, so without this the same spoken sentence would be appended over
     /// and over.
     @State private var appliedDictationID = 0
+    /// Bumped when a question's "Something else…" row is pressed, so the
+    /// composer takes the cursor.
+    @State private var composerFocusRequest = 0
 
     /// False = the deliverable in front, which is the pane's long-standing
     /// default: a session that produced an artifact is showing it to you.
@@ -1568,7 +1571,8 @@ private struct ConversationPane: View {
                                         text: label
                                     )
                                 )
-                            }
+                            },
+                            onFreeform: { composerFocusRequest += 1 }
                         )
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
@@ -1756,7 +1760,8 @@ private struct ConversationPane: View {
                 // explicit selection over the live session, so this is the
                 // existing mechanism rather than a new one.
                 onSelectSession(row)
-            }
+            },
+            focusRequest: composerFocusRequest
         )
         .onAppear {
             composerDrafts.claimPreviewSeed(for: row.id)
