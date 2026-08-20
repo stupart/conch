@@ -115,6 +115,45 @@ number one: capability parity comes before every other idea.
 6. **Phase 3, the feed** (`vision.md`) — deliberately last: an alternate VIEW
    over rankable items the work above already produces.
 
+### Beyond parity — what makes conch its own thing
+
+Tyler, 2026-08-20: *"I think we can add the stuff not in the existing apps
+after we nail the basics but yea its what can start making conch its own
+improved better thing."*
+
+Everything above this line is conch catching up with what Claude Code and Codex
+already do. Everything below is conch doing something neither of them can,
+because it is the only surface that sees both agents at once. These were
+scattered through "worth doing, not urgent" — that ranking was wrong, not
+because they are urgent but because they are the point.
+
+- **Agents messaging each other through conch.** Tyler: *"letting agents send
+  messages to one another if theyre working on the same thing via conch plugin.
+  Stuff like that."* conch already owns delivery, addressing and the transcript
+  for every session on the machine; agents simply cannot reach any of it. A
+  Codex session and a Claude session working the same repo have no way to say
+  anything to each other, and conch is sitting between them. Needs a real think
+  about loops and consent — an agent that can wake another agent can wake it
+  forever — but the plumbing is almost entirely there.
+- **Discovery and the unified marketplace** — see `docs/marketplace-vision.md`.
+  Skills, plugins, marketplaces, MCP servers, and possibly workflows, loops and
+  prompt templates, with per-platform filters. The last three are not things
+  either agent packages, which is either the best part of the idea or a scope
+  trap.
+- **Configuration at session START.** The only moment a toggle is honest, since
+  nothing we can write affects a running host. Turns the hard problem into a
+  non-problem rather than fighting it.
+- **Subagents nested under their session**, folder-style, with an open question
+  about reaching one from inside the conversation. Constraint already learned:
+  a subagent stopping is not the parent's turn ending, so a nested row must not
+  inherit its status or announce like one.
+- **Make the plugin genuinely useful.** Tyler: *"lets improve the plugin so it
+  is genuinely helpful and gets used."* Evidence it is not: surfacing the state
+  document was the first `review_to_front` call in a session of this length,
+  and `docs/vision.md` already argues the plugin points agents the wrong way by
+  telling them to surface sparingly. Also carries the `review_to_front` rename —
+  the name teaches "approval gate" every time an agent reads the tool list.
+
 ### Done since this list was last written
 
 Verified in source, not from commit messages:
@@ -425,11 +464,6 @@ implement materially different products." Highest-value items lifted out:
       an agent reads the tool list, whatever the description says. Renaming an
       MCP tool breaks callers mid-flight, so it wants doing deliberately with
       the text marker kept as an alias.
-- [ ] **Sessions messaging each other through conch**, addressed the way Tyler
-      addresses them. conch already owns delivery, addressing and the
-      transcript; agents just cannot use any of it.
-- [ ] **Subagents as children of their session** in the ledger, transcripts
-      readable, ideally talkable-to. `subagent` is already a tool kind.
 - [ ] **Build the plugin/skill/MCP palette UI and honest actions** on
       `agent-capabilities`. Attached sessions do not have a universal live
       switch: use next-session config verbs or hand interactive `/plugins`,
