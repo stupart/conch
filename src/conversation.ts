@@ -56,6 +56,8 @@ export interface ConversationToolDetail {
   /** What sort of operation this was, so a viewer can render it as one. */
   kind?: ToolKind;
   name: string;
+  /** Provider wire name retained for evidence joins; renderers should use name. */
+  wireName?: string;
   status: "running" | "done" | "error";
   /** Tool output, kept separate so a viewer can collapse it. */
   result?: string;
@@ -354,6 +356,7 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
       at,
       tool: {
         name: toolDisplayName(String(call.name ?? "tool")),
+        wireName: String(call.name ?? "tool"),
         kind: toolKind(String(call.name ?? ""), call.input),
         status: "running",
       },
@@ -868,6 +871,7 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
         at,
         tool: {
           name: toolDisplayName(String(payload.name ?? "tool")),
+          wireName: String(payload.name ?? "tool"),
           kind: asked ? "question" : toolKind(String(payload.name ?? ""), parsed),
           status: "running",
         },

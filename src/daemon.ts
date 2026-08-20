@@ -232,6 +232,11 @@ import {
   readResumableSessionsResult,
   type ResumableSessionsRead,
 } from "./resumable.ts";
+import {
+  readAgentCapabilities,
+  type AgentCapabilitiesRead,
+  type AgentCapabilityObservation,
+} from "./agent-capabilities.ts";
 
 /**
  * The turn-based voice loop.
@@ -534,6 +539,7 @@ export function dispatchControlMessage(
   }
   if (
     validated.value.kind === "resumable"
+    || validated.value.kind === "agent-capabilities"
     || validated.value.kind === "session-start"
     || validated.value.kind === "session-close"
     || validated.value.kind === "app-error"
@@ -570,6 +576,9 @@ export interface RuntimeControlDispatchOptions {
   listResumable(
     message: Extract<RuntimeControlMessage, { kind: "resumable" }>,
   ): ResumableSessionsRead | Promise<ResumableSessionsRead>;
+  readCapabilities?(
+    message: Extract<RuntimeControlMessage, { kind: "agent-capabilities" }>,
+  ): AgentCapabilitiesRead | Promise<AgentCapabilitiesRead>;
   start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | Promise<void>;
   /** Whether Claude Code already trusts a folder; absent or null means unknown. */
   folderTrusted?(cwd: string): boolean | null;
@@ -587,6 +596,7 @@ export async function dispatchRuntimeControlMessage(
     && value.kind !== "session-close"
     && value.kind !== "app-error"
     && value.kind !== "resumable"
+    && value.kind !== "agent-capabilities"
   )) return { handled: false };
 
   const validated = validateRuntimeControlMessage(value);
@@ -603,6 +613,18 @@ export async function dispatchRuntimeControlMessage(
           kind: "resumable",
           sessions: result.sessions,
           complete: result.complete,
+        },
+      };
+    }
+    if (message.kind === "agent-capabilities") {
+      if (!options.readCapabilities) {
+        throw new Error("agent capability inventory is unavailable");
+      }
+      return {
+        handled: true,
+        response: {
+          kind: "agent-capabilities",
+          inventory: await options.readCapabilities(message),
         },
       };
     }
@@ -4701,6 +4723,36 @@ export async function runDaemon(cfg: Config): Promise<void> {
         ? {}
         : { claudeHome: cfg.claudeDir }),
     }),
+    readCapabilities: (message) => {
+      const observations: AgentCapabilityObservation[] = [];
+      const conversation = message.sessionId
+        ? lastPublishedPanelState?.conversations?.[message.sessionId]
+        : undefined;
+      for (const item of conversation?.items ?? []) {
+        if (item.tool?.kind !== "mcp_tool_call") continue;
+        const match = /^mcp__(.+?)__(.+)$/.exec(item.tool.wireName ?? "");
+        if (!match) continue;
+        observations.push({
+          kind: "mcp-tool",
+          serverName: match[1]!,
+          toolName: match[2]!,
+          sessionId: message.sessionId!,
+          ...(item.at === undefined ? {} : { at: item.at }),
+        });
+      }
+      return readAgentCapabilities({
+        backend: message.backend,
+        cwd: message.cwd,
+        ...(message.sessionId === undefined ? {} : { sessionId: message.sessionId }),
+        observations,
+        ...(process.env.CONCH_CONFIG_DIR === undefined
+          ? {}
+          : { configDir: process.env.CONCH_CONFIG_DIR }),
+        ...(message.backend !== "claude" || process.env.CLAUDE_CONFIG_DIR === undefined
+          ? {}
+          : { claudeHome: cfg.claudeDir }),
+      });
+    },
     start: (message) => startTerminalSession({
       ...message,
       // Read at start time, so changing the setting affects the next session

@@ -6,6 +6,7 @@ import {
   shouldReportMissingCodexPid,
 } from "../src/daemon.ts";
 import { buildConversation } from "../src/conversation.ts";
+import { readAgentCapabilities } from "../src/agent-capabilities.ts";
 import { buildPublishedState, type PanelModel } from "../src/panel.ts";
 import {
   isControlMessageCandidate,
@@ -18,6 +19,7 @@ describe("Phase 2 runtime controls", () => {
     for (const message of [
       { kind: "resumable" },
       { kind: "resumable", query: "conch", limit: 25 },
+      { kind: "agent-capabilities", backend: "claude", cwd: "/tmp/conch", sessionId: "session-1" },
       { kind: "session-start", backend: "claude" },
       { kind: "session-start", backend: "codex", resumeSessionId: "thread-1", cwd: "/tmp/repo" },
       { kind: "session-close", sessionId: "session-1" },
@@ -31,6 +33,8 @@ describe("Phase 2 runtime controls", () => {
       { kind: "resumable", query: 42 },
       { kind: "resumable", limit: 0 },
       { kind: "resumable", limit: 501 },
+      { kind: "agent-capabilities", backend: "other", cwd: "/tmp/conch" },
+      { kind: "agent-capabilities", backend: "codex", cwd: "relative" },
       { kind: "session-start", backend: "other" },
       { kind: "session-start", backend: "claude", cwd: "relative" },
       { kind: "session-close", sessionId: "" },
@@ -105,10 +109,54 @@ describe("Phase 2 runtime controls", () => {
     });
   });
 
+  test("returns a capability inventory through runtime dispatch without mutating provider state", async () => {
+    const inventory = readAgentCapabilities({
+      backend: "codex",
+      cwd: "/tmp/conch",
+      configDir: "/tmp/isolated-conch-config",
+    });
+    expect(await dispatchRuntimeControlMessage(
+      { kind: "agent-capabilities", backend: "codex", cwd: "/tmp/conch", sessionId: "thread-1" },
+      {
+        listResumable: () => ({ sessions: [], complete: true }),
+        readCapabilities: (message) => {
+          expect(message).toEqual({
+            kind: "agent-capabilities",
+            backend: "codex",
+            cwd: "/tmp/conch",
+            sessionId: "thread-1",
+          });
+          return { ...inventory, context: { ...inventory.context, sessionId: "thread-1" } };
+        },
+        start: () => {},
+        close: () => {},
+        report: () => {},
+      },
+    )).toEqual({
+      handled: true,
+      response: {
+        kind: "agent-capabilities",
+        inventory: { ...inventory, context: { ...inventory.context, sessionId: "thread-1" } },
+      },
+    });
+  });
+
   test("lifecycle acknowledgements round-trip through the control client validator", () => {
     expect(validateControlResponse({ kind: "session-started", backend: "claude", resumed: false }).ok).toBe(true);
     expect(validateControlResponse({ kind: "session-closed", sessionId: "s1" }).ok).toBe(true);
     expect(validateControlResponse({ kind: "app-error-ack" }).ok).toBe(true);
+    expect(validateControlResponse({
+      kind: "agent-capabilities",
+      inventory: readAgentCapabilities({
+        backend: "claude",
+        cwd: "/tmp/conch",
+        configDir: "/tmp/isolated-conch-config",
+      }),
+    }).ok).toBe(true);
+    expect(validateControlResponse({
+      kind: "agent-capabilities",
+      inventory: { schemaVersion: 1, entities: "not-an-array" },
+    }).ok).toBe(false);
     expect(validateControlResponse({
       kind: "resumable",
       sessions: [{

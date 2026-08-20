@@ -12,6 +12,10 @@ import {
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
+import {
+  isAgentCapabilitiesRead,
+  type AgentCapabilitiesRead,
+} from "./agent-capabilities.ts";
 import type { ResumableSession } from "./resumable.ts";
 import { normalizeSessionLabel } from "./sessions.ts";
 import { isValidVoiceName } from "./speak.ts";
@@ -722,6 +726,12 @@ export type SessionControlMessage =
 export type RuntimeControlMessage =
   | { kind: "resumable"; query?: string; limit?: number }
   | {
+    kind: "agent-capabilities";
+    backend: "claude" | "codex";
+    cwd: string;
+    sessionId?: string;
+  }
+  | {
     kind: "session-start";
     backend: "claude" | "codex";
     resumeSessionId?: string;
@@ -813,6 +823,7 @@ export interface PairingOpen {
 
 export type RuntimeControlResponse =
   | { kind: "resumable"; sessions: ResumableSession[]; complete: boolean }
+  | { kind: "agent-capabilities"; inventory: AgentCapabilitiesRead }
   | {
     kind: "session-started";
     backend: "claude" | "codex";
@@ -867,6 +878,7 @@ export function isControlMessageCandidate(value: unknown): boolean {
     || value.kind === "unset-config"
     || value.kind === "session-command"
     || value.kind === "resumable"
+    || value.kind === "agent-capabilities"
     || value.kind === "session-start"
     || value.kind === "session-close"
     || value.kind === "app-error";
@@ -993,6 +1005,31 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
       },
     };
   }
+  if (value.kind === "agent-capabilities") {
+    if (value.backend !== "claude" && value.backend !== "codex") {
+      return { ok: false, err: "agent capability backend must be claude or codex" };
+    }
+    const cwd = boundedPrintable(value.cwd, "agent capability cwd", 4_096);
+    if (!cwd.ok) return cwd;
+    if (!cwd.value.startsWith("/")) {
+      return { ok: false, err: "agent capability cwd must be an absolute path" };
+    }
+    let sessionId: string | undefined;
+    if (value.sessionId !== undefined) {
+      const validated = validateSessionId(value.sessionId);
+      if (!validated.ok) return validated;
+      sessionId = validated.value;
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "agent-capabilities",
+        backend: value.backend,
+        cwd: cwd.value,
+        ...(sessionId ? { sessionId } : {}),
+      },
+    };
+  }
   if (value.kind === "session-close") {
     const sessionId = validateSessionId(value.sessionId);
     return sessionId.ok
@@ -1073,6 +1110,7 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
   if (value.kind === "session-command") return validateSessionControlMessage(value);
   if (
     value.kind === "resumable"
+    || value.kind === "agent-capabilities"
     || value.kind === "session-start"
     || value.kind === "session-close"
     || value.kind === "app-error"
@@ -1096,6 +1134,11 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
 
 export function validateControlResponse(value: unknown): ParseResult<ControlResponse> {
   if (!record(value) || typeof value.kind !== "string") return { ok: false, err: "invalid control response" };
+  if (value.kind === "agent-capabilities") {
+    return isAgentCapabilitiesRead(value.inventory)
+      ? { ok: true, value: { kind: "agent-capabilities", inventory: value.inventory } }
+      : { ok: false, err: "invalid agent capabilities response" };
+  }
   if (value.kind === "resumable") {
     if (!Array.isArray(value.sessions) || value.sessions.length > 500 || typeof value.complete !== "boolean") {
       return { ok: false, err: "invalid resumable sessions response" };
