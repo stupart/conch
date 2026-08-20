@@ -1374,6 +1374,8 @@ private struct ConversationPane: View {
     /// Bumped when a question's "Something else…" row is pressed, so the
     /// composer takes the cursor.
     @State private var composerFocusRequest = 0
+    /// The session whose capabilities are being inspected, if any.
+    @State private var inspectingSession: SessionRow?
 
     /// False = the deliverable in front, which is the pane's long-standing
     /// default: a session that produced an artifact is showing it to you.
@@ -1640,6 +1642,9 @@ private struct ConversationPane: View {
         } message: {
             Text("conch will ask the agent to exit cleanly. Its transcript stays available to resume later.")
         }
+        .sheet(item: $inspectingSession) { row in
+            CapabilityInspectorSheet(row: row) { inspectingSession = nil }
+        }
     }
 
     /// Close lives behind the least accidental control in the pane, while the
@@ -1662,6 +1667,10 @@ private struct ConversationPane: View {
             }
 
             Menu {
+                Button("What this session carries…") {
+                    inspectingSession = row
+                }
+                Divider()
                 Button("Close session…", role: .destructive) {
                     sessionPendingClose = row
                 }

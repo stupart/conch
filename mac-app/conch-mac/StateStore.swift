@@ -263,6 +263,31 @@ final class StateStore: ObservableObject {
         "Terminal is asking you to trust this folder. Answer it there and the "
         + "session will appear here."
 
+    /// What a session is carrying, or nil if it could not be read.
+    ///
+    /// Not cached: the answer changes when a config file changes, and this is
+    /// opened deliberately rather than rendered continuously — 107 Codex and
+    /// 205 Claude entities read in 35-48ms, so asking again is cheaper than
+    /// deciding when a cache went stale.
+    func capabilities(
+        backend: String,
+        cwd: String,
+        sessionId: String?
+    ) async -> AgentCapabilities? {
+        let outcome = await socketClient.request(
+            ConchCapabilitiesRequest(backend: backend, cwd: cwd, sessionId: sessionId),
+            timeout: Self.sessionLifecycleTimeout
+        )
+        guard case let .reply(data) = outcome,
+              let reply = try? JSONDecoder().decode(ConchCapabilitiesReply.self, from: data),
+              let inventory = reply.inventory
+        else {
+            reportAppError(operation: "agent-capabilities", message: "Could not read session capabilities")
+            return nil
+        }
+        return inventory
+    }
+
     func startSession(
         backend: ConchAgentBackend,
         resumeSessionId: String?,

@@ -1009,9 +1009,14 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     if (value.backend !== "claude" && value.backend !== "codex") {
       return { ok: false, err: "agent capability backend must be claude or codex" };
     }
-    const cwd = boundedPrintable(value.cwd, "agent capability cwd", 4_096);
+    // Empty means "the session's own directory", which the daemon resolves.
+    // A client that can already name a session should not also have to know
+    // its filesystem path — and the alternative was publishing a path on every
+    // session row for one deliberate lookup.
+    const requestedCwd = value.cwd === "" ? { ok: true as const, value: "" } : undefined;
+    const cwd = requestedCwd ?? boundedPrintable(value.cwd, "agent capability cwd", 4_096);
     if (!cwd.ok) return cwd;
-    if (!cwd.value.startsWith("/")) {
+    if (cwd.value !== "" && !cwd.value.startsWith("/")) {
       return { ok: false, err: "agent capability cwd must be an absolute path" };
     }
     let sessionId: string | undefined;

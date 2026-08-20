@@ -57,3 +57,48 @@ Stop and ask rather than guess when:
 ## Log
 
 Each iteration appends: what changed, what the screenshot showed, the verdict.
+
+### Iteration 1 — the inspector exists
+
+Built the Swift model, the view, the store method and an entry point in the
+session overflow menu. Screenshot: the sheet rendered but said "Could not read
+this session's capabilities". Two real bugs behind it, both found only by
+looking: the Mac's `SessionRow` never decoded `cwd` (the daemon has it and does
+not publish it), and the control-message validator rejected an empty one.
+Resolved by letting the DAEMON resolve a session's directory — a client that
+can already name a session should not have to know its filesystem path, and the
+alternative was publishing a path on every row for one deliberate lookup.
+
+Verdict: works against real config. 8 MCP servers, 11 plugins, descriptions and
+child counts, read in tens of milliseconds.
+
+### Iteration 2 — rows that looked like duplicates
+
+Screenshot showed `context7` twice under MCP servers and twice under plugins,
+with nothing separating them. They are genuinely different entities — one from
+a user-scope plugin, one from a project marketplace — so the list was correct
+and unreadable at the same time.
+
+First attempt labelled every namesake with its own `scope`, which fixed the
+plugins (`local` / `user`) and did nothing for the servers, whose scope is
+"plugin" in both cases. What actually differs there is the scope of the plugin
+that OWNS them. Now a badge appears only when it genuinely separates a row from
+its namesake, and never otherwise: two rows conch cannot tell apart should look
+like two rows, not like two broken badges.
+
+Verdict: passes. Duplicates disambiguate; unique rows stay clean.
+
+### Iteration 3 — the evidence detail
+
+Expanded a row. Every state carries its reason:
+
+    configured  A redacted MCP server definition exists on disk.
+    available   Disk configuration does not prove that a fresh or attached
+                host made this available.
+    loaded      Conch is attached to a host it did not initialize, so loaded
+                state is not observable.
+    observed    No use has been observed; absence of evidence is not evidence
+                of absence.
+
+Verdict: the "every claim carries its basis" criterion is met. Handing the diff
+to Codex for adversarial review before going further.

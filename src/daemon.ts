@@ -4740,9 +4740,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
           ...(item.at === undefined ? {} : { at: item.at }),
         });
       }
+      // An empty cwd means "the session's own directory". A client that can
+      // already name a session should not also have to know its filesystem
+      // path — the daemon holds that, and making the app carry it would mean
+      // publishing a path on every row for one deliberate lookup.
+      const cwd = message.cwd.trim()
+        || panelSessions.get(message.sessionId ?? "")?.cwd
+        || homedir();
       return readAgentCapabilities({
         backend: message.backend,
-        cwd: message.cwd,
+        cwd,
         ...(message.sessionId === undefined ? {} : { sessionId: message.sessionId }),
         observations,
         ...(process.env.CONCH_CONFIG_DIR === undefined

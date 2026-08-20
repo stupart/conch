@@ -138,6 +138,20 @@ struct ConchResumableReply: Decodable, Sendable {
     let complete: Bool?
 }
 
+/// Ask what a session is carrying. Per-session, because the answer depends on
+/// the agent AND the working directory — a plugin enabled in one project is
+/// not enabled everywhere.
+struct ConchCapabilitiesRequest: Encodable, Sendable {
+    let kind = "agent-capabilities"
+    let backend: String
+    let cwd: String
+    let sessionId: String?
+}
+
+struct ConchCapabilitiesReply: Decodable, Sendable {
+    let inventory: AgentCapabilities?
+}
+
 struct ConchSessionCloseRequest: Encodable, Sendable {
     let kind = "session-close"
     let sessionId: String
