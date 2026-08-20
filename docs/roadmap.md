@@ -68,17 +68,20 @@ only by what exists.
 
 Where the two apps actually are:
 
-- **Mac** has the tabs and currently DEFAULTS to the artifact whenever one
-  exists (`DashboardView.swift:1493`, `showsConversation` starts false). So it
-  does the first thing he considered and rejected.
+- **Mac** has the tabs — which Tyler likes — and currently defaults to the
+  artifact whenever one exists (`DashboardView.swift:1493`, `showsConversation`
+  starts false). This is not wrong, it is the thing being refined: *"I like what
+  the Mac app does but think it can be a bit better."* The refinement is where
+  you LAND, not whether the tabs should exist.
 - **Phone** has no tabs at all — a banner card inside the scroll, above the
   conversation, opening a modal sheet. Since sessions now open at the bottom,
   that banner is never on screen.
 
 The settled design, for both:
 
-1. **Default to the conversation.** Chatting is the common case, and being
-   thrown into a document you did not ask for is the annoyance he names.
+1. **Default to the conversation.** Chatting is the common case, and the
+   annoyance he names is having to switch back when he only wanted to talk.
+   The tabs stay — they are the good part.
 2. **The artifact appears INLINE, where it happened**, as a preview with real
    content rather than a link or a filename.
 3. **Tap or click it and it goes big**, with the top tab switching to
