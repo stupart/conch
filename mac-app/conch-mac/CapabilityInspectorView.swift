@@ -59,11 +59,15 @@ struct CapabilityInspectorView: View {
                         .foregroundStyle(ConchPalette.textDim)
                     if let trust = context.projectTrust {
                         Text("·").foregroundStyle(ConchPalette.textFaint)
-                        // Three states, not two. A folder with no recorded
-                        // decision has not refused; the dialog simply has not
-                        // been shown, and saying "untrusted" would be wrong.
+                        // Three states, not two, and the third is honest about
+                        // being ignorance rather than a refusal. nil arises BOTH
+                        // when no decision was recorded and when conch could not
+                        // read the file that would hold one, so it must not
+                        // claim the decision has not been made. The tooltip
+                        // carries the reader's own detail, which distinguishes
+                        // them.
                         Text(trust.trusted == nil
-                            ? "trust not decided"
+                            ? "trust unknown"
                             : (trust.trusted == true ? "trusted" : "not trusted"))
                             .font(ConchTypography.font(size: 11))
                             .foregroundStyle(trust.trusted == false
@@ -73,19 +77,37 @@ struct CapabilityInspectorView: View {
                     }
                 }
                 if let thread = context.threadConfiguration {
-                    // Codex writes down what a thread STARTED with. That is
-                    // real evidence and better than a global default, but it is
-                    // not proof the values are still live, so it is labelled as
-                    // a record rather than as state.
+                    // Codex records this per thread, which is real evidence and
+                    // far better than a global default — but the reader's own
+                    // contract calls it "configuration persisted for one
+                    // thread", not a launch snapshot, and nothing establishes
+                    // the values have not changed since. So: what Codex
+                    // recorded, not what the session started with.
                     Text(threadLine(thread))
                         .font(ConchTypography.font(size: 10.5))
                         .foregroundStyle(ConchPalette.textFaint)
                 }
             }
             if let capabilities, !capabilities.complete {
-                Text("Some sources could not be read — this list is a floor, not a census.")
+                // Deliberately does not name a cause. Incompleteness also
+                // arises from a row limit or a missing package, so claiming
+                // "sources could not be read" could itself be false — and the
+                // diagnostics below are what actually explain it.
+                Text("This list is a floor, not a census.")
                     .font(ConchTypography.font(size: 10.5))
                     .foregroundStyle(ConchPalette.statusWaiting)
+            }
+            // Inventory-level diagnostics were decoded and never shown, so a
+            // partial read could look like an authoritative empty one.
+            if let capabilities {
+                ForEach(capabilities.diagnostics.indices, id: \.self) { index in
+                    if let message = capabilities.diagnostics[index].message {
+                        Text(message)
+                            .font(ConchTypography.font(size: 10.5))
+                            .foregroundStyle(ConchPalette.statusWaiting)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -96,7 +118,7 @@ struct CapabilityInspectorView: View {
     private func threadLine(_ thread: AgentCapabilities.ThreadConfiguration) -> String {
         let parts = [thread.model, thread.reasoningEffort, thread.approvalMode, thread.sandboxPolicy]
             .compactMap { $0 }
-        return parts.isEmpty ? "" : "started with " + parts.joined(separator: " · ")
+        return parts.isEmpty ? "" : "Codex recorded " + parts.joined(separator: " · ")
     }
 
     @ViewBuilder
@@ -177,13 +199,37 @@ struct CapabilityInspectorView: View {
             let parentScopes = group.map(parentScope)
             if Set(parentScopes.compactMap { $0 }).count == group.count {
                 for entity in group {
-                    if let scope = parentScope(entity) { result[entity.id] = scope }
+                    // Say whose scope it is. A bare "user" on a server whose own
+                    // scope is "plugin" reads as the server's scope and is not.
+                    if let scope = parentScope(entity) { result[entity.id] = "from \(scope)" }
+                }
+                continue
+            }
+            // Last resort: where they came from. Two same-named skills in
+            // different discovery roots, or the same server key in a root and a
+            // nested `.mcp.json`, share both their own scope and their owner's
+            // — and would otherwise render as identical rows, which is the
+            // thing this whole function exists to prevent.
+            let paths = group.map { $0.sources.first?.path }
+            if Set(paths.compactMap { $0 }).count == group.count {
+                for entity in group {
+                    if let path = entity.sources.first?.path {
+                        result[entity.id] = shorten(path)
+                    }
                 }
             }
-            // Otherwise: leave them unlabelled. Two rows that conch cannot tell
-            // apart should look like two rows, not like two broken badges.
+            // Otherwise: leave them unlabelled. Two rows that conch genuinely
+            // cannot tell apart should look like two rows, not like two broken
+            // badges.
         }
         return result
+    }
+
+    /// Enough of a path to tell two of them apart, from the end where they
+    /// differ rather than the start where they usually do not.
+    private func shorten(_ path: String) -> String {
+        let parts = path.split(separator: "/")
+        return parts.suffix(2).joined(separator: "/")
     }
 
     private func centred(_ text: String) -> some View {
@@ -270,6 +316,12 @@ private struct CapabilityRow: View {
                         .foregroundStyle(ConchPalette.textFaint)
                         .frame(width: 66, alignment: .leading)
                     Text(line.1)
+                        .font(ConchTypography.font(size: 10, weight: .medium))
+                        .foregroundStyle(line.1 == "no"
+                            ? ConchPalette.statusNeeds
+                            : (line.1 == "yes" ? ConchPalette.textDim : ConchPalette.textFaint))
+                        .frame(width: 46, alignment: .leading)
+                    Text(line.2)
                         .font(ConchTypography.font(size: 10))
                         .foregroundStyle(ConchPalette.textDim)
                         .fixedSize(horizontal: false, vertical: true)
@@ -304,12 +356,15 @@ private struct CapabilityRow: View {
         .padding(.bottom, 9)
     }
 
-    private var evidenceLines: [(String, String)] {
+    /// Each state, its VALUE, and how conch knows — the prose alone left the
+    /// actual state and basis invisible, which is most of "every claim carries
+    /// its basis".
+    private var evidenceLines: [(String, String, String)] {
         [
-            ("configured", entity.evidence.configured.detail),
-            ("available", entity.evidence.available.detail),
-            ("loaded", entity.evidence.loaded.detail),
-            ("observed", entity.evidence.observed.detail),
+            ("configured", entity.evidence.configured.state, entity.evidence.configured.detail),
+            ("available", entity.evidence.available.state, entity.evidence.available.detail),
+            ("loaded", entity.evidence.loaded.state, entity.evidence.loaded.detail),
+            ("observed", entity.evidence.observed.state, entity.evidence.observed.detail),
         ]
     }
 }
@@ -333,7 +388,10 @@ private struct EvidenceChip: View {
         if observedOnly { return "observed" }
         switch evidence.state {
         case "yes": return "configured"
-        case "no": return "absent"
+        // Never a bare "absent": the reader can only say a thing is switched
+        // off or denied WHERE IT LOOKED, which is not the same as absent from
+        // the running session.
+        case "no": return "disabled"
         default: return "unknown"
         }
     }
@@ -346,6 +404,9 @@ private struct EvidenceChip: View {
         if observedOnly { return ConchPalette.statusWorking }
         switch evidence.state {
         case "yes": return ConchPalette.textDim
+        // The one state that has to catch the eye: everything else on this
+        // screen is a fact about configuration, and this one is a thing that
+        // will not work.
         case "no": return ConchPalette.statusNeeds
         default: return ConchPalette.textFaint
         }

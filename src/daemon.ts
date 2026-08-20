@@ -4744,9 +4744,23 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // already name a session should not also have to know its filesystem
       // path — the daemon holds that, and making the app carry it would mean
       // publishing a path on every row for one deliberate lookup.
-      const cwd = message.cwd.trim()
+      //
+      // But it FAILS rather than guessing. Falling back to the home directory
+      // produced a coherent inventory of somewhere else, attributed to this
+      // session and undetectable from the UI — the session may have no
+      // recorded cwd, or may have exited between the app rendering its row and
+      // this request arriving. A missing inventory is honest; another
+      // directory's inventory wearing this session's name is not.
+      const resolved = message.cwd.trim()
         || panelSessions.get(message.sessionId ?? "")?.cwd
-        || homedir();
+        || "";
+      if (!resolved) {
+        throw new Error(
+          "that session has no known working directory — conch will not "
+          + "inventory a different one in its name",
+        );
+      }
+      const cwd = resolved;
       return readAgentCapabilities({
         backend: message.backend,
         cwd,

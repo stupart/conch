@@ -85,17 +85,32 @@ struct AgentCapabilities: Decodable, Equatable, Sendable {
 }
 
 extension AgentCapabilities.Entity {
-    /// The one word this row leads with. Configured-on-disk is the strongest
-    /// thing conch can say about an attached session, so it wins; observed-only
-    /// means conch saw it used without finding a definition, which is worth
-    /// surfacing rather than hiding.
+    /// What this row leads with, in the order that matters to a reader.
+    ///
+    /// A DISABLED thing leads with being disabled. Preferring "configured"
+    /// simply because a definition exists on disk made a switched-off MCP
+    /// server, plugin or denied tool render identically to a working one — the
+    /// reader can prove `available: no`, and the row hid it behind the fact
+    /// that it was configured at all. That is precisely the lie this feature
+    /// exists to avoid, and it is worse than saying nothing.
+    ///
+    /// After that: configured beats observed-only, because a definition on disk
+    /// is stronger evidence than having seen it used once.
     var headline: AgentCapabilities.Evidence {
+        if evidence.available.state == "no" { return evidence.available }
         if evidence.configured.state == "yes" { return evidence.configured }
         if evidence.observed.state == "yes" { return evidence.observed }
         return evidence.configured
     }
 
+    /// Configured nowhere conch could find, but seen in use. Worth showing
+    /// rather than hiding: it means the session has something conch cannot
+    /// account for.
     var isObservedOnly: Bool {
-        evidence.configured.state != "yes" && evidence.observed.state == "yes"
+        evidence.configured.state != "yes"
+            && evidence.available.state != "no"
+            && evidence.observed.state == "yes"
     }
+
+    var isUnavailable: Bool { evidence.available.state == "no" }
 }

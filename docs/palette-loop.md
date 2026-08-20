@@ -102,3 +102,53 @@ Expanded a row. Every state carries its reason:
 
 Verdict: the "every claim carries its basis" criterion is met. Handing the diff
 to Codex for adversarial review before going further.
+
+### Iteration 4 — Codex's critique, and the lie it caught
+
+Handed the diff to Codex per step 6. It found eight defects, seven of them
+certain, and the worst was the one the whole feature exists to prevent.
+
+**A disabled thing looked exactly like a working one.** `headline` preferred
+`configured: yes` whenever a definition existed on disk, so a switched-off MCP
+server, plugin or denied tool rendered with the same calm "configured" chip as
+a live one. The reader could prove `available: no` and the row hid it. Fixed by
+leading with unavailability, and the screenshot immediately showed two of
+Tyler's servers as **disabled** — `playwright`, rejected for this project, and
+`posthog`, whose plugin is `false` in `settings.json`. Both verified in his real
+config before trusting my own fix, because a false "disabled" is now a loud lie
+rather than a quiet one.
+
+**"trust not decided" was unsupported.** nil arises both when no decision was
+recorded AND when conch could not read the file that would hold one. Now "trust
+unknown", with the reader's own detail in the tooltip.
+
+**"started with" overstated the receipt.** The reader's contract calls it
+configuration persisted for a thread, not a launch snapshot; nothing shows the
+values have not changed since. Now "Codex recorded".
+
+**"Some sources could not be read" could itself be false** — incompleteness also
+comes from a row limit or a missing package. Now "This list is a floor, not a
+census", with the inventory-level diagnostics rendered beneath it; they were
+decoded and never shown, so a partial read could look like an authoritative
+empty one.
+
+**An empty cwd fell back to the home directory**, producing a coherent inventory
+of somewhere else wearing this session's name, undetectable from the UI. It
+fails loudly now, and the validator rejects an empty cwd with no session to
+resolve it from.
+
+**Evidence showed prose without values.** Each line now carries its state —
+`configured yes`, `available unknown` — which is most of what "every claim
+carries its basis" actually meant.
+
+**The badge was ambiguous and still permitted identical rows.** A bare "user" on
+a server whose own scope is "plugin" reads as the server's scope; it says
+"from user" now, and falls back to a distinguishing path when neither scope
+separates namesakes.
+
+Still open, and honest to state: the Swift model discards kind-specific
+metadata — transport, version, marketplace, skill visibility, tool approval
+mode — so the plan's per-kind "show" requirements are not met yet. That is the
+next increment, not a defect in what is there.
+
+Verdict: the honesty defects are closed. The completeness gap is not.

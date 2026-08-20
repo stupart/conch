@@ -1013,6 +1013,12 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     // A client that can already name a session should not also have to know
     // its filesystem path — and the alternative was publishing a path on every
     // session row for one deliberate lookup.
+    // An empty cwd is only meaningful WITH a session id — it means "that
+    // session's directory". Without one there is nothing to resolve it from,
+    // and accepting it would let a request through that can only fail later.
+    if (value.cwd === "" && value.sessionId === undefined) {
+      return { ok: false, err: "agent capability cwd requires a sessionId when empty" };
+    }
     const requestedCwd = value.cwd === "" ? { ok: true as const, value: "" } : undefined;
     const cwd = requestedCwd ?? boundedPrintable(value.cwd, "agent capability cwd", 4_096);
     if (!cwd.ok) return cwd;
