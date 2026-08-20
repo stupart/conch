@@ -115,6 +115,25 @@ number one: capability parity comes before every other idea.
 6. **Phase 3, the feed** (`vision.md`) — deliberately last: an alternate VIEW
    over rankable items the work above already produces.
 
+### Newly raised, 2026-08-20
+
+- **No way to change the model mid-session.** Tyler: *"we have no way for me to
+  change the ai model Im using in the session - thats an important thing to
+  add."* Both agents expose it — Claude Code has `/model`, Codex has `/model`
+  and per-thread `model` + `reasoning_effort` recorded in its threads table,
+  which conch already reads and shows in the inspector's receipt. Same shape as
+  the rename work: a local slash command injected into a routable session,
+  never a blind keystroke. The honest version also belongs in the start sheet,
+  where it is a launch argument rather than a command.
+- **Split `daemon.ts`.** 5,615 lines holding the queue, the voice loop, the
+  panel model, the socket server, session lifecycle and control dispatch. See
+  `docs/architecture.md` for the four seams. Worth doing BEFORE the write pass
+  and the marketplace, since both add control messages that would otherwise
+  land in the same file — and it is where two writers already collided.
+- **Review the plugin in detail.** Tyler wants to go through it properly. It is
+  also the one surface agents actually read, so it decides whether any of the
+  above gets used.
+
 ### Beyond parity — what makes conch its own thing
 
 Tyler, 2026-08-20: *"I think we can add the stuff not in the existing apps
