@@ -152,3 +152,45 @@ mode — so the plan's per-kind "show" requirements are not met yet. That is the
 next increment, not a defect in what is there.
 
 Verdict: the honesty defects are closed. The completeness gap is not.
+
+## Queued by Tyler, 2026-08-20
+
+### Toggling, and permissions — the write pass
+
+"Can i toggle them on and off and at different permissions?"
+
+Short answer: yes for most of it, and the ground is better than the plan
+assumed — but it is a WRITE pass, which this one deliberately is not.
+
+What is genuinely writeable, per provider:
+
+- **Claude plugins.** `~/.claude/settings.json` holds `enabledPlugins` as an
+  explicit map, e.g. `"posthog@claude-plugins-official": false`. That is how
+  posthog is off right now. A real toggle, takes effect next session.
+- **Claude MCP servers.** Per project in `~/.claude.json`:
+  `enabledMcpServers` / `disabledMcpServers` — `playwright` is in the disabled
+  list for this project. Also a real toggle, and per-project rather than global.
+- **Codex MCP servers.** `enabled = true|false` per server in `config.toml`.
+- **Codex per-tool permissions.** `[mcp_servers.<id>.tools.<tool>]
+  approval_mode = "approve"`. This is the "different permissions" half, and it
+  already exists in Tyler's config for Linear and atlas-nura.
+- **Claude tool permissions.** `allowedTools` per project in `~/.claude.json`.
+
+What it needs before shipping, per `docs/palette-plan.md`: diff preview naming
+the exact file and scope, an atomic write, a readback proving the change
+landed, and rollback. Plus the honest label — none of these affect a session
+already running, so every control reads "for the next session".
+
+The one thing that stays impossible while attached: changing what a RUNNING
+host has already loaded.
+
+### The phone's connection screen
+
+"right now it just says it connects automatically but theres nothing one can do
+if it doesnt (like press a button or what not) should probably be a nice UI card
+with an image and instruction or button idk but u get the idea. Also should
+remove the top right speach and + (new session) button when not connected."
+
+Two parts: a real card with instructions and a retry, and hiding controls that
+cannot work while disconnected. Doing this one first — it is self-contained,
+and a person who cannot reconnect cannot use anything else.
