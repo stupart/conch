@@ -55,6 +55,7 @@ import {
   TerminalQuestionController,
 } from "./terminal-question.ts";
 import {
+  codexFolderTrusted,
   codexHomeDir,
   detectCodexTurnEnds,
   isInterAgentEnvelope,
@@ -582,6 +583,8 @@ export interface RuntimeControlDispatchOptions {
   start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | Promise<void>;
   /** Whether Claude Code already trusts a folder; absent or null means unknown. */
   folderTrusted?(cwd: string): boolean | null;
+  /** Whether Codex already trusts a folder; absent or null means unknown. */
+  codexFolderTrusted?(cwd: string): boolean | null;
   close(sessionId: string): void | Promise<void>;
   report(message: Extract<RuntimeControlMessage, { kind: "app-error" }>): void | Promise<void>;
 }
@@ -629,6 +632,23 @@ export async function dispatchRuntimeControlMessage(
       };
     }
     if (message.kind === "session-start") {
+      // Ask before launching, not after. Codex stops on a full-screen trust
+      // prompt in a directory it has not been told about, and a session held
+      // there never starts and never registers — indistinguishable, from
+      // outside, from one that failed. Unlike Claude's equivalent, this answer
+      // CAN be supplied at launch, so conch offers the choice instead of
+      // starting something that will sit there.
+      if (
+        message.backend === "codex"
+        && message.trustFolder !== true
+        && message.cwd
+        && options.codexFolderTrusted?.(message.cwd) === false
+      ) {
+        return {
+          handled: true,
+          response: { kind: "session-needs-trust", backend: "codex", cwd: message.cwd },
+        };
+      }
       // Answered BEFORE launching, because afterwards it is unanswerable: a
       // session held on the trust prompt writes no registry file, so conch
       // cannot tell "still deciding" from "never started" from the outside.
@@ -4779,8 +4799,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // Read at start time, so changing the setting affects the next session
       // you launch rather than needing a daemon restart.
       bypassPermissions: cfg.bypassPermissions,
+      ...(message.trustFolder === true ? { trustFolder: true as const } : {}),
     }),
     folderTrusted: (cwd) => claudeFolderTrusted(cwd),
+    codexFolderTrusted: (cwd) => codexFolderTrusted(cwd),
     close: closeLiveSession,
     report: (message) => {
       appendConchError(

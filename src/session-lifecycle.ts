@@ -16,6 +16,16 @@ export interface StartSessionRequest {
    * default anyone should inherit — it has to be a thing you turned on.
    */
   bypassPermissions?: boolean;
+  /**
+   * Tell Codex it trusts this directory for THIS launch.
+   *
+   * Codex otherwise stops on a full-screen prompt before doing anything, and a
+   * session held there never starts and never registers. Passed as a config
+   * override rather than written to `config.toml`: the person answered a
+   * question about one session, not about every future one, and conch should
+   * not quietly edit their configuration to make a launch succeed.
+   */
+  trustFolder?: boolean;
 }
 
 export interface SessionLifecycleProcess {
@@ -55,7 +65,12 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
   // Before the subcommand's own arguments, not after: `codex resume <id>` takes
   // the id as a positional, and a global flag trailing it reads as a second one.
   const bypass = request.bypassPermissions ? ` ${bypassFlag(request.backend)}` : "";
-  return `cd -- ${shellQuote(cwd)} && exec ${executable}${bypass}${args}`;
+  // Only Codex has this: Claude Code's trust decision cannot be supplied on the
+  // command line, which is why conch checks it beforehand and explains instead.
+  const trust = request.trustFolder && request.backend === "codex"
+    ? ` -c ${shellQuote(`projects."${cwd}".trust_level="trusted"`)}`
+    : "";
+  return `cd -- ${shellQuote(cwd)} && exec ${executable}${bypass}${trust}${args}`;
 }
 
 /**

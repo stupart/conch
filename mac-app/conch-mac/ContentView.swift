@@ -337,6 +337,12 @@ private struct StartSessionSheet: View {
     @State private var cwd = FileManager.default.homeDirectoryForCurrentUser.path
     @State private var isStarting = false
     @State private var error: String?
+    /// The directory Codex will not run in until it is told to, if any.
+    @State private var pendingTrust: String?
+    /// Directories answered "yes" in this sheet. Deliberately not persisted:
+    /// the person answered about one launch, and conch does not quietly decide
+    /// on their behalf next time.
+    @State private var trustedFolders: Set<String> = []
 
     // Resume
     @State private var resumable: [ResumableSession] = []
@@ -432,6 +438,33 @@ private struct StartSessionSheet: View {
         .padding(24)
         .frame(width: 430)
         .background(ConchPalette.bg)
+        .alert(
+            "Do you trust this folder?",
+            isPresented: Binding(
+                get: { pendingTrust != nil },
+                set: { if !$0 { pendingTrust = nil } }
+            )
+        ) {
+            // Codex's own two options, in its own order. Not conch inventing a
+            // phrasing for someone else's security question.
+            Button("Yes, continue") {
+                guard let cwd = pendingTrust else { return }
+                pendingTrust = nil
+                trustedFolders.insert(cwd)
+                start()
+            }
+            Button("No, cancel", role: .cancel) { pendingTrust = nil }
+        } message: {
+            // Codex's own words about the risk, because softening someone
+            // else's security warning is not conch's call to make.
+            Text(
+                "\(pendingTrust ?? "")\n\nWorking with untrusted contents comes with "
+                + "higher risk of prompt injection. Trusting the directory allows "
+                + "project-local config, hooks, and exec policies to load.\n\n"
+                + "conch will tell Codex this for this session only, and will not "
+                + "change your Codex configuration."
+            )
+        }
         // `task(id:)` rather than `onChange`, so this fires when the sheet
         // APPEARS already in resume mode as well as when you switch into it.
         // Keyed on the query too, because searching is a re-read: the daemon
@@ -481,15 +514,26 @@ private struct StartSessionSheet: View {
         isStarting = true
         error = nil
         Task { @MainActor in
-            let failure = await store.startSession(
+            let outcome = await store.startSession(
                 backend: effectiveBackend,
                 resumeSessionId: mode == .resume ? resumeSelection?.sessionId : nil,
-                cwd: effectiveCwd
+                cwd: effectiveCwd,
+                trustFolder: trustedFolders.contains(effectiveCwd)
             )
-            if let failure {
+            switch outcome {
+            case let .failed(message):
                 isStarting = false
-                error = failure
+                error = message
                 return
+            case let .needsTrust(cwd):
+                // Nothing was started. Codex's own question, asked here, with
+                // its own options — rather than a session left sitting on a
+                // full-screen prompt in a Terminal nobody is looking at.
+                isStarting = false
+                pendingTrust = cwd
+                return
+            case .started:
+                break
             }
             // Started is not the same as running.
             //

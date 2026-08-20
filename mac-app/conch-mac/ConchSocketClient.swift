@@ -120,6 +120,25 @@ struct ConchSessionStartRequest: Encodable, Sendable {
     let backend: ConchAgentBackend
     let resumeSessionId: String?
     let cwd: String?
+    /// Answering Codex's trust question in advance, for this launch only. Only
+    /// ever set because a person said yes in conch.
+    let trustFolder: Bool?
+
+    init(
+        backend: ConchAgentBackend,
+        resumeSessionId: String?,
+        cwd: String?,
+        trustFolder: Bool? = nil
+    ) {
+        self.backend = backend
+        self.resumeSessionId = resumeSessionId
+        self.cwd = cwd
+        self.trustFolder = trustFolder
+    }
+}
+
+struct ConchSessionNeedsTrustReply: Decodable, Equatable, Sendable {
+    let cwd: String
 }
 
 /// Ask the daemon what past sessions could be restarted.
@@ -171,6 +190,7 @@ struct ConchSessionClosedReply: Decodable, Equatable, Sendable {
 }
 
 enum ConchSessionLifecycleReply: Decodable, Equatable, Sendable {
+    case needsTrust(ConchSessionNeedsTrustReply)
     case started(ConchSessionStartedReply)
     case closed(ConchSessionClosedReply)
     case error(ConchSessionErrorReply)
@@ -182,6 +202,8 @@ enum ConchSessionLifecycleReply: Decodable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let kind = try? container.decodeIfPresent(String.self, forKey: .kind)
         switch kind {
+        case "session-needs-trust":
+            self = .needsTrust(try ConchSessionNeedsTrustReply(from: decoder))
         case "session-started":
             self = .started(try ConchSessionStartedReply(from: decoder))
         case "session-closed":

@@ -20,7 +20,7 @@
  * feeds the ledger conch already has rather than inventing a parallel one.
  */
 import { Database } from "bun:sqlite";
-import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CodexSessionEntry, CodexSessionRegistryRead } from "./codex-sessions.ts";
@@ -93,6 +93,61 @@ export function machineBootedAtMs(): number | null {
     bootedAtCache = null;
   }
   return bootedAtCache;
+}
+
+/**
+ * Has Codex been told it trusts this directory?
+ *
+ * Codex stops on a full-screen prompt before it does anything in a directory it
+ * has not been told about:
+ *
+ *   Do you trust the contents of this directory? ...
+ *   › 1. Yes, continue
+ *     2. No, quit
+ *
+ * A session held there never starts, never registers, and from outside looks
+ * identical to one that failed — which is exactly what happened to Tyler
+ * resuming into `~/arch-swap`.
+ *
+ * `config.toml` records the answer per project as `projects.<path>.trust_level`,
+ * so the question is answerable BEFORE launching rather than discovered after.
+ * Returns null when it cannot be read, which must be treated as "say nothing":
+ * warning about a directory that is actually trusted is its own small lie.
+ */
+export function codexFolderTrusted(
+  cwd: string,
+  configPath = join(homedir(), ".codex", "config.toml"),
+): boolean | null {
+  let text: string;
+  try {
+    text = readFileSync(configPath, "utf8");
+  } catch {
+    return null;
+  }
+  // Deliberately not a TOML parser: this is one key in one section shape, and
+  // conch has no TOML dependency by design. Walked line by line rather than
+  // matched with a regex — the first version used a `\z` end-anchor, which is
+  // Perl and not JavaScript, so it silently failed whenever the section
+  // happened to be the LAST one in the file. It passed against the real config
+  // because that section was not last, which is the kind of luck a test should
+  // not depend on.
+  const header = `[projects."${cwd}"]`;
+  let inSection = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (line.startsWith("[")) {
+      // A new section ends the one we care about, whether or not it is ours.
+      if (inSection) return false;
+      inSection = line === header;
+      continue;
+    }
+    if (!inSection) continue;
+    const match = /^trust_level\s*=\s*"([^"]*)"/.exec(line);
+    if (match) return match[1] === "trusted";
+  }
+  // Either the section never appeared, or it appeared without the key. Both
+  // mean Codex will ask.
+  return false;
 }
 
 /** Most-recent Codex threads to list, so a heavy day cannot flood the ledger. */
