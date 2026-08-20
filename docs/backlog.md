@@ -94,22 +94,26 @@ where conch's own resident footprint was 1.3GB of it.
 Phases 1 and 2 are finished. This is everything else.
 
 Re-verified against source on 2026-08-19, because this list has now drifted
-twice and the drift is what wastes time.
+twice and the drift is what wastes time. Tyler moved the former number four to
+number one: capability parity comes before every other idea.
 
-1. **Phase 3, the feed** (`vision.md`) — the whole remaining product idea, and
-   deliberately last: an alternate VIEW over data the app already holds.
+1. **Plugins, skills, MCP, and their slash-command palette** — the read-only,
+   evidence-labeled readers and daemon control message are built in
+   `src/agent-capabilities.ts`; `docs/palette-plan.md` is the implementation
+   contract. The palette UI, background provider catalog refresh, managed
+   effective-config/owned-host reader, and explicitly next-session mutations
+   remain. File-based managed policy is already included in the passive read.
 2. **Phase 4, performance** — Kokoro by mode, whisper pre-warmed on a signal,
    and the orphaned-adoption bug under it.
 3. **The app must own its daemon outright.** Decided 2026-08-17, parked by
    Tyler until the rest is built. `src/daemon-identity.ts` is written and
    tested; wiring it into daemon startup is the remaining half.
-4. **conch should know about skills and plugins**, then toggle them — the
-   slash-command paradigm. `docs/surfaces.md` is the study; its finding is that
-   most switches would be lies, so the honest build is read-only first.
-5. **Multi-select by voice returns one option.** The apps accumulate and submit
+4. **Multi-select by voice returns one option.** The apps accumulate and submit
    a set now, but the spoken path still resolves to a single index.
-6. Blocked on ten seconds with permissions on: **approvals** (the four-way
+5. Blocked on ten seconds with permissions on: **approvals** (the four-way
    decision) and **checkpoint/revert**.
+6. **Phase 3, the feed** (`vision.md`) — deliberately last: an alternate VIEW
+   over rankable items the work above already produces.
 
 ### Done since this list was last written
 
@@ -426,8 +430,10 @@ implement materially different products." Highest-value items lifted out:
       transcript; agents just cannot use any of it.
 - [ ] **Subagents as children of their session** in the ledger, transcripts
       readable, ideally talkable-to. `subagent` is already a tool kind.
-- [ ] **Turn plugins, skills and MCP servers on and off** from conch, per
-      session.
+- [ ] **Build the plugin/skill/MCP palette UI and honest actions** on
+      `agent-capabilities`. Attached sessions do not have a universal live
+      switch: use next-session config verbs or hand interactive `/plugins`,
+      `/skills`, and `/mcp` flows back to the agent terminal.
 - [ ] **Better phone transcription.** `tools/transcription-bench.ts` is written
       and waiting on one recording to settle on-device vs Apple's servers vs
       Mac-side whisper vs a paid API.
