@@ -1,0 +1,109 @@
+# Everything left, and where it lands
+
+Written 2026-08-20 at Tyler's request: *"list out the things we want to add and
+fixes we want to make and then we can decide where to draw the line to commit
+and refac before proceeding."*
+
+Every item is verified against source, not against older lists — that check has
+gone wrong twice, and half of `backlog.md`'s Features section is stale because
+of it. The right-hand column is the point: it says which part of the system
+each item lands in, so the refactor can be shaped by what is coming rather than
+only by what exists.
+
+## The four seams
+
+`daemon.ts` is 5,615 lines. `docs/architecture.md` names where it splits:
+
+- **Q** `event-queue.ts` — the queue, drain, enqueue, the serial invariant
+- **V** `voice-loop.ts` — wake → speak → listen → deliver
+- **C** `control-server.ts` — the socket, dispatch, the one validation boundary
+- **R** `session-registry.ts` — reconciling Claude's registry with Codex's DBs
+- **UI** — the two apps and the TUI; no daemon change at all
+
+---
+
+## A. Bugs — things that are wrong now
+
+| | fix | lands in |
+|---|---|---|
+| A1 | **The artifact is buried at the top of a long scroll.** Fixed its deletion-on-reply today, but the card still sits above the conversation, and sessions now open at the bottom. Needs to be pinned or reachable from the header. | UI |
+| A2 | **The Mac app does not respawn a dead daemon**, and hides the start toggle when it happens. `daemon-identity.ts` is written and tested; wiring is the other half. | C |
+| A3 | **Two ways to run the daemon** — launchd/tmux and the app. Two owners is the root of A2. | C |
+| A4 | **Multi-select by voice returns one option.** The apps submit a set; the spoken path resolves to one index. | V |
+| A5 | **The relay drops every 100 minutes, exactly.** Five 1006s, evenly spaced. Unexplained; separate from the idle bug fixed on 08-18. | C |
+| A6 | **Mac audio degraded** — `say` timed out at 18s, Kokoro hard-restarts. Tracks machine memory; recheck now the Mac is healthy. | V |
+| A7 | **Duplicate terminal mouse-up?** Repeated `copied N chars` with nobody selecting. Not investigated. | UI |
+| A8 | **A Mac draft can be lost on an unacknowledged send.** | UI |
+| A9 | **An image-only send does nothing on the phone.** | UI |
+| A10 | **The terminal never consumes the artifact link it is sent.** | UI |
+
+## B. Parity — catching up with the two agents
+
+| | add | lands in |
+|---|---|---|
+| B1 | **Per-kind metadata in the inspector** — transport, version, marketplace, skill visibility, tool approval mode. The readers already carry it; the Swift model discards it. *(in progress)* | UI |
+| B2 | **Change the model mid-session.** Both agents expose `/model`; Codex records per-thread model + effort, which the inspector already shows. Same shape as rename: a local slash command into a routable session. | V + UI |
+| B3 | **The write pass** — toggle plugins, skills, MCP servers, and per-tool permissions. Needs diff preview, scope, atomic write, readback, rollback, and the "next session" label. | C |
+| B4 | **The slash-command palette** — conch's own commands, provider commands, skills, MCP prompts, session actions, in one place. | C + UI |
+| B5 | **Approvals** (the four-way decision) and **checkpoint/revert**. Both blocked on ten seconds with permissions on. | V |
+| B6 | **Errors that find us** — step 3 of the error work: an agent watches the structured log and investigates unprompted. | C |
+| B7 | **Phone: an image-only send, and a working folder for fresh sessions.** | UI |
+
+## C. Beyond parity — what conch can do that neither agent can
+
+| | add | lands in |
+|---|---|---|
+| C1 | **Configuration at session START.** The only moment a toggle is honest. Turns B3's hard problem into a non-problem. | C |
+| C2 | **Agents messaging each other through conch.** conch owns delivery, addressing and every transcript; agents cannot reach any of it. Needs a real answer on loops and consent first. | Q + C |
+| C3 | **Discovery and the unified marketplace** — skills, plugins, marketplaces, MCP servers, and possibly workflows/loops/prompt templates. The last three are the scope trap. | C + UI |
+| C4 | **Subagents nested under their session**, folder-style, plus a way to reach one from the conversation. Constraint: a subagent stopping is not the parent's turn ending. | R + UI |
+| C5 | **Make the plugin genuinely useful**, and review it in detail. It is the one surface agents read, so it decides whether any of the above gets used. Includes the `review_to_front` rename and documenting the contract. | plugin |
+| C6 | **Phase 3, the feed.** Deliberately last, and a VIEW over what exists. | UI |
+
+## D. Performance — Phase 4
+
+| | fix | lands in |
+|---|---|---|
+| D1 | **Kokoro by mode** — manual unloads it; auto warms it. ~650MB. | V |
+| D2 | **whisper pre-warmed on a signal**, idle-unloaded. ~628MB. | V |
+| D3 | **An orphaned whisper-server is adopted forever.** Same ownership gap as A2/A3. | C |
+
+## E. Polish
+
+| | | lands in |
+|---|---|---|
+| E1 | Reclaim the top of the Mac window — 42pt of header above the content. | UI |
+| E2 | A design pass on the Mac app, once it is fluid. | UI |
+| E3 | Better phone transcription; the bench is written and waiting on one recording. | V |
+| E4 | Better phone reading, configurable. | V |
+| E5 | Behaviour rules for both apps, written down and made true. | UI |
+| E6 | Thread management — archive, pin, snooze. Dismiss and restore cover most of it. | R |
+| E7 | Live Activities on the phone. | UI |
+| E8 | One universal adapter shape, so a third backend is a table entry. | R |
+
+---
+
+## Where I would draw the line
+
+**Refactor now, before B3, B4, C1, C2 and C3.** Five of the six biggest
+remaining features add control messages or queue behaviour, and all five would
+land in the same 5,615-line file — the one where two writers already collided
+during the parity pass.
+
+Specifically:
+
+- **C** (`control-server.ts`) is touched by B3, B4, B6, C1, C2, C3, D3, A2, A3,
+  A5. Ten items. It is the seam that pays for itself immediately.
+- **Q** (`event-queue.ts`) is touched by C2, which is the one feature that could
+  genuinely destabilise the serial invariant — an agent waking another agent is
+  a new event source with a loop risk. Splitting first makes that reviewable.
+- **V** and **R** are touched by fewer things and could wait.
+
+**Finish first, because they are nearly done and would otherwise rot:**
+B1 (in progress right now), A1 (half fixed today), A4 (small, and a wrong
+answer rather than a missing one).
+
+**Explicitly after the refactor:** everything in C, plus B3 and B4.
+
+**Never blocking:** E, and A5–A10, which are real but none of them stop the
+next build.
