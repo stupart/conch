@@ -194,3 +194,20 @@ remove the top right speach and + (new session) button when not connected."
 Two parts: a real card with instructions and a retry, and hiding controls that
 cannot work while disconnected. Doing this one first — it is self-contained,
 and a person who cannot reconnect cannot use anything else.
+
+### Iteration 5 — the phone's disconnected screen
+
+Two changes, both from Tyler using it.
+
+The `+` and the speech toggle were `.disabled(...)` when the phone could not
+reach the Mac. A greyed-out control still says "this is a thing you do here",
+which is the wrong message when nothing can reach anything; they are hidden now,
+so the card is what holds attention.
+
+And the card itself. The screen used to be one centred sentence saying it
+reconnects on its own — true, and useless at the moment it is wrong, with
+nothing to press. The three situations already had three correct explanations,
+which was the hard-won part; what they lacked was an action. Now: the situation,
+the host it is trying, "Try again now" as the primary action, and a route to
+pairing. Verified on the simulator against a host that will never answer, so the
+disconnected state is real rather than mocked.

@@ -130,15 +130,22 @@ struct LedgerView: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel("conch")
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    modeToggle
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showingStartSession = true } label: {
-                        Image(systemName: "plus")
+                // Hidden rather than disabled while disconnected. A greyed-out
+                // control still says "this is a thing you do here", which is
+                // the wrong message when nothing can reach the Mac — Tyler:
+                // "should remove the top right speach and + (new session)
+                // button when not connected". The card below is what should
+                // hold attention instead.
+                if bridge.isConnected {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        modeToggle
                     }
-                    .disabled(!bridge.isConnected)
-                    .accessibilityLabel("Start a session")
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { showingStartSession = true } label: {
+                            Image(systemName: "plus")
+                        }
+                        .accessibilityLabel("Start a session")
+                    }
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     // Everything about THIS Mac lives here: whether we are
@@ -295,46 +302,139 @@ struct LedgerView: View {
             // relay the Wi-Fi is fine — it is the Mac that cannot be reached.
             // Naming the wrong culprit in a glyph is the same mistake as
             // naming it in a sentence, just harder to notice.
-            Image(systemName: bridge.isConnected ? "terminal" : "laptopcomputer.slash")
-                .font(.system(size: 22))
-                .foregroundStyle(Palette.textFaint)
-            Text(bridge.isConnected
-                ? "Nothing running yet"
-                : bridge.hasEverConnected ? "Reconnecting…" : "Looking for your Mac…")
-                .font(Type.label(16, weight: .medium))
-                .foregroundStyle(Palette.textDim)
-            Text(
-                bridge.isConnected
-                    ? "Start a Claude Code or Codex session here and it opens in Terminal on your Mac."
-                    // Over the relay, Wi-Fi is irrelevant advice — Tyler was on
-                    // cellular, correctly, and being told to check the thing
-                    // that could not be the cause. What actually has to be true
-                    // is that the Mac is awake with conch running.
-                    // Three different situations, three different fixes. Lumping
-                    // them under one sentence is what left Tyler checking Wi-Fi
-                    // that was fine, for a pairing that was correct.
-                    : bridge.hasEverConnected
-                        ? "This usually clears on its own. If it doesn't, your Mac may be asleep or conch stopped."
-                        : bridge.isRelayPaired
-                            ? "Your Mac needs to be awake with conch running — it reconnects on its own."
-                            : "Same Wi-Fi as the Mac, and conch running there — it reconnects on its own."
-            )
-            .font(Type.caption)
-            .foregroundStyle(Palette.textFaint)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: 260)
-
+            // Connected is a different SHAPE of message from disconnected, not
+            // a different sentence in the same one. When it is working, this is
+            // a nudge to start something. When it is not, it is the only screen
+            // that matters, and it needs to say what is wrong and offer the
+            // thing that fixes it — Tyler: "theres nothing one can do if it
+            // doesnt (like press a button or what not)".
             if bridge.isConnected {
+                Image(systemName: "terminal")
+                    .font(.system(size: 22))
+                    .foregroundStyle(Palette.textFaint)
+                Text("Nothing running yet")
+                    .font(Type.label(16, weight: .medium))
+                    .foregroundStyle(Palette.textDim)
+                Text("Start a Claude Code or Codex session here and it opens in Terminal on your Mac.")
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textFaint)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 260)
                 Button("Start a session") { showingStartSession = true }
                     .buttonStyle(.borderedProminent)
                     .tint(Palette.micOpen)
                     .foregroundStyle(Palette.bg)
                     .padding(.top, 6)
+            } else {
+                DisconnectedCard(
+                    hasEverConnected: bridge.hasEverConnected,
+                    isRelayPaired: bridge.isRelayPaired,
+                    host: bridge.pairedHost,
+                    onReconnect: { bridge.reconnectNow() },
+                    onSettings: { showingSettings = true }
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Geometric centre reads low; optical centre sits a little above it.
         .offset(y: -28)
+    }
+}
+
+/// What to do when the phone cannot reach the Mac.
+///
+/// This used to be one centred sentence saying it reconnects on its own, with
+/// no way to make it try — true, and useless at the moment it is wrong. The
+/// three situations already had three different explanations, which was the
+/// hard-won part; what they lacked was an action each.
+private struct DisconnectedCard: View {
+    let hasEverConnected: Bool
+    let isRelayPaired: Bool
+    let host: String
+    let onReconnect: () -> Void
+    let onSettings: () -> Void
+    @State private var retrying = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 10) {
+                Image(systemName: "laptopcomputer.slash")
+                    .font(.system(size: 26))
+                    .foregroundStyle(Palette.textFaint)
+                Text(title)
+                    .font(Type.label(16, weight: .medium))
+                    .foregroundStyle(Palette.textDim)
+                Text(explanation)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textFaint)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !host.isEmpty {
+                    Text(host)
+                        .font(Type.caption.monospaced())
+                        .foregroundStyle(Palette.textFaint)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 22)
+            .padding(.bottom, 18)
+
+            Divider().overlay(Palette.textFaint.opacity(0.16))
+
+            // The action IS the point of the card. Retrying is safe, cheap and
+            // the thing a person reaches for first, so it is the primary one
+            // even though the connection also retries by itself.
+            Button {
+                retrying = true
+                onReconnect()
+                // The reconnect is fire-and-forget; the delay exists so the
+                // button acknowledges the press rather than appearing dead.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { retrying = false }
+            } label: {
+                HStack(spacing: 7) {
+                    if retrying { ProgressView().controlSize(.small) }
+                    Text(retrying ? "Trying…" : "Try again now")
+                        .font(Type.label(14, weight: .medium))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Palette.micOpen)
+            .disabled(retrying)
+
+            Divider().overlay(Palette.textFaint.opacity(0.16))
+
+            Button(action: onSettings) {
+                Text("Pairing and settings")
+                    .font(Type.caption)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Palette.textDim)
+        }
+        .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(Palette.textFaint.opacity(0.14), lineWidth: 1)
+        )
+        .frame(maxWidth: 320)
+    }
+
+    private var title: String {
+        hasEverConnected ? "Can\u{2019}t reach your Mac" : "Looking for your Mac"
+    }
+
+    /// Three situations, three fixes. Naming the wrong culprit is what left
+    /// Tyler checking Wi-Fi that was fine, for a pairing that was correct.
+    private var explanation: String {
+        if hasEverConnected {
+            return "This usually clears on its own. If it doesn\u{2019}t, your Mac may be asleep, or conch may have stopped running on it."
+        }
+        return isRelayPaired
+            ? "Your Mac needs to be awake with conch running. It will connect from anywhere once it is."
+            : "Your Mac needs to be on the same Wi-Fi, awake, with conch running."
     }
 }
 
