@@ -1,4 +1,22 @@
-# Everything left, and where it lands
+# conch roadmap
+
+**This is the master.** Everything open lives here. If it is not in this file
+it is not tracked, and that is the point — there were seventeen documents and
+Tyler could not tell whether an idea had survived being written down.
+
+The rest of `docs/` is now reference, not planning:
+
+- `architecture.md` — how the system actually works, and what is wrong with it
+- `vision.md` — the feed, and why it comes last
+- `marketplace-vision.md` — the discovery/marketplace idea in full (item C3)
+- `surfaces.md` — the 18-entity study of what conch must account for
+- `palette-plan.md` — the implementation plan for plugins/skills/MCP
+- `conch-control-skill.md` — the agent-facing contract that ships in the plugin
+- `archive/` — superseded planning docs, kept for their history: the old
+  backlog with its full Fixed list, the UI audit, the t3code parity study, the
+  phase audit, and the palette build log
+
+## Everything left, and where it lands
 
 Written 2026-08-20 at Tyler's request: *"list out the things we want to add and
 fixes we want to make and then we can decide where to draw the line to commit
