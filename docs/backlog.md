@@ -93,68 +93,39 @@ where conch's own resident footprint was 1.3GB of it.
 
 Phases 1 and 2 are finished. This is everything else.
 
-1. **Phase 3, the feed** (`vision.md`) — the whole remaining product idea. One
-   swap button of it exists.
-2. **The mic must fill the composer.** Press it expecting to add to what you
-   typed and the spoken half vanishes into the session instead. Needs a
-   dictation mode that publishes final text back to the app rather than
-   injecting it. The last Phase-1 idea, deferred because it is the biggest.
-3. **Bring the phone up to the Mac.** Checked 2026-08-17, so this is a parity
-   list rather than a guess:
-   - Resume still means TYPING an id (`LedgerView.swift:544`,
-     `BridgeClient.swift:294`) — the exact gap the Mac just lost. The reader
-     and the control message are backend-side and already shared, so this is a
-     view, not new machinery.
-   - No working-folder field at all when starting a session, where the Mac has
-     one.
-   - Dismiss/restore decodes but has no restore path.
-   Tyler: "lets nail the Mac and iPhone first prob" — the TUI comes after.
-4. **Phase 4, performance** — Kokoro by mode, whisper pre-warmed on a signal.
-5. **The app must own its daemon outright.** Decided 2026-08-17. Tyler, on the
-   daemon surviving an app crash: *"thats not a use-case having part of the app
-   survive thats just more buggy spagetti."* So adoption goes — no courtesy for
-   a daemon the app did not start.
+Re-verified against source on 2026-08-19, because this list has now drifted
+twice and the drift is what wastes time.
 
-   Three symptoms, one missing idea: the app never respawns a daemon that dies
-   (and *hides the start toggle* when it happens), quitting leaves an adopted
-   one running, and a deploy silently adopts the OLD daemon so new app code
-   talks to old daemon code. That last one made me report work as deployed
-   twice when it was not.
+1. **Phase 3, the feed** (`vision.md`) — the whole remaining product idea, and
+   deliberately last: an alternate VIEW over data the app already holds.
+2. **Phase 4, performance** — Kokoro by mode, whisper pre-warmed on a signal,
+   and the orphaned-adoption bug under it.
+3. **The app must own its daemon outright.** Decided 2026-08-17, parked by
+   Tyler until the rest is built. `src/daemon-identity.ts` is written and
+   tested; wiring it into daemon startup is the remaining half.
+4. **conch should know about skills and plugins**, then toggle them — the
+   slash-command paradigm. `docs/surfaces.md` is the study; its finding is that
+   most switches would be lies, so the honest build is read-only first.
+5. **Multi-select by voice returns one option.** The apps accumulate and submit
+   a set now, but the spoken path still resolves to a single index.
+6. Blocked on ten seconds with permissions on: **approvals** (the four-way
+   decision) and **checkpoint/revert**.
 
-   Considered replacing the daemon with the app entirely and rejected it: the
-   hooks Claude Code fires every turn are external Bun processes conch does not
-   control, so a CLI exists regardless — and `listen.ts` alone has 7 spawn
-   sites for `sox`/whisper, which is exactly the hang-prone work that should
-   NOT share a process with the UI. A wedged recorder froze nothing today
-   because it was not in the app.
+### Done since this list was last written
 
-   So: the daemon publishes pid + version at startup; the app spawns it and
-   holds the handle; the daemon watches stdin so parent death is EOF and it
-   exits itself (orphans become structurally impossible, not merely
-   discouraged); on launch, anything older or ownerless is REPLACED. Open
-   **The TUI is what forces two owners, and it is not obvious.** `status.ts`
-   writes to `process.stdout` and is imported only by `daemon.ts` — the TUI is
-   the daemon's OWN stdout, not a client of it. So seeing the TUI means looking
-   at the daemon's terminal, which is why the tmux session and the launchd
-   service exist at all. An app that spawns the daemon as a child with piped
-   stdout leaves the TUI nowhere to draw.
+Verified in source, not from commit messages:
 
-   Tyler wants the TUI kept (2026-08-17), so the resolution is to make it a
-   socket CLIENT like the other two, rendering from published state. Then one
-   app-owned daemon serves all three surfaces and the second owner disappears
-   on its own. Until then, A has to tolerate a terminal-hosted daemon.
-6. **Images in the Mac composer show as filenames, not pictures**
-   (`ComposerView.swift:491` says so in its own comment).
-7. **A new session in an untrusted folder never appears** — Claude Code holds
-   it on its trust prompt and never registers it.
-8. **Renaming only renames inside conch** — route to Claude Code's `/rename`,
-   which is local and costs no model turn. No Codex equivalent found.
-9. **conch should know about skills and plugins**, then toggle them.
-10. **Render materials inline** instead of growing a DROP list.
-11. **Links may not be clickable** — markdown becomes AttributedString, which
-    should carry link attributes; confirm before rewriting anything.
-12. Blocked on ten seconds with permissions on: **approvals** (the four-way
-    decision) and **checkpoint/revert**.
+- The mic fills the composer (`compose` intent, `src/hook.ts`).
+- Resume-by-search on Mac AND phone, showing the names Claude Code shows.
+- Sessions start without permission prompts, when you ask (`bypass-permissions`).
+- A question offers "Something else…" on both apps.
+- Free text is no longer silently converted into a choice.
+- Untrusted-folder sessions explain themselves rather than vanishing.
+- Rename reaches Claude Code (`src/provider-rename.ts`).
+- Materials render as themselves; composer images render as pictures.
+- Links are underlined.
+- The terminal renders questions, meters, marks, and has a composer.
+- Mute is genuinely gone from CLI, wire and MCP.
 
 ### Terminal parity, deliberately scoped
 
