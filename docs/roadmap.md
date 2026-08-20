@@ -47,7 +47,7 @@ only by what exists.
 | A1 | **The artifact is hard to find, and the two apps disagree about it.** Design settled by Tyler 2026-08-20, below. | UI |
 | A2 | **The Mac app does not respawn a dead daemon**, and hides the start toggle when it happens. `daemon-identity.ts` is written and tested; wiring is the other half. | C |
 | A3 | **Two ways to run the daemon** — launchd/tmux and the app. Two owners is the root of A2. | C |
-| A4 | **Multi-select by voice returns one option.** The apps submit a set; the spoken path resolves to one index. | V |
+| A4 | ~~Multi-select by voice returns one option~~ — **fixed**. It was already returning sets after the parity pass, so this entry was stale; what was missing was "all of them", which is how people actually answer one out loud. | V |
 | A5 | **The relay drops every 100 minutes, exactly.** Five 1006s, evenly spaced. Unexplained; separate from the idle bug fixed on 08-18. | C |
 | A6 | **Mac audio degraded** — `say` timed out at 18s, Kokoro hard-restarts. Tracks machine memory; recheck now the Mac is healthy. | V |
 | A7 | **Duplicate terminal mouse-up?** Repeated `copied N chars` with nobody selecting. Not investigated. | UI |
