@@ -44,7 +44,7 @@ only by what exists.
 
 | | fix | lands in |
 |---|---|---|
-| A1 | **The artifact is buried at the top of a long scroll.** Fixed its deletion-on-reply today, but the card still sits above the conversation, and sessions now open at the bottom. Needs to be pinned or reachable from the header. | UI |
+| A1 | **The artifact is hard to find, and the two apps disagree about it.** Design settled by Tyler 2026-08-20, below. | UI |
 | A2 | **The Mac app does not respawn a dead daemon**, and hides the start toggle when it happens. `daemon-identity.ts` is written and tested; wiring is the other half. | C |
 | A3 | **Two ways to run the daemon** — launchd/tmux and the app. Two owners is the root of A2. | C |
 | A4 | **Multi-select by voice returns one option.** The apps submit a set; the spoken path resolves to one index. | V |
@@ -54,6 +54,41 @@ only by what exists.
 | A8 | **A Mac draft can be lost on an unacknowledged send.** | UI |
 | A9 | **An image-only send does nothing on the phone.** | UI |
 | A10 | **The terminal never consumes the artifact link it is sent.** | UI |
+
+### A1 in detail — the artifact, as Tyler designed it
+
+> we have 2 tabs (artifact and conversation) on mac app that are nice - we
+> could just remove the banner thing prob and have it default to showing
+> artifact/deliverable tab when there is one? or maybe it defaults to
+> conversation but shows the artifact/deliverable preview inline and then you
+> click or tap on it and it goes gets big and the top tab changes to artifact /
+> deliverable. I think thats the move. that way you're not annoyed always
+> switching back if u just want to chat but the artifact content is front and
+> centre and easy to focus on entirely if u want.
+
+Where the two apps actually are:
+
+- **Mac** has the tabs and currently DEFAULTS to the artifact whenever one
+  exists (`DashboardView.swift:1493`, `showsConversation` starts false). So it
+  does the first thing he considered and rejected.
+- **Phone** has no tabs at all — a banner card inside the scroll, above the
+  conversation, opening a modal sheet. Since sessions now open at the bottom,
+  that banner is never on screen.
+
+The settled design, for both:
+
+1. **Default to the conversation.** Chatting is the common case, and being
+   thrown into a document you did not ask for is the annoyance he names.
+2. **The artifact appears INLINE, where it happened**, as a preview with real
+   content rather than a link or a filename.
+3. **Tap or click it and it goes big**, with the top tab switching to
+   artifact — so the same gesture both focuses it and explains where it went.
+
+Note what this is: `vision.md` item 11, "artifacts inline where they happen",
+arriving early because Tyler chose it as the stepping stone. His words: *"in
+the future we can still do the social media style UI/UX innovation but this
+feels like a good middle stepping stone."* Build it as an inline ITEM rather
+than a pane, and the feed later becomes a lens over it rather than a rewrite.
 
 ## B. Parity — catching up with the two agents
 
