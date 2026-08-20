@@ -93,6 +93,33 @@ the future we can still do the social media style UI/UX innovation but this
 feels like a good middle stepping stone."* Build it as an inline ITEM rather
 than a pane, and the feed later becomes a lens over it rather than a rewrite.
 
+### A11 — a session can start and then sit on a prompt
+
+Tyler, resuming a Codex session: *"it got caught on a system message so we
+might need to adapt for those - this is with codex."*
+
+conch launched it and called that done. The process was alive and waiting the
+whole time (`codex --dangerously-bypass-approvals-and-sandbox resume <id>`,
+pid confirmed running, thread never updated after launch).
+
+Codex has several startup prompts that block on a keypress, including
+`"Backup folder: unavailable / Continuing startup with a fresh local
+database... / Press Enter to continue."` and a model-change confirmation when
+a thread's recorded model differs from the current default. Claude Code has the
+trust dialog, already handled by reading `hasTrustDialogAccepted` before
+launching.
+
+**Fixed generally rather than per-prompt**: starting now waits for the session
+to appear in the ledger, and says so when it does not. Chasing each prompt
+would mean a new special case every time either agent adds one; "did it
+actually come up" is the same question for all of them, on both agents.
+
+Still worth doing separately (not blocking):
+
+- Read Codex's `projects.<path>.trust_level` before launching, the way the
+  Claude trust check already works, so an untrusted directory is named BEFORE
+  the session is started rather than after it fails to appear.
+
 ## B. Parity — catching up with the two agents
 
 | | add | lands in |

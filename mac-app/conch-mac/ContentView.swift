@@ -486,13 +486,55 @@ private struct StartSessionSheet: View {
                 resumeSessionId: mode == .resume ? resumeSelection?.sessionId : nil,
                 cwd: effectiveCwd
             )
-            isStarting = false
             if let failure {
+                isStarting = false
                 error = failure
-            } else {
+                return
+            }
+            // Started is not the same as running.
+            //
+            // conch launches the agent in Terminal and, until now, called that
+            // done. But an agent can sit on a prompt before it does anything —
+            // Claude Code asks whether it trusts a folder, and Codex has
+            // several, including "Continuing startup with a fresh local
+            // database... Press Enter to continue." Tyler hit exactly that
+            // resuming a Codex session: conch said it started, and it was
+            // waiting for a keypress nobody could see.
+            //
+            // So wait for it to CHECK IN. A session that appears in the ledger
+            // has really started; one that does not is being held by something,
+            // and saying so beats a sheet that closed on a promise.
+            let appeared = await waitForSession()
+            isStarting = false
+            if appeared {
                 dismiss()
+            } else {
+                error = "Started, but it hasn\u{2019}t checked in. Terminal may be "
+                    + "waiting for you to answer something \u{2014} take a look there."
             }
         }
+    }
+
+    /// Poll the ledger for the session to show up.
+    ///
+    /// Resume knows exactly which id to expect. A fresh session does not, so it
+    /// watches for the row COUNT to grow instead — cruder, but it answers the
+    /// same question: did anything actually start?
+    private func waitForSession() async -> Bool {
+        let expected = mode == .resume ? resumeSelection?.sessionId : nil
+        let before = store.state?.rows.count ?? 0
+        // Long enough for a cold agent on a busy machine; short enough that a
+        // stuck one is noticed while you still remember starting it.
+        for _ in 0..<25 {
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard let rows = store.state?.rows else { continue }
+            if let expected {
+                if rows.contains(where: { $0.id == expected }) { return true }
+            } else if rows.count > before {
+                return true
+            }
+        }
+        return false
     }
 }
 
