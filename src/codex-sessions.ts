@@ -32,6 +32,12 @@ export interface CodexSessionRegistryOptions {
   configDir?: string;
   /** Injectable process probe; the default is `process.kill(pid, 0)`. */
   isPidAlive?: (pid: number) => boolean;
+  /** Codex's own home, read directly to observe sessions with no hook wired. */
+  codexHome?: string;
+  /** How recently a Codex thread must have been touched to count as live. */
+  liveWithinMs?: number;
+  /** Injectable clock, so the liveness window is testable. */
+  now?: number;
 }
 
 export interface CodexSessionRegistryRead {

@@ -12,7 +12,7 @@ export type VoiceIntent = "continue" | "repeat" | "discard" | "prompt";
  *
  * A delimiter makes the name boundary explicit. Without one, retain at least
  * one content word and offer up to three-word names longest-first; a single
- * word may stand alone as a bare address/wake.
+ * word may stand alone as a bare address candidate.
  */
 export function parseNameAddress(text: string): Array<{ name: string; rest: string }> {
   const prefix = text.match(/^\s*hey\s+/i);

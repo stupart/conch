@@ -9,6 +9,18 @@ struct ContentView: View {
     @State private var renamingSessionID: SessionRow.ID?
     @State private var renameDraft = ""
     @State private var isShowingKeyboardShortcuts = false
+    @State private var isShowingSessionStart = false
+    /// SwiftUI's own way to open the Settings scene. Doing it by sending
+    /// showSettingsWindow: to nil is the usual hack and breaks between
+    /// releases; this is the supported route on macOS 14+.
+    @Environment(\.openSettings) private var openSettings
+
+    /// Wrapped rather than passed through: openSettings is an
+    /// OpenSettingsAction, and handing it to a twenty-argument initialiser as
+    /// a closure made Swift give up type-checking the whole expression.
+    private func connectPhone() {
+        openSettings()
+    }
 
     private var reviewItems: [ReviewItem] {
         let indexedItems = store.state?.rows.enumerated().compactMap { index, row in
@@ -73,6 +85,7 @@ struct ContentView: View {
                 renamingSessionID: renamingSessionID,
                 renameDraft: $renameDraft,
                 actions: DashboardActions(
+                    onStartSession: { isShowingSessionStart = true },
                     onSelectSession: selectSession,
                     onExpandReview: expandReview,
                     onBeginRename: beginRename,
@@ -83,10 +96,10 @@ struct ContentView: View {
                     onUndoDismiss: store.undoLastDismissal,
                     onDismissNewerDaemonWarning: store.dismissNewerDaemonWarning,
                     onToggleLogs: store.toggleLogDrawer,
+                    onConnectPhone: connectPhone,
                     onShowKeyboardShortcuts: showKeyboardShortcuts,
                     onTalkOrStop: talkOrStop,
                     onPauseOrResume: pauseOrResume,
-                    onMuteOrUnmute: muteOrUnmute,
                     onRecite: recite,
                     onMoveUp: { moveSelection(by: -1) },
                     onMoveDown: { moveSelection(by: 1) },
@@ -115,6 +128,9 @@ struct ContentView: View {
         )
         .sheet(isPresented: $isShowingKeyboardShortcuts) {
             KeyboardShortcutsSheet()
+        }
+        .sheet(isPresented: $isShowingSessionStart) {
+            StartSessionSheet()
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .showKeyboardShortcuts)
@@ -181,50 +197,59 @@ struct ContentView: View {
         store.restoreSession(id: row.id, label: row.label)
     }
 
+    /// The spacebar STOPS. It never starts.
+    ///
+    /// It used to do both, and opening the microphone is not something a
+    /// spacebar should be able to do by accident. Space scrolls or types in
+    /// every other Mac app, so a stray press with the window focused and the
+    /// composer not focused opened the mic on a Mac explicitly set to manual —
+    /// Tyler: "the mic just opened for some reason even tho im in manual mode".
+    /// The wake was tagged `user` and the manual gate correctly let it through,
+    /// because a person really had pressed a key. The gate was right; this
+    /// binding was wrong.
+    ///
+    /// The app's own hint has always said "space to cancel", never "space to
+    /// talk", and there is a visible microphone button in the composer for
+    /// starting. This makes the hint true.
     private func talkOrStop() {
-        if store.state?.live.isExchangeActive == true {
-            store.send(.stop())
-            return
-        }
-
-        store.send(
-            .wake(
-                sessionId: actionTarget?.id ?? "",
-                label: actionTarget?.label ?? ""
-            )
-        )
+        guard store.state?.live.isExchangeActive == true else { return }
+        store.send(.stop())
     }
 
     private func pauseOrResume() {
+        let globallyPaused = store.state?.mode.paused ?? false
+        // While conch is paused globally, a per-session resume cannot lift it:
+        // the daemon holds every turn behind the global gate, so scoping the
+        // command to one session did nothing visible. Worse, it read
+        // `selectedRow.paused` — false, because that row was not individually
+        // paused — and sent PAUSE from a button labelled Resume. Tyler: "i just
+        // tried clicking the resume button and nothing happened."
+        //
+        // So while globally paused the control is global, and says "all".
+        // Resuming ONE session out of a global pause is a real feature and is
+        // on the roadmap; pretending the button already does it is worse than
+        // not having it.
+        // With a session selected, resume THAT one and leave the rest paused —
+        // which the daemon now supports via an exemption checked ahead of the
+        // global gate. Before that it silently did nothing, so the button was
+        // temporarily made global; it no longer needs to be.
+        if globallyPaused, selectedRow == nil {
+            store.send(.global(.resume))
+            return
+        }
+
         if let selectedRow {
+            let rowEffectivelyPaused = globallyPaused || selectedRow.paused
             store.send(
                 .scoped(
-                    selectedRow.paused ? .resume : .pause,
+                    rowEffectivelyPaused ? .resume : .pause,
                     sessionId: selectedRow.id,
                     label: selectedRow.label
                 )
             )
             return
         }
-
-        let paused = store.state?.mode.paused ?? false
-        store.send(.global(paused ? .resume : .pause))
-    }
-
-    private func muteOrUnmute() {
-        if let selectedRow {
-            store.send(
-                .scoped(
-                    selectedRow.muted ? .unmute : .mute,
-                    sessionId: selectedRow.id,
-                    label: selectedRow.label
-                )
-            )
-            return
-        }
-
-        let muted = store.state?.mode.muted ?? false
-        store.send(.global(muted ? .unmute : .mute))
+        store.send(.global(.pause))
     }
 
     private func recite() {
@@ -275,8 +300,6 @@ struct ContentView: View {
             talkOrStop()
         case .pauseOrResume:
             pauseOrResume()
-        case .muteOrUnmute:
-            muteOrUnmute()
         case .recite:
             recite()
         case .showKeyboardShortcuts:
@@ -292,6 +315,187 @@ struct ContentView: View {
     }
 }
 
+/// What a reload depends on. Two values, so `task(id:)` re-runs when either
+/// changes without needing a separate observer for each.
+private struct TaskKey: Equatable {
+    let mode: StartSessionSheet.StartMode
+    let query: String
+}
+
+private struct StartSessionSheet: View {
+    fileprivate enum StartMode: String, CaseIterable, Identifiable {
+        case new = "New"
+        case resume = "Resume"
+        var id: String { rawValue }
+    }
+
+    @EnvironmentObject private var store: StateStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var backend = ConchAgentBackend.claude
+    @State private var mode = StartMode.new
+    @State private var cwd = FileManager.default.homeDirectoryForCurrentUser.path
+    @State private var isStarting = false
+    @State private var error: String?
+
+    // Resume
+    @State private var resumable: [ResumableSession] = []
+    @State private var resumeQuery = ""
+    @State private var resumeSelection: ResumableSession?
+    @State private var isLoadingResumable = false
+
+    private var canStart: Bool {
+        !isStarting && (mode == .new || resumeSelection != nil)
+    }
+
+    /// A resumed session brings its own agent and its own folder. Asking again
+    /// is a question with a known answer and a wrong setting available.
+    private var effectiveBackend: ConchAgentBackend {
+        guard mode == .resume, let picked = resumeSelection else { return backend }
+        return picked.backend.lowercased() == "codex" ? .codex : .claude
+    }
+
+    private var effectiveCwd: String {
+        mode == .resume ? (resumeSelection?.cwd ?? cwd) : cwd
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Start a session")
+                .font(ConchTypography.font(size: 19, weight: .medium))
+                .foregroundStyle(ConchPalette.textPrimary)
+
+            // Mode first: it decides which of the questions below are even
+            // worth asking.
+            Picker("Session", selection: $mode) {
+                ForEach(StartMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            if mode == .new {
+                Picker("Agent", selection: $backend) {
+                    ForEach(ConchAgentBackend.allCases) { backend in
+                        Text(backend.label).tag(backend)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Working folder")
+                        .font(ConchTypography.font(size: 10.5, weight: .medium))
+                        .foregroundStyle(ConchPalette.textDim)
+                        .textCase(.uppercase)
+                        .tracking(0.5)
+                    HStack(spacing: 8) {
+                        TextField("Working folder", text: $cwd)
+                            .textFieldStyle(.roundedBorder)
+                        Button("Choose…", action: chooseFolder)
+                    }
+                }
+            } else {
+                ResumePickerView(
+                    sessions: resumable,
+                    isLoading: isLoadingResumable,
+                    query: $resumeQuery,
+                    selection: $resumeSelection,
+                    onConfirm: start
+                )
+            }
+
+            Text(footnote)
+                .font(ConchTypography.font(size: 11.5))
+                .foregroundStyle(ConchPalette.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let error {
+                Text(error)
+                    .font(ConchTypography.font(size: 11.5))
+                    .foregroundStyle(ConchPalette.statusNeeds)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(isStarting ? "Starting…" : "Start") {
+                    start()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canStart)
+            }
+        }
+        .padding(24)
+        .frame(width: 430)
+        .background(ConchPalette.bg)
+        // `task(id:)` rather than `onChange`, so this fires when the sheet
+        // APPEARS already in resume mode as well as when you switch into it.
+        // Keyed on the query too, because searching is a re-read: the daemon
+        // filters next to the history rather than shipping all of it, and a
+        // full read measures 18ms against 1229 transcripts and 58 threads —
+        // cheap enough that a keystroke can simply ask again.
+        .task(id: TaskKey(mode: mode, query: resumeQuery)) {
+            guard mode == .resume else { return }
+            loadResumable()
+        }
+    }
+
+    /// Say where it will actually land, since that is the thing a resume can
+    /// silently get wrong: the same conversation reopened in the wrong folder
+    /// is a conversation about files that are not there.
+    private var footnote: String {
+        if mode == .new {
+            return "Opens \(backend.label) in Terminal, outside conch\u{2019}s own tmux session."
+        }
+        guard let picked = resumeSelection else {
+            return "Pick a session to restart. It reopens with its own agent, in its own folder."
+        }
+        let agent = picked.backend.lowercased() == "codex" ? "Codex" : "Claude"
+        return "Restarts \(agent) in \(picked.shortCwd), in Terminal."
+    }
+
+    private func loadResumable() {
+        isLoadingResumable = true
+        Task { @MainActor in
+            resumable = await store.resumableSessions(query: resumeQuery)
+            isLoadingResumable = false
+        }
+    }
+
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: cwd, isDirectory: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        cwd = url.path
+    }
+
+    private func start() {
+        guard canStart else { return }
+        isStarting = true
+        error = nil
+        Task { @MainActor in
+            let failure = await store.startSession(
+                backend: effectiveBackend,
+                resumeSessionId: mode == .resume ? resumeSelection?.sessionId : nil,
+                cwd: effectiveCwd
+            )
+            isStarting = false
+            if let failure {
+                error = failure
+            } else {
+                dismiss()
+            }
+        }
+    }
+}
+
 extension Notification.Name {
     static let showKeyboardShortcuts = Notification.Name(
         "com.conch.mac.show-keyboard-shortcuts"
@@ -303,8 +507,7 @@ private struct KeyboardShortcutsSheet: View {
 
     private let keyRows = [
         ShortcutHelpRow(command: "Space", result: "Talk / stop"),
-        ShortcutHelpRow(command: "P", result: "Pause"),
-        ShortcutHelpRow(command: "M", result: "Mute"),
+        ShortcutHelpRow(command: "P", result: "Auto / manual"),
         ShortcutHelpRow(command: "R", result: "Recite"),
         ShortcutHelpRow(command: "↑ / ↓", result: "Select"),
         ShortcutHelpRow(command: "Esc", result: "Release selection / close"),
@@ -321,6 +524,34 @@ private struct KeyboardShortcutsSheet: View {
     ]
 
     var body: some View {
+        // Scrolls, and stops growing. This was a fixed WIDTH with an unbounded
+        // height, and the content is long — nine key rows, four spoken ones, a
+        // legend and two paragraphs — so on a laptop the sheet ran off the
+        // screen and there was no way to reach the bottom. Close is pinned
+        // outside the scroll so it cannot be the part that goes missing.
+        VStack(spacing: 0) {
+            ScrollView {
+                content
+            }
+            Divider().background(ConchPalette.divider)
+            HStack {
+                Spacer()
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 14)
+        }
+        .frame(width: 440)
+        // 620 keeps it inside a 13" screen once the title bar is counted.
+        .frame(maxHeight: 620)
+        .background(ConchPalette.bg)
+        .onExitCommand {
+            dismiss()
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 22) {
             Text("Keyboard Shortcuts")
                 .font(ConchTypography.font(size: 19, weight: .medium))
@@ -346,21 +577,11 @@ private struct KeyboardShortcutsSheet: View {
                 .font(ConchTypography.font(size: 12.5))
                 .foregroundStyle(ConchPalette.textDim)
 
-            HStack {
-                Spacer()
-                Button("Close") {
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-            }
         }
         .padding(24)
-        .frame(width: 440)
-        .background(ConchPalette.bg)
-        .onExitCommand {
-            dismiss()
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
+
 }
 
 /// What the ledger's glyphs mean, in the calm -> act-now order they escalate in.
@@ -378,8 +599,7 @@ private struct LedgerLegendSection: View {
         Entry(symbol: "circle.inset.filled", color: ConchPalette.statusWaiting, meaning: "Finished — waiting on you"),
         Entry(symbol: "exclamationmark.circle.fill", color: ConchPalette.statusNeeds, meaning: "Blocked — needs an answer"),
         Entry(symbol: "star.fill", color: ConchPalette.statusReview, meaning: "Has work for you to look at"),
-        Entry(symbol: "speaker.slash.fill", color: ConchPalette.textDim, meaning: "Muted — announcements dropped"),
-        Entry(symbol: "pause.fill", color: ConchPalette.textDim, meaning: "Paused — turns held for later"),
+        Entry(symbol: "pause.fill", color: ConchPalette.textDim, meaning: "Manual — turns held for later"),
         Entry(symbol: "record.circle.fill", color: ConchPalette.statusMicOpen, meaning: "Recording your reply"),
         Entry(symbol: "play.fill", color: ConchPalette.statusWorking, meaning: "Reading a reply aloud"),
         Entry(symbol: "ellipsis", color: ConchPalette.statusWorking, meaning: "Transcribing what you said"),

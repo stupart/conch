@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../src/config.ts";
@@ -8,7 +8,6 @@ import {
   missingHardDependencies,
   parseSetupArgs,
   renderHardDependencyFailure,
-  REVIEW_INSTRUCTIONS_BLOCK,
   renderSetupReady,
   runInstall,
   runSetupIntegrations,
@@ -117,8 +116,11 @@ describe("one-command setup", () => {
       expect(settings.hooks.Stop).toHaveLength(1);
       expect(settings.hooks.Notification).toHaveLength(1);
       expect(settings.hooks.UserPromptSubmit).toHaveLength(1);
-      expect(readFileSync(join(claudeDir, "CLAUDE.md"), "utf8"))
-        .toBe(`${REVIEW_INSTRUCTIONS_BLOCK}\n`);
+      // It creates the directory for its hooks and nothing else. This used to
+      // assert conch had written a CLAUDE.md here — on a machine with no
+      // ~/.claude at all, installing a voice tool would CREATE the user's
+      // global instruction file just to hold conch's own review contract.
+      expect(existsSync(join(claudeDir, "CLAUDE.md"))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -164,16 +166,19 @@ describe("one-command setup", () => {
     expect(skipped).not.toContain("installed: hooks · plugin");
   });
 
-  test("ready output sends an unwired existing Codex install to its hook installer", () => {
+  test("ready output never sends anyone to wire Codex", () => {
+    // It used to LEAD with "Run `conch install --codex`", so the first
+    // instruction a new person received was the one thing that does not work:
+    // Codex 0.144.1 never executes ~/.codex/hooks.json, proven with a bare
+    // `touch` hook that did not fire. An unfinished integration should be
+    // named honestly and left off, not put at the top of the getting-started.
     const ready = renderSetupReady(
       { service: "installed", plugin: "installed" },
       { codexNeedsInstall: true, color: false },
     );
-    expect(ready.split("\n")[0]).toBe(
-      "╭─ 🐚 DO THIS FIRST — Run `conch install --codex`.",
-    );
-    expect(ready).not.toContain("Type /hooks");
-    expect(ready).toContain("Codex is present, but its lifecycle hooks are not wired yet.");
+    expect(ready.split("\n")[0]).toContain("Type /hooks");
+    expect(ready).not.toContain("conch install --codex");
+    expect(ready).toContain("unfinished");
   });
 
   test("hard-dependency guidance is copyable and includes Homebrew when absent", () => {

@@ -10,7 +10,9 @@ import {
   refreshPublishedConversationState,
   dashboardPanelLines,
   dashboardRowsForModel,
+  carriedReview,
   latestLatchedState,
+  panelReplyText,
   numberPanelSessionRows,
   previewForPanelSelection,
   reconcileStatus,
@@ -29,6 +31,28 @@ import {
 } from "../src/status.ts";
 
 describe("buildPanelModel — renderer seam", () => {
+  test("carries known context into terminal row models and leaves unknown absent", () => {
+    const model = buildPanelModel({
+      sessions: [
+        { sessionId: "known", name: "Known", backend: "claude" },
+        { sessionId: "unknown", name: "Unknown", backend: "codex" },
+      ],
+      sessionStates: new Map(),
+      pausedSessionIds: new Set(),
+      live: { state: "idle", label: "", partial: "" },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+      contextBySessionId: new Map([
+        ["known", { usedTokens: 42_000, limitTokens: 200_000 }],
+      ]),
+    });
+    expect(model.rows.find((row) => row.sessionId === "known")?.context)
+      .toEqual({ usedTokens: 42_000, limitTokens: 200_000 });
+    expect(model.rows.find((row) => row.sessionId === "unknown")?.context)
+      .toBeUndefined();
+  });
+
   test("builds sorted semantic rows with independent active and nav cursors", () => {
     const model = buildPanelModel({
       sessions: [
@@ -54,7 +78,7 @@ describe("buildPanelModel — renderer seam", () => {
       at: 40,
       detail: "permission",
       paused: false,
-      muted: true,
+      muted: false,
     });
     expect(model.rows[1]).toMatchObject({
       at: 30,
@@ -108,7 +132,7 @@ describe("buildPanelModel — renderer seam", () => {
     expect(dashboardRowsForModel(model)[0]?.startsWith("\x1b[36m▸\x1b[0m ")).toBe(true);
   });
 
-  test("renders per-session mute ahead of pause without legacy snooze wording", () => {
+  test("legacy row state is rendered as the lossless manual mode", () => {
     const model = buildPanelModel({
       sessions: [{ sessionId: "quiet", name: "Quiet", status: "idle", statusUpdatedAt: 30 }],
       sessionStates: new Map(),
@@ -122,8 +146,8 @@ describe("buildPanelModel — renderer seam", () => {
 
     const row = dashboardRowsForModel(model)[0]!;
     expect(row).toContain("\x1b[2m");
-    expect(row).toContain("🔇 muted");
-    expect(row).not.toContain("⏸ paused");
+    expect(row).toContain("⏸ manual");
+    expect(row).not.toContain("muted");
     expect(row.toLowerCase()).not.toContain("snooz");
   });
 });
@@ -208,7 +232,7 @@ describe("buildPublishedState — external session snapshot", () => {
           needsResponse: true,
           detail: "permission",
           paused: true,
-          muted: true,
+          muted: false,
           live: "speaking",
           active: true,
           snippet: "Need: latest reply",
@@ -307,7 +331,9 @@ describe("buildPublishedState — external session snapshot", () => {
         print: () => {},
       },
     );
-    expect(selection.kind).toBe("footer");
+    // A daemon with no TTY draws nothing at all now; what matters here is that
+    // publishing to the apps is independent of whatever the terminal is doing.
+    expect(selection.kind).toBe("headless");
 
     try {
       setTranscriptPrefix("committed words");
@@ -408,16 +434,49 @@ describe("buildPublishedState — external session snapshot", () => {
 
     const published = buildPublishedState(model, new Map(), new Set(), 10);
 
-    expect(published.live.reading).toEqual({ text: retained, spokenChars: 125 });
+    // The reading text is capped by the same function, so it carries the same
+    // flag — a viewer tracking reading progress is looking at a tail too.
+    expect(published.live.reading).toEqual({
+      text: retained,
+      spokenChars: 125,
+      truncated: true,
+    });
+    // The flag is the point: this keeps the TAIL, so a client holding the
+    // result cannot tell a truncated long reply from a complete short one by
+    // looking. The phone showed people the middle of an answer for weeks.
     expect(published.reply).toEqual({
       sessionId: "long",
       text: retained,
       spokenChars: 250,
+      truncated: true,
     });
     expect(published.preview).toEqual({
       sessionId: "parked",
       text: retained,
       spokenChars: retained.length,
+      truncated: true,
+    });
+  });
+
+  test("a reply that fits is not marked truncated", () => {
+    // Otherwise the phone refetches every short reply over the relay for
+    // nothing, and "truncated" stops meaning anything.
+    const model = buildPanelModel({
+      sessions: [],
+      sessionStates: new Map(),
+      pausedSessionIds: new Set(),
+      mutedSessionIds: new Set(),
+      live: { state: "idle", label: "", partial: "" },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+      reply: { sessionId: "short", text: "all of it", spokenChars: 9 },
+    });
+    const published = buildPublishedState(model, new Map(), new Set(), 10);
+    expect(published.reply).toEqual({
+      sessionId: "short",
+      text: "all of it",
+      spokenChars: 9,
     });
   });
 });
@@ -437,23 +496,21 @@ describe("dashboard global mode banner", () => {
   });
 
   test("shows pause with the held-session count", () => {
-    expect(paused[2]).toContain("⏸ PAUSED");
+    expect(paused[2]).toContain("⏸ MANUAL");
     expect(paused[2]).toContain("holding 3");
-    expect(paused[2]).toContain("no parked cursor: p to resume");
+    expect(paused[2]).toContain("no parked cursor: p for auto");
   });
 
-  test("shows mute and gives it precedence over a simultaneous pause", () => {
-    expect(muted[2]).toContain("🔇 MUTED");
-    expect(muted[2]).toContain("no parked cursor: m to unmute");
+  test("ignores the retired compatibility field", () => {
+    expect(muted[2]).toBe("");
     const both = dashboardPanelLines([], 80, { muted: true, paused: true, holding: 2 });
-    expect(both[2]).toContain("MUTED");
-    expect(both[2]).not.toContain("PAUSED");
+    expect(both[2]).toContain("MANUAL");
   });
 
   test("remains visible with no session rows", () => {
     const lines = dashboardPanelLines([], 80, { muted: false, paused: true, holding: 0 });
     expect(lines).toHaveLength(4);
-    expect(lines[2]).toContain("PAUSED");
+    expect(lines[2]).toContain("MANUAL");
   });
 });
 
@@ -862,4 +919,129 @@ describe("previewForPanelSelection — async cursor stale guard", () => {
     expect("reply" in switched).toBe(false);
   });
 
+});
+
+describe("a review outlives the turn that produced it", () => {
+  // `review_to_front` defaults `session` to the caller and REFUSES to name a
+  // sibling, so surfacing your own work is the only supported use of the tool.
+  // But the caller's own Stop hook then lands a review-less `turn-end`, and the
+  // latch replaced the whole record — so every self-issued review was erased
+  // within a second of being filed. The plugin documented the marker as the
+  // workaround; this makes the tool actually work.
+  const review = { summary: "the landing page is ready", link: "https://x.test" };
+  const latched = { label: "conch", status: "waiting" as const, at: 1, review };
+
+  test("a review-less turn-end does not erase a just-filed review", () => {
+    expect(carriedReview(latched, "waiting", undefined)).toEqual(review);
+  });
+
+  test("a needs-you notification does not erase it either", () => {
+    expect(carriedReview(latched, "needs", undefined)).toEqual(review);
+  });
+
+  test("starting a new turn does NOT clear it", () => {
+    // It used to. That meant replying to the agent that filed an artifact
+    // destroyed the artifact you were replying about, and contradicted what
+    // conch tells agents: it stays until you send another.
+    expect(carriedReview(latched, "working", undefined)).toEqual(review);
+  });
+
+  test("a newer review replaces the old one rather than being ignored", () => {
+    const next = { summary: "second deliverable" };
+    expect(carriedReview(latched, "waiting", next)).toEqual(next);
+    expect(carriedReview(latched, "working", next)).toEqual(next);
+  });
+
+  test("a session that never had one stays without one", () => {
+    expect(carriedReview(undefined, "waiting", undefined)).toBeUndefined();
+  });
+});
+
+describe("a filed review is not hidden by the registry catching up", () => {
+  // The star almost never survived long enough to be seen, and it looked like
+  // the review was never filed at all. It was: `reconcilePanelState` lets the
+  // REGISTRY outvote the latch whenever it is newer, and a session that has
+  // just filed a review is by definition sitting waiting for the user — which
+  // Claude Code registers as blocked/waiting, mapping to `needs`. The row gate
+  // required exactly `waiting`, so the review vanished the moment the registry
+  // refreshed, with the review still sitting untouched in the latch.
+  //
+  // Measured live: latched 19:27:36 (visible), gone 19:29:26 on the flip to
+  // `needs`. Both the tool and the `conch:review` marker produce the same
+  // latched review, so this hit both equally.
+  const review = { summary: "the landing page is ready", link: "https://x.test" };
+
+  function rowFor(registryStatus: string, registryAt: number) {
+    const model = buildPanelModel({
+      sessions: [
+        { sessionId: "s", name: "conch", status: registryStatus, statusUpdatedAt: registryAt },
+      ],
+      sessionStates: new Map([
+        ["s", { label: "conch", status: "waiting" as const, at: 100, review }],
+      ]),
+      pausedSessionIds: new Set(),
+      mutedSessionIds: new Set(),
+      live: { state: "idle", label: "", partial: "" },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+      reply: null,
+    } as any);
+    return model.rows.find((r) => r.sessionId === "s")!;
+  }
+
+  test("survives a newer registry status of blocked/waiting-on-input", () => {
+    const row = rowFor("blocked", 200);
+    expect(row.status).toBe("needs"); // the registry did outvote the latch
+    expect(row.review).toMatchObject(review); // and the deliverable is still shown
+  });
+
+  test("still shows on a plainly waiting row", () => {
+    expect(rowFor("idle", 200).review).toMatchObject(review);
+  });
+
+  test("is suppressed only once the session goes back to work", () => {
+    const row = rowFor("busy", 200);
+    expect(row.status).toBe("working");
+    expect(row.review).toBeUndefined();
+  });
+});
+
+describe("the reply pane shows the reply, not the announcement", () => {
+  // Reported repeatedly: "only shows first line of last response instead of
+  // full response". What conch SPEAKS for a finished turn is a one-line
+  // announce; what the pane should SHOW is the whole reply. The old rule
+  // preferred the spoken text whenever it existed, so the pane collapsed to
+  // that line the moment a turn was announced and stayed collapsed.
+  const announce = "conch: finished, ready for your next prompt";
+  const full = "Here is the whole reply.\n\nWith several paragraphs of detail.";
+
+  test("a finished turn shows the transcript, not the spoken one-liner", () => {
+    expect(panelReplyText({ state: "idle", reading: { text: announce, spokenChars: 42 } }, full))
+      .toEqual({ text: full, spokenChars: 0 });
+  });
+
+  test("progress resets rather than indexing a string it does not belong to", () => {
+    // spokenChars indexes the SPOKEN text. Carrying it onto the transcript
+    // would highlight an arbitrary prefix of a different string.
+    const { spokenChars } = panelReplyText(
+      { state: "listening", reading: { text: announce, spokenChars: 42 } },
+      full,
+    );
+    expect(spokenChars).toBe(0);
+  });
+
+  test("while speaking the two must agree, so the spoken text wins", () => {
+    expect(panelReplyText({ state: "speaking", reading: { text: announce, spokenChars: 12 } }, full))
+      .toEqual({ text: announce, spokenChars: 12 });
+  });
+
+  test("with no transcript it still shows whatever was spoken", () => {
+    expect(panelReplyText({ state: "idle", reading: { text: announce, spokenChars: 5 } }, ""))
+      .toEqual({ text: announce, spokenChars: 5 });
+  });
+
+  test("nothing at all is empty, not a crash", () => {
+    expect(panelReplyText({ state: "idle" }, "")).toEqual({ text: "", spokenChars: 0 });
+  });
 });

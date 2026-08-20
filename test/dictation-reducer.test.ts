@@ -217,3 +217,31 @@ test("a trailing no-response discards the buffer rather than prompting", () => {
   expect(done.action).toBe("discard");
   expect(done.payload).toBeNull();
 });
+
+describe("punctuation-only speech is not a message", () => {
+  test("a transcript with no letter or digit never becomes a payload", () => {
+    // Observed live: a three-minute empty listen window came back from
+    // whisper as "-" and was injected into a live session as a prompt.
+    const reducer = new DictationReducer({ holdSubmit: true });
+    reducer.consume(transcript(1, "-", "rec-0001"));
+
+    const request = requested(reducer.requestExternalAction("spacebar"));
+    const action = ready(reducer.consume(barrier(2, request)));
+
+    expect(action.payload).toBeNull();
+    expect(action.finalSubmittedDiagnosticIds).toEqual([]);
+  });
+
+  test("punctuation riding alongside real speech is kept", () => {
+    // The guard asks whether ANYTHING was said, not whether every fragment
+    // was — stripping the quiet pieces would clip real sentences.
+    const reducer = new DictationReducer({ holdSubmit: true });
+    reducer.consume(transcript(1, "-", "rec-0001"));
+    reducer.consume(transcript(2, "ship it", "rec-0002"));
+
+    const request = requested(reducer.requestExternalAction("spacebar"));
+    const action = ready(reducer.consume(barrier(3, request)));
+
+    expect(action.payload).toBe("- ship it");
+  });
+});

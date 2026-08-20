@@ -10,6 +10,9 @@ struct PublishedState: Decodable, Equatable, Sendable {
     let live: LiveState
     let reply: ConversationReply?
     let preview: ConversationReply?
+    let conversation: Conversation?
+    /// Keyed by session id, so a viewer finds the one it is showing.
+    let conversations: [String: Conversation]?
     let rows: [SessionRow]
     let dismissed: [String]
     let dismissedRows: [DismissedSessionRow]
@@ -21,6 +24,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case live
         case reply
         case preview
+        case conversation
+        case conversations
         case rows
         case dismissed
         case dismissedRows
@@ -33,6 +38,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         live: LiveState,
         reply: ConversationReply?,
         preview: ConversationReply?,
+        conversation: Conversation? = nil,
+        conversations: [String: Conversation]? = nil,
         rows: [SessionRow],
         dismissed: [String],
         dismissedRows: [DismissedSessionRow]
@@ -43,6 +50,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.mode = mode
         self.live = live
         self.reply = reply
+        self.conversation = conversation
+        self.conversations = conversations
         self.preview = preview
         self.rows = rows
         self.dismissed = dismissed
@@ -72,6 +81,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         mode = (try? container.decodeIfPresent(ModeState.self, forKey: .mode)) ?? ModeState()
         live = (try? container.decodeIfPresent(LiveState.self, forKey: .live)) ?? LiveState()
         reply = try? container.decodeIfPresent(ConversationReply.self, forKey: .reply)
+        conversation = try? container.decodeIfPresent(Conversation.self, forKey: .conversation)
+        conversations = try? container.decodeIfPresent([String: Conversation].self, forKey: .conversations)
         preview = try? container.decodeIfPresent(ConversationReply.self, forKey: .preview)
         dismissed = (try? container.decodeIfPresent([String].self, forKey: .dismissed)) ?? []
         dismissedRows = Self.decodeLossyArray(
@@ -91,6 +102,23 @@ struct PublishedState: Decodable, Equatable, Sendable {
             forKey: key
         )
         return elements?.compactMap(\.value) ?? []
+    }
+
+    /// `ts` proves the daemon is alive, but changes even when nothing a person
+    /// can see has changed. StateStore keeps the fresh source snapshot for
+    /// liveness and command reconciliation; this comparison keeps that heartbeat
+    /// from invalidating the entire SwiftUI dashboard four times a second.
+    func hasSamePresentation(as other: PublishedState) -> Bool {
+        v == other.v
+            && mode == other.mode
+            && live == other.live
+            && reply == other.reply
+            && preview == other.preview
+            && conversation == other.conversation
+            && conversations == other.conversations
+            && rows == other.rows
+            && dismissed == other.dismissed
+            && dismissedRows == other.dismissedRows
     }
 }
 
@@ -116,25 +144,21 @@ struct DismissedSessionRow: Decodable, Equatable, Identifiable, Sendable {
 }
 
 struct ModeState: Decodable, Equatable, Sendable {
-    let muted: Bool
     let paused: Bool
     let holding: Int
 
-    init(muted: Bool = false, paused: Bool = false, holding: Int = 0) {
-        self.muted = muted
+    init(paused: Bool = false, holding: Int = 0) {
         self.paused = paused
         self.holding = holding
     }
 
     private enum CodingKeys: String, CodingKey {
-        case muted
         case paused
         case holding
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        muted = (try? container.decodeIfPresent(Bool.self, forKey: .muted)) ?? false
         paused = (try? container.decodeIfPresent(Bool.self, forKey: .paused)) ?? false
         holding = (try? container.decodeIfPresent(Int.self, forKey: .holding)) ?? 0
     }
@@ -146,19 +170,23 @@ struct LiveState: Decodable, Equatable, Sendable {
     let partial: String
     let transcriptPrefix: String
     let reading: ReadingProgress?
+    /// A finished dictation meant for the composer. Applied once, by `id`.
+    let dictated: Dictation?
 
     init(
         state: String = "idle",
         label: String = "",
         partial: String = "",
         transcriptPrefix: String = "",
-        reading: ReadingProgress? = nil
+        reading: ReadingProgress? = nil,
+        dictated: Dictation? = nil
     ) {
         self.state = state
         self.label = label
         self.partial = partial
         self.transcriptPrefix = transcriptPrefix
         self.reading = reading
+        self.dictated = dictated
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -167,6 +195,7 @@ struct LiveState: Decodable, Equatable, Sendable {
         case partial
         case transcriptPrefix
         case reading
+        case dictated
     }
 
     init(from decoder: Decoder) throws {
@@ -177,6 +206,7 @@ struct LiveState: Decodable, Equatable, Sendable {
         transcriptPrefix =
             (try? container.decodeIfPresent(String.self, forKey: .transcriptPrefix)) ?? ""
         reading = try? container.decodeIfPresent(ReadingProgress.self, forKey: .reading)
+        dictated = try? container.decodeIfPresent(Dictation.self, forKey: .dictated)
     }
 
     var isCapturing: Bool {
@@ -186,6 +216,20 @@ struct LiveState: Decodable, Equatable, Sendable {
     var isExchangeActive: Bool {
         isCapturing || state == "speaking" || state == "transcribing"
     }
+}
+
+/// Spoken text handed back for the composer.
+///
+/// `id` is the whole idempotency mechanism: state republishes several times a
+/// second, so appending on sight of `text` would append it on every frame. The
+/// app applies an id it has not seen and ignores every frame after.
+struct Dictation: Decodable, Equatable, Sendable {
+    let text: String
+    let id: Int
+    /// The session that ASKED for this. Without it the app appended to
+    /// whatever happened to be focused when the result arrived, so changing
+    /// session mid-transcription put your words in someone else's draft.
+    let sessionId: String
 }
 
 struct ReadingProgress: Decodable, Equatable, Sendable {
@@ -251,6 +295,224 @@ struct ReadingProgress: Decodable, Equatable, Sendable {
         from container: KeyedDecodingContainer<CodingKeys>
     ) -> Int {
         decodeCharacterCount(from: container, forKey: .spokenChars)
+    }
+}
+
+
+/// One message in a session's conversation.
+///
+/// The daemon publishes an ordered stack of these instead of a single flattened
+/// reply. `id` is stable across renders on purpose: SwiftUI rebuilds and
+/// re-measures any row whose identity changes, so stable identity is what lets
+/// the stack append without disturbing what is already on screen.
+struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
+    enum Kind: String, Decodable, Sendable {
+        case user, assistant, thinking, tool, material, review
+        /// A future daemon may add kinds; an unknown one renders as plain text
+        /// rather than dropping the message.
+        static func parse(_ raw: String?) -> Kind { Kind(rawValue: raw ?? "") ?? .assistant }
+    }
+
+    struct Tool: Decodable, Equatable, Sendable {
+        /// What sort of operation this was. The daemon maps both agents' tool
+        /// names onto one vocabulary, so the app never learns either — it only
+        /// decides how a "file change" or a "command" should look.
+        enum Kind: String, Decodable, Sendable {
+            case commandExecution = "command_execution"
+            case fileChange = "file_change"
+            case fileRead = "file_read"
+            case search
+            case webSearch = "web_search"
+            case subagent
+            case plan
+            case question
+            case mcpToolCall = "mcp_tool_call"
+            case unknown
+
+            var symbol: String {
+                switch self {
+                case .commandExecution: return "terminal"
+                case .fileChange: return "square.and.pencil"
+                case .fileRead: return "doc.text"
+                case .search: return "magnifyingglass"
+                case .webSearch: return "globe"
+                case .subagent: return "person.2"
+                case .plan: return "checklist"
+                case .question: return "questionmark.circle"
+                case .mcpToolCall: return "wrench.adjustable"
+                case .unknown: return "circle.dashed"
+                }
+            }
+        }
+
+        var name = ""
+        var kind = Kind.unknown
+        var status = "running"
+        var result: String?
+
+        private enum CodingKeys: String, CodingKey { case name, kind, status, result }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? ""
+            // An unrecognised kind is not a decode failure. A newer daemon may
+            // name a kind this build has never heard of, and one unknown tool
+            // must not cost the whole conversation.
+            kind = (try? c.decodeIfPresent(Kind.self, forKey: .kind)) ?? .unknown
+            status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? "running"
+            result = try? c.decodeIfPresent(String.self, forKey: .result)
+        }
+    }
+
+    struct Material: Decodable, Equatable, Sendable {
+        enum Kind: String, Decodable, Sendable {
+            case image, document, systemNote = "system_note", interruption
+            case commandOutput = "command_output"
+            case task, unknown
+
+            static func parse(_ raw: String?) -> Kind {
+                Kind(rawValue: raw ?? "") ?? .unknown
+            }
+        }
+
+        var kind = Kind.unknown
+        var title = "Material"
+        var detail: String?
+        var path: String?
+        var dataUrl: String?
+        var status: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case kind, title, detail, path, dataUrl, status
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            kind = Kind.parse(try? c.decodeIfPresent(String.self, forKey: .kind))
+            title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? "Material"
+            detail = try? c.decodeIfPresent(String.self, forKey: .detail)
+            path = try? c.decodeIfPresent(String.self, forKey: .path)
+            dataUrl = try? c.decodeIfPresent(String.self, forKey: .dataUrl)
+            status = try? c.decodeIfPresent(String.self, forKey: .status)
+        }
+    }
+
+    /// One line of a plan. Agents emit these constantly; as a generic tool row
+    /// they were noise, as a checklist they are the clearest answer on screen
+    /// to "what is it actually doing".
+    struct PlanStep: Decodable, Equatable, Sendable, Identifiable {
+        enum Status: String, Decodable, Sendable { case pending, running, done }
+        var text = ""
+        var status = Status.pending
+        var id: String { "\(status.rawValue):\(text)" }
+
+        private enum CodingKeys: String, CodingKey { case text, status }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            text = (try? c.decodeIfPresent(String.self, forKey: .text)) ?? ""
+            status = (try? c.decodeIfPresent(Status.self, forKey: .status)) ?? .pending
+        }
+    }
+
+    /// The lines an edit moved. Not a unified diff: in a stack you are scanning
+    /// rather than reviewing, the changed lines ARE the story, and context lines
+    /// would multiply what crosses the relay for something nobody reads here.
+    struct FileChange: Decodable, Equatable, Sendable {
+        var file = ""
+        var removed: [String] = []
+        var added: [String] = []
+        var truncated = false
+
+        private enum CodingKeys: String, CodingKey { case file, removed, added, truncated }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            file = (try? c.decodeIfPresent(String.self, forKey: .file)) ?? ""
+            removed = (try? c.decodeIfPresent([String].self, forKey: .removed)) ?? []
+            added = (try? c.decodeIfPresent([String].self, forKey: .added)) ?? []
+            truncated = (try? c.decodeIfPresent(Bool.self, forKey: .truncated)) ?? false
+        }
+    }
+
+    /// Keeping options structured lets every surface answer the same prompt
+    /// without scraping labels back out of rendered prose.
+    struct AgentQuestion: Decodable, Equatable, Sendable {
+        struct Option: Decodable, Equatable, Sendable {
+            var label = ""
+            var description: String?
+
+            private enum CodingKeys: String, CodingKey { case label, description }
+
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                label = (try? c.decodeIfPresent(String.self, forKey: .label)) ?? ""
+                description = try? c.decodeIfPresent(String.self, forKey: .description)
+            }
+        }
+
+        var header = ""
+        var question = ""
+        var options: [Option] = []
+        var multiSelect = false
+
+        private enum CodingKeys: String, CodingKey {
+            case header, question, options, multiSelect
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            header = (try? c.decodeIfPresent(String.self, forKey: .header)) ?? ""
+            question = (try? c.decodeIfPresent(String.self, forKey: .question)) ?? ""
+            options = (try? c.decodeIfPresent([Option].self, forKey: .options)) ?? []
+            multiSelect = (try? c.decodeIfPresent(Bool.self, forKey: .multiSelect)) ?? false
+        }
+    }
+
+    let id: String
+    let rev: Int
+    let kind: Kind
+    let text: String
+    let at: TimeInterval?
+    let tool: Tool?
+    let plan: [PlanStep]?
+    let change: FileChange?
+    let question: AgentQuestion?
+    let material: Material?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, rev, kind, text, at, tool, plan, change, question, material
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? UUID().uuidString
+        rev = (try? c.decodeIfPresent(Int.self, forKey: .rev)) ?? 0
+        kind = Kind.parse(try? c.decodeIfPresent(String.self, forKey: .kind))
+        text = (try? c.decodeIfPresent(String.self, forKey: .text)) ?? ""
+        at = try? c.decodeIfPresent(TimeInterval.self, forKey: .at)
+        tool = try? c.decodeIfPresent(Tool.self, forKey: .tool)
+        plan = try? c.decodeIfPresent([PlanStep].self, forKey: .plan)
+        change = try? c.decodeIfPresent(FileChange.self, forKey: .change)
+        question = try? c.decodeIfPresent(AgentQuestion.self, forKey: .question)
+        material = try? c.decodeIfPresent(Material.self, forKey: .material)
+    }
+}
+
+/// A session's conversation, windowed and capped by the daemon for the wire.
+struct Conversation: Decodable, Equatable, Sendable {
+    var sessionId = ""
+    var items: [ConversationItem] = []
+    /// Older messages exist above the window, so a viewer can say so.
+    var truncated = false
+
+    private enum CodingKeys: String, CodingKey { case sessionId, items, truncated }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = (try? c.decodeIfPresent(String.self, forKey: .sessionId)) ?? ""
+        items = (try? c.decodeIfPresent([ConversationItem].self, forKey: .items)) ?? []
+        truncated = (try? c.decodeIfPresent(Bool.self, forKey: .truncated)) ?? false
     }
 }
 
@@ -358,6 +620,10 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
 struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     let id: String
     let label: String
+    /// This is presentation metadata, not an implementation choice: it answers
+    /// which agent the person is about to address.
+    let backend: String?
+    let context: SessionContext?
     let status: RowStatus?
     /// Epoch milliseconds for the status currently visible on this row.
     let at: Double?
@@ -365,7 +631,6 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     let detail: String?
     let review: ReviewInfo?
     let paused: Bool
-    let muted: Bool
     let live: String?
     let active: Bool
     let snippet: String?
@@ -377,13 +642,14 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id
         case label
+        case backend
+        case context
         case status
         case at
         case needsResponse
         case detail
         case review
         case paused
-        case muted
         case live
         case active
         case snippet
@@ -396,13 +662,14 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     init(
         id: String,
         label: String,
+        backend: String? = nil,
+        context: SessionContext? = nil,
         status: RowStatus?,
         at: Double?,
         needsResponse: Bool,
         detail: String?,
         review: ReviewInfo?,
         paused: Bool,
-        muted: Bool,
         live: String?,
         active: Bool,
         snippet: String?,
@@ -413,13 +680,14 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     ) {
         self.id = id
         self.label = label
+        self.backend = backend
+        self.context = context
         self.status = status
         self.at = at
         self.needsResponse = needsResponse
         self.detail = detail
         self.review = review
         self.paused = paused
-        self.muted = muted
         self.live = live
         self.active = active
         self.snippet = snippet
@@ -434,6 +702,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
 
         id = try container.decode(String.self, forKey: .id)
         label = (try? container.decodeIfPresent(String.self, forKey: .label)) ?? id
+        backend = try? container.decodeIfPresent(String.self, forKey: .backend)
+        context = try? container.decodeIfPresent(SessionContext.self, forKey: .context)
         status = try? container.decodeIfPresent(RowStatus.self, forKey: .status)
         at = Timestamp.decode(from: container, forKey: .at)
         needsResponse =
@@ -441,7 +711,6 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         detail = try? container.decodeIfPresent(String.self, forKey: .detail)
         review = try? container.decodeIfPresent(ReviewInfo.self, forKey: .review)
         paused = (try? container.decodeIfPresent(Bool.self, forKey: .paused)) ?? false
-        muted = (try? container.decodeIfPresent(Bool.self, forKey: .muted)) ?? false
         live = try? container.decodeIfPresent(String.self, forKey: .live)
         active = (try? container.decodeIfPresent(Bool.self, forKey: .active)) ?? false
         snippet = try? container.decodeIfPresent(String.self, forKey: .snippet)
@@ -457,13 +726,14 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         SessionRow(
             id: id,
             label: label,
+            backend: backend,
+            context: context,
             status: status,
             at: at,
             needsResponse: needsResponse,
             detail: detail,
             review: review,
             paused: paused,
-            muted: muted,
             live: live,
             active: active,
             snippet: snippet,
@@ -472,6 +742,24 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             prioritized: prioritized,
             navSelected: navSelected
         )
+    }
+}
+
+struct SessionContext: Decodable, Equatable, Sendable {
+    let usedTokens: Int
+    let limitTokens: Int
+
+    var fraction: Double {
+        guard limitTokens > 0 else { return 0 }
+        return min(1, max(0, Double(usedTokens) / Double(limitTokens)))
+    }
+
+    private enum CodingKeys: String, CodingKey { case usedTokens, limitTokens }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        usedTokens = max(0, (try? container.decodeIfPresent(Int.self, forKey: .usedTokens)) ?? 0)
+        limitTokens = max(0, (try? container.decodeIfPresent(Int.self, forKey: .limitTokens)) ?? 0)
     }
 }
 

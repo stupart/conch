@@ -1,7 +1,7 @@
 {
   "name": "conch",
   "version": "0.2.1",
-  "description": "Voice-loop control: see and steer your other Claude sessions.",
+  "description": "Surface finished work to the user's screen and phone, and steer your other Claude and Codex sessions.",
   "author": {
     "name": "Tyler Stupart"
   }

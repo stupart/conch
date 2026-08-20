@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ConchSettingsView: View {
     @StateObject private var store = ConchSettingsStore()
+    @EnvironmentObject private var daemon: DaemonHost
 
     var body: some View {
         VStack(spacing: 0) {
@@ -11,9 +12,21 @@ struct ConchSettingsView: View {
                 .fill(ConchPalette.divider)
                 .frame(height: 1)
 
+            // Deliberately NOT one of the rows below: those are read from the
+            // daemon over its socket, so the one control that can turn the
+            // daemon off cannot be among the things that disappear when it is.
+            DaemonPowerRow(daemon: daemon)
+
+            Rectangle()
+                .fill(ConchPalette.divider)
+                .frame(height: 1)
+
             content
         }
-        .frame(minWidth: 640, idealWidth: 680, minHeight: 480, idealHeight: 620)
+        // No frame here. This view used to BE the settings window and sized it;
+        // inside a TabView that became a second, competing demand and the
+        // window grew past the screen with nothing to scroll. The scene owns
+        // the size now.
         .background(ConchPalette.bg)
         .preferredColorScheme(.dark)
         .task {
@@ -224,7 +237,6 @@ private struct ConchSettingRowView: View {
         "reveal-typing-grace": "Don't raise while typing",
         "working-mic": "Open the mic while working",
         "voice-qa": "Voice Q&A",
-        "resume-digest": "Digest on resume",
         "announce-summary": "Announce a summary",
         "haiku-timeout": "Haiku timeout",
         "meeting-autopause": "Auto-pause in meetings",
@@ -252,42 +264,64 @@ private struct ConchSettingRowView: View {
                         .foregroundStyle(ConchPalette.textDim)
                         .fixedSize(horizontal: false, vertical: true)
 
-                    Text(metadata)
-                        .font(ConchTypography.font(size: 11, weight: .medium))
+                    // Metadata and the source note share ONE line. Each row
+                    // carried four: name, help, bounds, and an override note —
+                    // so the two that matter were outnumbered two to one, and
+                    // a dozen rows became a wall. Truncated with the full text
+                    // on hover, because the detail is worth keeping and not
+                    // worth the height.
+                    Text(footnote)
+                        .font(ConchTypography.font(size: 11))
                         .foregroundStyle(isReadOnly ? ConchPalette.textDim : ConchPalette.textFaint)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .help(footnote)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
+                // Every control's RIGHT edge lands on the same line, hard
+                // against the right margin — the way a settings pane reads
+                // everywhere else.
+                //
+                // I tried leading alignment first, reasoning that the left
+                // edge is what the eye follows. It left a dead gap between
+                // each control and the row's right edge, so the column looked
+                // unfinished: "still looks wack... just right align all the
+                // main elements for each setting row against the right edge
+                // like normal settings." The slot is sized to the widest
+                // control so trailing alignment costs no dead space.
                 HStack(alignment: .center, spacing: 10) {
                     if isPending {
-                        ProgressView()
-                            .controlSize(.small)
+                        ProgressView().controlSize(.small)
                     }
 
                     settingControl
-                        .frame(width: 215, alignment: .trailing)
+                        .frame(width: 150, alignment: .trailing)
                         .disabled(isReadOnly || isPending)
 
-                    // Shown only when there is something TO reset. A permanently
-                    // dim Reset on every default row is chrome, not an affordance.
-                    // The slot is RESERVED either way, or rows without a Reset
-                    // slide right and the control column comes out jagged.
+                    // An icon, not a word. "Reset" as a bordered button is the
+                    // heaviest thing in the row and appears on exactly the rows
+                    // you have already touched — so the list got louder the more
+                    // you used it. The slot stays reserved either way, because an
+                    // empty Group collapses and the column goes jagged again.
                     Group {
                         if setting.entry.source != .defaultValue, !isReadOnly {
-                            Button("Reset", action: onReset)
-                                .disabled(isPending)
-                                .help("Remove the saved value and use the next available source")
+                            Button(action: onReset) {
+                                Image(systemName: "arrow.uturn.backward")
+                                    .font(.system(size: 11, weight: .medium))
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(ConchPalette.textDim)
+                            .disabled(isPending)
+                            .help("Reset to the default")
+                            .accessibilityLabel("Reset \(displayName)")
                         } else {
-                            // An empty Group collapses, so the frame reserved
-                            // nothing and the control column still came out
-                            // jagged. Something has to occupy the slot.
                             Color.clear
                         }
                     }
-                    .frame(width: 76, height: 28, alignment: .trailing)
+                    .frame(width: 22, height: 22)
                 }
-                .frame(minHeight: 40)
+                .frame(minHeight: 34)
             }
 
             if isReadOnly {
@@ -296,14 +330,6 @@ private struct ConchSettingRowView: View {
                     .foregroundStyle(ConchPalette.textDim)
             }
 
-            if let diagnostic = setting.entry.diagnostic?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !diagnostic.isEmpty,
-               feedback == nil {
-                Text(diagnostic)
-                    .font(ConchTypography.font(size: 11))
-                    .foregroundStyle(ConchPalette.textDim)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
 
             if let feedback {
                 Text(feedback.text)
@@ -314,6 +340,17 @@ private struct ConchSettingRowView: View {
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 15)
+    }
+
+    /// The one dim line under the help text: bounds, default, and where the
+    /// value came from, joined rather than stacked.
+    private var footnote: String {
+        var parts = [metadata]
+        if let diagnostic = setting.entry.diagnostic?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !diagnostic.isEmpty {
+            parts.append(diagnostic)
+        }
+        return parts.joined(separator: " · ")
     }
 
     private var metadata: String {
@@ -523,5 +560,74 @@ private func feedbackColor(_ tone: ConchSettingsFeedback.Tone) -> Color {
         return ConchPalette.statusWaiting
     case .error:
         return ConchPalette.statusNeeds
+    }
+}
+
+
+/// The one switch that turns conch on and off.
+///
+/// Before this, conch was an app plus a launchd agent, and stopping it meant
+/// knowing that `conch service off` existed. The daemon is a child of the app
+/// now, so this is the whole story: one switch, and quitting the app.
+private struct DaemonPowerRow: View {
+    @ObservedObject var daemon: DaemonHost
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(indicator)
+                .frame(width: 7, height: 7)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("conch")
+                    .font(ConchTypography.font(size: 12.5, weight: .medium))
+                    .foregroundStyle(ConchPalette.textPrimary)
+                Text(detail)
+                    .font(ConchTypography.font(size: 11))
+                    .foregroundStyle(ConchPalette.textDim)
+            }
+
+            Spacer(minLength: 12)
+
+            // An adopted daemon belongs to a terminal or an old launchd agent.
+            // Offering a switch that cannot honestly turn it off would be worse
+            // than saying plainly where it came from.
+            if case .adopted = daemon.state {
+                Text("started elsewhere")
+                    .font(ConchTypography.font(size: 11))
+                    .foregroundStyle(ConchPalette.textDim)
+            } else {
+                Toggle("", isOn: Binding(
+                    get: { daemon.isOurs || daemon.state == .starting },
+                    set: { wanted in wanted ? daemon.start() : daemon.stop() }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ConchPalette.raised)
+    }
+
+    private var indicator: Color {
+        switch daemon.state {
+        case .running, .adopted: return ConchPalette.brandCyan
+        case .starting: return ConchPalette.statusWorking
+        case .stopped: return ConchPalette.textDim
+        case .failed: return ConchPalette.statusWaiting
+        }
+    }
+
+    private var detail: String {
+        switch daemon.state {
+        case .running(let pid): return "Running · pid \(pid)"
+        case .adopted: return "Running — started outside this app"
+        case .starting: return "Starting…"
+        case .stopped: return "Off — voice, hooks, and the phone are all asleep"
+        case .failed(let reason): return reason
+        }
     }
 }

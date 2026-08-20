@@ -1,4 +1,5 @@
 import { connect } from "node:net";
+import { readState } from "./daemon-state.ts";
 import type { Config } from "./config.ts";
 import { bell, speak } from "./speak.ts";
 import {
@@ -9,6 +10,7 @@ import {
   transcriptMark,
   parseReviewRequest,
 } from "./snippet.ts";
+import { currentTurnText } from "./transcript-turn.ts";
 import { findSession, sessionLabel, isEngageable } from "./sessions.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
 import { askClaude } from "./model.ts";
@@ -23,7 +25,7 @@ interface HookPayload {
 }
 
 export interface TurnEvent {
-  type: "turn-end" | "needs-you" | "wake" | "recite" | "spacebar" | "mute" | "unmute" | "pause" | "resume" | "speak" | "working" | "inject";
+  type: "turn-end" | "needs-you" | "wake" | "recite" | "spacebar" | "pause" | "resume" | "speak" | "working" | "inject" | "interrupt";
   sessionId: string;
   label: string;
   cwd?: string;
@@ -43,6 +45,35 @@ export interface TurnEvent {
   backgroundWork?: true;
   /** Set when the final reply carried a conch:review marker. */
   review?: { summary: string; link?: string };
+  /**
+   * Who asked for this wake.
+   *
+   * The mic opened by itself in manual mode and the log could only say
+   * `wake -> "conch"` — Tyler: "why did the app just change to 'listening'
+   * state when im in manual mode and didn't hit the mic button?" Five different
+   * things enqueue an identical bare wake (the Mac button, the phone, the TUI
+   * spacebar, `conch wake`, and the `conch_wake` MCP tool an agent can call),
+   * so an unexplained one was unattributable after the fact.
+   *
+   * It also decides behaviour, not just logging: manual mode means conch does
+   * nothing you did not ask for, so only a wake you personally initiated may
+   * open the mic. An agent asking for attention gets held like any other
+   * announcement.
+   */
+  origin?: "user" | "agent";
+  /**
+   * Where this dictation should LAND: the composer, not the session.
+   *
+   * The mic beside a text field used to send straight past it — press it
+   * expecting to add to what you had typed and the spoken half went into the
+   * agent instead, so typed and spoken text could not be combined at all. A
+   * wake carrying this asks for the transcript back rather than delivered.
+   *
+   * Absent means the voice loop's own behaviour, which must not change: an
+   * announced turn opens the mic to REPLY, and that reply belongs in the
+   * session.
+   */
+  compose?: true;
 }
 
 // Notification types that actually need a human; everything else stays silent.
@@ -54,6 +85,34 @@ const ACTIONABLE = new Set(["permission_prompt", "idle_prompt", "elicitation_dia
  * stdin, rings the bell, and either hands the event to a running daemon
  * (which owns speak -> listen -> inject) or speaks the announcement itself.
  */
+/**
+ * One line per Stop hook, appended next to the daemon's log.
+ *
+ * The hook runs as its own short-lived process with nowhere to speak, so when
+ * `conch:review` stopped producing rows there was no way to see what it read
+ * or decided — only to infer it from outside, which was wrong twice. Failures
+ * here are silent by construction unless something writes them down.
+ *
+ * Best-effort and never throws: a diagnostic must not be able to break the
+ * hook it is diagnosing.
+ */
+async function appendHookTrace(
+  cfg: Config,
+  fields: Record<string, unknown>,
+): Promise<void> {
+  try {
+    const line = JSON.stringify({ at: new Date().toISOString(), ...fields });
+    const path = (cfg as { hookTracePath?: string }).hookTracePath ?? "/tmp/conch-hook.log";
+    const file = Bun.file(path);
+    const existing = await file.exists() ? await file.text() : "";
+    // Bounded: this is a diagnostic, not an archive.
+    const kept = (existing + line + "\n").split("\n").slice(-500).join("\n");
+    await Bun.write(path, kept);
+  } catch {
+    // Deliberately silent.
+  }
+}
+
 export async function runHook(cfg: Config): Promise<void> {
   if (process.env.CONCH_INTERNAL) return; // conch's own model shell-outs must never announce
   let payload: HookPayload;
@@ -108,7 +167,56 @@ export async function runHook(cfg: Config): Promise<void> {
     const finalText = payload.transcript_path
       ? await lastAssistantText(payload.transcript_path)
       : "";
-    const review = parseReviewRequest(finalText);
+    // Parse the review from the WHOLE turn, not lastAssistantText.
+    //
+    // That returns the final message of a completed turn and deliberately
+    // nothing while a tool call is outstanding — right for speech, which must
+    // never announce half a turn. But it meant the marker was parsed out of an
+    // EMPTY STRING, so `conch:review …` lines never became rows at all.
+    // Measured on a live transcript: length 0, contains "conch:review" false,
+    // parse null — while the same turn read 2,381 characters through
+    // currentTurnText. The marker is the LAST such line in the turn, so
+    // reading more text can only find it, never resurrect an older one.
+    // Wait for the turn to actually LAND in the transcript.
+    //
+    // Stop fires before Claude Code has flushed the final assistant message.
+    // Measured: at Stop the file held 1,410 characters of this turn ending
+    // mid-narration, and lastAssistantText read 0 — so the `conch:review`
+    // marker, which is written on the LAST line of the last message, was never
+    // findable at Stop time no matter how it was parsed. Three previous
+    // attempts fixed the parser and the text source; the text simply was not
+    // there yet.
+    //
+    // A settled turn is one where lastAssistantText returns something: that
+    // function deliberately yields nothing until the turn completes. Bounded
+    // to about a second, and skipped entirely once it settles — most turns
+    // pay nothing.
+    let settledText = finalText;
+    for (let attempt = 0; attempt < 6 && !settledText && payload.transcript_path; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 180));
+      settledText = await lastAssistantText(payload.transcript_path);
+    }
+    const reviewSource = payload.transcript_path
+      ? await currentTurnText(payload.transcript_path)
+      : "";
+    const review = parseReviewRequest(reviewSource || settledText || finalText);
+    // The hook is a separate short-lived process with no terminal and no log,
+    // so every failure here has been invisible — three rounds of reasoning
+    // about reviews from OUTSIDE the process that decides. Record what it
+    // actually read and what it made of it, next to the daemon's own log.
+    void appendHookTrace(cfg, {
+      event: "Stop",
+      turnChars: reviewSource.length,
+      finalChars: finalText.length,
+      settledChars: settledText.length,
+      sawMarker: reviewSource.includes("conch:review") || finalText.includes("conch:review"),
+      // The shape of what it read, so the next failure names itself instead
+      // of being inferred. 291 characters told me the scan stopped early; it
+      // could not tell me WHERE.
+      head: reviewSource.slice(0, 90),
+      tail: reviewSource.slice(-90),
+      parsed: review ? { summary: review.summary.slice(0, 60), link: review.link ?? null } : null,
+    });
     const backgroundWork = !review && payload.transcript_path
       ? sessionHasLiveBackgroundWork(payload.transcript_path)
       : false;
@@ -168,6 +276,12 @@ export async function runHook(cfg: Config): Promise<void> {
   // standalone; worker mode intentionally reaches the awaited say fallback.
   const handedOff = await sendToDaemon(cfg.socketPath, turn);
   if (!handedOff) {
+    // Manual mode is a promise the daemon normally keeps, and with no daemon
+    // there was nobody keeping it: every hook announced its own turn aloud on a
+    // Mac explicitly set to silent. Tyler heard conch talking with the app shut
+    // and nothing running. The mode is one boolean on disk, so read it — a
+    // process speaking on conch's behalf answers to conch's mode.
+    if (readState().paused) return;
     // A reclassified Stop is visual-only by default. The opt-in can still bell
     // and announce without a daemon, though only the daemon owns a listening loop.
     if (turn.backgroundWork && !cfg.workingMic) return;

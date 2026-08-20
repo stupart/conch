@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -12,7 +13,6 @@ import { join } from "node:path";
 import {
   buildCodexHooksSettings,
   codexHooksAreWired,
-  REVIEW_INSTRUCTIONS_BLOCK,
   runCodexInstall,
 } from "../src/install.ts";
 
@@ -143,8 +143,10 @@ describe("Codex hook installer settings", () => {
         expect(installed.hooks[event][0].hooks[0].command).toContain("codex-hook");
       }
       expect(readFileSync(obsoleteNestedPath, "utf8")).toBe(obsoleteNestedSettings);
-      expect(readFileSync(instructionsPath, "utf8"))
-        .toBe(`${REVIEW_INSTRUCTIONS_BLOCK}\n`);
+      // Wiring Codex's hooks does not touch Codex's global AGENTS.md. This
+      // used to assert conch had CREATED that file to hold its own review
+      // contract; the contract now travels with the plugin instead.
+      expect(existsSync(instructionsPath)).toBe(false);
 
       const backupsAfterFirstInstall = readdirSync(codexDir)
         .filter((name) => name.startsWith("hooks.json.conch-backup-"));
@@ -162,12 +164,10 @@ describe("Codex hook installer settings", () => {
         readdirSync(codexDir)
           .filter((name) => name.startsWith("AGENTS.md.conch-backup-")),
       ).toEqual([]);
-      expect(readFileSync(instructionsPath, "utf8").split("<!-- conch:begin -->"))
-        .toHaveLength(2);
+      expect(existsSync(instructionsPath)).toBe(false);
 
       const output = logs.join("\n");
-      expect(output).toContain(`AGENTS.md: conch review contract created -> ${instructionsPath}`);
-      expect(output).toContain("AGENTS.md: conch review contract already wired, skipping");
+      expect(output).not.toContain("review contract");
       expect(output).toContain(`hooks file: ${hooksPath}`);
       expect(output).toContain(
         "The first `codex` run shows Codex's hook trust-review screen",

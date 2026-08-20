@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 /// One session: its latest reply, its deliverable when it has one, and the
 /// talk control. The mic button is the entire bottom edge — mid-workout the
@@ -6,15 +7,73 @@ import SwiftUI
 struct SessionView: View {
     @ObservedObject var bridge: BridgeClient
     @ObservedObject var speech: SpeechController
+    /// Owned by the app, never by this view — see ConchApp.
+    @ObservedObject var talk: TalkController
     let sessionId: String
-
-    @StateObject private var talk = TalkController()
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showReview = false
     @State private var sendFailed = false
+    @FocusState private var typing: Bool
+    @State private var pickedPhoto: PhotosPickerItem?
+    /// Prepared and waiting, NOT uploaded. Nothing leaves the phone until you
+    /// press send — picking a picture is composing, not sending.
+    @State private var attachments: [PendingAttachment] = []
+    /// Whether the end of the conversation is on screen. Set by the anchor's
+    /// own visibility, which is how iOS answers what NSScrollView answers on
+    /// the Mac.
+    @State private var pinnedToBottom = true
+
+    private static let bottomAnchor = "conversation-bottom"
+
+    /// What "the conversation changed" means, for following purposes: a new
+    /// item, or the last one growing as a reply streams in. Keyed rather than
+    /// counted so an edit to the final message still follows.
+    private var conversationRevision: String {
+        let conversation = bridge.state?.conversations[sessionId]
+        let items = conversation?.items ?? []
+        return "\(items.count)-\(items.last?.id ?? "")-\(items.last?.rev ?? 0)"
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+        // After layout, not during it: scrolling to an anchor SwiftUI has not
+        // placed yet silently does nothing.
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+            }
+        }
+    }
+    @State private var attaching = false
+    @State private var attachError: String?
+    /// An image-only send in flight. TalkController's `.sending` phase covers
+    /// only sends that carry words; this is the same signal for the send that
+    /// carries none.
+    @State private var sendingImagesOnly = false
     @State private var fetchedReply: String?
     @State private var loadingReply = false
+    @State private var optionReplyInFlight = false
+    @State private var confirmingClose = false
+    @State private var closingSession = false
+    @State private var closeError: String?
+    @State private var showingCloseError = false
+    /// Four API-sized images put a 20 MB ceiling on retained upload payloads;
+    /// without a count limit, the 5 MB per-image cap was not a memory bound.
+    private static let attachmentLimit = 4
+    /// The reply the fetched copy belongs to, so a new turn refetches instead
+    /// of showing the previous answer in full and the current one in part.
+    @State private var fetchedFor: String?
 
-    private static let draftAnchor = "conch.draft"
+    /// Whether the mic is open FOR THIS SESSION. One controller serves them
+    /// all, so `phase` alone would light up the mic and relabel the button in
+    /// a session that is merely being looked at while another one listens.
+    private var isTalkingHere: Bool {
+        talk.targetSessionId == sessionId && talk.phase == .listening
+    }
 
     private var row: PublishedState.Row? {
         bridge.state?.rows.first { $0.id == sessionId }
@@ -26,11 +85,37 @@ struct SessionView: View {
 
     /// The live reply when this session owns it, else whatever we fetched.
     private var replyText: String? {
-        if let reply = bridge.state?.reply, reply.sessionId == sessionId,
-           !reply.displayText.isEmpty {
+        guard let reply = bridge.state?.reply, reply.sessionId == sessionId,
+              !reply.displayText.isEmpty else { return fetchedReply }
+        // Whichever actually holds more of the answer.
+        //
+        // Gating this on `truncated` was not enough: the live reply is often
+        // the short spoken ANNOUNCE, which is complete and therefore not
+        // marked truncated, so it beat the full turn fetched from /reply and
+        // you got a fragment of an older message while a new one streamed in.
+        // Length is the honest comparison — the live copy is for immediacy,
+        // /reply is authoritative, and once the live one genuinely overtakes
+        // it (a longer turn arriving) it wins on its own merits.
+        guard let whole = fetchedReply, whole.count > reply.displayText.count else {
             return reply.displayText
         }
-        return fetchedReply
+        return whole
+    }
+
+    /// What must change before this session's reply is worth refetching.
+    ///
+    /// `state.reply` is ONE globally-latest reply across every session, not a
+    /// reply per session. So a session that is not the most recent to speak
+    /// gets no live text at all, and keying the refetch on it meant those
+    /// sessions fetched once, ever — you opened conch and read a sentence
+    /// belonging to dayloop. This session's own ROW still moves whenever it
+    /// produces a turn, which is the signal that actually tracks it.
+    private var replyFingerprint: String? {
+        if let reply = bridge.state?.reply, reply.sessionId == sessionId {
+            return "live:\(reply.text.count):\(reply.displayText.suffix(48))"
+        }
+        guard let row else { return nil }
+        return "row:\(Int(row.at)):\(row.status):\(row.review?.summary ?? "")"
     }
 
     var body: some View {
@@ -38,13 +123,33 @@ struct SessionView: View {
             ScrollViewReader { scroller in
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    if let context = row?.context, context.limitTokens > 0 {
+                        ContextMeter(usage: context)
+                            .padding(12)
+                            .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
+                    }
+
                     if let review = row?.review {
                         ReviewCard(review: review) {
                             showReview = true
                         }
                     }
 
-                    if let replyText {
+                    // The whole conversation when the daemon has one for THIS
+                    // session, which is what finally puts Codex sessions on the
+                    // phone: their content never arrives as `reply`, because
+                    // that carries only the last turn conch spoke, and conch
+                    // does not speak for a session it merely observes.
+                    if let conversation = bridge.state?.conversations[sessionId],
+                       !conversation.items.isEmpty {
+                        ConversationStack(
+                            bridge: bridge,
+                            conversation: conversation,
+                            optionReplyInFlight: optionReplyInFlight || isSending,
+                            onSelectOption: answerQuestion,
+                            onFreeform: { typing = true }
+                        )
+                    } else if let replyText {
                         MarkdownView(text: replyText)
                             .foregroundStyle(Palette.textPrimary)
                     } else if loadingReply {
@@ -59,33 +164,90 @@ struct SessionView: View {
                             .frame(maxWidth: .infinity)
                     }
 
-                    // Your words belong in the thread, under what you are
-                    // answering — not stacked on top of the button. It reads as
-                    // a conversation, and you can see the whole utterance grow.
-                    if talk.phase == .listening || talk.phase == .sending || !talk.transcript.isEmpty {
-                        YourTurnBubble(
-                            text: talk.transcript,
-                            isSending: talk.phase == .sending
-                        )
-                        .id(Self.draftAnchor)
-                    }
+                    // No draft bubble here any more. It existed because the
+                    // input bar did not — there was nowhere else to watch your
+                    // words arrive. Now the field holds them, and showing the
+                    // same sentence twice while you type reads as a bug.
+                    // Tyler: "its also showing the preview in blue tho as I
+                    // type so its kinda weird".
+
+                    // The end of the conversation, and the way to know whether
+                    // you are looking at it. iOS has no equivalent of the Mac's
+                    // NSScrollView observer, but a zero-height marker that
+                    // reports its own visibility answers the same question:
+                    // are we at the bottom right now?
+                    Color.clear
+                        .frame(height: 1)
+                        .id(Self.bottomAnchor)
+                        .onAppear { pinnedToBottom = true }
+                        .onDisappear { pinnedToBottom = false }
                 }
                 .padding(20)
                 .padding(.bottom, 12)
             }
-            .onChange(of: talk.transcript) { _, _ in
-                withAnimation(.easeOut(duration: 0.2)) {
-                    scroller.scrollTo(Self.draftAnchor, anchor: .bottom)
-                }
+            .onAppear {
+                // The reported bug. A ScrollViewReader was already here and its
+                // proxy was never used once — `scroller` appeared exactly at
+                // its own declaration and nowhere else — so opening a session
+                // left you at the TOP of the conversation. Tyler: "when I open
+                // it up I often have to scroll back down to the bottom again."
+                scrollToBottom(scroller, animated: false)
             }
+            .onChange(of: conversationRevision) { _, _ in
+                // Follow new messages only while already at the end, so
+                // reading history is not yanked away by an arriving reply —
+                // the same rule the Mac settled on.
+                guard pinnedToBottom else { return }
+                scrollToBottom(scroller, animated: true)
+            }
+            .onChange(of: sessionId) { _, _ in
+                // A different session is a different conversation: start at its
+                // end, and re-arm the follow.
+                pinnedToBottom = true
+                scrollToBottom(scroller, animated: false)
+            }
+            // Focus used to be a trap: once the cursor entered the field there
+            // was no way out short of sending or discarding, and the keyboard
+            // sat over the conversation you wanted to re-read before deciding.
+            // Tyler: "i want to be able to deselect the input box ... by
+            // swiping down on it and or tapping outside of it so that i can
+            // scroll and read the content before sending or if i change my
+            // mind". Both escapes: a drag on the conversation walks the
+            // keyboard out with the finger, and a tap on it drops focus
+            // outright — controls in the conversation still win their tap, so
+            // only inert content defocuses. Neither touches the draft: it
+            // lives in TalkController per session, and losing focus is not on
+            // the short list of things allowed to clear it.
+            .scrollDismissesKeyboard(.interactively)
+            .contentShape(Rectangle())
+            .onTapGesture { typing = false }
             }
 
-            talkSurface
+            // Recognition partials arrive many times per sentence. Their own
+            // observer redraws this composer closure without invalidating the
+            // conversation and rebuilding every MarkdownView above it.
+            ComposerUpdateScope(partial: talk.livePartial) {
+                talkSurface
+            }
         }
         .background(Palette.bg)
-        .navigationTitle(row?.label ?? "")
+        .onChange(of: pickedPhoto) { _, item in
+            guard let item else { return }
+            Task { await attach(item) }
+        }
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                HStack(spacing: 7) {
+                    Text(row?.label ?? "")
+                        .font(Type.sessionName)
+                        .foregroundStyle(Palette.textPrimary)
+                        .lineLimit(1)
+                    AgentBadge(backend: row?.backend)
+                }
+            }
+
             // Read it to me. The Mac and terminal have always had `recite`;
             // without it the phone could only speak replies that happened to
             // arrive while you were watching, which is the opposite of the
@@ -102,7 +264,7 @@ struct SessionView: View {
                         .foregroundStyle(speech.isSpeaking ? Palette.needs : Palette.textDim)
                         .contentTransition(.symbolEffect(.replace))
                 }
-                .disabled(replyText == nil)
+                .disabled(replyText == nil || isTalkingHere)
                 .accessibilityLabel(speech.isSpeaking ? "Stop reading" : "Read this aloud")
             }
 
@@ -118,29 +280,90 @@ struct SessionView: View {
                         // ear the indicator was reporting a microphone on the
                         // other side of the room — the one state you cannot
                         // afford to be wrong about.
-                        Image(systemName: talk.phase == .listening ? "mic.fill" : mark.symbol)
-                            .font(.system(size: 12))
-                            .foregroundStyle(talk.phase == .listening ? Palette.micOpen : mark.color)
+                        // While this phone holds the mic, the whole glyph-and-
+                        // word chip becomes the way to CLOSE it — which the app
+                        // had no way to do at all, since the bottom button
+                        // sends. Icon and label are one Button on purpose: a
+                        // button's hit area is its label's frame, so wrapping
+                        // only the 12pt glyph would leave a 12pt target sitting
+                        // next to inert text that looks like part of it.
+                        //
+                        // It is otherwise a plain status glyph. A status glyph
+                        // that sometimes does something is worse than one that
+                        // never does.
+                        if isTalkingHere {
+                            Button { talk.closeMic() } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "mic.fill")
+                                        .font(.system(size: 12))
+                                    Text("Mic open")
+                                        .font(Type.caption)
+                                }
+                                .foregroundStyle(Palette.micOpen)
+                                // The trailing inset goes here, matching this
+                                // HStack's own spacing so the gap at the screen
+                                // edge equals the gap between glyph and word.
+                                .padding(.trailing, 6)
+                            }
+                            .accessibilityLabel("Close the microphone")
+                            .accessibilityHint("Keeps what you have said")
+                        } else {
+                            // THIS phone's mic, not the daemon's. The published
+                            // state describes the Mac, so while the phone held
+                            // the ear the indicator was reporting a microphone
+                            // on the other side of the room — the one state you
+                            // cannot afford to be wrong about.
+                            Image(systemName: mark.symbol)
+                                .font(.system(size: 12))
+                                .foregroundStyle(mark.color)
+                        }
                         // The word earns its place only when nothing else on
                         // screen explains the glyph — a review card directly
                         // beneath saying the same thing is clutter.
-                        if talk.phase == .listening {
-                            Text("Mic open")
-                                .font(Type.caption)
-                                .foregroundStyle(Palette.micOpen)
-                        } else if row?.review == nil {
+                        if !isTalkingHere, row?.review == nil {
                             Text(mark.meaning)
                                 .font(Type.caption)
                                 .foregroundStyle(mark.color)
+                                .padding(.trailing, 6)
                         }
                     }
                 }
+            }
+
+            // Ending a resumable agent is the most expensive tap on this
+            // screen. It lives behind an overflow item AND a confirmation,
+            // never in the composer or a full-swipe gesture.
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("End session…", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
+                        confirmingClose = true
+                    }
+                    .disabled(closingSession || !bridge.isConnected)
+                } label: {
+                    Image(systemName: "ellipsis")
+                }
+                .accessibilityLabel("Session actions")
             }
         }
         .sheet(isPresented: $showReview) {
             if let review = row?.review {
                 DeliverableSheet(bridge: bridge, review: review)
             }
+        }
+        .confirmationDialog(
+            "End this session cleanly?",
+            isPresented: $confirmingClose,
+            titleVisibility: .visible
+        ) {
+            Button("End session", role: .destructive, action: closeCleanly)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The agent exits normally and leaves this session resumable. Conch will never kill it.")
+        }
+        .alert("Couldn't end that session", isPresented: $showingCloseError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(closeError ?? "The Mac didn't confirm a clean exit, so conch left the agent running.")
         }
         .onAppear {
             // Auto-open the mic when a reply for THIS session finishes reading.
@@ -154,13 +377,67 @@ struct SessionView: View {
             }
         }
         .onDisappear { speech.onFinishedReading = nil }
-        .task(id: sessionId) {
-            guard fetchedReply == nil else { return }
-            loadingReply = true
-            fetchedReply = await bridge.fetchReply(sessionId: sessionId)
-            loadingReply = false
+        .onChange(of: talk.failure) { _, failure in
+            guard let failure else { return }
+            Task {
+                _ = await bridge.reportAppError(
+                    operation: "speech-recognition",
+                    message: failure,
+                    sessionId: sessionId
+                )
+            }
         }
-        .onDisappear { talk.cancel() }
+        .onChange(of: speech.speechFailure) { _, failure in
+            guard let failure else { return }
+            Task {
+                _ = await bridge.reportAppError(
+                    operation: "speech-playback",
+                    message: failure,
+                    sessionId: sessionId
+                )
+            }
+        }
+        // Keep asking while the session is producing.
+        //
+        // The Mac app re-reads the transcript file continuously, which is why
+        // it grows in front of you. The phone fetched once per fingerprint
+        // change, and a fingerprint built from the ROW only moves when the
+        // session's status does — not as an answer is written. So the phone
+        // held a stale snapshot of a turn that was still growing: "still not
+        // getting your full messages written out like I do on desktop".
+        //
+        // Only while this session is on screen AND actually working, so a
+        // ledger of idle sessions costs nothing. Task cancellation on
+        // disappear stops it; there is no timer to leak.
+        // Off screen it also stops: the connection is closed while backgrounded,
+        // so every poll would be a request against a socket that is not there.
+        // Including the phase in the id restarts it when you come back.
+        .task(id: "poll|\(sessionId)|\(row?.status ?? "")|\(scenePhase == .active)") {
+            while !Task.isCancelled, scenePhase == .active, row?.status == "working" {
+                try? await Task.sleep(for: .milliseconds(1500))
+                if Task.isCancelled { return }
+                guard let whole = await bridge.fetchReply(sessionId: sessionId),
+                      !whole.isEmpty else { continue }
+                // Never let a shorter re-read replace a longer one: a tail read
+                // that lands mid-write would otherwise make the answer flicker
+                // backwards while you are reading it.
+                if whole.count >= (fetchedReply?.count ?? 0) { fetchedReply = whole }
+            }
+        }
+        // Keyed on the REPLY, not the session: fetching once per session meant
+        // the first answer was whole and every one after it was a tail.
+        .task(id: "\(sessionId)|\(replyFingerprint ?? "")") {
+            let wanted = replyFingerprint
+            if fetchedReply != nil, fetchedFor == wanted { return }
+            loadingReply = fetchedReply == nil
+            let whole = await bridge.fetchReply(sessionId: sessionId)
+            loadingReply = false
+            guard !Task.isCancelled else { return }
+            if let whole, !whole.isEmpty {
+                fetchedReply = whole
+                fetchedFor = wanted
+            }
+        }
     }
 
     // MARK: - Talk
@@ -185,10 +462,26 @@ struct SessionView: View {
                 .padding(.horizontal, 20)
             }
 
+            if let attachError {
+                Text(attachError)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.needs)
+            }
+
             if sendFailed {
                 Text("Couldn't reach the Mac — your words are kept above.")
                     .font(Type.caption)
                     .foregroundStyle(Palette.needs)
+            }
+
+            // The phone going quiet with no explanation is indistinguishable
+            // from a broken agent, a dead network, or an empty reply.
+            if let failure = speech.speechFailure {
+                Text(failure)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.needs)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 20)
             }
 
             if let failure = talk.failure {
@@ -199,58 +492,366 @@ struct SessionView: View {
                     .padding(.horizontal, 20)
             }
 
-            Button(action: toggleTalk) {
-                HStack(spacing: 10) {
-                    Image(systemName: talk.phase == .listening ? "arrow.up.circle.fill" : "mic.fill")
-                        .font(.system(size: 20, weight: .semibold))
-                    Text(talkLabel)
-                        .font(Type.label(17, weight: .semibold))
+            // What is attached, before it is sent. An attachment you cannot
+            // see is one you cannot remove, and picking the wrong photo is the
+            // most likely mistake at this step.
+            if !attachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(attachments) { attachment in
+                            ZStack(alignment: .topTrailing) {
+                                Group {
+                                    if let thumbnail = attachment.thumbnail {
+                                        Image(uiImage: thumbnail)
+                                            .resizable()
+                                            .aspectRatio(contentMode: .fill)
+                                    } else {
+                                        Image(systemName: "photo")
+                                            .foregroundStyle(Palette.textDim)
+                                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    }
+                                }
+                                // ImageUpload retains only a 192 px first frame
+                                // for this 64 pt tile, never the agent-sized data.
+                                .frame(width: 64, height: 64)
+
+                                Button {
+                                    attachments.removeAll { $0.id == attachment.id }
+                                    attachError = nil
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 16))
+                                        .foregroundStyle(.white, .black.opacity(0.6))
+                                }
+                                .buttonStyle(.plain)
+                                .padding(3)
+                            }
+                            .frame(width: 64, height: 64)
+                            .background(Palette.raised)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                        }
+                    }
+                    .padding(.horizontal, 16)
                 }
-                .frame(maxWidth: .infinity)
-                .frame(height: 58)
-                .background(
-                    talk.phase == .listening ? Palette.micOpen : Palette.raised,
-                    in: RoundedRectangle(cornerRadius: 16)
-                )
-                .foregroundStyle(talk.phase == .listening ? Palette.bg : Palette.textPrimary)
             }
-            .buttonStyle(.plain)
-            .disabled(talk.phase == .sending)
-            .padding(.horizontal, 16)
+
+            // One surface holding the field AND its controls, the shape
+            // ChatGPT uses and Tyler asked for after two misses.
+            //
+            // The first attempt put three buttons beside the field and squeezed
+            // it to half the screen; the second moved them to a row underneath,
+            // which read as detached because it was a SEPARATE surface. The fix
+            // is not where the buttons sit but what they sit on: inside the same
+            // rounded container, the row is part of the composer rather than
+            // chrome stacked beneath it.
+            VStack(spacing: 10) {
+                TextField("Type or talk…", text: draftBinding, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(Type.body)
+                    .foregroundStyle(Palette.textPrimary)
+                    .lineLimit(1...7)
+                    .focused($typing)
+                    // `.return`, not `.send`: the field is multiline, so the key
+                    // inserts a newline. Labelling it "send" made it say one
+                    // thing and do another — and newlines matter, since an
+                    // attached picture's path sits on its own line above what
+                    // you are asking about.
+                    .submitLabel(.return)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                HStack(spacing: 14) {
+                    // Plain glyphs on the left, weight reserved for the actions
+                    // that send something.
+                    PhotosPicker(selection: $pickedPhoto, matching: .images, photoLibrary: .shared()) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 19, weight: .medium))
+                            .frame(width: 30, height: 30)
+                            .foregroundStyle(Palette.textPrimary)
+                    }
+                    .disabled(attaching)
+                    .accessibilityLabel("Attach a picture")
+
+                    if canSend, !isSending {
+                        // Deliberate deletion, kept. Everything else in the draft
+                        // machinery refuses to lose your words, and that only
+                        // works as a promise if you can throw them away yourself.
+                        Button {
+                            talk.discard(session: sessionId)
+                            attachments = []
+                            sendFailed = false
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 16, weight: .medium))
+                                .frame(width: 30, height: 30)
+                                .foregroundStyle(Palette.textFaint)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Discard what you have written")
+                    }
+
+                    Spacer(minLength: 0)
+
+                    // The mic stays a mic and stays blue. It used to BECOME send
+                    // as soon as you typed, which quietly broke the point of a
+                    // shared draft: you could no longer dictate onto typed text.
+                    Button(action: toggleTalk) {
+                        Image(systemName: isTalkingHere ? "stop.fill" : "mic.fill")
+                            .font(.system(size: 17, weight: .semibold))
+                            .frame(width: 38, height: 38)
+                            .background(Palette.micOpen, in: Circle())
+                            .foregroundStyle(Palette.bg)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isSending)
+                    .accessibilityLabel(isTalkingHere ? "Close the microphone" : "Open the microphone")
+
+                    // Stop sits where send would be, but only while the agent
+                    // is mid-turn and you have nothing written. Noticing an
+                    // agent has gone the wrong way while away from the desk
+                    // used to mean watching it keep going.
+                    if isWorking, !canSend, !isSending {
+                        Button(action: stopTurn) {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 15, weight: .bold))
+                                .frame(width: 38, height: 38)
+                                .background(Palette.waiting, in: Circle())
+                                .foregroundStyle(Palette.bg)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Stop this turn")
+                        .transition(.scale.combined(with: .opacity))
+                    }
+
+                    if canSend || isSending {
+                        Button(action: sendDraft) {
+                            Group {
+                                if isSending {
+                                    ProgressView().controlSize(.small).tint(Palette.bg)
+                                } else {
+                                    Image(systemName: "arrow.up")
+                                        .font(.system(size: 17, weight: .bold))
+                                }
+                            }
+                            .frame(width: 38, height: 38)
+                            .background(Palette.textPrimary, in: Circle())
+                            .foregroundStyle(Palette.bg)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isSending)
+                        .accessibilityLabel("Send")
+                        .transition(.scale.combined(with: .opacity))
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(Palette.raised, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .padding(.horizontal, 12)
             .padding(.bottom, 8)
-            .animation(.easeOut(duration: 0.18), value: talk.phase)
+            .animation(.easeOut(duration: 0.16), value: canSend)
+            .animation(.easeOut(duration: 0.16), value: talk.phase)
+            .animation(.easeOut(duration: 0.16), value: sendingImagesOnly)
         }
         .padding(.top, 10)
         .background(.ultraThinMaterial.opacity(0.06))
     }
 
-    private var talkLabel: String {
-        switch talk.phase {
-        case .listening: "Send"
-        case .sending: "Sending…"
-        case .idle, .denied: "Talk"
+    /// The draft, editable. Reading and writing the same string speech uses is
+    /// what makes typing and talking one surface rather than two.
+    private var draftBinding: Binding<String> {
+        Binding(
+            get: { talk.draft(for: sessionId) },
+            set: { talk.setDraft($0, for: sessionId) }
+        )
+    }
+
+    /// Mid-turn, which is the only time stopping means anything.
+    private var isWorking: Bool {
+        row?.status == "working"
+    }
+
+    private func stopTurn() {
+        let label = row?.label ?? ""
+        Task { await bridge.interrupt(sessionId: sessionId, label: label) }
+    }
+
+    private func answerQuestion(_ label: String) {
+        guard !label.isEmpty, !optionReplyInFlight else { return }
+        optionReplyInFlight = true
+        sendFailed = false
+        let sessionLabel = row?.label ?? ""
+        Task {
+            let delivered = await bridge.inject(
+                sessionId: sessionId,
+                label: sessionLabel,
+                text: label
+            )
+            optionReplyInFlight = false
+            if !delivered { sendFailed = true }
         }
     }
 
+    private func closeCleanly() {
+        guard !closingSession else { return }
+        closingSession = true
+        Task {
+            let closed = await bridge.closeSession(sessionId: sessionId)
+            closingSession = false
+            if closed { dismiss() }
+            else {
+                closeError = bridge.lastError
+                showingCloseError = true
+            }
+        }
+    }
+
+    private var canSend: Bool {
+        !attachments.isEmpty
+            || !talk.draft(for: sessionId).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// A send in flight on either path — the controller's, or the direct one
+    /// an image-only message takes.
+    private var isSending: Bool {
+        talk.phase == .sending || sendingImagesOnly
+    }
+
+    /// Prepare a picked photo and hold it. Nothing is sent yet.
+    ///
+    /// Tyler: "it shouldnt send right away anyways it should just add it to the
+    /// input box and then I hit send after adding any text that I want". He is
+    /// right, and it is also more robust — uploading at pick time meant a
+    /// network failure surfaced while you were still composing, with nothing to
+    /// retry. Now the picture rides the send, which already knows how to fail
+    /// and keep your words.
+    private func attach(_ item: PhotosPickerItem) async {
+        guard attachments.count < Self.attachmentLimit else {
+            attachError = "You can attach up to 4 pictures at a time."
+            pickedPhoto = nil
+            return
+        }
+        attaching = true
+        attachError = nil
+        defer { attaching = false; pickedPhoto = nil }
+
+        guard let raw = try? await item.loadTransferable(type: Data.self) else {
+            attachError = "Couldn't read that picture."
+            return
+        }
+        // Sized for the agent that will actually read it — the ceiling differs
+        // between Claude and Codex.
+        guard let prepared = await ImageUpload.prepare(
+            data: raw,
+            type: item.supportedContentTypes.first,
+            backend: row?.backend
+        ) else {
+            attachError = "That picture is too large to send."
+            return
+        }
+        // A picker task should be serial, but enforce the bound again after
+        // suspension so two overlapping callbacks can never exceed it.
+        guard attachments.count < Self.attachmentLimit else {
+            attachError = "You can attach up to 4 pictures at a time."
+            return
+        }
+        attachments.append(PendingAttachment(
+            data: prepared.data,
+            ext: prepared.ext,
+            thumbnail: prepared.previewData.flatMap(UIImage.init(data:))
+        ))
+    }
+
+    private func sendDraft() {
+        sendFailed = false
+        attachError = nil
+        let label = row?.label ?? ""
+        let pending = attachments
+        // A picture with no words is an ordinary message — "look at this". It
+        // cannot go through the controller: TalkController.send exists to
+        // shepherd a DRAFT through delivery and rightly refuses an empty one,
+        // which made an image-only send a silent no-op. With no words to
+        // protect there is nothing for it to guard, so this send goes direct,
+        // its own flag standing in for the controller's `.sending`.
+        if talk.draft(for: sessionId).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard !pending.isEmpty, !isSending else { return }
+            sendingImagesOnly = true
+            Task {
+                _ = await deliver(text: "", pending: pending, label: label)
+                sendingImagesOnly = false
+            }
+            return
+        }
+        // Route through the controller so a typed message takes exactly the
+        // path a spoken one does: the mic closes, the draft is cleared only on
+        // a CONFIRMED delivery, and a failure leaves your words on screen.
+        talk.send(session: sessionId) { text in
+            await deliver(text: text, pending: pending, label: label)
+        }
+    }
+
+    /// Pictures first, because the message references their paths. If one
+    /// fails the whole send fails, which keeps the words AND the images —
+    /// half a message is worse than none.
+    private func deliver(text: String, pending: [PendingAttachment], label: String) async -> Bool {
+        var paths: [String] = []
+        for attachment in pending {
+            guard let path = await bridge.uploadImage(
+                data: attachment.data,
+                ext: attachment.ext
+            ) else {
+                attachError = "Couldn't send the picture — try again."
+                return false
+            }
+            paths.append(path)
+        }
+        let body = (paths + [text]).filter { !$0.isEmpty }.joined(separator: "\n")
+        let delivered = await bridge.inject(sessionId: sessionId, label: label, text: body)
+        if delivered { attachments = [] } else { sendFailed = true }
+        return delivered
+    }
+
+    /// Open the mic, or close it. Never send — that is the other button now.
+    ///
+    /// It used to send on the second tap, because the mic WAS the send button.
+    /// With them separated, tapping the mic again has to mean "stop listening",
+    /// and closing it keeps every word for the send that follows.
     private func toggleTalk() {
         sendFailed = false
-        let label = row?.label ?? ""
-        talk.toggle { text in
-            let delivered = await bridge.inject(
-                sessionId: sessionId,
-                label: label,
-                text: text
-            )
-            if !delivered { sendFailed = true }
-            return delivered
+        typing = false
+        if isTalkingHere {
+            talk.closeMic()
+        } else {
+            talk.open(session: sessionId)
         }
     }
 }
 
-/// What you are saying, as a turn in the conversation.
+/// The hot recognition hypothesis has its own invalidation boundary. The
+/// stable controller still belongs to the app and SessionView still observes
+/// phase, failures, target and committed text; only the many-times-per-second
+/// partial publication stops at the composer.
+private struct ComposerUpdateScope<Content: View>: View {
+    @ObservedObject private var partial: TalkController.LivePartial
+    private let content: () -> Content
+
+    init(
+        partial: TalkController.LivePartial,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.partial = partial
+        self.content = content
+    }
+
+    var body: some View {
+        _ = partial.text
+        return content()
+    }
+}
+
 private struct YourTurnBubble: View {
     let text: String
     let isSending: Bool
+    let onDiscard: () -> Void
 
     var body: some View {
         HStack {
@@ -273,6 +874,10 @@ private struct YourTurnBubble: View {
         }
         .padding(.top, 8)
         .transition(.opacity.combined(with: .move(edge: .bottom)))
+        .contextMenu {
+            Button("Discard draft", systemImage: "trash", role: .destructive, action: onDiscard)
+        }
+        .accessibilityHint("Long press to discard this draft")
     }
 }
 
@@ -305,4 +910,13 @@ private struct ReviewCard: View {
         .buttonStyle(.plain)
         .disabled(review.link == nil)
     }
+}
+
+/// A picture chosen but not yet sent: already converted and sized for the agent
+/// that will read it, waiting for the send that carries it.
+private struct PendingAttachment: Identifiable {
+    let id = UUID()
+    let data: Data
+    let ext: String
+    let thumbnail: UIImage?
 }

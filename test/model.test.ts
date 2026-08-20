@@ -69,9 +69,14 @@ printf '%s' "$CONCH_INTERNAL"
     const root = mkdtempSync(join(tmpdir(), "conch-model-timeout-"));
     roots.push(root);
     const pidPath = join(root, "pid");
+    // Record the pid BEFORE reading stdin. This used to wait on `cat` first,
+    // so a 100ms timeout could kill the child before it ever wrote the file
+    // and the assertion below died on ENOENT instead of failing honestly —
+    // roughly one run in three on a loaded machine. The race was the fixture's,
+    // not the code's: askClaude was killing the child correctly every time.
     const bin = await script(`
-cat >/dev/null
 printf '%s' "$$" > "${pidPath}"
+cat >/dev/null
 exec sleep 30
 `);
     const started = performance.now();

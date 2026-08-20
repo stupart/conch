@@ -108,11 +108,49 @@ export function soxCaptureArgs(
   ];
 }
 
-/** SoX flushes its buffered capture tail on SIGINT; SIGTERM can drop it. */
+/**
+ * Close the mic, and make sure it actually closed.
+ *
+ * SIGINT rather than SIGTERM because SoX flushes its buffered capture tail on
+ * SIGINT and can drop it on SIGTERM — the last word of a sentence lives in that
+ * buffer, so the polite signal has to come first.
+ *
+ * But polite is not enough on its own. A recorder wedged on CoreAudio ignores
+ * both, and conch had no idea: the daemon logged `⏹ spacebar — closing mic` six
+ * times while one `sox` from eight minutes earlier held the device and wrote a
+ * zero-byte file. Every visible control — the app's mic button, the spacebar,
+ * the stop command — routes here, so all three appeared dead at once and the UI
+ * sat in "listening" with nothing able to move it.
+ *
+ * So: ask nicely, then verify, then insist. The grace window is long enough for
+ * a healthy SoX to flush and exit, and the escalation only ever fires for one
+ * that was never going to.
+ */
 export function stopSoxProcess(
-  proc: Pick<ReturnType<typeof Bun.spawn>, "kill">,
+  proc: Pick<ReturnType<typeof Bun.spawn>, "kill"> & { exited?: Promise<number> },
+  options: { graceMs?: number; immediate?: boolean } = {},
 ): void {
   proc.kill("SIGINT");
+  // Shutdown cannot wait, and has nothing to wait FOR. The daemon calls
+  // `process.exit(0)` on the next line, so the grace timer below would simply
+  // never fire and a SIGINT-resistant recorder would outlive the process that
+  // was trying to stop it — holding the microphone with nothing left alive to
+  // release it. That is the likeliest way the eight-minute orphan was born.
+  // The tail flush is worth waiting for only when something will still be there
+  // to transcribe it.
+  if (options.immediate) {
+    proc.kill("SIGKILL");
+    return;
+  }
+  const graceMs = options.graceMs ?? 1_500;
+  // Older callers (and tests) may hand over a bare `kill`; nothing to verify.
+  if (!proc.exited) return;
+  void Promise.race([
+    proc.exited.then(() => true),
+    Bun.sleep(graceMs).then(() => false),
+  ]).then((exited) => {
+    if (!exited) proc.kill("SIGKILL");
+  }).catch(() => {});
 }
 
 function spawnCapture(
@@ -161,7 +199,9 @@ export function hasActiveRecorders(): boolean {
 }
 
 /** Kill any in-flight sox capture — daemon shutdown must not leave the mic hot. */
-export function killActiveRecorders(): Promise<void> | undefined {
+export function killActiveRecorders(
+  options: { immediate?: boolean } = {},
+): Promise<void> | undefined {
   const diagnosticExits: Promise<void>[] = [];
   // Claim an intentional during-TTS recorder before the generic process sweep.
   // It has no controller yet, so its own single owner must drain/transcribe it.
@@ -182,7 +222,7 @@ export function killActiveRecorders(): Promise<void> | undefined {
         }),
       );
     }
-    stopSoxProcess(proc);
+    stopSoxProcess(proc, options);
   }
   activeRecorders.clear();
   return diagnosticExits.length ? Promise.all(diagnosticExits).then(() => {}) : undefined;

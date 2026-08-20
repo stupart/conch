@@ -54,7 +54,7 @@ export interface Config {
   /**
    * OPT-IN: keyboard/mouse idle time after which conch stays silent, seconds.
    * Off by default — HID idle doesn't count VOICE activity, so any default
-   * would silence a hands-free session mid-conversation. Use `conch mute`.
+   * would silence a hands-free session mid-conversation. Use `conch pause`.
    */
   awayAfterSecs: number;
   /**
@@ -96,8 +96,12 @@ export interface Config {
   recentInjectSuppressMs: number;
   /** allow blind osascript keystroke injection when no tmux pane is found */
   keystrokeFallback: boolean;
+  /** Start sessions with every permission prompt skipped. Off unless asked for. */
+  bypassPermissions: boolean;
   phoneEnabled: boolean;
   phonePort: number;
+  /** Deployed Cloudflare Worker URL; empty keeps the unchanged LAN transport only. */
+  phoneRelayURL: string;
   /** Reveal a session's window (raise-without-focus-steal) when conch starts talking to it. */
   revealOnTurn: boolean;
   /** suppress a window raise if keys/mouse were touched within this many seconds (0 = always raise) */
@@ -106,8 +110,6 @@ export interface Config {
   workingMic: boolean;
   /** answer conch-prefixed questions from the current session without injecting them */
   voiceQa: boolean;
-  /** on resume, speak one composed briefing instead of replaying each held turn */
-  resumeDigest: boolean;
   /** summarize long replies in one spoken sentence for hook announcements */
   announceSummary: boolean;
   /** seconds the fast model (Haiku) may run before a voice feature falls back */
@@ -197,13 +199,14 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     holdSubmitSecs: settings["hold-submit-delay"].value as number,
     recentInjectSuppressMs: num(env.CONCH_INJECT_SUPPRESS_MS, 30_000),
     keystrokeFallback: settings["keystroke-fallback"].value as boolean,
+    bypassPermissions: settings["bypass-permissions"].value as boolean,
     phoneEnabled: settings["phone"].value as boolean,
     phonePort: settings["phone-port"].value as number,
+    phoneRelayURL: settings["phone-relay-url"].value as string,
     revealOnTurn: settings["reveal-on-turn"].value as boolean,
     revealTypingGraceSecs: settings["reveal-typing-grace"].value as number,
     workingMic: settings["working-mic"].value as boolean,
     voiceQa: settings["voice-qa"].value as boolean,
-    resumeDigest: settings["resume-digest"].value as boolean,
     announceSummary: settings["announce-summary"].value as boolean,
     haikuTimeoutSecs: settings["haiku-timeout"].value as number,
     meetingAutopause: settings["meeting-autopause"].value as boolean,

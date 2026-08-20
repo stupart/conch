@@ -1,4 +1,6 @@
 import { sessionLabel, type SessionInfo } from "./sessions.ts";
+import type { PublishedConversation } from "./conversation.ts";
+import type { SessionContextUsage } from "./context-meter.ts";
 
 export type PanelConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
 
@@ -10,6 +12,20 @@ export interface PanelLiveState {
   transcriptPrefix?: string;
   /** Chunk-level reading progress. The audio backend does not expose word timing. */
   reading?: { text: string; spokenChars: number };
+  /**
+   * A finished dictation meant for the COMPOSER rather than the session.
+   *
+   * Pressing the mic beside a text field and watching the spoken half vanish
+   * into the agent is the bug this exists to fix: typed and spoken text could
+   * not be combined at all, because the daemon's only destination for a
+   * transcript was `deliver()`.
+   *
+   * `id` increments per dictation and is the whole mechanism. State is
+   * republished several times a second, so an app that appended on sight of
+   * text would append it again on every frame; it applies an id it has not
+   * seen and ignores the rest.
+   */
+  dictated?: { text: string; id: number; sessionId: string };
 }
 
 /** The states a session row can show in the dashboard panel. */
@@ -30,6 +46,10 @@ export interface DashboardMode {
 export interface PanelRowModel {
   sessionId: string;
   label: string;
+  /** Which agent runs this session; absent means Claude. */
+  backend?: "claude" | "codex";
+  /** Known context usage for the TUI row; absent is unknown, never zero. */
+  context?: SessionContextUsage;
   status: SessionStatus | null;
   /** Epoch-ms for the status currently visible on this row. */
   at?: number;
@@ -71,7 +91,7 @@ export interface SettingsOverlayModel {
   error?: string;
 }
 
-export type SessionActionKey = "voice" | "prioritize" | "rename" | "dismiss";
+export type SessionActionKey = "voice" | "prioritize" | "rename" | "dismiss" | "close";
 
 export interface SessionActionsOverlayRowModel {
   key: SessionActionKey;
@@ -95,22 +115,85 @@ export interface SessionActionsOverlayModel {
   error?: string;
 }
 
+export interface RestoreSessionsOverlayRowModel {
+  id: string;
+  label: string;
+  selected: boolean;
+}
+
+export interface RestoreSessionsOverlayModel {
+  rows: RestoreSessionsOverlayRowModel[];
+  selectedIndex: number;
+  error?: string;
+}
+
+export interface TerminalComposerModel {
+  target: { sessionId: string; label: string };
+  text: string;
+  error?: string;
+}
+
+export type SessionStartKey = "backend" | "cwd" | "start";
+
+export interface SessionStartOverlayRowModel {
+  key: SessionStartKey;
+  value: string;
+  help: string;
+  selected: boolean;
+  editing: boolean;
+}
+
+export interface SessionStartOverlayModel {
+  rows: SessionStartOverlayRowModel[];
+  selectedIndex: number;
+  starting: boolean;
+  error?: string;
+}
+
+export interface TerminalQuestionState {
+  sessionId: string;
+  itemId: string;
+  selectedIndices: number[];
+  submitted: boolean;
+}
+
 export interface PanelModel {
   rows: PanelRowModel[];
   mode: DashboardMode;
   live: PanelLiveState;
   reply: PanelReplyModel | null;
+  /**
+   * The conversation for whichever session is showing, as an ordered stack of
+   * items. `reply` is the same turn flattened to one string and stays until both
+   * apps render this instead.
+   */
+  conversation?: PublishedConversation | null;
+  /** Every visible session's conversation, so a viewer never depends on the daemon's cursor. */
+  conversations?: Record<string, PublishedConversation> | null;
   /** Theater-only parked-session output. Footer rendering intentionally ignores it. */
   preview?: PanelReplyModel | null;
   /** Theater-only presentation state. Footer rendering intentionally ignores it. */
   panelOpen: boolean;
   settingsOverlay?: SettingsOverlayModel | null;
   sessionActionsOverlay?: SessionActionsOverlayModel | null;
+  restoreSessionsOverlay?: RestoreSessionsOverlayModel | null;
+  terminalComposer?: TerminalComposerModel | null;
+  sessionStartOverlay?: SessionStartOverlayModel | null;
+  terminalQuestion?: TerminalQuestionState | null;
 }
 
 export interface PublishedSessionRow {
   id: string;
   label: string;
+  /**
+   * Which agent this session runs, because the answer changes what a client
+   * should send it. Images are the first case: Claude resizes anything past
+   * 1568px on the long edge, while OpenAI's tile models fit to 2048 — so a
+   * phone that assumes one ceiling either wastes bytes or throws away detail
+   * the model would have used.
+   */
+  backend?: "claude" | "codex";
+  context?: SessionContextUsage;
   status: SessionStatus | null;
   /** Epoch-ms for the status currently visible on this row. */
   at?: number;
@@ -143,10 +226,30 @@ export interface PublishedState {
     label: string;
     partial?: string;
     transcriptPrefix?: string;
-    reading?: { text: string; spokenChars: number };
+    /// `truncated` marks a tail: the publisher caps long text and keeps the
+    /// END, so a client cannot tell a capped long reply from a short whole one
+    /// by looking. Declared on the PUBLISHED shape only — the in-memory model
+    /// is never capped and must not imply it might be.
+    reading?: { text: string; spokenChars: number; truncated?: boolean };
+    /// A finished dictation for the composer. Applied once, by `id`, and only
+    /// to the session that ASKED for it.
+    dictated?: { text: string; id: number; sessionId: string };
   };
-  reply?: PanelReplyModel;
-  preview?: PanelReplyModel;
+  reply?: PanelReplyModel & { truncated?: boolean };
+  preview?: PanelReplyModel & { truncated?: boolean };
+  /** The showing session's conversation, windowed and capped for the wire. */
+  conversation?: PublishedConversation;
+  /**
+   * Every visible session's conversation, keyed by id.
+   *
+   * Published for all rows rather than for "the one that is showing" because
+   * there is no such thing: the terminal dashboard and the Mac app hold
+   * INDEPENDENT cursors, so any single choice is wrong for one of them. Trying
+   * to make them agree produced a stack that silently fell back to the old pane
+   * whenever the two disagreed, which was most of the time. A viewer should ask
+   * for the session it is showing and always find it.
+   */
+  conversations?: Record<string, PublishedConversation>;
   rows: PublishedSessionRow[];
   dismissed: string[];
   dismissedRows: Array<{ id: string; label: string }>;
@@ -167,6 +270,12 @@ function publishedReply<T extends { text: string; spokenChars: number; markdown?
   const removedChars = reply.text.length - MAX_PUBLISHED_CONVERSATION_CHARS;
   return {
     ...reply,
+    // Say so. This keeps the TAIL, so a long reply reaches a client with its
+    // beginning missing — which reads as a random snippet rather than as a
+    // truncation, and a client cannot tell the difference by looking. The Mac
+    // panel wants the bound; the phone can fetch the whole thing from /reply,
+    // but only if it knows there is more to fetch.
+    truncated: true,
     // The markdown copy is capped to its own tail. It cannot align exactly with
     // the speech text (markdown syntax has no spoken counterpart), so viewers
     // locate reading progress by PROPORTION rather than by character offset.
@@ -189,6 +298,7 @@ function publishedLiveState(live: PanelLiveState): PublishedState["live"] {
     ...(live.transcriptPrefix
       ? { transcriptPrefix: live.transcriptPrefix }
       : {}),
+    ...(live.dictated ? { dictated: live.dictated } : {}),
     ...(live.reading
       ? { reading: publishedReply(live.reading) }
       : {}),
@@ -225,6 +335,34 @@ export function refreshPublishedConversationState(
   };
 }
 
+/**
+ * Which text the reply pane should show, and how far speech has got through it.
+ *
+ * These are two different strings and conflating them is a bug Tyler has
+ * reported repeatedly: "only shows first line of last response instead of full
+ * response". What conch SPEAKS for a finished turn is a one-line announce; what
+ * the pane should SHOW is the whole reply. The old rule preferred the spoken
+ * text whenever it existed, so the moment a turn was announced the pane
+ * collapsed to that single line and stayed there.
+ *
+ * Speaking is the only time the two must agree, because `spokenChars` indexes
+ * the spoken string to highlight progress. Otherwise the transcript wins, and
+ * progress resets to zero rather than pointing into a string it does not index.
+ */
+export function panelReplyText(
+  live: Pick<PanelLiveState, "state" | "reading">,
+  transcriptText: string,
+): { text: string; spokenChars: number } {
+  if (live.state === "speaking" && live.reading?.text) {
+    return { text: live.reading.text, spokenChars: live.reading.spokenChars };
+  }
+  if (transcriptText) return { text: transcriptText, spokenChars: 0 };
+  return {
+    text: live.reading?.text ?? "",
+    spokenChars: live.reading?.spokenChars ?? 0,
+  };
+}
+
 /** Build the versioned, renderer-independent state exposed to external consumers. */
 export function buildPublishedState(
   model: PanelModel,
@@ -238,6 +376,7 @@ export function buildPublishedState(
     /** Resolve labels for dismissed sessions, which are intentionally absent from rows. */
     labelForSessionId?(sessionId: string): string | undefined;
     prioritizedSessionIds?: ReadonlySet<string>;
+    contextForSessionId?(sessionId: string): SessionContextUsage | undefined;
   } = {},
 ): PublishedState {
   return {
@@ -246,17 +385,24 @@ export function buildPublishedState(
     mode: { ...model.mode },
     live: publishedLiveState(model.live),
     ...(model.reply ? { reply: publishedReply(model.reply) } : {}),
+    ...(model.conversation ? { conversation: model.conversation } : {}),
+    ...(model.conversations && Object.keys(model.conversations).length
+      ? { conversations: model.conversations }
+      : {}),
     ...(model.preview ? { preview: publishedReply(model.preview) } : {}),
     rows: model.rows.map((row) => {
       const transcriptPath = options.transcriptPathForSessionId?.(row.sessionId);
       const voice = options.voiceForLabel?.(row.label)?.trim();
+      const context = options.contextForSessionId?.(row.sessionId);
       return {
         id: row.sessionId,
         label: row.label,
+        ...(row.backend ? { backend: row.backend } : {}),
         status: row.status,
         ...(row.at !== undefined ? { at: row.at } : {}),
         ...(transcriptPath ? { transcriptPath } : {}),
         ...(voice ? { voice } : {}),
+        ...(context ? { context: { ...context } } : {}),
         ...(options.prioritizedSessionIds?.has(row.sessionId)
           ? { prioritized: true as const }
           : {}),
@@ -301,13 +447,15 @@ export interface BuildPanelModelOptions {
   sessions: readonly SessionInfo[];
   sessionStates: ReadonlyMap<string, PanelSessionState>;
   pausedSessionIds: ReadonlySet<string>;
-  mutedSessionIds: ReadonlySet<string>;
+  /** Accepted while older model builders migrate; rows never expose destructive state. */
+  mutedSessionIds?: ReadonlySet<string>;
   live: PanelLiveState;
   mode: DashboardMode;
   activeSessionId: string | null;
   navSelectedId: string | null;
   reply?: PanelReplyModel | null;
   panelOpen?: boolean;
+  contextBySessionId?: ReadonlyMap<string, SessionContextUsage>;
 }
 
 const ROW_LIVE_STATES = new Set<PanelConchState>(["listening", "recording", "speaking", "transcribing"]);
@@ -319,16 +467,32 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
       const latched = options.sessionStates.get(session.sessionId);
       const visibleState = reconcilePanelState(session, latched);
       const status = visibleState?.status ?? null;
-      // A finished deliverable is an attribute of a naturally waiting row, not
-      // a fourth status. Suppress a stale review while a newer signal says the
-      // session is working or needs input; an idle registry refresh may keep it.
-      const review = status === "waiting" && latched?.review
+      // A finished deliverable is an attribute of a row, not a fourth status —
+      // and it is suppressed by exactly one thing: the session going back to
+      // work. `carriedReview` uses the same rule on the latch.
+      //
+      // This used to require `status === "waiting"`, which made the star
+      // vanish almost every time it was filed. `reconcilePanelState` lets the
+      // REGISTRY outvote the latch whenever it is newer, and a session that has
+      // just filed a review is by definition sitting waiting for the user —
+      // which Claude Code registers as blocked/waiting, i.e. `needs`. So the
+      // review landed, rendered for as long as it took the registry to catch
+      // up, and then disappeared. Measured on a live session: latched at
+      // 19:27:36 and visible, gone at 19:29:26 the moment status flipped to
+      // `needs`, with the review still sitting in the latch untouched. Needing
+      // input does not make a finished deliverable stale; starting a new turn
+      // does.
+      const review = status !== "working" && latched?.review
         ? { ...latched.review, at: latched.at }
         : undefined;
       const active = session.sessionId === options.activeSessionId;
       return {
         sessionId: session.sessionId,
         label: sessionLabel(session, session.cwd),
+        ...(session.backend ? { backend: session.backend } : {}),
+        ...(options.contextBySessionId?.get(session.sessionId)
+          ? { context: { ...options.contextBySessionId.get(session.sessionId)! } }
+          : {}),
         status,
         ...(visibleState?.at !== undefined ? { at: visibleState.at } : {}),
         ...(status === "needs" && latched?.detail
@@ -338,7 +502,9 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
             : {}),
         ...(review ? { review } : {}),
         paused: options.pausedSessionIds.has(session.sessionId),
-        muted: options.mutedSessionIds.has(session.sessionId),
+        // Kept on the v1 wire until every installed viewer has moved past it.
+        // No runtime mode may make this true again.
+        muted: false,
         liveGlyph: active && ROW_LIVE_STATES.has(options.live.state) ? options.live.state : null,
         active,
         navSelected: session.sessionId === options.navSelectedId,
@@ -454,11 +620,8 @@ const LIVE_GLYPH: Partial<Record<PanelConchState, string>> = {
 export function dashboardRowsForModel(model: PanelModel): string[] {
   return model.rows.map((row) => {
     const cursor = row.navSelected ? "\x1b[36m▸\x1b[0m " : "  ";
-    if (row.muted) {
-      return `${cursor}\x1b[2m${row.label.slice(0, 26).padEnd(27)}🔇 muted\x1b[0m`;
-    }
     if (row.paused) {
-      return `${cursor}\x1b[2m${row.label.slice(0, 26).padEnd(27)}⏸ paused\x1b[0m`;
+      return `${cursor}\x1b[2m${row.label.slice(0, 26).padEnd(27)}⏸ manual\x1b[0m`;
     }
     // Footer mode historically keyed its live glyph by label. Keep that exact
     // behavior here; theater uses the unambiguous active/liveGlyph model fields.
@@ -476,8 +639,8 @@ export function dashboardRowsForModel(model: PanelModel): string[] {
 
 /** Global mode occupies one permanent slot so rows never jump on toggle. */
 export function dashboardModeBanner({ muted, paused, holding }: DashboardMode): string {
-  if (muted) return "  \x1b[1;33m🔇 MUTED · no parked cursor: m to unmute\x1b[0m";
-  if (paused) return `  \x1b[1;35m⏸ PAUSED · holding ${holding} · no parked cursor: p to resume\x1b[0m`;
+  void muted; // v1 wire compatibility; runtime mode is exclusively auto/manual.
+  if (paused) return `  \x1b[1;35m⏸ MANUAL · holding ${holding} · no parked cursor: p for auto\x1b[0m`;
   return "";
 }
 
@@ -503,6 +666,48 @@ export function latestLatchedState(
   incoming: LatchedState,
 ): LatchedState {
   return current && current.at > incoming.at ? current : incoming;
+}
+
+export interface SessionReview {
+  summary: string;
+  link?: string;
+}
+
+/**
+ * Which review a session's next latched state should carry.
+ *
+ * A review outlives the event that happens to arrive after it. `review_to_front`
+ * latches one, and moments later that same session's Stop hook lands a
+ * review-less `turn-end` — and because the latch REPLACES the whole record, the
+ * review was erased within a second of being filed. That was the only reason a
+ * session could not surface its own finished work through the tool, even though
+ * `requiredReviewSession` defaults `session` to the caller and refuses to name
+ * anyone else; the plugin documented the `conch:review` marker as the
+ * workaround for a tool that could not keep its own result.
+ *
+ * A review belongs to the finished deliverable, not to the last message about
+ * the session, so it survives until the session starts a new turn — which is
+ * also the only status the panel refuses to draw a review row in.
+ */
+export function carriedReview(
+  prior: { review?: SessionReview } | undefined,
+  _status: SessionStatus,
+  incoming: SessionReview | undefined,
+): SessionReview | undefined {
+  // An artifact outlives the turn that produced it. It used to be cleared the
+  // moment the session went back to work, which meant REPLYING to the agent
+  // that filed it destroyed the thing you were replying about — Tyler asked
+  // where the artifact was, and it had been deleted by his own question.
+  //
+  // That also contradicted what conch tells agents, verbatim: "conch's apps
+  // show ONE artifact per session beside the conversation... it stays there
+  // until you send another." Only a newer artifact replaces it now, which is
+  // what the contract always said and what `review_to_front` is for.
+  //
+  // The status rule was right about one thing and wrong about the other: a
+  // session going back to work should stop ADVERTISING a finished deliverable
+  // as the reason it needs you, and that lives in the row's status, not here.
+  return incoming ?? prior?.review;
 }
 
 /**

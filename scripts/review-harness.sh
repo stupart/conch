@@ -75,7 +75,10 @@ echo "harness pid $HARNESS_PID window $WINDOW_ID"
 
 shot() { # $1 = name, $2 = link
   write_state "deliverable check — $1" "$2"
-  sleep 3  # app polls the state file; give it a beat plus render time
+  sleep 5  # app polls the state file; give it a beat plus render time.
+           # Was 3, which caught a local page mid-load and reported "loading…"
+           # as if the renderer were broken. A harness that lies about a
+           # failure is worse than no harness.
   screencapture -o -x -l"$WINDOW_ID" "$OUT/$1.png"
   echo "  $1 -> $OUT/$1.png"
 }
@@ -86,6 +89,11 @@ shot text "$FIXTURES/sample.txt"
 shot json "$FIXTURES/sample.json"
 shot pdf "$FIXTURES/sample.pdf"
 shot tall-image "$FIXTURES/tall.png"
+# Added when both routers were found to have drifted: video played on neither
+# by design, and a local page rendered on the Mac but not the phone.
+shot local-page "$FIXTURES/page.html"
+[ -f "$FIXTURES/sample.mp4" ] && shot video "$FIXTURES/sample.mp4"
+[ -f "$FIXTURES/archive.zip" ] && shot unsupported "$FIXTURES/archive.zip"
 shot web "https://github.com/stupart/conch"
 shot missing-file "$FIXTURES/does-not-exist.png"
 

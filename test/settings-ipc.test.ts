@@ -193,6 +193,9 @@ describe("settings control IPC", () => {
       dismiss: () => {
         throw new Error("hostile input reached a mutation");
       },
+      close: async () => {
+        throw new Error("hostile input reached a mutation");
+      },
       restore: () => {
         throw new Error("hostile input reached a mutation");
       },

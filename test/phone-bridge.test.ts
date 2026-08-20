@@ -1,8 +1,10 @@
+import { injectTimeoutFor } from "../src/daemon.ts";
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   createPhoneBridge,
+  createPhoneBridgeApplication,
   ensurePhoneToken,
   forwardToDaemonSocket,
   mintPairingCode,
@@ -20,12 +22,29 @@ afterEach(() => {
 
 const TOKEN = "a".repeat(32);
 
+function makeApplication(
+  overrides: Partial<Parameters<typeof createPhoneBridge>[0]> = {},
+) {
+  return createPhoneBridgeApplication(
+    {
+      getState: () => ({ v: 1, rows: [{ id: "r1" }] }),
+      forwardControl: async (line) => JSON.stringify({ echoed: JSON.parse(line).kind }),
+      replyFor: async () => "",
+      acceptUpload: async () => ({ received: 1, total: 1 }),
+      log: () => {},
+      ...overrides,
+    },
+    { token: TOKEN },
+  );
+}
+
 function startBridge(overrides: Partial<Parameters<typeof createPhoneBridge>[0]> = {}) {
   bridge = createPhoneBridge(
     {
       getState: () => ({ v: 1, rows: [{ id: "r1" }] }),
       forwardControl: async (line) => JSON.stringify({ echoed: JSON.parse(line).kind }),
       replyFor: async () => "",
+      acceptUpload: async () => ({ received: 1, total: 1 }),
       log: () => {},
       ...overrides,
     },
@@ -94,6 +113,80 @@ describe("the auth gate", () => {
   });
 });
 
+describe("transport-independent request handler", () => {
+  test("the shared handler itself owns the auth gate for every protected route", async () => {
+    const application = makeApplication();
+    const routes: Array<{ path: string; init?: RequestInit }> = [
+      { path: "/state" },
+      { path: "/reply?session=r1" },
+      { path: "/file?path=%2Ftmp%2Fanything" },
+      { path: "/control", init: { method: "POST", body: "{}" } },
+      { path: "/ws" },
+      { path: "/nope" },
+    ];
+
+    for (const { path, init } of routes) {
+      const missing = await application.handle(new Request(`https://relay.invalid${path}`, init));
+      expect(missing).toBeInstanceOf(Response);
+      expect((missing as Response).status).toBe(401);
+
+      const wrong = await application.handle(new Request(`https://relay.invalid${path}`, {
+        ...init,
+        headers: { authorization: `Bearer ${"b".repeat(32)}` },
+      }));
+      expect(wrong).toBeInstanceOf(Response);
+      expect((wrong as Response).status).toBe(401);
+    }
+
+    const state = await application.handle(new Request("https://relay.invalid/state", {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    }));
+    expect(state).toBeInstanceOf(Response);
+    expect(await (state as Response).json()).toEqual({ v: 1, rows: [{ id: "r1" }] });
+  });
+
+  test("a synthetic /ws upgrade subscribes through the shared state hub", () => {
+    const counts: number[] = [];
+    let version = 1;
+    const application = makeApplication({
+      getState: () => ({ v: version, rows: [] }),
+      onClientsChanged: (count) => counts.push(count),
+    });
+    const frames: string[] = [];
+    const sink = {
+      send(frame: string) {
+        frames.push(frame);
+        return frame.length;
+      },
+    };
+
+    const result = application.handle(
+      new Request("https://relay.invalid/ws", {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      }),
+      {
+        upgradeState(_request, subscribe) {
+          subscribe(sink);
+          return true;
+        },
+      },
+    );
+
+    expect(result).toBeUndefined();
+    expect(application.clientCount()).toBe(1);
+    expect(counts).toEqual([1]);
+    expect(frames.map((frame) => JSON.parse(frame).v)).toEqual([1]);
+
+    version = 2;
+    application.publish();
+    expect(frames.map((frame) => JSON.parse(frame).v)).toEqual([1, 2]);
+
+    application.unsubscribeState(sink);
+    expect(application.clientCount()).toBe(0);
+    expect(counts).toEqual([1, 0]);
+  });
+});
+
 describe("control forwarding", () => {
   test("POST /control relays through the injected forwarder", async () => {
     const b = startBridge();
@@ -120,14 +213,22 @@ describe("control forwarding", () => {
 
 describe("websocket push", () => {
   test("connects with token, gets the state immediately and on publish", async () => {
-    const b = startBridge();
+    // The state has to actually MOVE between the two deliveries. An identical
+    // frame is deliberately not resent — the phone decodes every frame as a
+    // complete state on the main actor, so a redundant one is a full re-render
+    // of a busy screen for no new information.
+    let status = "working";
+    const b = startBridge({ getState: () => ({ v: 1, rows: [{ id: "r1", status }] }) });
     const frames: string[] = [];
     const ws = new WebSocket(`ws://127.0.0.1:${b.port}/ws?token=${TOKEN}`);
     await new Promise<void>((resolve, reject) => {
       ws.onmessage = (event) => {
         frames.push(String(event.data));
         if (frames.length === 2) resolve();
-        else b.publish();
+        else {
+          status = "waiting";
+          b.publish();
+        }
       };
       ws.onerror = () => reject(new Error("ws error"));
       setTimeout(() => reject(new Error("timed out")), 3000);
@@ -171,17 +272,22 @@ describe("socket forwarder", () => {
 });
 
 describe("file serving", () => {
-  test("serves only a path that is currently a review link", async () => {
+  test("serves only a path currently published as a review or inline material", async () => {
     const dir = mkdtempSync("/tmp/conch-phone-file-");
     const served = join(dir, "deliverable.txt");
     await Bun.write(served, "the deliverable body");
     const secret = join(dir, "secret.txt");
     await Bun.write(secret, "never served");
+    const material = join(dir, "material.png");
+    await Bun.write(material, "inline image bytes");
 
     const b = startBridge({
       getState: () => ({
         v: 1,
         rows: [{ id: "r1", review: { link: served, summary: "x" } }],
+        conversations: {
+          r1: { items: [{ material: { kind: "image", path: material } }] },
+        },
       }),
     });
     const auth = { authorization: `Bearer ${TOKEN}` };
@@ -192,6 +298,13 @@ describe("file serving", () => {
     );
     expect(ok.status).toBe(200);
     expect(await ok.text()).toBe("the deliverable body");
+
+    const inline = await fetch(
+      `http://127.0.0.1:${b.port}/file?path=${encodeURIComponent(material)}`,
+      { headers: auth },
+    );
+    expect(inline.status).toBe(200);
+    expect(await inline.text()).toBe("inline image bytes");
 
     const queryAuthenticated = await fetch(
       `http://127.0.0.1:${b.port}/file?path=${encodeURIComponent(served)}&token=${TOKEN}`,
@@ -210,6 +323,44 @@ describe("file serving", () => {
       `http://127.0.0.1:${b.port}/file?path=${encodeURIComponent(served)}`,
     );
     expect(noToken.status).toBe(401);
+  });
+
+  test("the synthetic handler checks the current review set at dispatch time", async () => {
+    const dir = mkdtempSync("/tmp/conch-phone-handler-file-");
+    const served = join(dir, "deliverable.txt");
+    const secret = join(dir, "secret.txt");
+    await Bun.write(served, "approved now");
+    await Bun.write(secret, "never approved");
+    let currentLink: string | undefined = served;
+    const application = makeApplication({
+      getState: () => ({
+        v: 1,
+        rows: currentLink
+          ? [{ id: "r1", review: { link: currentLink, summary: "x" } }]
+          : [{ id: "r1" }],
+      }),
+    });
+    const request = (path: string) => new Request(
+      `https://relay.invalid/file?path=${encodeURIComponent(path)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+    );
+
+    const approved = await application.handle(request(served));
+    expect(approved).toBeInstanceOf(Response);
+    expect((approved as Response).status).toBe(200);
+    expect(await (approved as Response).text()).toBe("approved now");
+
+    const sibling = await application.handle(request(secret));
+    expect(sibling).toBeInstanceOf(Response);
+    expect((sibling as Response).status).toBe(403);
+
+    // A delayed relay frame is authorized against NOW, not the state from when
+    // the phone first created it. Removing this current-link check must make
+    // this mutation test fail over both transports.
+    currentLink = undefined;
+    const stale = await application.handle(request(served));
+    expect(stale).toBeInstanceOf(Response);
+    expect((stale as Response).status).toBe(403);
   });
 });
 
@@ -386,7 +537,7 @@ describe("client presence", () => {
 
   test("reports connect and disconnect so the Mac can reclaim audio", async () => {
     // A phone that walks out of the room must not leave the Mac permanently
-    // mute — the daemon needs to know the moment the last one goes away.
+    // silence — the daemon needs to know the moment the last one goes away.
     const counts: number[] = [];
     const b = startBridge({ onClientsChanged: (n: number) => counts.push(n) });
     const ws = new WebSocket(`ws://127.0.0.1:${b.port}/ws?token=${TOKEN}`);
@@ -439,7 +590,7 @@ describe("the audio lease", () => {
     });
     expect(counts.at(-1)).toBe(1);
     // Turning the bridge off must release the lease; otherwise disabling the
-    // phone leaves the Mac mute with nothing left to speak for it.
+    // phone leaves the Mac silent with nothing left to speak for it.
     b.stop();
     expect(counts.at(-1)).toBe(0);
     bridge = null;
@@ -458,5 +609,26 @@ describe("the audio lease", () => {
     ws.close();
     await new Promise<void>((r) => setTimeout(r, 400));
     expect(b.clientCount()).toBe(0);
+  });
+});
+
+describe("how long the daemon gets to answer", () => {
+  // An inject focuses a pane, types, confirms the text landed and re-sends if
+  // it did not. On a real send that took "1 re-send", the phone gave up two
+  // seconds after the daemon had confirmed delivery — so a message that
+  // arrived perfectly reported "couldn't reach your Mac". A false failure is
+  // the expensive kind: it teaches you not to trust a send that worked.
+  test("an inject gets a budget that matches what it does", () => {
+    expect(injectTimeoutFor(JSON.stringify({ type: "inject", text: "hi" })))
+      .toBeGreaterThan(20_000);
+  });
+
+  test("everything else stays fast, where a quick answer is the point", () => {
+    expect(injectTimeoutFor(JSON.stringify({ kind: "audio-sink", sink: "phone" }))).toBe(4_000);
+    expect(injectTimeoutFor(JSON.stringify({ type: "pause" }))).toBe(4_000);
+  });
+
+  test("a malformed line does not get the long budget by accident", () => {
+    expect(injectTimeoutFor("not json")).toBe(4_000);
   });
 });

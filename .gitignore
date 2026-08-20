@@ -15,3 +15,10 @@ ROADMAP.md
 
 # local deep-codebase analysis notes
 docs/codebase-analysis/
+
+# Xcode build output lives in *.noindex directories so Spotlight skips it.
+# Without that, every build leaves a launchable "conch" in Launchpad: Tyler
+# had five — a Mac app, three iOS builds, and one stray at the repo root from
+# a build run in the wrong directory. Xcode uses the same trick for its own
+# DerivedData.
+*.noindex/

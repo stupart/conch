@@ -1,4 +1,6 @@
-import { createServer } from "node:net";
+import { createServer, connect } from "node:net";
+import { appendFileSync } from "node:fs";
+import { currentTurnText } from "./transcript-turn.ts";
 import {
   chmodSync, existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -32,18 +34,54 @@ import {
 } from "./listen.ts";
 import type { RecorderHandle } from "./dictation-controller.ts";
 import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
+import { renameProviderSession } from "./provider-rename.ts";
 import { classify, classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
-import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
+import { isCodexTranscriptPath, lastAssistantText, splitSentences, stripMarkdown, firstSentences, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
+import { PhoneUploads } from "./phone-uploads.ts";
+import { CONCH_DATA } from "./config.ts";
+import {
+  latestAnswerableQuestion,
+  publishedConversation,
+  readConversationTail,
+  type Conversation,
+} from "./conversation.ts";
+import { readSessionContextUsage, type SessionContextUsage } from "./context-meter.ts";
+import { appendConchError, clipboardFallbackError } from "./app-errors.ts";
+import { closeTerminalSession, startTerminalSession } from "./session-lifecycle.ts";
+import { SessionStartOverlay } from "./session-start-overlay.ts";
+import { TerminalComposer } from "./terminal-composer.ts";
+import {
+  answerableTerminalQuestion,
+  TerminalQuestionController,
+} from "./terminal-question.ts";
+import {
+  codexHomeDir,
+  detectCodexTurnEnds,
+  isInterAgentEnvelope,
+  readCodexTurnSnapshots,
+  type CodexTurnMemory,
+} from "./codex-threads.ts";
+import { watchSessionSources } from "./session-watch.ts";
+import { daemonStateFromUnknown, readState, writeState } from "./daemon-state.ts";
+export { daemonStateFromUnknown } from "./daemon-state.ts";
 import { recordTelemetry } from "./telemetry.ts";
-import { createPhoneBridge, ensurePhoneToken, forwardToDaemonSocket, mintPairingCode, type PhoneBridgeHandle } from "./phone-bridge.ts";
+import {
+  createPhoneBridgeApplication,
+  createPhoneBridgeServer,
+  ensurePhoneToken,
+  forwardToDaemonSocket,
+  mintPairingCode,
+  type PhoneBridgeApplication,
+  type PhoneBridgeHandle,
+} from "./phone-bridge.ts";
+import {
+  createPhoneRelay,
+  ensureRelayPairing,
+  type PhoneRelayHandle,
+  type RelayPairing,
+} from "./phone-relay.ts";
 import { askClaude, type AskClaude } from "./model.ts";
 import { routeVoicePrompt } from "./voice-qa.ts";
-import {
-  composeResumeBriefing,
-  ResumeDigestEscrow,
-  runResumeDigest,
-  shouldUseResumeDigest,
-} from "./resume-digest.ts";
 import {
   whisperServerClient,
   type WhisperRecoveryReason,
@@ -71,6 +109,7 @@ import {
   shouldDispatchTerminalInput,
   theaterPointerEvent,
   type ConchState,
+  publishDictation,
 } from "./status.ts";
 import {
   registrySnapshot,
@@ -81,6 +120,7 @@ import {
   renameSessionLabel,
   type RegistrySnapshot,
   type SessionInfo,
+  claudeFolderTrusted,
 } from "./sessions.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
 import {
@@ -89,7 +129,9 @@ import {
   buildPanelRows,
   buildPublishedState,
   commitLatestPanelRender,
+  carriedReview,
   latestLatchedState,
+  panelReplyText,
   numberPanelSessionRows,
   previewForPanelSelection,
   refreshPublishedConversationState,
@@ -110,10 +152,7 @@ import {
 import {
   gateTurnForControls,
   InstantControls,
-  markQueuedTurnsForMute,
   markQueuedWakesForControl,
-  muteAcknowledgement,
-  shouldForgetMutedArrival,
   type InstantAudioCommand,
 } from "./instant-controls.ts";
 import {
@@ -127,6 +166,8 @@ import {
 import {
   DictationReducer,
   classifyPermissionDecision,
+  classifySpokenChoice,
+  classifySpokenChoices,
   type DictationActionReadyEffect,
   type DictationReducerEffect,
   type ExternalDictationAction,
@@ -162,6 +203,7 @@ import {
   settingsPathFor,
   unsetSetting,
   validateControlMessage,
+  validateRuntimeControlMessage,
   validateSessionControlMessage,
   writeSetting,
   type ControlResponse,
@@ -175,15 +217,26 @@ import {
   type HandoffOrder,
   type SessionControlMessage,
   type SessionControlResponse,
+  type RuntimeControlMessage,
 } from "./settings.ts";
 import { SettingsOverlay } from "./settings-overlay.ts";
 import {
   invokeSessionAction,
+  RestoreSessionsOverlay,
   SessionActionsOverlay,
   type SessionActionsController,
   type SessionActionsTarget,
 } from "./session-actions-overlay.ts";
 import { createPublishThrottle } from "./publish-throttle.ts";
+import {
+  readResumableSessionsResult,
+  type ResumableSessionsRead,
+} from "./resumable.ts";
+import {
+  readAgentCapabilities,
+  type AgentCapabilitiesRead,
+  type AgentCapabilityObservation,
+} from "./agent-capabilities.ts";
 
 /**
  * The turn-based voice loop.
@@ -199,32 +252,7 @@ import { createPublishThrottle } from "./publish-throttle.ts";
  * "wake" event (conch wake, or spacebar when the daemon runs in a terminal)
  * reopens the mic for the last announced session.
  */
-// Mute + pause are persisted so a daemon restart (launchd/supervisor respawn)
-// doesn't silently turn conch back ON — "muted for the night" / "paused while
-// away" must survive.
-const STATE_FILE = join(homedir(), ".config/conch/state.json");
-
-interface DaemonState {
-  muted: boolean;
-  paused: boolean;
-}
-
-function readState(): DaemonState {
-  try {
-    const s = JSON.parse(readFileSync(STATE_FILE, "utf8"));
-    return { muted: s.muted === true, paused: s.paused === true };
-  } catch {
-    return { muted: false, paused: false };
-  }
-}
-
-function writeState(state: DaemonState): void {
-  try {
-    mkdirSync(join(homedir(), ".config/conch"), { recursive: true });
-    writeFileSync(STATE_FILE, JSON.stringify(state) + "\n");
-  } catch {}
-}
-
+// Manual mode survives launchd/supervisor restarts. Old state files used a
 export interface ConfigControllerOptions {
   env?: Readonly<Record<string, string | undefined>>;
   settingsPath?: string;
@@ -509,6 +537,13 @@ export function dispatchControlMessage(
         : { kind: "session-error", error: "session commands are unavailable" },
     };
   }
+  if (
+    validated.value.kind === "resumable"
+    || validated.value.kind === "agent-capabilities"
+    || validated.value.kind === "session-start"
+    || validated.value.kind === "session-close"
+    || validated.value.kind === "app-error"
+  ) return { handled: false };
 
   if (validated.value.kind !== "get-config" && configPersistence) {
     try {
@@ -537,15 +572,102 @@ export function dispatchControlMessage(
   return { handled: true, response: controller.handle(validated.value) };
 }
 
+export interface RuntimeControlDispatchOptions {
+  listResumable(
+    message: Extract<RuntimeControlMessage, { kind: "resumable" }>,
+  ): ResumableSessionsRead | Promise<ResumableSessionsRead>;
+  readCapabilities?(
+    message: Extract<RuntimeControlMessage, { kind: "agent-capabilities" }>,
+  ): AgentCapabilitiesRead | Promise<AgentCapabilitiesRead>;
+  start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | Promise<void>;
+  /** Whether Claude Code already trusts a folder; absent or null means unknown. */
+  folderTrusted?(cwd: string): boolean | null;
+  close(sessionId: string): void | Promise<void>;
+  report(message: Extract<RuntimeControlMessage, { kind: "app-error" }>): void | Promise<void>;
+}
+
+/** Process/UI controls stay outside the synchronous settings controller so AppleScript cannot block config reads. */
+export async function dispatchRuntimeControlMessage(
+  value: unknown,
+  options: RuntimeControlDispatchOptions,
+): Promise<SocketControlDispatch> {
+  if (!socketRecord(value) || (
+    value.kind !== "session-start"
+    && value.kind !== "session-close"
+    && value.kind !== "app-error"
+    && value.kind !== "resumable"
+    && value.kind !== "agent-capabilities"
+  )) return { handled: false };
+
+  const validated = validateRuntimeControlMessage(value);
+  if (!validated.ok) {
+    return { handled: true, response: { kind: "session-error", error: validated.err } };
+  }
+  const message = validated.value;
+  try {
+    if (message.kind === "resumable") {
+      const result = await options.listResumable(message);
+      return {
+        handled: true,
+        response: {
+          kind: "resumable",
+          sessions: result.sessions,
+          complete: result.complete,
+        },
+      };
+    }
+    if (message.kind === "agent-capabilities") {
+      if (!options.readCapabilities) {
+        throw new Error("agent capability inventory is unavailable");
+      }
+      return {
+        handled: true,
+        response: {
+          kind: "agent-capabilities",
+          inventory: await options.readCapabilities(message),
+        },
+      };
+    }
+    if (message.kind === "session-start") {
+      // Answered BEFORE launching, because afterwards it is unanswerable: a
+      // session held on the trust prompt writes no registry file, so conch
+      // cannot tell "still deciding" from "never started" from the outside.
+      const awaitingTrust = message.backend === "claude"
+        && message.cwd !== undefined
+        && options.folderTrusted?.(message.cwd) === false;
+      await options.start(message);
+      return {
+        handled: true,
+        response: {
+          kind: "session-started",
+          backend: message.backend,
+          resumed: Boolean(message.resumeSessionId),
+          ...(awaitingTrust ? { awaitingTrust: true } : {}),
+        },
+      };
+    }
+    if (message.kind === "session-close") {
+      await options.close(message.sessionId);
+      return {
+        handled: true,
+        response: { kind: "session-closed", sessionId: message.sessionId },
+      };
+    }
+    await options.report(message);
+    return { handled: true, response: { kind: "app-error-ack" } };
+  } catch (error) {
+    return { handled: true, response: sessionCommandError(error) };
+  }
+}
+
 const TURN_EVENT_TYPES = new Set<TurnEvent["type"]>([
   "inject",
+  "interrupt",
   "turn-end",
   "needs-you",
   "wake",
   "recite",
   "spacebar",
-  "mute",
-  "unmute",
   "pause",
   "resume",
   "speak",
@@ -553,11 +675,12 @@ const TURN_EVENT_TYPES = new Set<TurnEvent["type"]>([
 ]);
 
 const SPARSE_TURN_EVENT_TYPES = new Set<TurnEvent["type"]>([
+  // Stopping a session needs only to know WHICH session; the label and the
+  // announce text every other event carries would be ceremony.
+  "interrupt",
   "wake",
   "recite",
   "spacebar",
-  "mute",
-  "unmute",
   "pause",
   "resume",
 ]);
@@ -715,8 +838,20 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
         return { ok: false, err: `${field} must not be empty for inject` };
       }
     }
-  } else if ((type === "wake" || type === "recite") && typeof value.sessionId !== "string") {
+  } else if (
+    (type === "wake" || type === "recite" || type === "interrupt")
+    && typeof value.sessionId !== "string"
+  ) {
     return { ok: false, err: `sessionId is required for ${type}` };
+  }
+
+  // `origin` decides whether manual mode will open the mic, so it is the one
+  // field where a malformed value must not be carried through as truthy junk.
+  if (value.origin !== undefined && value.origin !== "user" && value.origin !== "agent") {
+    return { ok: false, err: "origin must be \"user\" or \"agent\"" };
+  }
+  if (value.compose !== undefined && value.compose !== true) {
+    return { ok: false, err: "compose must be true when present" };
   }
 
   return {
@@ -765,7 +900,7 @@ export function shouldHandleTurnAudibly(
 
 /**
  * A daemon-time background-work check may learn more than the hook-time scan.
- * Mutate the queued object itself: ordering, mute-forget, and pause replay all
+ * Mutate the queued object itself: ordering and manual-mode replay both
  * retain this exact reference.
  */
 export function downgradeTurnWithLiveBackgroundWork(
@@ -782,7 +917,17 @@ export function downgradeTurnWithLiveBackgroundWork(
 /** Resolve a wake without carrying a prior turn's read-aloud discriminator forward. */
 export function resolveWakeTarget(wake: TurnEvent, lastTurn: TurnEvent | null): TurnEvent | null {
   const target = wake.sessionId ? wake : lastTurn;
-  return target ? { ...target, type: "wake" } : null;
+  if (!target) return null;
+  // Intent belongs to the REQUEST, not to whichever session it resolves to.
+  // A bare wake resolves to the last session that spoke, and that remembered
+  // event knows nothing about the button just pressed — so asking for the
+  // composer and being answered into the session is exactly the confusion
+  // this whole change exists to remove.
+  return {
+    ...target,
+    type: "wake",
+    ...(wake.compose ? { compose: true as const } : {}),
+  };
 }
 
 /** Wake/adopted exchanges listen first; ordinary turns read the remaining response first. */
@@ -823,7 +968,7 @@ export interface SocketTurnEventCallbacks {
   busy(): boolean;
   stopSpacebar(): void;
   setSessionPaused(sessionId: string, paused: boolean): void;
-  setSessionMuted(sessionId: string, muted: boolean): void;
+  isDismissedSession?(sessionId: string): boolean;
   enrichAudioCommand(event: InstantAudioCommand): InstantAudioCommand;
   enqueueInstant(event: InstantAudioCommand): void;
   enqueue(event: TurnEvent): void;
@@ -839,21 +984,19 @@ export function isLightweightTargetedAudioCommand(event: InstantAudioCommand): b
 
 /** Route dashboard/CLI socket commands through the same instant seams as terminal keys. */
 export function dispatchSocketTurnEvent(
-  event: TurnEvent,
+  incoming: TurnEvent,
   callbacks: SocketTurnEventCallbacks,
 ): void {
+  const event = incoming;
   if (event.type === "spacebar") {
     if (callbacks.busy()) callbacks.stopSpacebar();
     return;
   }
 
   if (event.sessionId) {
+    if (callbacks.isDismissedSession?.(event.sessionId)) return;
     if (event.type === "pause" || event.type === "resume") {
       callbacks.setSessionPaused(event.sessionId, event.type === "pause");
-      return;
-    }
-    if (event.type === "mute" || event.type === "unmute") {
-      callbacks.setSessionMuted(event.sessionId, event.type === "mute");
       return;
     }
     if (event.type === "wake" || event.type === "recite") {
@@ -870,18 +1013,28 @@ export function dispatchSocketTurnEvent(
   callbacks.enqueue(event);
 }
 
-export type NameAddressRoute =
-  | {
-    kind: "deliver";
-    event: TurnEvent;
-    text: string;
-    addressed?: { name: string; label: string };
+/** Ordinals are safe to rewrite only while the transcript still contains an unanswered option row. */
+export function choiceReplyForConversation(heard: string, conversation: Conversation): string {
+  const question = latestAnswerableQuestion(conversation);
+  if (!question) return heard;
+  if (question.multiSelect) {
+    const selected = classifySpokenChoices(heard, question.options);
+    if (!selected) return heard;
+    return question.options
+      .filter((_, index) => selected.has(index))
+      .map((option) => option.label)
+      .join(", ");
   }
-  | {
-    kind: "wake";
-    event: TurnEvent;
-    addressed: { name: string; label: string };
-  };
+  const selected = classifySpokenChoice(heard, question.options);
+  return selected === null ? heard : question.options[selected]!.label;
+}
+
+export type NameAddressRoute = {
+  kind: "deliver";
+  event: TurnEvent;
+  text: string;
+  addressed?: { name: string; label: string };
+};
 
 export interface NameAddressRouteOptions {
   findSession?: (claudeDir: string, name: string) => Promise<SessionInfo | null>;
@@ -908,25 +1061,11 @@ export async function resolveNameAddressRoute(
       continue;
     }
     if (!session) continue;
+    if (!candidate.rest) continue;
 
     const label = labelFor(session, session.cwd);
     const transcriptPath = transcriptFor(claudeDir, session.sessionId);
     const addressed = { name: candidate.name, label };
-    if (!candidate.rest) {
-      return {
-        kind: "wake",
-        addressed,
-        event: {
-          type: "wake",
-          sessionId: session.sessionId,
-          label,
-          cwd: session.cwd,
-          pid: session.pid,
-          announce: "",
-          transcriptPath,
-        },
-      };
-    }
 
     return {
       kind: "deliver",
@@ -955,7 +1094,7 @@ const HANDOFF_URGENCY: Partial<Record<TurnEvent["type"], number>> = {
   "turn-end": 2,
   "needs-you": 3,
 };
-const MODE_CONTROL_TYPES = new Set<TurnEvent["type"]>(["mute", "unmute", "pause", "resume"]);
+const MODE_CONTROL_TYPES = new Set<TurnEvent["type"]>(["pause", "resume"]);
 const NO_INSTANT_QUEUE_BARRIERS = { has: (_event: TurnEvent): boolean => false };
 
 /**
@@ -968,7 +1107,7 @@ export function insertQueuedEvent(
   instantBarriers: { has(event: TurnEvent): boolean } = NO_INSTANT_QUEUE_BARRIERS,
 ): boolean {
   const instant = instantBarriers.has(event);
-  const duplicateIndex = event.type === "speak" && !event.sessionId
+  const duplicateIndex = event.type === "inject" || (event.type === "speak" && !event.sessionId)
     ? -1
     : queue.findIndex(
       (queued) => queued.sessionId === event.sessionId && queued.type === event.type,
@@ -1093,15 +1232,12 @@ export function withoutDismissedSessions<T extends Pick<SessionInfo, "sessionId"
   return sessions.filter((session) => !dismissedSessionIds.has(session.sessionId));
 }
 
-/** The dismiss operation couples mute; restoration must always clear both sets. */
+/** Restoration only changes visibility; quiet mode is an independent choice. */
 export function restoreDismissedSessionState(
   sessionId: string,
   dismissedSessionIds: Set<string>,
-  mutedSessionIds: Set<string>,
 ): boolean {
-  if (!dismissedSessionIds.delete(sessionId)) return false;
-  mutedSessionIds.delete(sessionId);
-  return true;
+  return dismissedSessionIds.delete(sessionId);
 }
 
 /** Transient command state dies only when a complete registry proves the session exited. */
@@ -1116,6 +1252,20 @@ export function pruneSessionCommandSets(
       if (!snapshot.liveIds.has(sessionId)) ids.delete(sessionId);
     }
   }
+}
+
+/** One record per unresolved interval preserves the signal without adding the same row every 20 seconds. */
+export function shouldReportMissingCodexPid(
+  session: Pick<SessionInfo, "sessionId" | "backend" | "pid">,
+  reported: Set<string>,
+): boolean {
+  if (session.backend === "codex" && !session.pid) {
+    if (reported.has(session.sessionId)) return false;
+    reported.add(session.sessionId);
+    return true;
+  }
+  reported.delete(session.sessionId);
+  return false;
 }
 
 /**
@@ -1159,6 +1309,40 @@ export function listenHooks(
 }
 
 /** Build the external document with daemon-owned voice and priority resolution. */
+/** How many sessions get a published conversation, newest-active first. */
+const MAX_PUBLISHED_CONVERSATIONS = 8;
+/** Per-session window. Smaller than the focused one: this is every row at once. */
+const PUBLISHED_CONVERSATION_WINDOW = 30;
+
+/**
+ * How long to wait for the daemon to answer one control line.
+ *
+ * Injection does UI automation with confirm-and-retry; a status query does not.
+ * Giving them the same budget meant the slow one reported failure while
+ * succeeding.
+ */
+/** Queue tracing, always on: a stuck event is invisible without it. */
+function traceQueue(message: string): void {
+  try {
+    appendFileSync(
+      "/tmp/conch-inject-debug.log",
+      `[${new Date().toISOString().slice(11, 23)}] queue: ${message}\n`,
+    );
+  } catch {}
+}
+
+export function injectTimeoutFor(line: string): number {
+  try {
+    const kind = JSON.parse(line)?.type ?? JSON.parse(line)?.kind;
+    if (kind === "inject") return 25_000;
+    // A truthful close waits for the agent pid to disappear after Ctrl-D; the
+    // bridge must not invent a failure while that clean shutdown is in flight.
+    if (kind === "session-close") return 12_000;
+    if (kind === "session-start") return 8_000;
+  } catch {}
+  return 4_000;
+}
+
 export function buildDaemonPublishedState(
   cfg: Config,
   model: PanelModel,
@@ -1167,6 +1351,9 @@ export function buildDaemonPublishedState(
   prioritizedSessionIds: ReadonlySet<string>,
   now: number,
   labelForSessionId?: (sessionId: string) => string | undefined,
+  /** Codex rollouts live at paths only its database knows; Claude's are found by id. */
+  sessionTranscriptPaths?: ReadonlyMap<string, string>,
+  sessionContexts?: ReadonlyMap<string, SessionContextUsage>,
 ): PublishedState {
   return buildPublishedState(
     model,
@@ -1174,10 +1361,12 @@ export function buildDaemonPublishedState(
     dismissedSessionIds,
     now,
     {
-      transcriptPathForSessionId: (sessionId) => findTranscript(cfg.claudeDir, sessionId),
+      transcriptPathForSessionId: (sessionId) =>
+        sessionTranscriptPaths?.get(sessionId) ?? findTranscript(cfg.claudeDir, sessionId),
       voiceForLabel: (label) => voiceFor(cfg, label),
       labelForSessionId,
       prioritizedSessionIds,
+      contextForSessionId: (sessionId) => sessionContexts?.get(sessionId),
     },
   );
 }
@@ -1223,6 +1412,38 @@ export async function rehydrateLatestTurns(options: {
   return restored;
 }
 
+/**
+ * Is a live daemon already listening on this socket?
+ *
+ * The file existing means nothing — a unix socket outlives the process that
+ * created it, which is why "unlink and rebind" felt safe and was not. Connect
+ * instead: only an answer proves someone is home. A refusal (ECONNREFUSED)
+ * means the file is a leftover and is safe to remove.
+ */
+export async function anotherDaemonIsListening(
+  socketPath: string,
+  timeoutMs = 500,
+): Promise<boolean> {
+  if (!existsSync(socketPath)) return false;
+  return await new Promise<boolean>((resolve) => {
+    let settled = false;
+    const socket = connect({ path: socketPath });
+    const finish = (answer: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { socket.destroy(); } catch {}
+      resolve(answer);
+    };
+    // A socket that accepts but never speaks is still an owner; treat a
+    // timeout as OCCUPIED rather than stale, because deleting a live
+    // daemon's socket is the failure this exists to prevent.
+    const timer = setTimeout(() => finish(true), timeoutMs);
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+  });
+}
+
 export async function runDaemon(cfg: Config): Promise<void> {
   prepareLogFile();
   // Read cfg.haikuTimeoutSecs at call time — the config socket mutates cfg in
@@ -1241,9 +1462,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const diagnosticsEnabled = recorderDiagnosticsEnabled();
   const queue: TurnEvent[] = [];
   let busy = false;
+  let busyLabel = "none";
   let lastTurn: TurnEvent | null = null;
   const persisted = readState(); // survives restarts — see STATE_FILE
-  let muted = persisted.muted;
   let pause!: PauseController; // "away" mode: quiet, but HOLD finished sessions to replay on resume
   let stopKey = false; // spacebar pressed while reciting — the guaranteed interrupt
   let micOpen = false; // true while a dictation/permission listen is in flight — spacebar closes it
@@ -1259,16 +1480,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const injectedAt = new Map<string, number>(); // session -> last time conch drove it
   const pending = new Map<string, TurnEvent>(); // sessions that finished while paused — latest per session
   const resumeTransitions = new WeakMap<TurnEvent, Promise<PauseResumeResult>>();
-  const resumeDigestEscrow = new ResumeDigestEscrow<TurnEvent>();
-  let resumeDigestArm: {
-    owner: TurnEvent;
-    generation: number | null;
-  } | null = null;
-  const restorePreparedResumeDigest = (): void => {
-    for (const event of resumeDigestEscrow.restore()) {
-      if (!pending.has(event.sessionId)) pending.set(event.sessionId, event);
-    }
-  };
   // Live session status for the dashboard panel — replaces the spoken "needs you"
   // nag with a glanceable visual: working (you submitted a prompt) / waiting (turn
   // ended, ready for you) / needs (a permission/idle notification fired).
@@ -1293,19 +1504,26 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const mouseParser = new SgrMouseParser();
   let settingsOverlay: SettingsOverlay | null = null;
   let sessionActionsOverlay: SessionActionsOverlay | null = null;
+  let restoreSessionsOverlay: RestoreSessionsOverlay | null = null;
+  let sessionStartOverlay: SessionStartOverlay | null = null;
+  let terminalComposer: TerminalComposer | null = null;
+  let terminalQuestionController: TerminalQuestionController | null = null;
   let meetingMic: MicClaimPoller | null = null;
-  // Per-session modes are transient dashboard state. Pause holds only the newest
-  // turn for replay; mute deliberately forgets.
+  // Per-session manual mode holds only the newest turn for replay.
   const pausedSessionIds = new Set<string>();
-  const mutedSessionIds = new Set<string>();
+  // Sessions resumed by name out of a global pause. Cleared on every global
+  // edge: a new pause pauses everything, and a global resume makes the
+  // exemption meaningless.
+  const resumedSessionIds = new Set<string>();
   const prioritizedSessionIds = new Set<string>();
   const dismissedSessionIds = new Set<string>();
   const sessionHeldTurns = new Map<string, TurnEvent>();
+  const dismissedHeldTurns = new Map<string, TurnEvent>();
   const latestTurnBySession = new Map<string, TurnEvent>();
-  const forgottenTurns = new WeakSet<TurnEvent>();
+  const cancelledAudioCommands = new WeakSet<TurnEvent>();
   const instantQueueBarriers = new WeakSet<TurnEvent>();
-  const forgetQueuedAudioCommand = (event: TurnEvent): void => {
-    forgottenTurns.add(event);
+  const cancelQueuedAudioCommand = (event: TurnEvent): void => {
+    cancelledAudioCommands.add(event);
     instantQueueBarriers.delete(event);
   };
   // The turn currently being handled, used by PauseController's scoped edge.
@@ -1329,20 +1547,35 @@ export async function runDaemon(cfg: Config): Promise<void> {
       || latestTurnBySession.has(id)
       || dismissedSessionIds.has(id)
       || pausedSessionIds.has(id)
-      || mutedSessionIds.has(id)
       || prioritizedSessionIds.has(id)
       || sessionHeldTurns.has(id)
+      || dismissedHeldTurns.has(id)
       || pending.has(id)
       || recitingEvent?.sessionId === id
       || handlingEvent?.sessionId === id;
   }
   function sessionActionTarget(sessionId: string): SessionActionsTarget | null {
-    return isKnownSessionId(sessionId)
-      ? { sessionId, label: labelForSessionId(sessionId) }
-      : null;
+    if (!isKnownSessionId(sessionId)) return null;
+    const session = panelSessions.get(sessionId);
+    const known = latestTurnBySession.get(sessionId)
+      ?? (recitingEvent?.sessionId === sessionId ? recitingEvent : null)
+      ?? (handlingEvent?.sessionId === sessionId ? handlingEvent : null)
+      ?? (lastTurn?.sessionId === sessionId ? lastTurn : null);
+    const pid = session?.pid ?? known?.pid;
+    return {
+      sessionId,
+      label: labelForSessionId(sessionId),
+      backend: session?.backend ?? "claude",
+      ...(pid ? { pid } : {}),
+    };
   }
   const sessionModalOpen = (): boolean =>
-    Boolean(settingsOverlay?.isOpen() || sessionActionsOverlay?.isOpen());
+    Boolean(
+      settingsOverlay?.isOpen()
+      || sessionActionsOverlay?.isOpen()
+      || restoreSessionsOverlay?.isOpen()
+      || sessionStartOverlay?.isOpen()
+    );
   const explicitQuietOverrideBlocked = (): boolean =>
     sessionModalOpen() || Boolean(meetingMic?.claimed);
 
@@ -1391,38 +1624,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
     activeSession: () => activeDictation?.session ?? null,
     cancelCurrentSpeech: () => speech.cancelCurrent(),
     cancelPendingAudio: () => speech.cancelPendingAudio(),
-    persist: (paused) => writeState({ muted, paused }),
+    persist: (paused) => writeState({ paused }),
     render: () => void renderSessionPanel(),
-    setModeState: (paused) => setState(muted ? "muted" : paused ? "paused" : "idle"),
+    setModeState: (paused) => setState(paused ? "paused" : "idle"),
     log,
     speak: (text) => speak(cfg, text),
     liveSessionIds: async () => (await registrySnapshot(cfg.claudeDir))?.liveIds ?? null,
     userRespondedSince: (event) => userRespondedSince(event.transcriptPath, event.mark),
-    replayOverride: async (events) => {
-      const arm = resumeDigestArm;
-      resumeDigestArm = null;
-      if (
-        !arm
-        || arm.generation === null
-        || pause.interrupted(arm.generation)
-        || !shouldUseResumeDigest(cfg.resumeDigest, events, pausedSessionIds)
-      ) {
-        return false;
-      }
-      const briefing = await composeResumeBriefing(events, askHaiku);
-      if (
-        pause.interrupted(arm.generation)
-        || !shouldUseResumeDigest(cfg.resumeDigest, events, pausedSessionIds)
-      ) {
-        return false;
-      }
-      return Boolean(resumeDigestEscrow.prepare(
-        arm.owner,
-        events,
-        briefing,
-        arm.generation,
-      ));
-    },
     enqueue,
     onHold: (event) => {
       lastTurn = event;
@@ -1433,80 +1641,23 @@ export async function runDaemon(cfg: Config): Promise<void> {
     pause,
     globalHeldTurns: pending,
     pausedSessionIds,
-    mutedSessionIds,
+    resumedSessionIds,
     sessionHeldTurns,
-    setMuted,
     enqueue,
     markInstantQueued: (event) => instantQueueBarriers.add(event),
-    forgetQueued: (sessionId) =>
-      markQueuedTurnsForMute(queue, (event) => forgottenTurns.add(event), sessionId),
-    forgetLatest: (sessionId) => {
-      if (sessionId === undefined) latestTurnBySession.clear();
-      else latestTurnBySession.delete(sessionId);
-    },
     cancelQueuedWakes: (sessionId) =>
       markQueuedWakesForControl(
         queue,
-        forgetQueuedAudioCommand,
+        cancelQueuedAudioCommand,
         sessionId,
       ),
     labelFor: labelForSessionId,
     log,
     render: () => void renderSessionPanel(),
   });
-  const cancelConsumingResumeDigest = (reason: string): void => {
-    try {
-      speech.cancelCurrent();
-    } catch (error) {
-      log(`resume digest speech cancellation failed: ${error}`);
-    }
-    try {
-      speech.cancelPendingAudio();
-    } catch (error) {
-      log(`resume digest pending-audio cancellation failed: ${error}`);
-    }
-    try {
-      activeDictation?.requestExternal("spacebar", reason);
-    } catch (error) {
-      log(`resume digest mic cancellation failed: ${error}`);
-    }
-  };
-  const setSessionMutedWithDigest = (sessionId: string, next: boolean): void => {
-    let digestWasConsuming = false;
-    if (next) {
-      const forgotten = resumeDigestEscrow.forget(sessionId);
-      digestWasConsuming = forgotten.consuming;
-    }
-    instantControls.setSessionMuted(sessionId, next);
-    if (digestWasConsuming) {
-      cancelConsumingResumeDigest("resume-digest-session-muted");
-    }
-  };
-  const setSessionPausedWithDigest = (sessionId: string, next: boolean): void => {
-    const digestWasConsuming = next
-      ? resumeDigestEscrow.invalidate(sessionId).consuming
-      : false;
-    instantControls.setSessionPaused(sessionId, next);
-    if (digestWasConsuming) {
-      cancelConsumingResumeDigest("resume-digest-session-paused");
-    }
-  };
-  // Meeting-mode's silent auto-pause and settings-pause share one coordinator;
-  // wrapping the digest-aware target here means EVERY pause path (manual,
-  // settings, or meeting auto-pause) also clears a prepared resume digest.
+  // Meeting-mode's silent auto-pause and settings-pause share one coordinator.
   const silentPause = new SilentPauseCoordinator(
-    {
-      get paused() {
-        return pause.paused;
-      },
-      setPaused(next, options) {
-        if (next) {
-          resumeDigestArm = null;
-          restorePreparedResumeDigest();
-        }
-        return pause.setPaused(next, options);
-      },
-    },
+    pause,
     (error) => log(`settings pause transition failed: ${error}`),
   );
   const settingsPause = new SettingsPauseLifecycle(silentPause);
@@ -1530,16 +1681,113 @@ export async function runDaemon(cfg: Config): Promise<void> {
     });
   };
 
-  const speak = async (speechCfg: Config, text: string, label = ""): Promise<void> => {
+  const speak = async (
+    speechCfg: Config,
+    text: string,
+    label = "",
+    // True when a person asked for this sound directly — a recite, an explicit
+    // `conch speak`. Those are answers, not conch volunteering, so manual mode
+    // does not silence them.
+    volunteered = false,
+  ): Promise<void> => {
     // The phone owning the voice has to mean it HERE, at the one place every
     // path funnels through. Gating the announce path alone left wake, recite,
-    // explicit speak, mute/pause acknowledgements and every error fallback
+    // explicit speak, mode acknowledgements and every error fallback
     // still talking — Tyler heard the Mac and the phone reading the same reply
     // simultaneously. A per-call-site gate is a list you can forget to add to;
     // this is not.
-    if (audioLease.sink === "phone") return;
+    // The state names the SESSION being read, not the device making the sound.
+    // Moving it below the gate stopped the Mac claiming to read while silent,
+    // but broke the thing that made it useful: liveGlyph is only set for the
+    // ACTIVE row, active is only set when live.state is a live state, so with
+    // the phone owning the audio no row was ever marked speaking and the
+    // ledger said "Waiting for you" for a session being read aloud.
+    //
+    // Above the gate, so it is set on both paths. Known limit: while the phone
+    // reads, the Mac cannot see when it finishes, so this clears when the Mac
+    // would have stopped rather than when the phone actually does. The phone
+    // reporting its own speech is the honest fix and is not this change.
+    // Never talk over someone who is talking.
+    //
+    // conch has always guarded the other direction — the mic must not open
+    // while TTS is speaking, or the loop hears itself — but nothing stopped
+    // speech STARTING while a mic was already open. Tyler was mid-dictation
+    // when another session's turn ended and conch began reading it to him,
+    // over the top of the sentence he was still speaking.
+    //
+    // Dropped rather than deferred. The turn stays latched on its row and can
+    // be recited whenever he wants it, so nothing is lost that cannot be asked
+    // for again — whereas holding audio behind an open mic invites the deadlock
+    // where each is waiting on the other.
+    if (normalMicOpen()) {
+      log(`held "${label || "announcement"}" — the mic is open`);
+      return;
+    }
+
+    // Manual mode means conch does not speak FIRST. That has to be true here,
+    // at the funnel, not only in the announcement queue.
+    //
+    // The queue is gated, so turn-ends hold correctly — but every direct
+    // speak() call went around it: failure lines, acknowledgements, error
+    // fallbacks. Tyler heard a session announce "a system dialog is open on the
+    // Mac and it's blocking me" while in manual, and diagnosed it exactly:
+    // "might be the clipboard thing doesn't listen to being in manual mode?"
+    //
+    // Deliberately not gated on `spoken`: an explicit `conch speak` and a
+    // recite are things a person just asked for out loud, and manual is about
+    // conch volunteering, not about refusing to answer.
+    if (pause.paused && !volunteered) {
+      log(`held "${label || "announcement"}" — manual mode`);
+      return;
+    }
+
+    setState("speaking", label);
+    if (audioLease.sink === "phone") {
+      armPhoneSpeechLatch(text);
+      return;
+    }
+    clearPhoneSpeechLatch();
     await speech.speak(speechCfg, text, label);
   };
+
+  /**
+   * Bound how long conch will claim the phone is reading.
+   *
+   * When the phone owns the audio this Mac stays quiet and cannot hear when the
+   * reading ends, so the phone reports it. That report is the honest signal and
+   * stays the primary one — but it arrives over a relay that drops
+   * ("heartbeat expired", "disconnected (4002)" repeatedly in one afternoon),
+   * and a dropped stop-report latched the dashboard at "speaking" forever.
+   * Tyler saw it as the app insisting it was reading aloud when nothing was.
+   *
+   * So: an upper bound, generous enough never to cut a real reading short, and
+   * cancelled the moment the phone says it finished. A safety net, not a timer.
+   */
+  let phoneSpeechLatch: ReturnType<typeof setTimeout> | null = null;
+
+  function clearPhoneSpeechLatch(): void {
+    if (!phoneSpeechLatch) return;
+    clearTimeout(phoneSpeechLatch);
+    phoneSpeechLatch = null;
+  }
+
+  function armPhoneSpeechLatch(text?: string): void {
+    clearPhoneSpeechLatch();
+    // ~8 characters per second is roughly half real speaking pace, so this only
+    // fires when a report genuinely went missing. When the phone announces
+    // speech it started itself we never saw the text, so fall back to the cap.
+    const estimateMs = text === undefined
+      ? 120_000
+      : Math.min(120_000, 5_000 + (text.length / 8) * 1_000);
+    phoneSpeechLatch = setTimeout(() => {
+      phoneSpeechLatch = null;
+      if (getLiveState().state !== "speaking") return;
+      log("phone never reported finishing — clearing the speaking state");
+      setState("idle");
+      void renderSessionPanel();
+    }, estimateMs);
+    phoneSpeechLatch.unref?.();
+  }
 
   /**
    * Raise a session window unless you're actively typing right now. Read at call
@@ -1585,33 +1833,49 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   function restoreDismissedSession(sessionId: string): boolean {
     const label = labelForSessionId(sessionId);
-    if (!restoreDismissedSessionState(
-      sessionId,
-      dismissedSessionIds,
-      mutedSessionIds,
-    )) return false;
+    if (!restoreDismissedSessionState(sessionId, dismissedSessionIds)) return false;
+    const held = dismissedHeldTurns.get(sessionId);
+    dismissedHeldTurns.delete(sessionId);
     log(`▶ restored "${label}" after dismiss`);
     void renderSessionPanel();
+    if (held) enqueue(held);
     return true;
   }
 
-  function enqueue(event: TurnEvent): void {
+  /** An unscoped audio command must never reopen the conversation the user hid. */
+  function latestVisibleTurn(): TurnEvent | null {
+    return lastTurn && !dismissedSessionIds.has(lastTurn.sessionId) ? lastTurn : null;
+  }
+
+  function enqueue(incoming: TurnEvent): void {
     if (shuttingDown) return;
-    // A named wake is the deliberate escape hatch from safe dismiss. Clear the
-    // hidden/muted state before arrival stamping so the wake and future turns
-    // are both usable again; an unnamed wake cannot identify a dismissed owner.
-    if (event.type === "wake" && event.sessionId) {
-      restoreDismissedSession(event.sessionId);
-    }
+    const event = incoming;
     if (!eventOrder.accept(event)) return;
-    const forgetOnArrival = shouldForgetMutedArrival(
-      event,
-      muted,
-      Boolean(event.sessionId && mutedSessionIds.has(event.sessionId)),
-    );
-    if (forgetOnArrival) {
-      forgottenTurns.add(event);
-    } else if (shouldHandleTurnAudibly(event, cfg.workingMic)) {
+
+    // Answering a session must not wait for a DIFFERENT session to finish
+    // being read aloud.
+    //
+    // The queue drains one event at a time, which is right for anything that
+    // speaks — two turns talking over each other is unusable. But an inject
+    // and an interrupt make no sound, and both are someone waiting with a
+    // finger still on the key. Behind the barrier they inherited the whole
+    // length of another session's spoken announcement: Tyler watched a message
+    // sit unsent until an unrelated session stopped talking, and reasonably
+    // read it as "the sessions might be blocking each other". They were.
+    //
+    // Running them off the queue is safe precisely because they are silent: the
+    // barrier exists to serialise AUDIO, and neither of these produces any. An
+    // inject cancels whatever is being read first, so it cannot race the very
+    // speech it is meant to cut off.
+    if (event.type === "inject" || event.type === "interrupt") {
+      traceQueue(`immediate ${event.type}:${event.label}`);
+      void handle(event).catch((error) => {
+        log(`error handling ${event.type} "${event.label}": ${error}`);
+      });
+      return;
+    }
+
+    if (shouldHandleTurnAudibly(event, cfg.workingMic)) {
       latestTurnBySession.set(event.sessionId, event);
     }
     if (event.type === "resume") {
@@ -1622,56 +1886,34 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (
       event.type === "pause"
       || event.type === "resume"
-      || event.type === "mute"
-      || event.type === "unmute"
     ) {
       // Apply every mode edge synchronously. The queued event owns only its
       // spoken acknowledgement after the aborted exchange closes its barrier.
+      // Any GLOBAL pause/resume clears per-session exemptions: a fresh pause
+      // pauses everything, and a global resume makes an exemption meaningless.
+      if (!event.sessionId) resumedSessionIds.clear();
       if (event.type === "resume") {
-        // A second resume can overtake a prepared-but-not-yet-spoken digest.
-        // Put its exact work back under PauseController before snapshotting.
-        restorePreparedResumeDigest();
-        resumeDigestArm = { owner: event, generation: null };
         silentPause.recordManualState(false);
-      } else if (event.type === "pause") {
-        restorePreparedResumeDigest();
-        resumeDigestArm = null;
-        silentPause.recordManualState(true);
-      } else if (event.type === "mute") {
-        // Global mute deliberately forgets every held turn.
-        resumeDigestEscrow.restore();
-        resumeDigestArm = null;
       } else {
-        // An intervening global edge makes a not-yet-started model plan stale.
-        resumeDigestArm = null;
+        silentPause.recordManualState(true);
       }
-      const transition = instantControls.applyGlobal(event.type);
-      if (transition) {
-        if (resumeDigestArm?.owner === event) {
-          resumeDigestArm.generation = pause.capture();
-        }
-        const tracked = transition.then(
-          (result) => {
-            resumeDigestEscrow.settle(event, result.digested === true);
-            return result;
-          },
-          (error) => {
-            resumeDigestEscrow.settle(event, false);
-            throw error;
-          },
-        );
-        resumeTransitions.set(event, tracked);
-      }
+      const transition = instantControls.applyGlobal(event.type as "pause" | "resume");
+      if (transition) resumeTransitions.set(event, transition);
     }
     insertQueuedEvent(queue, event, instantQueueBarriers);
     void drain();
   }
 
   async function drain(): Promise<void> {
+    // The queue drains one event at a time behind a `busy` flag, so ONE event
+    // that never settles silently strands every event after it — injects
+    // included. That is what made a message look session-specific when it was
+    // not: probes into two different idle sessions both hung, with nothing in
+    // the log, because neither ever left the queue.
+    traceQueue(busy ? `blocked behind "${busyLabel}" (${queue.length} waiting)` : `drain start (${queue.length})`);
     if (busy) return;
     busy = true;
     try {
-      await ttsStartup;
       if (shuttingDown) return;
       if (stopKey && queue.length) {
         const skipped = takeNextQueuedEvent(queue, cfg.handoffOrder, prioritizedSessionIds)!;
@@ -1681,7 +1923,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
       while (queue.length) {
         const event = takeNextQueuedEvent(queue, cfg.handoffOrder, prioritizedSessionIds)!;
         try {
+          busyLabel = `${event.type}:${event.label}`;
+          traceQueue(`handle ${busyLabel}`);
           await handle(event);
+          traceQueue(`done ${busyLabel}`);
         } catch (e) {
           // one bad event (closed pane, missing binary, socket reset, a throw
           // from any spawn) must not take the whole daemon down mid-exchange.
@@ -1695,11 +1940,28 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
   }
 
-  // The at-rest status when nothing's in flight: muted wins over paused for display.
-  const restState = (): ConchState => (muted ? "muted" : pause.paused ? "paused" : "idle");
+  // The at-rest status reflects the one lossless quiet mode.
+  const restState = (): ConchState => (pause.paused ? "paused" : "idle");
 
   let panelRenderVersion = 0;
   let lastPublishedPanelState: PublishedState | null = null;
+  let lastPanelModel: PanelModel | null = null;
+  const reportedMissingCodexPid = new Set<string>();
+  const recordDaemonError = (
+    operation: string,
+    message: string,
+    sessionId?: string,
+    state?: Record<string, unknown>,
+  ): void => {
+    try {
+      appendConchError(
+        { source: "daemon", operation, message, ...(sessionId ? { sessionId } : {}), ...(state ? { state } : {}) },
+        lastPublishedPanelState,
+      );
+    } catch (error) {
+      log(`could not record daemon error: ${error}`);
+    }
+  };
   // Publication is always on, independent of the selected terminal renderer.
   // Full ledger rebuilds and cheap conversation refreshes share this writer so
   // neither path can bypass the 10 Hz leading/trailing throttle.
@@ -1719,53 +1981,169 @@ export async function runDaemon(cfg: Config): Promise<void> {
    * dashboard still updates, and the phone speaks and listens instead.
    *
    * It ALWAYS returns to the Mac when the phone disconnects. A phone that walks
-   * out of the room must not leave the Mac permanently mute.
+   * out of the room must not leave the Mac permanently silent.
    */
+  const phoneUploads = new PhoneUploads(join(CONCH_DATA, "uploads"));
+  let phoneApplication: PhoneBridgeApplication | null = null;
   let phoneBridge: PhoneBridgeHandle | null = null;
+  let phoneRelay: PhoneRelayHandle | null = null;
+  let activeRelayEndpoint = "";
+  let activeRelayPairing: RelayPairing | null = null;
   function syncPhoneBridge(): void {
     const wanted = cfg.phoneEnabled;
     const previousBridge = phoneBridge;
     phoneBridge = retainMatchingPhoneBridge(phoneBridge, wanted, cfg.phonePort);
-    if (!wanted && previousBridge) {
-      log("phone bridge stopped");
+    if (!wanted) {
+      phoneRelay?.stop();
+      phoneRelay = null;
+      activeRelayEndpoint = "";
+      activeRelayPairing = null;
+      phoneApplication = null;
+      if (previousBridge) log("phone bridge stopped");
       return;
     }
-    if (wanted && !phoneBridge) {
-      try {
-        phoneBridge = createPhoneBridge(
-          {
-            getState: () => lastPublishedPanelState,
-            forwardControl: (line) => forwardToDaemonSocket(cfg.socketPath, line),
-            onClientsChanged: (count) => {
-              if (audioLease.clientsChanged(count)) {
-                log("phone disconnected — audio back on this Mac");
-                void renderSessionPanel();
-              }
-            },
-            replyFor: async (sessionId) => {
-              const path = findTranscript(cfg.claudeDir, sessionId);
-              // RAW, not stripMarkdown: the phone renders it, it doesn't speak it.
-              const finalMessage = path ? await lastAssistantText(path) : "";
-              if (finalMessage) return finalMessage;
-              // Empty means the session is MID-TURN — lastAssistantText returns
-              // the final message of a turn, and deliberately nothing while a
-              // tool call is outstanding, so speech never announces half a turn.
-              // The phone still deserves the last thing it actually told you.
-              return latestTurnBySession.get(sessionId)?.announce ?? "";
-            },
-            log,
+    if (!phoneApplication) {
+      phoneApplication = createPhoneBridgeApplication(
+        {
+          getState: () => lastPublishedPanelState,
+          forwardControl: (line) => forwardToDaemonSocket(
+            cfg.socketPath,
+            line,
+            // An inject is not a query. It focuses a pane, types, CONFIRMS the
+            // text landed and re-sends if it did not — UI automation that
+            // routinely outlives a four-second budget. Measured: "confirmed
+            // sent (after 1 re-send)" at 22:16:29 and the phone giving up two
+            // seconds later, so a message that arrived perfectly reported
+            // "couldn't reach your Mac".
+            //
+            // A false failure is the expensive kind here: it teaches you not to
+            // trust a send that worked, and invites sending twice. Everything
+            // else stays on the short budget, where a quick answer is the point.
+            injectTimeoutFor(line),
+          ),
+          onClientsChanged: (count) => {
+            if (audioLease.clientsChanged(count)) {
+              log("phone disconnected — audio back on this Mac");
+              // The phone that was reading is gone, so its finish report is
+              // never coming. Leaving the latch armed would keep the dashboard
+              // claiming something is being read aloud by a device that is no
+              // longer here.
+              clearPhoneSpeechLatch();
+              if (getLiveState().state === "speaking") setState("idle");
+              void renderSessionPanel();
+            }
           },
-          { port: cfg.phonePort, token: ensurePhoneToken() },
+          // Images land beside conch's own cache, not in /tmp: an agent may
+          // read one long after it arrived, and /tmp is swept by the OS.
+          acceptUpload: (chunk) => phoneUploads.accept(chunk),
+          replyFor: async (sessionId) => {
+            const path = findTranscript(cfg.claudeDir, sessionId);
+            // The WHOLE turn in progress, the way the Mac dashboard shows it —
+            // every assistant block back to the last genuine human turn. The
+            // phone is showing, not speaking, so the rule that protects speech
+            // (never announce half a turn) makes it show the wrong thing: it
+            // fell through to an earlier turn's short spoken announce, which is
+            // where "one random sentence idk where from" came from.
+            const turn = path ? await currentTurnText(path) : "";
+            if (turn) return turn;
+            // RAW, not stripMarkdown: the phone renders it, it doesn't speak it.
+            const finalMessage = path ? await lastAssistantText(path) : "";
+            if (finalMessage) return finalMessage;
+            // Empty means the session is MID-TURN — lastAssistantText returns
+            // the final message of a turn, and deliberately nothing while a
+            // tool call is outstanding, so speech never announces half a turn.
+            // The phone still deserves the last thing it actually told you.
+            return latestTurnBySession.get(sessionId)?.announce ?? "";
+          },
+          log,
+        },
+        { token: ensurePhoneToken() },
+      );
+    }
+    if (!phoneBridge) {
+      try {
+        phoneBridge = createPhoneBridgeServer(
+          phoneApplication,
+          { log },
+          { port: cfg.phonePort },
         );
       } catch (error) {
         log(`phone bridge failed to start: ${String(error)}`);
       }
     }
+
+    const relayEndpoint = cfg.phoneRelayURL.trim();
+    if (phoneRelay && relayEndpoint !== activeRelayEndpoint) {
+      phoneRelay.stop();
+      phoneRelay = null;
+      activeRelayPairing = null;
+    }
+    if (!relayEndpoint) {
+      phoneRelay?.stop();
+      phoneRelay = null;
+      activeRelayEndpoint = "";
+      activeRelayPairing = null;
+      return;
+    }
+    if (!phoneRelay) {
+      try {
+        activeRelayPairing = ensureRelayPairing(relayEndpoint);
+        activeRelayEndpoint = relayEndpoint;
+        phoneRelay = createPhoneRelay(phoneApplication, activeRelayPairing, { log });
+      } catch (error) {
+        activeRelayEndpoint = "";
+        activeRelayPairing = null;
+        log(`phone relay failed to start: ${String(error)}`);
+      }
+    }
   }
+
+  /**
+   * Notice that this Mac was asleep, and re-dial rather than wait out a backoff.
+   *
+   * The daemon is a Bun process, so it gets no `NSWorkspace.didWakeNotification`
+   * — only the app does, and only for its own UI. Meanwhile the relay socket
+   * dies during sleep without a close frame ever arriving, so on wake the
+   * daemon is sitting inside an exponential backoff that can be thirty seconds
+   * long, having noticed nothing. Tyler: "i let my computer sleep and turned it
+   * back on and the app is having a tough time connecting".
+   *
+   * A timer is the honest detector available here. One that should fire every
+   * ten seconds and fires after a much longer gap means wall-clock moved
+   * without us — which is sleep, a suspended process, or a machine so wedged
+   * that reconnecting is the right response anyway.
+   */
+  // A BACKSTOP, not the mechanism. The Mac app sends `system-woke` the moment
+  // it wakes, which is instant and costs nothing; this only covers a daemon
+  // running with no app to tell it — launchd, or a terminal. So it ticks
+  // rarely: the worst case it protects against is the relay's own backoff,
+  // which caps at thirty seconds, and paying a wakeup every ten seconds
+  // forever to shave that is the trade conch refuses everywhere else.
+  const WAKE_TICK_MS = 60_000;
+  const WAKE_GAP_MS = 240_000;
+  let lastWakeTick = Date.now();
+  const wakeWatch = setInterval(() => {
+    const now = Date.now();
+    const gap = now - lastWakeTick;
+    lastWakeTick = now;
+    if (gap < WAKE_GAP_MS) return;
+    log(`woke after ${Math.round(gap / 1000)}s asleep — re-dialling (no app told us)`);
+    // The phone's own socket is equally stale; it reconnects itself when its
+    // app comes forward. This end is the one nobody was going to fix.
+    try {
+      phoneRelay?.reconnectNow();
+    } catch (error) {
+      log(`relay re-dial failed: ${error}`);
+    }
+    // Sessions may have come and gone while the lid was shut, and the panel is
+    // the only thing that would notice.
+    void renderSessionPanel();
+  }, WAKE_TICK_MS);
+  wakeWatch.unref?.();
 
   const publishedStateWriter = createPublishThrottle(() => {
     if (lastPublishedPanelState) publishSessionsFile(lastPublishedPanelState);
-    phoneBridge?.publish();
+    phoneApplication?.publish();
   });
 
   /** Publish progress against the last reconciled ledger without another registry scan. */
@@ -1788,6 +2166,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
       snap = await registrySnapshot(cfg.claudeDir);
     } catch {}
     const registryLive = snap?.infos ?? [];
+    for (const session of registryLive) {
+      if (shouldReportMissingCodexPid(session, reportedMissingCodexPid)) {
+        recordDaemonError(
+          "session-routing",
+          "Codex row has no pid",
+          session.sessionId,
+          { cwd: session.cwd ?? "", status: session.status ?? "unknown" },
+        );
+      }
+    }
     pruneSessionCommandSets(snap, prioritizedSessionIds, dismissedSessionIds);
     // Prune a latch only on a COMPLETE snapshot — a torn/unreadable file must not
     // delete a live session's latch (e.g. a pending "needs"), which never re-fires.
@@ -1796,10 +2184,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const trackedIds = new Set([
         ...sessionStates.keys(),
         ...pausedSessionIds,
-        ...mutedSessionIds,
         ...prioritizedSessionIds,
         ...dismissedSessionIds,
         ...sessionHeldTurns.keys(),
+        ...dismissedHeldTurns.keys(),
         ...latestTurnBySession.keys(),
         ...pending.keys(),
       ]);
@@ -1808,10 +2196,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
         sessionStates.delete(id);
         eventOrder.forget(id);
         pausedSessionIds.delete(id);
-        mutedSessionIds.delete(id);
+        resumedSessionIds.delete(id);
         prioritizedSessionIds.delete(id);
         dismissedSessionIds.delete(id);
         sessionHeldTurns.delete(id);
+        dismissedHeldTurns.delete(id);
         latestTurnBySession.delete(id);
         pending.delete(id);
       }
@@ -1823,9 +2212,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       sessions: live,
       sessionStates,
       pausedSessionIds,
-      mutedSessionIds,
       live: liveState,
-      mode: { muted, paused: pause.paused, holding: pending.size },
+      mode: { muted: false, paused: pause.paused, holding: pending.size },
       activeSessionId: null,
       navSelectedId: null,
     });
@@ -1833,6 +2221,22 @@ export async function runDaemon(cfg: Config): Promise<void> {
       preferredSessionId: recitingEvent?.sessionId,
       liveSessionIds: snap?.liveIds,
     });
+
+    // Whose conversation to show, in the order a person would expect: the one
+    // they parked the cursor on, else the one conch is about to speak for, else
+    // the busiest row. Anything is better than nothing, which is what a fresh
+    // daemon had before a first turn landed.
+    // Deliberately NOT the terminal cursor, which drives `preview` instead.
+    //
+    // Two front-ends have independent cursors and only one conversation is
+    // published, so if this followed the TUI's parked row the Mac app would ask
+    // for one session and receive another — measured exactly that: the daemon
+    // published client-dashboard while the app focused asset generator, and the
+    // stack silently fell back to the old pane every time. This chain mirrors
+    // the app's own fallback (active row, else the first), so they agree.
+    const conversationSessionId = nextActiveSessionId
+      ?? orderedRows[0]?.sessionId
+      ?? null;
 
     // Capture either renderer's manual cursor before reading its transcript.
     // Preview production is part of the published model, not theater drawing.
@@ -1845,12 +2249,71 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // The RAW reply is fetched alongside the spoken one. stripMarkdown exists to
     // make text speakable; handing that same string to a GUI is what made every
     // list render as a literal "- " with no blocks at all.
-    const [transcriptReplyRaw, previewRaw] = await Promise.all([
+    // The conversation is read from the same transcript, at the same moment, as
+    // the flattened reply beside it — so a viewer can never show a stack that
+    // disagrees with the line being spoken.
+    const [transcriptReplyRaw, previewRaw, conversation] = await Promise.all([
       contentEvent?.transcriptPath
         ? lastAssistantText(contentEvent.transcriptPath)
         : Promise.resolve(""),
       previewPath ? lastAssistantText(previewPath) : Promise.resolve(""),
+      // Not tied to `contentEvent` like the reply beside it. That is the last
+      // turn conch SPOKE, which is null for a whole daemon lifetime until
+      // something finishes — so on a fresh start the app would show an empty
+      // stack even with sessions full of history sitting right there. The
+      // conversation belongs to whichever session is showing.
+      (() => {
+        const sessionId = contentEvent?.sessionId ?? conversationSessionId;
+        if (!sessionId) return Promise.resolve(null);
+        // Prefer the session's OWN path. `findTranscript` searches Claude's
+        // projects directory by id, which can never locate a Codex rollout —
+        // so every Codex row resolved to nothing and showed no conversation at
+        // all, even while its rows updated live.
+        const path = (contentEvent?.sessionId === sessionId && contentEvent.transcriptPath)
+          || live.find((session) => session.sessionId === sessionId)?.transcriptPath
+          || findTranscript(cfg.claudeDir, sessionId);
+        if (!path) return Promise.resolve(null);
+        return readConversationTail(
+          path,
+          sessionId,
+          isCodexTranscriptPath(path) ? "codex" : "claude",
+        ).catch(() => null);
+      })(),
     ]);
+    // One per visible row. The reads are tail-only and bounded, and doing them
+    // together means a viewer can show whichever session it is focused on
+    // without the daemon having to guess which that is.
+    const conversationsBySession = Object.fromEntries(
+      (await Promise.all(
+        live.slice(0, MAX_PUBLISHED_CONVERSATIONS).map(async (session) => {
+          const path = session.transcriptPath
+            ?? findTranscript(cfg.claudeDir, session.sessionId);
+          if (!path) return null;
+          const read = await readConversationTail(
+            path,
+            session.sessionId,
+            isCodexTranscriptPath(path) ? "codex" : "claude",
+          ).catch(() => null);
+          if (!read || read.order.length === 0) return null;
+          return [
+            session.sessionId,
+            publishedConversation(read, { windowSize: PUBLISHED_CONVERSATION_WINDOW }),
+          ] as const;
+        }),
+      )).filter((entry): entry is NonNullable<typeof entry> => entry !== null),
+    );
+    const sessionContexts = new Map(
+      (await Promise.all(live.map(async (session) => {
+        const path = session.transcriptPath
+          ?? findTranscript(cfg.claudeDir, session.sessionId);
+        if (!path) return null;
+        const context = await readSessionContextUsage(
+          path,
+          isCodexTranscriptPath(path) ? "codex" : "claude",
+        ).catch(() => null);
+        return context ? [session.sessionId, context] as const : null;
+      }))).filter((entry): entry is NonNullable<typeof entry> => entry !== null),
+    );
     const transcriptReplyText = stripMarkdown(transcriptReplyRaw);
     const previewText = stripMarkdown(previewRaw);
     if (shuttingDown) return;
@@ -1861,7 +2324,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // or transcript is being read. Sample at commit so an older full render
       // cannot overwrite the lightweight publisher with stale conversation data.
       const committedLiveState = getLiveState();
-      const replyText = committedLiveState.reading?.text || transcriptReplyText;
+      terminalComposer?.applyDictation(committedLiveState.dictated);
+      const shownReply = panelReplyText(committedLiveState, transcriptReplyText);
       // Absence is authoritative only for a complete registry read. A torn
       // per-session file must not release a cursor that was meant to stay put.
       if (snap?.complete) {
@@ -1881,20 +2345,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
         sessions: live,
         sessionStates,
         pausedSessionIds,
-        mutedSessionIds,
         live: committedLiveState,
-        mode: { muted, paused: pause.paused, holding: pending.size },
+        mode: { muted: false, paused: pause.paused, holding: pending.size },
         activeSessionId: nextActiveSessionId,
         navSelectedId,
-        reply: contentEvent && replyText
+        reply: contentEvent && shownReply.text
           ? {
             sessionId: contentEvent.sessionId,
-            text: replyText,
-            spokenChars: committedLiveState.reading?.spokenChars ?? 0,
+            text: shownReply.text,
+            spokenChars: shownReply.spokenChars,
             ...(transcriptReplyRaw ? { markdown: transcriptReplyRaw } : {}),
           }
           : null,
         panelOpen,
+        contextBySessionId: sessionContexts,
       });
       model.preview = previewForPanelSelection(
         navSelectedId,
@@ -1902,8 +2366,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
         previewText,
         previewRaw,
       );
+      model.conversation = conversation ? publishedConversation(conversation) : null;
+      model.conversations = conversationsBySession;
       model.settingsOverlay = settingsOverlay?.model() ?? null;
       model.sessionActionsOverlay = sessionActionsOverlay?.model() ?? null;
+      model.restoreSessionsOverlay = restoreSessionsOverlay?.model() ?? null;
+      model.sessionStartOverlay = sessionStartOverlay?.model() ?? null;
+      model.terminalComposer = terminalComposer?.model() ?? null;
+      model.terminalQuestion = terminalQuestionController?.model(
+        answerableTerminalQuestion(model),
+      ) ?? null;
       panelOrder = model.rows.map((row) => row.sessionId);
       panelLabels = new Map(model.rows.map((row) => [row.sessionId, row.label]));
       // Keep dismissed metadata available for restore clients; visible rows and
@@ -1917,8 +2389,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
       numberedSessionRows = numberPanelSessionRows(model.rows, live);
       // Read mode state after the async registry snapshot so a slow older redraw
-      // cannot repaint a stale pause/mute banner over a newer toggle.
-      model.mode = { muted, paused: pause.paused, holding: pending.size };
+      // cannot repaint a stale manual banner over a newer toggle.
+      model.mode = { muted: false, paused: pause.paused, holding: pending.size };
+      lastPanelModel = model;
       renderPanel(model);
       lastPublishedPanelState = buildDaemonPublishedState(
         cfg,
@@ -1930,6 +2403,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
         prioritizedSessionIds,
         Date.now(),
         labelForSessionId,
+        new Map(
+          live.flatMap((session) =>
+            session.transcriptPath ? [[session.sessionId, session.transcriptPath] as const] : []
+          ),
+        ),
+        sessionContexts,
       );
       publishedStateWriter.request();
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
@@ -1969,6 +2448,33 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
   }
 
+  /**
+   * What a session actually wants from you.
+   *
+   * This used to print the notification's internal type with the underscores
+   * swapped for spaces, so a session sat there saying "permission prompt". It
+   * is wrong twice over: Claude Code fires `permission_prompt` for an
+   * `AskUserQuestion` as well, so a plain multiple-choice question announced
+   * itself as a permission request — Tyler saw exactly that and said so — and
+   * even when it IS a permission prompt, the internal name is not the words a
+   * person would use.
+   *
+   * "Needs an answer" is true of both, which is the point: one honest phrase
+   * beats two guesses at which kind of asking this is.
+   */
+  function describeNeed(ntype: string | undefined): string | undefined {
+    switch (ntype) {
+      case "permission_prompt":
+      case "elicitation_dialog":
+        return "needs an answer";
+      case "idle_prompt":
+        // Already covered by the row being idle; saying it twice adds nothing.
+        return undefined;
+      default:
+        return ntype ? ntype.replace(/_/g, " ") : undefined;
+    }
+  }
+
   function setSessionState(
     sessionId: string,
     label: string,
@@ -1981,8 +2487,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // Legacy clients without eventAt may still work, but their latch is oldest
     // possible truth and can never clobber a timestamped hook or registry state.
     const at = eventTimestamp(eventAt);
-    const incoming = { label, status, detail, at, ...(review ? { review } : {}) };
-    if (latestLatchedState(sessionStates.get(sessionId), incoming) !== incoming) return false;
+    const prior = sessionStates.get(sessionId);
+    const carried = carriedReview(prior, status, review);
+    const incoming = {
+      label,
+      status,
+      detail: detail ?? carried?.summary,
+      at,
+      ...(carried ? { review: carried } : {}),
+    };
+    if (latestLatchedState(prior, incoming) !== incoming) return false;
     sessionStates.set(sessionId, incoming);
     void renderSessionPanel();
     return true;
@@ -2001,7 +2515,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
       ...(lastTurn ? [lastTurn] : []),
       ...(recitingEvent ? [recitingEvent] : []),
       ...(handlingEvent ? [handlingEvent] : []),
-      ...resumeDigestEscrow.events(),
     ]);
     const oldPrefix = `${oldLabel}:`;
     for (const event of events) {
@@ -2021,166 +2534,23 @@ export async function runDaemon(cfg: Config): Promise<void> {
     );
   }
 
-  function setMuted(next: boolean): void {
-    muted = next;
-    writeState({ muted, paused: pause.paused }); // persist so a restart doesn't un-mute
-    void renderSessionPanel(); // visual feedback must not wait on fallible audio
-    log(muted ? "muted — announcements and mic off (m or `conch unmute` to resume)" : "unmuted");
-    setState(restState());
-  }
-
-  async function announceMuted(next: boolean): Promise<void> {
-    await speak(cfg, muteAcknowledgement(next));
-  }
-
-  async function listenForResumeDigest(
-    generation: number,
-    canContinue: () => boolean,
-  ): Promise<{ text: string; error?: string }> {
-    let digestActive: typeof activeDictation = null;
-    let closing = false;
-    let resolveDone!: () => void;
-    const done = new Promise<void>((resolve) => {
-      resolveDone = resolve;
-    });
-
-    if (!canContinue() || !(await reserveNormalMic())) {
-      return { text: "", error: "daemon is shutting down" };
-    }
-    if (!canContinue() || pause.interrupted(generation)) {
-      normalMicReserved = false;
-      return { text: "", error: "resume was interrupted" };
-    }
-
-    resetConversationTranscriptPrefix();
-    setState("listening", "who first");
-    micOpen = true;
-    try {
-      return await listenOnce(
-        {
-          ...cfg,
-          listenWindowSecs: Math.min(cfg.listenWindowSecs, 10),
-        },
-        listenHooks("who first", () => ""),
-        {
-          tag: "digest",
-          onSessionStarted(session) {
-            digestActive = {
-              session,
-              requestExternal(_action, barrierReason) {
-                if (closing || session.state !== "running") return;
-                closing = true;
-                session.requestBarrier(barrierReason ?? "resume-digest-spacebar");
-              },
-              done,
-            };
-            activeDictation = digestActive;
-            normalMicReserved = false;
-            micOpen = true;
-          },
-        },
-      );
-    } catch (error) {
-      return {
-        text: "",
-        error: error instanceof Error ? error.message : String(error),
-      };
-    } finally {
-      normalMicReserved = false;
-      if (activeDictation === digestActive) activeDictation = null;
-      micOpen = false;
-      resolveDone();
-    }
-  }
-
-  async function handlePreparedResumeDigest(
-    owner: TurnEvent,
-    result: PauseResumeResult,
-  ): Promise<void> {
-    const plan = resumeDigestEscrow.begin(owner);
-    if (!plan) {
-      // A newer pause/resume or settings modal already restored/consumed this
-      // stale resume's escrow. Its acknowledgement must not speak twice.
-      log("resume digest plan already restored or consumed");
-      return;
-    }
-
-    for (const sessionId of pausedSessionIds) {
-      resumeDigestEscrow.invalidate(sessionId);
-    }
-    for (const sessionId of mutedSessionIds) {
-      resumeDigestEscrow.forget(sessionId);
-    }
-    const events = plan.events;
-    let digestStopRequested = false;
-    const digestInterrupted = (): boolean => {
-      if (consumeStopKey()) digestStopRequested = true;
-      return digestStopRequested
-        || plan.cancelled
-        || plan.invalidated
-        || shuttingDown
-        || pause.interrupted(plan.generation);
-    };
-    const enqueueFullReplay = async (fallbackEvents: readonly TurnEvent[]) => {
-      // A newer pause/resume restored this same plan to pending; it now owns
-      // the work, so this stale handler must neither duplicate nor announce it.
-      if (plan.cancelled) return;
-      resumeDigestEscrow.finish(plan);
-      // Queue first: even if the spoken count fails, the exact held work stays
-      // reachable and will resume after this handler unwinds.
-      for (const event of fallbackEvents) enqueue(event);
-      if (
-        !digestStopRequested
-        && !pause.paused
-        && !muted
-        && !shuttingDown
-      ) {
-        await pause.announceResumed({
-          replayed: fallbackEvents.length,
-          dropped: result.dropped + (result.replayed - fallbackEvents.length),
-          cancelled: false,
-        });
-      }
-    };
-
-    try {
-      if (
-        digestInterrupted()
-        || !shouldUseResumeDigest(cfg.resumeDigest, events, pausedSessionIds)
-      ) {
-        await enqueueFullReplay(events);
-        return;
-      }
-
-      await runResumeDigest(events, plan.briefing, {
-        speak: async (text) => {
-          setState("speaking");
-          await speak(cfg, text);
-        },
-        listen: async () => {
-          await micCue(cfg, "open");
-          if (digestInterrupted()) {
-            return { text: "", error: "resume was interrupted" };
-          }
-          return listenForResumeDigest(
-            plan.generation,
-            () => !digestInterrupted(),
-          );
-        },
-        enqueue,
-        fallback: enqueueFullReplay,
-        interrupted: digestInterrupted,
-      });
-    } finally {
-      resumeDigestEscrow.finish(plan);
-    }
-  }
-
   async function handle(event: TurnEvent): Promise<void> {
+    // Wait for the voice engine only when this event will SPEAK.
+    //
+    // `drain` used to await it before touching the queue, which meant nothing
+    // moved until Kokoro had warmed up — measured at 67 SECONDS on a cold start
+    // ("warmup 66968ms"), and every daemon restart pays it again. An inject
+    // does not speak, so it was queued behind a text-to-speech model for over a
+    // minute, the socket never replied, and the phone reported "Couldn't reach
+    // the Mac". Restarting the daemon to pick up a fix re-armed the same trap,
+    // which is why this looked intermittent and session-specific for hours.
+    // Neither an inject nor an interrupt speaks, and both are things a person
+    // is waiting on right now — an interrupt most of all, since its whole value
+    // is arriving before the agent does more of what you are stopping.
+    if (event.type !== "inject" && event.type !== "interrupt") await ttsStartup;
     stopKey = false; // a stale press from a past exchange must not skip this one
     micOpen = false; // no listen in flight yet for this event
-    if (event.type === "mute") return muted ? announceMuted(true) : undefined;
-    if (event.type === "unmute") return !muted ? announceMuted(false) : undefined;
+    if (event.type === "interrupt") return void (await interruptSession(event));
     if (event.type === "pause") return pause.paused ? pause.announcePaused() : undefined;
     if (event.type === "resume") {
       if (sessionModalOpen() || pause.paused) return;
@@ -2188,10 +2558,22 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const result = transition
         ? await transition
         : { replayed: 0, dropped: 0, cancelled: false };
-      if (result.digested) return handlePreparedResumeDigest(event, result);
       return pause.announceResumed(result);
     }
     if (event.type === "inject") {
+      // Answering STOPS the reading.
+      //
+      // Typing into Claude Code directly interrupts a read, because conch
+      // watches the transcript for a manual reply. A message sent through conch
+      // did not: the reading paused while the keystrokes went in and then
+      // carried on, so the one route conch fully controls behaved worse than
+      // the one it merely observes. Tyler: "if i send a message via text to a
+      // session it should stop reading".
+      //
+      // Sending IS the interruption — you have already moved on, and no answer
+      // to the previous turn is worth hearing over your own next question.
+      speech.cancelCurrent();
+
       // The phone's voice path: text transcribed ON the phone, delivered into
       // the named session through the exact machinery Mac dictation uses —
       // exact-pane focus, confirm-by-transcript, clipboard fallback, telemetry.
@@ -2212,7 +2594,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const speechCfg = event.voice ? { ...cfg, ttsVoices: [event.voice] } : cfg;
       // Explicit previews bypass both modal pause gating and a label-keyed
       // persisted pin; an empty selection label makes the one-item ring win.
-      return speak(speechCfg, event.announce, event.voice ? "" : event.label);
+      // Asked for out loud, so manual does not silence it.
+      return speak(speechCfg, event.announce, event.voice ? "" : event.label, true);
     }
     handlingEvent = event;
     handlingPauseGeneration = pause.capture();
@@ -2239,8 +2622,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
       log(`"${event.label}" still has live background work — downgrading to working`);
     }
 
-    const audibleTurn = shouldHandleTurnAudibly(event, cfg.workingMic)
-      && audioLease.sink === "mac";
+    // Quiet state belongs to the conversation, not the device currently
+    // speaking it. The phone owns playback only; it must not bypass a scoped
+    // manual/dismiss gate and make that session audible from another surface.
+    const controlledTurn = shouldHandleTurnAudibly(event, cfg.workingMic);
+    const audibleTurn = controlledTurn && audioLease.sink === "mac";
     if (
       audibleTurn
       && sessionGoneFromSnapshot(
@@ -2253,10 +2639,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
       eventOrder.forget(event.sessionId);
       latestTurnBySession.delete(event.sessionId);
       pausedSessionIds.delete(event.sessionId);
-      mutedSessionIds.delete(event.sessionId);
+      resumedSessionIds.delete(event.sessionId);
       prioritizedSessionIds.delete(event.sessionId);
       dismissedSessionIds.delete(event.sessionId);
       sessionHeldTurns.delete(event.sessionId);
+      dismissedHeldTurns.delete(event.sessionId);
       pending.delete(event.sessionId);
       if (lastTurn?.sessionId === event.sessionId) lastTurn = null;
       void renderSessionPanel();
@@ -2265,7 +2652,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (shuttingDown || interruptedByPause() || consumeStopKey()) return;
     if (!eventOrder.isCurrent(event)) return;
 
-    // Dashboard status — visual, and updated even while muted/paused. Ordinary
+    // Dashboard status — visual, and updated even while manual. Ordinary
     // `working` and all `needs-you` events are visual-only. A Stop reclassified
     // as background-working may opt back into the normal bell/voice/mic path.
     if (event.type === "working") {
@@ -2273,7 +2660,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (!audibleTurn) return;
     }
     if (event.type === "needs-you") {
-      const kind = event.ntype && event.ntype !== "idle_prompt" ? event.ntype.replace(/_/g, " ") : undefined;
+      const kind = describeNeed(event.ntype);
       setSessionState(event.sessionId, event.label, "needs", kind, event.eventAt);
       return; // stripped: no bell, no announcement, no permission mic
     }
@@ -2286,59 +2673,51 @@ export async function runDaemon(cfg: Config): Promise<void> {
       event.review,
     )) return;
 
-    // Mute stamps at enqueue/control time, so a quick unmute cannot resurrect a
-    // turn that completed while quiet. Keep the status update above visible.
-    if (forgottenTurns.delete(event)) {
-      if (event.type === "wake" || event.type === "recite") {
-        return log(`cancelled queued ${event.type} for "${event.label}"`);
-      }
-      if (audibleTurn) lastTurn = event;
-      return log(`muted — forgot queued turn for "${event.label}"`);
+    if (cancelledAudioCommands.delete(event)) {
+      return log(`cancelled queued ${event.type} for "${event.label}"`);
     }
 
-    const controlDisposition = gateTurnForControls(event, audibleTurn, {
-      globalMuted: muted,
+    const controlDisposition = gateTurnForControls(event, controlledTurn, {
       globalPaused: pause.paused,
       settingsOpen: explicitQuietOverrideBlocked(),
       globalHeldTurns: pending,
       pausedSessionIds,
-      mutedSessionIds,
+      resumedSessionIds,
       sessionHeldTurns,
+      dismissedSessionIds,
+      dismissedHeldTurns,
     });
     if (controlDisposition) {
-      if (audibleTurn || event.ntype === "idle_prompt") lastTurn = event;
-      if (controlDisposition === "session-muted") {
-        return log(`🔇 "${event.label}" muted — staying quiet`);
+      if (controlDisposition === "session-dismissed") {
+        return log(`dismissed — holding latest turn for "${event.label}"`);
       }
-      if (controlDisposition === "global-muted") {
-        return log(`muted — staying quiet for "${event.label}"`);
-      }
+      if (controlledTurn || event.ntype === "idle_prompt") lastTurn = event;
       if (controlDisposition === "session-paused") {
-        return log(`⏸ "${event.label}" paused — park it and press p to resume`);
+        return log(`⏸ "${event.label}" is manual — park it and press p for auto`);
       }
       void renderSessionPanel();
-      return log(`paused — holding "${event.label}" (${pending.size} waiting)`);
+      return log(`manual — holding "${event.label}" (${pending.size} waiting)`);
     }
 
     // Nobody's there: don't announce to an empty room, don't open the mic,
     // don't burn battery on sox/whisper. Telegram (the other hook) still
     // pings the phone. `conch wake` always cuts through.
     // Only reach for ioreg when the away-timer is actually armed (default off) —
-    // muted short-circuits without spawning anything.
-    if (event.type !== "wake" && event.type !== "recite" && (muted || cfg.awayAfterSecs)) {
-      const idle = muted ? 0 : (await idleSeconds() ?? 0); // null probe → 0 → not away (fail safe)
-      if (muted || idle >= cfg.awayAfterSecs) {
-        log(`${muted ? "muted" : `away (idle ${Math.round(idle / 60)}m)`} — staying quiet for "${event.label}"`);
+    if (event.type !== "wake" && event.type !== "recite" && cfg.awayAfterSecs) {
+      const idle = await idleSeconds() ?? 0; // null probe → 0 → not away (fail safe)
+      if (idle >= cfg.awayAfterSecs) {
+        log(`away (idle ${Math.round(idle / 60)}m) — staying quiet for "${event.label}"`);
         if (audibleTurn || event.ntype === "idle_prompt") lastTurn = event; // wake still finds it
         return;
       }
     }
 
     if (event.type === "recite") {
+      const rememberedTurn = latestVisibleTurn();
       const target: TurnEvent | null = event.sessionId
         ? event
-        : lastTurn
-          ? { ...lastTurn, type: "recite", announce: "" }
+        : rememberedTurn
+          ? { ...rememberedTurn, type: "recite", announce: "" }
           : null;
       if (!target) {
         log("nothing to recite — no session has spoken yet");
@@ -2374,8 +2753,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         log(`recite -> "${target.label}"`);
         if (cfg.revealOnTurn && target.pid) void revealSessionWindow(target.pid);
         resetReadingProgress();
-        setState("speaking", target.label);
-        await speak(cfg, `${target.label}:`, target.label);
+        await speak(cfg, `${target.label}:`, target.label, true);
         if (shuttingDown || interruptedByPause()) return;
         // event.announce is intentionally empty, so conversationLoop starts at
         // sentence zero. autoTurn=false avoids the keyboard-activity mic gate.
@@ -2398,10 +2776,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
 
     if (event.type === "wake") {
-      const target = resolveWakeTarget(event, lastTurn); // named wake carries its own session
+      const target = resolveWakeTarget(event, latestVisibleTurn()); // named wake carries its own session
       if (!target) {
         log("wake with nothing to wake — no session has announced yet");
-        return void (await speak(cfg, "Nothing to wake. No session has spoken yet."));
+        return void (await speak(cfg, "Nothing to wake. No session has spoken yet.", "", true));
       }
       recitingEvent = target;
       try {
@@ -2414,13 +2792,48 @@ export async function runDaemon(cfg: Config): Promise<void> {
         if (targetGone) {
           if (lastTurn?.sessionId === target.sessionId) lastTurn = null;
           log("wake target closed");
-          return void (await speak(cfg, "That session is closed."));
+          return void (await speak(cfg, "That session is closed.", "", true));
         }
-        log(`wake -> "${target.label}"`);
+        // Manual mode is a promise that conch does nothing you did not ask
+        // for, and opening the mic is the loudest thing it does. Anything conch
+        // cannot attribute to a person pressing something is refused, exactly
+        // like an announcement — not just agent calls, because the whole
+        // complaint was a mic that opened with no visible cause. Default-deny
+        // is what makes that a guarantee rather than a list of known senders.
+        //
+        // Per-session manual counts as manual. Wakes are otherwise treated as
+        // explicit overrides that bypass `pausedSessionIds` entirely, which is
+        // right for a person and wrong for everyone else: without this an agent
+        // could open the mic on the one session you had specifically quieted.
+        const sessionIsManual = pause.paused
+          || pausedSessionIds.has(target.sessionId);
+        if (sessionIsManual && event.origin !== "user") {
+          // "refused", not "held": nothing is stored to replay later.
+          log(
+            `manual — refused wake for "${target.label}"`
+            + ` (${event.origin ?? "no origin"}, not you)`,
+          );
+          return;
+        }
+        log(`wake -> "${target.label}" (${event.origin ?? "unattributed"})`);
         if (cfg.revealOnTurn && target.pid) void revealSessionWindow(target.pid); // surface it, no focus steal
         resetReadingProgress();
-        setState("speaking", target.label);
-        await speak(cfg, `Mic open for ${target.label}.`, target.label);
+        // The courtesy line must never delay the thing it is announcing.
+        //
+        // The mic opens AFTER this resolves, so a sick TTS holds it shut:
+        // Kokoro has been hard-restarting on this machine and falling back to
+        // `say`, which itself has timed out at eighteen seconds. Tyler pressed
+        // the mic button and "nothing happened" — the wake had arrived and been
+        // handled, and conch was still busy telling him the mic was open.
+        //
+        // Bounded rather than dropped, and still awaited: opening the mic while
+        // the confirmation plays is what makes the loop hear itself, which is
+        // the one thing the audio gate exists to prevent. Three seconds is long
+        // enough for four words and short enough to feel like a button.
+        await Promise.race([
+          speak(cfg, `Mic open for ${target.label}.`, target.label, true),
+          Bun.sleep(3_000),
+        ]);
         if (interruptedByPause()) return;
         await conversationLoop(target, "", undefined, undefined, undefined, undefined, undefined, undefined, false, pauseGeneration);
       } finally {
@@ -2619,15 +3032,22 @@ export async function runDaemon(cfg: Config): Promise<void> {
       allowBlindFallback?: boolean;
     } = {},
   ): Promise<boolean> {
+    if (event.transcriptPath) {
+      try {
+        const conversation = await readConversationTail(
+          event.transcriptPath,
+          event.sessionId,
+          isCodexTranscriptPath(event.transcriptPath) ? "codex" : "claude",
+        );
+        const reply = choiceReplyForConversation(text, conversation);
+        if (reply !== text) log(`matched spoken choice -> ${JSON.stringify(reply)}`);
+        text = reply;
+      } catch {}
+    }
     if (options.allowNameAddressing !== false) {
       const addressed = await resolveNameAddressRoute(cfg.claudeDir, event, text);
       if (addressed.addressed) {
         log(`addressed "${addressed.addressed.name}" -> "${addressed.addressed.label}"`);
-      }
-      if (addressed.kind === "wake") {
-        if (beforeInject && !(await beforeInject())) return false;
-        enqueue(addressed.event);
-        return true;
       }
       event = addressed.event;
       text = addressed.text;
@@ -2700,18 +3120,71 @@ export async function runDaemon(cfg: Config): Promise<void> {
         chars: text.length,
         ...(reason ? { reason } : {}),
       });
+      const failure = clipboardFallbackError({
+        sessionId: event.sessionId,
+        label: event.label,
+        cwd: event.cwd,
+        reason,
+      });
+      recordDaemonError(
+        failure.operation,
+        failure.message,
+        failure.sessionId,
+        failure.state,
+      );
       if (beforeInject && !(await beforeInject())) return false;
-      await speak(cfg, "Couldn't reach the session's window — your words are on the clipboard, just paste.", event.label);
-      return true;
+      // Name the actual obstacle. A modal dialog on the Mac blocks every
+      // AppleScript call for as long as it is up, so this is not a session
+      // problem and not something retrying fixes — it stays broken until
+      // someone dismisses the popup, and saying so is the difference between
+      // a fixable minute and a baffling one.
+      await speak(
+        cfg,
+        reason === "automation-permission-denied"
+          ? "macOS is blocking conch from controlling Terminal. Turn conch on under Privacy and Security, Automation."
+          : reason === "system-dialog-blocking"
+            ? "A system dialog is open on the Mac and it's blocking me. Dismiss it and send again."
+            : "Couldn't reach the session's window — your words are on the clipboard, just paste.",
+        event.label,
+      );
+      // NOT delivered. The words are on a clipboard, not in the session, and
+      // saying otherwise is the failure that cost Tyler a real message: the
+      // phone was told "delivered", cleared his draft, and the text existed
+      // only on a Mac he was nowhere near. Whoever is standing at the machine
+      // can still paste — that is what the spoken line above is for — but the
+      // caller must not be told this reached the agent.
+      return false;
     }
     if (via === "none") {
       log(`injected via ${via}`);
       if (beforeInject && !(await beforeInject())) return false;
       await speak(cfg, "Heard you, but I could not find the session's pane.", event.label);
-      return true;
+      return false;
     }
     if (beforeCount === null) {
       log(`injected into "${event.label}" via ${via}`); // no transcript to confirm against — trust it
+      return true;
+    }
+
+    // A busy session cannot be confirmed this way, and demanding it anyway is a
+    // trap. Both agents accept typed input mid-turn and queue it themselves,
+    // but neither writes the prompt to its transcript until it STARTS that
+    // turn — so the mark cannot move, every retry re-presses Return into a
+    // working session, and a message that queued perfectly gets reported as
+    // failed. The phone then keeps the draft and you send it twice.
+    //
+    // Only routes that put real keystrokes into a real pane qualify: a blind
+    // or clipboard fallback has no such evidence and must still be proven.
+    const keysLanded = via === "tmux" || via === "osascript-focused";
+    if (keysLanded && panelSessions.get(event.sessionId)?.status === "busy") {
+      log(`injected into "${event.label}" via ${via} — queued behind the running turn`);
+      recordTelemetry("inject", {
+        route: via,
+        confirmed: true,
+        queued: true,
+        chars: text.length,
+        latencyMs: Date.now() - injectStartedAt,
+      });
       return true;
     }
 
@@ -2752,7 +3225,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
     await toClipboard(text);
     if (beforeInject && !(await beforeInject())) return false;
     await speak(cfg, "I typed that but it didn't send. Your words are on the clipboard — just paste and press return.", event.label);
-    return true;
+    // Three attempts and the transcript never grew, so the text is sitting
+    // unsent in an input box at best. 15 of Tyler's sends landed here today
+    // against 57 confirmed — a 21% failure rate reported to him as success.
+    return false;
   }
 
   /** Shared handling for anything heard while reading aloud (gap or barge-in). */
@@ -2795,6 +3271,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
         return "handled";
       case "prompt":
         for (const id of traceIds) updateRecorderTrace(id, { intent: "prompt", bufferCountAfterReduction: 0 });
+        // A composer dictation goes BACK to the app, not into the session.
+        // Same capture, same transcription, different destination — which is
+        // the whole feature: it lets spoken and typed text be one message
+        // instead of two, and lets you edit what you said before sending it.
+        if (event.compose) {
+          publishDictation(text, event.sessionId);
+          log(`dictated → composer ${JSON.stringify(text)}`);
+          return "handled";
+        }
         await deliver(event, text, diagnosticIds ?? diagnosticId, beforeInject);
         return "handled";
       default:
@@ -3304,7 +3789,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
         }
         case "repeat":
           emitTerminalRows(action);
-          setState("speaking", event.label);
           await speak(cfg, lastSpoken, event.label);
           if (interruptedByPause()) return "done";
           return "resume";
@@ -3324,7 +3808,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
             return "resume";
           }
           lastSpoken = chunk;
-          setState("speaking", event.label);
           await speak(cfg, chunk, event.label);
           if (interruptedByPause()) return "done";
           cursor += cfg.continueSentences;
@@ -3364,6 +3847,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
     }
 
+    // The phone owns the EAR as well as the voice. This is the main listen
+    // path and it never consulted the lease: the log shows the claim landing
+    // and the Mac opening its mic in the same second anyway, then both machines
+    // transcribing Tyler and both injecting. The gap was that only the
+    // reading-gap branch of this loop ever called reserveNormalMic.
+    if (audioLease.isPhone()) {
+      log(`mic held — the phone has the ear ("${event.label}")`);
+      emitRecorderTraces(
+        seededSegments.flatMap((segment) => segment.diagnosticIds),
+        { intent: "text-handled", bufferCountAfterReduction: null },
+      );
+      return;
+    }
     if (!initialDictationCapture && !deferredInitialExternal) {
       await micCue(cfg, "open");
       if (shuttingDown || interruptedByPause()) {
@@ -3979,12 +4475,36 @@ export async function runDaemon(cfg: Config): Promise<void> {
     else log(`sent ${verdict === "approve" ? "Enter" : "Escape"} via ${via}`);
   }
 
+  /**
+   * Stop a session mid-turn.
+   *
+   * Escape is what a person presses, and it is the only signal both Claude Code
+   * and Codex agree on — neither exposes a "cancel" an outside process could
+   * call, so conch presses the key the same way you would. Watching an agent go
+   * down the wrong path with no way to stop it from your phone was the gap.
+   *
+   * The pid comes from the registry rather than the caller: a phone knows a
+   * session by its id, and nothing off-machine should be able to name a process
+   * to send keystrokes to.
+   */
+  async function interruptSession(event: TurnEvent): Promise<void> {
+    const known = panelSessions.get(event.sessionId);
+    const label = known?.name || event.label || event.sessionId.slice(0, 8);
+    const { via } = await injectKey(cfg, known?.pid, "Escape");
+    if (via === "none") {
+      log(`⚠ could not reach "${label}" to stop it`);
+      await speak(cfg, `Couldn't reach ${label} to stop it.`, label);
+      return;
+    }
+    log(`⏹ stopped "${label}" via ${via}`);
+  }
+
   const daemonSettingsPath = settingsPathFor();
   const configController = createConfigController(cfg, {
     settingsPath: daemonSettingsPath,
     onLiveChange: (key, value) => {
       if (key === "meeting-autopause") meetingMic?.setEnabled(value === true);
-      if (key === "phone" || key === "phone-port") syncPhoneBridge();
+      if (key === "phone" || key === "phone-port" || key === "phone-relay-url") syncPhoneBridge();
     },
   });
   // These controllers own settings/session-action data and side effects for
@@ -3998,6 +4518,49 @@ export async function runDaemon(cfg: Config): Promise<void> {
     onClose: () => settingsPause.close(),
     onChange: () => void renderSessionPanel(),
   });
+  const injectTerminalPrompt = (
+    target: Readonly<{ sessionId: string; label: string }>,
+    text: string,
+  ): boolean => {
+    const session = panelSessions.get(target.sessionId);
+    if (!session || dismissedSessionIds.has(target.sessionId)) return false;
+    enqueue({
+      type: "inject",
+      sessionId: session.sessionId,
+      label: labelForSessionId(session.sessionId),
+      cwd: session.cwd,
+      pid: session.pid,
+      announce: text,
+      transcriptPath: session.transcriptPath
+        ?? findTranscript(cfg.claudeDir, session.sessionId),
+      origin: "user",
+    });
+    log(`terminal prompt → "${labelForSessionId(session.sessionId)}"`);
+    return true;
+  };
+  const closeLiveSession = async (sessionId: string): Promise<void> => {
+    let session = panelSessions.get(sessionId);
+    if (!session) {
+      session = (await registrySnapshot(cfg.claudeDir))?.infos.find(
+        (candidate) => candidate.sessionId === sessionId,
+      );
+    }
+    if (!session) throw new Error("session is not live");
+    if (!session.pid) {
+      if (session.backend === "codex") {
+        reportedMissingCodexPid.add(session.sessionId);
+        recordDaemonError(
+          "session-close",
+          "Codex row has no pid",
+          session.sessionId,
+          { cwd: session.cwd ?? "", status: session.status ?? "unknown" },
+        );
+      }
+      throw new Error("session has no routable pid");
+    }
+    await closeTerminalSession(session.pid);
+    void renderSessionPanel();
+  };
   const sessionActions: SessionActionsController = {
     voiceCandidates: () => availableVoiceRing(cfg),
     effectiveVoice: (target) => voiceFor(cfg, target.label),
@@ -4039,25 +4602,54 @@ export async function runDaemon(cfg: Config): Promise<void> {
       log(`renamed "${target.label}" -> "${renamed.label}"${
         renamed.voiceMigrated ? " (voice pin migrated)" : ""
       }`);
+      void renameProviderSession(cfg, target, renamed.label).then((provider) => {
+        if (provider.kind === "delivered") {
+          log(`synced Claude Code label via ${provider.via}`);
+        } else if (provider.kind === "unroutable") {
+          recordDaemonError(
+            "session-rename",
+            `Conch renamed the session, but Claude Code did not: ${provider.reason}`,
+            target.sessionId,
+            { label: renamed.label, backend: target.backend ?? "claude" },
+          );
+        }
+      }).catch((error) => {
+        recordDaemonError(
+          "session-rename",
+          `Conch renamed the session, but Claude Code did not: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          target.sessionId,
+          { label: renamed.label, backend: target.backend ?? "claude" },
+        );
+      });
       void renderSessionPanel();
       return renamed.label;
     },
     dismiss: (target) => {
-      // Hide before the mute helper repaints, so no intermediate
-      // muted-but-visible row flashes behind the closing modal.
       dismissedSessionIds.add(target.sessionId);
+      if (lastTurn?.sessionId === target.sessionId) lastTurn = null;
       panelOrder = panelOrder.filter((sessionId) => sessionId !== target.sessionId);
       panelLabels.delete(target.sessionId);
-      speech.cancelCurrent();
+      pause.interrupt({
+        sessionId: target.sessionId,
+        hold: dismissedHeldTurns,
+        preserveHeld: true,
+      });
       for (let index = queue.length - 1; index >= 0; index--) {
         const queued = queue[index]!;
         if (queued.type === "speak" && queued.sessionId === target.sessionId) {
           queue.splice(index, 1);
         }
       }
+      markQueuedWakesForControl(queue, cancelQueuedAudioCommand, target.sessionId);
       theaterNavigation.release();
-      setSessionMutedWithDigest(target.sessionId, true);
       log(`dismissed "${target.label}" — announcements stopped; session keeps running`);
+      void renderSessionPanel();
+    },
+    close: async (target) => {
+      await closeLiveSession(target.sessionId);
+      log(`closed "${target.label}" cleanly`);
     },
     restore: restoreDismissedSession,
   };
@@ -4067,6 +4659,32 @@ export async function runDaemon(cfg: Config): Promise<void> {
     onClose: () => settingsPause.close(),
     onChange: () => void renderSessionPanel(),
   });
+  restoreSessionsOverlay = new RestoreSessionsOverlay({
+    controller: sessionActions,
+    onOpen: () => settingsPause.open(),
+    onClose: () => settingsPause.close(),
+    onChange: () => void renderSessionPanel(),
+  });
+  sessionStartOverlay = new SessionStartOverlay({
+    controller: {
+      start: async (request) => {
+        await startTerminalSession(request);
+        log(`started fresh ${request.backend} session in ${request.cwd ?? homedir()}`);
+        void renderSessionPanel();
+      },
+    },
+    defaultCwd: homedir(),
+    onOpen: () => settingsPause.open(),
+    onClose: () => settingsPause.close(),
+    onChange: () => void renderSessionPanel(),
+  });
+  terminalComposer = new TerminalComposer({
+    controller: { submit: injectTerminalPrompt },
+    onChange: () => void renderSessionPanel(),
+  });
+  terminalQuestionController = new TerminalQuestionController(
+    () => void renderSessionPanel(),
+  );
   const enrichSocketAudioCommand = (event: InstantAudioCommand): InstantAudioCommand => {
     const session = panelSessions.get(event.sessionId);
     const known = latestTurnBySession.get(event.sessionId)
@@ -4082,8 +4700,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const socketTurnCallbacks: SocketTurnEventCallbacks = {
     busy: () => busy,
     stopSpacebar: () => stopReciting("spacebar"),
-    setSessionPaused: setSessionPausedWithDigest,
-    setSessionMuted: setSessionMutedWithDigest,
+    setSessionPaused: (sessionId, paused) => instantControls.setSessionPaused(sessionId, paused),
+    isDismissedSession: (sessionId) => dismissedSessionIds.has(sessionId),
     enrichAudioCommand: enrichSocketAudioCommand,
     enqueueInstant: (event) => instantControls.enqueueInstant(event),
     enqueue,
@@ -4094,16 +4712,107 @@ export async function runDaemon(cfg: Config): Promise<void> {
     targetForSessionId: sessionActionTarget,
     isDismissed: (sessionId) => dismissedSessionIds.has(sessionId),
   };
+  const runtimeControlDispatchOptions: RuntimeControlDispatchOptions = {
+    listResumable: (message) => readResumableSessionsResult({
+      ...(message.query === undefined ? {} : { query: message.query }),
+      ...(message.limit === undefined ? {} : { limit: message.limit }),
+      ...(process.env.CONCH_CONFIG_DIR === undefined
+        ? {}
+        : { configDir: process.env.CONCH_CONFIG_DIR }),
+      ...(process.env.CLAUDE_CONFIG_DIR === undefined
+        ? {}
+        : { claudeHome: cfg.claudeDir }),
+    }),
+    readCapabilities: (message) => {
+      const observations: AgentCapabilityObservation[] = [];
+      const conversation = message.sessionId
+        ? lastPublishedPanelState?.conversations?.[message.sessionId]
+        : undefined;
+      for (const item of conversation?.items ?? []) {
+        if (item.tool?.kind !== "mcp_tool_call") continue;
+        const match = /^mcp__(.+?)__(.+)$/.exec(item.tool.wireName ?? "");
+        if (!match) continue;
+        observations.push({
+          kind: "mcp-tool",
+          serverName: match[1]!,
+          toolName: match[2]!,
+          sessionId: message.sessionId!,
+          ...(item.at === undefined ? {} : { at: item.at }),
+        });
+      }
+      // An empty cwd means "the session's own directory". A client that can
+      // already name a session should not also have to know its filesystem
+      // path — the daemon holds that, and making the app carry it would mean
+      // publishing a path on every row for one deliberate lookup.
+      //
+      // But it FAILS rather than guessing. Falling back to the home directory
+      // produced a coherent inventory of somewhere else, attributed to this
+      // session and undetectable from the UI — the session may have no
+      // recorded cwd, or may have exited between the app rendering its row and
+      // this request arriving. A missing inventory is honest; another
+      // directory's inventory wearing this session's name is not.
+      const resolved = message.cwd.trim()
+        || panelSessions.get(message.sessionId ?? "")?.cwd
+        || "";
+      if (!resolved) {
+        throw new Error(
+          "that session has no known working directory — conch will not "
+          + "inventory a different one in its name",
+        );
+      }
+      const cwd = resolved;
+      return readAgentCapabilities({
+        backend: message.backend,
+        cwd,
+        ...(message.sessionId === undefined ? {} : { sessionId: message.sessionId }),
+        observations,
+        ...(process.env.CONCH_CONFIG_DIR === undefined
+          ? {}
+          : { configDir: process.env.CONCH_CONFIG_DIR }),
+        ...(message.backend !== "claude" || process.env.CLAUDE_CONFIG_DIR === undefined
+          ? {}
+          : { claudeHome: cfg.claudeDir }),
+      });
+    },
+    start: (message) => startTerminalSession({
+      ...message,
+      // Read at start time, so changing the setting affects the next session
+      // you launch rather than needing a daemon restart.
+      bypassPermissions: cfg.bypassPermissions,
+    }),
+    folderTrusted: (cwd) => claudeFolderTrusted(cwd),
+    close: closeLiveSession,
+    report: (message) => {
+      appendConchError(
+        {
+          source: message.source,
+          operation: message.operation,
+          message: message.message,
+          ...(message.sessionId ? { sessionId: message.sessionId } : {}),
+          state: message.state,
+        },
+        lastPublishedPanelState,
+      );
+    },
+  };
   const server = createServer({ allowHalfOpen: true }, (sock) => {
     let buf = "";
     let handled = false;
     sock.on("error", () => {}); // a hook killed mid-write (ECONNRESET) must not throw
-    const handleLine = (line: string): void => {
+    const handleLine = async (line: string): Promise<void> => {
       if (handled) return;
       handled = true;
       let response: ControlResponse | undefined;
       try {
         const value: unknown = JSON.parse(line);
+        const runtime = await dispatchRuntimeControlMessage(
+          value,
+          runtimeControlDispatchOptions,
+        );
+        if (runtime.handled) {
+          sock.end(JSON.stringify(runtime.response) + "\n");
+          return;
+        }
         // `conch pair` asks the RUNNING daemon to open a pairing window: the
         // bridge lives in that process, so only it can offer a code.
         if (
@@ -4112,7 +4821,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         ) {
           const previous = audioLease.sink;
           const requested = (value as { sink?: unknown }).sink;
-          const connectedClients = phoneBridge?.clientCount() ?? 0;
+          const connectedClients = phoneApplication?.clientCount() ?? 0;
           const claimingPhone = requested === "phone"
             && connectedClients > 0
             && previous !== "phone";
@@ -4135,6 +4844,94 @@ export async function runDaemon(cfg: Config): Promise<void> {
           sock.end(JSON.stringify({ kind: "audio-sink-ack", sink: audioLease.sink }) + "\n");
           return;
         }
+        // The phone is the only thing that knows when the PHONE finishes
+        // reading. With the audio lease held, speak() returns immediately, so
+        // the Mac sets "speaking" and the caller clears it milliseconds later
+        // — the glyph flashes and the ledger says "Waiting for you" for a
+        // session being read aloud. Tyler: "the reason I can't tell which one
+        // is speaking is cause the state is broken."
+        // What conch costs the phone it runs on. Logged rather than acted on:
+        // the point is to be able to answer "is this draining my phone" with a
+        // reading instead of an opinion, and a trend across a session is what
+        // answers it. Low Power Mode is called out because it throttles the
+        // CPU and has already been mistaken for a conch bug once.
+        if (
+          typeof value === "object" && value !== null
+          && (value as { kind?: unknown }).kind === "phone-device"
+        ) {
+          const sample = value as Record<string, unknown>;
+          const mb = Number(sample.footprintMB ?? 0).toFixed(0);
+          const battery = typeof sample.battery === "number"
+            ? `${Math.round(sample.battery * 100)}% ${String(sample.batteryState ?? "")}`
+            : String(sample.batteryState ?? "unknown");
+          const minutes = Math.round(Number(sample.uptime ?? 0) / 60);
+          const free = typeof sample.freeGB === "number" ? sample.freeGB : null;
+          const flags = [
+            sample.thermal !== "nominal" ? `thermal ${sample.thermal}` : "",
+            sample.lowPower === true ? "LOW POWER MODE" : "",
+            // Called out rather than merely reported. A nearly full phone slows
+            // everything on it, and nothing else conch measures can say so —
+            // memory, battery and thermal all read healthy while Tyler's phone
+            // was crawling for exactly this reason.
+            free !== null && free < 5 ? `ONLY ${free.toFixed(1)}GB FREE` : "",
+          ].filter(Boolean).join(", ");
+          const disk = free !== null ? ` · ${free.toFixed(1)}GB free` : "";
+          log(`phone: ${mb}MB · battery ${battery}${disk} · up ${minutes}m${flags ? ` · ${flags}` : ""}`);
+          sock.end(JSON.stringify({ kind: "phone-device-ack" }) + "\n");
+          return;
+        }
+        // The Mac app telling us the machine woke.
+        //
+        // This is the honest signal: the app receives
+        // NSWorkspace.didWakeNotification and the daemon is its child, so the
+        // fact travels one socket write instead of being inferred. The polling
+        // version of this asked the process to wake ten times a minute forever
+        // to notice an event that happens twice a day, which is the shape of
+        // thing conch keeps deciding not to do elsewhere.
+        if (
+          typeof value === "object" && value !== null
+          && (value as { kind?: unknown }).kind === "system-woke"
+        ) {
+          log("the Mac woke — re-dialling the relay");
+          try {
+            phoneRelay?.reconnectNow();
+          } catch (error) {
+            log(`relay re-dial failed: ${error}`);
+          }
+          // Sessions may have come and gone while the lid was shut, and the
+          // panel is the only thing that would notice.
+          void renderSessionPanel();
+          sock.end(JSON.stringify({ kind: "system-woke-ack" }) + "\n");
+          return;
+        }
+        if (
+          typeof value === "object" && value !== null
+          && (value as { kind?: unknown }).kind === "phone-speaking"
+        ) {
+          const speaking = (value as { speaking?: unknown }).speaking === true;
+          const rawLabel = (value as { label?: unknown }).label;
+          const label = typeof rawLabel === "string" ? rawLabel.slice(0, 120) : "";
+          // Only while the phone actually owns the audio: a stale report from
+          // a backgrounded phone must not silence or mislabel this Mac.
+          if (audioLease.isPhone()) {
+            if (speaking && label) {
+              setState("speaking", label);
+              // Bound it here too. This is the path that actually latched on
+              // Tyler's phone: it reported that it had STARTED reading and the
+              // matching stop never arrived, so the dashboard sat at "Reading
+              // aloud" with nothing playing. Every route into the speaking
+              // state needs a way back out that does not depend on a message
+              // crossing a relay that drops.
+              armPhoneSpeechLatch();
+            } else if (!speaking) {
+              clearPhoneSpeechLatch();
+              setState("idle");
+            }
+            void renderSessionPanel();
+          }
+          sock.end(JSON.stringify({ kind: "phone-speaking-ack", speaking }) + "\n");
+          return;
+        }
         if (
           typeof value === "object" && value !== null
           && (value as { kind?: unknown }).kind === "open-pairing"
@@ -4151,6 +4948,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
               code: code.code,
               expiresAt: code.expiresAt,
               port: phoneBridge.port,
+              ...(activeRelayPairing ? { relay: activeRelayPairing } : {}),
             } as unknown as ControlResponse;
           }
           sock.end(JSON.stringify(response) + "\n");
@@ -4205,10 +5003,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
       buf += data.toString();
       const newline = buf.indexOf("\n");
-      if (newline !== -1) handleLine(buf.slice(0, newline));
+      if (newline !== -1) void handleLine(buf.slice(0, newline));
     });
     sock.on("end", () => {
-      if (!handled && buf.trim()) handleLine(buf.trim());
+      if (!handled && buf.trim()) void handleLine(buf.trim());
       else if (!handled) sock.end();
     });
   });
@@ -4227,13 +5025,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
     onLiveDataChange(null);
     publishedStateWriter.flush();
     meetingMic?.close();
+    phoneRelay?.stop();
+    phoneBridge?.stop();
     queue.length = 0;
     speech.close(); // cancel and seal speech, cues, and in-flight/future canaries
     // Close the controller's rearm gate synchronously before taking the
     // recorder snapshot. No await is allowed before this request.
     const dictationAtShutdown = activeDictation;
     dictationAtShutdown?.requestExternal("spacebar", "shutdown");
-    const recorderDrain = killActiveRecorders(); // a live sox capture would keep the mic hot after we die
+    // A live sox capture would keep the mic hot after we die. Without
+    // diagnostics we `process.exit(0)` a few lines down, so there is no later
+    // moment in which a grace timer could fire — the kill has to land now.
+    const recorderDrain = killActiveRecorders({ immediate: !diagnosticsEnabled });
     if (server.listening) server.close();
     whisperServerClient.cancelWarmRequests();
     whisperSupervisor?.close();
@@ -4354,7 +5157,21 @@ export async function runDaemon(cfg: Config): Promise<void> {
     log,
   });
 
-  if (existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath); // stale socket from a previous run
+  // ONE daemon. This used to unlink unconditionally, so a second daemon
+  // silently stole the socket from a live one — which is how a supervisor
+  // whose liveness check never matched could kill and recreate conch every
+  // five seconds and still look like it was working. Two daemons also means
+  // two mics, two speakers, and two writers to the same state file.
+  //
+  // A socket FILE proves nothing: it outlives the process that made it. Only
+  // connecting proves someone is home.
+  if (await anotherDaemonIsListening(cfg.socketPath)) {
+    log(`another conch daemon already owns ${cfg.socketPath} — this one is exiting`);
+    // 0, not 1: a supervisor treats a nonzero exit as a crash and retries
+    // harder. Losing a race is the system working, not failing.
+    process.exit(0);
+  }
+  if (existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath); // genuinely stale
   server.listen(cfg.socketPath);
   syncPhoneBridge();
   void rehydrateFromTranscripts();
@@ -4364,8 +5181,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     chmodSync(cfg.socketPath, 0o600);
   } catch {}
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);
-  if (muted) log("resuming muted (persisted) — m or `conch unmute` to turn on");
-  if (pause.paused) log("resuming paused (persisted) — p or `conch resume` to turn on");
+  if (pause.paused) log("starting in manual mode (persisted) — p or `conch resume` turns auto on");
   rendererLifecycle.enter();
   setState(restState());
   void renderSessionPanel(); // show the dashboard immediately
@@ -4379,6 +5195,60 @@ export async function runDaemon(cfg: Config): Promise<void> {
   // Refresh periodically so killed sessions drop off even with no new events.
   const panelTimer = setInterval(() => void renderSessionPanel(), 20_000);
   panelTimer.unref?.();
+  // ...but the timer is only the backstop. Both agents publish liveness in a
+  // directory, so a session opening or closing is an event conch can be told
+  // about rather than one it has to wait up to 20s to notice.
+  const codexHome = codexHomeDir();
+  watchSessionSources(
+    [
+      join(cfg.claudeDir, "sessions"),
+      ...(codexHome ? [join(codexHome, "thread-writer-locks")] : []),
+    ],
+    () => void renderSessionPanel(),
+  );
+
+  // Announce Codex turns, which have no hook to announce themselves.
+  //
+  // Claude Code tells conch a turn ended; Codex cannot, and wiring its hooks
+  // would mean editing shared config that only takes effect on session start —
+  // so it could never reach a session already running, which is exactly what
+  // Tyler asked to leave alone. Polling the rollout files observes the same
+  // event from outside, and a session never learns conch is watching.
+  //
+  // The announce text comes from `lastAssistantText`, not from the detector's
+  // own tail read: that already knows how to walk a rollout back to the FINAL
+  // message of a turn rather than the last text it happens to see, and routes
+  // on the filename, so Codex and Claude produce the same shape of summary.
+  const codexTurnMemory: CodexTurnMemory = new Map();
+  const codexTimer = setInterval(() => {
+    let ended: ReturnType<typeof detectCodexTurnEnds>;
+    try {
+      ended = detectCodexTurnEnds(codexTurnMemory, readCodexTurnSnapshots());
+    } catch (error) {
+      return log(`codex watch failed: ${error}`);
+    }
+    for (const snapshot of ended) {
+      void (async () => {
+        let text = snapshot.text;
+        try {
+          const full = await lastAssistantText(snapshot.transcriptPath);
+          if (full && !isInterAgentEnvelope(full)) text = full;
+        } catch {}
+        const snippet = firstSentences(stripMarkdown(text), 2, 220);
+        log(`codex turn ended — "${snapshot.label}"`);
+        enqueue({
+          type: "turn-end",
+          sessionId: snapshot.sessionId,
+          label: snapshot.label,
+          cwd: snapshot.cwd,
+          announce: `${snapshot.label}: ${snippet || "finished, ready for your next prompt"}`,
+          transcriptPath: snapshot.transcriptPath,
+          eventAt: Date.now(),
+        });
+      })();
+    }
+  }, 5_000);
+  codexTimer.unref?.();
 
   // Warm Whisper independently after the socket and signal path are live.
   // Startup/recovery never blocks dictation: finals use the cold CLI until the
@@ -4415,20 +5285,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
   /** Audition every live session in its assigned voice — `conch voice <session> <voice>` reassigns. */
   async function auditionVoices(): Promise<void> {
     if (busy) return log("busy — audition after the current exchange");
-    if (muted || pause.paused) return log("quiet mode — unmute/resume before auditioning voices");
+    if (pause.paused) return log("manual mode — resume before auditioning voices");
     busy = true;
     const controlGeneration = pause.capture();
     try {
       const rows = await numberedSessions();
-      if (pause.interrupted(controlGeneration) || muted || pause.paused) return;
+      if (pause.interrupted(controlGeneration) || pause.paused) return;
       if (!rows.length) return log("no live sessions");
       for (const r of rows) {
-        if (pause.interrupted(controlGeneration) || muted || pause.paused) break;
+        if (pause.interrupted(controlGeneration) || pause.paused) break;
         logAbove(`  \x1b[36m${r.n}\x1b[0m ${r.label} — \x1b[35m${voiceFor(cfg, r.label)}\x1b[0m`);
         await speak(cfg, `${r.label} sounds like this.`, r.label);
-        if (pause.interrupted(controlGeneration) || muted || pause.paused) break;
+        if (pause.interrupted(controlGeneration) || pause.paused) break;
       }
-      if (!pause.interrupted(controlGeneration) && !muted && !pause.paused) {
+      if (!pause.interrupted(controlGeneration) && !pause.paused) {
         logAbove('  \x1b[2mreassign: conch voice <session> <kokoro-voice>\x1b[0m');
       }
     } finally {
@@ -4451,6 +5321,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       pid: row.s.pid,
       announce: "",
       transcriptPath: findTranscript(cfg.claudeDir, row.s.sessionId),
+      origin: "user",
     });
   }
 
@@ -4468,6 +5339,28 @@ export async function runDaemon(cfg: Config): Promise<void> {
       pid: s.pid,
       announce: "",
       transcriptPath: findTranscript(cfg.claudeDir, s.sessionId),
+      origin: "user",
+    });
+  }
+
+  /** The TUI mic has the same contract as both apps: return words to the draft. */
+  function dictateToTerminalComposer(id: string): void {
+    const s = panelSessions.get(id);
+    if (!s) return log("that session is gone — press s to list");
+    terminalComposer?.open({
+      sessionId: id,
+      label: labelForSessionId(id),
+    }, lastPanelModel?.live.dictated?.id ?? 0);
+    enqueue({
+      type: "wake",
+      sessionId: s.sessionId,
+      label: labelForSessionId(id),
+      cwd: s.cwd,
+      pid: s.pid,
+      announce: "",
+      transcriptPath: s.transcriptPath ?? findTranscript(cfg.claudeDir, id),
+      origin: "user",
+      compose: true,
     });
   }
 
@@ -4531,7 +5424,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     speech.cancelPendingAudio();
     // Space remains the guaranteed stop even when an instant takeover is
     // queued behind the old exchange's deliberately un-killed Whisper job.
-    markQueuedWakesForControl(queue, forgetQueuedAudioCommand);
+    markQueuedWakesForControl(queue, cancelQueuedAudioCommand);
     activeDictation?.requestExternal("spacebar");
     log(activeDictation?.session.micOpen || micOpen ? `⏹ ${src} — closing mic` : `⏹ ${src} — stopped`);
   }
@@ -4541,30 +5434,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
       ? theaterNavigation.manualControlTarget()
       : cursorAuto ? null : selectedId,
     globalPaused: () => pause.paused,
-    globalMuted: () => muted,
     sessionPaused: (id) => pausedSessionIds.has(id),
-    sessionMuted: (id) => mutedSessionIds.has(id),
     setGlobalPaused: (next) => enqueue({
       type: next ? "pause" : "resume",
       sessionId: "",
       label: "",
       announce: "",
     }),
-    setGlobalMuted: (next) => enqueue({
-      type: next ? "mute" : "unmute",
-      sessionId: "",
-      label: "",
-      announce: "",
-    }),
-    setSessionPaused: setSessionPausedWithDigest,
-    setSessionMuted: setSessionMutedWithDigest,
+    setSessionPaused: (sessionId, paused) => instantControls.setSessionPaused(sessionId, paused),
   };
 
   // Interactive keys when running in a terminal.
   const dispatchTerminalInput = shouldDispatchTerminalInput(rendererSelection.kind);
-  // Keep any attached maintenance pane raw so typed Ctrl-C is harmless data,
-  // not SIGINT. Only the chosen theater renderer may dispatch those bytes as
-  // controls; all other renderer panes deliberately drain them read-only.
+  // Raw input keeps Ctrl-C in the same explicit shutdown path as q. Both
+  // rendered dashboards dispatch their advertised controls; headless does not.
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
     process.stdin.resume();
@@ -4575,6 +5458,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
         theaterMode
         && !settingsOverlay?.isOpen()
         && !sessionActionsOverlay?.isOpen()
+        && !restoreSessionsOverlay?.isOpen()
+        && !sessionStartOverlay?.isOpen()
+        && !terminalComposer?.isOpen()
       ) {
         let wheel = 0;
         for (const event of events) {
@@ -4591,8 +5477,44 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // fallthrough so terminal-safe daemon shutdown can always run.
       if (settingsOverlay?.handleKey(c)) return;
       if (sessionActionsOverlay?.handleKey(c)) return;
+      if (restoreSessionsOverlay?.handleKey(c)) return;
+      if (sessionStartOverlay?.handleKey(c)) return;
+      if (terminalComposer?.isOpen() && c === " " && busy) {
+        stopReciting("spacebar");
+        return;
+      }
+      if (terminalComposer?.isOpen() && c === "\x14") {
+        const sessionId = terminalComposer.model()?.target.sessionId;
+        if (sessionId) dictateToTerminalComposer(sessionId);
+        return;
+      }
+      if (terminalComposer?.handleKey(c)) return;
+      const terminalQuestion = answerableTerminalQuestion(lastPanelModel);
+      if (terminalQuestionController?.handleKey(
+        c,
+        terminalQuestion,
+        (text) => terminalQuestion
+          ? injectTerminalPrompt(terminalQuestion, text)
+          : false,
+      )) return;
       if (theaterMode && c === ",") {
         settingsOverlay?.open();
+        return;
+      }
+      if (theaterMode && c === "n") {
+        sessionStartOverlay?.open();
+        return;
+      }
+      if (theaterMode && c === "i") {
+        const sessionId = theaterActionTarget();
+        if (sessionId) {
+          terminalComposer?.open({
+            sessionId,
+            label: labelForSessionId(sessionId),
+          }, lastPanelModel?.live.dictated?.id ?? 0);
+        } else {
+          log("park a session before opening the prompt line");
+        }
         return;
       }
       if (theaterMode && c === "\r") {
@@ -4605,11 +5527,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
           return;
         }
       }
+      if (theaterMode && c === "u") {
+        restoreSessionsOverlay?.open(
+          [...dismissedSessionIds].map((sessionId) => ({
+            sessionId,
+            label: labelForSessionId(sessionId),
+          })),
+        );
+        return;
+      }
       if (c === " ") {
         if (busy) stopReciting("spacebar");
-        else if (theaterMode && theaterActionTarget()) wakeBySessionId(theaterActionTarget()!);
+        else if (theaterMode && theaterActionTarget()) dictateToTerminalComposer(theaterActionTarget()!);
         else if (selectedId) wakeBySessionId(selectedId); // talk to the selected session
-        else enqueue({ type: "wake", sessionId: "", label: "", announce: "" }); // else the last-announced
+        else enqueue({ type: "wake", sessionId: "", label: "", announce: "", origin: "user" }); // else the last-announced
       }
       // ↑/↓ move the panel cursor (normal `[` and application `O` escape forms).
       else if (c === "\x1b[A" || c === "\x1bOA") moveSelection(-1);
@@ -4632,6 +5563,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
       else if (c === "l") { const on = setLogsVisible(!logsShown()); log(on ? "logs on — press l to hide" : "logs off"); }
       else if (c === "v") void auditionVoices();
       else if (theaterMode && c === "r") reciteBySessionId(theaterActionTarget());
+      else if (theaterMode && c === "x") {
+        const sessionId = theaterActionTarget();
+        if (!sessionId) log("nothing to interrupt — park a session first");
+        else enqueue({
+          type: "interrupt",
+          sessionId,
+          label: labelForSessionId(sessionId),
+          announce: "",
+          origin: "user",
+        });
+      }
       else if (dispatchTheaterControlKey(c, theaterControls)) {}
       else if (c === "?" || c === "h") {
         revealLogPane();
@@ -4653,7 +5595,7 @@ function log(msg: string): void {
 
 /** Seconds since the user last touched keyboard or mouse (macOS HID idle time). */
 /** Seconds since the last keyboard/mouse/trackpad event, or `null` if the HID probe
- *  couldn't be read — callers must fail SAFE (don't gate / don't auto-mute) on null. */
+ *  couldn't be read — callers must fail SAFE (don't gate / don't auto-silence) on null. */
 async function idleSeconds(): Promise<number | null> {
   try {
     const proc = Bun.spawn(["ioreg", "-c", "IOHIDSystem"], { stdout: "pipe", stderr: "ignore" });

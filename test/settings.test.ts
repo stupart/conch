@@ -49,8 +49,12 @@ const expected = {
   "barge-threshold": ["bargeThresholdPct", "CONCH_BARGE_THRESHOLD_PCT", "live", 0],
   "voice-speed": ["ttsSpeed", "CONCH_TTS_SPEED", "live", 1.35],
   "keystroke-fallback": ["keystrokeFallback", "CONCH_KEYSTROKE_FALLBACK", "live", false],
+  // Ships OFF. conch starts sessions on other people's machines; removing every
+  // confirmation from them is a thing you turn on, never something you inherit.
+  "bypass-permissions": ["bypassPermissions", "CONCH_BYPASS_PERMISSIONS", "live", false],
   "phone": ["phoneEnabled", "CONCH_PHONE", "live", false],
   "phone-port": ["phonePort", "CONCH_PHONE_PORT", "live", 8674],
+  "phone-relay-url": ["phoneRelayURL", "CONCH_PHONE_RELAY_URL", "live", ""],
   "read-full": ["readFull", "CONCH_READ_FULL", "live", true],
   "interrupt-on-manual-reply": ["interruptOnManualReply", "CONCH_INTERRUPT_ON_MANUAL_REPLY", "live", true],
   "handoff-order": ["handoffOrder", "CONCH_HANDOFF_ORDER", "live", "oldest"],
@@ -58,7 +62,6 @@ const expected = {
   "reveal-typing-grace": ["revealTypingGraceSecs", "CONCH_REVEAL_TYPING_GRACE_SECS", "live", 2],
   "working-mic": ["workingMic", "CONCH_WORKING_MIC", "live", false],
   "voice-qa": ["voiceQa", "CONCH_VOICE_QA", "live", false],
-  "resume-digest": ["resumeDigest", "CONCH_RESUME_DIGEST", "live", false],
   "announce-summary": ["announceSummary", "CONCH_ANNOUNCE_SUMMARY", "hook", false],
   "haiku-timeout": ["haikuTimeoutSecs", "CONCH_HAIKU_TIMEOUT_SECS", "live", 10],
   "meeting-autopause": ["meetingAutopause", "CONCH_MEETING_AUTOPAUSE", "live", false],
@@ -68,10 +71,10 @@ const expected = {
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 25 curated, default-bearing knobs", () => {
+  test("contains exactly the 26 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(25);
+    expect(SETTING_DESCRIPTORS).toHaveLength(26);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });
@@ -111,8 +114,14 @@ describe("settings parser", () => {
     expect(parse("interrupt-on-manual-reply", "false")).toEqual({ ok: true, value: false });
     expect(parse("announce-summary", "true")).toEqual({ ok: true, value: true });
     expect(parse("voice-qa", "1")).toEqual({ ok: true, value: true });
-    expect(parse("resume-digest", "0")).toEqual({ ok: true, value: false });
     expect(parse("handoff-order", " OLDEST ")).toEqual({ ok: true, value: "oldest" });
+    expect(parse("phone-relay-url", " https://relay.example.test/path ")).toEqual({
+      ok: true,
+      value: "https://relay.example.test/path",
+    });
+    expect(parse("phone-relay-url", "")).toEqual({ ok: true, value: "" });
+    expect(parse("phone-relay-url", "http://relay.example.test").ok).toBe(false);
+    expect(parse("phone-relay-url", "https://user@relay.example.test").ok).toBe(false);
   });
 
   test("enforces finite positive and zeroable number bounds", () => {
@@ -160,7 +169,6 @@ describe("settings parser", () => {
     expect(parse("interrupt-on-manual-reply", true)).toEqual({ ok: true, value: true });
     expect(parse("announce-summary", false)).toEqual({ ok: true, value: false });
     expect(parse("voice-qa", true)).toEqual({ ok: true, value: true });
-    expect(parse("resume-digest", false)).toEqual({ ok: true, value: false });
     expect(parse("reveal-on-turn", "maybe").ok).toBe(false);
     expect(parse("working-mic", "sometimes").ok).toBe(false);
     expect(parse("meeting-autopause", "sometimes").ok).toBe(false);
@@ -168,7 +176,6 @@ describe("settings parser", () => {
     expect(parse("interrupt-on-manual-reply", "sometimes").ok).toBe(false);
     expect(parse("announce-summary", "sometimes").ok).toBe(false);
     expect(parse("voice-qa", "sometimes").ok).toBe(false);
-    expect(parse("resume-digest", "sometimes").ok).toBe(false);
     expect(parse("reveal-on-turn", 1).ok).toBe(false);
     expect(parse("reveal-on-turn", null).ok).toBe(false);
   });
@@ -293,7 +300,6 @@ describe("settings resolution", () => {
     for (const [key, env] of [
       ["announce-summary", "CONCH_ANNOUNCE_SUMMARY"],
       ["voice-qa", "CONCH_VOICE_QA"],
-      ["resume-digest", "CONCH_RESUME_DIGEST"],
     ] as const) {
       const path = tempSettings(JSON.stringify({ [key]: true }));
       expect(resolved(key, { env: { [env]: "false" }, settingsPath: path }))
@@ -493,7 +499,7 @@ describe("control-message validation", () => {
     }
   });
 
-  test("config snapshot metadata round-trips for number, boolean, and enum settings", () => {
+  test("config snapshot metadata round-trips for number, boolean, enum, and string settings", () => {
     const snapshot = Object.create(null) as ConfigSnapshot;
     for (const descriptor of SETTING_DESCRIPTORS) {
       snapshot[descriptor.key] = configSnapshotEntry(descriptor, {

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config.ts";
 import { runHook, sendToDaemon } from "./hook.ts";
@@ -44,8 +45,8 @@ Getting started:
 
 Everyday:
   conch wake [name] | recite [name]       talk again | reread the latest reply
-  conch sessions | rename <session> <name> list sessions | save a display name
-  conch mute | unmute | pause | resume     silence or hold/replay finished turns
+  conch sessions | resumable [query] | rename <session> <name>  list live/past | save a name
+  conch pause | resume                     manual (hold) | auto (read and listen)
 
 Voice and settings:
   conch voice <session> [voice] | voices   show/pin or audition voices
@@ -64,9 +65,15 @@ Internal entrypoints: conch hook | codex-hook | daemon | mcp
 
 /**
  * Open the dashboard: attach to the daemon's detached tmux session, and if the
- * daemon restarts (launchd respawns it), wait and reattach so the window
- * survives restarts. Detaching on purpose (ctrl-b d) leaves the session alive,
- * so we exit cleanly. Mirrors dashboard.command as a first-class subcommand.
+ * daemon restarts, wait and reattach so the window survives restarts.
+ * Detaching on purpose (ctrl-b d) leaves the session alive, so we exit cleanly.
+ *
+ * This is the LAUNCHD way of running conch — `conch install` starts the daemon
+ * inside a tmux session named `conch`. The Mac app hosts its own daemon instead
+ * and never creates that session, so with the app there is nothing here to
+ * attach to and the app IS the dashboard. Say so rather than waiting forever:
+ * a `dashboard.command` login item spent every boot printing "daemon
+ * restarting… reattaching" at a session that was never coming.
  */
 async function runDashboard(): Promise<void> {
   const tmux = Bun.which("tmux") ?? "/opt/homebrew/bin/tmux";
@@ -77,7 +84,14 @@ async function runDashboard(): Promise<void> {
   while (true) {
     while (!hasSession()) {
       if (!warned) {
-        console.log("daemon not up yet — waiting for the conch session (launchd starts it)…");
+        if (existsSync(cfg.socketPath)) {
+          console.log(
+            "A daemon is already running without a tmux session — that is the Mac"
+            + " app hosting it, and the app is the dashboard. Nothing to attach to.",
+          );
+          return;
+        }
+        console.log("daemon not up yet — waiting for the conch session (`conch install` starts it)…");
         warned = true;
       }
       await Bun.sleep(1000);
@@ -278,7 +292,14 @@ switch (command) {
     break;
   case "wake": {
     const { findSessionByName, findTranscript, listSessions, sessionLabel } = await import("./sessions.ts");
-    let event = { type: "wake" as const, sessionId: "", label: "", announce: "" };
+    // Typed at a terminal by a person, so it opens the mic even in manual mode.
+    let event = {
+      type: "wake" as const,
+      sessionId: "",
+      label: "",
+      announce: "",
+      origin: "user" as const,
+    };
     const query = rest.join(" ").trim();
     if (query) {
       const s = await findSessionByName(cfg.claudeDir, query);
@@ -373,6 +394,7 @@ switch (command) {
     });
     let renamedLabel: string;
     let voiceMigrated = false;
+    let providerWarning = "";
     if (!result.ok) {
       if (result.reason !== "daemon-down") {
         const diagnostic = result.diagnostic ? `: ${result.diagnostic}` : "";
@@ -382,6 +404,11 @@ switch (command) {
       const renamed = renameSessionLabel(session.sessionId, oldLabel, label);
       renamedLabel = renamed.label;
       voiceMigrated = renamed.voiceMigrated;
+      const { renameProviderSession } = await import("./provider-rename.ts");
+      const provider = await renameProviderSession(cfg, session, renamed.label);
+      if (provider.kind === "unroutable") {
+        providerWarning = `; Claude Code label not synced (${provider.reason})`;
+      }
     } else if (result.response.kind === "session-error") {
       console.error(`[conch] ${result.response.error}`);
       process.exit(1);
@@ -398,15 +425,14 @@ switch (command) {
     }
     console.log(`[conch] ${oldLabel} -> ${renamedLabel} (persisted to ~/.config/conch/labels.json)${
       voiceMigrated ? "; voice pin migrated" : ""
-    }`);
+    }${providerWarning}`);
     break;
   }
-  case "mute":
-  case "unmute":
   case "pause":
   case "resume": {
     const ok = await sendToDaemon(cfg.socketPath, { type: command, sessionId: "", label: "", announce: "" });
-    console.log(ok ? `[conch] ${command}d` : "[conch] daemon not running");
+    const said = command === "pause" ? "manual mode" : "auto mode";
+    console.log(ok ? `[conch] ${said}` : "[conch] daemon not running");
     if (!ok) process.exit(1);
     break;
   }
@@ -414,6 +440,26 @@ switch (command) {
     const { listSessions, sessionLabel } = await import("./sessions.ts");
     for (const s of await listSessions(cfg.claudeDir)) {
       console.log(`${sessionLabel(s, s.cwd).padEnd(30)} ${s.cwd ?? ""}  pid=${s.pid}`);
+    }
+    break;
+  }
+  case "resumable": {
+    const { readResumableSessions } = await import("./resumable.ts");
+    const query = rest.join(" ").trim();
+    const sessions = readResumableSessions({
+      ...(query ? { query } : {}),
+      ...(process.env.CONCH_CONFIG_DIR === undefined
+        ? {}
+        : { configDir: process.env.CONCH_CONFIG_DIR }),
+      ...(process.env.CLAUDE_CONFIG_DIR === undefined
+        ? {}
+        : { claudeHome: cfg.claudeDir }),
+    });
+    for (const session of sessions) {
+      console.log(
+        `${session.backend.padEnd(6)}  ${new Date(session.updatedAt).toISOString()}`
+        + `  ${session.label.padEnd(40)}  ${session.cwd}  ${session.sessionId}`,
+      );
     }
     break;
   }
@@ -443,6 +489,41 @@ switch (command) {
   case "service":
     await runService(cfg, rest[0] === "off" ? "off" : "install");
     break;
+  case "shot": {
+    // Ask the Mac app to photograph ITSELF, and wait for the file.
+    //
+    // Exists because verifying UI work by running `screencapture` over the
+    // display caught an unrelated window full of Tyler's private work. The
+    // app's own window is the only thing conch has any business capturing.
+    const target = rest[0] ?? `/tmp/conch-shot-${Date.now()}.png`;
+    if (!target.startsWith("/tmp/") || !target.endsWith(".png")) {
+      console.error("usage: conch shot [/tmp/<name>.png]");
+      process.exitCode = 1;
+      break;
+    }
+    const { unlinkSync: removeFile, existsSync: fileExists } = await import("node:fs");
+    try { removeFile(target); } catch {}
+    await Bun.write("/tmp/conch-shot.request", target);
+    // The app services the request on its state poll, which runs every 250ms.
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      if (fileExists(target)) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (!fileExists(target)) {
+      try { removeFile("/tmp/conch-shot.request"); } catch {}
+      // The app reports which step failed rather than leaving the caller to
+      // guess after a five-second wait.
+      const reason = fileExists(target + ".error")
+        ? await Bun.file(target + ".error").text()
+        : "is the conch Mac app running?";
+      console.error(`no snapshot — ${reason.trim()}`);
+      process.exitCode = 1;
+      break;
+    }
+    console.log(target);
+    break;
+  }
   case "doctor":
     await runDoctor(cfg);
     break;
@@ -538,7 +619,11 @@ switch (command) {
       { kind: "open-pairing" } as never,
     );
     const window = opened.ok
-      ? (opened.response as unknown as { code?: string; port?: number })
+      ? (opened.response as unknown as {
+        code?: string;
+        port?: number;
+        relay?: import("./phone-relay.ts").RelayPairing;
+      })
       : null;
     if (!window?.code) {
       console.error("[conch] couldn't open a pairing window — is the daemon running?");
@@ -558,7 +643,27 @@ switch (command) {
     console.log(`    Code   ${window.code}`);
     console.log("");
     console.log("  The code works once, for two minutes. Run `conch pair` again");
-    console.log("  for a fresh one. Turn the bridge off: conch set phone false");
+    console.log("  for a fresh one.");
+    if (window.relay) {
+      const { relayPairingCode } = await import("./phone-relay.ts");
+      const qrcode = await import("qrcode-terminal");
+      const relayCode = relayPairingCode(window.relay);
+      console.log("");
+      console.log("  From anywhere (cellular or any Wi-Fi), scan this in conch:");
+      console.log("");
+      qrcode.generate(relayCode, { small: true }, (qr) => console.log(qr));
+      console.log(`    Relay code   ${relayCode}`);
+      console.log("");
+      console.log("  The relay pairing is long-lived and selects relay only; the app");
+      console.log("  will not silently fall back to the LAN transport.");
+    } else {
+      console.log("");
+      console.log("  Internet relay is not configured. After deploying relay/, run:");
+      console.log("    conch set phone-relay-url https://<worker>.workers.dev");
+      console.log("    conch pair");
+    }
+    console.log("");
+    console.log("  Turn every phone transport off: conch set phone false");
     console.log("");
     break;
   }

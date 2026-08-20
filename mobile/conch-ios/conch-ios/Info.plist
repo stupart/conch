@@ -20,6 +20,16 @@
 	<string>0.2.1</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<!-- conch's whole premise is a phone in your pocket. Without this, iOS
+	     suspends the app the moment the screen locks: AVSpeechSynthesizer makes
+	     no sound, and the app cannot even send its "stopped speaking" report,
+	     which is the dropped report that latched the Mac's dashboard at
+	     "speaking". Tyler, on his phone: "it's saying it's speaking and not
+	     speaking and also not hearing it speak". -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>
@@ -29,8 +39,12 @@
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>conch sends a picture you choose to your own Mac, so an agent there can look at it.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>conch listens while you talk to your coding sessions. Audio never leaves this phone.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>conch scans the encrypted relay pairing QR shown by your Mac.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>conch turns your voice into text on this phone, then sends only the text to your Mac.</string>
 	<key>NSLocalNetworkUsageDescription</key>

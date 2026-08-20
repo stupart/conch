@@ -1,4 +1,5 @@
 import { $ } from "bun";
+import { appendFileSync } from "node:fs";
 import type { Config } from "./config.ts";
 
 export type InjectRoute = "tmux" | "osascript-focused" | "osascript-blind" | "clipboard" | "none";
@@ -6,7 +7,14 @@ export interface InjectTextResult {
   via: InjectRoute;
   interrupted?: true;
   /** Why we fell back to the clipboard — the two causes need different fixes. */
-  reason?: "keystroke-fallback-off" | "window-not-focusable" | "session-not-routable";
+  reason?:
+    | "keystroke-fallback-off"
+    | "window-not-focusable"
+    | "session-not-routable"
+    /** A modal dialog on the Mac is swallowing every AppleScript call. */
+    | "system-dialog-blocking"
+    /** macOS is refusing to let conch drive other apps. Needs a person. */
+    | "automation-permission-denied";
 }
 
 export interface InjectTextOptions {
@@ -36,11 +44,37 @@ export async function injectText(
   options: InjectTextOptions = {},
 ): Promise<InjectTextResult> {
   const submit = cfg.autoSubmit;
+  // Step-level timing, because three plausible theories about why an inject
+  // stalls were all wrong when checked against data — a pause gate injects
+  // never reach, an event loop that was never blocked, and a keystroke cost
+  // that does not correlate with length (1414 chars succeeded; 49 failed).
+  // The path has several awaits that can each hang for their own reasons, and
+  // nothing said which one. CONCH_DEBUG_INJECT=1 makes it say.
+  // Always on, not behind an env var. The supervisor respawns the daemon with
+  // its own command, so an env-gated probe silently never activates — which is
+  // exactly what happened, wasting a whole retry. A handful of appends per
+  // inject is nothing next to another round of guessing.
+  const debugInject = process.env.CONCH_DEBUG_INJECT !== "0";
+  const startedAt = Date.now();
+  const step = (name: string): void => {
+    if (!debugInject) return;
+    // Straight to a file, never console.error: the daemon owns an alt-screen
+    // TUI and its stderr goes nowhere visible, so the first attempt at this
+    // produced an empty log and looked like "the code never ran" when it had.
+    try {
+      appendFileSync(
+        "/tmp/conch-inject-debug.log",
+        `[${new Date().toISOString().slice(11, 23)} +${Date.now() - startedAt}ms] ${name}\n`,
+      );
+    } catch {}
+  };
+  step(`begin pid=${sessionPid ?? "none"} chars=${text.length}`);
   const copyToClipboard = options.copyToClipboard ?? toClipboard;
   const mayInject = async (): Promise<boolean> => beforeInject ? await beforeInject() : true;
   const interrupted = (): InjectTextResult => ({ via: "none", interrupted: true });
   if (sessionPid) {
     const pane = await findTmuxPane(sessionPid);
+    step(`findTmuxPane -> ${pane ?? "none"}`);
     if (pane) {
       if (!(await mayInject())) return interrupted();
       // `-l --`: -l sends the text as literal keys, -- stops flag parsing so a
@@ -48,6 +82,7 @@ export async function injectText(
       // AND used to throw, killing the daemon). nothrow + exit check so any
       // send-keys refusal falls through to clipboard instead of crashing.
       const r = await $`tmux send-keys -t ${pane} -l -- ${text}`.quiet().nothrow();
+      step(`tmux send-keys exit=${r.exitCode}`);
       if (r.exitCode === 0) {
         if (submit) {
           if (!(await mayInject())) return interrupted();
@@ -65,19 +100,44 @@ export async function injectText(
       return { via: "clipboard", reason: "session-not-routable" };
     }
     const focused = sessionPid ? await focusSessionWindow(sessionPid) : false;
+    step(`focusSessionWindow -> ${focused}`);
     if (!focused && sessionPid) {
       // We know which session this is for but can't put its window in
       // front — typing would land somewhere unknowable. Clipboard instead.
       if (!(await mayInject())) return interrupted();
       await copyToClipboard(text);
-      return { via: "clipboard", reason: "window-not-focusable" };
+      // "Not focusable" and "a dialog ate the request" look identical from
+      // here but mean completely different things to the person holding the
+      // phone: one is a session conch cannot reach, the other is a popup on
+      // the Mac that will keep blocking every send until it is dismissed.
+      return {
+        via: "clipboard",
+        reason: osaLastDenied()
+          ? "automation-permission-denied"
+          : osaLastTimedOut()
+            ? "system-dialog-blocking"
+            : "window-not-focusable",
+      };
     }
     if (focused) await Bun.sleep(300); // let the window raise settle
     if (!(await mayInject())) return interrupted();
-    await Bun.spawn(
+    const typist = Bun.spawn(
       ["osascript", "-e", "on run argv", "-e", 'tell application "System Events" to keystroke (item 1 of argv)', "-e", "end run", "--", text],
       { stdout: "ignore", stderr: "ignore" },
-    ).exited;
+    );
+    const typed = await Promise.race([
+      typist.exited.then(() => "done" as const),
+      Bun.sleep(OSA_TIMEOUT_MS).then(() => "timeout" as const),
+    ]);
+    if (typed === "timeout") {
+      try {
+        typist.kill();
+      } catch {}
+      step("osascript keystroke TIMED OUT — something modal is in front");
+      await copyToClipboard(text);
+      return { via: "clipboard", reason: "system-dialog-blocking" };
+    }
+    step("osascript keystroke returned");
     if (submit) {
       // Separate, delayed Return: bundling it with the text arrived before the
       // terminal finished ingesting the keystrokes. Scale the settle to the
@@ -102,8 +162,94 @@ export async function injectText(
 }
 
 /** Run osascript with one or more `-e` statements, output discarded. */
-function osa(...lines: string[]): Promise<number> {
-  return Bun.spawn(["osascript", ...lines.flatMap((l) => ["-e", l])], { stdout: "ignore", stderr: "ignore" }).exited;
+/**
+ * How long any AppleScript may take before we give up on it.
+ *
+ * A modal system dialog — a TCC permission prompt, a security agent — freezes
+ * every System Events call for as long as it is on screen. Measured on Tyler's
+ * Mac while a permission popup was showing: `focusSessionWindow` took 122,891
+ * milliseconds and then failed anyway, three sends in a row, with the daemon's
+ * whole queue stacked up behind it ("blocked behind inject:conch"). From the
+ * phone that looked like conch silently refusing to send.
+ *
+ * Nothing here is worth two minutes. Focusing a window either works in about a
+ * second or something is in the way, and knowing that quickly is what lets the
+ * caller say something useful instead of hanging.
+ */
+const OSA_TIMEOUT_MS = 4_000;
+
+/** True when the last AppleScript gave up rather than finished. */
+let lastOsaTimedOut = false;
+
+export function osaLastTimedOut(): boolean {
+  return lastOsaTimedOut;
+}
+
+/**
+ * Run an AppleScript and read its output, but never wait forever.
+ *
+ * Reading the child's stdout is precisely where a blocked System Events call
+ * parks: a stack sample of the wedged daemon sat in `__read_nocancel`, which is
+ * this read waiting on an osascript that a modal dialog had frozen.
+ */
+/**
+ * True when macOS is refusing to let conch drive other apps at all.
+ *
+ * This is not a transient failure and no retry touches it: someone has to
+ * grant the permission. It became reachable the day the daemon moved inside
+ * the Mac app — TCC decides per responsible process, so conch.app was asked
+ * fresh for permission it had never needed while launchd was its parent, and
+ * the answer that came back was no.
+ */
+let lastOsaDenied = false;
+
+export function osaLastDenied(): boolean {
+  return lastOsaDenied;
+}
+
+/** macOS: "Not authorized to send Apple events to <app>". */
+const OSA_NOT_AUTHORIZED = /-1743|not authori[sz]ed|Not allowed to send Apple events/i;
+
+async function osaText(script: string): Promise<{ text: string; timedOut: boolean }> {
+  const child = Bun.spawn(["osascript", "-e", script], { stdout: "pipe", stderr: "pipe" });
+  const read = Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]).then(([text, err]) => {
+    lastOsaDenied = OSA_NOT_AUTHORIZED.test(err);
+    return { text, timedOut: false };
+  });
+  const timeout = Bun.sleep(OSA_TIMEOUT_MS).then(() => ({ text: "", timedOut: true }));
+  const result = await Promise.race([read, timeout]);
+  if (result.timedOut) {
+    lastOsaTimedOut = true;
+    try {
+      child.kill();
+    } catch {}
+    return result;
+  }
+  lastOsaTimedOut = false;
+  return result;
+}
+
+async function osa(...lines: string[]): Promise<number> {
+  const child = Bun.spawn(["osascript", ...lines.flatMap((l) => ["-e", l])], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  const timeout = Bun.sleep(OSA_TIMEOUT_MS).then(() => "timeout" as const);
+  const result = await Promise.race([child.exited, timeout]);
+  if (result === "timeout") {
+    lastOsaTimedOut = true;
+    // Kill it, or the stuck osascript outlives the daemon's interest in it and
+    // a long session accumulates one blocked process per attempt.
+    try {
+      child.kill();
+    } catch {}
+    return 1;
+  }
+  lastOsaTimedOut = false;
+  return result;
 }
 
 /** Press a single key in the session — Enter accepts a permission dialog's highlighted option, Escape dismisses it. */
@@ -171,9 +317,7 @@ tell application "Terminal"
   end repeat
 end tell
 return "notfound"`;
-    const proc = Bun.spawn(["osascript", "-e", script], { stdout: "pipe", stderr: "ignore" });
-    const out = await new Response(proc.stdout).text();
-    await proc.exited;
+    const { text: out } = await osaText(script);
     return out.trim() === "ok";
   } catch {
     return false;

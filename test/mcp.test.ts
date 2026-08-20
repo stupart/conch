@@ -148,6 +148,7 @@ interface FakeCalls {
   transcripts: Array<{ claudeDir: string; sessionId: string }>;
   labels: Array<{ sessionId: string | null; cwd: string | undefined }>;
   renames: Array<{ sessionId: string; oldLabel: string; newLabel: string }>;
+  providerRenames: Array<{ sessionId: string; label: string }>;
   daemon: Array<{ socketPath: string; event: TurnEvent }>;
   control: Array<{ socketPath: string; message: ControlMessage }>;
   marks: string[];
@@ -208,6 +209,7 @@ function fakeHarness(options: FakeOptions = {}): {
     transcripts: [],
     labels: [],
     renames: [],
+    providerRenames: [],
     daemon: [],
     control: [],
     marks: [],
@@ -240,6 +242,10 @@ function fakeHarness(options: FakeOptions = {}): {
     renameSessionLabel(sessionId, oldLabel, newLabel) {
       calls.renames.push({ sessionId, oldLabel, newLabel });
       return { label: newLabel, voiceMigrated: true };
+    },
+    async renameProviderSession(found, label) {
+      calls.providerRenames.push({ sessionId: found.sessionId, label });
+      return { kind: "delivered", via: "tmux" };
     },
     async sendToDaemon(socketPath, event) {
       calls.daemon.push({ socketPath, event });
@@ -409,7 +415,7 @@ describe("MCP tool discovery", () => {
     }
 
     expect(MCP_TOOLS[4].inputSchema.properties.action.enum)
-      .toEqual(["mute", "unmute", "pause", "resume"]);
+      .toEqual(["pause", "resume"]);
     expect(MCP_TOOLS[7].inputSchema.properties.sentences)
       .toMatchObject({ type: "integer", minimum: 1, default: 3 });
   });
@@ -601,6 +607,9 @@ describe("real MCP tool handlers with injected dependencies", () => {
           cwd: "/work/build",
           transcriptPath: "/virtual/session-123.jsonl",
           announce: "",
+          // An agent asked, not the person. Manual mode holds these rather
+          // than opening the mic on them.
+          origin: "agent",
         },
       },
       {
@@ -636,6 +645,20 @@ describe("real MCP tool handlers with injected dependencies", () => {
         },
       },
     ]);
+  });
+
+  test("mode rejects retired destructive aliases", async () => {
+    const handlers = createMcpToolHandlers({
+      claudeDir: "/virtual/claude",
+      socketPath: "/virtual/conch.sock",
+    }, fakeHarness().dependencies);
+
+    await expect(handlers.conch_mode({ action: "mute" })).rejects.toThrow(
+      "action must be pause or resume",
+    );
+    await expect(handlers.conch_mode({ action: "unmute" })).rejects.toThrow(
+      "action must be pause or resume",
+    );
   });
 
   test("rename, config, and transcript tail route through their injected helpers", async () => {
@@ -767,6 +790,10 @@ describe("real MCP tool handlers with injected dependencies", () => {
       sessionId: "session-123",
       oldLabel: "Build label",
       newLabel: "Release",
+    }]);
+    expect(h.calls.providerRenames).toEqual([{
+      sessionId: "session-123",
+      label: "Release",
     }]);
   });
 

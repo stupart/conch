@@ -35,11 +35,11 @@ const ACTIVE_FOOTER_GOLDEN = "\n"
 
 const PAUSED_FOOTER_GOLDEN = "\n"
   + "  \x1b[1m🐚 conch\x1b[0m\n"
-  + "  \x1b[1;35m⏸ PAUSED · holding 2 · no parked cursor: p to resume\x1b[0m\n"
+  + "  \x1b[1;35m⏸ MANUAL · holding 2 · no parked cursor: p for auto\x1b[0m\n"
   + "  \x1b[2m────────────────────────────────────────────────────────────────────────────\x1b[0m\n"
   + "\x1b[36m▸\x1b[0m alpha                      \x1b[33m❗ needs a response\x1b[0m \x1b[2m(permission)\x1b[0m\n"
-  + "  \x1b[2mbeta                       ⏸ paused\x1b[0m\n"
-  + "  \x1b[2mgamma                      🔇 muted\x1b[0m\n";
+  + "  \x1b[2mbeta                       ⏸ manual\x1b[0m\n"
+  + "  \x1b[2mgamma                      ⏸ manual\x1b[0m\n";
 
 function sampleModel(overrides: Partial<PanelModel> = {}): PanelModel {
   return {
@@ -80,6 +80,130 @@ function recordingIO(options: { columns?: number; rows?: number; tty?: boolean }
   };
   return { io, writes, prints, copies };
 }
+
+describe("terminal Phase 2 surfaces", () => {
+  test("ledger rows identify the agent and show known context pressure", () => {
+    const { io, writes } = recordingIO({ columns: 100, rows: 7 });
+    const renderer = createTheaterRenderer(io);
+    renderer.enter();
+    renderer.panel(sampleModel({
+      panelOpen: false,
+      live: { state: "idle", label: "", partial: "" },
+      reply: null,
+      rows: [
+        {
+          sessionId: "claude",
+          label: "alpha",
+          backend: "claude",
+          context: { usedTokens: 84_000, limitTokens: 200_000 },
+          status: "waiting",
+          paused: false,
+          muted: false,
+          liveGlyph: null,
+          active: false,
+          navSelected: false,
+        },
+        {
+          sessionId: "codex",
+          label: "beta",
+          backend: "codex",
+          context: { usedTokens: 85_000, limitTokens: 100_000 },
+          status: "working",
+          paused: false,
+          muted: false,
+          liveGlyph: null,
+          active: false,
+          navSelected: false,
+        },
+      ],
+    }));
+    const plain = writes.at(-1)!.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+    expect(plain).toContain("C alpha");
+    expect(plain).toContain("42%");
+    expect(plain).toContain("X beta");
+    expect(plain).toContain("85%");
+  });
+
+  test("the content pane renders an active structured question and selected options", () => {
+    const { io, writes } = recordingIO({ columns: 100, rows: 11 });
+    const renderer = createTheaterRenderer(io);
+    renderer.enter();
+    renderer.panel(sampleModel({
+      live: { state: "idle", label: "", partial: "" },
+      reply: null,
+      rows: [{
+        sessionId: "one",
+        label: "project-one",
+        backend: "claude",
+        status: "needs",
+        paused: false,
+        muted: false,
+        liveGlyph: null,
+        active: false,
+        navSelected: true,
+      }],
+      conversations: {
+        one: {
+          sessionId: "one",
+          truncated: false,
+          items: [{
+            id: "ask-1",
+            rev: 1,
+            kind: "tool",
+            text: "",
+            tool: { name: "question", kind: "question", status: "running" },
+            question: {
+              header: "Destination",
+              question: "Where should it go?",
+              options: [{ label: "Linear" }, { label: "Export PDF" }],
+              multiSelect: true,
+            },
+          }],
+        },
+      },
+      terminalQuestion: {
+        sessionId: "one",
+        itemId: "ask-1",
+        selectedIndices: [1],
+        submitted: false,
+      },
+    }));
+    const plain = writes.at(-1)!.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
+    expect(plain).toContain("Destination");
+    expect(plain).toContain("Where should it go?");
+    expect(plain).toContain("[ ] 1. Linear");
+    expect(plain).toContain("[x] 2. Export PDF");
+    expect(plain).toContain("1-9 toggle · enter submit · esc clear");
+  });
+
+  test("the one-line composer and fresh-session launcher render as terminal modals", () => {
+    const { io, writes } = recordingIO({ columns: 100, rows: 10 });
+    const renderer = createTheaterRenderer(io);
+    renderer.enter();
+    renderer.panel(sampleModel({
+      terminalComposer: {
+        target: { sessionId: "one", label: "project-one" },
+        text: "run the focused tests",
+      },
+    }));
+    expect(writes.at(-1)).toContain("prompt → project-one");
+    expect(writes.at(-1)).toContain("run the focused tests▌");
+
+    renderer.panel(sampleModel({
+      sessionStartOverlay: {
+        selectedIndex: 0,
+        starting: false,
+        rows: [
+          { key: "backend", value: "claude", help: "switch agent", selected: true, editing: false },
+          { key: "cwd", value: "/Users/tyler", help: "working folder", selected: false, editing: false },
+          { key: "start", value: "fresh session", help: "open", selected: false, editing: false },
+        ],
+      },
+    }));
+    expect(writes.at(-1)).toContain("new fresh session");
+    expect(writes.at(-1)).toContain("/Users/tyler");
+  });
+});
 
 describe("theater status formatting", () => {
   test("relativeAge formats minute, hour, and day boundaries", () => {
@@ -159,9 +283,8 @@ describe("theater status formatting", () => {
       mode: { muted: true, paused: true, holding: 2 },
       live: { state: "muted", label: "", partial: "" },
     })).replace(/\x1b\[[0-9;]*m/g, "");
-    expect(quiet).toBe("  conch · muted · paused · holding 2");
-    expect(quiet.match(/muted/g)).toHaveLength(1);
-    expect(quiet.match(/paused/g)).toHaveLength(1);
+    expect(quiet).toBe("  conch · manual · holding 2");
+    expect(quiet.match(/manual/g)).toHaveLength(1);
     expect(quiet.match(/holding 2/g)).toHaveLength(1);
   });
 });
@@ -359,7 +482,7 @@ describe("theater renderer lifecycle", () => {
     }));
 
     const plain = writes.at(-1)!.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-    expect(plain.match(/paused/g)).toHaveLength(1);
+    expect(plain.match(/manual/g)).toHaveLength(1);
     expect(plain.match(/holding 3/g)).toHaveLength(1);
     expect(plain).not.toContain("⏸");
     expect(plain.split("\n").at(-1)).toContain("keys");
@@ -540,9 +663,8 @@ describe("theater renderer lifecycle", () => {
     const frame = writes.at(-1)!;
     const plain = frame.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
     const mutedLine = plain.split("\n").find((line) => line.includes("muted-and-paused"));
-    expect(plain).toContain("⏸ paused");
-    expect(mutedLine).toContain("🔇 muted");
-    expect(mutedLine).not.toContain("⏸ paused");
+    expect(plain).toContain("⏸ manual");
+    expect(mutedLine).toContain("⏸ manual");
     expect(plain.toLowerCase()).not.toContain("snooz");
   });
 
@@ -733,7 +855,7 @@ describe("theater renderer lifecycle", () => {
     const plain = frame.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
     const manualLine = plain.split("\n").find((line) => line.includes("manual-eight"))!;
     expect(frame).toContain("manual-eight");
-    expect(manualLine).toMatch(/▸\s+manual-eight/);
+    expect(manualLine).toMatch(/▸\s+C manual-eight/);
     expect(manualLine).not.toMatch(/\b9\s+▸/);
     expect(frame).toContain("selected-session-latest-reply");
     expect(frame).not.toContain("latest-tail");
@@ -1133,9 +1255,9 @@ describe("theater renderer lifecycle", () => {
         expect(plain.match(/transcribing/g)).toHaveLength(1);
         expect(frame).not.toContain("transcribing…");
       } else {
-        expect(frame).toContain("pause to send · space to stop · say send to submit now");
+        expect(frame).toContain("stop talking to send · space to cancel · say send to submit now");
       }
-      expect(frame).not.toContain("‹project-one› · pause to send");
+      expect(frame).not.toContain("‹project-one› · stop talking to send");
       expect(frame.indexOf(reply)).toBeLessThan(frame.indexOf(partial));
     }
   });
@@ -1173,7 +1295,7 @@ describe("theater renderer lifecycle", () => {
     const conversationOnlyFrame = writes.at(-1)!;
     expect(conversationOnlyFrame).toContain("↪ replying to · quote-start");
     expect(conversationOnlyFrame).toContain("latest-live-tail▌");
-    expect(conversationOnlyFrame).not.toContain("pause to send");
+    expect(conversationOnlyFrame).not.toContain("stop talking to send");
 
     dimensions.rows = 4;
     renderer.resize();
@@ -1181,7 +1303,7 @@ describe("theater renderer lifecycle", () => {
     expect(transcriptOnlyFrame).toContain("latest-live-tail▌");
     expect(transcriptOnlyFrame).not.toContain("↪ replying to");
     expect(transcriptOnlyFrame).not.toContain("quote-start");
-    expect(transcriptOnlyFrame).not.toContain("pause to send");
+    expect(transcriptOnlyFrame).not.toContain("stop talking to send");
   });
 
   test("shows the reducer-kept transcript before the live partial through transcription", () => {
@@ -1404,8 +1526,9 @@ test("theater is the default on a full TTY; footer is the opt-out", () => {
   expect(shouldUseTheater({}, false, true)).toBe(false);
 });
 
-test("only the selected theater renderer dispatches destructive terminal controls", () => {
+test("rendered terminal keybars dispatch controls", () => {
   expect(shouldDispatchTerminalInput("theater", true)).toBe(true);
   expect(shouldDispatchTerminalInput("theater", false)).toBe(false);
-  expect(shouldDispatchTerminalInput("footer", true)).toBe(false);
+  expect(shouldDispatchTerminalInput("footer", true)).toBe(true);
+  expect(shouldDispatchTerminalInput("headless", true)).toBe(false);
 });

@@ -17,10 +17,12 @@ const REVIEW_INSTRUCTIONS_END = "<!-- conch:end -->";
 export const REVIEW_INSTRUCTIONS_BLOCK = `${REVIEW_INSTRUCTIONS_BEGIN}
 ## Conch review handoff
 
-When a deliverable is DONE, self-critiqued, and ready for the user's final look, end the final reply with its own line:
+When a deliverable is DONE, self-critiqued, and ready for the user's final look, **call the \`review_to_front\` tool** with a one-line spoken summary and, when there is one, a link or file path to the thing itself. Conch renders it — a page, an image, a PDF, a video, a document — rather than showing the path.
+
+If that tool is not available, fall back to ending your final reply with its own line:
 \`conch:review <one-line spoken summary> | <link-or-path>\`
 
-Use this only as a final approval gate—not for routine "I finished" messages or every iteration. Conch already announces finished turns. If there is no useful link or path, omit the \` | …\` suffix.
+Use this only as a final approval gate—not for routine "I finished" messages or every iteration. Conch already announces finished turns.
 ${REVIEW_INSTRUCTIONS_END}`;
 
 const REVIEW_INSTRUCTIONS_PATTERN =
@@ -284,11 +286,12 @@ export function renderSetupReady(
   completion: SetupCompletion,
   options: SetupReadyOptions = {},
 ): string {
-  const first = options.codexNeedsInstall
-    ? "╭─ 🐚 DO THIS FIRST — Run `conch install --codex`."
-    : "╭─ 🐚 DO THIS FIRST — Type /hooks in any Claude Code session you already have open.";
+  // No Codex nudge. It used to lead with "Run `conch install --codex`", which
+  // wires hooks that Codex 0.144.1 never executes — the first thing a new
+  // person was told to do was the one thing that does not work.
+  const first = "╭─ 🐚 DO THIS FIRST — Type /hooks in any Claude Code session you already have open.";
   const pickup = options.codexNeedsInstall
-    ? "│ Codex is present, but its lifecycle hooks are not wired yet."
+    ? "│ Codex is present; its support is unfinished and stays off (see the README)."
     : "│ Sessions opened from now on pick conch up automatically.";
   const then = completion.service === "skipped"
     ? "│ THEN — Run `conch daemon` to start the voice loop; leave it open, then\n│ finish a turn. conch reads it aloud, plays a tink, and opens the mic."
@@ -406,18 +409,23 @@ export async function runSetup(
     );
   }
 
-  // 4. Wire Claude Code and give both supported agents the global review
-  //    contract. Codex hooks remain an explicit `conch install --codex` opt-in.
+  // 4. Wire Claude Code's hooks. Codex hooks remain an explicit
+  //    `conch install --codex` opt-in.
+  //
+  // Nothing here writes to CLAUDE.md or AGENTS.md. Conch used to splice a
+  // managed review-contract block into the user's GLOBAL instruction files,
+  // which meant installing a voice tool silently edited the prompt of every
+  // session on the machine, and every wording change needed a reinstall to
+  // take. The contract now ships entirely inside the plugin — see
+  // `docs/conch-control-skill.md`, which becomes both the plugin's AGENTS.md
+  // and its conch-control skill — so it arrives and updates with the thing it
+  // describes, and uninstalling actually removes it.
   const codexDir = join(homedir(), ".codex");
-  // Capture this before writing the cross-agent review contract: setup itself
-  // must not make every Claude-only machine look like an existing Codex install.
+  // Capture this before the install runs: setup must not make every
+  // Claude-only machine look like an existing Codex install.
   const codexWasPresent = existsSync(codexDir);
-  console.log("\nWiring Claude Code hooks and global review instructions…");
+  console.log("\nWiring Claude Code hooks…");
   await runInstall(cfg);
-  await installReviewInstructions(
-    join(codexDir, "AGENTS.md"),
-    "AGENTS.md",
-  );
   console.log("\nRunning doctor…\n");
   await runDoctor(cfg);
   const completion = await runSetupIntegrations(cfg, options);
@@ -459,26 +467,37 @@ async function downloadModel(url: string, dest: string, minBytes: number): Promi
 }
 
 /**
- * Install (or remove) a launchd agent that supervises the daemon: it keeps
- * a detached tmux session alive, starting it at login and resurrecting it
- * within ~15s of any crash. tmux hosting matters on macOS: Terminal.app has
- * a recursive process-tree walk that can segfault on a churning tab tree
- * (observed live, three crashes) — the daemon must never live in a Terminal
- * window. View the dashboard anytime with `tmux attach -t conch`.
+ * Install (or remove) a launchd agent that runs the daemon directly.
+ *
+ * This used to be a shell loop that polled every five seconds and kept the
+ * daemon inside a detached tmux session. Both halves are gone. launchd's
+ * KeepAlive already restarts a dead job, so the polling loop was a second
+ * supervisor competing with the first — racing it produced three simultaneous
+ * daemons and most of one day's instability.
+ *
+ * The tmux host was worse than redundant: a detached pane is a terminal with
+ * no reader, so the daemon's own dashboard would eventually block inside
+ * write(2) with the socket accept loop stuck behind it. conch stayed alive in
+ * `ps` while every phone request timed out as "couldn't reach your Mac". The
+ * original reason for tmux still holds — Terminal.app can segfault walking a
+ * churning process tree, so the daemon must never live in a Terminal window —
+ * but launchd gives us no terminal at all, which satisfies that constraint
+ * more completely than tmux did.
+ *
+ * With no TTY the daemon selects the headless renderer and draws nothing. To
+ * watch it, run `conch` in a terminal or open the Mac app: both are viewers
+ * that attach over the socket, which is what they were always meant to be.
  */
-export function renderSupervisorScript(tmux: string, daemonCmd: string): string {
-  return `#!/bin/zsh
-# conch supervisor — keeps the daemon's tmux session alive (installed by \`conch service\`)
-while true; do
-  "${tmux}" has-session -t conch 2>/dev/null || \\
-    "${tmux}" new-session -d -s conch '${daemonCmd}'
-  sleep 15
-done
-`;
+export function renderSupervisorScript(_tmux: string, _daemonCmd: string): string {
+  // Retained only so an older installed copy can still be recognised and
+  // replaced; nothing generates a supervisor script any more.
+  return "#!/bin/zsh\n# obsolete — conch is supervised by launchd directly\n";
 }
 
 export function serviceRestartCommands(tmux: string, uid: number): string[][] {
   return [
+    // Clear a session left by an older tmux-hosted install, so its daemon
+    // cannot keep the socket while launchd starts the replacement.
     [tmux, "kill-session", "-t", "conch"],
     ["launchctl", "kickstart", "-k", `gui/${uid}/${SERVICE_LABEL}`],
   ];
@@ -493,27 +512,32 @@ export async function runService(cfg: Config, action: "install" | "off"): Promis
     try {
       unlinkSync(plistPath);
     } catch {}
-    console.log("[conch] service removed (daemon left running if it was up — `tmux kill-session -t conch` to stop it)");
+    console.log("[conch] service removed — the daemon it was running has stopped");
     return;
   }
 
   const conchRoot = dirname(import.meta.dir); // src/.. (real only when run via bun)
-  const tmux = Bun.which("tmux");
-  if (!tmux) {
-    console.error("[conch] tmux is required for the service (brew install tmux)");
-    process.exit(1);
-  }
+  // tmux is still how the daemon types into a session's pane; it just no longer
+  // hosts the daemon itself. An install without it is degraded, not broken.
+  const tmux = Bun.which("tmux") ?? "/opt/homebrew/bin/tmux";
 
-  // The daemon launch line + where the supervisor script lives both depend on
-  // whether we're a compiled binary (no repo on disk) or a bun checkout.
-  const daemonCmd = IS_COMPILED
-    ? `CONCH_KEYSTROKE_FALLBACK=1 ${conchInvocation()} daemon`
-    : `cd "${conchRoot}" && CONCH_KEYSTROKE_FALLBACK=1 ${conchInvocation()} daemon`;
-  const supervisorDir = IS_COMPILED ? join(homedir(), ".config", "conch") : join(conchRoot, "bin");
-  const supervisorPath = join(supervisorDir, "conch-supervisor.sh");
-  mkdirSync(supervisorDir, { recursive: true });
-  await Bun.write(supervisorPath, renderSupervisorScript(tmux, daemonCmd));
-  chmodSync(supervisorPath, 0o755);
+  // A launchd job inherits none of the shell you installed from, so settings
+  // that live only in the environment would silently revert to their defaults
+  // at login. CONCH_TTS is the one that matters in practice: the MLX voice
+  // model needs several gigabytes, and on a machine already swapping it stalls
+  // the daemon in page-fault waits — alive in `ps`, never reading its socket,
+  // which is what "couldn't reach your Mac" actually was. Installing with
+  // `CONCH_TTS=say conch service install` has to stick.
+  const carriedEnv = ["CONCH_TTS", "CONCH_TTS_MODEL", "CONCH_TTS_VOICES", "CONCH_SEASHELL_ROOT"]
+    .filter((key) => process.env[key])
+    .map((key) => `\n    <key>${key}</key><string>${process.env[key]}</string>`)
+    .join("");
+
+  // launchd exec's this directly — no shell, so every word is its own argv
+  // entry and nothing needs quoting.
+  const daemonArgv = IS_COMPILED
+    ? [conchInvocation(), "daemon"]
+    : [process.execPath, join(conchRoot, "src", "cli.ts"), "daemon"];
 
   const path = [
     "/opt/homebrew/bin",
@@ -529,11 +553,15 @@ export async function runService(cfg: Config, action: "install" | "off"): Promis
 <dict>
   <key>Label</key><string>${SERVICE_LABEL}</string>
   <key>ProgramArguments</key>
-  <array><string>/bin/zsh</string><string>${supervisorPath}</string></array>
+  <array>${daemonArgv.map((arg) => `<string>${arg}</string>`).join("")}</array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>WorkingDirectory</key><string>${conchRoot}</string>
   <key>EnvironmentVariables</key>
-  <dict><key>PATH</key><string>${path}</string></dict>
+  <dict>
+    <key>PATH</key><string>${path}</string>
+    <key>CONCH_KEYSTROKE_FALLBACK</key><string>1</string>${carriedEnv}
+  </dict>
   <key>StandardOutPath</key><string>/tmp/conch-supervisor.log</string>
   <key>StandardErrorPath</key><string>/tmp/conch-supervisor.log</string>
 </dict>
@@ -552,9 +580,8 @@ export async function runService(cfg: Config, action: "install" | "off"): Promis
   // tmux. Drop that session first, then kick the managed supervisor so it
   // recreates the daemon immediately with the regenerated launch environment.
   for (const restart of serviceRestartCommands(tmux, uid)) Bun.spawnSync(restart);
-  const viewHint = IS_COMPILED ? "tmux attach -t conch" : `tmux attach -t conch   (or open ${conchRoot}/dashboard.command)`;
-  console.log(`[conch] service installed — daemon restarted, starts at login, and self-heals within ~15s.
-  view:      ${viewHint}
+  console.log(`[conch] service installed — daemon restarted, starts at login, and restarts if it dies.
+  view:      open the conch app, or run \`conch\` in a terminal
   logs:      /tmp/conch-supervisor.log
   remove:    conch service off`);
 }
@@ -648,7 +675,6 @@ export async function runCodexInstall(
   codexDir = join(homedir(), ".codex"),
 ): Promise<void> {
   const hooksPath = join(codexDir, "hooks.json");
-  const instructionsPath = join(codexDir, "AGENTS.md");
   const command = `${conchInvocation()} codex-hook`;
 
   let existing: Record<string, any> = {};
@@ -657,10 +683,6 @@ export async function runCodexInstall(
   }
 
   const result = buildCodexHooksSettings(existing, command);
-  const instructionsResult = await installReviewInstructions(
-    instructionsPath,
-    "AGENTS.md",
-  );
   for (const event of ["Stop", "UserPromptSubmit", "SessionStart"]) {
     if (result.addedEvents.includes(event)) {
       console.log(`${event}: wired -> ${command}`);
@@ -678,14 +700,8 @@ export async function runCodexInstall(
     }
     await Bun.write(hooksPath, JSON.stringify(result.settings, null, 2) + "\n");
   }
-  const instructionsChanged =
-    instructionsResult === "created" || instructionsResult === "updated";
   if (result.changed) {
     console.log("\nDone. Codex hooks installed.");
-  } else if (instructionsChanged) {
-    console.log("\nDone. Global Codex review instructions installed; hooks were already wired.");
-  } else if (instructionsResult === "skipped") {
-    console.log("\nCodex hooks were already wired; global review instructions were skipped (see warning above).");
   } else {
     console.log("\nNothing to do.");
   }
@@ -703,7 +719,6 @@ Verify Codex hook activation:
  */
 export async function runInstall(cfg: Config): Promise<void> {
   const settingsPath = join(cfg.claudeDir, "settings.json");
-  const instructionsPath = join(cfg.claudeDir, "CLAUDE.md");
   // Paths are quoted so an install dir containing spaces still yields a runnable
   // hook command. Resolves to `"conch" hook` (compiled) or `"bun" "…/cli.ts" hook`.
   const command = `${conchInvocation()} hook`;
@@ -727,11 +742,6 @@ export async function runInstall(cfg: Config): Promise<void> {
     console.log(`${event}: wired -> ${command}`);
   }
 
-  const instructionsResult = await installReviewInstructions(
-    instructionsPath,
-    "CLAUDE.md",
-  );
-
   if (changed) {
     // Back up only when we're actually about to modify — the old code wrote a
     // fresh timestamped backup on every run, even "Nothing to do", piling up.
@@ -745,14 +755,8 @@ export async function runInstall(cfg: Config): Promise<void> {
     mkdirSync(dirname(settingsPath), { recursive: true });
     await Bun.write(settingsPath, JSON.stringify(settings, null, 2) + "\n");
   }
-  const instructionsChanged =
-    instructionsResult === "created" || instructionsResult === "updated";
   if (changed) {
     console.log("\nDone. Open /hooks in Claude Code (or restart sessions) to reload config.");
-  } else if (instructionsChanged) {
-    console.log("\nDone. Global Claude Code review instructions installed; hooks were already wired.");
-  } else if (instructionsResult === "skipped") {
-    console.log("\nClaude Code hooks were already wired; global review instructions were skipped (see warning above).");
   } else {
     console.log("\nNothing to do.");
   }

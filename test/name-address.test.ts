@@ -93,29 +93,20 @@ describe("spoken name routing", () => {
     expect(route.text).toBe("keep going");
   });
 
-  test("bare matching address becomes a clean targeted wake with no payload", async () => {
+  test("bare matching address falls through to normal delivery unrouted", async () => {
     const event = originalEvent();
+    const text = "hey target.";
+    const transcriptCalls: string[] = [];
     const route = await resolveNameAddressRoute(
       "/claude",
       event,
-      "hey target.",
-      routeOptions(async () => targetSession),
+      text,
+      routeOptions(async () => targetSession, transcriptCalls),
     );
 
-    expect(route).toEqual({
-      kind: "wake",
-      addressed: { name: "target", label: "target-label" },
-      event: {
-        type: "wake",
-        sessionId: "target",
-        label: "target-label",
-        cwd: "/work/target",
-        pid: 202,
-        announce: "",
-        transcriptPath: "/transcripts/target.jsonl",
-      },
-    });
-    expect(event).toEqual(originalEvent());
+    expect(route).toEqual({ kind: "deliver", event, text });
+    expect(route.event).toBe(event);
+    expect(transcriptCalls).toEqual([]);
   });
 
   test("no match or lookup failure falls through byte-for-byte to normal delivery", async () => {
@@ -152,9 +143,6 @@ describe("spoken name routing", () => {
     expect(deliver.indexOf("resolveNameAddressRoute(cfg.claudeDir, event, text)"))
       .toBeLessThan(deliver.indexOf("let committed = false"));
     expect(deliver).toContain("if (beforeInject && !(await beforeInject())) return false");
-    expect(deliver).toContain("enqueue(addressed.event)");
-    expect(deliver.indexOf("enqueue(addressed.event)"))
-      .toBeLessThan(deliver.indexOf("let committed = false"));
     expect(deliver).toContain("event = addressed.event");
     expect(deliver).toContain("text = addressed.text");
     expect(deliver).toContain("markInjected(event.sessionId)");

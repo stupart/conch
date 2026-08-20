@@ -9,33 +9,74 @@ struct ConchDaemonEvent: Encodable, Sendable {
         case spacebar
         case pause
         case resume
-        case mute
-        case unmute
+        case inject
+        case interrupt
     }
 
     let type: Kind
     let sessionId: String?
     let label: String?
     let announce: String?
+    /// Who asked. Everything this app sends is a button someone pressed, so the
+    /// daemon may act on it even in manual mode — where a wake it cannot
+    /// attribute to a person is held rather than opening the mic.
+    let origin: String?
+    /// Ask for the transcript BACK, into the composer, rather than delivered
+    /// into the session. Absent means the voice loop's own behaviour.
+    let compose: Bool?
 
     init(
         type: Kind,
         sessionId: String? = nil,
         label: String? = nil,
-        announce: String? = nil
+        announce: String? = nil,
+        origin: String? = nil,
+        compose: Bool? = nil
     ) {
         self.type = type
         self.sessionId = sessionId
         self.label = label
         self.announce = announce
+        self.origin = origin
+        self.compose = compose
     }
 
+    /// Type into a session. The daemon puts `announce` into the session's
+    /// input, so this is the same path the phone and the voice loop use — one
+    /// delivery route with one set of failure modes, not a third.
+    static func inject(sessionId: String, label: String, text: String) -> Self {
+        Self(type: .inject, sessionId: sessionId, label: label, announce: text)
+    }
+
+    /// Stop a session mid-turn. The daemon presses Escape in its pane, which
+    /// is what a person would do — neither agent exposes a cancel an outside
+    /// process could call.
+    static func interrupt(sessionId: String, label: String) -> Self {
+        Self(type: .interrupt, sessionId: sessionId, label: label)
+    }
+
+    /// Open the mic to REPLY to a session — the voice loop's own wake.
     static func wake(sessionId: String, label: String) -> Self {
         Self(
             type: .wake,
             sessionId: sessionId,
             label: label,
-            announce: ""
+            announce: "",
+            origin: "user"
+        )
+    }
+
+    /// Open the mic to fill the COMPOSER. Same capture, different destination:
+    /// what you say comes back as text you can edit and combine with what you
+    /// had already typed, instead of going straight to the agent.
+    static func dictate(sessionId: String, label: String) -> Self {
+        Self(
+            type: .wake,
+            sessionId: sessionId,
+            label: label,
+            announce: "",
+            origin: "user",
+            compose: true
         )
     }
 
@@ -64,6 +105,105 @@ enum ConchSocketRequestOutcome: Equatable, Sendable {
 
 struct ConchGetConfigRequest: Encodable, Sendable {
     let kind = "get-config"
+}
+
+enum ConchAgentBackend: String, CaseIterable, Identifiable, Encodable, Sendable {
+    case claude
+    case codex
+
+    var id: String { rawValue }
+    var label: String { rawValue.capitalized }
+}
+
+struct ConchSessionStartRequest: Encodable, Sendable {
+    let kind = "session-start"
+    let backend: ConchAgentBackend
+    let resumeSessionId: String?
+    let cwd: String?
+}
+
+/// Ask the daemon what past sessions could be restarted.
+///
+/// `query` is matched by the daemon rather than here: the history is over a
+/// thousand files, so filtering belongs next to the reader, not after a full
+/// list has crossed the socket.
+struct ConchResumableRequest: Encodable, Sendable {
+    let kind = "resumable"
+    let query: String?
+}
+
+struct ConchResumableReply: Decodable, Sendable {
+    let sessions: [ResumableSession]
+    /// False when the reader stopped early — the list is a page, not the truth.
+    let complete: Bool?
+}
+
+/// Ask what a session is carrying. Per-session, because the answer depends on
+/// the agent AND the working directory — a plugin enabled in one project is
+/// not enabled everywhere.
+struct ConchCapabilitiesRequest: Encodable, Sendable {
+    let kind = "agent-capabilities"
+    let backend: String
+    let cwd: String
+    let sessionId: String?
+}
+
+struct ConchCapabilitiesReply: Decodable, Sendable {
+    let inventory: AgentCapabilities?
+}
+
+struct ConchSessionCloseRequest: Encodable, Sendable {
+    let kind = "session-close"
+    let sessionId: String
+}
+
+struct ConchSessionStartedReply: Decodable, Equatable, Sendable {
+    let backend: String
+    let resumed: Bool
+    /// Claude Code will ask you to trust this folder before it starts, and
+    /// writes no registry file until you answer — so conch cannot see the
+    /// session and the app looks broken.
+    let awaitingTrust: Bool?
+}
+
+struct ConchSessionClosedReply: Decodable, Equatable, Sendable {
+    let sessionId: String
+}
+
+enum ConchSessionLifecycleReply: Decodable, Equatable, Sendable {
+    case started(ConchSessionStartedReply)
+    case closed(ConchSessionClosedReply)
+    case error(ConchSessionErrorReply)
+    case unknown(kind: String?)
+
+    private enum CodingKeys: String, CodingKey { case kind }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try? container.decodeIfPresent(String.self, forKey: .kind)
+        switch kind {
+        case "session-started":
+            self = .started(try ConchSessionStartedReply(from: decoder))
+        case "session-closed":
+            self = .closed(try ConchSessionClosedReply(from: decoder))
+        case "session-error":
+            self = .error(try ConchSessionErrorReply(from: decoder))
+        default:
+            self = .unknown(kind: kind)
+        }
+    }
+}
+
+/// Failures belong beside the daemon state that made them possible, not in a
+/// transient Console line. The daemon owns the durable JSONL record; the app
+/// supplies the UI state only it can see at the moment of failure.
+struct ConchAppErrorReport: Encodable, Sendable {
+    let kind = "app-error"
+    let source = "mac"
+    let operation: String
+    let message: String
+    let sessionId: String?
+    let state: [String: String]
 }
 
 enum ConchSessionCommand: String, Encodable, Sendable {
@@ -155,6 +295,20 @@ struct ConchSocketClient: Sendable {
         }.value
     }
 
+    /// Send a control message and don't wait for an answer.
+    ///
+    /// `request` expects a reply and holds a deadline open for it; a wake
+    /// notification has nothing worth waiting for and must never delay the
+    /// thing that woke it.
+    func notify(_ message: [String: String]) async {
+        guard var payload = try? JSONSerialization.data(withJSONObject: message) else { return }
+        payload.append(0x0A)
+        let socketPath = socketPath
+        _ = await Task.detached(priority: .utility) {
+            Self.transact(payload, with: socketPath, deadline: Self.makeDeadline(after: Self.nanoseconds(for: 1)))
+        }.value
+    }
+
     func request<Request: Encodable>(
         _ request: Request,
         timeout: TimeInterval = 1
@@ -174,6 +328,25 @@ struct ConchSocketClient: Sendable {
                 deadline: deadline
             )
         }.value
+    }
+
+    /// Reporting cannot itself become another user-visible failure. A daemon
+    /// that is unreachable cannot record the incident, but the original action
+    /// still returns its honest result to the caller.
+    func reportAppError(
+        operation: String,
+        message: String,
+        sessionId: String? = nil,
+        state: [String: String] = [:]
+    ) async {
+        _ = await request(
+            ConchAppErrorReport(
+                operation: operation,
+                message: message,
+                sessionId: sessionId,
+                state: state
+            )
+        )
     }
 
     private static func write(_ event: ConchDaemonEvent, to path: String) -> Bool {

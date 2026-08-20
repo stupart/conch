@@ -1,4 +1,5 @@
 import type {
+  RestoreSessionsOverlayModel,
   SessionActionKey,
   SessionActionsOverlayModel,
 } from "./panel.ts";
@@ -6,6 +7,8 @@ import type {
 export interface SessionActionsTarget {
   sessionId: string;
   label: string;
+  backend?: "claude" | "codex";
+  pid?: number;
 }
 
 /**
@@ -26,7 +29,9 @@ export interface SessionActionsController {
    */
   rename(target: Readonly<SessionActionsTarget>, label: string): string | void;
   dismiss(target: Readonly<SessionActionsTarget>): boolean | void;
-  /** Restore a previously dismissed session, including dismiss-coupled mute. */
+  /** Ask the agent to exit cleanly; never kill its process. */
+  close(target: Readonly<SessionActionsTarget>): Promise<boolean | void>;
+  /** Restore a previously dismissed session to the active dashboard. */
   restore(sessionId: string): boolean | void;
 }
 
@@ -36,6 +41,7 @@ export type SessionActionMutation =
   | { command: "reset-voice" }
   | { command: "prioritize"; value: boolean }
   | { command: "dismiss" }
+  | { command: "close" }
   | { command: "restore" };
 
 /** One closed command-to-controller adapter shared by terminal UI and socket IPC. */
@@ -43,7 +49,7 @@ export function invokeSessionAction(
   controller: SessionActionsController,
   target: Readonly<SessionActionsTarget>,
   mutation: SessionActionMutation,
-): string | boolean | void {
+): string | boolean | void | Promise<boolean | void> {
   switch (mutation.command) {
     case "rename":
       return controller.rename({ ...target }, mutation.label);
@@ -55,6 +61,8 @@ export function invokeSessionAction(
       return controller.setPrioritized(target.sessionId, mutation.value);
     case "dismiss":
       return controller.dismiss({ ...target });
+    case "close":
+      return controller.close({ ...target });
     case "restore":
       return controller.restore(target.sessionId);
   }
@@ -72,6 +80,7 @@ const ACTION_KEYS: readonly SessionActionKey[] = [
   "prioritize",
   "rename",
   "dismiss",
+  "close",
 ];
 
 const ACTION_HELP: Record<SessionActionKey, string> = {
@@ -79,6 +88,7 @@ const ACTION_HELP: Record<SessionActionKey, string> = {
   prioritize: "← off · → on · space/enter toggle hand-off priority",
   rename: "enter edit/commit · letters, numbers, space, _.- · esc cancel",
   dismiss: "enter twice · stops announcements; session keeps running",
+  close: "enter twice · clean Ctrl-D; transcript remains resumable",
 };
 
 const RENAME_INPUT = /^[A-Za-z0-9 _.-]+$/;
@@ -98,6 +108,8 @@ export class SessionActionsOverlay {
   #prioritized = false;
   #renameBuffer: string | null = null;
   #dismissArmed = false;
+  #closeArmed = false;
+  #closeInFlight = false;
   #acks: Partial<Record<SessionActionKey, string>> = {};
   #error: string | undefined;
 
@@ -119,10 +131,12 @@ export class SessionActionsOverlay {
   open(target: Readonly<SessionActionsTarget>): void {
     if (this.#opened) return;
     this.#opened = true;
-    this.#target = { sessionId: target.sessionId, label: target.label };
+    this.#target = { ...target };
     this.#selectedIndex = 0;
     this.#renameBuffer = null;
     this.#dismissArmed = false;
+    this.#closeArmed = false;
+    this.#closeInFlight = false;
     this.#acks = {};
     this.#error = undefined;
     this.#onOpen();
@@ -148,6 +162,8 @@ export class SessionActionsOverlay {
     this.#opened = false;
     this.#renameBuffer = null;
     this.#dismissArmed = false;
+    this.#closeArmed = false;
+    this.#closeInFlight = false;
     this.#onClose();
     this.#onChange();
   }
@@ -165,6 +181,7 @@ export class SessionActionsOverlay {
         editing: key === "rename" && this.#renameBuffer !== null,
         ...(this.#acks[key] ? { ack: this.#acks[key] } : {}),
         ...(key === "dismiss" && this.#dismissArmed ? { confirming: true } : {}),
+        ...(key === "close" && this.#closeArmed ? { confirming: true } : {}),
       })),
       selectedIndex: this.#selectedIndex,
       ...(this.#error ? { error: this.#error } : {}),
@@ -175,6 +192,7 @@ export class SessionActionsOverlay {
   handleKey(input: string): boolean {
     if (!this.#opened) return false;
     if (input === "\u0003") return false;
+    if (this.#closeInFlight) return true;
 
     if (input === "\x1b[A" || input === "\x1bOA") return this.#move(-1);
     if (input === "\x1b[B" || input === "\x1bOB") return this.#move(1);
@@ -198,16 +216,18 @@ export class SessionActionsOverlay {
 
     if (input === "\x7f" || input === "\b") {
       const disarmed = this.#disarmDismiss();
+      const closeDisarmed = this.#disarmClose();
       if (key === "rename" && this.#renameBuffer !== null) {
         this.#renameBuffer = this.#renameBuffer.slice(0, -1);
         this.#acks.rename = undefined;
         this.#onChange();
-      } else if (disarmed) this.#onChange();
+      } else if (disarmed || closeDisarmed) this.#onChange();
       return true;
     }
 
     if (key === "rename" && this.#renameBuffer !== null && RENAME_INPUT.test(input)) {
       this.#disarmDismiss();
+      this.#disarmClose();
       this.#renameBuffer = (this.#renameBuffer + input).slice(0, MAX_RENAME_LENGTH);
       this.#acks.rename = undefined;
       this.#onChange();
@@ -216,21 +236,23 @@ export class SessionActionsOverlay {
 
     if (key === "voice" && input.toLowerCase() === "a") {
       this.#disarmDismiss();
+      this.#disarmClose();
       this.#resetVoice();
       return true;
     }
 
     if (input === " ") {
       const disarmed = this.#disarmDismiss();
+      const closeDisarmed = this.#disarmClose();
       if (key === "voice") this.#previewVoice();
       else if (key === "prioritize") this.#setPriority(!this.#prioritized);
-      else if (disarmed) this.#onChange();
+      else if (disarmed || closeDisarmed) this.#onChange();
       return true;
     }
 
     // A confirmation must be two consecutive Enters, but every key remains
-    // trapped so q/p/m/r/space cannot leak to a global action.
-    if (this.#disarmDismiss()) this.#onChange();
+    // trapped so q/p/r/space cannot leak to a global action.
+    if (this.#disarmDismiss() || this.#disarmClose()) this.#onChange();
     return true;
   }
 
@@ -240,6 +262,7 @@ export class SessionActionsOverlay {
     ) % ACTION_KEYS.length;
     this.#renameBuffer = null;
     this.#disarmDismiss();
+    this.#disarmClose();
     this.#error = undefined;
     this.#onChange();
     return true;
@@ -249,10 +272,11 @@ export class SessionActionsOverlay {
     const key = ACTION_KEYS[this.#selectedIndex];
     this.#renameBuffer = null;
     const disarmed = this.#disarmDismiss();
+    const closeDisarmed = this.#disarmClose();
     this.#error = undefined;
     if (key === "voice") this.#cycleVoice(delta);
     else if (key === "prioritize") this.#setPriority(delta > 0);
-    else if (disarmed) this.#onChange();
+    else if (disarmed || closeDisarmed) this.#onChange();
     return true;
   }
 
@@ -260,14 +284,17 @@ export class SessionActionsOverlay {
     switch (key) {
       case "voice":
         this.#disarmDismiss();
+        this.#disarmClose();
         this.#commitVoice();
         break;
       case "prioritize":
         this.#disarmDismiss();
+        this.#disarmClose();
         this.#setPriority(!this.#prioritized);
         break;
       case "rename":
         this.#disarmDismiss();
+        this.#disarmClose();
         if (this.#renameBuffer === null) {
           this.#renameBuffer = this.#capturedTarget().label;
           this.#acks.rename = undefined;
@@ -277,12 +304,23 @@ export class SessionActionsOverlay {
         }
         break;
       case "dismiss":
+        this.#disarmClose();
         if (!this.#dismissArmed) {
           this.#dismissArmed = true;
           this.#acks.dismiss = "press enter again to dismiss";
           this.#onChange();
         } else {
           this.#commitDismiss();
+        }
+        break;
+      case "close":
+        this.#disarmDismiss();
+        if (!this.#closeArmed) {
+          this.#closeArmed = true;
+          this.#acks.close = "press enter again to end cleanly";
+          this.#onChange();
+        } else {
+          this.#commitClose();
         }
         break;
     }
@@ -299,6 +337,8 @@ export class SessionActionsOverlay {
         return this.#renameBuffer ?? this.#capturedTarget().label;
       case "dismiss":
         return this.#dismissArmed ? "CONFIRM" : "keeps running";
+      case "close":
+        return this.#closeInFlight ? "closing…" : this.#closeArmed ? "CONFIRM" : "clean exit";
     }
   }
 
@@ -437,6 +477,31 @@ export class SessionActionsOverlay {
     }
   }
 
+  #commitClose(): void {
+    this.#closeInFlight = true;
+    this.#acks.close = "closing cleanly…";
+    this.#onChange();
+    void Promise.resolve(invokeSessionAction(
+      this.#controller,
+      this.#capturedTarget(),
+      { command: "close" },
+    )).then((closed) => {
+      if (closed === false) {
+        this.#closeInFlight = false;
+        this.#closeArmed = false;
+        this.#acks.close = "session did not close";
+        this.#onChange();
+        return;
+      }
+      this.close();
+    }).catch((error) => {
+      this.#closeInFlight = false;
+      this.#closeArmed = false;
+      this.#acks.close = `not closed: ${errorMessage(error)}`;
+      this.#onChange();
+    });
+  }
+
   #disarmDismiss(): boolean {
     if (!this.#dismissArmed) return false;
     this.#dismissArmed = false;
@@ -444,9 +509,132 @@ export class SessionActionsOverlay {
     return true;
   }
 
+  #disarmClose(): boolean {
+    if (!this.#closeArmed || this.#closeInFlight) return false;
+    this.#closeArmed = false;
+    this.#acks.close = undefined;
+    return true;
+  }
+
   #capturedTarget(): SessionActionsTarget {
     if (!this.#target) throw new Error("session actions target is unavailable");
     return this.#target;
+  }
+}
+
+export interface RestoreSessionsOverlayOptions {
+  controller: SessionActionsController;
+  onOpen?(): void;
+  onClose?(): void;
+  onChange(): void;
+}
+
+/** A stable snapshot makes every dismissed session reachable, not just the latest. */
+export class RestoreSessionsOverlay {
+  readonly #controller: SessionActionsController;
+  readonly #onOpen: () => void;
+  readonly #onClose: () => void;
+  readonly #onChange: () => void;
+  #opened = false;
+  #targets: SessionActionsTarget[] = [];
+  #selectedIndex = 0;
+  #error: string | undefined;
+
+  constructor(options: RestoreSessionsOverlayOptions) {
+    this.#controller = options.controller;
+    this.#onOpen = options.onOpen ?? (() => {});
+    this.#onClose = options.onClose ?? (() => {});
+    this.#onChange = options.onChange;
+  }
+
+  isOpen(): boolean {
+    return this.#opened;
+  }
+
+  open(targets: readonly SessionActionsTarget[]): void {
+    if (this.#opened) return;
+    const seen = new Set<string>();
+    this.#targets = [];
+    for (const target of targets) {
+      if (!target.sessionId || seen.has(target.sessionId)) continue;
+      seen.add(target.sessionId);
+      this.#targets.push({ ...target });
+    }
+    if (!this.#targets.length) return;
+    this.#opened = true;
+    this.#selectedIndex = 0;
+    this.#error = undefined;
+    this.#onOpen();
+    this.#onChange();
+  }
+
+  close(): void {
+    if (!this.#opened) return;
+    this.#opened = false;
+    this.#onClose();
+    this.#onChange();
+  }
+
+  model(): RestoreSessionsOverlayModel | null {
+    if (!this.#opened) return null;
+    return {
+      rows: this.#targets.map((target, index) => ({
+        id: target.sessionId,
+        label: target.label,
+        selected: index === this.#selectedIndex,
+      })),
+      selectedIndex: this.#selectedIndex,
+      ...(this.#error ? { error: this.#error } : {}),
+    };
+  }
+
+  /** Returns false only when closed or when raw Ctrl-C must reach shutdown. */
+  handleKey(input: string): boolean {
+    if (!this.#opened || input === "\u0003") return false;
+    if (input === "\x1b") {
+      this.close();
+      return true;
+    }
+    if (input === "\x1b[A" || input === "\x1bOA") return this.#move(-1);
+    if (input === "\x1b[B" || input === "\x1bOB") return this.#move(1);
+    if (input === "\r" || input === "\n") return this.#restoreSelected();
+    return true;
+  }
+
+  #move(delta: -1 | 1): true {
+    this.#selectedIndex = (
+      this.#selectedIndex + delta + this.#targets.length
+    ) % this.#targets.length;
+    this.#error = undefined;
+    this.#onChange();
+    return true;
+  }
+
+  #restoreSelected(): true {
+    const target = this.#targets[this.#selectedIndex];
+    if (!target) return true;
+    try {
+      const restored = invokeSessionAction(
+        this.#controller,
+        target,
+        { command: "restore" },
+      );
+      if (restored === false) {
+        this.#error = `could not restore ${target.label}`;
+      } else {
+        this.#targets.splice(this.#selectedIndex, 1);
+        if (!this.#targets.length) {
+          this.close();
+          return true;
+        }
+        this.#selectedIndex = Math.min(this.#selectedIndex, this.#targets.length - 1);
+        this.#error = undefined;
+      }
+    } catch (error) {
+      this.#error = `could not restore ${target.label}: ${errorMessage(error)}`;
+    }
+    this.#onChange();
+    return true;
   }
 }
 

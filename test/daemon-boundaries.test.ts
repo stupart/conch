@@ -24,7 +24,7 @@ describe("phone-backed audio ownership", () => {
     expect(lease.sink).toBe("phone");
     expect(lease.clientsChanged(0)).toBeTrue();
     expect(lease.sink).toBe("mac");
-    // A delayed claim from the just-closed phone must not re-mute the Mac.
+    // A delayed claim from the just-closed phone must not silence the Mac again.
     expect(lease.request("phone", 0)).toBe("mac");
   });
 
@@ -239,7 +239,7 @@ describe("every Mac speech path is gated on the audio lease", () => {
   }
 
   test("`speak` returns before synthesising when the phone owns the voice", () => {
-    const speak = bodyOf("const speak = async (speechCfg", "await speech.speak(");
+    const speak = bodyOf("const speak = async (", "await speech.speak(");
     expect(speak).toMatch(/audioLease\.(isPhone\(\)|sink === "phone")/);
   });
 
@@ -268,5 +268,27 @@ describe("every Mac speech path is gated on the audio lease", () => {
     });
     expect(granted).toBe(false);
     expect(reserved).toBe(false);
+  });
+});
+
+describe("the phone owns the ear, not just the voice", () => {
+  const daemonSource = readFileSync(
+    new URL("../src/daemon.ts", import.meta.url),
+    "utf8",
+  );
+
+  test("the main listen path checks the lease before opening the mic", () => {
+    // The log caught this in production: the claim landed and the Mac opened
+    // its mic in the SAME SECOND, then both machines transcribed Tyler and both
+    // injected. Only the reading-gap branch of conversationLoop had ever called
+    // reserveNormalMic; the main path went straight to micCue.
+    const loop = daemonSource.slice(
+      daemonSource.indexOf("async function conversationLoop"),
+      daemonSource.indexOf('log(`listening → '),
+    );
+    const openIndex = loop.indexOf('await micCue(cfg, "open")');
+    const gateIndex = loop.indexOf("audioLease.isPhone()");
+    expect(gateIndex).toBeGreaterThan(-1);
+    expect(gateIndex).toBeLessThan(openIndex);
   });
 });

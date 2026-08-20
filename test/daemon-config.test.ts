@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { loadConfig } from "../src/config.ts";
 import {
   createConfigController,
+  daemonStateFromUnknown,
   downgradeTurnWithLiveBackgroundWork,
   dispatchControlMessage,
   insertQueuedEvent,
@@ -34,6 +35,13 @@ function fixture(settings: Record<string, unknown> = {}): { path: string } {
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+test("legacy persisted quiet state migrates into lossless manual mode", () => {
+  expect(daemonStateFromUnknown({ muted: true, paused: false })).toEqual({ paused: true });
+  expect(daemonStateFromUnknown({ muted: false, paused: true })).toEqual({ paused: true });
+  expect(daemonStateFromUnknown({ muted: false, paused: false })).toEqual({ paused: false });
+  expect(daemonStateFromUnknown(null)).toEqual({ paused: false });
 });
 
 describe("daemon listen status hooks", () => {
@@ -135,7 +143,6 @@ describe("daemon listen status hooks", () => {
       "() => reducer.snapshot.buffer.map((segment) => segment.text).join(\" \")",
     );
     expect(conversationWiring).not.toContain("theaterMode");
-    expect(daemonSource).toContain('listenHooks("who first", () => "")');
     expect(daemonSource).toContain('listenHooks(event.label, () => "")');
   });
 
@@ -161,7 +168,7 @@ describe("daemon listen status hooks", () => {
     expect(liveProduction).toContain("clearReadingProgress()");
     expect(liveProduction).toContain("setReadingProgress(text, spokenChars)");
     expect(liveProduction).not.toContain("theaterMode");
-    expect(publishedConversation).toContain("reply: contentEvent && replyText");
+    expect(publishedConversation).toContain("reply: contentEvent && shownReply.text");
     expect(publishedConversation).toContain("model.preview = previewForPanelSelection(");
     expect(publishedConversation).not.toContain("theaterMode");
     expect(controllers).toContain("settingsOverlay = new SettingsOverlay(");
@@ -385,6 +392,24 @@ describe("daemon config controller", () => {
     expect(takeNextQueuedEvent(queue, "newest")).toBe(laterRecite);
   });
 
+  test("distinct queued phone injects are append-only and never coalesced", () => {
+    const first: TurnEvent = {
+      type: "inject",
+      sessionId: "target",
+      label: "target",
+      announce: "first dictated prompt",
+    };
+    const second: TurnEvent = {
+      ...first,
+      announce: "second dictated prompt",
+    };
+    const queue: TurnEvent[] = [];
+
+    expect(insertQueuedEvent(queue, first)).toBeTrue();
+    expect(insertQueuedEvent(queue, second)).toBeTrue();
+    expect(queue).toEqual([first, second]);
+  });
+
   test("oldest and urgency reorder only the state cohort newer than the latest command", () => {
     const olderWaiting: TurnEvent = { type: "turn-end", sessionId: "old", label: "old", announce: "" };
     const wake: TurnEvent = { type: "wake", sessionId: "target", label: "target", announce: "" };
@@ -497,10 +522,20 @@ describe("daemon config controller", () => {
     expect(completePrune).toContain("pending.delete(id)");
     expect(completePrune).toContain("eventOrder.prune(liveIds)");
     expect(closedCleanup).toContain("pending.delete(event.sessionId)");
-    expect(dismiss.indexOf("dismissedSessionIds.add(target.sessionId)")).toBeLessThan(
-      dismiss.indexOf("setSessionMutedWithDigest(target.sessionId, true)"),
-    );
+    expect(dismiss).toContain("dismissedSessionIds.add(target.sessionId)");
+    expect(dismiss).toContain("if (lastTurn?.sessionId === target.sessionId) lastTurn = null");
+    expect(dismiss).toContain("hold: dismissedHeldTurns");
+    expect(dismiss).not.toContain("setSessionMutedWithDigest");
     expect(daemonSource).toContain("dismissedSessionIds.delete(event.sessionId)");
+
+    const quietGate = daemonSource.slice(
+      daemonSource.indexOf("const controlDisposition = gateTurnForControls"),
+      daemonSource.indexOf("// Nobody's there:"),
+    );
+    expect(quietGate.indexOf('controlDisposition === "session-dismissed"'))
+      .toBeLessThan(quietGate.indexOf("lastTurn = event"));
+    expect(daemonSource).toContain("resolveWakeTarget(event, latestVisibleTurn())");
+    expect(daemonSource).toContain("const rememberedTurn = latestVisibleTurn()");
   });
 
   test("recite routes through the existing reader without a bell or responded guard", () => {
@@ -510,7 +545,7 @@ describe("daemon config controller", () => {
     );
 
     expect(branch).toContain("lastAssistantText(target.transcriptPath)");
-    expect(branch).toContain("await speak(cfg, `${target.label}:`, target.label)");
+    expect(branch).toContain("await speak(cfg, `${target.label}:`, target.label, true)");
     expect(branch).toContain("await conversationLoop(");
     expect(branch).toContain("false,\n          pauseGeneration");
     expect(branch).not.toContain("ringBell");
@@ -555,62 +590,6 @@ describe("daemon config controller", () => {
     expect(action).toContain("await deliver(");
   });
 
-  test("resume digest audio is serialized in the resume handler with exact replay fallback", () => {
-    const wiring = daemonSource.slice(
-      daemonSource.indexOf("pause = new PauseController"),
-      daemonSource.indexOf("const instantControls"),
-    );
-    const handler = daemonSource.slice(
-      daemonSource.indexOf("async function listenForResumeDigest"),
-      daemonSource.indexOf("async function handle(event"),
-    );
-    const settingsPause = daemonSource.slice(
-      daemonSource.indexOf("const settingsPause"),
-      daemonSource.indexOf("// Hooks may connect while model startup"),
-    );
-
-    expect(wiring).toContain("replayOverride: async (events)");
-    expect(wiring).toContain(
-      "shouldUseResumeDigest(cfg.resumeDigest, events, pausedSessionIds)",
-    );
-    expect(settingsPause).toContain("resumeDigestArm = null");
-    expect(handler).toContain("await runResumeDigest(");
-    expect(handler).toContain("for (const event of fallbackEvents) enqueue(event)");
-    expect(handler).toContain("if (plan.cancelled) return");
-    expect(handler).toContain("plan.cancelled");
-    expect(handler).toContain("plan.invalidated");
-    expect(handler).toContain("if (consumeStopKey()) digestStopRequested = true");
-    expect(handler).toContain("await listenOnce(");
-    expect(handler.indexOf("await speak(cfg, text)")).toBeLessThan(
-      handler.indexOf("return listenForResumeDigest"),
-    );
-  });
-
-  test("resume digest escrow rejects stale ownership and scoped mute invalidates it", () => {
-    const setup = daemonSource.slice(
-      daemonSource.indexOf("const resumeDigestEscrow"),
-      daemonSource.indexOf("const settingsPause"),
-    );
-    const modeEdges = daemonSource.slice(
-      daemonSource.indexOf("// Apply every mode edge synchronously"),
-      daemonSource.indexOf("insertQueuedEvent(queue", daemonSource.indexOf("// Apply every mode edge synchronously")),
-    );
-    const resumeHandler = daemonSource.slice(
-      daemonSource.indexOf('if (event.type === "resume") {', daemonSource.indexOf("async function handle(event")),
-      daemonSource.indexOf('if (event.type === "speak")'),
-    );
-
-    expect(setup).toContain("new ResumeDigestEscrow<TurnEvent>()");
-    expect(setup).toContain("resumeDigestEscrow.forget(sessionId)");
-    expect(setup).toContain("resumeDigestEscrow.invalidate(sessionId)");
-    expect(setup).toContain("setSessionMutedWithDigest");
-    expect(setup).toContain("setSessionPausedWithDigest");
-    expect(setup).toContain("shouldUseResumeDigest(cfg.resumeDigest, events, pausedSessionIds)");
-    expect(modeEdges).toContain("resumeDigestEscrow.settle(event, result.digested === true)");
-    expect(resumeHandler).toContain("handlePreparedResumeDigest(event, result)");
-    expect(daemonSource).toContain("setSessionPaused: setSessionPausedWithDigest");
-  });
-
   test("working-mic only makes Stop-reclassified working events audible", () => {
     const turnEnd = { type: "turn-end" as const };
     const submitted = { type: "working" as const };
@@ -620,6 +599,18 @@ describe("daemon config controller", () => {
     expect(shouldHandleTurnAudibly(background, false)).toBe(false);
     expect(shouldHandleTurnAudibly(background, true)).toBe(true);
     expect(shouldHandleTurnAudibly(submitted, true)).toBe(false);
+  });
+
+  test("conversation quiet gates do not depend on which device owns playback", () => {
+    const turnHandler = daemonSource.slice(
+      daemonSource.indexOf("const controlledTurn = shouldHandleTurnAudibly"),
+      daemonSource.indexOf("// Nobody's there:"),
+    );
+    expect(turnHandler).toContain(
+      'const audibleTurn = controlledTurn && audioLease.sink === "mac"',
+    );
+    expect(turnHandler).toContain("gateTurnForControls(event, controlledTurn");
+    expect(turnHandler).not.toContain("gateTurnForControls(event, audibleTurn");
   });
 
   test("live background work downgrades a turn end by mutating the same event", () => {
@@ -652,7 +643,7 @@ describe("daemon config controller", () => {
       daemonSource.indexOf("/**\n   * Speak with the barge-in recorder"),
     );
     const refreshAt = handleTurn.indexOf("sessionHasLiveBackgroundWork(event.transcriptPath)");
-    const audibleAt = handleTurn.indexOf("const audibleTurn = shouldHandleTurnAudibly");
+    const audibleAt = handleTurn.indexOf("const controlledTurn = shouldHandleTurnAudibly");
     expect(refreshAt).toBeGreaterThan(-1);
     expect(audibleAt).toBeGreaterThan(refreshAt);
     expect(handleTurn).toContain("downgradeTurnWithLiveBackgroundWork(event, true)");
@@ -704,7 +695,7 @@ describe("daemon config controller", () => {
 
     const turnEndStatus = daemonSource.slice(
       daemonSource.indexOf('if (event.type === "turn-end" && !setSessionState('),
-      daemonSource.indexOf("// Mute stamps", daemonSource.indexOf('if (event.type === "turn-end" && !setSessionState(')),
+      daemonSource.indexOf("if (cancelledAudioCommands.delete(event))", daemonSource.indexOf('if (event.type === "turn-end" && !setSessionState(')),
     );
     expect(turnEndStatus).toContain('"waiting"');
     expect(turnEndStatus).not.toContain('"review" : "waiting"');
@@ -1289,5 +1280,28 @@ describe("daemon config controller", () => {
       "end-silence": 4,
     });
     expect(cfg.endSilenceSecs).toBe(4);
+  });
+});
+
+describe("an inject never waits for the voice engine", () => {
+  // `drain` awaited ttsStartup before touching the queue, so nothing moved
+  // until Kokoro had warmed up — measured at 67 seconds on a cold start
+  // ("warmup 66968ms"), paid again on every daemon restart. An inject does not
+  // speak, so it sat behind a text-to-speech model for over a minute while the
+  // socket never replied and the phone said "Couldn't reach the Mac".
+  const source = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
+
+  test("the queue no longer blocks on startup before dispatching", () => {
+    const drain = source.slice(source.indexOf("async function drain()"));
+    const body = drain.slice(0, drain.indexOf("async function handle("));
+    expect(body).not.toContain("await ttsStartup");
+  });
+
+  test("speaking events still wait for it, silent ones never do", () => {
+    // An interrupt is the other event nobody may be made to wait for: its whole
+    // value is arriving before the agent does more of what you are stopping.
+    expect(source).toContain(
+      'if (event.type !== "inject" && event.type !== "interrupt") await ttsStartup;',
+    );
   });
 });

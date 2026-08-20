@@ -1,5 +1,6 @@
 import AppKit
 import PDFKit
+import AVKit
 import SwiftUI
 
 struct ReviewItem: Identifiable, Equatable {
@@ -194,6 +195,12 @@ private struct ReviewContent: View {
                 .onAppear {
                     isWebLoading = false
                 }
+        case let .video(url):
+            DeliverableVideoView(url: url)
+                .background(ConchPalette.bg)
+                .onAppear {
+                    isWebLoading = false
+                }
         case let .pdf(url):
             DeliverablePDFView(url: url)
                 .background(ConchPalette.bg)
@@ -212,6 +219,33 @@ private struct ReviewContent: View {
                 .onAppear {
                     isWebLoading = false
                 }
+        case let .unsupported(url):
+            // A limitation stated plainly, not WebKit's "Frame load
+            // interrupted" — which looked like conch had broken.
+            VStack(spacing: 10) {
+                Image(systemName: url.hasDirectoryPath ? "folder" : "doc.zipper")
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundStyle(ConchPalette.textDim)
+                Text(url.hasDirectoryPath
+                     ? "\(url.lastPathComponent) is a folder"
+                     : "conch can't preview a \(url.pathExtension.uppercased())")
+                    .font(ConchTypography.font(size: 14, weight: .medium))
+                    .foregroundStyle(ConchPalette.textPrimary)
+                Text("It's on this Mac — open it in Finder to look inside.")
+                    .font(ConchTypography.font(size: 12))
+                    .foregroundStyle(ConchPalette.textDim)
+                Text(url.path)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(ConchPalette.textDim)
+                    .textSelection(.enabled)
+                Button("Reveal in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+                .padding(.top, 4)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(ConchPalette.bg)
+            .onAppear { isWebLoading = false }
         case let .missing(url):
             VStack(spacing: 10) {
                 Image(systemName: "questionmark.folder")
@@ -476,9 +510,11 @@ private struct DeliverableLoadingLine: View {
 
 enum DeliverableSource: Equatable {
     case image(URL)
+    case video(URL)
     case pdf(URL)
     case markdown(URL)
     case text(URL)
+    case unsupported(URL)
     case missing(URL)
     case web
 
@@ -486,6 +522,19 @@ enum DeliverableSource: Equatable {
         "png", "jpg", "jpeg", "gif", "webp", "svg", "heic", "tiff",
     ])
     private static let markdownExtensions = Set(["md", "markdown"])
+    // WebKit will play some of these and refuse others depending on codec, so
+    // "it fell through to the web view" was luck rather than support. AVKit
+    // plays them with real transport controls.
+    private static let videoExtensions = Set([
+        "mp4", "mov", "m4v", "webm",
+    ])
+    // Nothing can render these, and WebKit fails them with "Frame load
+    // interrupted" — jargon that reads as a crash rather than a limitation.
+    // Naming the type is the whole difference between "conch is broken" and
+    // "conch can't show a zip".
+    private static let unpreviewableExtensions = Set([
+        "zip", "gz", "tar", "tgz", "dmg", "pkg", "app", "bin", "exe",
+    ])
     // Types that are TEXT to a person even when they aren't .txt. Everything
     // else local still falls through to the web view, which handles .html and
     // anything WebKit natively previews.
@@ -507,8 +556,19 @@ enum DeliverableSource: Equatable {
         let localURL = Self.localFileURL(for: link)
         // A vanished file must SAY so. Falling through to a renderer produced a
         // lone glyph with no words — indistinguishable from a broken renderer.
-        if !FileManager.default.fileExists(atPath: localURL.path) {
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: localURL.path, isDirectory: &isDirectory)
+        if !exists {
             self = .missing(localURL)
+            return
+        }
+        // A FOLDER is a real thing to hand over — Tyler filed a review pointing
+        // at /tmp/deliverable-shots and got nothing, because a directory has no
+        // extension, fell through to the web view, and WebKit refused it. It is
+        // not missing and it is not broken; there is simply nothing to render,
+        // and the useful action is to open it.
+        if isDirectory.boolValue {
+            self = .unsupported(localURL)
             return
         }
         switch localURL.pathExtension.lowercased() {
@@ -516,6 +576,10 @@ enum DeliverableSource: Equatable {
             self = .image(localURL)
         case "pdf":
             self = .pdf(localURL)
+        case let ext where Self.unpreviewableExtensions.contains(ext):
+            self = .unsupported(localURL)
+        case let ext where Self.videoExtensions.contains(ext):
+            self = .video(localURL)
         case let ext where Self.markdownExtensions.contains(ext):
             self = .markdown(localURL)
         case let ext where Self.textExtensions.contains(ext):
@@ -532,6 +596,33 @@ enum DeliverableSource: Equatable {
 
         let expanded = NSString(string: link).expandingTildeInPath
         return URL(fileURLWithPath: expanded, isDirectory: false).standardizedFileURL
+    }
+}
+
+/// A video deliverable with real transport controls.
+///
+/// These used to fall through to the web view, which plays some codecs and
+/// silently refuses others — so support was luck. AVKit gives scrubbing,
+/// volume and fullscreen, and fails loudly when it cannot decode.
+private struct DeliverableVideoView: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .inline
+        view.videoGravity = .resizeAspect
+        let player = AVPlayer(url: url)
+        view.player = player
+        return view
+    }
+
+    func updateNSView(_ view: AVPlayerView, context: Context) {
+        // Only replace the player for a NEW video. Rebuilding it on every daemon
+        // publication would reset the person's playback position and volume.
+        if (view.player?.currentItem?.asset as? AVURLAsset)?.url != url {
+            let player = AVPlayer(url: url)
+            view.player = player
+        }
     }
 }
 

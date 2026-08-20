@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import {
+  AGENTS_ALWAYS_ON,
   buildInstallCommands,
   buildMcpInvocation,
   buildMcpJson,
@@ -123,7 +124,10 @@ describe("plugin installer helpers", () => {
       join(repoRoot, "docs", "conch-control-skill.md"),
       "utf8",
     );
-    expect(readFileSync(join(pluginRoot, "AGENTS.md"), "utf8")).toBe(prose);
+    // NOT the prose. AGENTS.md is always-on context for Codex while the skill
+    // loads on demand, so shipping the same bytes to both made every Codex
+    // session permanently carry a Homebrew install pitch.
+    expect(readFileSync(join(pluginRoot, "AGENTS.md"), "utf8")).toBe(AGENTS_ALWAYS_ON);
     expect(
       readFileSync(
         join(pluginRoot, "skills", "conch-control", "SKILL.md"),
@@ -131,7 +135,7 @@ describe("plugin installer helpers", () => {
       ),
     ).toBe(`---
 name: conch-control
-description: Control conch — see and steer your other sessions by voice.
+description: Put finished work in front of the user when a turn produces something to look at (a page, a diff, a screenshot, a built app), and see or steer their other Claude Code and Codex sessions. Use when you have made something viewable, or when asked what the other sessions are doing.
 ---
 
 ${prose}`);
@@ -171,7 +175,7 @@ ${prose}`);
       "utf8",
     );
     expect(readFileSync(join(distDir, "plugins", "conch", "AGENTS.md"), "utf8"))
-      .toBe(prose);
+      .toBe(AGENTS_ALWAYS_ON);
     expect(
       readFileSync(
         join(distDir, "plugins", "conch", "skills", "conch-control", "SKILL.md"),
@@ -179,7 +183,7 @@ ${prose}`);
       ),
     ).toBe(`---
 name: conch-control
-description: Control conch — see and steer your other sessions by voice.
+description: Put finished work in front of the user when a turn produces something to look at (a page, a diff, a screenshot, a built app), and see or steer their other Claude Code and Codex sessions. Use when you have made something viewable, or when asked what the other sessions are doing.
 ---
 
 ${prose}`);
@@ -239,4 +243,42 @@ ${prose}`);
     expect(mcp.mcpServers.conch.command).toEndWith("/conch");
     expect(mcp.mcpServers.conch.args).toEqual(["mcp"]);
   }, 15_000);
+});
+
+describe("the two install paths ship the same prose", () => {
+  // conch reaches users two ways with two different sources for one text:
+  //
+  //   marketplace  -> `plugin/plugins/conch` is served straight out of git
+  //                   (`source: git-subdir` in the marketplace manifest)
+  //   Homebrew/dev -> materializePlugin GENERATES those same files from
+  //                   docs/conch-control-skill.md
+  //
+  // Nothing kept them equal, and they silently drifted into three different
+  // review contracts — the checked-in AGENTS.md told agents `session` was
+  // required and must NOT name the caller, which is the exact inverse of what
+  // `requiredReviewSession` enforces, so following it was a guaranteed
+  // ToolInputError. Whichever file is edited, this fails until both match.
+  const repoRoot = join(import.meta.dir, "..");
+  const prose = readFileSync(join(repoRoot, "docs", "conch-control-skill.md"), "utf8");
+  const pluginRoot = join(repoRoot, "plugin", "plugins", "conch");
+
+  test("the checked-in AGENTS.md is the short always-on text", () => {
+    expect(readFileSync(join(pluginRoot, "AGENTS.md"), "utf8")).toBe(AGENTS_ALWAYS_ON);
+  });
+
+  test("the checked-in SKILL.md is the generated prose under its frontmatter", () => {
+    const skill = readFileSync(
+      join(pluginRoot, "skills", "conch-control", "SKILL.md"),
+      "utf8",
+    );
+    expect(skill.endsWith(prose)).toBe(true);
+    expect(skill.slice(0, skill.length - prose.length)).toMatch(/^---\nname: conch-control\n/);
+  });
+
+  test("the shipped contract matches what review_to_front actually enforces", () => {
+    // The drift above was undetectable by eye. Pin the two claims that were
+    // wrong: `session` defaults to the caller, and naming a sibling is refused.
+    expect(prose).toContain("`session` is optional and defaults to you");
+    expect(prose).toContain("naming a different session is refused");
+  });
 });

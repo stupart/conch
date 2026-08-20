@@ -12,6 +12,7 @@ struct ConchMacApp: App {
         WindowGroup("conch") {
             ContentView()
                 .environmentObject(store)
+                .environmentObject(appDelegate.daemon)
                 .frame(minWidth: 640, minHeight: 400)
                 .preferredColorScheme(.dark)
                 .background(WindowBackgroundConfigurator())
@@ -20,6 +21,12 @@ struct ConchMacApp: App {
                         for: NSApplication.didBecomeActiveNotification
                     )
                 ) { _ in
+                    // Becoming active is NOT waking. This is every click back
+                    // into the app, many times an hour; reporting it as a wake
+                    // tore down a live relay connection and re-dialled on each
+                    // one — visible in the log as "the Mac woke" four times in
+                    // five minutes. A worse version of the polling it replaced,
+                    // since that at least did not drop a working socket.
                     store.forceLivenessProbe()
                 }
                 .onReceive(
@@ -28,6 +35,8 @@ struct ConchMacApp: App {
                     )
                 ) { _ in
                     store.forceLivenessProbe()
+                    // The actual wake, which fires once per lid-open.
+                    store.reportSystemWake()
                 }
         }
         .defaultSize(width: 1_040, height: 720)
@@ -45,20 +54,80 @@ struct ConchMacApp: App {
         }
 
         Settings {
-            ConchSettingsView()
+            // Pairing first, knobs second: connecting a phone is the one thing
+            // a new person must do, and it used to require a terminal.
+            TabView {
+                // "Advanced" promised something arcane and delivered the
+                // ordinary settings; "Phone" named a device rather than the
+                // job. Two tabs, named for what each one is.
+                ConchPairingView()
+                    .tabItem { Label("Phone app", systemImage: "iphone") }
+                ConchSettingsView()
+                    .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
+            }
+            // A Settings window sizes to its content and does NOT scroll, so
+            // an ideal height taller than a laptop screen simply overflows.
+            // 560 leaves room for the tab bar and the title bar on a 13".
+            // Each tab scrolls internally, which is what actually makes long
+            // content reachable rather than relying on the window growing.
+            .frame(minWidth: 620, idealWidth: 680, minHeight: 420, idealHeight: 560)
+            // `Settings` is its own SCENE. Environment objects injected into
+            // the WindowGroup above do not reach it, and SwiftUI answers a
+            // missing @EnvironmentObject with a trap rather than a nil — so
+            // opening Settings killed the app outright (EXC_BREAKPOINT in
+            // EnvironmentObject.error, straight out of ConchSettingsView.body).
+            // Every scene that reads these has to be handed them itself.
+            .environmentObject(store)
+            .environmentObject(appDelegate.daemon)
         }
     }
 }
 
+@MainActor
 private final class ConchAppDelegate: NSObject,
     NSApplicationDelegate,
     UNUserNotificationCenterDelegate
 {
+    /// The daemon is a child of this app, not a separate install.
+    let daemon = DaemonHost()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         registerLoginItemIfNeeded()
         ReviewNotifications.shared.requestAuthorizationAtLaunch()
+        // Adopts an already-listening daemon rather than starting a rival one.
+        daemon.start()
+    }
+
+    /// Quitting conch stops conch. That is the whole point of folding the
+    /// daemon into the app: there is no second thing left running that the
+    /// person has to know about, find, and stop separately.
+    func applicationWillTerminate(_ notification: Notification) {
+        daemon.stop()
+    }
+
+    /// Closing the window must not strand the app with no way back.
+    ///
+    /// `CommandGroup(replacing: .newItem) {}` removes File ▸ New Window, which
+    /// is right — conch is one window, not a document app — but it also removed
+    /// the only way to get a window back. Close it and the process kept running
+    /// with nothing on screen and no menu item, dock click, or relaunch that
+    /// would bring it back; `open -a` just activated an app with zero windows.
+    /// Found because the app photographed itself and reported "no visible
+    /// window (of 0 total)".
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows: Bool
+    ) -> Bool {
+        if hasVisibleWindows { return true }
+        // Prefer restoring the real window; only ask AppKit to rebuild the
+        // scene if there is genuinely nothing to raise.
+        if let existing = sender.windows.first(where: { $0.canBecomeMain }) {
+            existing.makeKeyAndOrderFront(nil)
+            return false
+        }
+        return true
     }
 
     private func registerLoginItemIfNeeded() {
@@ -71,6 +140,14 @@ private final class ConchAppDelegate: NSObject,
             try loginItem.register()
         } catch {
             NSLog("Conch login item registration failed: %@", error.localizedDescription)
+            let message = error.localizedDescription
+            Task {
+                await ConchSocketClient().reportAppError(
+                    operation: "login-item.register",
+                    message: message,
+                    state: ["bundlePath": Bundle.main.bundlePath]
+                )
+            }
         }
     }
 

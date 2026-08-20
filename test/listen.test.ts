@@ -68,6 +68,48 @@ test("stopSoxProcess sends SIGINT so SoX flushes its capture tail", () => {
   expect(signal).toBe("SIGINT");
 });
 
+test("a recorder that honours SIGINT is never killed", async () => {
+  const signals: unknown[] = [];
+  stopSoxProcess({
+    kill(received: unknown) {
+      signals.push(received);
+    },
+    exited: Promise.resolve(0),
+  } as never, { graceMs: 20 });
+  await Bun.sleep(60);
+  // The tail flush is the whole reason SIGINT goes first; a SIGKILL chasing it
+  // would truncate exactly the last word conch is trying to keep.
+  expect(signals).toEqual(["SIGINT"]);
+});
+
+test("shutdown kills without waiting, because nothing will be alive to wait", () => {
+  // The daemon calls process.exit(0) immediately after this, so a scheduled
+  // escalation would never fire and a SIGINT-resistant recorder would outlive
+  // the daemon still holding the microphone.
+  const signals: unknown[] = [];
+  stopSoxProcess({
+    kill(received: unknown) {
+      signals.push(received);
+    },
+    exited: new Promise<number>(() => {}), // never exits
+  } as never, { immediate: true });
+  expect(signals).toEqual(["SIGINT", "SIGKILL"]); // synchronous, not scheduled
+});
+
+test("a wedged recorder is killed rather than left holding the mic", async () => {
+  // One sox stuck on CoreAudio held the device for eight minutes while the
+  // daemon logged "closing mic" six times and every control appeared dead.
+  const signals: unknown[] = [];
+  stopSoxProcess({
+    kill(received: unknown) {
+      signals.push(received);
+    },
+    exited: new Promise<number>(() => {}), // never exits
+  } as never, { graceMs: 20 });
+  await Bun.sleep(80);
+  expect(signals).toEqual(["SIGINT", "SIGKILL"]);
+});
+
 test("runtime session abort closes its recorder through a manual-reply barrier", async () => {
   const root = mkdtempSync(join(tmpdir(), "conch-listen-abort-test-"));
   const fakeSox = join(root, "sox");

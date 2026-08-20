@@ -1,3 +1,4 @@
+import type { UploadChunk, UploadResult } from "./phone-uploads.ts";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -61,6 +62,8 @@ export interface PhoneBridgeDependencies {
   replyFor(sessionId: string): Promise<string>;
   /** Connected phone count, so the daemon can reclaim audio when it hits zero. */
   onClientsChanged?(count: number): void;
+  /** Take one piece of an image; resolves a path once the last piece lands. */
+  acceptUpload(chunk: UploadChunk): Promise<UploadResult | { error: string }>;
   log(message: string): void;
 }
 
@@ -74,6 +77,36 @@ export interface PhoneBridgeHandle {
   /** Live websocket count — an audio claim is only valid while this is > 0. */
   clientCount(): number;
 }
+
+/**
+ * A frame with its timestamp flattened, for comparing one publish to the last.
+ * `ts` moves on every publish by definition and would defeat the comparison on
+ * its own; everything else differing means something a viewer can see has moved.
+ */
+function normalisedFrame(frame: string): string {
+  return frame.replace(/"ts":\s*\d+/, '"ts":0');
+}
+
+/** One downstream state consumer, whether a Bun websocket or a relay stream. */
+export interface PhoneStateSink {
+  send(data: string): number;
+}
+
+/**
+ * `/ws` is the route's one transport-specific operation. LAN upgrades the Bun
+ * request and subscribes from `websocket.open`; a relay can subscribe its
+ * logical stream immediately. The route still owns auth and pathname routing.
+ */
+export interface PhoneRequestContext {
+  /** Relay pairings use their own bearer without rotating legacy LAN tokens. */
+  expectedToken?: string;
+  upgradeState?(
+    request: Request,
+    subscribe: (sink: PhoneStateSink) => void,
+  ): boolean;
+}
+
+export type PhoneRequestResult = Response | Promise<Response> | undefined;
 
 /** Bun reports a connection-dropped frame with 0; backpressure (-1) is alive. */
 export function sendPhoneFrame(
@@ -216,133 +249,297 @@ export async function readPairingBody(
   }
 }
 
-export function createPhoneBridge(
+/**
+ * The phone-facing application protocol, independent of how requests arrive.
+ *
+ * Both the LAN server and the internet relay drive this exact Request handler,
+ * so authentication, current-session scoping, body limits, and error semantics
+ * cannot drift between transports. State subscribers are aggregated here for
+ * the same reason: the daemon's audio lease cares whether ANY phone is alive.
+ */
+export class PhoneBridgeApplication {
+  readonly #dependencies: PhoneBridgeDependencies;
+  readonly #token: string;
+  readonly #pairing = new PairingWindow();
+  readonly #stateSinks = new Set<PhoneStateSink>();
+
+  constructor(dependencies: PhoneBridgeDependencies, options: { token: string }) {
+    this.#dependencies = dependencies;
+    this.#token = options.token;
+  }
+
+  offerPairingCode(code: PairingCode): void {
+    this.#pairing.offer(code);
+  }
+
+  /** Register a successfully authenticated state stream and send its snapshot. */
+  subscribeState(sink: PhoneStateSink): void {
+    const previousCount = this.#stateSinks.size;
+    this.#stateSinks.add(sink);
+    if (this.#stateSinks.size !== previousCount) {
+      this.#dependencies.onClientsChanged?.(this.#stateSinks.size);
+    }
+    const state = this.#dependencies.getState();
+    if (!state) return;
+    const frame = JSON.stringify(state);
+    // Remember what a joining client was just handed, so the next publish does
+    // not immediately resend the same state it already has.
+    this.#lastPublishedFrame = normalisedFrame(frame);
+    if (!sendPhoneFrame(sink, frame)) {
+      this.unsubscribeState(sink);
+    }
+  }
+
+  unsubscribeState(sink: PhoneStateSink): void {
+    if (!this.#stateSinks.delete(sink)) return;
+    this.#dependencies.onClientsChanged?.(this.#stateSinks.size);
+  }
+
+  clientCount(): number {
+    return this.#stateSinks.size;
+  }
+
+  #lastPublishedFrame = "";
+
+  publish(): void {
+    if (this.#stateSinks.size === 0) return;
+    const state = this.#dependencies.getState();
+    if (!state) return;
+    const frame = JSON.stringify(state);
+    // Don't send a frame that says exactly what the last one said.
+    //
+    // The phone decodes every frame as a COMPLETE state on the main actor and
+    // republishes it, which invalidates the whole view tree and rebuilds every
+    // markdown body in the visible conversation. A Codex audit measured the
+    // live snapshot at ~112KB across six conversations, publishable at up to
+    // 10Hz — so a redundant frame is not free, it is a full re-render of a
+    // busy screen for no new information.
+    //
+    // Only the timestamp is normalised before comparing: it changes on every
+    // publish by definition and would defeat the check on its own, while
+    // everything else differing means something a viewer can actually see has
+    // moved.
+    const comparable = normalisedFrame(frame);
+    if (comparable === this.#lastPublishedFrame) return;
+    this.#lastPublishedFrame = comparable;
+    let changed = false;
+    for (const sink of this.#stateSinks) {
+      // A sink that cannot be written to is gone; keeping it in the set makes
+      // the audio lease look alive forever.
+      if (!sendPhoneFrame(sink, frame)) {
+        this.#stateSinks.delete(sink);
+        changed = true;
+      }
+    }
+    if (changed) this.#dependencies.onClientsChanged?.(this.#stateSinks.size);
+  }
+
+  handle(req: Request, context: PhoneRequestContext = {}): PhoneRequestResult {
+    const url = new URL(req.url);
+
+    // The one unauthenticated route. Its exposure is bounded — not made safe
+    // for hostile networks — by a two-minute, single-use, five-guess window.
+    if (url.pathname === "/pair" && req.method === "POST") {
+      return (async () => {
+        const body = await readPairingBody(req);
+        if (!body.ok) {
+          return Response.json(
+            { error: "Pairing request is too large." },
+            { status: 413 },
+          );
+        }
+        const result = this.#pairing.redeem(body.code);
+        if (result.kind === "closed") {
+          return Response.json(
+            { error: "No pairing window open — run `conch pair` on the Mac." },
+            { status: 403 },
+          );
+        }
+        if (result.kind === "exhausted") {
+          return Response.json(
+            { error: "Too many attempts — run `conch pair` again." },
+            { status: 429 },
+          );
+        }
+        if (result.kind === "wrong") {
+          return Response.json({ error: "That code didn't match." }, { status: 401 });
+        }
+        this.#dependencies.log("phone paired");
+        return Response.json({ token: this.#token });
+      })();
+    }
+
+    if (!tokenMatches(presentedToken(req), context.expectedToken ?? this.#token)) {
+      return new Response("unauthorized", { status: 401 });
+    }
+
+    if (url.pathname === "/ws") {
+      const upgraded = context.upgradeState?.(
+        req,
+        (sink) => this.subscribeState(sink),
+      ) ?? false;
+      return upgraded
+        ? undefined
+        : new Response("upgrade required", { status: 426 });
+    }
+
+    if (url.pathname === "/state") {
+      return Response.json(this.#dependencies.getState() ?? { v: 0 });
+    }
+
+    // Published state carries ONE reply — whichever session last finished a
+    // turn — so every other session looked empty on the phone, and a daemon
+    // restart made them all look empty. The Mac app never had this problem
+    // because it reads the transcript itself; the phone can't, so it asks.
+    if (url.pathname === "/reply") {
+      const sessionId = url.searchParams.get("session") ?? "";
+      if (!sessionId) return new Response("session required", { status: 400 });
+      const known = (this.#dependencies.getState() as { rows?: Array<{ id?: string }> } | null)
+        ?.rows?.some((row) => row.id === sessionId);
+      if (!known) return new Response("unknown session", { status: 404 });
+      return (async () => Response.json({
+        markdown: await this.#dependencies.replyFor(sessionId),
+      }))();
+    }
+
+    if (url.pathname === "/file") {
+      // Serve a LOCAL deliverable or inline material to the phone — but only a
+      // path that is present in the current published state. That exact-set
+      // constraint is the whole security story: never arbitrary file access.
+      const requested = url.searchParams.get("path") ?? "";
+      const state = this.#dependencies.getState() as
+        | {
+          rows?: Array<{ review?: { link?: string } }>;
+          conversations?: Record<string, {
+            items?: Array<{ material?: { path?: string } }>;
+          }>;
+        }
+        | null;
+      const reviewLinks = (state?.rows ?? [])
+        .map((row) => row.review?.link)
+        .filter((link): link is string => Boolean(link));
+      const materialPaths = Object.values(state?.conversations ?? {})
+        .flatMap((conversation) => conversation.items ?? [])
+        .map((item) => item.material?.path)
+        .filter((path): path is string => Boolean(path));
+      if (!requested || !reviewLinks.includes(requested) && !materialPaths.includes(requested)) {
+        return new Response("not a current published file", { status: 403 });
+      }
+      const file = Bun.file(requested);
+      return (async () => (await file.exists())
+        ? new Response(file)
+        : new Response("gone", { status: 404 }))();
+    }
+
+    // Images arrive in pieces: a relay frame caps at 192 KiB and base64 adds a
+    // third. The phone has already sized them to what the model actually uses.
+    if (url.pathname === "/image" && req.method === "POST") {
+      // `handle` is synchronous and returns a promise where it needs one, so
+      // the awaiting lives in here rather than changing every caller.
+      return (async () => {
+        let payload: any;
+        try {
+          payload = await req.json();
+        } catch {
+          return Response.json({ error: "bad request" }, { status: 400 });
+        }
+        const result = await this.#dependencies.acceptUpload({
+          uploadId: String(payload?.uploadId ?? ""),
+          index: Number(payload?.index),
+          total: Number(payload?.total),
+          extension: String(payload?.extension ?? ""),
+          data: String(payload?.data ?? ""),
+        });
+        if ("error" in result) return Response.json(result, { status: 400 });
+        return Response.json(result);
+      })();
+    }
+
+    if (url.pathname === "/control" && req.method === "POST") {
+      return (async () => {
+        const body = await req.text();
+        if (body.length > CONTROL_MAX_BYTES) {
+          return new Response("too large", { status: 413 });
+        }
+        try {
+          const reply = await this.#dependencies.forwardControl(body);
+          // Say that the PHONE did this. Controls from every surface arrive on
+          // one socket, so when conch "unpaused itself" there was no way to
+          // tell a tap on the phone from a click on the Mac from a stray key
+          // in the terminal — the question could only be answered by guessing.
+          // Injects are logged in full elsewhere and would only be noise here.
+          try {
+            const parsed = JSON.parse(body);
+            const kind = String(parsed?.type ?? parsed?.kind ?? "");
+            if (
+              kind && kind !== "inject" && kind !== "phone-speaking"
+              && kind !== "phone-device"
+            ) {
+              this.#dependencies.log(
+                `phone → ${kind}${parsed?.label ? ` "${parsed.label}"` : ""}`,
+              );
+            }
+          } catch {}
+          return new Response(reply, {
+            headers: { "content-type": "application/json" },
+          });
+        } catch (error) {
+          // Name the control and the target. "phone control failed" alone could
+          // not distinguish a lost message from a routine status poll giving
+          // up, so a scary line appeared next to sends that had worked while
+          // the one that actually failed looked identical.
+          let what = "control";
+          try {
+            const parsed = JSON.parse(body);
+            const kind = parsed?.type ?? parsed?.kind ?? "control";
+            what = parsed?.label ? `${kind} -> "${parsed.label}"` : String(kind);
+          } catch {}
+          this.#dependencies.log(`phone ${what} failed: ${String(error)}`);
+          return new Response("daemon unreachable", { status: 502 });
+        }
+      })();
+    }
+
+    return new Response("not found", { status: 404 });
+  }
+}
+
+export function createPhoneBridgeApplication(
   dependencies: PhoneBridgeDependencies,
-  options: { port?: number; token: string; hostname?: string } ,
+  options: { token: string },
+): PhoneBridgeApplication {
+  return new PhoneBridgeApplication(dependencies, options);
+}
+
+/**
+ * LAN transport adapter. A later relay adapter can share the same application
+ * and add logical state sinks without copying one pathname or authorization
+ * rule from `PhoneBridgeApplication.handle`.
+ */
+export function createPhoneBridgeServer(
+  application: PhoneBridgeApplication,
+  dependencies: Pick<PhoneBridgeDependencies, "log">,
+  options: { port?: number; hostname?: string },
 ): PhoneBridgeHandle {
   const port = options.port ?? PHONE_BRIDGE_DEFAULT_PORT;
-  const sockets = new Set<{ send(data: string): number }>();
-  const pairing = new PairingWindow();
+  const lanSockets = new Set<PhoneStateSink>();
 
   const server = Bun.serve({
     port,
     hostname: options.hostname ?? "0.0.0.0",
     fetch(req, srv) {
-      const url = new URL(req.url);
-
-      // The one unauthenticated route. Its exposure is bounded — not made safe
-      // for hostile networks — by a two-minute, single-use, five-guess window.
-      if (url.pathname === "/pair" && req.method === "POST") {
-        return (async () => {
-          const body = await readPairingBody(req);
-          if (!body.ok) {
-            return Response.json(
-              { error: "Pairing request is too large." },
-              { status: 413 },
-            );
-          }
-          const result = pairing.redeem(body.code);
-          if (result.kind === "closed") {
-            return Response.json(
-              { error: "No pairing window open — run `conch pair` on the Mac." },
-              { status: 403 },
-            );
-          }
-          if (result.kind === "exhausted") {
-            return Response.json(
-              { error: "Too many attempts — run `conch pair` again." },
-              { status: 429 },
-            );
-          }
-          if (result.kind === "wrong") {
-            return Response.json({ error: "That code didn't match." }, { status: 401 });
-          }
-          dependencies.log("phone paired");
-          return Response.json({ token: options.token });
-        })();
-      }
-
-      if (!tokenMatches(presentedToken(req), options.token)) {
-        return new Response("unauthorized", { status: 401 });
-      }
-
-      if (url.pathname === "/ws") {
-        return srv.upgrade(req)
-          ? undefined
-          : new Response("upgrade required", { status: 426 });
-      }
-
-      if (url.pathname === "/state") {
-        return Response.json(dependencies.getState() ?? { v: 0 });
-      }
-
-      // Published state carries ONE reply — whichever session last finished a
-      // turn — so every other session looked empty on the phone, and a daemon
-      // restart made them all look empty. The Mac app never had this problem
-      // because it reads the transcript itself; the phone can't, so it asks.
-      if (url.pathname === "/reply") {
-        const sessionId = url.searchParams.get("session") ?? "";
-        if (!sessionId) return new Response("session required", { status: 400 });
-        const known = (dependencies.getState() as { rows?: Array<{ id?: string }> } | null)
-          ?.rows?.some((row) => row.id === sessionId);
-        if (!known) return new Response("unknown session", { status: 404 });
-        return (async () => Response.json({ markdown: await dependencies.replyFor(sessionId) }))();
-      }
-
-      if (url.pathname === "/file") {
-        // Serve a LOCAL deliverable to the phone — but only a file that is,
-        // right now, a review link in the published state. That constraint is
-        // the whole security story: the token holder can see what the
-        // dashboard is currently showing, never read arbitrary files.
-        const requested = url.searchParams.get("path") ?? "";
-        const state = dependencies.getState() as
-          | { rows?: Array<{ review?: { link?: string } }> }
-          | null;
-        const links = (state?.rows ?? [])
-          .map((row) => row.review?.link)
-          .filter((link): link is string => Boolean(link));
-        if (!requested || !links.includes(requested)) {
-          return new Response("not a current deliverable", { status: 403 });
-        }
-        const file = Bun.file(requested);
-        return (async () => (await file.exists())
-          ? new Response(file)
-          : new Response("gone", { status: 404 }))();
-      }
-
-      if (url.pathname === "/control" && req.method === "POST") {
-        return (async () => {
-          const body = await req.text();
-          if (body.length > CONTROL_MAX_BYTES) {
-            return new Response("too large", { status: 413 });
-          }
-          try {
-            const reply = await dependencies.forwardControl(body);
-            return new Response(reply, {
-              headers: { "content-type": "application/json" },
-            });
-          } catch (error) {
-            dependencies.log(`phone control failed: ${String(error)}`);
-            return new Response("daemon unreachable", { status: 502 });
-          }
-        })();
-      }
-
-      return new Response("not found", { status: 404 });
+      return application.handle(req, {
+        upgradeState: (request) => srv.upgrade(request),
+      });
     },
     websocket: {
       open(ws) {
-        sockets.add(ws);
-        dependencies.onClientsChanged?.(sockets.size);
-        const state = dependencies.getState();
-        if (state && !sendPhoneFrame(ws, JSON.stringify(state))) {
-          sockets.delete(ws);
-          dependencies.onClientsChanged?.(sockets.size);
-        }
+        lanSockets.add(ws);
+        application.subscribeState(ws);
       },
       close(ws) {
-        sockets.delete(ws);
-        dependencies.onClientsChanged?.(sockets.size);
+        lanSockets.delete(ws);
+        application.unsubscribeState(ws);
       },
       message() {
         // Phones send controls over POST /control so every message shares one
@@ -356,31 +553,28 @@ export function createPhoneBridge(
   return {
     port: server.port ?? port,
     offerPairingCode(code) {
-      pairing.offer(code);
+      application.offerPairingCode(code);
     },
     stop() {
       server.stop(true);
-      sockets.clear();
-      // Tell the daemon the clients are gone, or turning the bridge off leaves
-      // the Mac silent with no phone left to speak.
-      dependencies.onClientsChanged?.(0);
+      for (const socket of lanSockets) application.unsubscribeState(socket);
+      lanSockets.clear();
     },
     clientCount() {
-      return sockets.size;
+      return application.clientCount();
     },
     publish() {
-      if (sockets.size === 0) return;
-      const state = dependencies.getState();
-      if (!state) return;
-      const frame = JSON.stringify(state);
-      for (const ws of sockets) {
-        // A socket that cannot be written to is gone; keeping it in the set
-        // makes the audio lease look alive forever.
-        if (!sendPhoneFrame(ws, frame)) sockets.delete(ws);
-      }
-      dependencies.onClientsChanged?.(sockets.size);
+      application.publish();
     },
   };
+}
+
+export function createPhoneBridge(
+  dependencies: PhoneBridgeDependencies,
+  options: { port?: number; token: string; hostname?: string } ,
+): PhoneBridgeHandle {
+  const application = createPhoneBridgeApplication(dependencies, { token: options.token });
+  return createPhoneBridgeServer(application, dependencies, options);
 }
 
 /** Dial the daemon's own Unix socket and relay one line — reply or timeout. */

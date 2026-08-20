@@ -8,13 +8,25 @@ struct ConchApp: App {
     @State private var pairing: BridgeClient.Pairing? = {
         let env = ProcessInfo.processInfo.environment
         if let host = env["CONCH_PAIR_HOST"], let token = env["CONCH_PAIR_TOKEN"] {
-            return BridgeClient.Pairing(host: host, token: token)
+            return .lan(host: host, token: token)
         }
         return PairingStore.load()
     }()
     @State private var bridge: BridgeClient?
     @StateObject private var speech = SpeechController()
+    /// Your words outlive the screen showing them.
+    ///
+    /// This lived inside SessionView, which is a `navigationDestination` under
+    /// a conditional the ledger re-evaluates on every published state. Any
+    /// teardown — one empty row list, a reconnect, navigation churn — took the
+    /// @StateObject with it and ran `.onDisappear { talk.cancel() }`, and
+    /// cancel clears `committed`. Mid-sentence, the whole transcript, gone.
+    /// The audio pipeline was appending correctly the entire time; the view
+    /// lifecycle was deleting the result. Nothing you have said should be
+    /// reachable by a redraw.
+    @StateObject private var talk = TalkController()
     @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var telemetry = DeviceTelemetry()
 
     var body: some Scene {
         WindowGroup {
@@ -23,7 +35,8 @@ struct ConchApp: App {
                     LedgerView(
                         bridge: bridgeClient(for: pairing),
                         onUnpair: unpair,
-                        speech: speech
+                        speech: speech,
+                        talk: talk
                     )
                 } else {
                     PairingView { newPairing in
@@ -33,13 +46,96 @@ struct ConchApp: App {
                 }
             }
             .background(Palette.bg)
+            // Speaking and recording share one AVAudioSession. Wiring this in
+            // a view meant a teardown mid-utterance dropped the guard; both
+            // objects live for the whole app, so the invariant does too.
+            // `.sending` counts: send ends audio, then waits up to three
+            // seconds for recognition to flush its final result.
+            .onAppear {
+                speech.captureOwnsAudio = { [weak talk] in
+                    talk?.phase == .listening || talk?.phase == .sending
+                }
+                // The other direction, which the phone never had: opening the
+                // mic silences anything being read. Both objects live for the
+                // whole app, so the pair of invariants is installed together
+                // and neither can be dropped by a view disappearing.
+                talk.silenceSpeech = { [weak speech] in speech?.stop() }
+                // Through the cached client, not a fresh one: reporting must
+                // ride the connection that already exists, and must never be
+                // the thing that constructs one.
+                speech.reportSpeaking = { speaking, label in
+                    Task { await bridge?.reportSpeaking(speaking, label: label) }
+                }
+                telemetry.report = { sample in
+                    Task { await bridge?.reportDevice(sample) }
+                }
+                telemetry.start()
+            }
             .onChange(of: scenePhase) { _, phase in
                 guard let bridge else { return }
                 switch phase {
                 case .active:
+                    // Reconnect FIRST, then claim.
+                    //
+                    // The phone pings every 10s and the Mac expires a silent
+                    // peer after 30, but that heartbeat is a Task and iOS
+                    // suspends it on background — so backgrounding always kills
+                    // the session about half a minute later. Handing the audio
+                    // back then is correct. Coming back and NOT re-dialling is
+                    // not: the app sat on a dead socket waiting out a backoff,
+                    // which is the "it disconnects and won't come back" that
+                    // has made pairing feel unreliable.
+                    //
+                    // Before claimAudio, because a claim sent over a dead
+                    // socket accomplishes nothing.
+                    bridge.reconnectNow()
+                    telemetry.start()
                     Task { await bridge.claimAudio(true) }
-                case .background, .inactive:
-                    Task { await bridge.claimAudio(false) }
+                case .background:
+                    // Nothing to measure while suspended, and a timer that
+                    // survives backgrounding is the drain it claims to watch.
+                    telemetry.stop()
+                    // Close the MIC, not just the audio lease.
+                    //
+                    // Handing the lease back tells the Mac to speak; it does
+                    // nothing about a recording session still running here. On
+                    // its own that was survivable, because iOS suspends a
+                    // silent app — but declaring background audio today removed
+                    // that backstop, so an open mic could now keep capture,
+                    // on-device speech recognition and the socket alive with
+                    // the screen off, indefinitely. A Codex audit ranked it the
+                    // clearest path to heat and battery drain in the app, and
+                    // it is a regression the same change introduced.
+                    //
+                    // Nothing is lost: whatever was dictated stays in the draft,
+                    // which survives the app being backgrounded.
+                    talk.closeMic()
+                    // Hand the audio back, then LET GO of the connection.
+                    //
+                    // iOS suspends the 10s heartbeat the moment we background,
+                    // so the Mac expires this peer 30 seconds later and the
+                    // phone re-handshakes on the way back — 496 connect and
+                    // disconnect pairs in one day's log, each one an encrypted
+                    // handshake the phone paid for. Leaving a socket behind to
+                    // rot is strictly worse than closing it: same outcome,
+                    // more work, and a spell of looking connected while
+                    // nothing can arrive.
+                    //
+                    // Nothing is lost by closing. Replies already queue while
+                    // the app is away and are read when it comes forward, and
+                    // .active reconnects before it claims anything.
+                    Task {
+                        await bridge.claimAudio(false)
+                        bridge.stop()
+                    }
+                case .inactive:
+                    // NOT a handback. iOS reports .inactive for anything that
+                    // transiently covers the app — a context menu, a system
+                    // sheet, the control centre — so releasing here made the
+                    // lease flap: "phone has the audio" / "audio back on this
+                    // Mac" twice inside one second in the daemon log, every
+                    // time a menu opened. Backgrounding is the real signal.
+                    break
                 @unknown default:
                     break
                 }
@@ -59,7 +155,10 @@ struct ConchApp: App {
         // Open and foregrounded: the phone has the voice and the ear. Closed or
         // backgrounded: the Mac takes them straight back. No button to get
         // wrong, and no state to leave stranded on the wrong device.
-        created.onConnected = { Task { await created.claimAudio(true) } }
+        created.onConnected = { [weak created] in
+            guard let created else { return }
+            Task { await created.claimAudio(true) }
+        }
         // Assigning state during view construction is fine here: the next
         // render pass reuses the cached client rather than reconnecting.
         DispatchQueue.main.async { self.bridge = created }

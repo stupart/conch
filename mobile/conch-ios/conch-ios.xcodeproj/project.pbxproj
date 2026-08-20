@@ -7,7 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		C10000000000000000009F01 /* DeviceTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000009F02 /* DeviceTelemetry.swift */; };
 		C10000000000000000000001 /* ConchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000001 /* ConchApp.swift */; };
+		C10000000000000000000901 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000901 /* Assets.xcassets */; };
+		C10000000000000000000902 /* ConversationStack.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000902 /* ConversationStack.swift */; };
+		C10000000000000000000903 /* ImageUpload.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000903 /* ImageUpload.swift */; };
 		C10000000000000000000002 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000002 /* Theme.swift */; };
 		C10000000000000000000003 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000003 /* Models.swift */; };
 		C10000000000000000000004 /* BridgeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000004 /* BridgeClient.swift */; };
@@ -20,9 +24,13 @@
 		C1000000000000000000A1 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000A1 /* SettingsView.swift */; };
 		C1000000000000000000A2 /* ConchSetting.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000A2 /* ConchSetting.swift */; };
 		C1000000000000000000B1 /* SpeechController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000B1 /* SpeechController.swift */; };
+		C1000000000000000000C1 /* RelayProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000C1 /* RelayProtocol.swift */; };
+		C1000000000000000000C2 /* RelayTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000C2 /* RelayTransport.swift */; };
+		C1000000000000000000C3 /* DirectHTTPTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000C3 /* DirectHTTPTransport.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		C20000000000000000009F02 /* DeviceTelemetry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceTelemetry.swift; sourceTree = "<group>"; };
 		C20000000000000000000001 /* ConchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConchApp.swift; sourceTree = "<group>"; };
 		C20000000000000000000002 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		C20000000000000000000003 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
@@ -33,11 +41,17 @@
 		C20000000000000000000008 /* SessionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionView.swift; sourceTree = "<group>"; };
 		C20000000000000000000009 /* DeliverableSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeliverableSheet.swift; sourceTree = "<group>"; };
 		C2000000000000000000000A /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
+		C20000000000000000000901 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		C20000000000000000000902 /* ConversationStack.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationStack.swift; sourceTree = "<group>"; };
+		C20000000000000000000903 /* ImageUpload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageUpload.swift; sourceTree = "<group>"; };
 		C20000000000000000000100 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		C20000000000000000000101 /* conch-ios.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "conch-ios.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		C2000000000000000000A1 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		C2000000000000000000A2 /* ConchSetting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConchSetting.swift; sourceTree = "<group>"; };
 		C2000000000000000000B1 /* SpeechController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechController.swift; sourceTree = "<group>"; };
+		C2000000000000000000C1 /* RelayProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayProtocol.swift; sourceTree = "<group>"; };
+		C2000000000000000000C2 /* RelayTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayTransport.swift; sourceTree = "<group>"; };
+		C2000000000000000000C3 /* DirectHTTPTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectHTTPTransport.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -62,6 +76,7 @@
 		C40000000000000000000002 /* conch-ios */ = {
 			isa = PBXGroup;
 			children = (
+				C20000000000000000009F02 /* DeviceTelemetry.swift */,
 				C20000000000000000000001 /* ConchApp.swift */,
 				C20000000000000000000002 /* Theme.swift */,
 				C20000000000000000000003 /* Models.swift */,
@@ -75,7 +90,13 @@
 				C2000000000000000000A1 /* SettingsView.swift */,
 				C2000000000000000000A2 /* ConchSetting.swift */,
 				C2000000000000000000B1 /* SpeechController.swift */,
+				C2000000000000000000C1 /* RelayProtocol.swift */,
+				C2000000000000000000C2 /* RelayTransport.swift */,
+				C2000000000000000000C3 /* DirectHTTPTransport.swift */,
+				C20000000000000000000902 /* ConversationStack.swift */,
+				C20000000000000000000903 /* ImageUpload.swift */,
 				C20000000000000000000100 /* Info.plist */,
+				C20000000000000000000901 /* Assets.xcassets */,
 			);
 			path = "conch-ios";
 			sourceTree = "<group>";
@@ -146,6 +167,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C10000000000000000000901 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -156,8 +178,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C10000000000000000009F01 /* DeviceTelemetry.swift in Sources */,
 				C10000000000000000000001 /* ConchApp.swift in Sources */,
 				C10000000000000000000002 /* Theme.swift in Sources */,
+				C10000000000000000000903 /* ImageUpload.swift in Sources */,
+				C10000000000000000000902 /* ConversationStack.swift in Sources */,
 				C10000000000000000000003 /* Models.swift in Sources */,
 				C10000000000000000000004 /* BridgeClient.swift in Sources */,
 				C10000000000000000000005 /* TalkController.swift in Sources */,
@@ -169,6 +194,9 @@
 				C1000000000000000000A1 /* SettingsView.swift in Sources */,
 				C1000000000000000000A2 /* ConchSetting.swift in Sources */,
 				C1000000000000000000B1 /* SpeechController.swift in Sources */,
+				C1000000000000000000C1 /* RelayProtocol.swift in Sources */,
+				C1000000000000000000C2 /* RelayTransport.swift in Sources */,
+				C1000000000000000000C3 /* DirectHTTPTransport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -30,6 +30,20 @@ export interface ManagedBlockRemovalResult {
 
 export interface UninstallSelection {
   models: boolean;
+  /**
+   * Which agent's wiring to remove. Undefined means all of it.
+   *
+   * Scoping exists because an integration can rot while the rest is healthy.
+   * Codex 0.144.1 does not execute ~/.codex/hooks.json at all — proven with a
+   * bare `touch` hook that never ran — so conch's Stop hook never fires and no
+   * Codex session ever registers. Meanwhile AGENTS.md still instructs Codex to
+   * end deliverables with `conch:review …`, so it dutifully emits a line into
+   * a void. Advertising a capability that does nothing is worse than having
+   * none: the agent spends turns on it and the user reads a directive that
+   * will never be honoured. `--codex` removes that side without disturbing
+   * Claude Code, which works.
+   */
+  only?: HookKind;
 }
 
 export interface UninstallPaths {
@@ -256,13 +270,27 @@ export function removeManagedInstructionBlocks(
 
 /** Parse the one destructive opt-in separately so unknown flags fail closed. */
 export function parseUninstallArgs(args: readonly string[]): UninstallSelection {
-  const unknown = args.find((arg) => arg !== "--models");
+  const known = new Set(["--models", "--codex", "--claude"]);
+  const unknown = args.find((arg) => !known.has(arg));
   if (unknown) {
     throw new Error(
-      `unknown uninstall option: ${unknown}\nusage: conch uninstall [--models]`,
+      `unknown uninstall option: ${unknown}\nusage: conch uninstall [--models] [--codex | --claude]`,
     );
   }
-  return { models: args.includes("--models") };
+  if (args.includes("--codex") && args.includes("--claude")) {
+    throw new Error("choose one of --codex or --claude, or neither to remove both");
+  }
+  const only = args.includes("--codex")
+    ? "codex" as const
+    : args.includes("--claude")
+      ? "claude" as const
+      : undefined;
+  if (only && args.includes("--models")) {
+    // The models are shared by both agents and by the terminal loop. Deleting
+    // 1.6 GB while scoping to one agent would be a surprise, not a shortcut.
+    throw new Error("--models removes shared speech models; run it without --codex/--claude");
+  }
+  return { models: args.includes("--models"), ...(only ? { only } : {}) };
 }
 
 export function defaultUninstallPaths(
@@ -420,6 +448,7 @@ export async function runUninstall(
     [paths.codexHooks, "codex", "Codex hooks"],
   ];
   for (const [path, kind, label] of hookFiles) {
+    if (options.only && options.only !== kind) continue;
     try {
       const result = await removeHooksFile(path, kind);
       if (kind === "claude") claudeHooks = result.removedHooks;
@@ -443,6 +472,7 @@ export async function runUninstall(
     [paths.codexInstructions, "codex", "Codex instructions"],
   ];
   for (const [path, kind, label] of instructionFiles) {
+    if (options.only && options.only !== kind) continue;
     try {
       const result = await removeInstructionsFile(path);
       if (kind === "claude") {
@@ -462,6 +492,30 @@ export async function runUninstall(
       failures.push(message);
       error(message);
     }
+  }
+
+  // Everything past this point is SHARED — the launchd service, the tmux
+  // session, the speech models. An agent scope must not reach any of it.
+  //
+  // It did, once, on Tyler's machine: `conch uninstall --codex` removed the
+  // Codex hooks as asked and then went on to delete the launch agent and kill
+  // the daemon, because the scope only guarded the two loops above. A flag
+  // named for one integration took the whole thing down. The guard belongs
+  // here, at the boundary between per-agent wiring and the install itself.
+  if (options.only) {
+    log(`Left alone: the background service, the tmux session, and the speech models are shared.`);
+    return {
+      ok: failures.length === 0,
+      claudeHooks,
+      codexHooks,
+      claudeInstructionBlocks,
+      codexInstructionBlocks,
+      serviceRemoved: false,
+      tmux: "absent",
+      pluginOk: true,
+      modelsRemovedBytes: 0,
+      failures,
+    };
   }
 
   const serviceWasPresent = existsSync(paths.servicePlist);

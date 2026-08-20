@@ -1,4 +1,5 @@
 import PDFKit
+import AVKit
 import SwiftUI
 import WebKit
 
@@ -9,13 +10,13 @@ struct DeliverableSheet: View {
     @ObservedObject var bridge: BridgeClient
     let review: PublishedState.Row.Review
     @Environment(\.dismiss) private var dismiss
+    @State private var localURL: URL?
+    @State private var localFailed = false
 
+    private enum LocalKind { case image, video, pdf, markdown, page, text, unsupported }
     private enum Kind {
         case web(URL)
-        case image(URL)
-        case pdf(URL)
-        case markdown(URL)
-        case text(URL)
+        case local(LocalKind)
         case unavailable(String)
     }
 
@@ -26,18 +27,27 @@ struct DeliverableSheet: View {
            scheme == "http" || scheme == "https" {
             return .web(url)
         }
-        guard let served = bridge.fileURL(for: link) else {
-            return .unavailable("This deliverable lives on your Mac and couldn't be fetched.")
-        }
+        // Kept in step with the Mac's router in ReviewView.swift. They had
+        // DRIFTED: a local .html rendered as a page there and as raw markup
+        // here, and anything unrecognised — a video, a zip, an .app — was
+        // printed as text, which for a binary means pages of bytes.
         switch (link as NSString).pathExtension.lowercased() {
         case "png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "svg":
-            return .image(served)
+            return .local(.image)
+        case "mp4", "mov", "m4v", "webm":
+            return .local(.video)
         case "pdf":
-            return .pdf(served)
+            return .local(.pdf)
         case "md", "markdown":
-            return .markdown(served)
+            return .local(.markdown)
+        case "html", "htm", "svgz":
+            return .local(.page)
+        case "txt", "log", "json", "yaml", "yml", "toml", "csv", "diff", "patch",
+             "swift", "ts", "js", "tsx", "jsx", "py", "rb", "go", "rs", "sh", "css":
+            return .local(.text)
         default:
-            return .text(served)
+            // Honest about what it cannot show, rather than rendering bytes.
+            return .local(.unsupported)
         }
     }
 
@@ -54,6 +64,22 @@ struct DeliverableSheet: View {
                 }
         }
         .preferredColorScheme(.dark)
+        .task(id: review.link) {
+            localURL = nil
+            localFailed = false
+            guard case .local = kind, let link = review.link else { return }
+            let downloaded = await bridge.downloadFile(path: link)
+            if Task.isCancelled {
+                if let downloaded { try? FileManager.default.removeItem(at: downloaded) }
+                return
+            }
+            localURL = downloaded
+            localFailed = localURL == nil
+        }
+        .onDisappear {
+            if let localURL { try? FileManager.default.removeItem(at: localURL) }
+            localURL = nil
+        }
     }
 
     @ViewBuilder
@@ -61,37 +87,55 @@ struct DeliverableSheet: View {
         switch kind {
         case let .web(url):
             BridgedWebView(url: url)
-        case let .image(url):
+        case let .local(localKind):
+            if let url = localURL {
+                localContent(localKind, url: url)
+            } else if localFailed {
+                unavailableView("This deliverable lives on your Mac and couldn't be fetched.")
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        case let .unavailable(reason):
+            unavailableView(reason)
+        }
+    }
+
+    @ViewBuilder
+    private func localContent(_ kind: LocalKind, url: URL) -> some View {
+        switch kind {
+        case .image:
             // Fit to WIDTH, scroll vertically, start at the top. Two-axis
             // panning at native pixel scale made a tall screenshot — the single
             // most likely deliverable — unreadable.
             ScrollView(.vertical) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case let .success(image):
-                        // No containerRelativeFrame: inside a vertical
-                        // ScrollView it passed the CONTAINER'S HEIGHT into the
-                        // proposal, so aspect-fit fitted the height - a tall
-                        // screenshot crammed into one screen as a thumbnail
-                        // column. A vertical ScrollView already proposes
-                        // (viewport width, nil); scaledToFit against that IS
-                        // fit-to-width. The fix was a deletion.
-                        image.resizable().scaledToFit()
-                    case .failure:
-                        unavailableView("Couldn't load the image from your Mac.")
-                    default:
-                        ProgressView().padding(60)
-                    }
-                }
+                LocalImageView(url: url)
             }
-        case let .pdf(url):
+        case .video:
+            // A real player. Routed to `.text` before, which meant a video
+            // deliverable rendered as pages of bytes.
+            //
+            // Playback is deliberate, so Manual does not alter it. Manual owns
+            // only what conch does by itself: automatic reading and mic opening.
+            VideoPlayer(player: AVPlayer(url: url))
+                .background(Palette.bg)
+        case .pdf:
             BridgedPDFView(url: url)
-        case let .markdown(url):
+        case .markdown:
             RemoteDocumentView(url: url, renderMarkdown: true)
-        case let .text(url):
+        case .page:
+            // A local .html is a PAGE. The Mac has always rendered it as one;
+            // here it was raw markup, so the same deliverable looked finished
+            // on one surface and broken on the other.
+            // loadFileURL, not load(URLRequest:) — a file:// page needs read
+            // access granted to its own directory or its assets never load.
+            LocalPageView(url: url)
+        case .text:
             RemoteDocumentView(url: url, renderMarkdown: false)
-        case let .unavailable(reason):
-            unavailableView(reason)
+        case .unsupported:
+            unavailableView(
+                "conch can't preview a \(url.pathExtension.uppercased()) yet — "
+                + "it's on the Mac at \(url.lastPathComponent)."
+            )
         }
     }
 
@@ -149,7 +193,12 @@ private struct RemoteDocumentView: View {
         }
         .task {
             do {
-                let (data, _) = try await URLSession.shared.data(from: url)
+                let data: Data
+                if url.isFileURL {
+                    data = try Data(contentsOf: url)
+                } else {
+                    data = try await URLSession.shared.data(from: url).0
+                }
                 content = String(decoding: data, as: UTF8.self)
             } catch {
                 failed = true
@@ -172,6 +221,25 @@ private struct BridgedWebView: UIViewRepresentable {
     func updateUIView(_ view: WKWebView, context: Context) {}
 }
 
+/// A local HTML page, with read access to its own folder.
+///
+/// WKWebView will not fetch a page's sibling assets — its CSS, its images —
+/// from a file:// URL unless it is granted the containing directory, so a page
+/// loaded the ordinary way renders unstyled and looks broken.
+private struct LocalPageView: UIViewRepresentable {
+    let url: URL
+
+    func makeUIView(context: Context) -> WKWebView {
+        let view = WKWebView()
+        view.isOpaque = false
+        view.backgroundColor = UIColor(Palette.bg)
+        view.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        return view
+    }
+
+    func updateUIView(_ view: WKWebView, context: Context) {}
+}
+
 private struct BridgedPDFView: UIViewRepresentable {
     let url: URL
 
@@ -181,9 +249,17 @@ private struct BridgedPDFView: UIViewRepresentable {
         view.displayMode = .singlePageContinuous
         view.backgroundColor = UIColor(Palette.bg)
         Task {
-            if let (data, _) = try? await URLSession.shared.data(from: url) {
+            let document: PDFDocument?
+            if url.isFileURL {
+                document = PDFDocument(url: url)
+            } else if let data = try? await URLSession.shared.data(from: url).0 {
+                document = PDFDocument(data: data)
+            } else {
+                document = nil
+            }
+            if let document {
                 await MainActor.run {
-                    view.document = PDFDocument(data: data)
+                    view.document = document
                     // Scale and position are computed against an EMPTY document
                     // otherwise, which opened with a dead gap above the page.
                     view.autoScales = true
@@ -197,4 +273,55 @@ private struct BridgedPDFView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: PDFView, context: Context) {}
+}
+
+private struct LocalImageView: View {
+    let url: URL
+    @State private var image: UIImage?
+    @State private var failure: String?
+
+    /// A 4096 px square is at most 64 MB decoded, versus an unbounded source;
+    /// 32 MB compressed also rejects pathological files before ImageIO opens
+    /// them. Tall screenshots retain substantially more useful width here than
+    /// they would under the agents' smaller inference limits.
+    private static let maxPixelSize = 4096
+    private static let maxBytes = 32 * 1024 * 1024
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+            } else if let failure {
+                Text(failure)
+                    .font(Type.summary)
+                    .foregroundStyle(Palette.textDim)
+                    .padding(40)
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity, minHeight: 200)
+            }
+        }
+        .task(id: url) {
+            image = nil
+            failure = nil
+            let result = await ImageDownsampler.filePreview(
+                at: url,
+                maxBytes: Self.maxBytes,
+                maxPixelSize: Self.maxPixelSize
+            )
+            guard !Task.isCancelled else { return }
+            switch result {
+            case let .image(decoded):
+                // ImageIO already decoded this bounded thumbnail on its worker;
+                // UIImage is only the cheap SwiftUI wrapper at this point.
+                image = UIImage(cgImage: decoded)
+            case .tooLarge:
+                failure = "This image is too large to preview on iPhone."
+            case .unreadable:
+                failure = "Couldn't load the image from your Mac."
+            }
+        }
+    }
 }

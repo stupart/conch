@@ -4,6 +4,10 @@ import { CONCH_VERSION } from "./version.ts";
 import { sendToDaemon, type TurnEvent } from "./hook.ts";
 import { registryToPanel } from "./panel.ts";
 import {
+  renameProviderSession as deliverProviderRename,
+  type ProviderRenameResult,
+} from "./provider-rename.ts";
+import {
   findSessionByName,
   findTranscript,
   registrySnapshot,
@@ -176,13 +180,13 @@ export const MCP_TOOLS = [
   },
   {
     name: "conch_mode",
-    description: "Mute, unmute, pause, or resume conch.",
+    description: "Switch conch between auto and manual. Auto reads finished turns aloud and opens the mic on its own; manual does neither, while everything else keeps working and the user reads instead. `pause` means manual and `resume` means auto.",
     inputSchema: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["mute", "unmute", "pause", "resume"],
+          enum: ["pause", "resume"],
         },
       },
       required: ["action"],
@@ -240,7 +244,7 @@ export const MCP_TOOLS = [
   },
   {
     name: "review_to_front",
-    description: "Surface YOUR finished deliverable for the user's review. Defaults to the calling session; a session may only surface its own work. Latches it as needs-review in conch's dashboard, announces it, and opens an optional safe link.",
+    description: "Put the artifact you are working on into conch's artifact pane, where the user actually looks at it. conch's apps show ONE artifact per session beside the conversation; this is what fills it, and it stays there until you send another. Send whatever the turn produced that has to be LOOKED at — a page, a screenshot, a render, a PDF, a diff, a document, a video — and send it again as it changes, not only when it is finished. conch renders it inline on the Mac and the phone rather than printing a path. Always send one when you want the user to review something. Pass a one-line spoken summary plus the link or file path. Defaults to the calling session; a session may only surface its own work.",
     inputSchema: {
       type: "object",
       properties: {
@@ -279,6 +283,10 @@ export interface McpDependencies {
     oldLabel: string,
     newLabel: string,
   ): { label: string; voiceMigrated: boolean };
+  renameProviderSession?(
+    session: Readonly<SessionInfo>,
+    label: string,
+  ): Promise<ProviderRenameResult>;
   sendToDaemon(socketPath: string, event: TurnEvent): Promise<boolean>;
   sendControlMessage(
     socketPath: string,
@@ -304,6 +312,9 @@ export const defaultMcpDependencies: McpDependencies = {
   findTranscript,
   sessionLabel,
   renameSessionLabel,
+  renameProviderSession(session, label) {
+    return deliverProviderRename(loadConfig(), session, label);
+  },
   sendToDaemon,
   sendControlMessage,
   getSettingDescriptor,
@@ -582,6 +593,7 @@ export function createMcpToolHandlers(
           sessionId: "",
           label: "",
           announce: "",
+          origin: "agent",
         });
       }
       const session = await resolveSession(query, config, dependencies);
@@ -596,6 +608,7 @@ export function createMcpToolHandlers(
           session.sessionId,
         ),
         announce: "",
+        origin: "agent",
       });
     },
 
@@ -650,13 +663,8 @@ export function createMcpToolHandlers(
       const argumentsObject = toolArguments(argumentsValue);
       allowOnly(argumentsObject, ["action"]);
       const action = requiredString(argumentsObject, "action");
-      if (
-        action !== "mute"
-        && action !== "unmute"
-        && action !== "pause"
-        && action !== "resume"
-      ) {
-        throw new ToolInputError("action must be mute, unmute, pause, or resume");
+      if (action !== "pause" && action !== "resume") {
+        throw new ToolInputError("action must be pause or resume");
       }
       return sendTurn(config, dependencies, {
         type: action,
@@ -688,6 +696,7 @@ export function createMcpToolHandlers(
           oldLabel,
           newLabel,
         );
+        await dependencies.renameProviderSession?.(session, renamed.label);
         return {
           kind: "session-ack",
           sessionId: session.sessionId,

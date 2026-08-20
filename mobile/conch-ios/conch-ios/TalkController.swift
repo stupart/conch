@@ -123,6 +123,13 @@ private extension NSLock {
 /// needed most, one-handed mid-workout.
 @MainActor
 final class TalkController: NSObject, ObservableObject {
+    /// Recognition hypotheses publish far more often than controller state.
+    /// Keeping them on a child object lets the composer observe live words
+    /// without making every TalkController observer redraw with them.
+    @MainActor final class LivePartial: ObservableObject {
+        @Published fileprivate(set) var text = ""
+    }
+
     enum Phase: Equatable {
         case idle
         case denied(String)
@@ -136,9 +143,165 @@ final class TalkController: NSObject, ObservableObject {
         [committed, partial].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
-    @Published private(set) var committed = ""
-    @Published private(set) var partial = ""
+    /// Unsent words for the session being talked to right now.
+    ///
+    /// Append-only and written to disk on every change. Exactly ONE thing may
+    /// clear it: a send the Mac confirmed. Not starting a recording, not a
+    /// failed finalisation, not a teardown, not a relaunch, not a crash.
+    ///
+    /// This is a policy, not an optimisation, and it is here because the
+    /// alternative kept failing. Three separate bugs deleted this string —
+    /// a view lifecycle, an audio-session collision, a re-entered start — and
+    /// each fix only closed the path it knew about. Words that cannot be
+    /// deleted cannot be deleted by the next path either.
+    @Published private(set) var committed = "" {
+        didSet { persistDrafts() }
+    }
+    /// Unsent words for every OTHER session.
+    ///
+    /// A draft belongs to a conversation, not to the app. One controller now
+    /// serves every session, so without this an unsent draft would follow you
+    /// into the next session and be injected there — and worse, tapping the
+    /// button while another session held the mic would deliver ITS words to
+    /// whatever you happened to be looking at.
+    private var parked: [String: String] = [:]
+    private static let draftKey = "conch.drafts"
+
+    /// What is waiting to be sent to `session`, active or parked.
+    func draft(for session: String) -> String {
+        session == targetSessionId ? transcript : (parked[session] ?? "")
+    }
+
+    /// Open the mic pointed at `session`, keeping whatever draft it already has.
+    ///
+    /// Split out of `toggle` because the mic and send are separate controls now:
+    /// tapping the mic must never deliver anything, and it must be possible to
+    /// dictate ONTO text you typed. Switching sessions still parks the previous
+    /// draft under its own session rather than carrying it across.
+    func open(session: String) {
+        if phase == .sending { return }
+        if phase == .listening {
+            if session == targetSessionId { return }
+            commit(partial)
+            cancel()
+        }
+        switchTarget(to: session)
+        start()
+    }
+
+    /// Send this session's draft, however it got there.
+    ///
+    /// While the mic is open this IS the existing finish path, so a typed
+    /// correction to a dictated sentence is sent by the same code that has
+    /// learned not to lose the tail. With the mic closed it delivers the draft
+    /// directly — the case that did not exist before, because there was no way
+    /// to have a draft without speaking one.
+    ///
+    /// Clearing follows the same rule either way: only what was ACKNOWLEDGED is
+    /// removed, and only the exact prefix that was sent, so anything typed or
+    /// heard during the round trip survives.
+    func send(session: String, deliver: @escaping (String) async -> Bool) {
+        if phase == .sending { return }
+        if phase == .listening, session == targetSessionId {
+            finish(deliver: deliver)
+            return
+        }
+        switchTarget(to: session)
+        let text = committed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        phase = .sending
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let delivered = await deliver(text)
+            if delivered {
+                let held = self.committed.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.committed = held.hasPrefix(text)
+                    ? String(held.dropFirst(text.count))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    : ""
+            }
+            self.phase = .idle
+        }
+    }
+
+    /// Type into the same draft speech is dictating into.
+    ///
+    /// Tyler: "i had the option to type messages... and what i said showed as
+    /// transcription in that input bar there. gives the ability to still work
+    /// when i can't make noise talking". One draft, two ways in — so a bad
+    /// transcription is fixed in place rather than re-dictated, and a room where
+    /// you cannot speak is not a room where conch stops working.
+    ///
+    /// Writes to `committed`, the banked half, and leaves `partial` alone: an
+    /// edit must not fight words still arriving from the recogniser mid-sentence.
+    func setDraft(_ text: String, for session: String) {
+        if session == targetSessionId {
+            committed = text
+        } else {
+            if text.isEmpty { parked.removeValue(forKey: session) } else { parked[session] = text }
+            persistDrafts()
+        }
+    }
+
+    /// Throw a draft away, on purpose.
+    ///
+    /// Everything else in here refuses to delete your words; that only works
+    /// as a promise if you have a way to delete them yourself. Deliberate and
+    /// explicit is the whole distinction — the bug was words vanishing
+    /// without anyone asking.
+    func discard(session: String) {
+        if session == targetSessionId {
+            if phase == .listening || starting { cancel() }
+            partial = ""
+            failure = nil
+            committed = ""
+        } else {
+            parked.removeValue(forKey: session)
+            persistDrafts()
+        }
+    }
+
+    private func persistDrafts() {
+        var all = parked
+        if let target = targetSessionId {
+            if committed.isEmpty { all.removeValue(forKey: target) } else { all[target] = committed }
+        }
+        UserDefaults.standard.set(all, forKey: Self.draftKey)
+    }
+
+    /// Park the current draft under its own session and adopt `session`'s.
+    private func switchTarget(to session: String) {
+        guard targetSessionId != session else { return }
+        if let previous = targetSessionId {
+            if committed.isEmpty { parked.removeValue(forKey: previous) }
+            else { parked[previous] = committed }
+        }
+        targetSessionId = session
+        partial = ""
+        failure = nil
+        committed = parked[session] ?? ""
+    }
+    let livePartial = LivePartial()
+    private var partial: String {
+        get { livePartial.text }
+        set { livePartial.text = newValue }
+    }
     @Published private(set) var failure: String?
+    /// Which session this draft is being spoken to.
+    ///
+    /// One controller now serves every session, because a per-view one died
+    /// with its view and took your words with it. The cost is that a draft
+    /// could surface under a conversation you did not say it to — so it is
+    /// stamped once, at the moment you start talking, and shown nowhere else.
+    @Published private(set) var targetSessionId: String?
+
+    override init() {
+        super.init()
+        // A relaunch or a crash mid-utterance is not a decision to discard
+        // what you said. Whatever was unsent when the process died is still
+        // unsent now, and it is still yours.
+        parked = UserDefaults.standard.dictionary(forKey: Self.draftKey) as? [String: String] ?? [:]
+    }
 
     private let engine = AVAudioEngine()
     private let audioRelay = RecognitionAudioRelay()
@@ -152,6 +315,20 @@ final class TalkController: NSObject, ObservableObject {
     // callback from the old task inert before the replacement can be mutated.
     private var generation = 0
     private var replayAfterSequence = 0
+    /// Called immediately before the mic opens, to silence anything speaking.
+    ///
+    /// The Mac has refused to open the mic while TTS speaks since day one.
+    /// The phone only ever got the OTHER half — speaking was gated on
+    /// capture, capture was never gated on speaking. So the mic opened on top
+    /// of a live utterance, `.record` tore the playback route out from under
+    /// the synthesizer, and it stalled without ever calling didFinish: the
+    /// button sat showing "speaking", nothing was audible, and the mic was
+    /// live. Stopping first makes both states true at once impossible.
+    var silenceSpeech: () -> Void = {}
+    /// Why recognition last died. Shown when finalisation fails, because "it
+    /// couldn't finish" is undiagnosable from a treadmill — the underlying
+    /// error is what distinguishes an audio-session collision from a stall.
+    private var lastRecognitionError: String?
 
     // Send waits for recognition to flush its final result. A stalled/erroring
     // task gets one recovery pass fed entirely from the retained audio relay.
@@ -162,15 +339,23 @@ final class TalkController: NSObject, ObservableObject {
     private var finalizationContinuation: CheckedContinuation<Void, Never>?
     private var finalizationTimeout: Task<Void, Never>?
 
-    func toggle(deliver: @escaping (String) async -> Bool) {
-        switch phase {
-        case .listening:
+    func toggle(session: String, deliver: @escaping (String) async -> Bool) {
+        if phase == .sending { return }
+        // Send ONLY into the session the words were spoken to. `deliver` comes
+        // from whichever screen is on top, so a tap here while another session
+        // held the mic would have injected its words into this one.
+        if phase == .listening, session == targetSessionId {
             finish(deliver: deliver)
-        case .idle, .denied:
-            start()
-        case .sending:
-            break
+            return
         }
+        if phase == .listening {
+            // Tapping Talk in a different session means "talk to this one
+            // instead" — keep what was said to the other, do not send it.
+            commit(partial)
+            cancel()
+        }
+        switchTarget(to: session)
+        start()
     }
 
     private func start() {
@@ -192,6 +377,8 @@ final class TalkController: NSObject, ObservableObject {
 
     private func beginCapture() async {
         guard starting else { return }
+        // Before the route changes, not after.
+        silenceSpeech()
         guard await AVAudioApplication.requestRecordPermission() else {
             starting = false
             phase = .denied("Microphone access is off for conch — enable it in Settings.")
@@ -206,8 +393,12 @@ final class TalkController: NSObject, ObservableObject {
         }
         self.recognizer = recognizer
 
-        committed = ""
+        // Deliberately NOT clearing `committed`: a start that lands on top of
+        // unsent words is a continuation, not a reset. Re-entering start was
+        // one of the three paths that ate the transcript — you tap what you
+        // believe is Send, phase has fallen back to idle, and it begins afresh.
         partial = ""
+        lastRecognitionError = nil
         audioRelay.reset()
         let request = makeRequest(for: recognizer)
         self.request = request
@@ -249,7 +440,44 @@ final class TalkController: NSObject, ObservableObject {
         if recognizer.supportsOnDeviceRecognition {
             request.requiresOnDeviceRecognition = true
         }
+        // Punctuation, because these words are going to an AGENT, not into a
+        // notes field. An unpunctuated wall of dictation changes how a model
+        // reads an instruction — where a sentence ends is where a clause stops
+        // applying.
+        request.addsPunctuation = true
+        // Dictation, not search or short commands: it tells the recogniser to
+        // expect connected speech rather than a few keywords.
+        request.taskHint = .dictation
+        // Words this recogniser has no reason to know and every reason to meet.
+        // Apple's on-device model mangles technical vocabulary — it has never
+        // heard "Codex" as a proper noun, and "conch" it hears as "cotch",
+        // "conk", or "conscious". Naming them costs nothing per utterance.
+        request.contextualStrings = Self.vocabulary
         return request
+    }
+
+    /// Terms conch's own conversations are full of, plus whatever the sessions
+    /// happen to be called right now. Session names matter most: they are how
+    /// you address a session out loud, so mishearing one sends your words to
+    /// the wrong agent — or to none.
+    private static let baseVocabulary = [
+        "conch", "Codex", "Claude", "tmux", "Kokoro", "whisper", "daemon",
+        "TestFlight", "Xcode", "SwiftUI", "TypeScript", "repo", "commit",
+        "diff", "merge", "branch", "PR", "linter", "telemetry",
+    ]
+
+    /// Rebuilt when the session list changes, so a newly named session is
+    /// recognisable the moment it appears.
+    static var vocabulary: [String] = baseVocabulary
+
+    static func learnSessionNames(_ names: [String]) {
+        // Split on non-letters: "client-dashboard" is two words to a speech
+        // recogniser, and offering it whole helps neither half.
+        let words = names
+            .flatMap { $0.split(whereSeparator: { !$0.isLetter }) }
+            .map(String.init)
+            .filter { $0.count > 2 }
+        vocabulary = Array(Set(baseVocabulary + names + words))
     }
 
     private func startRecognition(
@@ -280,17 +508,18 @@ final class TalkController: NSObject, ObservableObject {
         callbackCursor: Int
     ) {
         guard callbackGeneration == generation else { return }
+        if let error { lastRecognitionError = error.localizedDescription }
 
         if let result {
             let text = result.bestTranscription.formattedString
             if result.isFinal {
-                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    commit(partial)
-                } else {
-                    commit(text)
-                }
+                // A final can arrive SHORTER than the partial it replaces, or
+                // be a new phrase entirely. Same decision as any other
+                // hypothesis — then bank whatever survives it.
+                absorbPartial(removingCommittedOverlap(from: text))
+                commit(partial)
             } else {
-                partial = removingCommittedOverlap(from: text)
+                absorbPartial(removingCommittedOverlap(from: text))
                 // Retain a short overlap, plus every buffer after this callback,
                 // then release audio older than that safe replay boundary.
                 replayAfterSequence = audioRelay.replayCursor(endingAt: callbackCursor)
@@ -323,11 +552,52 @@ final class TalkController: NSObject, ObservableObject {
         restartRecognition(after: cursor)
     }
 
+    /// Fold a fresh hypothesis into the visible draft.
+    ///
+    /// Until a result goes final the words on screen live in `partial`, and a
+    /// nonfinal SFSpeech result replaces that whole string. Apple is explicit
+    /// that a nonfinal transcription may represent only part of the audio, so
+    /// a pause makes the recogniser hand back something SHORTER for speech it
+    /// already reported. Assigning it wholesale emptied the bubble mid-
+    /// sentence; refusing every shorter hypothesis then froze the transcript
+    /// at its high-water mark and it never grew again. Both are the same
+    /// mistake — reading one string as the whole truth.
+    ///
+    /// Shorter means one of two different things, and they need opposite
+    /// handling:
+    ///
+    ///   revision   held "tell Tyler I will arrive"  next "tell Tyler"
+    ///              -> same phrase, less of it. Keep what we have.
+    ///   resegment  held "tell Tyler I will arrive"  next "so anyway"
+    ///              -> a NEW phrase. Bank the old one and carry on.
+    ///
+    /// A prefix match separates them: a revision of a phrase still starts like
+    /// that phrase, and a new phrase almost never does.
+    private func absorbPartial(_ candidate: String) {
+        let next = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        let held = partial.trimmingCharacters(in: .whitespacesAndNewlines)
+        if held.isEmpty { partial = next; return }
+        // Silence between words, not a retraction of what was already said.
+        if next.isEmpty { return }
+
+        // Word count, not length: "I'll" -> "I will" is longer in characters
+        // and says no more. Ties go to the newer text so in-place corrections
+        // still land.
+        let nextWords = next.split(whereSeparator: { $0.isWhitespace }).count
+        let heldWords = held.split(whereSeparator: { $0.isWhitespace }).count
+        if nextWords >= heldWords { partial = next; return }
+
+        if held.lowercased().hasPrefix(next.lowercased()) { return }
+        commit(held)
+        partial = next
+    }
+
     /// Append a segment while removing only a proven multi-word audio overlap.
     /// A one-word repeat may be intentional; preserving it is safer than loss.
     private func commit(_ text: String) {
         let novel = removingCommittedOverlap(from: text)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        // The replayed prefix has now been absorbed; anything the user says
         guard !novel.isEmpty else { partial = ""; return }
         committed = committed.isEmpty ? novel : committed + " " + novel
         partial = ""
@@ -335,6 +605,12 @@ final class TalkController: NSObject, ObservableObject {
 
     private func removingCommittedOverlap(from text: String) -> String {
         let candidate = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Scoping this to rollover windows only was a mistake, reverted: it
+        // has a SECOND job. When a resegment banks a phrase and the final for
+        // that same audio then arrives in full, this is what stops the phrase
+        // being appended twice. Removing that duplicated ~40 words of Tyler's
+        // message straight into the session, which is far worse than the
+        // deliberate-repeat case it was meant to fix (Codex #6, still open).
         guard !committed.isEmpty, !candidate.isEmpty else { return candidate }
         let existingWords = committed.split(whereSeparator: { $0.isWhitespace })
         let candidateWords = candidate.split(whereSeparator: { $0.isWhitespace })
@@ -351,6 +627,29 @@ final class TalkController: NSObject, ObservableObject {
                 return candidateWords.dropFirst(count).joined(separator: " ")
             }
         }
+
+        // RESTATEMENT, not continuation. A final result can report the whole
+        // utterance again rather than only the part since the last final, and
+        // the loop above cannot see it: that compares what we HAVE ended with
+        // against what the candidate STARTS with, and a restatement starts at
+        // the beginning. Observed live — the same sentence arrived twice in one
+        // block, the second copy opening "Right" where the first said "All
+        // right", so it was not even byte-identical to compare against.
+        //
+        // Matching TAILS is the tell. Two independent transcriptions of the
+        // same audio converge at the end far more reliably than at the start,
+        // where a dropped leading word is common. Six words is long enough that
+        // ordinary speech does not collide by accident.
+        let tailWords = min(8, min(existingWords.count, candidateWords.count))
+        if tailWords >= 6 {
+            let existingTail = existingWords.suffix(tailWords).map(normalized)
+            let candidateTail = candidateWords.suffix(tailWords).map(normalized)
+            if existingTail == candidateTail {
+                // Anything the candidate adds beyond what we hold would sit
+                // AFTER that shared tail, and there is nothing after it.
+                return ""
+            }
+        }
         return candidate
     }
 
@@ -363,7 +662,6 @@ final class TalkController: NSObject, ObservableObject {
         request = next
         replayAfterSequence = cursor
         // The relay moves first. Any tap callback concurrent with rollover is
-        // serialized onto the new request, and retained audio fills its prefix.
         audioRelay.install(next, replayAfter: cursor)
         previousRequest?.endAudio()
         previousRecognition?.cancel()
@@ -398,26 +696,46 @@ final class TalkController: NSObject, ObservableObject {
             self.finalizationTimeout?.cancel()
             self.finalizationTimeout = nil
             self.finishingGeneration = nil
+            // Make every in-flight callback from this capture inert BEFORE we
+            // await the Mac. Cleanup nilled the references but left the
+            // generation intact, so a late same-generation result could still
+            // append a tail during the await — and then be deleted by the
+            // clear below, having never been sent.
+            self.generation += 1
             self.recognition = nil
             self.request = nil
             self.audioRelay.reset()
 
             let text = self.committed.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard self.finalizationSucceeded else {
-                self.failure = "Speech recognition couldn't finish — your recognized words are kept above."
+            // Words in hand get sent, whether or not recognition signed off.
+            // Refusing to send text we already have because the recogniser
+            // failed to say "done" punishes you for its problem: you asked to
+            // send, the words exist, send them. The only thing a failed
+            // finalisation costs is the tail it never reported, and that is
+            // worth saying out loud rather than swallowing the whole message.
+            guard !text.isEmpty else {
+                if !self.finalizationSucceeded {
+                    let why = self.lastRecognitionError.map { " (\($0))" } ?? ""
+                    self.failure = "Speech recognition couldn't finish\(why) — nothing was captured."
+                }
                 self.phase = .idle
                 return
             }
-            guard !text.isEmpty else {
-                self.phase = .idle
-                return
+            if !self.finalizationSucceeded {
+                self.failure = "Recognition cut out at the end — sending what it caught."
             }
             let delivered = await deliver(text)
             // Keep failed text intact; a subsequent Talk starts only after the
             // user has had a chance to copy/retry it from the visible bubble.
             if delivered {
-                self.committed = ""
-                self.partial = ""
+                // Clear exactly what was acknowledged, never the whole buffer.
+                // Assigning empty after an await deletes anything that arrived
+                // during it — words that were never sent to anyone.
+                let held = self.committed.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.committed = held.hasPrefix(text)
+                    ? String(held.dropFirst(text.count))
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    : ""
             }
             self.phase = .idle
         }
@@ -507,13 +825,29 @@ final class TalkController: NSObject, ObservableObject {
         )
     }
 
+    /// Close the mic without sending and without losing a word.
+    ///
+    /// There was no way to do this at all: the bottom button SENDS while
+    /// listening, so an accidentally-opened mic could only be resolved by
+    /// sending something you did not mean to. Tyler: "I don't think there's a
+    /// way to close the mic on the iPhone app".
+    ///
+    /// `cancel()` alone would drop the in-flight `partial` — the words spoken
+    /// since the last commit — so the partial is banked first. Closing the mic
+    /// is a decision about the MICROPHONE, never about the transcript, which
+    /// stays exactly where it was for the next time you open it.
+    func closeMic() {
+        guard phase == .listening || starting else { return }
+        commit(partial)
+        cancel()
+    }
+
     func cancel() {
         guard phase == .listening || starting else { return }
         starting = false
         stopCaptureHardware()
         invalidateRecognition()
         audioRelay.reset()
-        committed = ""
         partial = ""
         failure = nil
         phase = .idle

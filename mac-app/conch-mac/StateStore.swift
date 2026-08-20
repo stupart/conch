@@ -35,14 +35,19 @@ final class StateStore: ObservableObject {
     private static let failedProbeSpacing: TimeInterval = 2
     private static let stuckMicAge: TimeInterval = 30
     private static let undoLifetimeNanoseconds: UInt64 = 6_000_000_000
+    // Terminal automation plus clean-exit verification can legitimately take
+    // several seconds; timing out first invites a duplicate start or a second
+    // close against a session already leaving normally.
+    private static let sessionLifecycleTimeout: TimeInterval = 12
 
     private let reader: StateSnapshotReader
     private let socketClient: ConchSocketClient
     private var sourceState: PublishedState?
     private var pollingTask: Task<Void, Never>?
-    private var deliveryTask: Task<Void, Never>?
+    private var deliveryTask: Task<Bool, Never>?
     private var probeTask: Task<Void, Never>?
     private var sessionCommandTask: Task<Void, Never>?
+    private var sessionLifecycleTask: Task<Void, Never>?
     private var undoTask: Task<Void, Never>?
     private var controlSequence = 0
 
@@ -94,6 +99,7 @@ final class StateStore: ObservableObject {
                     appendLogLines(result.logLines)
                 }
                 evaluateLiveness()
+                DebugSnapshot.serviceRequest()
 
                 do {
                     try await Task.sleep(nanoseconds: 250_000_000)
@@ -109,24 +115,49 @@ final class StateStore: ObservableObject {
         deliveryTask?.cancel()
         probeTask?.cancel()
         sessionCommandTask?.cancel()
+        sessionLifecycleTask?.cancel()
         undoTask?.cancel()
     }
 
-    func send(_ event: ConchDaemonEvent) {
+    @discardableResult
+    func send(_ event: ConchDaemonEvent) -> Task<Bool, Never> {
         controlSequence &+= 1
         let sequence = controlSequence
         let socketClient = socketClient
         let previousDelivery = deliveryTask
 
-        deliveryTask = Task { @MainActor [weak self] in
-            await previousDelivery?.value
-            guard !Task.isCancelled else { return }
+        let task = Task { @MainActor [weak self] in
+            _ = await previousDelivery?.value
+            guard !Task.isCancelled else { return false }
             let delivered = await socketClient.send(event)
-            guard let self, controlSequence == sequence else { return }
-            if !delivered {
-                forceLivenessProbe()
+            if let self, !delivered {
+                if controlSequence == sequence {
+                    forceLivenessProbe()
+                }
+                reportAppError(
+                    operation: "control.\(event.type.rawValue)",
+                    message: "Could not deliver control to the daemon",
+                    sessionId: event.sessionId
+                )
             }
+            return delivered
         }
+        deliveryTask = task
+        return task
+    }
+
+    /// Tell the daemon the machine woke.
+    ///
+    /// The app gets `NSWorkspace.didWakeNotification`; the daemon, being a Bun
+    /// process, gets nothing. Its relay socket died during sleep without a
+    /// close frame ever arriving, so without being told it sits inside a
+    /// backoff of up to thirty seconds having noticed nothing — which is what
+    /// "a tough time connecting" after a lid-open actually was.
+    ///
+    /// Fire and forget: a failed notification just means the daemon falls back
+    /// to noticing the gap itself, a little later.
+    func reportSystemWake() {
+        Task { await socketClient.notify(["kind": "system-woke"]) }
     }
 
     func forceLivenessProbe() {
@@ -203,6 +234,209 @@ final class StateStore: ObservableObject {
     func undoLastDismissal() {
         guard let undoDismissal else { return }
         restoreSession(id: undoDismissal.id, label: undoDismissal.label)
+    }
+
+    /// The daemon owns launch because it is the only layer that can guarantee a
+    /// new agent stays outside conch's own tmux session.
+    /// Past sessions that could be restarted, newest first.
+    ///
+    /// Returns an empty list rather than an error on failure: this feeds a
+    /// picker that already says "No past sessions found", and a modal error on
+    /// top of an empty list tells you the same thing twice.
+    func resumableSessions(query: String) async -> [ResumableSession] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let outcome = await socketClient.request(
+            ConchResumableRequest(query: trimmed.isEmpty ? nil : trimmed),
+            timeout: Self.sessionLifecycleTimeout
+        )
+        guard case let .reply(data) = outcome,
+              let reply = try? JSONDecoder().decode(ConchResumableReply.self, from: data)
+        else {
+            reportAppError(operation: "resumable", message: "Could not read past sessions")
+            return []
+        }
+        return reply.sessions
+    }
+
+    /// Shown when a start succeeded but the agent is waiting on a person.
+    static let awaitingTrustNotice =
+        "Terminal is asking you to trust this folder. Answer it there and the "
+        + "session will appear here."
+
+    /// What a session is carrying, or nil if it could not be read.
+    ///
+    /// Not cached: the answer changes when a config file changes, and this is
+    /// opened deliberately rather than rendered continuously — 107 Codex and
+    /// 205 Claude entities read in 35-48ms, so asking again is cheaper than
+    /// deciding when a cache went stale.
+    func capabilities(
+        backend: String,
+        cwd: String,
+        sessionId: String?
+    ) async -> AgentCapabilities? {
+        let outcome = await socketClient.request(
+            ConchCapabilitiesRequest(backend: backend, cwd: cwd, sessionId: sessionId),
+            timeout: Self.sessionLifecycleTimeout
+        )
+        guard case let .reply(data) = outcome,
+              let reply = try? JSONDecoder().decode(ConchCapabilitiesReply.self, from: data),
+              let inventory = reply.inventory
+        else {
+            reportAppError(operation: "agent-capabilities", message: "Could not read session capabilities")
+            return nil
+        }
+        return inventory
+    }
+
+    func startSession(
+        backend: ConchAgentBackend,
+        resumeSessionId: String?,
+        cwd: String?
+    ) async -> String? {
+        let resumed = Self.nonempty(resumeSessionId)
+        let workingDirectory = Self.nonempty(cwd)
+        let request = ConchSessionStartRequest(
+            backend: backend,
+            resumeSessionId: resumed,
+            cwd: workingDirectory
+        )
+        let outcome = await socketClient.request(
+            request,
+            timeout: Self.sessionLifecycleTimeout
+        )
+
+        switch outcome {
+        case let .reply(data):
+            guard let reply = try? JSONDecoder().decode(
+                ConchSessionLifecycleReply.self,
+                from: data
+            ) else {
+                let message = "Invalid start reply from daemon"
+                reportAppError(operation: "session-start", message: message)
+                return message
+            }
+            switch reply {
+            case let .started(started)
+                where started.backend == backend.rawValue
+                    && started.resumed == (resumed != nil):
+                // Not an error, but not nothing either: the session will not
+                // appear until the trust prompt in Terminal is answered.
+                return started.awaitingTrust == true ? Self.awaitingTrustNotice : nil
+            case let .error(error):
+                let message = Self.nonempty(error.error) ?? "Could not start session"
+                reportAppError(operation: "session-start", message: message)
+                return message
+            case .started, .closed, .unknown:
+                let message = "Unexpected start reply from daemon"
+                reportAppError(operation: "session-start", message: message)
+                return message
+            }
+        case .connectFailed:
+            let message = "Daemon not running"
+            reportAppError(operation: "session-start", message: message)
+            forceLivenessProbe()
+            return message
+        case .timeout:
+            let message = "Daemon did not reply"
+            reportAppError(operation: "session-start", message: message)
+            forceLivenessProbe()
+            return message
+        }
+    }
+
+    /// A lifecycle close is intentionally distinct from interrupt: interrupt
+    /// stops one turn, while this asks the agent to exit normally and preserve
+    /// the resumable transcript.
+    func closeSession(_ row: SessionRow) {
+        rowMessages[row.id] = "Closing cleanly…"
+        let socketClient = socketClient
+        let previous = sessionLifecycleTask
+        sessionLifecycleTask = Task { @MainActor [weak self] in
+            await previous?.value
+            guard !Task.isCancelled else { return }
+            let outcome = await socketClient.request(
+                ConchSessionCloseRequest(sessionId: row.id),
+                timeout: Self.sessionLifecycleTimeout
+            )
+            guard let self else { return }
+            finishClose(row, outcome: outcome)
+        }
+    }
+
+    private func finishClose(
+        _ row: SessionRow,
+        outcome: ConchSocketRequestOutcome
+    ) {
+        let failure: String?
+        switch outcome {
+        case let .reply(data):
+            guard let reply = try? JSONDecoder().decode(
+                ConchSessionLifecycleReply.self,
+                from: data
+            ) else {
+                failure = "Invalid close reply from daemon"
+                break
+            }
+            switch reply {
+            case let .closed(closed) where closed.sessionId == row.id:
+                failure = nil
+            case let .error(error):
+                failure = Self.nonempty(error.error) ?? "Could not close session"
+            case .closed, .started, .unknown:
+                failure = "Unexpected close reply from daemon"
+            }
+        case .connectFailed:
+            failure = "Daemon not running"
+            forceLivenessProbe()
+        case .timeout:
+            failure = "Daemon did not reply"
+            forceLivenessProbe()
+        }
+
+        if let failure {
+            rowMessages[row.id] = failure
+            reportAppError(
+                operation: "session-close",
+                message: failure,
+                sessionId: row.id
+            )
+        } else {
+            // The row disappears on the next daemon snapshot. Keeping a quiet
+            // progress label until then prevents a successful close looking
+            // like a dead click while Terminal finishes its normal shutdown.
+            rowMessages[row.id] = "Closing cleanly…"
+        }
+    }
+
+    func reportAppError(
+        operation: String,
+        message: String,
+        sessionId: String? = nil
+    ) {
+        let snapshot = errorStateSnapshot
+        let socketClient = socketClient
+        Task {
+            await socketClient.reportAppError(
+                operation: operation,
+                message: message,
+                sessionId: sessionId,
+                state: snapshot
+            )
+        }
+    }
+
+    private var errorStateSnapshot: [String: String] {
+        [
+            "liveness": String(describing: liveness),
+            "live": sourceState?.live.state ?? "unknown",
+            "mode": sourceState?.mode.paused == true ? "manual" : "auto",
+            "visibleSessions": String(sourceState?.rows.count ?? 0),
+        ]
+    }
+
+    private static func nonempty(_ text: String?) -> String? {
+        let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     @discardableResult
@@ -409,6 +643,11 @@ final class StateStore: ObservableObject {
     ) {
         rowMessages[context.id] = message
         guard isLatest else { return }
+        reportAppError(
+            operation: "session-command.\(context.command.rawValue)",
+            message: message,
+            sessionId: context.id
+        )
 
         switch context.command {
         case .rename:
@@ -599,11 +838,17 @@ final class StateStore: ObservableObject {
             live: sourceState.live,
             reply: sourceState.reply,
             preview: sourceState.preview,
+            // Carried explicitly. This rebuild is the reason the conversation
+            // stack rendered nothing for an hour: the memberwise init defaults
+            // these to nil, so adding a field to PublishedState compiles here
+            // without a word and silently drops it on every poll.
+            conversation: sourceState.conversation,
+            conversations: sourceState.conversations,
             rows: rows,
             dismissed: sourceState.dismissed,
             dismissedRows: dismissedRows
         )
-        if next != state {
+        if state?.hasSamePresentation(as: next) != true {
             state = next
             updateDockBadge(for: next.rows)
         }

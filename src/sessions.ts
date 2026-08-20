@@ -20,6 +20,7 @@ import {
   readCodexSessions,
   type CodexSessionRegistryOptions,
 } from "./codex-sessions.ts";
+import { readCodexThreads } from "./codex-threads.ts";
 
 const LABELS_FILE = join(homedir(), ".config/conch/labels.json");
 const MAX_SESSION_LABEL_LENGTH = 40;
@@ -48,6 +49,16 @@ export interface SessionInfo {
   kind?: string;
   /** "cli" for a real terminal session; "sdk-cli" etc. are headless routines. */
   entrypoint?: string;
+  /**
+   * The session's own transcript, when it carries one.
+   *
+   * Claude sessions are found by id under the projects directory, so this stays
+   * empty for them. A Codex thread cannot be: its rollout lives at a path only
+   * Codex's database knows, and dropping it here meant every Codex row reached
+   * the apps with no transcript at all — no conversation, no reply, nothing to
+   * read.
+   */
+  transcriptPath?: string;
 }
 
 /**
@@ -104,6 +115,9 @@ function toInfo(entry: any, backend?: SessionInfo["backend"]): SessionInfo {
         : undefined,
     kind: entry.kind,
     entrypoint: entry.entrypoint,
+    ...(typeof entry.transcriptPath === "string" && entry.transcriptPath
+      ? { transcriptPath: entry.transcriptPath }
+      : {}),
   };
 }
 
@@ -204,6 +218,39 @@ export function renameSessionLabel(
   }
 }
 
+/**
+ * Will Claude Code stop and ask before it starts here?
+ *
+ * A session launched into a folder Claude Code has not seen sits on "Is this a
+ * project you trust?" and does NOT write its registry file until that is
+ * answered — so conch cannot see it, and the app looks broken. Tyler hit
+ * exactly this: "it sucessdully made a new session btu that session didn't
+ * then show in the conch app."
+ *
+ * `~/.claude.json` records `hasTrustDialogAccepted` per project, so this is
+ * knowable BEFORE launching rather than inferred from a session that never
+ * arrives. Returns null when the answer cannot be read, which must be treated
+ * as "say nothing" — warning about a folder that is actually fine is its own
+ * small lie.
+ */
+export function claudeFolderTrusted(
+  cwd: string,
+  configPath = join(homedir(), ".claude.json"),
+): boolean | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(configPath, "utf8"));
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const projects = (parsed as { projects?: unknown }).projects;
+    if (typeof projects !== "object" || projects === null) return null;
+    const entry = (projects as Record<string, unknown>)[cwd];
+    if (typeof entry !== "object" || entry === null) return false; // never opened here
+    const accepted = (entry as { hasTrustDialogAccepted?: unknown }).hasTrustDialogAccepted;
+    return accepted === true;
+  } catch {
+    return null;
+  }
+}
+
 /** Session label precedence: conch override, registry name, then project folder. */
 export function sessionLabel(
   info: SessionInfo | null,
@@ -300,6 +347,22 @@ export async function registrySnapshot(
     infos.push(toInfo(entry, "codex"));
   }
   if (!codex.complete) complete = false;
+
+  // Codex sessions nobody wired a hook into.
+  //
+  // The registry above is written by `conch codex-hook`, which requires hooks
+  // in ~/.codex — shared config that only takes effect on session start, so it
+  // can never reach a session already running. Reading Codex's own databases
+  // observes those sessions without them participating at all. Hook-fed
+  // entries win on conflict: they carry a real pid, so they can be TALKED to,
+  // where an observed row can only be seen.
+  const observed = readCodexThreads(options);
+  for (const entry of observed.entries) {
+    if (liveIds.has(entry.sessionId)) continue;
+    liveIds.add(entry.sessionId);
+    infos.push(toInfo(entry, "codex"));
+  }
+  if (!observed.complete) complete = false;
 
   // No readable source at all retains the legacy "total uncertainty" result.
   // A readable Codex registry can still supply useful sessions when Claude's

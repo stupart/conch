@@ -117,6 +117,7 @@ private extension SessionRow {
 }
 
 struct DashboardActions {
+    let onStartSession: () -> Void
     let onSelectSession: (SessionRow) -> Void
     let onExpandReview: (SessionRow) -> Void
     let onBeginRename: (SessionRow) -> Void
@@ -127,10 +128,11 @@ struct DashboardActions {
     let onUndoDismiss: () -> Void
     let onDismissNewerDaemonWarning: () -> Void
     let onToggleLogs: () -> Void
+    /// Opens Settings on the Phone tab, where the pairing QR lives.
+    let onConnectPhone: () -> Void
     let onShowKeyboardShortcuts: () -> Void
     let onTalkOrStop: () -> Void
     let onPauseOrResume: () -> Void
-    let onMuteOrUnmute: () -> Void
     let onRecite: () -> Void
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
@@ -139,6 +141,7 @@ struct DashboardActions {
 
 struct DashboardView: View {
     @EnvironmentObject private var store: StateStore
+    @EnvironmentObject private var daemon: DaemonHost
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let state: PublishedState?
@@ -147,14 +150,29 @@ struct DashboardView: View {
     @Binding var renameDraft: String
     let actions: DashboardActions
 
+    /// Nil while conch is working, so the bar only appears when it earns its
+    /// space. A daemon we adopted from a terminal is working fine and needs no
+    /// banner — it is simply not ours to stop.
+    private var daemonTrouble: String? {
+        switch daemon.state {
+        case .running, .adopted: return nil
+        case .starting: return "Starting conch…"
+        case .stopped: return "conch is off."
+        case .failed(let reason): return reason
+        }
+    }
+
     var body: some View {
         GeometryReader { proxy in
             VStack(spacing: 0) {
                 DashboardHeader(
                     state: state,
+                    selectedSessionID: selectedSessionID,
+                    isLogDrawerOpen: store.isLogDrawerOpen,
                     daemonMessage: store.daemonMessage,
                     newerDaemonWarningVisible: store.newerDaemonWarningVisible,
-                    onDismissNewerDaemonWarning: actions.onDismissNewerDaemonWarning
+                    onDismissNewerDaemonWarning: actions.onDismissNewerDaemonWarning,
+                    actions: actions
                 )
 
                 Rectangle()
@@ -175,6 +193,32 @@ struct DashboardView: View {
                             .font(ConchTypography.font(size: 11.5))
                         Spacer(minLength: 8)
                         Button("Relaunch", action: store.relaunchForNewBuild)
+                            .buttonStyle(.plain)
+                            .font(ConchTypography.font(size: 11, weight: .medium))
+                            .foregroundStyle(ConchPalette.statusWorking)
+                    }
+                    .foregroundStyle(ConchPalette.statusWaiting)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ConchPalette.raised)
+
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(height: 1)
+                }
+
+                // The daemon runs inside this app, so when it is down the app
+                // is the only place that can say so. Silence here is what
+                // "couldn't reach your Mac" looked like from the outside.
+                if let trouble = daemonTrouble {
+                    HStack(spacing: 10) {
+                        Image(systemName: "bolt.horizontal.circle")
+                            .font(.system(size: 10.5, weight: .medium))
+                        Text(trouble)
+                            .font(ConchTypography.font(size: 11.5))
+                        Spacer(minLength: 8)
+                        Button("Start", action: daemon.start)
                             .buttonStyle(.plain)
                             .font(ConchTypography.font(size: 11, weight: .medium))
                             .foregroundStyle(ConchPalette.statusWorking)
@@ -222,7 +266,8 @@ struct DashboardView: View {
                     ConversationPane(
                         state: state,
                         selectedSessionID: selectedSessionID,
-                        onExpandReview: actions.onExpandReview
+                        onExpandReview: actions.onExpandReview,
+                        onSelectSession: actions.onSelectSession
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -237,16 +282,6 @@ struct DashboardView: View {
                         .frame(height: min(220, max(132, proxy.size.height * 0.27)))
                 }
 
-                Rectangle()
-                    .fill(ConchPalette.divider)
-                    .frame(height: 1)
-
-                DashboardKeybar(
-                    state: state,
-                    selectedSessionID: selectedSessionID,
-                    isLogDrawerOpen: store.isLogDrawerOpen,
-                    actions: actions
-                )
             }
         }
         .background(ConchPalette.bg)
@@ -309,24 +344,56 @@ private struct PluginHintBar: View {
 
 private struct DashboardHeader: View {
     let state: PublishedState?
+    let selectedSessionID: SessionRow.ID?
+    let isLogDrawerOpen: Bool
     let daemonMessage: String?
     let newerDaemonWarningVisible: Bool
     let onDismissNewerDaemonWarning: () -> Void
+    let actions: DashboardActions
+
+    private var selectedRow: SessionRow? {
+        guard let selectedSessionID else { return nil }
+        return state?.rows.first { $0.id == selectedSessionID }
+    }
+
+    /// Auto or manual, for what used to be called pause.
+    ///
+    /// These were never two features. Auto reads finished turns aloud and opens
+    /// the mic on its own; manual does neither, while everything else keeps
+    /// working — you read, and press recite on what you want to hear. That is
+    /// exactly what pause always did, named for what it does rather than for
+    /// the button being pressed.
+    ///
+    /// A session inside a manual conch is manual whatever its own flag says,
+    /// which is why this reads the global state as well as the row's.
+    private var isManual: Bool {
+        state?.mode.paused == true || selectedRow?.paused == true
+    }
+
+    private var modeScope: String {
+        selectedRow == nil ? "everything" : "this session"
+    }
+
+    /// What conch is DOING, which is not the same as what mode it is in.
+    ///
+    /// The daemon's at-rest live state can be the mode itself, so reporting it
+    /// verbatim prints the mode a second time, three inches from the toggle that
+    /// already says it. Only genuine activity belongs here.
+    private static let activityStates: Set<String> = [
+        "speaking", "listening", "recording", "transcribing",
+    ]
 
     private var doingText: String? {
         guard let state else { return nil }
-        if state.live.state != "idle" {
+        if Self.activityStates.contains(state.live.state) {
             return state.live.label.isEmpty
                 ? state.live.state
                 : "\(state.live.state) ‹\(state.live.label)›"
         }
-        if state.mode.muted {
-            return "muted"
-        }
-        if state.mode.paused {
-            return state.mode.holding > 0
-                ? "paused · holding \(state.mode.holding)"
-                : "paused"
+        // The MODE is the toggle's job now. What it cannot show is the
+        // consequence: how much work is waiting for you.
+        if state.mode.paused, state.mode.holding > 0 {
+            return "holding \(state.mode.holding)"
         }
         return nil
     }
@@ -385,11 +452,89 @@ private struct DashboardHeader: View {
                     .truncationMode(.tail)
                     .contentTransition(.opacity)
             }
+            // The global controls, moved up out of a bar of their own.
+            //
+            // The bottom strip held Talk — a duplicate of the mic now sitting in
+            // the composer — plus mode, Settings, Logs and ?. The session
+            // actions belong beside the session; the rest belong in the app's
+            // own chrome. Deleting the strip gives the ledger and composer the
+            // full height of the window, and stops the header being 42pt of
+            // wordmark.
+            HeaderControls(
+                isManual: isManual,
+                modeScope: modeScope,
+                isLogDrawerOpen: isLogDrawerOpen,
+                actions: actions
+            )
         }
         .lineLimit(1)
-        .padding(.horizontal, 16)
-        .frame(height: 42)
+        .padding(.leading, 16)
+        .padding(.trailing, 8)
+        .frame(height: 38)
         .background(ConchPalette.bg)
+    }
+}
+
+/// Mode, settings, logs, shortcuts — the things that act on conch itself rather
+/// than on one session.
+private struct HeaderControls: View {
+    let isManual: Bool
+    let modeScope: String
+    let isLogDrawerOpen: Bool
+    let actions: DashboardActions
+
+    var body: some View {
+        HStack(spacing: 2) {
+            // One control, two modes, and the word for the mode you are IN.
+            ModeToggle(
+                isManual: isManual,
+                scope: modeScope,
+                action: actions.onPauseOrResume
+            )
+            HeaderButton(
+                symbol: "gearshape",
+                help: "Settings — connect a phone, and everything else",
+                action: actions.onConnectPhone
+            )
+            HeaderButton(
+                symbol: "text.alignleft",
+                help: isLogDrawerOpen ? "Hide logs" : "Show logs",
+                isSelected: isLogDrawerOpen,
+                action: actions.onToggleLogs
+            )
+            HeaderButton(
+                symbol: "questionmark",
+                help: "Keyboard shortcuts",
+                action: actions.onShowKeyboardShortcuts
+            )
+        }
+    }
+}
+
+private struct HeaderButton: View {
+    let symbol: String
+    let help: String
+    var isSelected = false
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .medium))
+                .frame(width: 26, height: 26)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isSelected || isHovered ? ConchPalette.hover : .clear)
+                )
+                .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(help)
+        .accessibilityLabel(help)
     }
 }
 
@@ -430,6 +575,23 @@ private struct SessionLedger: View {
                     TimelineView(.periodic(from: .now, by: 10)) { timeline in
                         ScrollView {
                             LazyVStack(spacing: 2) {
+                                // The way back to "everything".
+                                //
+                                // Escape released a selection, and Escape stops
+                                // reaching the dashboard the moment a composer
+                                // holds focus — which is now most of the time.
+                                // With no way to deselect, manual mode stayed
+                                // scoped to one session forever: Tyler "seem[ed]
+                                // to lose the ability to pause the entire app
+                                // once I've started using it". A keystroke that
+                                // a text field can swallow is not an adequate
+                                // home for the only exit from a mode.
+                                AllSessionsRow(
+                                    isSelected: selectedSessionID == nil,
+                                    onSelect: actions.onReleaseSelection,
+                                    onStart: actions.onStartSession
+                                )
+
                                 ForEach(
                                     state.rows,
                                     id: \.id
@@ -575,7 +737,7 @@ private struct DashboardRow: View {
     }
 
     private var isDimmed: Bool {
-        row.paused || row.muted
+        row.paused
     }
 
     private var isLiveSession: Bool {
@@ -629,6 +791,14 @@ private struct DashboardRow: View {
             }
         }
         .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        // Double-click renames, because renaming a thing by double-clicking its
+        // name is what every file list has taught. It was reachable only from
+        // the context menu, which means it was reachable only by someone who
+        // already suspected it existed — Tyler asked for a feature conch has
+        // had all along.
+        //
+        // Before the context menu, so the gesture wins over the row's own tap.
+        .onTapGesture(count: 2, perform: onBeginRename)
         .contextMenu {
             Button("Rename", action: onBeginRename)
             Button("Dismiss", action: onDismiss)
@@ -730,6 +900,8 @@ private struct DashboardRow: View {
                     .help("Prioritized")
             }
 
+            AgentBadge(backend: row.backend)
+
             // NEITHER of these two may carry a maxWidth frame. A frame with a
             // maxWidth — 190 or .infinity alike — is GREEDY: it expands to
             // whatever it is offered and then may not use it. Capping the label
@@ -761,6 +933,7 @@ private struct DashboardRow: View {
             // this row has a summary.
             Spacer(minLength: 0)
 
+
             if let age {
                 Text(age)
                     .font(ConchTypography.font(size: 10.5))
@@ -783,7 +956,7 @@ private struct DashboardRow: View {
             // of the line where the eye lands last — after the age, hard right.
             //
             // It is deliberately NOT dimmed with the rest of the row. Dimming a
-            // muted row used to fade the glyph too, dropping it to 2.45:1 — so
+            // manual row used to fade the glyph too, dropping it to 2.45:1 — so
             // the pixel answering "why is this one silent?" became the least
             // legible thing on screen, in a product whose failure mode IS
             // silence. The row recedes; its verdict does not.
@@ -816,6 +989,100 @@ private struct DashboardRow: View {
                 reviewPulseOpacity = 0
             }
         }
+    }
+}
+
+private struct AgentBadge: View {
+    let backend: String?
+
+    private var label: String {
+        switch backend?.lowercased() {
+        // Claude sessions predate the backend field. Treating absence as
+        // Claude keeps old live rows identified instead of making only Codex
+        // earn a mark after upgrading one half of the pair.
+        case nil, "", "claude": return "Claude"
+        case "codex": return "Codex"
+        default: return backend?.capitalized ?? "Claude"
+        }
+    }
+
+    /// A mark, not a word in a box.
+    ///
+    /// The name in a stroked pill read as a label to be parsed — two of them in
+    /// a list and you are reading "Claude" and "Codex" over and over to learn
+    /// something you only need peripherally. A glyph is recognised without
+    /// being read.
+    ///
+    /// The real marks, as template images.
+    ///
+    /// SF Symbols stand-ins — an asterisk and a hexagon — were close enough to
+    /// describe and not close enough to recognise, which defeats the point of a
+    /// glyph. These are the actual burst and knot, lifted from the installed
+    /// apps' own icons and reduced to alpha, so SwiftUI tints them like any
+    /// symbol and one asset serves grey here and any colour later.
+    private var asset: String {
+        backend?.lowercased() == "codex" ? "AgentCodex" : "AgentClaude"
+    }
+
+    var body: some View {
+        Image(asset)
+            .renderingMode(.template)
+            .resizable()
+            .scaledToFit()
+            .foregroundStyle(ConchPalette.textFaint)
+            // Fixed box so both marks occupy identical space: the burst is
+            // square and the knot is not, and letting each size itself left
+            // the gap to the session name visibly different per row.
+            .frame(width: 11, height: 11)
+            .help(label)
+            .accessibilityLabel("Agent: \(label)")
+    }
+}
+
+private struct SessionContextMeter: View {
+    let context: SessionContext
+
+    private var fill: Color {
+        // A routine session stays quiet. Colour starts carrying urgency only
+        // once context pressure can plausibly change the next decision.
+        if context.fraction >= 0.97 { return ConchPalette.statusNeeds }
+        if context.fraction >= 0.85 { return ConchPalette.statusWaiting }
+        return ConchPalette.statusWorking.opacity(0.66)
+    }
+
+    private var label: String {
+        "\(Self.tokens(context.usedTokens)) / \(Self.tokens(context.limitTokens))"
+    }
+
+    var body: some View {
+        // A number, not a bar, and only where you have already committed to
+        // looking at one session.
+        //
+        // Tyler: "it adds visual clutter and a lot of importance to a not super
+        // important piece of data". A filled capsule beside every session name
+        // gave context pressure the same weight as the session itself, on the
+        // one surface you scan constantly. Colour still carries the warning,
+        // because that is the part worth interrupting for.
+        Text(label)
+            .font(ConchTypography.font(size: 10.5))
+            .foregroundStyle(context.fraction >= 0.85 ? fill : ConchPalette.textFaint)
+            .monospacedDigit()
+            .fixedSize()
+        .help("Context \(label) tokens · \(Int((context.fraction * 100).rounded()))% full")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Context \(label) tokens")
+        .accessibilityValue("\(Int((context.fraction * 100).rounded())) percent full")
+    }
+
+    private static func tokens(_ count: Int) -> String {
+        if count >= 1_000_000 {
+            return String(format: "%.1fm", Double(count) / 1_000_000)
+                .replacingOccurrences(of: ".0m", with: "m")
+        }
+        if count >= 1_000 {
+            return String(format: "%.0fk", Double(count) / 1_000)
+        }
+        return String(count)
     }
 }
 
@@ -937,8 +1204,7 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
     case waiting
     case needs
     case review
-    case muted
-    case paused
+    case manual
     case speaking
     case listening
     case recording
@@ -966,19 +1232,12 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             self = .review
             return
         }
-        // Muting silences ANNOUNCEMENTS; it is not a request to stop tracking
-        // the session. These checks used to run before status, so a muted
-        // session that had finished showed only the mute glyph and its waiting
-        // turn became invisible — the worst possible failure in a product whose
-        // failure mode IS silence. The row's dimmed label and age already say
-        // "silenced"; the glyph goes on saying what the session actually needs.
+        // A mode glyph must not hide work waiting on the person. The row's dimmed
+        // label already carries manual mode; waiting and needs-response keep the
+        // more consequential glyph.
         let wantsUser = row.status == .waiting || row.status == .needs
-        if row.muted, !wantsUser {
-            self = .muted
-            return
-        }
         if row.paused, !wantsUser {
-            self = .paused
+            self = .manual
             return
         }
         switch row.live {
@@ -1014,9 +1273,7 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             return "exclamationmark.circle.fill"
         case .review:
             return "star.fill"
-        case .muted:
-            return "speaker.slash.fill"
-        case .paused:
+        case .manual:
             return "pause.fill"
         case .speaking:
             return "play.fill"
@@ -1031,7 +1288,7 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
         switch self {
         case .needs, .review, .recording:
             return 10.5
-        case .muted, .paused, .speaking:
+        case .manual, .speaking:
             return 9
         case .transcribing:
             return 11
@@ -1067,7 +1324,7 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             return ConchPalette.statusWorking.opacity(0.78)
         case .idle:
             return ConchPalette.textFaint
-        case .muted, .paused:
+        case .manual:
             // "Why is this one silent?" is a question the user actually asks;
             // textFaint answered it at 2.63:1, below AA.
             return ConchPalette.textDim
@@ -1086,10 +1343,8 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             return "Needs a response"
         case .review:
             return "Needs review"
-        case .muted:
-            return "Muted"
-        case .paused:
-            return "Paused"
+        case .manual:
+            return "Manual"
         case .speaking:
             return "Speaking"
         case .listening:
@@ -1106,8 +1361,44 @@ private struct ConversationPane: View {
     let state: PublishedState?
     let selectedSessionID: SessionRow.ID?
     let onExpandReview: (SessionRow) -> Void
+    let onSelectSession: (SessionRow) -> Void
 
+    @EnvironmentObject private var store: StateStore
     @StateObject private var transcriptContent = TranscriptContentModel()
+    @StateObject private var composerDrafts = ComposerDraftStore()
+    @State private var sessionPendingClose: SessionRow?
+    /// The last dictation applied to a draft. State republishes several times a
+    /// second, so without this the same spoken sentence would be appended over
+    /// and over.
+    @State private var appliedDictationID = 0
+    /// Bumped when a question's "Something else…" row is pressed, so the
+    /// composer takes the cursor.
+    @State private var composerFocusRequest = 0
+    /// The session whose capabilities are being inspected, if any.
+    @State private var inspectingSession: SessionRow?
+
+    /// False = the deliverable in front, which is the pane's long-standing
+    /// default: a session that produced an artifact is showing it to you.
+    /// This state only ever loses to that default — a NEW artifact resets it
+    /// (see the onChange below), because a fresh deliverable is the agent
+    /// asking to be looked at, not background noise to read past.
+    @State private var showsConversation = false
+
+    /// Only the session actually being dictated to shows the live transcript.
+    /// Without the label check every open composer would mirror the same words,
+    /// which reads as though conch is about to send them everywhere.
+    /// What conch's voice loop is doing for the session in front of you.
+    private var voiceStateForFocusedRow: String {
+        guard let state, let row = focusedRow else { return "" }
+        guard state.live.label.isEmpty || state.live.label == row.label else { return "" }
+        return state.live.state
+    }
+
+    private var dictationForFocusedRow: String {
+        guard let state, let row = focusedRow else { return "" }
+        guard state.live.label.isEmpty || state.live.label == row.label else { return "" }
+        return state.live.partial
+    }
 
     private var selectedRow: SessionRow? {
         guard let selectedSessionID else { return nil }
@@ -1186,7 +1477,10 @@ private struct ConversationPane: View {
         case "speaking":
             return "space to cut in · the mic opens when it finishes"
         case "listening", "recording":
-            return "pause to send · space to stop · say \"send\" to submit now"
+            // "pause to send" meant a pause in your SPEECH, but conch also has
+            // a pause mode, so it read as a control — Tyler: "it also says
+            // 'pause to send' but idk what they means."
+            return "stop talking to send · space to cancel · say \"send\" to submit now"
         case "transcribing":
             return "transcribing…"
         default:
@@ -1196,8 +1490,20 @@ private struct ConversationPane: View {
 
     var body: some View {
         Group {
-            if let selectedReview, let reviewRow = reviewOwnerRow {
+            if let selectedReview, let reviewRow = reviewOwnerRow, !showsConversation {
                 VStack(spacing: 0) {
+                    sessionBar(for: reviewRow)
+
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(height: 1)
+
+                    perspectiveBar
+
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(height: 1)
+
                     InlineReviewView(
                         item: selectedReview,
                         onExpand: { onExpandReview(reviewRow) }
@@ -1217,19 +1523,76 @@ private struct ConversationPane: View {
                         .frame(minHeight: 96, idealHeight: 150, maxHeight: 190)
                     }
 
-                    noteBar
+                    Spacer(minLength: 0)
+
+                    composer(for: reviewRow)
                 }
             } else {
                 VStack(spacing: 0) {
-                    ConversationTextView(
-                        attributedText: document.text,
-                        scrollTarget: document.scrollTarget,
-                        contentID: document.contentID
-                    )
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if let row = focusedRow {
+                        sessionBar(for: row)
 
-                    noteBar
+                        Rectangle()
+                            .fill(ConchPalette.divider)
+                            .frame(height: 1)
+                    }
+
+                    // Only when there is a deliverable to swap back to. With
+                    // nothing on the other side the control is a promise the
+                    // pane can't keep, and the pane already reads fine as
+                    // plain conversation without a mode label.
+                    if selectedReview != nil {
+                        perspectiveBar
+
+                        Rectangle()
+                            .fill(ConchPalette.divider)
+                            .frame(height: 1)
+                    }
+
+                    // The stack when the daemon has one FOR THIS SESSION, and
+                    // the old single-reply document otherwise. The session check
+                    // is not paranoia: the daemon publishes one conversation at
+                    // a time, so without it, focusing a second session would
+                    // show it the first one's messages under its own name.
+                    // Look up THIS row's conversation. The daemon publishes
+                    // one per visible session precisely so the app never has to
+                    // agree with it about which session is "showing" — the
+                    // terminal dashboard holds its own cursor, and every attempt
+                    // to reconcile them left the stack silently falling back.
+                    if let row = focusedRow,
+                       let conversation = state?.conversations?[row.id] ?? state?.conversation,
+                       !conversation.items.isEmpty,
+                       conversation.sessionId == row.id {
+                        ConversationStackView(
+                            conversation: conversation,
+                            onAnswer: { label in
+                                store.send(
+                                    .inject(
+                                        sessionId: row.id,
+                                        label: row.label,
+                                        text: label
+                                    )
+                                )
+                            },
+                            onFreeform: { composerFocusRequest += 1 }
+                        )
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        ConversationTextView(
+                            attributedText: document.text,
+                            scrollTarget: document.scrollTarget,
+                            contentID: document.contentID
+                        )
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+
+                    // Typing belongs where you are reading. Putting the composer
+                    // here rather than in a separate panel means the reply you
+                    // are answering is directly above the field you answer in.
+                    if let row = focusedRow {
+                        composer(for: row)
+                    }
                 }
             }
         }
@@ -1237,21 +1600,269 @@ private struct ConversationPane: View {
         .task(id: TranscriptWatchID(row: watchesTranscriptForRow)) {
             await transcriptContent.monitor(row: watchesTranscriptForRow)
         }
+        .onChange(of: selectedReview?.id) { _, current in
+            // Keyed off the review's IDENTITY (row + timestamp), not the
+            // published state: the daemon republishes constantly, and
+            // re-asserting the deliverable on every publish would fight any
+            // attempt to actually read the conversation.
+            if current != nil { showsConversation = false }
+        }
+        .onChange(of: state?.live.dictated?.id) { _, current in
+            // Spoken words land in the composer, added to whatever was typed.
+            // Keyed on the dictation's id for the same reason the review above
+            // is keyed on identity: the daemon republishes constantly, and
+            // anything keyed on the TEXT would re-append it every frame.
+            //
+            // Delivered to the session that ASKED, never to whatever is focused
+            // now. Transcription takes seconds; a person who starts dictating
+            // to one session and clicks another while it runs was addressing
+            // the first one, and putting the words in the second is worse than
+            // losing them.
+            guard let current, current != appliedDictationID,
+                  let dictated = state?.live.dictated
+            else { return }
+            appliedDictationID = current
+            composerDrafts.appendDictation(dictated.text, to: dictated.sessionId)
+        }
+        .alert(
+            "Close \(sessionPendingClose?.label ?? "session")?",
+            isPresented: Binding(
+                get: { sessionPendingClose != nil },
+                set: { if !$0 { sessionPendingClose = nil } }
+            )
+        ) {
+            Button("Cancel", role: .cancel) {
+                sessionPendingClose = nil
+            }
+            Button("Close Session", role: .destructive) {
+                guard let row = sessionPendingClose else { return }
+                sessionPendingClose = nil
+                store.closeSession(row)
+            }
+        } message: {
+            Text("conch will ask the agent to exit cleanly. Its transcript stays available to resume later.")
+        }
+        .sheet(item: $inspectingSession) { row in
+            CapabilityInspectorSheet(row: row) { inspectingSession = nil }
+        }
     }
 
-    @ViewBuilder
-    private var noteBar: some View {
-        if let note {
-            Text(note)
-                .font(ConchTypography.font(size: 10.5))
-                .foregroundStyle(ConchPalette.textFaint)
+    /// Close lives behind the least accidental control in the pane, while the
+    /// identity and context pressure remain visible without interaction.
+    private func sessionBar(for row: SessionRow) -> some View {
+        HStack(spacing: 8) {
+            Text(row.label)
+                .font(ConchTypography.font(size: 12.5, weight: .medium))
+                .foregroundStyle(ConchPalette.textPrimary)
                 .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16)
-                .frame(height: 32)
-                .accessibilityLabel(note)
+                .truncationMode(.middle)
+
+            AgentBadge(backend: row.backend)
+
+            Spacer(minLength: 8)
+
+            if let context = row.context, context.limitTokens > 0 {
+                SessionContextMeter(context: context)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+
+            Menu {
+                Button("What this session carries…") {
+                    inspectingSession = row
+                }
+                Divider()
+                Button("Close session…", role: .destructive) {
+                    sessionPendingClose = row
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(ConchPalette.textDim)
+                    .frame(width: 28, height: 26)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Session actions")
+            .accessibilityLabel("Actions for \(row.label)")
         }
+        .padding(.leading, 14)
+        .padding(.trailing, 8)
+        .frame(height: 36)
+        .background(ConchPalette.bg)
+    }
+
+    /// Two labelled segments rather than one button naming the destination.
+    /// Lone controls in this app keep getting read as their opposite (the
+    /// counterclockwise arrow as undo, the dim speaker as idle); a pair shows
+    /// where you are AND where you can go without decoding anything, which is
+    /// also what makes this read as two perspectives on one session rather
+    /// than navigation away from it — same pane, same composer underneath.
+    private var perspectiveBar: some View {
+        HStack(spacing: 2) {
+            PerspectiveOption(
+                label: "Deliverable",
+                symbol: "doc.richtext",
+                isSelected: !showsConversation,
+                help: "What the session produced",
+                action: { showsConversation = false }
+            )
+            PerspectiveOption(
+                label: "Conversation",
+                symbol: "text.bubble",
+                isSelected: showsConversation,
+                help: "The exchange that produced it",
+                action: { showsConversation = true }
+            )
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+    }
+
+    /// The composer, wherever you are.
+    ///
+    /// It used to exist only on the conversation pane, so opening an artifact
+    /// left you looking at work you could not respond to — no text field, no
+    /// mic, and no way back. That inverts the product: conch is meant to hand
+    /// you something and let you react to it. Tyler: "the user just gets
+    /// presented with artifacts and verbally or via writing reacts to them and
+    /// that's all".
+    @ViewBuilder
+    private func composer(for row: SessionRow) -> some View {
+        ComposerView(
+            sessionID: row.id,
+            sessionLabel: row.label,
+            draft: composerDrafts.textBinding(for: row.id),
+            attachments: composerDrafts.attachmentsBinding(for: row.id),
+            dictation: dictationForFocusedRow,
+            isWorking: row.status == .working,
+            voiceState: voiceStateForFocusedRow,
+            onSend: { text in
+                store.send(.inject(sessionId: row.id, label: row.label, text: text))
+            },
+            onInterrupt: {
+                store.send(.interrupt(sessionId: row.id, label: row.label))
+            },
+            onTalk: {
+                // The same button both ways. It showed a live waveform and
+                // still only ever OPENED the mic, so the one control that
+                // looks like it is running had no way to stop the thing it
+                // was showing — you had to find the spacebar, which a text
+                // field now swallows anyway.
+                if voiceStateForFocusedRow.isEmpty || voiceStateForFocusedRow == "idle" {
+                    // The mic BESIDE a text field fills that field. It used to
+                    // send the spoken half straight past the composer into the
+                    // session, so what you typed and what you said could not be
+                    // one message.
+                    store.send(.dictate(sessionId: row.id, label: row.label))
+                } else {
+                    store.send(.stop())
+                }
+            },
+            onRecite: {
+                store.send(.recite(sessionId: row.id, label: row.label))
+            },
+            onDraftStarted: {
+                // Selecting is what pins the pane: `focusedRow` prefers an
+                // explicit selection over the live session, so this is the
+                // existing mechanism rather than a new one.
+                onSelectSession(row)
+            },
+            focusRequest: composerFocusRequest
+        )
+        .onAppear {
+            composerDrafts.claimPreviewSeed(for: row.id)
+        }
+        .overlay(alignment: .top) {
+            noteOverlay.offset(y: -26)
+        }
+    }
+
+    /// The hint, floating over the conversation rather than under the composer.
+    ///
+    /// Reserving a row stopped the layout jumping but left a permanent empty
+    /// black bar — Tyler: "this jank black bar below the input box". Both
+    /// problems come from the same premise, that a transient hint deserves
+    /// permanent layout. It does not: it now sits ON the conversation's bottom
+    /// edge, so it costs no space when silent and displaces nothing when it
+    /// appears.
+    ///
+    /// The state it describes also has a home now — the mic button in the
+    /// composer changes shape and colour — so this line is a detail, not the
+    /// only signal.
+    private var noteOverlay: some View {
+        Group {
+            if let note {
+                Text(note)
+                    .font(ConchTypography.font(size: 10.5))
+                    .foregroundStyle(ConchPalette.textFaint)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(
+                        Capsule().fill(ConchPalette.raised.opacity(0.92))
+                    )
+                    .padding(.bottom, 6)
+                    .transition(.opacity)
+                    .accessibilityLabel(note)
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: note)
+    }
+
+    /// Kept for the review pane, which has no composer to hang a hint on. A
+    /// reserved row is right THERE, where nothing else moves; it was only wrong
+    /// under the composer, where it was a permanent empty bar.
+    private var noteBar: some View {
+        Text(note ?? " ")
+            .font(ConchTypography.font(size: 10.5))
+            .foregroundStyle(ConchPalette.textFaint)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .frame(height: 32)
+            .opacity(note == nil ? 0 : 1)
+            .animation(.easeOut(duration: 0.15), value: note)
+            .accessibilityHidden(note == nil)
+            .accessibilityLabel(note ?? "")
+    }
+}
+
+private struct PerspectiveOption: View {
+    let label: String
+    let symbol: String
+    let isSelected: Bool
+    let help: String
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .medium))
+                Text(label)
+                    .font(ConchTypography.font(size: 11, weight: .medium))
+            }
+            .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
+            .padding(.horizontal, 8)
+            .frame(height: 26)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isSelected ? ConchPalette.raised : (isHovered ? ConchPalette.hover : .clear))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(help)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }
 
@@ -1943,83 +2554,6 @@ private struct DaemonLogTextView: NSViewRepresentable {
     }
 }
 
-private struct DashboardKeybar: View {
-    let state: PublishedState?
-    let selectedSessionID: SessionRow.ID?
-    let isLogDrawerOpen: Bool
-    let actions: DashboardActions
-
-    private var selectedRow: SessionRow? {
-        guard let selectedSessionID else { return nil }
-        return state?.rows.first { $0.id == selectedSessionID }
-    }
-
-    // A long session label used to be spelled out in BOTH the pause and mute
-    // buttons — once middle-truncated, once not — consuming the whole bar with
-    // the same name twice. What the buttons target is already stated by the
-    // ledger highlight and the pane header, so "all" is the only qualifier that
-    // adds anything: it's the case where the scope is NOT what's highlighted.
-    private var talkLabel: String {
-        state?.live.isExchangeActive == true ? "Stop" : "Talk"
-    }
-
-    private var scopeSuffix: String {
-        selectedRow == nil ? " all" : ""
-    }
-
-    private var pauseLabel: String {
-        let paused = selectedRow?.paused ?? state?.mode.paused ?? false
-        return (paused ? "Resume" : "Pause") + scopeSuffix
-    }
-
-    private var muteLabel: String {
-        let muted = selectedRow?.muted ?? state?.mode.muted ?? false
-        return (muted ? "Unmute" : "Mute") + scopeSuffix
-    }
-
-    var body: some View {
-        HStack(spacing: 5) {
-            KeybarActionButton(
-                label: talkLabel,
-                // Prominence is a claim that this is the thing to do next. With
-                // no sessions there is nothing to talk to, so it stops shouting.
-                isProminent: !(state?.rows.isEmpty ?? true),
-                action: actions.onTalkOrStop
-            )
-            .disabled(state?.rows.isEmpty ?? true)
-            KeybarActionButton(
-                label: pauseLabel,
-                isDisabled: state?.rows.isEmpty ?? true,
-                action: actions.onPauseOrResume
-            )
-            KeybarActionButton(
-                label: muteLabel,
-                isDisabled: state?.rows.isEmpty ?? true,
-                action: actions.onMuteOrUnmute
-            )
-
-            Spacer(minLength: 0)
-
-            KeybarActionButton(
-                label: "Logs",
-                isSelected: isLogDrawerOpen,
-                action: actions.onToggleLogs
-            )
-            .accessibilityValue(isLogDrawerOpen ? "shown" : "hidden")
-
-            KeybarActionButton(
-                label: "?",
-                action: actions.onShowKeyboardShortcuts
-            )
-            .help("Keyboard Shortcuts")
-            .accessibilityLabel("Keyboard Shortcuts")
-        }
-        .padding(.horizontal, 10)
-        .frame(height: 47)
-        .background(ConchPalette.bg)
-    }
-}
-
 private struct KeybarActionButton: View {
     let label: String
     var isProminent = false
@@ -2140,3 +2674,116 @@ private func splitAtUTF16Offset(
     let boundary = stringIndex ?? text.startIndex
     return (String(text[..<boundary]), String(text[boundary...]))
 }
+
+/// "All sessions" — selected when nothing else is, and the way back when
+/// something is.
+private struct AllSessionsRow: View {
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onStart: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button(action: onSelect) {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.stack")
+                        .font(.system(size: 10.5))
+                        .frame(width: 14)
+                    Text("All sessions")
+                        .font(ConchTypography.font(size: 12.5, weight: .medium))
+                    Spacer(minLength: 8)
+                }
+                .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Act on every session — pause and mode apply to all")
+
+            // A plus where the count was.
+            //
+            // The count restated something the list already shows by being a
+            // list. This is the one thing you would reach for at the top of a
+            // session list and could not do from here — and it sits where the
+            // sessions are, not in the app's chrome beside settings and logs,
+            // because starting one acts on the LIST.
+            Button(action: onStart) {
+                Image(systemName: "plus")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .frame(width: 22, height: 22)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(isHovered ? ConchPalette.hover : .clear)
+                    )
+                    .foregroundStyle(isHovered ? ConchPalette.textPrimary : ConchPalette.textFaint)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { isHovered = $0 }
+            .help("Start a Claude or Codex session, new or resumed")
+            .accessibilityLabel("New session")
+        }
+        .padding(.leading, 12)
+        // 7, not 12, so the plus lands on the same vertical line as the status
+        // glyphs below it: those sit in a 16pt frame with 10pt of trailing
+        // padding, putting their centres 18pt in. An 22pt chip needs 7 to
+        // match. Two things in a column that are ALMOST aligned read as a
+        // mistake in a way that being obviously apart does not.
+        .padding(.trailing, 7)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 7)
+                .fill(isSelected ? ConchPalette.raised : .clear)
+        )
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// Auto ⇄ manual. Named for what conch is doing, not for what the button does.
+private struct ModeToggle: View {
+    let isManual: Bool
+    let scope: String
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    private var help: String {
+        return isManual
+            ? "Manual — conch stays quiet and waits. Switch \(scope) to auto."
+            : "Auto — finished turns read aloud and the mic opens itself. Switch \(scope) to manual."
+    }
+
+    private var symbol: String {
+        return isManual ? "hand.raised.fill" : "waveform.circle.fill"
+    }
+
+    private var tint: Color {
+        return isManual ? ConchPalette.textDim : ConchPalette.brandCyan
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: symbol)
+                    .font(.system(size: 11, weight: .medium))
+                Text(isManual ? "Manual" : "Auto")
+                    .font(ConchTypography.font(size: 11, weight: .medium))
+            }
+            .foregroundStyle(tint)
+            .padding(.horizontal, 8)
+            .frame(height: 26)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isHovered ? ConchPalette.hover : .clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}
+

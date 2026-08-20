@@ -31,6 +31,7 @@ import {
   TheaterSelection,
   type SelectionDocumentLine,
 } from "./theater-selection.ts";
+import { answerableTerminalQuestion } from "./terminal-question.ts";
 
 export type ConchState = PanelConchState;
 export type LiveState = PanelLiveState;
@@ -102,9 +103,9 @@ export function logsShown(): boolean {
 }
 
 const GLYPHS: Record<ConchState, string> = {
-  idle: "\x1b[2m◌ idle · space=wake m=mute p=pause ?=help\x1b[0m",
-  muted: "\x1b[33m◌ muted\x1b[0m\x1b[2m · m to unmute\x1b[0m",
-  paused: "\x1b[35m⏸ paused (away)\x1b[0m\x1b[2m · p or `conch resume` — holding your queue\x1b[0m",
+  idle: "\x1b[2m◌ idle · space=wake p=auto/manual ?=help\x1b[0m",
+  muted: "\x1b[35m⏸ manual\x1b[0m\x1b[2m · p or `conch resume` — holding your queue\x1b[0m",
+  paused: "\x1b[35m⏸ manual\x1b[0m\x1b[2m · p or `conch resume` — holding your queue\x1b[0m",
   speaking: "\x1b[33m▶ speaking\x1b[0m",
   listening: "\x1b[32m● mic open\x1b[0m",
   recording: "\x1b[31m● recording\x1b[0m",
@@ -343,7 +344,7 @@ const THEATER_STATUS_ICON: Record<string, string> = {
   working: "\x1b[36m●\x1b[39m",
   idle: "\x1b[2m·\x1b[22m",
   paused: "\x1b[2m⏸\x1b[22m",
-  muted: "\x1b[2m🔇\x1b[22m",
+  muted: "\x1b[2m⏸\x1b[22m",
 };
 
 const THEATER_STATUS_COPY = {
@@ -375,14 +376,13 @@ export function theaterStatusHeader(model: PanelModel): string {
       parts.push(`${THEATER_STATUS_ICON.review}${reviewCount} to look at`);
     }
   }
-  const liveStateIsMuted = model.live.state === "muted";
-  const liveStateIsPaused = model.live.state === "paused";
-  if (model.mode.muted || liveStateIsMuted) parts.push("muted");
-  if (model.mode.paused || liveStateIsPaused) parts.push("paused");
+  // Old published-state readers still accept the field, but both legacy states
+  // now mean the same lossless manual mode.
+  const liveStateIsPaused = model.live.state === "paused" || model.live.state === "muted";
+  if (model.mode.muted || model.mode.paused || liveStateIsPaused) parts.push("manual");
   if (model.mode.holding > 0) parts.push(`holding ${model.mode.holding}`);
   if (
     model.live.state !== "idle"
-    && !liveStateIsMuted
     && !liveStateIsPaused
   ) {
     parts.push(
@@ -407,8 +407,7 @@ export function relativeAge(at: number, now: number): string {
 }
 
 function rowState(row: PanelRowModel): string {
-  if (row.muted) return "muted";
-  if (row.paused) return "paused";
+  if (row.muted || row.paused) return "paused";
   if (row.review) return "review";
   // The top line owns conch's live activity; the ledger keeps each session's
   // underlying status so speaking/recording is never announced twice.
@@ -416,8 +415,7 @@ function rowState(row: PanelRowModel): string {
 }
 
 function fullStatus(row: PanelRowModel): string {
-  if (row.muted) return "\x1b[2m🔇 muted\x1b[22m";
-  if (row.paused) return "\x1b[2m⏸ paused\x1b[22m";
+  if (row.muted || row.paused) return "\x1b[2m⏸ manual\x1b[22m";
   if (row.review) return "\x1b[33m⭐ needs review\x1b[39m";
   switch (row.status) {
     case "needs": return "\x1b[33m❗ needs a response\x1b[39m";
@@ -458,18 +456,21 @@ function compactLedgerLeft(
   lead: string,
 ): string {
   const icon = THEATER_STATUS_ICON[rowState(row)] ?? THEATER_STATUS_ICON.idle!;
+  const identity = `${terminalAgentMark(row)} ${row.label}`;
+  const context = terminalContext(row);
+  const status = context ? `${icon} ${context}` : icon;
   const detail = inlineRowDetail(row);
   const leadWidth = visibleLength(lead);
-  const iconWidth = visibleLength(icon);
+  const statusWidth = visibleLength(status);
   if (!detail) {
-    const labelWidth = Math.max(1, width - leadWidth - iconWidth - 1);
-    return `${lead}${padVisible(row.label, labelWidth)} ${icon}`;
+    const labelWidth = Math.max(1, width - leadWidth - statusWidth - 1);
+    return `${lead}${padVisible(identity, labelWidth)} ${status}`;
   }
 
-  const fieldsWidth = Math.max(2, width - leadWidth - iconWidth - 2);
+  const fieldsWidth = Math.max(2, width - leadWidth - statusWidth - 2);
   const labelWidth = Math.max(1, Math.min(12, Math.floor(fieldsWidth / 2)));
   const detailWidth = Math.max(1, fieldsWidth - labelWidth);
-  return `${lead}${padVisible(row.label, labelWidth)} ${icon} ${fitTheaterLine(detail, detailWidth)}`;
+  return `${lead}${padVisible(identity, labelWidth)} ${status} ${fitTheaterLine(detail, detailWidth)}`;
 }
 
 function fullLedgerLeft(
@@ -478,14 +479,33 @@ function fullLedgerLeft(
   lead: string,
 ): string {
   const status = fullStatus(row);
+  const identity = `${terminalAgentMark(row)} ${row.label}`;
+  const context = terminalContext(row);
+  const statusAndContext = context ? `${status} ${context}` : status;
   const detail = inlineRowDetail(row);
   const labelWidth = Math.max(
     1,
-    Math.min(30, width - visibleLength(lead) - visibleLength(status) - 2),
+    Math.min(30, width - visibleLength(lead) - visibleLength(statusAndContext) - 2),
   );
-  return `${lead}${padVisible(row.label, labelWidth)} ${status}${
+  return `${lead}${padVisible(identity, labelWidth)} ${statusAndContext}${
     detail ? ` \x1b[2m(${detail})\x1b[22m` : ""
   }`;
+}
+
+/** Plain-terminal equivalents of the two app badges: C = Claude, X = Codex. */
+function terminalAgentMark(row: Pick<PanelRowModel, "backend">): string {
+  return `\x1b[2m${row.backend === "codex" ? "X" : "C"}\x1b[22m`;
+}
+
+/** Context is a number on every surface; unknown stays absent rather than becoming 0%. */
+function terminalContext(row: Pick<PanelRowModel, "context">): string {
+  const context = row.context;
+  if (!context || context.limitTokens <= 0) return "";
+  const fraction = Math.max(0, Math.min(1, context.usedTokens / context.limitTokens));
+  const text = `${Math.round(fraction * 100)}%`;
+  if (fraction >= 0.97) return `\x1b[91m${text}\x1b[39m`;
+  if (fraction >= 0.85) return `\x1b[33m${text}\x1b[39m`;
+  return `\x1b[2m${text}\x1b[22m`;
 }
 
 function theaterLedgerRow(
@@ -665,6 +685,46 @@ function theaterContentLines(
     );
   }
 
+  const terminalQuestion = answerableTerminalQuestion(model);
+  if (terminalQuestion) {
+    const questionState = model.terminalQuestion?.sessionId === terminalQuestion.sessionId
+      && model.terminalQuestion.itemId === terminalQuestion.itemId
+      ? model.terminalQuestion
+      : null;
+    const selected = new Set(questionState?.selectedIndices ?? []);
+    const asked = terminalQuestion.question;
+    const sourceLines = [
+      ...(asked.header ? [asked.header] : []),
+      asked.question,
+      ...asked.options.flatMap((option, index) => {
+        const marker = asked.multiSelect
+          ? `[${selected.has(index) ? "x" : " "}] ${index + 1}.`
+          : `${index + 1}.`;
+        return [
+          `${marker} ${option.label}`,
+          ...(option.description ? [`   ${option.description}`] : []),
+        ];
+      }),
+    ];
+    const doc = sourceLines.flatMap((line) =>
+      wrapPlainText(plainTheaterDocumentText(line), width).map(({ text }) => ({ text }))
+    );
+    const note = questionState?.submitted
+      ? "answer sent · waiting for the session"
+      : asked.multiSelect
+        ? "1-9 toggle · enter submit · esc clear"
+        : "1-9 answer";
+    return scrollableTheaterContent(
+      doc,
+      `question:${terminalQuestion.sessionId}:${terminalQuestion.itemId}:${terminalQuestion.rev}`,
+      width,
+      height,
+      paneOffset,
+      selection,
+      { note },
+    );
+  }
+
   const state = model.live.state;
   const selectedRow = model.rows.find((row) => row.navSelected);
   if (selectedRow) {
@@ -697,7 +757,7 @@ function theaterContentLines(
   const note = state === "speaking"
     ? "space to cut in · the mic opens when it finishes"
     : capturing
-      ? "pause to send · space to stop · say send to submit now"
+      ? "stop talking to send · space to cancel · say send to submit now"
       : "";
 
   if (capturing || transcribing) {
@@ -892,6 +952,119 @@ function theaterSessionActionsOverlay(
   return output.slice(0, height);
 }
 
+function theaterRestoreSessionsOverlay(
+  base: string[],
+  overlay: NonNullable<PanelModel["restoreSessionsOverlay"]>,
+  width: number,
+  height: number,
+): string[] {
+  if (width < 12 || height < 4) {
+    const compact = [...base];
+    while (compact.length < height) compact.push("");
+    if (height) compact[Math.floor(height / 2)] = " restore · esc close";
+    return compact.slice(0, height);
+  }
+  const output = [...base];
+  while (output.length < height) output.push("");
+  const boxWidth = Math.max(12, Math.min(width - 2, 72));
+  const innerWidth = boxWidth - 2;
+  const errorRows = overlay.error && height >= 6 ? 1 : 0;
+  const visibleCount = Math.max(1, Math.min(overlay.rows.length, height - 3 - errorRows));
+  const start = Math.max(0, Math.min(
+    Math.max(0, overlay.rows.length - visibleCount),
+    overlay.selectedIndex - Math.floor(visibleCount / 2),
+  ));
+  const lines = [
+    `\x1b[2m╭${"─".repeat(innerWidth)}╮\x1b[0m`,
+    `\x1b[2m│\x1b[0m${padVisible(" restore dismissed session · ↑↓ choose · enter restore · esc close", innerWidth)}\x1b[2m│\x1b[0m`,
+  ];
+  for (const row of overlay.rows.slice(start, start + visibleCount)) {
+    const fitted = padVisible(`${row.selected ? "›" : " "} ${row.label}`, innerWidth);
+    const styled = row.selected
+      ? `\x1b[38;2;88;201;212m\x1b[48;2;28;32;36m${fitted}\x1b[0m`
+      : fitted;
+    lines.push(`\x1b[2m│\x1b[0m${styled}\x1b[2m│\x1b[0m`);
+  }
+  if (errorRows) lines.push(`\x1b[2m│\x1b[0m${padVisible(` ${overlay.error}`, innerWidth)}\x1b[2m│\x1b[0m`);
+  lines.push(`\x1b[2m╰${"─".repeat(innerWidth)}╯\x1b[0m`);
+  const top = Math.max(0, Math.floor((height - lines.length) / 2));
+  const left = " ".repeat(Math.max(0, Math.floor((width - boxWidth) / 2)));
+  for (let index = 0; index < lines.length && top + index < height; index++) {
+    output[top + index] = left + lines[index]!;
+  }
+  return output.slice(0, height);
+}
+
+function theaterSessionStartOverlay(
+  base: string[],
+  overlay: NonNullable<PanelModel["sessionStartOverlay"]>,
+  width: number,
+  height: number,
+): string[] {
+  if (width < 12 || height < 4) {
+    const compact = [...base];
+    while (compact.length < height) compact.push("");
+    if (height) compact[Math.floor(height / 2)] = " new session · esc close";
+    return compact.slice(0, height);
+  }
+  const output = [...base];
+  while (output.length < height) output.push("");
+  const boxWidth = Math.max(12, Math.min(width - 2, 88));
+  const innerWidth = boxWidth - 2;
+  const lines = [
+    `\x1b[2m╭${"─".repeat(innerWidth)}╮\x1b[0m`,
+    `\x1b[2m│\x1b[0m${padVisible(" new fresh session · ↑↓ choose · enter edit/start · esc close", innerWidth)}\x1b[2m│\x1b[0m`,
+  ];
+  for (const row of overlay.rows) {
+    const cursor = row.selected ? "›" : " ";
+    const value = `${row.value}${row.editing ? "▌" : ""}`;
+    const fitted = padVisible(`${cursor} ${row.key.padEnd(8)} · ${value} · \x1b[2m${row.help}\x1b[22m`, innerWidth);
+    const styled = row.selected
+      ? `\x1b[38;2;88;201;212m\x1b[48;2;28;32;36m${fitted}\x1b[0m`
+      : fitted;
+    lines.push(`\x1b[2m│\x1b[0m${styled}\x1b[2m│\x1b[0m`);
+  }
+  if (overlay.error) {
+    lines.push(`\x1b[2m│\x1b[0m${padVisible(` ${overlay.error}`, innerWidth)}\x1b[2m│\x1b[0m`);
+  }
+  lines.push(`\x1b[2m╰${"─".repeat(innerWidth)}╯\x1b[0m`);
+  const top = Math.max(0, Math.floor((height - lines.length) / 2));
+  const left = " ".repeat(Math.max(0, Math.floor((width - boxWidth) / 2)));
+  for (let index = 0; index < lines.length && top + index < height; index++) {
+    output[top + index] = left + lines[index]!;
+  }
+  return output.slice(0, height);
+}
+
+/** A bottom prompt line, not a full-screen editor: the terminal's honest composer. */
+function theaterComposerOverlay(
+  base: string[],
+  composer: NonNullable<PanelModel["terminalComposer"]>,
+  live: PanelLiveState,
+  width: number,
+  height: number,
+): string[] {
+  const output = [...base];
+  while (output.length < height) output.push("");
+  if (height <= 1) {
+    if (height) output[0] = fitTheaterLine(`> ${composer.text}▌`, width);
+    return output.slice(0, height);
+  }
+  const partial = live.label === composer.target.label ? live.partial : "";
+  const composed = `${composer.text}${composer.text && partial ? " " : ""}${partial}`;
+  const lines = [
+    `\x1b[2m${"─".repeat(Math.max(1, width))}\x1b[0m`,
+    `\x1b[2mprompt → ${composer.target.label} · ctrl-t dictate · enter send · esc cancel\x1b[0m`,
+    `\x1b[38;2;88;201;212m>\x1b[39m ${composed}▌`,
+    ...(composer.error ? [`\x1b[91m${composer.error}\x1b[39m`] : []),
+  ];
+  const start = Math.max(0, height - lines.length);
+  for (let index = 0; index < lines.length && start + index < height; index++) {
+    output[start + index] = fitTheaterLine(lines[index]!, width);
+  }
+  return output.slice(0, height);
+}
+
 /** Full-frame alternate-screen renderer. Its tests assert invariants, not pixels. */
 export function createTheaterRenderer(
   io: RendererIO = processRendererIO(),
@@ -926,7 +1099,13 @@ export function createTheaterRenderer(
     const rows = Math.max(1, io.rows());
     const frameWidth = Math.max(1, columns - 1); // never arm the terminal's wrap column
     const frame: string[] = [];
-    const overlayOpen = Boolean(model?.settingsOverlay || model?.sessionActionsOverlay);
+    const overlayOpen = Boolean(
+      model?.settingsOverlay
+      || model?.sessionActionsOverlay
+      || model?.restoreSessionsOverlay
+      || model?.sessionStartOverlay
+      || model?.terminalComposer
+    );
     // Forced logs/help must remain visible on narrow terminals; below the normal
     // split threshold they temporarily own the body, like a narrow modal.
     const contentOnly = (overlayOpen && columns < 36) || (logsVisible && columns < 52);
@@ -999,6 +1178,28 @@ export function createTheaterRenderer(
         contentWidth,
         bodyHeight,
       );
+    } else if (model?.restoreSessionsOverlay && paneOpen) {
+      content = theaterRestoreSessionsOverlay(
+        content,
+        model.restoreSessionsOverlay,
+        contentWidth,
+        bodyHeight,
+      );
+    } else if (model?.sessionStartOverlay && paneOpen) {
+      content = theaterSessionStartOverlay(
+        content,
+        model.sessionStartOverlay,
+        contentWidth,
+        bodyHeight,
+      );
+    } else if (model?.terminalComposer && paneOpen) {
+      content = theaterComposerOverlay(
+        content,
+        model.terminalComposer,
+        model.live,
+        contentWidth,
+        bodyHeight,
+      );
     }
     const allLedgerRows = model?.rows ?? [];
     const navFocus = allLedgerRows.findIndex((row) => row.navSelected);
@@ -1032,6 +1233,12 @@ export function createTheaterRenderer(
           ? "  \x1b[2msettings · esc close · ↑↓ choose · ←→ adjust · space toggle · enter commit\x1b[0m"
           : model?.sessionActionsOverlay
             ? "  \x1b[2mactions · esc close · ↑↓ choose · ←→ adjust · enter select\x1b[0m"
+            : model?.restoreSessionsOverlay
+              ? "  \x1b[2mrestore · esc close · ↑↓ choose · enter restore\x1b[0m"
+            : model?.sessionStartOverlay
+              ? "  \x1b[2mnew session · esc close · ↑↓ choose · ←→ agent · enter edit/start\x1b[0m"
+            : model?.terminalComposer
+              ? "  \x1b[2mprompt line · ctrl-t dictate · enter send · backspace edit · esc cancel\x1b[0m"
             : keybar,
       );
     }
@@ -1201,16 +1408,16 @@ export function createTheaterRenderer(
 }
 
 export interface RendererSelection {
-  kind: "footer" | "theater";
+  kind: "footer" | "theater" | "headless";
   renderer: Renderer;
 }
 
-/** Only the full terminal dashboard owns interactive daemon controls. */
+/** Every rendered keybar owns input; headless daemons have nothing to dispatch. */
 export function shouldDispatchTerminalInput(
   rendererKind: RendererSelection["kind"],
   stdinTTY = process.stdin.isTTY ?? false,
 ): boolean {
-  return rendererKind === "theater" && stdinTTY;
+  return rendererKind !== "headless" && stdinTTY;
 }
 
 let activeRenderer: Renderer = createFooterRenderer();
@@ -1225,14 +1432,102 @@ export function shouldUseTheater(
   return stdoutTTY && stdinTTY && env.CONCH_TUI !== "footer";
 }
 
+/**
+ * A renderer that draws nothing, for a daemon with no one watching.
+ *
+ * The daemon is a server that happens to be able to draw a dashboard, and the
+ * drawing is the part that can wedge it. Painting a full frame into a terminal
+ * whose reader has gone away blocks in the kernel — the process sits in `Us+`
+ * inside write(2) with the socket accept loop stuck behind it, so every phone
+ * request times out as "couldn't reach your Mac" while the daemon looks alive
+ * in `ps`. That is not a hypothetical: it is what cost most of one day's
+ * debugging, and it is why the daemon is currently running unmanaged instead of
+ * under launchd.
+ *
+ * Nothing about serving sessions needs a frame buffer, so when no one can see
+ * the output we skip drawing entirely rather than trying to make the write
+ * safe. Logs still go to LOG_FILE, which is where a headless daemon's history
+ * belongs anyway.
+ */
+function createHeadlessRenderer(): Renderer {
+  return {
+    panel: () => {},
+    live: () => {},
+    keybar: () => {},
+    log: () => {},
+    resize: () => {},
+    enter: () => {},
+    shutdown: () => {},
+  };
+}
+
+/**
+ * Is anyone actually looking at this terminal?
+ *
+ * A tmux pane stays a TTY after its client detaches, so `isTTY` alone says
+ * nothing about whether a human can see the output — and a detached pane is
+ * exactly the surface that blocks. tmux knows the answer, so ask it, but cache
+ * the answer: renders are driven by turn events rather than a frame clock, so a
+ * few seconds of staleness costs nothing and one subprocess per frame would.
+ */
+let attachedCheckedAt = 0;
+let attachedCached = true;
+const ATTACH_TTL_MS = 3000;
+export function terminalIsWatched(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  now: number = Date.now(),
+): boolean {
+  if (!env.TMUX) return true; // a plain terminal is watched or it is gone
+  if (now - attachedCheckedAt < ATTACH_TTL_MS) return attachedCached;
+  attachedCheckedAt = now;
+  try {
+    const out = Bun.spawnSync(["tmux", "display-message", "-p", "#{session_attached}"], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    // Trust the pane on any doubt: a failed probe must not blank a live TUI.
+    attachedCached = out.exitCode !== 0 || Number(out.stdout.toString().trim() || "1") > 0;
+  } catch {
+    attachedCached = true;
+  }
+  return attachedCached;
+}
+
 /** Select once at daemon startup; importing status.ts never enters alt-screen. */
 export function configureRenderer(
   env: Readonly<Record<string, string | undefined>> = process.env,
   io: RendererIO = processRendererIO(),
 ): RendererSelection {
+  // No TTY at all — launchd, a pipe, a log file — means no dashboard to draw.
+  // This is the daemon's real deployment shape, and the reason it can go back
+  // under launchd and survive a reboot.
+  if (!io.stdoutTTY || env.CONCH_HEADLESS === "1") {
+    activeRendererKind = "headless";
+    activeRenderer = createHeadlessRenderer();
+    return { kind: activeRendererKind, renderer: activeRenderer };
+  }
   const theater = shouldUseTheater(env, io.stdoutTTY, io.stdinTTY);
   activeRendererKind = theater ? "theater" : "footer";
-  activeRenderer = theater ? createTheaterRenderer(io, env) : createFooterRenderer(io);
+  const drawn = theater ? createTheaterRenderer(io, env) : createFooterRenderer(io);
+  const blank = createHeadlessRenderer();
+  // A detached tmux pane is a TTY with no reader, so route every draw through
+  // the attachment check and fall back to drawing nothing while it is away.
+  const visible = () => (terminalIsWatched(env) ? drawn : blank);
+  activeRenderer = {
+    panel: (m) => visible().panel(m),
+    live: (s) => visible().live(s),
+    keybar: (l) => visible().keybar(l),
+    log: (l) => visible().log(l),
+    // Lifecycle and interaction always reach the real renderer: they are rare,
+    // and skipping `enter` while detached would leave a reattached client
+    // looking at a half-built screen.
+    resize: () => drawn.resize(),
+    enter: () => drawn.enter(),
+    shutdown: () => drawn.shutdown(),
+    scrollPane: drawn.scrollPane?.bind(drawn),
+    pointerEvent: drawn.pointerEvent?.bind(drawn),
+    clearSelection: drawn.clearSelection?.bind(drawn),
+  };
   return { kind: activeRendererKind, renderer: activeRenderer };
 }
 
@@ -1377,6 +1672,29 @@ export function setTranscriptPrefix(prefix: string): void {
   onLiveData?.();
 }
 
+/**
+ * Hand a finished dictation to the apps instead of the session.
+ *
+ * Sticky, and never cleared. `setState` rebuilds the live model on every
+ * transition, so anything not explicitly carried forward vanishes on the next
+ * frame — and this has to outlive several: the daemon publishes at a few hertz
+ * and the app applies it whenever it next reads state.
+ *
+ * The id is what makes that safe. An app that appended on sight of text would
+ * append it again on every republish; it applies an id it has not seen yet and
+ * ignores every frame after.
+ */
+export function publishDictation(text: string, sessionId: string): void {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  live = {
+    ...live,
+    dictated: { text: trimmed, id: (live.dictated?.id ?? 0) + 1, sessionId },
+  };
+  activeRenderer.live(live);
+  onLiveData?.();
+}
+
 export function setState(state: ConchState, label = "", partial = ""): void {
   // Full panel reconstruction is transition-only; onLiveData below still sees
   // every meaningful same-state partial update.
@@ -1389,6 +1707,9 @@ export function setState(state: ConchState, label = "", partial = ""): void {
     partial,
     ...(transcriptPrefix !== undefined ? { transcriptPrefix } : {}),
     ...(reading ? { reading } : {}),
+    // Carried forward deliberately: a dictation the app has not applied yet
+    // must survive the state transitions that follow it.
+    ...(live.dictated ? { dictated: live.dictated } : {}),
   };
   const dataChanged = !sameLiveData(live, next);
   live = next;

@@ -12,6 +12,11 @@ import {
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
+import {
+  isAgentCapabilitiesRead,
+  type AgentCapabilitiesRead,
+} from "./agent-capabilities.ts";
+import type { ResumableSession } from "./resumable.ts";
 import { normalizeSessionLabel } from "./sessions.ts";
 import { isValidVoiceName } from "./speak.ts";
 
@@ -28,8 +33,10 @@ export const SETTING_KEYS = [
   "barge-threshold",
   "voice-speed",
   "keystroke-fallback",
+  "bypass-permissions",
   "phone",
   "phone-port",
+  "phone-relay-url",
   "read-full",
   "interrupt-on-manual-reply",
   "handoff-order",
@@ -37,7 +44,6 @@ export const SETTING_KEYS = [
   "reveal-typing-grace",
   "working-mic",
   "voice-qa",
-  "resume-digest",
   "announce-summary",
   "haiku-timeout",
   "meeting-autopause",
@@ -48,6 +54,7 @@ export const SETTING_KEYS = [
 
 export type SettingKey = typeof SETTING_KEYS[number];
 export type SettingField =
+  | "bypassPermissions"
   | "endSilenceSecs"
   | "micGainDb"
   | "holdSubmitSecs"
@@ -59,6 +66,7 @@ export type SettingField =
   | "keystrokeFallback"
   | "phoneEnabled"
   | "phonePort"
+  | "phoneRelayURL"
   | "readFull"
   | "interruptOnManualReply"
   | "handoffOrder"
@@ -66,7 +74,6 @@ export type SettingField =
   | "revealTypingGraceSecs"
   | "workingMic"
   | "voiceQa"
-  | "resumeDigest"
   | "announceSummary"
   | "haikuTimeoutSecs"
   | "meetingAutopause"
@@ -74,7 +81,7 @@ export type SettingField =
   | "speakMaxChars"
   | "sayRate";
 export type HandoffOrder = "newest" | "oldest" | "urgency";
-export type SettingValue = number | boolean | HandoffOrder;
+export type SettingValue = number | boolean | string;
 export type SettingApply = "live" | "hook";
 export type SettingSource = "env" | "file" | "default";
 
@@ -92,7 +99,7 @@ export interface SettingDescriptor {
   key: SettingKey;
   field: SettingField;
   env: string;
-  kind: "number" | "integer" | "boolean" | "enum";
+  kind: "number" | "integer" | "boolean" | "enum" | "string";
   default: SettingValue;
   parse(raw: unknown): ParseResult<SettingValue>;
   bounds: SettingBounds | null;
@@ -119,6 +126,22 @@ function parseHandoffOrder(raw: unknown): ParseResult<HandoffOrder> {
     }
   }
   return { ok: false, err: "expected newest, oldest, or urgency" };
+}
+
+function parseRelayURL(raw: unknown): ParseResult<string> {
+  if (typeof raw !== "string") return { ok: false, err: "expected an https or wss URL" };
+  const value = raw.trim();
+  if (!value) return { ok: true, value: "" };
+  try {
+    const url = new URL(value);
+    if ((url.protocol !== "https:" && url.protocol !== "wss:")
+      || !url.hostname || url.username || url.password || url.hash || url.search) {
+      return { ok: false, err: "expected an https or wss URL without credentials, query, or fragment" };
+    }
+    return { ok: true, value };
+  } catch {
+    return { ok: false, err: "expected an https or wss URL" };
+  }
 }
 
 function numberParser(bounds: SettingBounds, description: string): (raw: unknown) => ParseResult<number> {
@@ -229,6 +252,21 @@ export const SETTING_DESCRIPTORS = [
     help: "Kokoro/voice synthesis speed",
   },
   {
+    key: "bypass-permissions",
+    field: "bypassPermissions",
+    env: "CONCH_BYPASS_PERMISSIONS",
+    kind: "boolean",
+    // Off, and it ships off. conch starts sessions on someone else's machine
+    // from a list they can scroll; a tool that quietly removes every
+    // confirmation from those sessions is not a default anyone should inherit.
+    // Turning it on has to be a thing you did.
+    default: false,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "start sessions with all permission prompts skipped (claude --dangerously-skip-permissions, codex --dangerously-bypass-approvals-and-sandbox)",
+  },
+  {
     key: "keystroke-fallback",
     field: "keystrokeFallback",
     env: "CONCH_KEYSTROKE_FALLBACK",
@@ -277,6 +315,17 @@ export const SETTING_DESCRIPTORS = [
     bounds: positive,
     apply: "live",
     help: "port the phone bridge listens on",
+  },
+  {
+    key: "phone-relay-url",
+    field: "phoneRelayURL",
+    env: "CONCH_PHONE_RELAY_URL",
+    kind: "string",
+    default: "",
+    parse: parseRelayURL,
+    bounds: null,
+    apply: "live",
+    help: "deployed relay Worker URL; empty disables internet relay while LAN pairing stays available",
   },
   {
     key: "read-full",
@@ -357,17 +406,6 @@ export const SETTING_DESCRIPTORS = [
     help: "answer conch-prefixed questions from the current session without injecting them",
   },
   {
-    key: "resume-digest",
-    field: "resumeDigest",
-    env: "CONCH_RESUME_DIGEST",
-    kind: "boolean",
-    default: false,
-    parse: parseBoolean,
-    bounds: null,
-    apply: "live",
-    help: "on resume, speak one composed briefing instead of replaying each held turn",
-  },
-  {
     key: "announce-summary",
     field: "announceSummary",
     env: "CONCH_ANNOUNCE_SUMMARY",
@@ -387,7 +425,7 @@ export const SETTING_DESCRIPTORS = [
     parse: numberParser(haikuTimeout, "a number from 1 to 60"),
     bounds: haikuTimeout,
     apply: "live",
-    help: "seconds the fast model (Haiku) may take for a spoken summary, voice answer, or resume briefing before falling back",
+    help: "seconds the fast model (Haiku) may take for a spoken summary or voice answer before falling back",
   },
   {
     key: "meeting-autopause",
@@ -685,7 +723,33 @@ export type SessionControlMessage =
   | { kind: "session-command"; sessionId: string; command: "dismiss" }
   | { kind: "session-command"; sessionId: string; command: "restore" };
 
+export type RuntimeControlMessage =
+  | { kind: "resumable"; query?: string; limit?: number }
+  | {
+    kind: "agent-capabilities";
+    backend: "claude" | "codex";
+    cwd: string;
+    sessionId?: string;
+  }
+  | {
+    kind: "session-start";
+    backend: "claude" | "codex";
+    resumeSessionId?: string;
+    /** Optional because a phone has no meaningful Mac filesystem picker. */
+    cwd?: string;
+  }
+  | { kind: "session-close"; sessionId: string }
+  | {
+    kind: "app-error";
+    source: "ios" | "mac";
+    operation: string;
+    message: string;
+    sessionId?: string;
+    state: Record<string, unknown>;
+  };
+
 export type ControlMessage = ConfigControlMessage | SessionControlMessage;
+export type AnyControlMessage = ControlMessage | RuntimeControlMessage;
 
 export interface ConfigSnapshotEntry extends SettingResolution {
   kind: SettingDescriptor["kind"];
@@ -736,7 +800,41 @@ export type SessionAck = {
 };
 
 export type SessionError = { kind: "session-error"; error: string };
-export type SessionControlResponse = SessionAck | SessionError;
+/// The daemon's answer to `open-pairing`.
+///
+/// This was missing from the response union, so every reply to `conch pair`
+/// failed validation and surfaced as "couldn't open a pairing window — is the
+/// daemon running?" while the daemon was running perfectly and answering
+/// correctly. The workaround was handing over the raw 32-char token by hand,
+/// which is why pairing felt like typing a hash.
+export interface PairingOpen {
+  kind: "pairing-open";
+  code: string;
+  expiresAt: number;
+  port: number;
+  relay?: {
+    version: 1;
+    endpoint: string;
+    roomId: string;
+    secret: string;
+    createdAt: number;
+  };
+}
+
+export type RuntimeControlResponse =
+  | { kind: "resumable"; sessions: ResumableSession[]; complete: boolean }
+  | { kind: "agent-capabilities"; inventory: AgentCapabilitiesRead }
+  | {
+    kind: "session-started";
+    backend: "claude" | "codex";
+    resumed: boolean;
+    /** The terminal will ask you to trust this folder before the agent starts. */
+    awaitingTrust?: boolean;
+  }
+  | { kind: "session-closed"; sessionId: string }
+  | { kind: "app-error-ack" };
+
+export type SessionControlResponse = SessionAck | SessionError | PairingOpen | RuntimeControlResponse;
 export type ControlResponse = ConfigControlResponse | SessionControlResponse;
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -744,7 +842,8 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 
 function validSettingKind(value: unknown): value is SettingDescriptor["kind"] {
-  return value === "number" || value === "integer" || value === "boolean" || value === "enum";
+  return value === "number" || value === "integer" || value === "boolean"
+    || value === "enum" || value === "string";
 }
 
 function validateSnapshotBounds(value: unknown): ParseResult<SettingBounds | null> {
@@ -777,11 +876,19 @@ export function isControlMessageCandidate(value: unknown): boolean {
   return value.kind === "set-config"
     || value.kind === "get-config"
     || value.kind === "unset-config"
-    || value.kind === "session-command";
+    || value.kind === "session-command"
+    || value.kind === "resumable"
+    || value.kind === "agent-capabilities"
+    || value.kind === "session-start"
+    || value.kind === "session-close"
+    || value.kind === "app-error";
 }
 
 const MAX_SESSION_ID_LENGTH = 256;
 const MAX_SESSION_LABEL_INPUT_LENGTH = 4_096;
+const MAX_ERROR_OPERATION_LENGTH = 200;
+const MAX_ERROR_MESSAGE_LENGTH = 8_192;
+const MAX_ERROR_STATE_LENGTH = 32 * 1024;
 const SESSION_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
 
 function validateSessionId(value: unknown): ParseResult<string> {
@@ -857,12 +964,170 @@ export function validateSessionControlMessage(value: unknown): ParseResult<Sessi
   }
 }
 
-export function validateControlMessage(value: unknown): ParseResult<ControlMessage> {
+function boundedPrintable(value: unknown, name: string, max: number): ParseResult<string> {
+  if (typeof value !== "string") return { ok: false, err: `${name} must be a string` };
+  const trimmed = value.trim();
+  if (!trimmed) return { ok: false, err: `${name} cannot be empty` };
+  if (trimmed.length > max) return { ok: false, err: `${name} cannot exceed ${max} characters` };
+  if (SESSION_CONTROL_CHARS.test(trimmed)) return { ok: false, err: `${name} cannot contain control characters` };
+  return { ok: true, value: trimmed };
+}
+
+/** Runtime actions are validated separately because they perform process/UI side effects. */
+export function validateRuntimeControlMessage(value: unknown): ParseResult<RuntimeControlMessage> {
+  if (!record(value) || typeof value.kind !== "string") {
+    return { ok: false, err: "runtime control message must be a JSON object with a kind" };
+  }
+  if (value.kind === "resumable") {
+    let query: string | undefined;
+    if (value.query !== undefined) {
+      if (typeof value.query !== "string") return { ok: false, err: "resumable query must be a string" };
+      const trimmed = value.query.trim();
+      if (trimmed.length > 1_000) return { ok: false, err: "resumable query cannot exceed 1000 characters" };
+      if (SESSION_CONTROL_CHARS.test(trimmed)) {
+        return { ok: false, err: "resumable query cannot contain control characters" };
+      }
+      query = trimmed || undefined;
+    }
+    let limit: number | undefined;
+    if (value.limit !== undefined) {
+      if (!Number.isSafeInteger(value.limit) || (value.limit as number) < 1 || (value.limit as number) > 500) {
+        return { ok: false, err: "resumable limit must be an integer from 1 to 500" };
+      }
+      limit = value.limit as number;
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "resumable",
+        ...(query ? { query } : {}),
+        ...(limit === undefined ? {} : { limit }),
+      },
+    };
+  }
+  if (value.kind === "agent-capabilities") {
+    if (value.backend !== "claude" && value.backend !== "codex") {
+      return { ok: false, err: "agent capability backend must be claude or codex" };
+    }
+    // Empty means "the session's own directory", which the daemon resolves.
+    // A client that can already name a session should not also have to know
+    // its filesystem path — and the alternative was publishing a path on every
+    // session row for one deliberate lookup.
+    // An empty cwd is only meaningful WITH a session id — it means "that
+    // session's directory". Without one there is nothing to resolve it from,
+    // and accepting it would let a request through that can only fail later.
+    if (value.cwd === "" && value.sessionId === undefined) {
+      return { ok: false, err: "agent capability cwd requires a sessionId when empty" };
+    }
+    const requestedCwd = value.cwd === "" ? { ok: true as const, value: "" } : undefined;
+    const cwd = requestedCwd ?? boundedPrintable(value.cwd, "agent capability cwd", 4_096);
+    if (!cwd.ok) return cwd;
+    if (cwd.value !== "" && !cwd.value.startsWith("/")) {
+      return { ok: false, err: "agent capability cwd must be an absolute path" };
+    }
+    let sessionId: string | undefined;
+    if (value.sessionId !== undefined) {
+      const validated = validateSessionId(value.sessionId);
+      if (!validated.ok) return validated;
+      sessionId = validated.value;
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "agent-capabilities",
+        backend: value.backend,
+        cwd: cwd.value,
+        ...(sessionId ? { sessionId } : {}),
+      },
+    };
+  }
+  if (value.kind === "session-close") {
+    const sessionId = validateSessionId(value.sessionId);
+    return sessionId.ok
+      ? { ok: true, value: { kind: "session-close", sessionId: sessionId.value } }
+      : sessionId;
+  }
+  if (value.kind === "session-start") {
+    if (value.backend !== "claude" && value.backend !== "codex") {
+      return { ok: false, err: "session backend must be claude or codex" };
+    }
+    let resumeSessionId: string | undefined;
+    if (value.resumeSessionId !== undefined) {
+      const validated = validateSessionId(value.resumeSessionId);
+      if (!validated.ok) return validated;
+      resumeSessionId = validated.value;
+    }
+    let cwd: string | undefined;
+    if (value.cwd !== undefined) {
+      const validated = boundedPrintable(value.cwd, "cwd", 4_096);
+      if (!validated.ok) return validated;
+      if (!validated.value.startsWith("/")) return { ok: false, err: "cwd must be an absolute path" };
+      cwd = validated.value;
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "session-start",
+        backend: value.backend,
+        ...(resumeSessionId ? { resumeSessionId } : {}),
+        ...(cwd ? { cwd } : {}),
+      },
+    };
+  }
+  if (value.kind === "app-error") {
+    if (value.source !== "ios" && value.source !== "mac") {
+      return { ok: false, err: "app error source must be ios or mac" };
+    }
+    const operation = boundedPrintable(value.operation, "operation", MAX_ERROR_OPERATION_LENGTH);
+    if (!operation.ok) return operation;
+    const message = boundedPrintable(value.message, "message", MAX_ERROR_MESSAGE_LENGTH);
+    if (!message.ok) return message;
+    let sessionId: string | undefined;
+    if (value.sessionId !== undefined) {
+      const validated = validateSessionId(value.sessionId);
+      if (!validated.ok) return validated;
+      sessionId = validated.value;
+    }
+    if (!record(value.state)) return { ok: false, err: "app error state must be an object" };
+    let stateLength: number;
+    try {
+      stateLength = JSON.stringify(value.state).length;
+    } catch {
+      return { ok: false, err: "app error state must be JSON serializable" };
+    }
+    if (stateLength > MAX_ERROR_STATE_LENGTH) {
+      return { ok: false, err: `app error state cannot exceed ${MAX_ERROR_STATE_LENGTH} characters` };
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "app-error",
+        source: value.source,
+        operation: operation.value,
+        message: message.value,
+        ...(sessionId ? { sessionId } : {}),
+        state: value.state,
+      },
+    };
+  }
+  return { ok: false, err: `unknown runtime control message kind "${value.kind}"` };
+}
+
+export function validateControlMessage(value: unknown): ParseResult<AnyControlMessage> {
   if (!record(value)) return { ok: false, err: "control message must be a JSON object" };
   if (!Object.hasOwn(value, "kind") || typeof value.kind !== "string") {
     return { ok: false, err: "control message kind is required" };
   }
   if (value.kind === "session-command") return validateSessionControlMessage(value);
+  if (
+    value.kind === "resumable"
+    || value.kind === "agent-capabilities"
+    || value.kind === "session-start"
+    || value.kind === "session-close"
+    || value.kind === "app-error"
+  ) {
+    return validateRuntimeControlMessage(value);
+  }
   if (value.kind === "get-config") return { ok: true, value: { kind: "get-config" } };
   if (value.kind !== "set-config" && value.kind !== "unset-config") {
     return { ok: false, err: `unknown control message kind "${value.kind}"` };
@@ -880,6 +1145,60 @@ export function validateControlMessage(value: unknown): ParseResult<ControlMessa
 
 export function validateControlResponse(value: unknown): ParseResult<ControlResponse> {
   if (!record(value) || typeof value.kind !== "string") return { ok: false, err: "invalid control response" };
+  if (value.kind === "agent-capabilities") {
+    return isAgentCapabilitiesRead(value.inventory)
+      ? { ok: true, value: { kind: "agent-capabilities", inventory: value.inventory } }
+      : { ok: false, err: "invalid agent capabilities response" };
+  }
+  if (value.kind === "resumable") {
+    if (!Array.isArray(value.sessions) || value.sessions.length > 500 || typeof value.complete !== "boolean") {
+      return { ok: false, err: "invalid resumable sessions response" };
+    }
+    const sessions: ResumableSession[] = [];
+    for (const raw of value.sessions) {
+      if (!record(raw) || (raw.backend !== "claude" && raw.backend !== "codex")) {
+        return { ok: false, err: "invalid resumable session" };
+      }
+      const sessionId = validateSessionId(raw.sessionId);
+      if (!sessionId.ok) return { ok: false, err: `invalid resumable session: ${sessionId.err}` };
+      const label = boundedPrintable(raw.label, "resumable label", 4_096);
+      if (!label.ok) return { ok: false, err: label.err };
+      const cwd = boundedPrintable(raw.cwd, "resumable cwd", 4_096);
+      if (!cwd.ok) return { ok: false, err: cwd.err };
+      if (!Number.isSafeInteger(raw.updatedAt) || (raw.updatedAt as number) < 0) {
+        return { ok: false, err: "resumable updatedAt must be a non-negative epoch millisecond integer" };
+      }
+      sessions.push({
+        sessionId: sessionId.value,
+        backend: raw.backend,
+        label: label.value,
+        cwd: cwd.value,
+        updatedAt: raw.updatedAt as number,
+      });
+    }
+    return { ok: true, value: { kind: "resumable", sessions, complete: value.complete } };
+  }
+  if (value.kind === "app-error-ack") return { ok: true, value: { kind: "app-error-ack" } };
+  if (value.kind === "session-started") {
+    if ((value.backend !== "claude" && value.backend !== "codex") || typeof value.resumed !== "boolean") {
+      return { ok: false, err: "invalid session started response" };
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "session-started",
+        backend: value.backend,
+        resumed: value.resumed,
+        ...(value.awaitingTrust === true ? { awaitingTrust: true } : {}),
+      },
+    };
+  }
+  if (value.kind === "session-closed") {
+    const sessionId = validateSessionId(value.sessionId);
+    return sessionId.ok
+      ? { ok: true, value: { kind: "session-closed", sessionId: sessionId.value } }
+      : { ok: false, err: `invalid session closed response: ${sessionId.err}` };
+  }
   if (value.kind === "session-error") {
     return typeof value.error === "string"
       ? { ok: true, value: { kind: "session-error", error: value.error } }
@@ -904,6 +1223,45 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
         command: value.command,
         ...(label === undefined ? {} : { label }),
         changed: value.changed,
+      },
+    };
+  }
+  if (value.kind === "pairing-open") {
+    if (typeof value.code !== "string" || !/^[0-9]{6}$/.test(value.code)) {
+      return { ok: false, err: "invalid pairing code" };
+    }
+    if (!Number.isSafeInteger(value.expiresAt) || (value.expiresAt as number) <= 0) {
+      return { ok: false, err: "invalid pairing expiry" };
+    }
+    if (!Number.isSafeInteger(value.port) || (value.port as number) <= 0 || (value.port as number) > 65535) {
+      return { ok: false, err: "invalid pairing port" };
+    }
+    let relay: PairingOpen["relay"];
+    if (value.relay !== undefined) {
+      const r = value.relay;
+      if (
+        !record(r) || r.version !== 1
+        || typeof r.endpoint !== "string" || !/^wss:\/\/[^\s]+$/.test(r.endpoint)
+        || typeof r.roomId !== "string" || !/^[A-Za-z0-9_-]{16,}$/.test(r.roomId)
+        || typeof r.secret !== "string" || !/^[A-Za-z0-9_-]{16,}$/.test(r.secret)
+        || !Number.isSafeInteger(r.createdAt)
+      ) return { ok: false, err: "invalid relay pairing" };
+      relay = {
+        version: 1,
+        endpoint: r.endpoint,
+        roomId: r.roomId,
+        secret: r.secret,
+        createdAt: r.createdAt as number,
+      };
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "pairing-open",
+        code: value.code,
+        expiresAt: value.expiresAt as number,
+        port: value.port as number,
+        ...(relay === undefined ? {} : { relay }),
       },
     };
   }
@@ -1028,12 +1386,17 @@ export function sendControlMessage(
 ): Promise<SessionControlResult>;
 export function sendControlMessage(
   socketPath: string,
-  message: ControlMessage,
+  message: RuntimeControlMessage,
+  timeoutMs?: number,
+): Promise<SessionControlResult>;
+export function sendControlMessage(
+  socketPath: string,
+  message: AnyControlMessage,
   timeoutMs?: number,
 ): Promise<ControlResult>;
 export function sendControlMessage(
   socketPath: string,
-  message: ControlMessage,
+  message: AnyControlMessage,
   timeoutMs = 500,
 ): Promise<ControlResult> {
   return new Promise((resolve) => {

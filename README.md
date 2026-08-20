@@ -1,6 +1,6 @@
 # 🐚 conch
 
-A voice loop for Claude Code. Your sessions announce themselves out loud when they finish — then you just talk back.
+A voice loop for Claude Code. Your sessions announce themselves out loud when they finish — then you just talk back. From your Mac, or from your phone anywhere in the world.
 
 ![The conch dashboard — a live session ledger down the left (sorted so whatever needs you floats to the top, each row a colored status dot), and a pane on the right that reads along with the session conch is talking to: here, your spoken reply building word by word as it records.](docs/dashboard.png)
 
@@ -28,6 +28,34 @@ The native macOS app is conch's primary UI. It shows the live session ledger and
 
 The app is currently built from source. Open `mac-app/conch-mac.xcodeproj` in Xcode, select the `conch-mac` scheme, and press Run. Keep using the terminal dashboard (`conch`) as the SSH/remote fallback.
 
+## Your phone
+
+<img src="docs/iphone-ledger.png" alt="conch on iPhone: a ledger of live sessions, each row showing what it wants — arch-website needs an answer, dayloop is being read aloud, conch has work to look at. A session that is merely working says nothing." width="300" align="right">
+
+The iOS app is the same ledger in your pocket. Every session, sorted so whatever
+needs you floats to the top, each row saying what it actually wants: *Needs an
+answer*, *Reading aloud*, *Has work to look at*. A session that is merely
+working says nothing — printing "Working" on every quiet row is how you learn
+to stop reading the column.
+
+Tap in and you get that session's reply in full, a Talk button that transcribes
+**on the phone** (no audio crosses the network), and the deliverable when
+there's one to look at. Replies are read aloud through your AirPods, and the
+mic opens by itself when the reading stops — so a whole turn costs you one tap.
+
+**It works from anywhere.** Not just your Wi-Fi: over cellular, from another
+country, without a VPN, a tunnel, or an open port. Your Mac and phone each dial
+*out* to a small Cloudflare Worker that pairs them up, and every frame is
+encrypted end to end with a key from the pairing QR — the relay stores and
+forwards bytes it cannot read. Deploy your own in one command; the whole thing
+is in [`relay/`](relay/), and at conch's traffic it costs nothing.
+
+Pair it from the Mac app's **Phone** tab (or `conch pair`): scan the QR and
+you're connected. There's a LAN-only mode too if you'd rather nothing left the
+house.
+
+<br clear="right">
+
 ## Install
 
 macOS. Two commands:
@@ -37,7 +65,7 @@ brew install stupart/tap/conch     # binary + sox/tmux/whisper-cpp
 conch setup                        # models, hooks, service, and app plugins
 ```
 
-`brew install` pulls the system dependencies (`sox`, `tmux`, `whisper-cpp`) automatically. `conch setup` then downloads the two speech models into `~/.cache/conch/models` (whisper large-v3-turbo ~1.6 GB, silero VAD ~900 KB), wires the Claude Code hooks, verifies the chain, starts the launchd service, and installs the conch plugin for whichever of Claude Code and Codex are present. It's idempotent — re-run it any time; it skips or safely refreshes managed pieces. Already have a whisper.cpp build and models (e.g. a [seashell](https://github.com/stupart/seashell) checkout)? Point `CONCH_WHISPER_CLI` / `CONCH_WHISPER_MODEL` / `CONCH_VAD_MODEL` (or `CONCH_SEASHELL_ROOT`) at them and setup leaves them untouched.
+`brew install` pulls the system dependencies (`sox`, `tmux`, `whisper-cpp`) automatically. `conch setup` then downloads the two speech models into `~/.cache/conch/models` (whisper large-v3-turbo ~1.6 GB, silero VAD ~900 KB), wires the Claude Code hooks, verifies the chain, starts the launchd service, and installs the conch plugin. It's idempotent — re-run it any time; it skips or safely refreshes managed pieces. Already have a whisper.cpp build and models (e.g. a [seashell](https://github.com/stupart/seashell) checkout)? Point `CONCH_WHISPER_CLI` / `CONCH_WHISPER_MODEL` / `CONCH_VAD_MODEL` (or `CONCH_SEASHELL_ROOT`) at them and setup leaves them untouched.
 
 <details>
 <summary><b>From source</b> (for hacking on conch)</summary>
@@ -95,15 +123,15 @@ The worker itself adds no package beyond the installed `mlx-audio`, NumPy, `misa
 | `conch uninstall [--models]` | Remove managed hooks, instructions, service, tmux session, and plugin; also remove downloaded models only with `--models` |
 | `conch version` / `--version` | Print the installed package version |
 | `conch service [install\|off]` | Optionally install/refresh or remove launchd supervision |
-| `conch install-plugin` / `uninstall-plugin` | Optionally manage the Claude Code and Codex plugin separately |
-| `conch install [--codex]` | Optionally wire Claude Code or Codex hooks separately |
+| `conch install-plugin` / `uninstall-plugin` | Optionally manage the Claude Code plugin separately |
+| `conch install` | Optionally wire Claude Code hooks separately |
+| `conch uninstall [--claude \| --codex]` | Remove one agent's wiring, or everything |
 | `conch daemon` | Run the voice loop: announce → listen → inject |
 | `conch wake [name]` | Reopen the mic — last announced session, or by name (bind it to a hotkey) |
 | `conch recite [name]` | Read the latest response aloud — last announced session, or by name |
 | `conch rename <session> <label>` | Save a conch display label and migrate its pinned voice |
 | `conch sessions` | List live Claude Code sessions |
-| `conch mute` / `unmute` | Silence announcements + mic |
-| `conch pause` / `resume` | Step away: stay quiet but HOLD finished sessions, replay on resume |
+| `conch pause` / `resume` | Manual / auto: hold finished sessions quietly, then replay them |
 | `conch hook` | Hook entrypoint (Claude Code calls this, not you) |
 | `conch listen` | Mic check: capture one utterance, print the transcript |
 | `conch speak <text>` | TTS check |
@@ -134,15 +162,11 @@ Commands only match as the *entire* utterance — "continue working on the login
 
 **Came back after the window closed?** Press **space** in the daemon's terminal, or run `conch wake` (bind it to a global hotkey via Raycast/Shortcuts) — the mic reopens for the last announced session. `conch wake dayloop` targets any live session by name (`conch sessions` lists them), and the status line shows exactly who's listening.
 
-**Leaving?** `conch mute` silences announcements and the mic until `conch unmute`; in the dashboard, **m** does the same globally whenever no session is parked. Mute forgets what finishes, so there is no reminder loop, and a closed window costs nothing (no sox, no whisper). `CONCH_AWAY_AFTER_SECS` adds opt-in auto-silence after N seconds of keyboard/mouse idle, but note it's off by default for a reason: idle time doesn't count *voice* activity, so it would mute a fully hands-free session mid-conversation.
+**Leaving or reading instead?** `conch pause` switches to manual: replies remain visible, announcements and automatic mic opening stop, and conch **holds** the latest finished turn per session. `conch resume` returns to auto and replays what was held. In the dashboard, **p** toggles the same mode. `CONCH_AWAY_AFTER_SECS` adds opt-in auto-silence after N seconds of keyboard/mouse idle, but it is off by default because idle time does not count voice activity. Joining meetings often? `conch set meeting-autopause true` enables a default-off CoreAudio watcher that silently enters manual mode when another app takes the default microphone, then restores your prior mode when it releases.
 
-**Stepping away for a bit?** `conch pause` (or **p** with no session parked) is mute's patient sibling: it stays quiet *and* **holds** every session that finishes while you're gone, then replays them on `conch resume` or the next **p**. Joining meetings often? `conch set meeting-autopause true` enables a default-off CoreAudio watcher that silently pauses when another app takes the default microphone, then restores your prior pause state when it releases.
+The two default-off fast-model features (`announce-summary` and `voice-qa`) shell out to your installed, authenticated `claude` CLI; conch adds no model SDK or runtime package.
 
-With the default-off `resume-digest` setting enabled, two or more held sessions are composed into one short Haiku briefing, followed by one "Who first?" listen. If Haiku is unavailable, conch uses a deterministic label briefing; a failed listen or session match falls back to the normal full replay, so held work is never discarded.
-
-The three default-off fast-model features (`announce-summary`, `voice-qa`, and `resume-digest`) shell out to your installed, authenticated `claude` CLI; conch adds no model SDK or runtime package.
-
-**Want to focus on one thing?** Use **↑↓** to park the cursor on a session. Its latest output follows into the pane and stays there; **esc** releases the cursor back to automatic follow. Press **r** to read that output aloud, or **Enter** for its actions menu: preview/pin a voice, prioritize its next hand-off, rename it, or safely dismiss it from conch while leaving the Claude process running. Recite is immediate and read-only: it cuts any active read or mic, reads the latest reply from the top, then returns to rest. While it is parked, **p** pauses or resumes just that session, holding only its latest turn and replaying that turn from the top on resume; **m** mutes or unmutes just that session, forgetting what finishes with no replay. With no parked cursor, **p** and **m** are global. These controls take effect instantly: an active read stops, the mic closes, and its in-flight capture is dropped.
+**Want to focus on one thing?** Use **↑↓** to park the cursor on a session. Its latest output follows into the pane and stays there; **esc** releases the cursor back to automatic follow. Press **r** to read that output aloud, or **Enter** for its actions menu: preview/pin a voice, prioritize its next hand-off, rename it, or safely dismiss it from conch while leaving the agent process running. Press **u** to open the restore list and bring back any dismissed session. Recite is immediate and read-only: it cuts any active read or mic, reads the latest reply from the top, then returns to rest. While a session is parked, **p** toggles manual/auto just for it, holding only its latest turn and replaying that turn from the top on auto; with no parked cursor, **p** changes the whole app. These controls take effect instantly: an active read stops, the mic closes, and its in-flight capture is dropped.
 
 **Permission prompts** ("dayloop needs you: permission to run npm install") open the mic too, but only accept yes/no: "yes" presses Enter on the highlighted option, "no" presses Escape, anything else is ignored — free text near a permission dialog is deliberately refused. And idle "waiting for your input" nags are filtered: conch checks whether the session's last reply actually asked you something, and stays quiet when the session is just idle ("I'll ping you when it lands").
 
@@ -160,12 +184,12 @@ Run the daemon in a visible terminal (`conch daemon`), or just type **`conch`** 
  ▎ arch site    ● │
    conch        ● │
    poaster      ⏸ │ pause to send · space to stop · say send to submit now
-   ↑↓ park · esc back · wheel scroll · drag copy · \ pane · , settings · ⏎ actions · r recite · space talk · p pause · m mute · ? help · q quit
+   ↑↓ park · esc back · space talk · p auto/manual · ⏎ actions · u restore · r recite · , settings · ? help · q quit
 ```
 
-Sessions that need input sort to the top. Each row carries a **colored status dot** — `❗ needs a response`, `○ waiting for you`, `● working…`, `● recording`, `⏸ paused`, `🔇 muted` — and the **session conch is currently talking to** takes a cyan accent bar and lights up in place as it moves through the turn (`▶ speaking` → `● mic open` → `● recording` → `… transcribing`). The **pane on the right reads along**: your words build there as you speak them while it records, and when conch reads a reply back the pane scrolls through it, dimming what's already been spoken.
+Sessions that need input sort to the top. Each row carries a **colored status dot** — `❗ needs a response`, `○ waiting for you`, `● working…`, `● recording`, `⏸ manual` — and the **session conch is currently talking to** takes a cyan accent bar and lights up in place as it moves through the turn (`▶ speaking` → `● mic open` → `● recording` → `… transcribing`). The **pane on the right reads along**: your words build there as you speak them while it records, and when conch reads a reply back the pane scrolls through it, dimming what's already been spoken.
 
-You don't have to touch it — but you can. **↑↓** park a cursor on a session and make the pane follow its latest output until **esc** releases it; **Enter** opens that parked session's trapped actions menu; **r** recites the parked output (or the active/last session when no cursor is parked); **space** talks to the parked session (or the active one); **p** toggles pause and **m** toggles mute, targeting the parked session while the cursor is parked and the whole app otherwise. The mouse wheel scrolls long pane output, and dragging in the pane selects and copies text through both the macOS clipboard and OSC 52 (including tmux passthrough). **\\** hides the pane for a full-width ledger; **,** opens live settings; **l** toggles a log in the pane; **?** shows the full key + voice-command help; **q** quits. Set `CONCH_NO_MOUSE=1` to keep the dashboard but restore terminal-native mouse selection. The play-by-play is always written to `/tmp/conch-daemon.log` whether or not the log is on screen, so the dashboard stays clean by default.
+You don't have to touch it — but you can. **↑↓** park a cursor on a session and make the pane follow its latest output until **esc** releases it; **Enter** opens that parked session's trapped actions menu; **u** opens every dismissed session for restore; **r** recites the parked output (or the active/last session when no cursor is parked); **space** talks to the parked session (or the active one); **p** toggles auto/manual, targeting the parked session while the cursor is parked and the whole app otherwise. The mouse wheel scrolls long pane output, and dragging in the pane selects and copies text through both the macOS clipboard and OSC 52 (including tmux passthrough). **\\** hides the pane for a full-width ledger; **,** opens live settings; **l** toggles a log in the pane; **?** shows the full key + voice-command help; **q** quits. Set `CONCH_NO_MOUSE=1` to keep the dashboard but restore terminal-native mouse selection. The play-by-play is always written to `/tmp/conch-daemon.log` whether or not the log is on screen, so the dashboard stays clean by default.
 
 An ordinary exit restores mouse tracking automatically. If the daemon is killed with untrappable `SIGKILL` and the shell starts printing mouse reports, recover with `printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l'`.
 
@@ -198,7 +222,6 @@ The full environment-variable surface remains available (put overrides in the ho
 | `CONCH_SPEAK_MAX_CHARS` | `350` | hard cap on spoken length |
 | `CONCH_ANNOUNCE_SUMMARY` | `0` | summarize long hook announcements with Haiku; falls back to the literal snippet |
 | `CONCH_VOICE_QA` | `0` | answer "conch, …" from the active session's last reply without injecting it |
-| `CONCH_RESUME_DIGEST` | `0` | brief two or more held sessions once, then ask who should go first |
 | `CONCH_BELL` / `CONCH_SPEAK` | `1` | disable the ding / the voice |
 | `CONCH_BELL_SOUND` | Glass.aiff | any afplay-able file |
 | `CONCH_LISTEN_WINDOW_SECS` | `30` | how long the mic waits for you to *start* talking |
@@ -229,10 +252,29 @@ The full environment-variable surface remains available (put overrides in the ho
 | `CONCH_TTS_SPEED` | `1.35` | Kokoro/voice synthesis speed (`conch set voice-speed …`) |
 | `CONCH_TTS_BATCH_CHARS` | `240` | coalesce later short sentences up to this size; `0` disables (sentence one always stays separate) |
 
+## Codex support is unfinished
+
+conch is built for Claude Code. There is Codex code in here — hooks, a
+transcript reader, a plugin — and it does not currently work: **Codex 0.144.1
+does not execute `~/.codex/hooks.json` at all.** Verified by installing a hook
+that does nothing but `touch` a file, and watching it never fire, after ruling
+out hook trust and schema problems.
+
+So a Codex session never announces itself, never appears in the ledger, and
+cannot be talked to. It is **off by default** — setup no longer writes the
+review contract into `~/.codex/AGENTS.md`, because telling Codex to end
+deliverables with `conch:review …` when nothing can act on it just spends its
+turns. `conch uninstall --codex` removes any earlier wiring without touching
+Claude Code.
+
+Fixing it likely means following Codex's own plugin/marketplace structure
+rather than the hooks file. Contributions welcome; until then the honest
+status is *written, not working*.
+
 ## Roadmap
 
 - **Name-addressing** — "hey dayloop, ..." routes to any session, not just the last announcer
-- **Phone remote** — hear from and talk back to your sessions over a websocket when you're away from the machine
+- **Images from the phone** — screenshot something and send it to a session, since the phone has a camera and the Mac does not
 - **Always-listening mode** — seashell's concurrent VAD architecture, once extracted from its TUI, replaces the per-window sox capture
 - **Linux** — swap `say`/`afplay` for espeak/paplay, keystroke fallback for xdotool
 
