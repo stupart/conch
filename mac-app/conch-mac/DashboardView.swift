@@ -1382,7 +1382,10 @@ private struct ConversationPane: View {
     /// This state only ever loses to that default — a NEW artifact resets it
     /// (see the onChange below), because a fresh deliverable is the agent
     /// asking to be looked at, not background noise to read past.
-    @State private var showsConversation = false
+    /// Where you land: the conversation, because talking is the common case and
+    /// being dropped into a document you did not ask for means switching back.
+    /// The artifact is reached from its preview inline, which also flips this.
+    @State private var showsConversation = true
 
     /// Only the session actually being dictated to shows the live transcript.
     /// Without the label check every open composer would mirror the same words,
@@ -1574,6 +1577,8 @@ private struct ConversationPane: View {
                                     )
                                 )
                             },
+                            artifact: row.review,
+                            onOpenArtifact: { showsConversation = false },
                             onFreeform: { composerFocusRequest += 1 }
                         )
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1601,11 +1606,12 @@ private struct ConversationPane: View {
             await transcriptContent.monitor(row: watchesTranscriptForRow)
         }
         .onChange(of: selectedReview?.id) { _, current in
-            // Keyed off the review's IDENTITY (row + timestamp), not the
-            // published state: the daemon republishes constantly, and
-            // re-asserting the deliverable on every publish would fight any
-            // attempt to actually read the conversation.
-            if current != nil { showsConversation = false }
+            // A NEW artifact no longer takes the screen. It arrives as a
+            // preview inline in the conversation, where it can be seen without
+            // interrupting what you were reading, and goes big only when you
+            // ask. Returning to the conversation on a new artifact is what
+            // makes that true even when you were already looking at an old one.
+            if current != nil { showsConversation = true }
         }
         .onChange(of: state?.live.dictated?.id) { _, current in
             // Spoken words land in the composer, added to whatever was typed.

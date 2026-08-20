@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The conversation as a stack of messages, rather than one replaced string.
@@ -14,6 +15,23 @@ import SwiftUI
 struct ConversationStackView: View {
     let conversation: Conversation
     let onAnswer: (String) -> Void
+    /// The artifact this session produced, shown where it happened rather than
+    /// only behind a tab.
+    ///
+    /// Tyler: "maybe it defaults to conversation but shows the artifact preview
+    /// inline and then you click or tap on it and it goes gets big and the top
+    /// tab changes to artifact — that way you're not annoyed always switching
+    /// back if u just want to chat but the artifact content is front and centre
+    /// and easy to focus on entirely if u want."
+    ///
+    /// At the end of the stack, which for one-artifact-per-session IS where it
+    /// happened: it is the latest thing the session produced. A `review` item
+    /// kind has existed in the conversation model all along and nothing ever
+    /// emitted one, so this is the position that kind was reserving.
+    var artifact: ReviewInfo?
+    /// Enlarge it, and switch the tab so the move is explained.
+    var onOpenArtifact: () -> Void = {}
+
     /// Take me to the text field — I want to answer in my own words.
     ///
     /// Claude Code's own question UI always offers an "Other" row, and conch
@@ -56,6 +74,10 @@ struct ConversationStackView: View {
                     // A zero-height anchor rather than scrolling to the last
                     // item: the last item GROWS while it streams, and scrolling
                     // to a growing view lands part-way up it.
+                    if let artifact {
+                        ArtifactPreview(artifact: artifact, onOpen: onOpenArtifact)
+                    }
+
                     Color.clear
                         .frame(height: 1)
                         .id(Self.bottomAnchor)
@@ -813,5 +835,111 @@ private struct DiffLine: View {
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
+    }
+}
+
+/// The artifact, previewed where it happened.
+///
+/// Not a banner and not a link: the point is that you can see what it IS
+/// without leaving the conversation, and reach it in one gesture when you want
+/// it whole. The tab switch that comes with that gesture is what explains where
+/// you went — otherwise enlarging something feels like the app moved on its own.
+private struct ArtifactPreview: View {
+    let artifact: ReviewInfo
+    let onOpen: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(alignment: .top, spacing: 11) {
+                thumbnail
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Deliverable")
+                        .font(ConchTypography.font(size: 9.5, weight: .medium))
+                        .foregroundStyle(ConchPalette.statusReview)
+                        .textCase(.uppercase)
+                        .tracking(0.6)
+                    Text(artifact.summary)
+                        .font(ConchTypography.font(size: 12.5))
+                        .foregroundStyle(ConchPalette.textPrimary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let link = artifact.link, !link.isEmpty {
+                        Text(shortLink(link))
+                            .font(ConchTypography.font(size: 10.5))
+                            .foregroundStyle(ConchPalette.textFaint)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(ConchPalette.textFaint)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(isHovering ? ConchPalette.hover : ConchPalette.raised)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(ConchPalette.statusReview.opacity(0.35), lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .help("Open the deliverable")
+        .accessibilityLabel("Deliverable: \(artifact.summary)")
+        .accessibilityHint("Opens it full size")
+    }
+
+    /// A real thumbnail when the artifact is a local image, because seeing the
+    /// thing beats reading its name — the same reason the composer stopped
+    /// showing attachments as filenames.
+    @ViewBuilder
+    private var thumbnail: some View {
+        if let image = localImage {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 44, height: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+        } else {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(ConchPalette.bg)
+                .frame(width: 44, height: 44)
+                .overlay(
+                    Image(systemName: symbol)
+                        .font(.system(size: 15))
+                        .foregroundStyle(ConchPalette.statusReview.opacity(0.85))
+                )
+        }
+    }
+
+    private var localImage: NSImage? {
+        guard let link = artifact.link, link.hasPrefix("/") else { return nil }
+        let image = ["png", "jpg", "jpeg", "gif", "heic", "webp"]
+            .contains((link as NSString).pathExtension.lowercased())
+        return image ? NSImage(contentsOfFile: link) : nil
+    }
+
+    private var symbol: String {
+        guard let link = artifact.link, !link.isEmpty else { return "star.fill" }
+        if link.hasPrefix("http") { return "globe" }
+        switch (link as NSString).pathExtension.lowercased() {
+        case "pdf": return "doc.richtext"
+        case "mp4", "mov", "webm": return "play.rectangle"
+        case "md", "markdown", "txt": return "doc.text"
+        default: return "doc"
+        }
+    }
+
+    private func shortLink(_ link: String) -> String {
+        if link.hasPrefix("http") { return link }
+        let parts = link.split(separator: "/")
+        return parts.suffix(2).joined(separator: "/")
     }
 }
