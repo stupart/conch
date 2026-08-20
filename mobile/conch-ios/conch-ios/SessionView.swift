@@ -19,6 +19,35 @@ struct SessionView: View {
     /// Prepared and waiting, NOT uploaded. Nothing leaves the phone until you
     /// press send — picking a picture is composing, not sending.
     @State private var attachments: [PendingAttachment] = []
+    /// Whether the end of the conversation is on screen. Set by the anchor's
+    /// own visibility, which is how iOS answers what NSScrollView answers on
+    /// the Mac.
+    @State private var pinnedToBottom = true
+
+    private static let bottomAnchor = "conversation-bottom"
+
+    /// What "the conversation changed" means, for following purposes: a new
+    /// item, or the last one growing as a reply streams in. Keyed rather than
+    /// counted so an edit to the final message still follows.
+    private var conversationRevision: String {
+        let conversation = bridge.state?.conversations[sessionId]
+        let items = conversation?.items ?? []
+        return "\(items.count)-\(items.last?.id ?? "")-\(items.last?.rev ?? 0)"
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+        // After layout, not during it: scrolling to an anchor SwiftUI has not
+        // placed yet silently does nothing.
+        DispatchQueue.main.async {
+            if animated {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+                }
+            } else {
+                proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+            }
+        }
+    }
     @State private var attaching = false
     @State private var attachError: String?
     /// An image-only send in flight. TalkController's `.sending` phase covers
@@ -141,9 +170,41 @@ struct SessionView: View {
                     // same sentence twice while you type reads as a bug.
                     // Tyler: "its also showing the preview in blue tho as I
                     // type so its kinda weird".
+
+                    // The end of the conversation, and the way to know whether
+                    // you are looking at it. iOS has no equivalent of the Mac's
+                    // NSScrollView observer, but a zero-height marker that
+                    // reports its own visibility answers the same question:
+                    // are we at the bottom right now?
+                    Color.clear
+                        .frame(height: 1)
+                        .id(Self.bottomAnchor)
+                        .onAppear { pinnedToBottom = true }
+                        .onDisappear { pinnedToBottom = false }
                 }
                 .padding(20)
                 .padding(.bottom, 12)
+            }
+            .onAppear {
+                // The reported bug. A ScrollViewReader was already here and its
+                // proxy was never used once — `scroller` appeared exactly at
+                // its own declaration and nowhere else — so opening a session
+                // left you at the TOP of the conversation. Tyler: "when I open
+                // it up I often have to scroll back down to the bottom again."
+                scrollToBottom(scroller, animated: false)
+            }
+            .onChange(of: conversationRevision) { _, _ in
+                // Follow new messages only while already at the end, so
+                // reading history is not yanked away by an arriving reply —
+                // the same rule the Mac settled on.
+                guard pinnedToBottom else { return }
+                scrollToBottom(scroller, animated: true)
+            }
+            .onChange(of: sessionId) { _, _ in
+                // A different session is a different conversation: start at its
+                // end, and re-arm the follow.
+                pinnedToBottom = true
+                scrollToBottom(scroller, animated: false)
             }
             // Focus used to be a trap: once the cursor entered the field there
             // was no way out short of sending or discarding, and the keyboard
