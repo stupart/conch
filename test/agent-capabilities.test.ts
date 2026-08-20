@@ -601,4 +601,38 @@ identity = { url = "https://allowed.test/mcp" }
     expect(observed?.evidence.observed.state).toBe("yes");
     expect(observed?.diagnostics).toContainEqual(expect.objectContaining({ code: "ambiguous-mcp-observation" }));
   });
+
+  describe("Claude project trust is read, not assumed", () => {
+    // Caught by mutation: hardcoding `trusted: true` on the Claude path passed
+    // the whole suite. Trust decides whether an agent stops and asks before
+    // running in a folder, and conch already uses the same signal to explain a
+    // session that never appears — so a wrong reading is worse than none.
+    function trustFor(recorded: boolean | undefined): unknown {
+      const f = fixture();
+      const statePath = join(f.root, "claude.json");
+      write(statePath, {
+        projects: recorded === undefined ? {} : { [f.cwd]: { hasTrustDialogAccepted: recorded } },
+      });
+      return readAgentCapabilities({
+        backend: "claude",
+        cwd: f.cwd,
+        claudeHome: f.claudeHome,
+        claudeStatePath: statePath,
+        claudeManagedSettingsPath: null,
+      }).context.projectTrust;
+    }
+
+    test("an accepted folder reads as trusted", () => {
+      expect(trustFor(true)).toMatchObject({ trusted: true, basis: "provider-state" });
+    });
+
+    test("a recorded refusal reads as untrusted, not unknown", () => {
+      expect(trustFor(false)).toMatchObject({ trusted: false, basis: "provider-state" });
+    });
+
+    test("a folder Claude has never seen has no decision, rather than a false one", () => {
+      // Absence is not a refusal: the dialog has simply not been shown yet.
+      expect(trustFor(undefined)).toMatchObject({ trusted: null, basis: "none" });
+    });
+  });
 });
