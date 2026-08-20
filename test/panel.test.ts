@@ -939,8 +939,11 @@ describe("a review outlives the turn that produced it", () => {
     expect(carriedReview(latched, "needs", undefined)).toEqual(review);
   });
 
-  test("starting a new turn clears it", () => {
-    expect(carriedReview(latched, "working", undefined)).toBeUndefined();
+  test("starting a new turn does NOT clear it", () => {
+    // It used to. That meant replying to the agent that filed an artifact
+    // destroyed the artifact you were replying about, and contradicted what
+    // conch tells agents: it stays until you send another.
+    expect(carriedReview(latched, "working", undefined)).toEqual(review);
   });
 
   test("a newer review replaces the old one rather than being ignored", () => {

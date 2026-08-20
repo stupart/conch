@@ -691,11 +691,23 @@ export interface SessionReview {
  */
 export function carriedReview(
   prior: { review?: SessionReview } | undefined,
-  status: SessionStatus,
+  _status: SessionStatus,
   incoming: SessionReview | undefined,
 ): SessionReview | undefined {
-  if (incoming) return incoming;
-  return status === "working" ? undefined : prior?.review;
+  // An artifact outlives the turn that produced it. It used to be cleared the
+  // moment the session went back to work, which meant REPLYING to the agent
+  // that filed it destroyed the thing you were replying about — Tyler asked
+  // where the artifact was, and it had been deleted by his own question.
+  //
+  // That also contradicted what conch tells agents, verbatim: "conch's apps
+  // show ONE artifact per session beside the conversation... it stays there
+  // until you send another." Only a newer artifact replaces it now, which is
+  // what the contract always said and what `review_to_front` is for.
+  //
+  // The status rule was right about one thing and wrong about the other: a
+  // session going back to work should stop ADVERTISING a finished deliverable
+  // as the reason it needs you, and that lives in the row's status, not here.
+  return incoming ?? prior?.review;
 }
 
 /**
