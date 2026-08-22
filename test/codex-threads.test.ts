@@ -384,11 +384,22 @@ describe("an open Codex thread stays listed however idle", () => {
     const state = new Database(join(home, "state_5.sqlite"));
     state.run(`CREATE TABLE threads (
       id TEXT PRIMARY KEY, cwd TEXT, name TEXT, agent_nickname TEXT, title TEXT,
-      rollout_path TEXT, updated_at_ms INTEGER, archived INTEGER, source TEXT)`);
+      rollout_path TEXT, updated_at_ms INTEGER, archived INTEGER, source TEXT,
+      has_user_event INTEGER, tokens_used INTEGER)`);
     for (const t of threads) {
       state.run(
-        `INSERT INTO threads VALUES (?,'/tmp',?,NULL,'','',?,0,'cli')`,
-        [t.id, t.name, t.updated_at_ms] as any,
+        `INSERT INTO threads VALUES (?,'/tmp',?,NULL,?,'',?,0,?,?,?)`,
+        [
+          t.id,
+          t.name ?? null,
+          t.title ?? "",
+          t.updated_at_ms,
+          (t.source as string) ?? "cli",
+          // Default to "a person spoke here", because that is what almost every
+          // fixture means; the one-shot cases set it explicitly.
+          t.has_user_event === undefined ? 1 : t.has_user_event,
+          t.tokens_used === undefined ? 100 : t.tokens_used,
+        ] as any,
       );
     }
     state.close();
@@ -427,6 +438,44 @@ describe("an open Codex thread stays listed however idle", () => {
     );
     try {
       expect(readCodexThreads({ codexHome: home, now: NOW }).entries).toEqual([]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a one-shot command that opened a thread is not listed", () => {
+    // `codex mcp login mobbin` — Tyler re-authenticating an MCP server — opened
+    // a thread, did its job and exited, and conch listed it as a session for
+    // eight hours. The row records the truth: no user event, no tokens.
+    const home = homeWith(
+      [{
+        id: "oneshot", name: null, title: "codex mcp login\nmobbin",
+        updated_at_ms: NOW - 60_000, has_user_event: 0, tokens_used: 0,
+      }],
+      [],
+    );
+    try {
+      expect(readCodexThreads({ codexHome: home, now: NOW }).entries).toEqual([]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a real session with no tokens yet is listed while it holds its lock", () => {
+    // A session that genuinely just started also has no user event yet. The
+    // lock is what separates the two, so the live check must win.
+    const home = homeWith(
+      [{
+        id: "fresh", name: "just started", title: "hello",
+        updated_at_ms: NOW - 1_000, has_user_event: 0, tokens_used: 0,
+      }],
+      ["fresh"],
+    );
+    try {
+      const entries = readCodexThreads({
+        codexHome: home, now: NOW, lockProbe: (paths) => paths.join("\n"),
+      }).entries;
+      expect(entries.map((e) => e.sessionId)).toEqual(["fresh"]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -545,4 +594,11 @@ test("an unusable probe falls back to presence rather than emptying the ledger",
   expect([...ids].sort()).toEqual(["a", "b"]);
 
   rmSync(home, { recursive: true, force: true });
+});
+
+test("a newline in a title does not break the row it renders in", () => {
+  // A Codex title is whatever was typed. `codex mcp login\n  mobbin` arrived
+  // with a real newline, which a one-line row cannot render.
+  expect(codexThreadLabel({ title: "codex mcp login\n  mobbin" }))
+    .toBe("codex mcp login mobbin");
 });
