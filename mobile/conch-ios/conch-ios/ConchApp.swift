@@ -66,6 +66,9 @@ struct ConchApp: App {
                 speech.reportSpeaking = { speaking, label in
                     Task { await bridge?.reportSpeaking(speaking, label: label) }
                 }
+                speech.reportSpoke = { text, reason in
+                    Task { await bridge?.reportSpoke(text, reason: reason) }
+                }
                 telemetry.report = { sample in
                     Task { await bridge?.reportDevice(sample) }
                 }

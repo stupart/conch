@@ -4877,6 +4877,25 @@ export async function runDaemon(cfg: Config): Promise<void> {
         // reading instead of an opinion, and a trend across a session is what
         // answers it. Low Power Mode is called out because it throttles the
         // CPU and has already been mistaken for a conch bug once.
+        // Why the phone talked.
+        //
+        // It speaks through iOS's own synthesiser, so nothing it says has ever
+        // appeared in this log — and when Tyler asked why conch spoke aloud in
+        // manual mode, the honest answer was that the Mac had not, and the
+        // phone leaves no trace either way. That is the same shape as the wake
+        // that could not be attributed: unanswerable until the thing doing it
+        // says so.
+        if (
+          typeof value === "object" && value !== null
+          && (value as { kind?: unknown }).kind === "phone-spoke"
+        ) {
+          const note = value as Record<string, unknown>;
+          const reason = typeof note.reason === "string" ? note.reason : "unknown";
+          const text = typeof note.text === "string" ? note.text.slice(0, 60) : "";
+          log(`phone spoke (${reason}): ${JSON.stringify(text)}`);
+          sock.end(JSON.stringify({ kind: "ack" }) + "\n");
+          return;
+        }
         if (
           typeof value === "object" && value !== null
           && (value as { kind?: unknown }).kind === "phone-device"
@@ -5611,8 +5630,18 @@ function printHelp(): void {
 }
 
 function log(msg: string): void {
-  const t = new Date().toTimeString().slice(0, 8);
-  logAbove(`[conch ${t}] ${msg}`);
+  // Date first, because this file is not a session — it is five days long.
+  //
+  // It carried the time only, and the log is never rotated, so entries from
+  // different days sat next to each other looking simultaneous. That is not
+  // theoretical: investigating why conch spoke aloud, I read "manual — holding
+  // honeyb" as current evidence twice, and both lines were from the previous
+  // day. A timestamp that can mislead the person reading it is worse than no
+  // timestamp, because it is trusted.
+  const now = new Date();
+  const day = `${now.getMonth() + 1}/${now.getDate()}`;
+  const t = now.toTimeString().slice(0, 8);
+  logAbove(`[conch ${day} ${t}] ${msg}`);
 }
 
 /** Seconds since the user last touched keyboard or mouse (macOS HID idle time). */
