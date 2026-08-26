@@ -21,6 +21,7 @@ import {
   type CodexSessionRegistryOptions,
 } from "./codex-sessions.ts";
 import { readCodexThreads } from "./codex-threads.ts";
+import { liveTranscriptPath, readClaudeTitles } from "./claude-title.ts";
 
 const LABELS_FILE = join(homedir(), ".config/conch/labels.json");
 const MAX_SESSION_LABEL_LENGTH = 40;
@@ -86,17 +87,64 @@ export async function findSession(claudeDir: string, sessionId: string): Promise
   } catch {
     return null;
   }
+  let match: any;
   for (const f of files) {
     try {
       const entry = await Bun.file(join(dir, f)).json();
-      if (entry.sessionId === sessionId) {
-        return toInfo(entry);
-      }
+      if (entry.sessionId !== sessionId) continue;
+      match = newer(match, entry);
     } catch {
       // stale or mid-write registry file; skip
     }
   }
-  return null;
+  return match ? currentName(toInfo(match), claudeDir) : null;
+}
+
+/**
+ * One session, two terminals.
+ *
+ * `claude --resume <id>` on a session whose first window is still open leaves
+ * two live processes writing one transcript, and the registry describes both —
+ * so conch listed the session twice, under two names, with one id between them.
+ * Tyler: "Is it correct how its showing two arch prime sessions right now? I
+ * think one is really arch-site". It was one session, resumed at 15:17 into a
+ * window opened at 10:39.
+ *
+ * The newer process wins because it is the one the person moved to, and because
+ * an id that resolves to two pids cannot route a reply: a wake would land in
+ * whichever terminal the directory happened to list first.
+ */
+function newer(current: any, candidate: any): any {
+  if (!current) return candidate;
+  return startedAt(candidate) >= startedAt(current) ? candidate : current;
+}
+
+function startedAt(entry: any): number {
+  return typeof entry?.startedAt === "number" ? entry.startedAt : 0;
+}
+
+function keepNewest(entries: Map<string, any>, entry: any): void {
+  entries.set(entry.sessionId, newer(entries.get(entry.sessionId), entry));
+}
+
+/**
+ * The registry's `name` is a snapshot of the title taken when the process
+ * started, and nothing refreshes it — so the window Tyler opened at 10:39 still
+ * called the session `arch site` hours after he renamed it to `arch-prime`, and
+ * a session renamed today keeps yesterday's name until it is restarted. The
+ * transcript's own `custom-title` is the current answer, and the one `/resume`
+ * shows.
+ *
+ * A generated title never displaces a registry name: the name a person typed
+ * outranks the one a model wrote, whichever is more recent.
+ */
+function currentName(info: SessionInfo, claudeDir: string): SessionInfo {
+  const path = info.transcriptPath
+    ?? liveTranscriptPath(claudeDir, info.cwd, info.sessionId);
+  if (!path) return info;
+  const titles = readClaudeTitles(path);
+  const name = titles.custom ?? info.name ?? titles.generated;
+  return name === info.name ? info : { ...info, name };
 }
 
 /** Project a raw registry JSON entry onto SessionInfo (keeps the fields conch actually uses). */
@@ -316,6 +364,7 @@ export async function registrySnapshot(
     claudeMissing = (error as NodeJS.ErrnoException).code === "ENOENT";
   }
   const infos: SessionInfo[] = [];
+  const claudeEntries = new Map<string, any>();
   const liveIds = new Set<string>();
   let complete = claudeAvailable || claudeMissing;
   for (const f of files) {
@@ -338,7 +387,10 @@ export async function registrySnapshot(
     }
     if (!entry.sessionId) continue;
     liveIds.add(entry.sessionId);
-    if (isEngageable(entry)) infos.push(toInfo(entry));
+    if (isEngageable(entry)) keepNewest(claudeEntries, entry);
+  }
+  for (const entry of claudeEntries.values()) {
+    infos.push(currentName(toInfo(entry), claudeDir));
   }
 
   const codex = readCodexSessions(options);
