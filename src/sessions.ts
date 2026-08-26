@@ -101,18 +101,20 @@ export async function findSession(claudeDir: string, sessionId: string): Promise
 }
 
 /**
- * One session, two terminals.
+ * One id, two windows — and both of them are real.
  *
- * `claude --resume <id>` on a session whose first window is still open leaves
- * two live processes writing one transcript, and the registry describes both —
- * so conch listed the session twice, under two names, with one id between them.
- * Tyler: "Is it correct how its showing two arch prime sessions right now? I
- * think one is really arch-site". It was one session, resumed at 15:17 into a
- * window opened at 10:39.
+ * `claude --resume <id>` in a second terminal keeps the id, so the registry can
+ * describe two live processes that share one. conch briefly collapsed them,
+ * reasoning that one transcript meant one session. Tyler: "ive been using both
+ * in the claude code tui - theyre both open and seem to have diverged with no
+ * problems". He was right, and the transcript proves it — the same file carries
+ * records from ~/arch-website and ~/arch-swap, on separate branches, minutes
+ * apart. Claude Code chains messages by parentUuid, so two windows write one
+ * file and neither sees the other's work.
  *
- * The newer process wins because it is the one the person moved to, and because
- * an id that resolves to two pids cannot route a reply: a wake would land in
- * whichever terminal the directory happened to list first.
+ * So both stay listed. This picks a target only where something must resolve an
+ * ambiguous id to ONE process, and it picks the newest so the answer is at
+ * least stable — the directory order it replaced was an APFS hash.
  */
 function newer(current: any, candidate: any): any {
   if (!current) return candidate;
@@ -123,17 +125,16 @@ function startedAt(entry: any): number {
   return typeof entry?.startedAt === "number" ? entry.startedAt : 0;
 }
 
-function keepNewest(entries: Map<string, any>, entry: any): void {
-  entries.set(entry.sessionId, newer(entries.get(entry.sessionId), entry));
-}
-
 /**
  * The registry's `name` is a snapshot of the title taken when the process
- * started, and nothing refreshes it — so the window Tyler opened at 10:39 still
- * called the session `arch site` hours after he renamed it to `arch-prime`, and
- * a session renamed today keeps yesterday's name until it is restarted. The
- * transcript's own `custom-title` is the current answer, and the one `/resume`
- * shows.
+ * started, and nothing refreshes it, so a session renamed today keeps
+ * yesterday's name until it restarts. The transcript's own `custom-title` is
+ * the current answer, and the one `/resume` shows.
+ *
+ * Only for a session with ONE window, though. Two windows sharing an id each
+ * hold their own name, and the transcript keeps just the last one written — so
+ * refreshing from it there would rename both to whatever one window is called,
+ * which is exactly how `arch site` briefly became a second `arch-prime`.
  *
  * A generated title never displaces a registry name: the name a person typed
  * outranks the one a model wrote, whichever is more recent.
@@ -364,7 +365,7 @@ export async function registrySnapshot(
     claudeMissing = (error as NodeJS.ErrnoException).code === "ENOENT";
   }
   const infos: SessionInfo[] = [];
-  const claudeEntries = new Map<string, any>();
+  const claudeEntries: any[] = [];
   const liveIds = new Set<string>();
   let complete = claudeAvailable || claudeMissing;
   for (const f of files) {
@@ -387,10 +388,17 @@ export async function registrySnapshot(
     }
     if (!entry.sessionId) continue;
     liveIds.add(entry.sessionId);
-    if (isEngageable(entry)) keepNewest(claudeEntries, entry);
+    if (isEngageable(entry)) claudeEntries.push(entry);
   }
-  for (const entry of claudeEntries.values()) {
-    infos.push(currentName(toInfo(entry), claudeDir));
+  // A session id is not a window. `claude --resume <id>` in a second terminal
+  // keeps the id, so two windows can share one — see `newer` below.
+  const windows = new Map<string, number>();
+  for (const entry of claudeEntries) {
+    windows.set(entry.sessionId, (windows.get(entry.sessionId) ?? 0) + 1);
+  }
+  for (const entry of claudeEntries) {
+    const info = toInfo(entry);
+    infos.push(windows.get(entry.sessionId) === 1 ? currentName(info, claudeDir) : info);
   }
 
   const codex = readCodexSessions(options);

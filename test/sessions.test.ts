@@ -325,21 +325,42 @@ describe("one session, two terminals", () => {
   }
   const opts = (claudeDir: string) => ({ configDir: join(claudeDir, "conch-config") });
 
-  test("a resumed session listed twice collapses onto the newer process", async () => {
+  test("two windows sharing one id both stay listed, each under its own name", async () => {
+    const f = fixture();
+    // Tyler had ~/arch-website and ~/arch-swap open in two terminals on one
+    // resumed id, working in both. Collapsing them hid a session he was using.
+    f.write(39889, { sessionId: "dup", name: "arch site", startedAt: 1_000 });
+    f.write(21210, { sessionId: "dup", name: "arch-prime", startedAt: 9_000 });
+    const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
+    expect(snap!.infos.map((s) => s.pid).sort()).toEqual([21210, 39889]);
+    expect(snap!.infos.map((s) => s.name).sort()).toEqual(["arch site", "arch-prime"]);
+    rmSync(f.claudeDir, { recursive: true, force: true });
+  });
+
+  test("a shared id resolves to one stable process, not whichever file came back first", async () => {
     const f = fixture();
     // Directory order is an APFS hash — not creation order, not sorted — so the
     // same two files are asserted both ways round. Whichever one the directory
     // hands over first, only "newest startedAt wins" answers both.
     for (const [older, newer] of [[39889, 21210], [21210, 39889]]) {
-      f.write(older, { sessionId: "dup", name: "arch site", startedAt: 1_000 });
-      f.write(newer, { sessionId: "dup", name: "arch-prime", startedAt: 9_000 });
-      const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
-      expect(snap!.infos).toHaveLength(1);
-      expect(snap!.infos[0].pid).toBe(newer); // the terminal he moved to, not the one he left
-      expect(snap!.infos[0].name).toBe("arch-prime");
-      // and a reply routes to that same pid, not whichever file came back first
+      f.write(older, { sessionId: "dup", name: "old window", startedAt: 1_000 });
+      f.write(newer, { sessionId: "dup", name: "resumed", startedAt: 9_000 });
       expect((await findSession(f.claudeDir, "dup"))?.pid).toBe(newer);
     }
+    rmSync(f.claudeDir, { recursive: true, force: true });
+  });
+
+  test("a rename shows up only where one window owns the id", async () => {
+    const f = fixture();
+    f.write(39889, { sessionId: "shared", name: "arch site", startedAt: 1_000 });
+    f.write(21210, { sessionId: "shared", name: "arch-prime", startedAt: 9_000 });
+    f.transcript("/Users/t/arch", "shared", [{ type: "custom-title", customTitle: "arch-prime" }]);
+    const two = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
+    // the transcript keeps only the last title written, so it must not rename both
+    expect(two!.infos.map((s) => s.name).sort()).toEqual(["arch site", "arch-prime"]);
+    rmSync(join(f.claudeDir, "sessions", "21210.json"));
+    const one = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
+    expect(one!.infos[0].name).toBe("arch-prime"); // sole window: refresh is safe
     rmSync(f.claudeDir, { recursive: true, force: true });
   });
 
