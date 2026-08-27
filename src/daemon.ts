@@ -1561,6 +1561,26 @@ export async function runDaemon(cfg: Config): Promise<void> {
       ?? known?.label
       ?? (session ? sessionLabel(session, session.cwd) : id.slice(0, 8));
   }
+  /**
+   * Translate a session id at the door, when it names a session that conch is
+   * addressing per window.
+   *
+   * Window keys are conch's own invention (see `window-key.ts`), so anything
+   * from outside — an agent that knows its own `session_id`, a hand-typed
+   * `conch wake <id>` — legitimately asks by the session. Nothing else in here
+   * has to know: by the time a message is dispatched it names a window.
+   */
+  function addressWindow(value: unknown): unknown {
+    if (typeof value !== "object" || value === null) return value;
+    const id = (value as { sessionId?: unknown }).sessionId;
+    if (typeof id !== "string" || !id || isKnownSessionId(id)) return value;
+    const windows = [...panelSessions.values()]
+      .filter((s) => s.agentSessionId === id)
+      .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+    // Two windows and no way to tell which was meant: the newest, the same
+    // answer `findSession` gives an ambiguous id.
+    return windows[0] ? { ...value, sessionId: windows[0].sessionId } : value;
+  }
   function isKnownSessionId(id: string): boolean {
     return panelSessions.has(id)
       || sessionStates.has(id)
@@ -4826,7 +4846,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       handled = true;
       let response: ControlResponse | undefined;
       try {
-        const value: unknown = JSON.parse(line);
+        const value: unknown = addressWindow(JSON.parse(line));
         const runtime = await dispatchRuntimeControlMessage(
           value,
           runtimeControlDispatchOptions,

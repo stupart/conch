@@ -11,7 +11,7 @@ import {
   parseReviewRequest,
 } from "./snippet.ts";
 import { currentTurnText } from "./transcript-turn.ts";
-import { findSession, sessionLabel, isEngageable } from "./sessions.ts";
+import { findHookWindow, sessionLabel, isEngageable } from "./sessions.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
 import { askClaude } from "./model.ts";
 
@@ -133,7 +133,7 @@ export async function runHook(cfg: Config): Promise<void> {
   if ((process.env.CLAUDE_CODE_ENTRYPOINT ?? "cli") !== "cli") return;
 
   const event = payload.hook_event_name ?? "";
-  const session = await findSession(cfg.claudeDir, payload.session_id ?? "");
+  const session = await findHookWindow(cfg.claudeDir, payload.session_id ?? "");
   const label = sessionLabel(session, payload.cwd);
 
   // Belt-and-braces: also drop by the registry entry when we can read it.
@@ -152,7 +152,7 @@ export async function runHook(cfg: Config): Promise<void> {
   if (event === "UserPromptSubmit") {
     await sendToDaemon(cfg.socketPath, {
       type: "working",
-      sessionId: payload.session_id ?? "",
+      sessionId: session?.sessionId ?? payload.session_id ?? "",
       label,
       cwd: payload.cwd,
       pid: session?.pid,
@@ -234,7 +234,7 @@ export async function runHook(cfg: Config): Promise<void> {
       : "";
     turn = {
       type: backgroundWork ? "working" : "turn-end",
-      sessionId: payload.session_id ?? "",
+      sessionId: session?.sessionId ?? payload.session_id ?? "",
       label,
       cwd: payload.cwd,
       pid: session?.pid,
@@ -258,7 +258,7 @@ export async function runHook(cfg: Config): Promise<void> {
     }
     turn = {
       type: "needs-you",
-      sessionId: payload.session_id ?? "",
+      sessionId: session?.sessionId ?? payload.session_id ?? "",
       label,
       cwd: payload.cwd,
       pid: session?.pid,
