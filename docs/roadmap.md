@@ -44,7 +44,7 @@ only by what exists.
 
 | | fix | lands in |
 |---|---|---|
-| A1 | **The artifact is hard to find, and the two apps disagree about it.** Design settled by Tyler 2026-08-20, below. | UI |
+| A1 | ~~**The artifact is hard to find, and the two apps disagree about it.**~~ — **done** (2026-08-20, `6baf30b` + `39c3b86`). Both apps default to the conversation and carry the artifact inline where it happened; on Mac, opening it switches the top tab, and on the phone — which has no tabs — it goes big as a sheet. Design as Tyler settled it, below. | UI |
 | A2 | **The Mac app does not respawn a dead daemon**, and hides the start toggle when it happens. `daemon-identity.ts` is written and tested; wiring is the other half. | C |
 | A3 | **Two ways to run the daemon** — launchd/tmux and the app. Two owners is the root of A2. | C |
 | A4 | ~~Multi-select by voice returns one option~~ — **fixed**. It was already returning sets after the parity pass, so this entry was stale; what was missing was "all of them", which is how people actually answer one out loud. | V |
@@ -126,7 +126,7 @@ Still worth doing separately (not blocking):
 
 | | add | lands in |
 |---|---|---|
-| B1 | **Per-kind metadata in the inspector** — transport, version, marketplace, skill visibility, tool approval mode. The readers already carry it; the Swift model discards it. *(in progress)* | UI |
+| B1 | ~~**Per-kind metadata in the inspector**~~ — **done**. Transport and endpoint, plugin version and marketplace, skill visibility and who may invoke it, tool approval mode: a summary line on every row, the full set in the expanded detail. The readers already carried it; the Swift model was discarding it, which is why two `context7` servers read identically when one runs a local binary and the other reaches a remote host. | UI |
 | B2 | **Change the model mid-session.** Both agents expose `/model`; Codex records per-thread model + effort, which the inspector already shows. Same shape as rename: a local slash command into a routable session. | V + UI |
 | B3 | **The write pass** — toggle plugins, skills, MCP servers, and per-tool permissions. Needs diff preview, scope, atomic write, readback, rollback, and the "next session" label. | C |
 | B4 | **The slash-command palette** — conch's own commands, provider commands, skills, MCP prompts, session actions, in one place. | C + UI |
@@ -185,8 +185,9 @@ Specifically:
 - **V** and **R** are touched by fewer things and could wait.
 
 **Finish first, because they are nearly done and would otherwise rot:**
-B1 (in progress right now), A1 (half fixed today), A4 (small, and a wrong
-answer rather than a missing one).
+~~B1~~, ~~A1~~, ~~A4~~ — all three done, along with A7, which was not on this
+list until Tyler ran two windows on one session id and found it. The line is
+now clear: the refactor is next.
 
 **Explicitly after the refactor:** everything in C, plus B3 and B4.
 
