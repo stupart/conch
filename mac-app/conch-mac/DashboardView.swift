@@ -1376,6 +1376,7 @@ private struct ConversationPane: View {
     @State private var composerFocusRequest = 0
     /// The session whose capabilities are being inspected, if any.
     @State private var inspectingSession: SessionRow?
+    @State private var debugExpandInspector = false
 
     /// False = the deliverable in front, which is the pane's long-standing
     /// default: a session that produced an artifact is showing it to you.
@@ -1649,7 +1650,23 @@ private struct ConversationPane: View {
             Text("conch will ask the agent to exit cleanly. Its transcript stays available to resume later.")
         }
         .sheet(item: $inspectingSession) { row in
-            CapabilityInspectorSheet(row: row) { inspectingSession = nil }
+            CapabilityInspectorSheet(row: row, expandAll: debugExpandInspector) {
+                inspectingSession = nil
+                debugExpandInspector = false
+            }
+        }
+        .onChange(of: store.debugInspectRequest) { _, wanted in
+            guard let wanted else { return }
+            store.debugInspectRequest = nil
+            // A trailing "!" asks for every row open — a capture proving what
+            // the detail renders, not a state any click can reach.
+            let expand = wanted.hasSuffix("!")
+            debugExpandInspector = expand
+            let target = expand ? String(wanted.dropLast()) : wanted
+            let rows = store.state?.rows ?? []
+            inspectingSession = target.isEmpty
+                ? selectedRow ?? rows.first
+                : rows.first { $0.id == target || $0.id.hasPrefix(target) || $0.label == target }
         }
     }
 

@@ -16,6 +16,10 @@ struct SessionDismissUndo: Equatable, Sendable {
 
 @MainActor
 final class StateStore: ObservableObject {
+    /// A debug request to open the capability inspector, by session id (empty
+    /// means the selected row). Cleared by the view once it acts on it.
+    @Published var debugInspectRequest: String?
+
     @Published private(set) var state: PublishedState?
     @Published private(set) var daemonMessage: String?
     @Published private(set) var liveness = DaemonLiveness.checking
@@ -99,6 +103,9 @@ final class StateStore: ObservableObject {
                     appendLogLines(result.logLines)
                 }
                 evaluateLiveness()
+                // Opening comes before the capture: a request to photograph a
+                // sheet has to reach the view a poll earlier than the shot.
+                if let wanted = DebugSnapshot.pendingInspection() { debugInspectRequest = wanted }
                 DebugSnapshot.serviceRequest()
 
                 do {

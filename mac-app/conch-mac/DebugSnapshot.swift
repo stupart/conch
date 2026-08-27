@@ -16,6 +16,26 @@ enum DebugSnapshot {
     /// Written by `conch shot <path>`; contains the destination path.
     static let requestPath = "/tmp/conch-shot.request"
 
+    /// Ask the app to OPEN something before it is photographed.
+    ///
+    /// A picture of the window only proves what was already on screen, so the
+    /// views that most need checking — sheets, reached by a menu on a row —
+    /// could not be verified without reaching for the user's mouse. This lets
+    /// the capture ask first. The value is a session id, or empty for the
+    /// selected row; anything it names is read-only either way.
+    static let inspectRequestPath = "/tmp/conch-inspect.request"
+
+    /// Read and clear a pending request to open the capability inspector.
+    @MainActor
+    static func pendingInspection() -> String? {
+        let manager = FileManager.default
+        guard manager.fileExists(atPath: inspectRequestPath) else { return nil }
+        let wanted = (try? String(contentsOfFile: inspectRequestPath, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        try? manager.removeItem(atPath: inspectRequestPath)
+        return wanted ?? ""
+    }
+
     /// Honour a pending request, if there is one. Cheap enough to call per poll.
     @MainActor
     static func serviceRequest() {
