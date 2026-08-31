@@ -3954,7 +3954,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // find speech — against a guaranteed multi-second delay on every single
       // press, which is what made the button feel broken. If a stray leading
       // token ever shows up in a transcript, this is the line that did it.
-      void micCue(cfg, "open");
+      // ...and not at all for a composer dictation, which is why the mic still
+      // waited 1.4s after the await was removed. Firing the cue does not
+      // decouple it: the very next thing on this path is reserveNormalMic,
+      // which awaits `quiescent()` — the audio gate that keeps the mic shut
+      // while conch is making any sound, and the reason the loop cannot hear
+      // itself. The cue is a sound, so the gate correctly waits for it. The
+      // measurements agreed exactly: `mic cue took 1.4s`, `mic armed 1.4s
+      // after the press`.
+      //
+      // So the gate stays and the sound goes. Pressing a mic beside a text
+      // field and watching it is already the feedback; a tink that costs a
+      // second and a half of latency to say what the button just said is a bad
+      // trade. A voice wake still cues, because there nothing is being watched.
+      if (!event.compose) void micCue(cfg, "open");
       if (shuttingDown || interruptedByPause()) {
         emitRecorderTraces(
           seededSegments.flatMap((segment) => segment.diagnosticIds),
