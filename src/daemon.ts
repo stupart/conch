@@ -123,6 +123,11 @@ import {
   type SessionInfo,
   claudeFolderTrusted,
 } from "./sessions.ts";
+import {
+  SessionLedger,
+  STATE_EVENT_TYPES,
+} from "./session-ledger.ts";
+export { TurnEventOrder } from "./session-ledger.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
 import {
   activeSessionIdForRows,
@@ -1107,8 +1112,6 @@ export async function resolveNameAddressRoute(
   return { kind: "deliver", event, text };
 }
 
-type OrderedTurnEvent = Pick<TurnEvent, "type" | "sessionId" | "eventAt">;
-const STATE_EVENT_TYPES = new Set<TurnEvent["type"]>(["working", "turn-end", "needs-you"]);
 const HANDOFF_URGENCY: Partial<Record<TurnEvent["type"], number>> = {
   working: 1,
   "turn-end": 2,
@@ -1205,43 +1208,6 @@ export function takeNextQueuedEvent(
     }
   }
   return queue.splice(selected, 1)[0];
-}
-
-function eventTimestamp(eventAt: unknown): number {
-  return typeof eventAt === "number" && Number.isFinite(eventAt) && eventAt > 0 ? eventAt : 0;
-}
-
-/**
- * Arrival can invert occurrence order because separate hooks do different I/O.
- * Keep the newest state event seen for each session before queued handling, and
- * use object identity to invalidate an older event already sitting in the queue.
- */
-export class TurnEventOrder {
-  readonly #latest = new Map<string, { at: number; event: OrderedTurnEvent }>();
-
-  accept(event: OrderedTurnEvent): boolean {
-    if (!event.sessionId || !STATE_EVENT_TYPES.has(event.type)) return true;
-    const at = eventTimestamp(event.eventAt);
-    const current = this.#latest.get(event.sessionId);
-    if (current && current.at > at) return false;
-    this.#latest.set(event.sessionId, { at, event });
-    return true;
-  }
-
-  isCurrent(event: OrderedTurnEvent): boolean {
-    if (!event.sessionId || !STATE_EVENT_TYPES.has(event.type)) return true;
-    return this.#latest.get(event.sessionId)?.event === event;
-  }
-
-  forget(sessionId: string): void {
-    this.#latest.delete(sessionId);
-  }
-
-  prune(liveIds: ReadonlySet<string>): void {
-    for (const id of this.#latest.keys()) {
-      if (!liveIds.has(id)) this.#latest.delete(id);
-    }
-  }
 }
 
 /** Keep dismissed sessions live in the registry while omitting their dashboard rows. */
@@ -1497,20 +1463,23 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let shuttingDown = false;
   let normalMicReserved = false;
   let bargeHandoffOpen = false;
-  const injectedAt = new Map<string, number>(); // session -> last time conch drove it
-  const pending = new Map<string, TurnEvent>(); // sessions that finished while paused — latest per session
+  const ledger = new SessionLedger();
+  // The ledger owns the per-session/window runtime facts, but exposes the raw
+  // collections so render and controller paths keep their existing shape.
+  const {
+    injectedAt,
+    pending,
+    sessionStates,
+    eventOrder,
+    pausedSessionIds,
+    resumedSessionIds,
+    prioritizedSessionIds,
+    dismissedSessionIds,
+    sessionHeldTurns,
+    dismissedHeldTurns,
+    latestTurnBySession,
+  } = ledger;
   const resumeTransitions = new WeakMap<TurnEvent, Promise<PauseResumeResult>>();
-  // Live session status for the dashboard panel — replaces the spoken "needs you"
-  // nag with a glanceable visual: working (you submitted a prompt) / waiting (turn
-  // ended, ready for you) / needs (a permission/idle notification fired).
-  const sessionStates = new Map<string, {
-    label: string;
-    status: SessionStatus;
-    detail?: string;
-    at: number;
-    review?: { summary: string; link?: string };
-  }>();
-  const eventOrder = new TurnEventOrder();
   // Footer mode keeps its established persistent picker untouched. Theater uses
   // a separate active anchor + explicitly released parked cursor below.
   let panelOrder: string[] = [];
@@ -1529,17 +1498,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let terminalComposer: TerminalComposer | null = null;
   let terminalQuestionController: TerminalQuestionController | null = null;
   let meetingMic: MicClaimPoller | null = null;
-  // Per-session manual mode holds only the newest turn for replay.
-  const pausedSessionIds = new Set<string>();
-  // Sessions resumed by name out of a global pause. Cleared on every global
-  // edge: a new pause pauses everything, and a global resume makes the
-  // exemption meaningless.
-  const resumedSessionIds = new Set<string>();
-  const prioritizedSessionIds = new Set<string>();
-  const dismissedSessionIds = new Set<string>();
-  const sessionHeldTurns = new Map<string, TurnEvent>();
-  const dismissedHeldTurns = new Map<string, TurnEvent>();
-  const latestTurnBySession = new Map<string, TurnEvent>();
   const cancelledAudioCommands = new WeakSet<TurnEvent>();
   const instantQueueBarriers = new WeakSet<TurnEvent>();
   const cancelQueuedAudioCommand = (event: TurnEvent): void => {
@@ -1583,14 +1541,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   }
   function isKnownSessionId(id: string): boolean {
     return panelSessions.has(id)
-      || sessionStates.has(id)
-      || latestTurnBySession.has(id)
-      || dismissedSessionIds.has(id)
-      || pausedSessionIds.has(id)
-      || prioritizedSessionIds.has(id)
-      || sessionHeldTurns.has(id)
-      || dismissedHeldTurns.has(id)
-      || pending.has(id)
+      || ledger.isKnown(id)
       || recitingEvent?.sessionId === id
       || handlingEvent?.sessionId === id;
   }
@@ -2221,30 +2172,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // delete a live session's latch (e.g. a pending "needs"), which never re-fires.
     if (snap?.complete) {
       const liveIds = new Set(registryLive.map((s) => s.sessionId));
-      const trackedIds = new Set([
-        ...sessionStates.keys(),
-        ...pausedSessionIds,
-        ...prioritizedSessionIds,
-        ...dismissedSessionIds,
-        ...sessionHeldTurns.keys(),
-        ...dismissedHeldTurns.keys(),
-        ...latestTurnBySession.keys(),
-        ...pending.keys(),
-      ]);
-      for (const id of trackedIds) {
-        if (liveIds.has(id)) continue;
-        sessionStates.delete(id);
-        eventOrder.forget(id);
-        pausedSessionIds.delete(id);
-        resumedSessionIds.delete(id);
-        prioritizedSessionIds.delete(id);
-        dismissedSessionIds.delete(id);
-        sessionHeldTurns.delete(id);
-        dismissedHeldTurns.delete(id);
-        latestTurnBySession.delete(id);
-        pending.delete(id);
-      }
-      eventOrder.prune(liveIds);
+      ledger.forgetGone(liveIds);
     }
     const live = withoutDismissedSessions(registryLive, dismissedSessionIds);
     const liveState = getLiveState(); // what conch is doing right now, if anything
@@ -2675,16 +2603,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       )
     ) {
       log(`skipping "${event.label}" — session closed`);
-      sessionStates.delete(event.sessionId);
-      eventOrder.forget(event.sessionId);
-      latestTurnBySession.delete(event.sessionId);
-      pausedSessionIds.delete(event.sessionId);
-      resumedSessionIds.delete(event.sessionId);
-      prioritizedSessionIds.delete(event.sessionId);
-      dismissedSessionIds.delete(event.sessionId);
-      sessionHeldTurns.delete(event.sessionId);
-      dismissedHeldTurns.delete(event.sessionId);
-      pending.delete(event.sessionId);
+      ledger.forget(event.sessionId);
       if (lastTurn?.sessionId === event.sessionId) lastTurn = null;
       void renderSessionPanel();
       return;
