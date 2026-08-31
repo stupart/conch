@@ -1848,6 +1848,41 @@ export async function runDaemon(cfg: Config): Promise<void> {
   }
 
   /** An unscoped audio command must never reopen the conversation the user hid. */
+  /**
+   * Pay a transcript's one expensive read in the background, before anything
+   * needs it.
+   *
+   * `countUserPrompts` is the only reader that must see the WHOLE file: with no
+   * cached prompt count it scans from byte zero (`snippet.ts`, the
+   * `requirement === "prompts"` branch), which measured 3.77s on a 189MB
+   * session. Every other read takes the cheap tail path — and that is exactly
+   * what hid this, because reading replies aloud kept the cache warm for
+   * `assistant` while leaving `userPrompts` undefined, so the first prompt
+   * count still paid full price.
+   *
+   * Once it has been counted once, the reader resumes from the cached state and
+   * parses only what was appended, so this is a one-off per session and every
+   * later call is effectively free. Tyler: "or preload or idk theres a ton of
+   * stuff we could do" — this is that, and it is a smaller change than making
+   * the count unnecessary.
+   *
+   * Serialized deliberately. Restoring turns at startup can hand us several
+   * sessions at once, and three simultaneous full scans of 200MB files is a
+   * thundering herd on the exact machine that is already busy.
+   */
+  function warmTranscript(path: string | undefined): void {
+    if (!path || warmedTranscripts.has(path)) return;
+    warmedTranscripts.add(path);
+    warmQueue = warmQueue
+      .then(() => transcriptMark(path))
+      .then(
+        () => {},
+        // Never fatal, and never sticky: a transcript that was not readable yet
+        // must be retried the next time its session speaks.
+        () => void warmedTranscripts.delete(path),
+      );
+  }
+
   function latestVisibleTurn(): TurnEvent | null {
     return lastTurn && !dismissedSessionIds.has(lastTurn.sessionId) ? lastTurn : null;
   }
@@ -1855,6 +1890,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   function enqueue(incoming: TurnEvent): void {
     if (shuttingDown) return;
     const event = incoming;
+    warmTranscript(event.transcriptPath);
     if (!eventOrder.accept(event)) return;
 
     // Answering a session must not wait for a DIFFERENT session to finish
@@ -1951,6 +1987,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let panelRenderVersion = 0;
   let lastPublishedPanelState: PublishedState | null = null;
   let lastPanelModel: PanelModel | null = null;
+  const warmedTranscripts = new Set<string>();
+  let warmQueue: Promise<unknown> = Promise.resolve();
   const reportedMissingCodexPid = new Set<string>();
   const recordDaemonError = (
     operation: string,
@@ -2416,7 +2454,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const restored = await rehydrateLatestTurns({
         sessions,
         latest: latestTurnBySession,
-        transcriptFor: (sessionId) => findTranscript(cfg.claudeDir, sessionId),
+        transcriptFor: (sessionId) => {
+          const path = findTranscript(cfg.claudeDir, sessionId);
+          // Startup is the case that actually hurt: reconstructed turns never
+          // enter enqueue, so without this the FIRST wake after a daemon
+          // restart still paid the whole scan — which is exactly what happened
+          // on 08-30, twelve seconds between the click and the mic.
+          warmTranscript(path ?? undefined);
+          return path;
+        },
         readAssistant: lastAssistantText,
         labelFor: (session) => sessionLabel(session, session.cwd),
         maxChars: cfg.speakMaxChars,
