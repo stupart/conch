@@ -1468,6 +1468,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let pause!: PauseController; // "away" mode: quiet, but HOLD finished sessions to replay on resume
   let stopKey = false; // spacebar pressed while reciting — the guaranteed interrupt
   let micOpen = false; // true while a dictation/permission listen is in flight — spacebar closes it
+  let micRequestedAt: number | null = null; // set when a wake is accepted, cleared when the mic opens
   let activeDictation: {
     session: RuntimeDictationSession;
     requestExternal(action: ExternalDictationAction, barrierReason?: string): void;
@@ -1809,8 +1810,15 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   const micCue = async (cueCfg: Config, kind: "open" | "close" | "sent"): Promise<void> => {
     if (!cueCfg.micCues) return;
+    const started = Date.now();
     await speech.playCue(CUE_SOUND[kind], `${kind} mic cue`);
     if (kind === "open") await Bun.sleep(350); // let the cue's tail decay before sox arms
+    // Reported only when it is slow enough to be felt. The cue is a sound plus
+    // a deliberate settle, so it is never free — but if it grows into seconds
+    // it is indistinguishable from the mic being broken, which is exactly how
+    // the last two delays were experienced.
+    const took = Date.now() - started;
+    if (kind === "open" && took > 700) log(`mic cue took ${(took / 1000).toFixed(1)}s`);
   };
 
   const ringBell = async (): Promise<void> => {
@@ -2835,6 +2843,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
           return;
         }
         log(`wake -> "${target.label}" (${event.origin ?? "unattributed"})`);
+        // Stamped so the mic can report how long it took to open. A person
+        // pressing a button experiences ONE number — click to "listening" —
+        // and every time that number grew, the cause was somewhere nobody was
+        // measuring: a TTS announcement, then a cold transcript scan. It is
+        // cheap to make the path say so itself rather than reconstruct it from
+        // two log timestamps after the fact.
+        micRequestedAt = Date.now();
         if (cfg.revealOnTurn && target.pid) void revealSessionWindow(target.pid); // surface it, no focus steal
         resetReadingProgress();
         // The courtesy line must never delay the thing it is announcing.
@@ -3924,7 +3939,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
     }
     const initialWindow = seededSegments.length ? cfg.holdSubmitSecs : cfg.listenWindowSecs;
-    log(`listening → "${event.label}" (start within ${initialWindow}s)${seededSegments.length ? " · holding" : ""}...`);
+    const openedIn = micRequestedAt ? ` · ${((Date.now() - micRequestedAt) / 1000).toFixed(1)}s after the press` : "";
+    micRequestedAt = null;
+    log(`listening → "${event.label}" (start within ${initialWindow}s)${seededSegments.length ? " · holding" : ""}${openedIn}...`);
     if (shuttingDown || (interruptedByPause() && !initialDictationCapture)) return;
     let needsCapture = attachedInitialCapture || Boolean(initialDictationCapture)
       || (!deferredInitialExternal && !interruptedByPause());
