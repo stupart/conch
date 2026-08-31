@@ -84,3 +84,37 @@ test("press-to-open is measured at the arm, not at the decision", () => {
   expect(daemon).toContain("onArmed?.();");
   expect(loop).toContain("reportArmed,");
 });
+
+/**
+ * A composer dictation makes no sound at all before the mic opens.
+ *
+ * Firing the cue instead of awaiting it did NOT decouple them, and the
+ * measurements said so exactly: `mic cue took 1.4s` beside `mic armed 1.4s
+ * after the press`. The next thing on this path is `reserveNormalMic`, which
+ * awaits `quiescent()` — the audio gate that keeps the mic shut while conch is
+ * making any sound, and the reason the loop cannot hear itself. The cue is a
+ * sound, so the gate correctly waited for it.
+ *
+ * The gate stays. The sound goes — for the visual exchange only, on the same
+ * argument as the spoken announcement: you pressed a mic beside a text field
+ * and you are watching it.
+ */
+test("no cue is played before a composer dictation's mic opens", () => {
+  const loop = daemon.slice(daemon.indexOf("async function conversationLoop"));
+  const beforeListening = loop.slice(0, loop.indexOf('log(`listening → '));
+
+  expect(beforeListening).toContain('if (!event.compose) void micCue(cfg, "open")');
+
+  // The gate itself must remain ON THIS PATH — `reserveNormalMic` is called
+  // from several branches, so asserting it merely exists lets the main one be
+  // deleted while the test still passes. It sits between the decision to listen
+  // and the recorder starting, which is the window that matters: it is what
+  // stops the loop hearing itself, and the fix here is to make less noise,
+  // never to open the mic through sound.
+  const afterDecision = loop.slice(loop.indexOf('log(`listening → '));
+  const gate = afterDecision.indexOf("await reserveNormalMic()");
+  const start = afterDecision.indexOf("session.start(");
+  expect(gate).toBeGreaterThan(-1);
+  expect(start).toBeGreaterThan(-1);
+  expect(gate).toBeLessThan(start);
+});
