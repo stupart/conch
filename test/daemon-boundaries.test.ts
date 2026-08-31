@@ -286,9 +286,18 @@ describe("the phone owns the ear, not just the voice", () => {
       daemonSource.indexOf("async function conversationLoop"),
       daemonSource.indexOf('log(`listening → '),
     );
-    const openIndex = loop.indexOf('await micCue(cfg, "open")');
+    // Matched without `await`: the cue is now FIRED rather than awaited, because
+    // waiting for it was the entire press-to-listening delay. The ordering this
+    // test protects is unchanged and still the point — the lease decides whether
+    // this Mac may open its mic at all, so it has to be settled before the cue
+    // that announces the mic, awaited or not.
+    const openIndex = loop.indexOf('micCue(cfg, "open")');
     const gateIndex = loop.indexOf("audioLease.isPhone()");
+    // Both must EXIST before their order means anything: `indexOf` returns -1
+    // for a missing string, and -1 sorts before every real index, so an
+    // ordering assertion alone silently passes when a line is deleted.
     expect(gateIndex).toBeGreaterThan(-1);
+    expect(openIndex).toBeGreaterThan(-1);
     expect(gateIndex).toBeLessThan(openIndex);
   });
 });
