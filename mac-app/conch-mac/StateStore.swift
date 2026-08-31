@@ -134,7 +134,22 @@ final class StateStore: ObservableObject {
         let previousDelivery = deliveryTask
 
         let task = Task { @MainActor [weak self] in
-            _ = await previousDelivery?.value
+            // Bounded, because this chain used to be unlimited.
+            //
+            // Every control waits for the one before it, which is right: each
+            // send opens its own socket, so without ordering a stop could
+            // overtake the wake it was meant to end. But an UNBOUNDED wait
+            // makes one slow send swallow every press behind it. The daemon log
+            // caught it: a stop pressed at ~19:13:56 and a second one at
+            // 19:14:15 both arrived in the same second, nineteen seconds after
+            // the first press, with Tyler saying "it didn't stop listening
+            // after I pressed so I'm pressing it again" in between — into a mic
+            // that was still open because his stop was still queued.
+            //
+            // A healthy send over a unix socket is sub-millisecond, so this
+            // waits far longer than ordering ever needs and then proceeds. The
+            // previous delivery is NOT cancelled; it finishes on its own.
+            await Self.awaitDelivery(previousDelivery, within: .milliseconds(250))
             guard !Task.isCancelled else { return false }
             let delivered = await socketClient.send(event)
             if let self, !delivered {
@@ -151,6 +166,24 @@ final class StateStore: ObservableObject {
         }
         deliveryTask = task
         return task
+    }
+
+    /// Wait for a prior delivery, but never longer than `timeout`.
+    ///
+    /// Racing rather than cancelling: whichever finishes first releases the
+    /// caller, and the delivery keeps going either way. A control that is late
+    /// is still worth sending — it is a person pressing a button.
+    private static func awaitDelivery(
+        _ delivery: Task<Bool, Never>?,
+        within timeout: Duration
+    ) async {
+        guard let delivery else { return }
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { _ = await delivery.value }
+            group.addTask { try? await Task.sleep(for: timeout) }
+            await group.next()
+            group.cancelAll()
+        }
     }
 
     /// Tell the daemon the machine woke.
