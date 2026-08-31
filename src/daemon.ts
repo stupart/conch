@@ -992,6 +992,8 @@ export function enrichTargetedAudioCommand(
 
 export interface SocketTurnEventCallbacks {
   busy(): boolean;
+  /** Is a microphone actually open? Not the same question as `busy`. */
+  capturing?(): boolean;
   stopSpacebar(): void;
   /** Told when a stop arrived with nothing running, so it leaves a trace. */
   droppedStop?(): void;
@@ -1017,12 +1019,15 @@ export function dispatchSocketTurnEvent(
 ): void {
   const event = incoming;
   if (event.type === "spacebar") {
-    // A stop that finds nothing to stop must SAY so. This returned in silence,
-    // which makes a dead control indistinguishable from a working one — the
-    // exact failure we had just fixed on the button that sends it. The physical
-    // key is not symmetric with this: it falls through to opening the mic
-    // (`c === " "` in the key handler), so only the socket path can no-op.
-    if (callbacks.busy()) callbacks.stopSpacebar();
+    // `busy` is the DRAIN LOOP's flag, and an open mic is not always inside it:
+    // a lightweight targeted wake takes the instant path, which never sets it.
+    // So this asked "is the queue working?" when the only question that matters
+    // is "is the microphone open?" — and dropped the stop while conch was
+    // audibly listening. Six of them in one attempt, all logged as ignored by
+    // the line below, which is how we found it. `capturing` is the daemon's own
+    // `normalMicOpen()`, the same predicate `stopReciting` uses to decide
+    // whether it is closing a mic or just stopping speech.
+    if (callbacks.busy() || callbacks.capturing?.()) callbacks.stopSpacebar();
     else callbacks.droppedStop?.();
     return;
   }
@@ -3700,9 +3705,28 @@ export async function runDaemon(cfg: Config): Promise<void> {
         void session.abort().catch((error) => log(`pause interrupt cleanup failed: ${error}`));
       }
     }
-    manualReplyEvent = interruptedByPause()
-      ? { transcriptPath: event.transcriptPath, mark: event.mark }
-      : await manualReplyListenBaseline(event);
+    // Started here, awaited where it is USED — never before the mic opens.
+    //
+    // The baseline calls countUserPrompts, which on a cold cache reads the
+    // whole transcript: measured at 3.8s on Tyler's 189MB conch session. The
+    // daemon log shows what that costs from the outside — a wake at 23:18:44
+    // and `listening` at 23:18:56, TWELVE seconds after the click, then three
+    // on the next wake once the cache was warm. The reader is incremental for
+    // appends, so only the first scan is expensive; the bug is that the first
+    // scan sat between arming the recorder and telling anyone it was listening.
+    //
+    // Nothing needs it to OPEN a microphone. It is needed when the manual-reply
+    // guard is built, which is after listening has begun, so it is awaited
+    // there. It cannot reject into an unhandled rejection while it waits: a
+    // failure degrades to the event's own values, the same shape the paused
+    // branch already uses.
+    const manualReplyBaseline: Promise<Pick<TurnEvent, "transcriptPath" | "mark">> =
+      interruptedByPause()
+        ? Promise.resolve({ transcriptPath: event.transcriptPath, mark: event.mark })
+        : manualReplyListenBaseline(event).catch((error) => {
+          log(`transcript baseline failed, replies may not interrupt: ${error}`);
+          return { transcriptPath: event.transcriptPath, mark: event.mark };
+        });
     if (interruptedByPause() && !initialDictationCapture) return;
 
     const expandDiagnosticIds = (ids: Iterable<string>): string[] => {
@@ -3889,6 +3913,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (interruptedByPause() && session.state === "running") {
       void session.abort().catch((error) => log(`pause interrupt cleanup failed: ${error}`));
     } else if (session.state === "running") {
+      manualReplyEvent = await manualReplyBaseline;
       manualReplyGuard = createManualReplyListenGuard(
         manualReplyEvent,
         session,
@@ -4679,6 +4704,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   };
   const socketTurnCallbacks: SocketTurnEventCallbacks = {
     busy: () => busy,
+    capturing: () => normalMicOpen(),
     stopSpacebar: () => stopReciting("spacebar"),
     droppedStop: () => log("stop arrived with nothing running — ignored"),
     setSessionPaused: (sessionId, paused) => instantControls.setSessionPaused(sessionId, paused),
@@ -5539,7 +5565,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
         return;
       }
       if (c === " ") {
-        if (busy) stopReciting("spacebar");
+        // Same question as the socket path: an open mic is what space closes,
+        // and a mic opened by the instant path leaves `busy` false. Without
+        // `normalMicOpen()` this fell through and opened a SECOND wake while
+        // the first was still listening.
+        if (busy || normalMicOpen()) stopReciting("spacebar");
         else if (theaterMode && theaterActionTarget()) dictateToTerminalComposer(theaterActionTarget()!);
         else if (selectedId) wakeBySessionId(selectedId); // talk to the selected session
         else enqueue({ type: "wake", sessionId: "", label: "", announce: "", origin: "user" }); // else the last-announced
