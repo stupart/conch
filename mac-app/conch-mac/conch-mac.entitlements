@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The app does not record; the daemon it spawns runs sox. But macOS
+	     attributes a child's microphone use to the responsible app bundle, and
+	     under Hardened Runtime that bundle needs this entitlement. Without it
+	     sox opens the device, receives silence, and whisper fails on an empty
+	     buffer - with no error anywhere in the chain. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>
