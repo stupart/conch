@@ -993,6 +993,8 @@ export function enrichTargetedAudioCommand(
 export interface SocketTurnEventCallbacks {
   busy(): boolean;
   stopSpacebar(): void;
+  /** Told when a stop arrived with nothing running, so it leaves a trace. */
+  droppedStop?(): void;
   setSessionPaused(sessionId: string, paused: boolean): void;
   isDismissedSession?(sessionId: string): boolean;
   enrichAudioCommand(event: InstantAudioCommand): InstantAudioCommand;
@@ -1015,7 +1017,13 @@ export function dispatchSocketTurnEvent(
 ): void {
   const event = incoming;
   if (event.type === "spacebar") {
+    // A stop that finds nothing to stop must SAY so. This returned in silence,
+    // which makes a dead control indistinguishable from a working one — the
+    // exact failure we had just fixed on the button that sends it. The physical
+    // key is not symmetric with this: it falls through to opening the mic
+    // (`c === " "` in the key handler), so only the socket path can no-op.
     if (callbacks.busy()) callbacks.stopSpacebar();
+    else callbacks.droppedStop?.();
     return;
   }
 
@@ -2790,10 +2798,22 @@ export async function runDaemon(cfg: Config): Promise<void> {
         // the confirmation plays is what makes the loop hear itself, which is
         // the one thing the audio gate exists to prevent. Three seconds is long
         // enough for four words and short enough to feel like a button.
-        await Promise.race([
-          speak(cfg, `Mic open for ${target.label}.`, target.label, true),
-          Bun.sleep(3_000),
-        ]);
+        // Not for a dictation into the composer. That exchange is VISUAL —
+        // you clicked a mic beside a text field and you are watching it — so
+        // the spoken line buys nothing and costs the two things that make a
+        // button feel broken. It delays the mic (this wake announced for three
+        // seconds and the mic opened five seconds after the click, because TTS
+        // had fallen back to `say` again), and while it plays the live state is
+        // `speaking`, which the composer renders as "reading" — so the control
+        // you pressed to talk reports that conch is reading TO you. Tyler:
+        // "clicking it turns it on (but it says reading first for some reason)".
+        // A voice wake still announces: there, the speech IS the interface.
+        if (!target.compose) {
+          await Promise.race([
+            speak(cfg, `Mic open for ${target.label}.`, target.label, true),
+            Bun.sleep(3_000),
+          ]);
+        }
         if (interruptedByPause()) return;
         await conversationLoop(target, "", undefined, undefined, undefined, undefined, undefined, undefined, false, pauseGeneration);
       } finally {
@@ -4660,6 +4680,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const socketTurnCallbacks: SocketTurnEventCallbacks = {
     busy: () => busy,
     stopSpacebar: () => stopReciting("spacebar"),
+    droppedStop: () => log("stop arrived with nothing running — ignored"),
     setSessionPaused: (sessionId, paused) => instantControls.setSessionPaused(sessionId, paused),
     isDismissedSession: (sessionId) => dismissedSessionIds.has(sessionId),
     enrichAudioCommand: enrichSocketAudioCommand,

@@ -1393,7 +1393,21 @@ private struct ConversationPane: View {
     /// which reads as though conch is about to send them everywhere.
     /// What conch's voice loop is doing for the session in front of you.
     private var voiceStateForFocusedRow: String {
-        guard let state, let row = focusedRow else { return "" }
+        guard let row = focusedRow else { return "" }
+        return voiceState(for: row)
+    }
+
+    /// What the mic is doing FOR THIS ROW.
+    ///
+    /// The composer is built per row, and its mic both draws from this and acts
+    /// on it — so reading the focused row's state instead of its own is a
+    /// divergence waiting to happen: whenever focus and the rendered row differ,
+    /// the button shows one session's state while its click addresses another's.
+    /// A control that can disagree with itself about what pressing it will do is
+    /// the same shape as the denylist bug that made this button dead in manual
+    /// mode, so it reads its own row now and cannot drift.
+    private func voiceState(for row: SessionRow) -> String {
+        guard let state else { return "" }
         guard state.live.label.isEmpty || state.live.label == row.label else { return "" }
         return state.live.state
     }
@@ -1761,7 +1775,7 @@ private struct ConversationPane: View {
             attachments: composerDrafts.attachmentsBinding(for: row.id),
             dictation: dictationForFocusedRow,
             isWorking: row.status == .working,
-            voiceState: voiceStateForFocusedRow,
+            voiceState: voiceState(for: row),
             onSend: { text in
                 store.send(.inject(sessionId: row.id, label: row.label, text: text))
             },
@@ -1774,7 +1788,7 @@ private struct ConversationPane: View {
                 // looks like it is running had no way to stop the thing it
                 // was showing — you had to find the spacebar, which a text
                 // field now swallows anyway.
-                if LiveState.isExchangeActive(voiceStateForFocusedRow) {
+                if LiveState.isExchangeActive(voiceState(for: row)) {
                     store.send(.stop())
                 } else {
                     // The mic BESIDE a text field fills that field. It used to

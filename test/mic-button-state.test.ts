@@ -72,7 +72,9 @@ test("every state the daemon publishes is classified by the app", () => {
 
 test("the button asks the shared predicate, not its own inline guess", () => {
   const dashboard = read("mac-app/conch-mac/DashboardView.swift");
-  expect(dashboard).toContain("if LiveState.isExchangeActive(voiceStateForFocusedRow) {");
+  // Scoped to the composer's own row, not the focused one — see
+  // "the composer's mic is scoped to the row it belongs to".
+  expect(dashboard).toContain("if LiveState.isExchangeActive(voiceState(for: row)) {");
   // The denylist that caused this, in either spelling.
   expect(dashboard).not.toContain('voiceStateForFocusedRow.isEmpty || voiceStateForFocusedRow == "idle"');
 
