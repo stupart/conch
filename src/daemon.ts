@@ -126,6 +126,7 @@ import {
 import {
   SessionLedger,
   STATE_EVENT_TYPES,
+  eventTimestamp,
 } from "./session-ledger.ts";
 export { TurnEventOrder } from "./session-ledger.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";

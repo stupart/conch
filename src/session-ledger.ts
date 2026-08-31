@@ -9,7 +9,7 @@ export const STATE_EVENT_TYPES: ReadonlySet<TurnEvent["type"]> = new Set([
   "needs-you",
 ]);
 
-function eventTimestamp(eventAt: unknown): number {
+export function eventTimestamp(eventAt: unknown): number {
   return typeof eventAt === "number" && Number.isFinite(eventAt) && eventAt > 0 ? eventAt : 0;
 }
 
