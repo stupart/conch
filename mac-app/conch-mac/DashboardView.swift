@@ -1774,14 +1774,14 @@ private struct ConversationPane: View {
                 // looks like it is running had no way to stop the thing it
                 // was showing — you had to find the spacebar, which a text
                 // field now swallows anyway.
-                if voiceStateForFocusedRow.isEmpty || voiceStateForFocusedRow == "idle" {
+                if LiveState.isExchangeActive(voiceStateForFocusedRow) {
+                    store.send(.stop())
+                } else {
                     // The mic BESIDE a text field fills that field. It used to
                     // send the spoken half straight past the composer into the
                     // session, so what you typed and what you said could not be
                     // one message.
                     store.send(.dictate(sessionId: row.id, label: row.label))
-                } else {
-                    store.send(.stop())
                 }
             },
             onRecite: {
