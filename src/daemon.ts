@@ -1282,6 +1282,8 @@ export function listenHooks(
     setState(state: ConchState, label?: string, partial?: string): void;
     setTranscriptPrefix(prefix: string): void;
   } = { setState, setTranscriptPrefix },
+  /** Called the first time the recorder actually arms — the honest "you can talk now". */
+  onArmed?: () => void,
 ): ListenHooks {
   const refreshTranscriptPrefix = (): void => {
     if (transcriptPrefix) status.setTranscriptPrefix(transcriptPrefix());
@@ -1295,7 +1297,10 @@ export function listenHooks(
       // Refresh before the visible state transition: setState intentionally
       // preserves the prefix, so theater never paints a stale one in between.
       refreshTranscriptPrefix();
-      if (state === "armed") status.setState("listening", label);
+      if (state === "armed") {
+        onArmed?.();
+        status.setState("listening", label);
+      }
       else if (state === "capturing") status.setState("recording", label);
       else status.setState("transcribing", label);
     },
@@ -3663,9 +3668,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // ordered paths while the single worker transcribes older paths; only the
     // reducer mutates held text or authorizes a cue/TTS/injection at a barrier.
     const reducer = new DictationReducer({ holdSubmit: cfg.holdSubmit });
+    const reportArmed = (): void => {
+      if (!micRequestedAt) return;
+      const took = Date.now() - micRequestedAt;
+      micRequestedAt = null;
+      log(`mic armed ${(took / 1000).toFixed(1)}s after the press`);
+    };
     const session = createDictationSession(cfg, listenHooks(
       event.label,
       () => reducer.snapshot.buffer.map((segment) => segment.text).join(" "),
+      undefined,
+      reportArmed,
     ), {
       parent: traceParent ?? initialCaptureParent,
       traceSequence: nextTraceSequence,
@@ -3954,9 +3967,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
     }
     const initialWindow = seededSegments.length ? cfg.holdSubmitSecs : cfg.listenWindowSecs;
-    const openedIn = micRequestedAt ? ` · ${((Date.now() - micRequestedAt) / 1000).toFixed(1)}s after the press` : "";
-    micRequestedAt = null;
-    log(`listening → "${event.label}" (start within ${initialWindow}s)${seededSegments.length ? " · holding" : ""}${openedIn}...`);
+    // Deliberately carries no timing. This line prints when conch DECIDES to
+    // listen, and the recorder has not been armed yet — so the "0.0s after the
+    // press" it used to claim was true and useless: it measured the daemon
+    // agreeing with itself. The number a person feels is press to armed, and
+    // that is reported from the arm itself, below.
+    log(`listening → "${event.label}" (start within ${initialWindow}s)${seededSegments.length ? " · holding" : ""}...`);
     if (shuttingDown || (interruptedByPause() && !initialDictationCapture)) return;
     let needsCapture = attachedInitialCapture || Boolean(initialDictationCapture)
       || (!deferredInitialExternal && !interruptedByPause());
