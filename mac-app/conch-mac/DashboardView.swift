@@ -1376,13 +1376,17 @@ private struct ConversationPane: View {
     @State private var composerFocusRequest = 0
     /// The session whose capabilities are being inspected, if any.
     @State private var inspectingSession: SessionRow?
+    @State private var debugExpandInspector = false
 
     /// False = the deliverable in front, which is the pane's long-standing
     /// default: a session that produced an artifact is showing it to you.
     /// This state only ever loses to that default — a NEW artifact resets it
     /// (see the onChange below), because a fresh deliverable is the agent
     /// asking to be looked at, not background noise to read past.
-    @State private var showsConversation = false
+    /// Where you land: the conversation, because talking is the common case and
+    /// being dropped into a document you did not ask for means switching back.
+    /// The artifact is reached from its preview inline, which also flips this.
+    @State private var showsConversation = true
 
     /// Only the session actually being dictated to shows the live transcript.
     /// Without the label check every open composer would mirror the same words,
@@ -1574,6 +1578,8 @@ private struct ConversationPane: View {
                                     )
                                 )
                             },
+                            artifact: row.review,
+                            onOpenArtifact: { showsConversation = false },
                             onFreeform: { composerFocusRequest += 1 }
                         )
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1601,11 +1607,12 @@ private struct ConversationPane: View {
             await transcriptContent.monitor(row: watchesTranscriptForRow)
         }
         .onChange(of: selectedReview?.id) { _, current in
-            // Keyed off the review's IDENTITY (row + timestamp), not the
-            // published state: the daemon republishes constantly, and
-            // re-asserting the deliverable on every publish would fight any
-            // attempt to actually read the conversation.
-            if current != nil { showsConversation = false }
+            // A NEW artifact no longer takes the screen. It arrives as a
+            // preview inline in the conversation, where it can be seen without
+            // interrupting what you were reading, and goes big only when you
+            // ask. Returning to the conversation on a new artifact is what
+            // makes that true even when you were already looking at an old one.
+            if current != nil { showsConversation = true }
         }
         .onChange(of: state?.live.dictated?.id) { _, current in
             // Spoken words land in the composer, added to whatever was typed.
@@ -1643,7 +1650,23 @@ private struct ConversationPane: View {
             Text("conch will ask the agent to exit cleanly. Its transcript stays available to resume later.")
         }
         .sheet(item: $inspectingSession) { row in
-            CapabilityInspectorSheet(row: row) { inspectingSession = nil }
+            CapabilityInspectorSheet(row: row, expandAll: debugExpandInspector) {
+                inspectingSession = nil
+                debugExpandInspector = false
+            }
+        }
+        .onChange(of: store.debugInspectRequest) { _, wanted in
+            guard let wanted else { return }
+            store.debugInspectRequest = nil
+            // A trailing "!" asks for every row open — a capture proving what
+            // the detail renders, not a state any click can reach.
+            let expand = wanted.hasSuffix("!")
+            debugExpandInspector = expand
+            let target = expand ? String(wanted.dropLast()) : wanted
+            let rows = store.state?.rows ?? []
+            inspectingSession = target.isEmpty
+                ? selectedRow ?? rows.first
+                : rows.first { $0.id == target || $0.id.hasPrefix(target) || $0.label == target }
         }
     }
 
@@ -1751,14 +1774,14 @@ private struct ConversationPane: View {
                 // looks like it is running had no way to stop the thing it
                 // was showing — you had to find the spacebar, which a text
                 // field now swallows anyway.
-                if voiceStateForFocusedRow.isEmpty || voiceStateForFocusedRow == "idle" {
+                if LiveState.isExchangeActive(voiceStateForFocusedRow) {
+                    store.send(.stop())
+                } else {
                     // The mic BESIDE a text field fills that field. It used to
                     // send the spoken half straight past the composer into the
                     // session, so what you typed and what you said could not be
                     // one message.
                     store.send(.dictate(sessionId: row.id, label: row.label))
-                } else {
-                    store.send(.stop())
                 }
             },
             onRecite: {

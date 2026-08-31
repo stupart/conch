@@ -11,7 +11,7 @@ const TTS_PROBE_TIMEOUT_MS = 5_000;
 export interface DoctorProbeResult {
   /** Live probes are advisory: callers should display this, not use it as the doctor's exit status. */
   ok: boolean;
-  label: "microphone" | "TTS";
+  label: "microphone" | "TTS" | "agents";
   message: string;
   action?: string;
 }
@@ -212,6 +212,77 @@ export async function checkTts(
 }
 
 /** One ready-to-print advisory line; intentionally uses a warning, never a fatal cross. */
+/**
+ * Which `claude` and `codex` conch will actually launch, and whether that is
+ * the same one you get in a terminal.
+ *
+ * These can differ, silently. The daemon runs under the Mac app, which inherits
+ * a GUI environment rather than a login shell — so PATH order is not the one
+ * you see. On this machine a Homebrew cask sits ahead of an npm install in the
+ * interactive shell, and conch resolves the npm one: measured five minor
+ * versions apart for Codex and sixty-nine patch versions for Claude Code.
+ *
+ * That matters more than it sounds. A session started from conch is then not
+ * the same program as one started by hand — different features, different
+ * bugs, different prompts — and nothing anywhere says so. Tyler noticed only
+ * because one of them asked to be updated.
+ *
+ * Advisory, like the other probes: conch does not get to decide which install
+ * someone meant to use.
+ */
+export async function checkAgentBinaries(
+  run: (argv: string[]) => Promise<{ stdout: string; ok: boolean }> = defaultRun,
+): Promise<DoctorProbeResult> {
+  const lines: string[] = [];
+  let divergent = false;
+
+  for (const agent of ["claude", "codex"] as const) {
+    const mine = (await run(["/bin/sh", "-lc", `command -v ${agent}`])).stdout.trim();
+    const shell = (await run(["/bin/zsh", "-lc", `command -v ${agent}`])).stdout.trim();
+    const used = Bun.which(agent) ?? "";
+    if (!used) {
+      lines.push(`${agent}: not on conch's PATH`);
+      divergent = true;
+      continue;
+    }
+    const version = (await run([used, "--version"])).stdout.trim().split("\n")[0] ?? "";
+    // The interactive shell is the comparison that matters: it is what the
+    // person means by "the one I use".
+    const theirs = shell || mine;
+    if (theirs && theirs !== used) {
+      const theirVersion = (await run([theirs, "--version"])).stdout.trim().split("\n")[0] ?? "";
+      lines.push(`${agent}: conch runs ${version} (${used})`);
+      lines.push(`${" ".repeat(agent.length)}  your shell runs ${theirVersion} (${theirs})`);
+      divergent = true;
+    } else {
+      lines.push(`${agent}: ${version}`);
+    }
+  }
+
+  return {
+    ok: !divergent,
+    label: "agents",
+    message: lines.join("\n  "),
+    ...(divergent
+      ? {
+        action: "conch and your shell resolve different installs. Remove the one "
+          + "you do not want, or reorder PATH, so a session started from conch is "
+          + "the same program as one you start by hand.",
+      }
+      : {}),
+  };
+}
+
+async function defaultRun(argv: string[]): Promise<{ stdout: string; ok: boolean }> {
+  try {
+    const child = Bun.spawn(argv, { stdout: "pipe", stderr: "ignore" });
+    const stdout = await new Response(child.stdout).text();
+    return { stdout, ok: (await child.exited) === 0 };
+  } catch {
+    return { stdout: "", ok: false };
+  }
+}
+
 export function formatDoctorProbe(result: DoctorProbeResult): string {
   return `${result.ok ? "✅" : "⚠️"} ${result.message}${result.action ? ` ${result.action}` : ""}`;
 }

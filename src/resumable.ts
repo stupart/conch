@@ -1,6 +1,7 @@
 import { existsSync, closeSync, openSync, readSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { readClaudeTitle } from "./claude-title.ts";
 import {
   codexHomeDir,
   codexThreadDbPaths,
@@ -286,68 +287,6 @@ function readClaudeSessionHead(candidate: ClaudeCandidate): ClaudeHeadRead {
     };
   } catch {
     return { session: null, complete: false };
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
-}
-
-/** How much of a transcript's end to read looking for its current title. */
-const CLAUDE_TAIL_BYTES = 64 * 1024;
-
-/**
- * The name Claude Code itself shows you, from the END of the transcript.
- *
- * conch was labelling rows with the first thing you ever said in a session, so
- * the resume list did not match `/resume` — Tyler: "The resume names i see in
- * conch are weird - they don't match what i see when i run /resume in the
- * apps". The sessions he recognises are the renamed ones: `conch`, `honeyb`,
- * `arch site`, `dayloop-feature-work`, each showing as an ancient opening
- * sentence instead.
- *
- * Claude Code writes `custom-title` when you rename a session and `ai-title`
- * for the one it generates, and rewrites both as they change — roughly two
- * thousand times each in a long transcript. So the CURRENT value is at the
- * tail, and the tail is the only affordable place to look: the transcript this
- * was traced in is 158MB, its first `custom-title` sits at line 3190, and a
- * 64KB tail read finds both records in 0.06ms.
- *
- * A rename beats a generated title, because it is the name a person chose.
- */
-function readClaudeTitle(path: string): string | undefined {
-  let fd: number | undefined;
-  try {
-    fd = openSync(path, "r");
-    const size = statSync(path).size;
-    const length = Math.min(size, CLAUDE_TAIL_BYTES);
-    const buffer = Buffer.allocUnsafe(length);
-    readSync(fd, buffer, 0, length, Math.max(0, size - length));
-    const tail = new TextDecoder().decode(buffer);
-
-    let custom: string | undefined;
-    let generated: string | undefined;
-    for (const line of tail.split("\n")) {
-      // Cheap reject before the parse: most lines are neither, and a 64KB tail
-      // of a busy transcript is a few hundred of them.
-      if (!line.includes("-title")) continue;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        continue; // the first line of a tail read is usually a fragment
-      }
-      if (!parsed || typeof parsed !== "object") continue;
-      const record = parsed as Record<string, unknown>;
-      // Last wins: later records are more recent renames.
-      if (record.type === "custom-title" && typeof record.customTitle === "string") {
-        custom = record.customTitle.trim() || custom;
-      } else if (record.type === "ai-title" && typeof record.aiTitle === "string") {
-        generated = record.aiTitle.trim() || generated;
-      }
-    }
-    const chosen = custom ?? generated;
-    return chosen ? codexThreadLabel({ title: chosen.replace(/\s+/g, " ") }) : undefined;
-  } catch {
-    return undefined;
   } finally {
     if (fd !== undefined) closeSync(fd);
   }

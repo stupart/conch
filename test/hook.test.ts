@@ -9,7 +9,7 @@ test("the internal-model recursion guard is the first hook action", () => {
 
   expect(guard).toBeGreaterThan(0);
   expect(guard).toBeLessThan(body.indexOf("Bun.stdin.stream()"));
-  expect(guard).toBeLessThan(body.indexOf("findSession("));
+  expect(guard).toBeLessThan(body.indexOf("findHookWindow("));
   expect(guard).toBeLessThan(body.indexOf("sendToDaemon("));
   expect(guard).toBeLessThan(body.indexOf("await bell("));
   expect(guard).toBeLessThan(body.indexOf("await speak("));

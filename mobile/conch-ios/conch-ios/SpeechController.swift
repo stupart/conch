@@ -19,6 +19,10 @@ final class SpeechController: NSObject, ObservableObject {
     /// Reports this phone's speech to the Mac, so the ledger can show which
     /// session is being read. Set by the app, which owns the bridge.
     var reportSpeaking: (Bool, String) -> Void = { _, _ in }
+    /// Tell the daemon what was said and WHY, so "why did conch just talk?" has
+    /// an answer. The phone speaks through iOS's own synthesiser, so nothing it
+    /// says reaches conch's log unless it says so itself.
+    var reportSpoke: (String, String) -> Void = { _, _ in }
     /// The label most recently read, so the stop report names the same row.
     private var speakingLabel = ""
     /// Why the phone could not read aloud, when it could not.
@@ -91,6 +95,7 @@ final class SpeechController: NSObject, ObservableObject {
         spoken[reply.sessionId] = text
 
         let label = state.rows.first { $0.id == reply.sessionId }?.label
+        reportSpoke(text, "automatic — a reply arrived and the mode is auto")
         speak(text, from: label, followUpSessionId: reply.sessionId)
     }
 
@@ -98,6 +103,7 @@ final class SpeechController: NSObject, ObservableObject {
         // Clear before any audio guard can return: even a manual request that
         // cannot start must not leave an older automatic follow-up armed.
         lastSpokenSessionId = nil
+        reportSpoke(markdown, "you pressed play")
         speak(markdown, from: label, followUpSessionId: nil)
     }
 

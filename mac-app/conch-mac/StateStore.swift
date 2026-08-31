@@ -16,6 +16,10 @@ struct SessionDismissUndo: Equatable, Sendable {
 
 @MainActor
 final class StateStore: ObservableObject {
+    /// A debug request to open the capability inspector, by session id (empty
+    /// means the selected row). Cleared by the view once it acts on it.
+    @Published var debugInspectRequest: String?
+
     @Published private(set) var state: PublishedState?
     @Published private(set) var daemonMessage: String?
     @Published private(set) var liveness = DaemonLiveness.checking
@@ -99,6 +103,9 @@ final class StateStore: ObservableObject {
                     appendLogLines(result.logLines)
                 }
                 evaluateLiveness()
+                // Opening comes before the capture: a request to photograph a
+                // sheet has to reach the view a poll earlier than the shot.
+                if let wanted = DebugSnapshot.pendingInspection() { debugInspectRequest = wanted }
                 DebugSnapshot.serviceRequest()
 
                 do {
@@ -288,17 +295,29 @@ final class StateStore: ObservableObject {
         return inventory
     }
 
+    /// What came back from asking the daemon to start a session.
+    enum StartOutcome: Equatable {
+        case started
+        /// Codex will not run here until it is trusted, and it can be told at
+        /// launch — so the person gets the choice rather than a session that
+        /// silently sits on a prompt.
+        case needsTrust(cwd: String)
+        case failed(String)
+    }
+
     func startSession(
         backend: ConchAgentBackend,
         resumeSessionId: String?,
-        cwd: String?
-    ) async -> String? {
+        cwd: String?,
+        trustFolder: Bool = false
+    ) async -> StartOutcome {
         let resumed = Self.nonempty(resumeSessionId)
         let workingDirectory = Self.nonempty(cwd)
         let request = ConchSessionStartRequest(
             backend: backend,
             resumeSessionId: resumed,
-            cwd: workingDirectory
+            cwd: workingDirectory,
+            trustFolder: trustFolder ? true : nil
         )
         let outcome = await socketClient.request(
             request,
@@ -313,34 +332,38 @@ final class StateStore: ObservableObject {
             ) else {
                 let message = "Invalid start reply from daemon"
                 reportAppError(operation: "session-start", message: message)
-                return message
+                return .failed(message)
             }
             switch reply {
+            case let .needsTrust(needs):
+                return .needsTrust(cwd: needs.cwd)
             case let .started(started)
                 where started.backend == backend.rawValue
                     && started.resumed == (resumed != nil):
                 // Not an error, but not nothing either: the session will not
                 // appear until the trust prompt in Terminal is answered.
-                return started.awaitingTrust == true ? Self.awaitingTrustNotice : nil
+                return started.awaitingTrust == true
+                    ? .failed(Self.awaitingTrustNotice)
+                    : .started
             case let .error(error):
                 let message = Self.nonempty(error.error) ?? "Could not start session"
                 reportAppError(operation: "session-start", message: message)
-                return message
+                return .failed(message)
             case .started, .closed, .unknown:
                 let message = "Unexpected start reply from daemon"
                 reportAppError(operation: "session-start", message: message)
-                return message
+                return .failed(message)
             }
         case .connectFailed:
             let message = "Daemon not running"
             reportAppError(operation: "session-start", message: message)
             forceLivenessProbe()
-            return message
+            return .failed(message)
         case .timeout:
             let message = "Daemon did not reply"
             reportAppError(operation: "session-start", message: message)
             forceLivenessProbe()
-            return message
+            return .failed(message)
         }
     }
 
@@ -382,7 +405,7 @@ final class StateStore: ObservableObject {
                 failure = nil
             case let .error(error):
                 failure = Self.nonempty(error.error) ?? "Could not close session"
-            case .closed, .started, .unknown:
+            case .closed, .started, .needsTrust, .unknown:
                 failure = "Unexpected close reply from daemon"
             }
         case .connectFailed:

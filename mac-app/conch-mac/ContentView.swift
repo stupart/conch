@@ -337,6 +337,12 @@ private struct StartSessionSheet: View {
     @State private var cwd = FileManager.default.homeDirectoryForCurrentUser.path
     @State private var isStarting = false
     @State private var error: String?
+    /// The directory Codex will not run in until it is told to, if any.
+    @State private var pendingTrust: String?
+    /// Directories answered "yes" in this sheet. Deliberately not persisted:
+    /// the person answered about one launch, and conch does not quietly decide
+    /// on their behalf next time.
+    @State private var trustedFolders: Set<String> = []
 
     // Resume
     @State private var resumable: [ResumableSession] = []
@@ -432,6 +438,33 @@ private struct StartSessionSheet: View {
         .padding(24)
         .frame(width: 430)
         .background(ConchPalette.bg)
+        .alert(
+            "Do you trust this folder?",
+            isPresented: Binding(
+                get: { pendingTrust != nil },
+                set: { if !$0 { pendingTrust = nil } }
+            )
+        ) {
+            // Codex's own two options, in its own order. Not conch inventing a
+            // phrasing for someone else's security question.
+            Button("Yes, continue") {
+                guard let cwd = pendingTrust else { return }
+                pendingTrust = nil
+                trustedFolders.insert(cwd)
+                start()
+            }
+            Button("No, cancel", role: .cancel) { pendingTrust = nil }
+        } message: {
+            // Codex's own words about the risk, because softening someone
+            // else's security warning is not conch's call to make.
+            Text(
+                "\(pendingTrust ?? "")\n\nWorking with untrusted contents comes with "
+                + "higher risk of prompt injection. Trusting the directory allows "
+                + "project-local config, hooks, and exec policies to load.\n\n"
+                + "conch will tell Codex this for this session only, and will not "
+                + "change your Codex configuration."
+            )
+        }
         // `task(id:)` rather than `onChange`, so this fires when the sheet
         // APPEARS already in resume mode as well as when you switch into it.
         // Keyed on the query too, because searching is a re-read: the daemon
@@ -481,18 +514,71 @@ private struct StartSessionSheet: View {
         isStarting = true
         error = nil
         Task { @MainActor in
-            let failure = await store.startSession(
+            let outcome = await store.startSession(
                 backend: effectiveBackend,
                 resumeSessionId: mode == .resume ? resumeSelection?.sessionId : nil,
-                cwd: effectiveCwd
+                cwd: effectiveCwd,
+                trustFolder: trustedFolders.contains(effectiveCwd)
             )
+            switch outcome {
+            case let .failed(message):
+                isStarting = false
+                error = message
+                return
+            case let .needsTrust(cwd):
+                // Nothing was started. Codex's own question, asked here, with
+                // its own options — rather than a session left sitting on a
+                // full-screen prompt in a Terminal nobody is looking at.
+                isStarting = false
+                pendingTrust = cwd
+                return
+            case .started:
+                break
+            }
+            // Started is not the same as running.
+            //
+            // conch launches the agent in Terminal and, until now, called that
+            // done. But an agent can sit on a prompt before it does anything —
+            // Claude Code asks whether it trusts a folder, and Codex has
+            // several, including "Continuing startup with a fresh local
+            // database... Press Enter to continue." Tyler hit exactly that
+            // resuming a Codex session: conch said it started, and it was
+            // waiting for a keypress nobody could see.
+            //
+            // So wait for it to CHECK IN. A session that appears in the ledger
+            // has really started; one that does not is being held by something,
+            // and saying so beats a sheet that closed on a promise.
+            let appeared = await waitForSession()
             isStarting = false
-            if let failure {
-                error = failure
-            } else {
+            if appeared {
                 dismiss()
+            } else {
+                error = "Started, but it hasn\u{2019}t checked in. Terminal may be "
+                    + "waiting for you to answer something \u{2014} take a look there."
             }
         }
+    }
+
+    /// Poll the ledger for the session to show up.
+    ///
+    /// Resume knows exactly which id to expect. A fresh session does not, so it
+    /// watches for the row COUNT to grow instead — cruder, but it answers the
+    /// same question: did anything actually start?
+    private func waitForSession() async -> Bool {
+        let expected = mode == .resume ? resumeSelection?.sessionId : nil
+        let before = store.state?.rows.count ?? 0
+        // Long enough for a cold agent on a busy machine; short enough that a
+        // stuck one is noticed while you still remember starting it.
+        for _ in 0..<25 {
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            guard let rows = store.state?.rows else { continue }
+            if let expected {
+                if rows.contains(where: { $0.id == expected }) { return true }
+            } else if rows.count > before {
+                return true
+            }
+        }
+        return false
     }
 }
 

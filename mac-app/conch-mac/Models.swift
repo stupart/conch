@@ -214,7 +214,26 @@ struct LiveState: Decodable, Equatable, Sendable {
     }
 
     var isExchangeActive: Bool {
-        isCapturing || state == "speaking" || state == "transcribing"
+        Self.isExchangeActive(state)
+    }
+
+    /// Is something running that a press of the mic should STOP?
+    ///
+    /// Named as an allowlist, and deliberately so. The mic button used to ask
+    /// the opposite question — "is the state neither empty nor `idle`?" — and
+    /// so treated every word it had never heard of as live capture. `paused` is
+    /// such a word: it is what the daemon publishes in manual mode, when the
+    /// mic is shut and pressing the button should open it. The button sent
+    /// `stop` instead, which had nothing to stop, so manual mode had a dead
+    /// mic button that still said "Talk to this session" — and stopping is
+    /// silent, so it left no log to find it by.
+    ///
+    /// Every other reading of this state — the symbol, the caption, the help —
+    /// is already an allowlist. This makes the one that ACTS agree with them,
+    /// and any state added later means "the mic is closed" until it says so.
+    static func isExchangeActive(_ state: String) -> Bool {
+        state == "listening" || state == "recording"
+            || state == "speaking" || state == "transcribing"
     }
 }
 

@@ -123,3 +123,30 @@ describe("talking about a question is not answering it", () => {
     expect(classifySpokenChoice("lets talk about sqlite instead", options)).toBe(1);
   });
 });
+
+describe("answering a multi-select question the way people do", () => {
+  const three = [{ label: "Postgres" }, { label: "SQLite" }, { label: "Redis" }];
+  const two = [{ label: "Yes" }, { label: "No" }];
+
+  test("\"all of them\" selects all of them", () => {
+    // Naming each option out loud is the awkward path, and removing that is
+    // what a voice loop is for.
+    for (const said of ["all", "all of them", "all of the above", "everything"]) {
+      expect(classifySpokenChoices(said, three)).toEqual(new Set([0, 1, 2]));
+    }
+  });
+
+  test("\"both\" counts only when there are two", () => {
+    // With two options it means everything. With three it means some
+    // unidentified pair, and guessing which would be answering on someone's
+    // behalf — the failure this classifier must never have.
+    expect(classifySpokenChoices("both", two)).toEqual(new Set([0, 1]));
+    expect(classifySpokenChoices("both", three)).toBeNull();
+  });
+
+  test("it does not leak into single-select", () => {
+    // classifySpokenChoice is the one-answer path; "all of them" is not an
+    // answer to a question that takes one.
+    expect(classifySpokenChoice("all of them", three)).toBeNull();
+  });
+});

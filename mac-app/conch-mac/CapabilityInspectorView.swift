@@ -18,6 +18,9 @@ struct CapabilityInspectorView: View {
     let capabilities: AgentCapabilities?
     let isLoading: Bool
     let sessionLabel: String
+    /// Debug captures open every row, so a screenshot can prove what the
+    /// detail actually renders. Never set from the UI.
+    var expandAll: Bool = false
     @State private var expanded: Set<String> = []
 
     private static let order = ["mcp-server", "plugin", "skill"]
@@ -140,7 +143,7 @@ struct CapabilityInspectorView: View {
                                 entity: entity,
                                 children: capabilities.entities.filter { $0.parentId == entity.id },
                                 badge: badges[entity.id],
-                                isExpanded: expanded.contains(entity.id),
+                                isExpanded: expandAll || expanded.contains(entity.id),
                                 toggle: {
                                     if expanded.contains(entity.id) { expanded.remove(entity.id) }
                                     else { expanded.insert(entity.id) }
@@ -282,6 +285,13 @@ private struct CapabilityRow: View {
                                 .foregroundStyle(ConchPalette.textFaint)
                                 .lineLimit(1)
                         }
+                        if let summary = entity.kindSummary {
+                            Text(summary)
+                                .font(ConchTypography.font(size: 10))
+                                .foregroundStyle(ConchPalette.textFaint.opacity(0.85))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
                     }
                     Spacer(minLength: 8)
                     if !children.isEmpty {
@@ -307,6 +317,25 @@ private struct CapabilityRow: View {
 
     private var detail: some View {
         VStack(alignment: .leading, spacing: 5) {
+            // What it IS, before what conch knows about it. A transport, a
+            // version, an approval mode — the facts the readers gather and the
+            // row used to throw away.
+            ForEach(entity.kindLines, id: \.0) { line in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(line.0)
+                        .font(ConchTypography.font(size: 10))
+                        .foregroundStyle(ConchPalette.textFaint)
+                        .frame(width: 66, alignment: .leading)
+                    Text(line.1)
+                        .font(ConchTypography.font(size: 10))
+                        .foregroundStyle(ConchPalette.textDim)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            if !entity.kindLines.isEmpty {
+                Divider().overlay(ConchPalette.textDim.opacity(0.1)).padding(.vertical, 2)
+            }
             // Every state, with the reason conch believes it. This is the part
             // that makes "unknown" legible rather than broken-looking.
             ForEach(evidenceLines, id: \.0) { line in
@@ -346,6 +375,11 @@ private struct CapabilityRow: View {
                     Text(child.displayName)
                         .font(ConchTypography.font(size: 10.5))
                         .foregroundStyle(ConchPalette.textDim)
+                    if let approval = child.mcpTool?.approvalMode ?? child.mcpTool?.policy {
+                        Text(approval)
+                            .font(ConchTypography.font(size: 9.5))
+                            .foregroundStyle(ConchPalette.textFaint)
+                    }
                     Spacer(minLength: 8)
                     EvidenceChip(evidence: child.headline, observedOnly: child.isObservedOnly)
                 }
@@ -421,6 +455,8 @@ private struct EvidenceChip: View {
 /// is also simply correct: the fetch belongs to the thing being presented.
 struct CapabilityInspectorSheet: View {
     let row: SessionRow
+    /// Set only by a debug capture, so a screenshot shows the expanded detail.
+    var expandAll: Bool = false
     let onDone: () -> Void
 
     @EnvironmentObject private var store: StateStore
@@ -431,7 +467,8 @@ struct CapabilityInspectorSheet: View {
         CapabilityInspectorView(
             capabilities: capabilities,
             isLoading: isLoading,
-            sessionLabel: row.label
+            sessionLabel: row.label,
+            expandAll: expandAll
         )
         .frame(width: 620, height: 560)
         .overlay(alignment: .topTrailing) {

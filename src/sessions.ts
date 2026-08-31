@@ -21,6 +21,8 @@ import {
   type CodexSessionRegistryOptions,
 } from "./codex-sessions.ts";
 import { readCodexThreads } from "./codex-threads.ts";
+import { liveTranscriptPath, readClaudeTitles } from "./claude-title.ts";
+import { parseWindowKey, windowKey, windowPidFromAncestry } from "./window-key.ts";
 
 const LABELS_FILE = join(homedir(), ".config/conch/labels.json");
 const MAX_SESSION_LABEL_LENGTH = 40;
@@ -35,7 +37,16 @@ export interface RenameSessionLabelOptions extends LabelOverrideOptions, VoiceOv
 export interface SessionLookupOptions extends LabelOverrideOptions, CodexSessionRegistryOptions {}
 
 export interface SessionInfo {
+  /**
+   * What conch addresses this by — the agent's session id, unless that id is
+   * shared by two live windows, in which case it names the window. See
+   * `window-key.ts`.
+   */
   sessionId: string;
+  /** The agent's own id, for resuming the session or asking if it is alive. */
+  agentSessionId?: string;
+  /** When this window started — the tie-break when one id has two of them. */
+  startedAt?: number;
   /** Session implementation; absent on legacy Claude registry projections. */
   backend?: "claude" | "codex";
   name?: string;
@@ -79,6 +90,7 @@ export function isEngageable(info: Pick<SessionInfo, "kind" | "entrypoint">): bo
  * Gives us the /rename-able session name and the CLI pid for pane targeting.
  */
 export async function findSession(claudeDir: string, sessionId: string): Promise<SessionInfo | null> {
+  const wanted = parseWindowKey(sessionId);
   const dir = join(claudeDir, "sessions");
   let files: string[];
   try {
@@ -86,17 +98,114 @@ export async function findSession(claudeDir: string, sessionId: string): Promise
   } catch {
     return null;
   }
+  let match: any;
+  for (const entry of await matchingEntries(dir, wanted.sessionId)) {
+    // A key naming a window asks for that window, and only that one.
+    if (wanted.pid !== undefined && entry.pid !== wanted.pid) continue;
+    match = newer(match, entry);
+  }
+  return match ? currentName(toInfo(match), claudeDir) : null;
+}
+
+/** Every live registry entry claiming one session id — usually one, sometimes two. */
+async function matchingEntries(dir: string, sessionId: string): Promise<any[]> {
+  let files: string[];
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+  } catch {
+    return [];
+  }
+  const entries: any[] = [];
   for (const f of files) {
     try {
       const entry = await Bun.file(join(dir, f)).json();
-      if (entry.sessionId === sessionId) {
-        return toInfo(entry);
-      }
+      if (entry.sessionId === sessionId) entries.push(entry);
     } catch {
       // stale or mid-write registry file; skip
     }
   }
-  return null;
+  return entries;
+}
+
+/**
+ * The window a hook came from, not just the session it names.
+ *
+ * Claude Code tells a hook its `session_id` and nothing about which window ran
+ * it, so with two windows on one id conch was attributing every turn to
+ * whichever entry it happened to read first — the wrong terminal half the time,
+ * for speech, status and the reply that follows. The process tree knows: the
+ * hook is a descendant of its own window.
+ */
+export async function findHookWindow(
+  claudeDir: string,
+  agentSessionId: string,
+): Promise<SessionInfo | null> {
+  if (!agentSessionId) return null;
+  const dir = join(claudeDir, "sessions");
+  const entries = await matchingEntries(dir, agentSessionId);
+  if (entries.length === 0) return null;
+  if (entries.length === 1) return currentName(toInfo(entries[0]), claudeDir);
+
+  const pids = new Set<number>(
+    entries.map((e) => e.pid).filter((pid): pid is number => Number.isInteger(pid)),
+  );
+  const pid = await windowPidFromAncestry(pids);
+  // Ancestry can come back empty (a `ps` that failed, a hook re-parented). The
+  // newest window is then the same guess as before, and no worse.
+  const chosen = entries.find((e) => e.pid === pid) ?? entries.reduce(newer, undefined);
+  return {
+    ...toInfo(chosen),
+    sessionId: windowKey(agentSessionId, chosen.pid, true),
+    agentSessionId,
+  };
+}
+
+/**
+ * One id, two windows — and both of them are real.
+ *
+ * `claude --resume <id>` in a second terminal keeps the id, so the registry can
+ * describe two live processes that share one. conch briefly collapsed them,
+ * reasoning that one transcript meant one session. Tyler: "ive been using both
+ * in the claude code tui - theyre both open and seem to have diverged with no
+ * problems". He was right, and the transcript proves it — the same file carries
+ * records from ~/arch-website and ~/arch-swap, on separate branches, minutes
+ * apart. Claude Code chains messages by parentUuid, so two windows write one
+ * file and neither sees the other's work.
+ *
+ * So both stay listed. This picks a target only where something must resolve an
+ * ambiguous id to ONE process, and it picks the newest so the answer is at
+ * least stable — the directory order it replaced was an APFS hash.
+ */
+function newer(current: any, candidate: any): any {
+  if (!current) return candidate;
+  return startedAt(candidate) >= startedAt(current) ? candidate : current;
+}
+
+function startedAt(entry: any): number {
+  return typeof entry?.startedAt === "number" ? entry.startedAt : 0;
+}
+
+/**
+ * The registry's `name` is a snapshot of the title taken when the process
+ * started, and nothing refreshes it, so a session renamed today keeps
+ * yesterday's name until it restarts. The transcript's own `custom-title` is
+ * the current answer, and the one `/resume` shows.
+ *
+ * Only for a session with ONE window, though. Two windows sharing an id each
+ * hold their own name, and the transcript keeps just the last one written — so
+ * refreshing from it there would rename both to whatever one window is called,
+ * which is exactly how `arch site` briefly became a second `arch-prime`.
+ *
+ * A generated title never displaces a registry name: the name a person typed
+ * outranks the one a model wrote, whichever is more recent.
+ */
+function currentName(info: SessionInfo, claudeDir: string): SessionInfo {
+  const path = info.transcriptPath
+    ?? liveTranscriptPath(claudeDir, info.cwd, info.sessionId);
+  if (!path) return info;
+  const titles = readClaudeTitles(path);
+  const name = titles.custom ?? info.name ?? titles.generated;
+  return name === info.name ? info : { ...info, name };
 }
 
 /** Project a raw registry JSON entry onto SessionInfo (keeps the fields conch actually uses). */
@@ -106,6 +215,7 @@ function toInfo(entry: any, backend?: SessionInfo["backend"]): SessionInfo {
     ...(backend ? { backend } : {}),
     name: entry.name,
     cwd: entry.cwd,
+    ...(typeof entry.startedAt === "number" ? { startedAt: entry.startedAt } : {}),
     pid: entry.pid,
     status: entry.status,
     statusUpdatedAt: typeof entry.statusUpdatedAt === "number"
@@ -259,10 +369,12 @@ export function sessionLabel(
 ): string {
   if (info?.sessionId) {
     const overrides = labelOverrides(options);
-    const override = Object.hasOwn(overrides, info.sessionId)
-      ? overrides[info.sessionId]
-      : undefined;
-    if (override) return override;
+    // The window's own name first, then the session's — a rename made while one
+    // window owned the id keeps naming it after a second window re-keys it.
+    for (const key of [info.sessionId, info.agentSessionId]) {
+      const override = key && Object.hasOwn(overrides, key) ? overrides[key] : undefined;
+      if (override) return override;
+    }
   }
   if (info?.name) return info.name;
   const dir = cwd ?? info?.cwd ?? process.cwd();
@@ -316,6 +428,7 @@ export async function registrySnapshot(
     claudeMissing = (error as NodeJS.ErrnoException).code === "ENOENT";
   }
   const infos: SessionInfo[] = [];
+  const claudeEntries: any[] = [];
   const liveIds = new Set<string>();
   let complete = claudeAvailable || claudeMissing;
   for (const f of files) {
@@ -338,7 +451,29 @@ export async function registrySnapshot(
     }
     if (!entry.sessionId) continue;
     liveIds.add(entry.sessionId);
-    if (isEngageable(entry)) infos.push(toInfo(entry));
+    if (isEngageable(entry)) claudeEntries.push(entry);
+  }
+  // A session id is not a window. `claude --resume <id>` in a second terminal
+  // keeps the id, so two windows can share one — see `newer` below.
+  const windows = new Map<string, number>();
+  for (const entry of claudeEntries) {
+    windows.set(entry.sessionId, (windows.get(entry.sessionId) ?? 0) + 1);
+  }
+  for (const entry of claudeEntries) {
+    const info = toInfo(entry);
+    if (windows.get(entry.sessionId) === 1) {
+      infos.push(currentName(info, claudeDir));
+      continue;
+    }
+    // Two windows on one id: address each by the window, and keep the id itself
+    // live so "has this session closed?" still answers for either form.
+    const keyed = {
+      ...info,
+      sessionId: windowKey(info.sessionId, info.pid, true),
+      agentSessionId: info.sessionId,
+    };
+    liveIds.add(keyed.sessionId);
+    infos.push(keyed);
   }
 
   const codex = readCodexSessions(options);
@@ -425,6 +560,10 @@ export function findTranscript(
   sessionId: string,
   options: CodexSessionRegistryOptions = {},
 ): string | undefined {
+  // Two windows on one session read one transcript, so a key naming a window
+  // still asks for the session's file. Stripped here rather than at the ten
+  // call sites, all of which mean the same thing by it.
+  sessionId = parseWindowKey(sessionId).sessionId;
   const projects = join(claudeDir, "projects");
   try {
     for (const dir of readdirSync(projects)) {

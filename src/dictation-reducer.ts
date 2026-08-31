@@ -492,6 +492,18 @@ export function classifySpokenChoices(
   const said = normalizeChoice(heard);
   if (!said || options.length === 0) return null;
 
+  // 0. "all of them". Only reachable for a multi-select question, because that
+  //    is the only branch that calls this — and it is how people answer one out
+  //    loud. Naming each option instead is the awkward path, which is exactly
+  //    what a voice loop is supposed to remove.
+  //
+  //    "both" only counts for two, where it means everything; with three
+  //    options it means some unidentified pair and must not be guessed at.
+  if (/^(all|all of (them|the above)|everything|every one)$/.test(said)) {
+    return new Set(options.map((_, index) => index));
+  }
+  if (said === "both" && options.length === 2) return new Set([0, 1]);
+
   // 1. Labels said outright. Longest first, with overlapping shorter matches
   //    ignored, so "Export PDF as draft" does not also pick "Export". A short
   //    label said elsewhere in the same answer still counts.

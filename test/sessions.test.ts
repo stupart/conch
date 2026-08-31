@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import {
   findSessionByName,
   findSessionBySpokenName,
+  findSession,
   isEngageable,
   normalizeSessionLabel,
   registrySnapshot,
@@ -302,5 +303,93 @@ describe("conch session-label overrides", () => {
     } finally {
       rmSync(f.root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("one session, two terminals", () => {
+  function fixture(): { claudeDir: string; write: (pid: number, entry: object) => void; transcript: (cwd: string, id: string, lines: object[]) => void } {
+    const claudeDir = mkdtempSync(join(tmpdir(), "conch-dupe-"));
+    mkdirSync(join(claudeDir, "sessions"), { recursive: true });
+    return {
+      claudeDir,
+      write: (pid, entry) =>
+        writeFileSync(join(claudeDir, "sessions", `${pid}.json`), JSON.stringify({
+          pid, cwd: "/Users/t/arch", kind: "interactive", entrypoint: "cli", ...entry,
+        })),
+      transcript: (cwd, id, lines) => {
+        const dir = join(claudeDir, "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, `${id}.jsonl`), lines.map((l) => JSON.stringify(l)).join("\n"));
+      },
+    };
+  }
+  const opts = (claudeDir: string) => ({ configDir: join(claudeDir, "conch-config") });
+
+  test("two windows sharing one id both stay listed, each under its own name", async () => {
+    const f = fixture();
+    // Tyler had ~/arch-website and ~/arch-swap open in two terminals on one
+    // resumed id, working in both. Collapsing them hid a session he was using.
+    f.write(39889, { sessionId: "dup", name: "arch site", startedAt: 1_000 });
+    f.write(21210, { sessionId: "dup", name: "arch-prime", startedAt: 9_000 });
+    const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
+    expect(snap!.infos.map((s) => s.pid).sort()).toEqual([21210, 39889]);
+    expect(snap!.infos.map((s) => s.name).sort()).toEqual(["arch site", "arch-prime"]);
+    rmSync(f.claudeDir, { recursive: true, force: true });
+  });
+
+  test("a shared id resolves to one stable process, not whichever file came back first", async () => {
+    const f = fixture();
+    // Directory order is an APFS hash — not creation order, not sorted — so the
+    // same two files are asserted both ways round. Whichever one the directory
+    // hands over first, only "newest startedAt wins" answers both.
+    for (const [older, newer] of [[39889, 21210], [21210, 39889]]) {
+      f.write(older, { sessionId: "dup", name: "old window", startedAt: 1_000 });
+      f.write(newer, { sessionId: "dup", name: "resumed", startedAt: 9_000 });
+      expect((await findSession(f.claudeDir, "dup"))?.pid).toBe(newer);
+    }
+    rmSync(f.claudeDir, { recursive: true, force: true });
+  });
+
+  test("a rename shows up only where one window owns the id", async () => {
+    const f = fixture();
+    f.write(39889, { sessionId: "shared", name: "arch site", startedAt: 1_000 });
+    f.write(21210, { sessionId: "shared", name: "arch-prime", startedAt: 9_000 });
+    f.transcript("/Users/t/arch", "shared", [{ type: "custom-title", customTitle: "arch-prime" }]);
+    const two = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
+    // the transcript keeps only the last title written, so it must not rename both
+    expect(two!.infos.map((s) => s.name).sort()).toEqual(["arch site", "arch-prime"]);
+    rmSync(join(f.claudeDir, "sessions", "21210.json"));
+    const one = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
+    expect(one!.infos[0].name).toBe("arch-prime"); // sole window: refresh is safe
+    rmSync(f.claudeDir, { recursive: true, force: true });
+  });
+
+  test("the transcript's rename beats the name the registry cached at startup", async () => {
+    const f = fixture();
+    f.write(39889, { sessionId: "stale", name: "arch site", startedAt: 1_000 });
+    f.transcript("/Users/t/arch", "stale", [
+      { type: "custom-title", customTitle: "arch site" },
+      { type: "custom-title", customTitle: "arch-prime" }, // last write wins
+    ]);
+    const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
+    expect(snap!.infos[0].name).toBe("arch-prime");
+    rmSync(f.claudeDir, { recursive: true, force: true });
+  });
+
+  test("a generated title never displaces the name a person typed", async () => {
+    const f = fixture();
+    f.write(39889, { sessionId: "gen", name: "arch site", startedAt: 1_000 });
+    f.transcript("/Users/t/arch", "gen", [{ type: "ai-title", aiTitle: "Pull latest code changes" }]);
+    const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
+    expect(snap!.infos[0].name).toBe("arch site");
+    rmSync(f.claudeDir, { recursive: true, force: true });
+  });
+
+  test("no readable transcript leaves the registry name alone", async () => {
+    const f = fixture();
+    f.write(39889, { sessionId: "orphan", name: "arch site", startedAt: 1_000 });
+    const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
+    expect(snap!.infos[0].name).toBe("arch site");
+    rmSync(f.claudeDir, { recursive: true, force: true });
   });
 });

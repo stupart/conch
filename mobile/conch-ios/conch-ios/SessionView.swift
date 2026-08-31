@@ -129,12 +129,6 @@ struct SessionView: View {
                             .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
                     }
 
-                    if let review = row?.review {
-                        ReviewCard(review: review) {
-                            showReview = true
-                        }
-                    }
-
                     // The whole conversation when the daemon has one for THIS
                     // session, which is what finally puts Codex sessions on the
                     // phone: their content never arrives as `reply`, because
@@ -170,6 +164,18 @@ struct SessionView: View {
                     // same sentence twice while you type reads as a bug.
                     // Tyler: "its also showing the preview in blue tho as I
                     // type so its kinda weird".
+
+                    // The artifact, where it happened rather than above
+                    // everything. It used to sit at the TOP of this scroll — and
+                    // once sessions started opening at the bottom it was never
+                    // on screen at all, which is why Tyler could not find one he
+                    // had just been sent. With one artifact per session, the end
+                    // is where it happened: it is the latest thing produced.
+                    if let review = row?.review {
+                        ReviewCard(review: review) {
+                            showReview = true
+                        }
+                    }
 
                     // The end of the conversation, and the way to know whether
                     // you are looking at it. iOS has no equivalent of the Mac's

@@ -272,6 +272,22 @@ final class BridgeClient: ObservableObject {
         return await post(control: message)
     }
 
+    /// What this phone just said aloud, and why.
+    ///
+    /// The phone speaks through iOS's own synthesiser, so nothing it says
+    /// reaches conch's log. When Tyler asked why conch spoke in manual mode the
+    /// honest answer was that the Mac had not — and that the phone leaves no
+    /// trace either way, so the question could not be settled. Same shape as
+    /// the wake nobody could attribute: unanswerable until the thing doing it
+    /// says so.
+    func reportSpoke(_ text: String, reason: String) async -> Bool {
+        await post(control: [
+            "kind": "phone-spoke",
+            "text": String(text.prefix(200)),
+            "reason": reason,
+        ])
+    }
+
     func send(mode action: String) async -> Bool {
         await post(control: ["type": action, "sessionId": "", "label": "", "announce": ""])
     }

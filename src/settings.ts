@@ -734,6 +734,8 @@ export type RuntimeControlMessage =
   | {
     kind: "session-start";
     backend: "claude" | "codex";
+    /** Answering Codex's trust prompt in advance, for this launch only. */
+    trustFolder?: boolean;
     resumeSessionId?: string;
     /** Optional because a phone has no meaningful Mac filesystem picker. */
     cwd?: string;
@@ -830,6 +832,17 @@ export type RuntimeControlResponse =
     resumed: boolean;
     /** The terminal will ask you to trust this folder before the agent starts. */
     awaitingTrust?: boolean;
+  }
+  | {
+    /**
+     * Nothing was started. Codex will not run in this directory until it is
+     * trusted, and unlike Claude that answer CAN be supplied at launch — so
+     * conch asks rather than starting a session that would sit on a prompt
+     * nobody can see.
+     */
+    kind: "session-needs-trust";
+    backend: "codex";
+    cwd: string;
   }
   | { kind: "session-closed"; sessionId: string }
   | { kind: "app-error-ack" };
@@ -1069,6 +1082,9 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
       value: {
         kind: "session-start",
         backend: value.backend,
+        // The person answered Codex's trust question in conch. Only ever true
+        // because they said so — it is never inferred.
+        ...(value.trustFolder === true ? { trustFolder: true as const } : {}),
         ...(resumeSessionId ? { resumeSessionId } : {}),
         ...(cwd ? { cwd } : {}),
       },
@@ -1179,6 +1195,12 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
     return { ok: true, value: { kind: "resumable", sessions, complete: value.complete } };
   }
   if (value.kind === "app-error-ack") return { ok: true, value: { kind: "app-error-ack" } };
+  if (value.kind === "session-needs-trust") {
+    if (value.backend !== "codex" || typeof value.cwd !== "string" || !value.cwd) {
+      return { ok: false, err: "invalid needs-trust response" };
+    }
+    return { ok: true, value: { kind: "session-needs-trust", backend: "codex", cwd: value.cwd } };
+  }
   if (value.kind === "session-started") {
     if ((value.backend !== "claude" && value.backend !== "codex") || typeof value.resumed !== "boolean") {
       return { ok: false, err: "invalid session started response" };

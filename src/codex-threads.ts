@@ -20,7 +20,7 @@
  * feeds the ledger conch already has rather than inventing a parallel one.
  */
 import { Database } from "bun:sqlite";
-import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CodexSessionEntry, CodexSessionRegistryRead } from "./codex-sessions.ts";
@@ -95,6 +95,61 @@ export function machineBootedAtMs(): number | null {
   return bootedAtCache;
 }
 
+/**
+ * Has Codex been told it trusts this directory?
+ *
+ * Codex stops on a full-screen prompt before it does anything in a directory it
+ * has not been told about:
+ *
+ *   Do you trust the contents of this directory? ...
+ *   › 1. Yes, continue
+ *     2. No, quit
+ *
+ * A session held there never starts, never registers, and from outside looks
+ * identical to one that failed — which is exactly what happened to Tyler
+ * resuming into `~/arch-swap`.
+ *
+ * `config.toml` records the answer per project as `projects.<path>.trust_level`,
+ * so the question is answerable BEFORE launching rather than discovered after.
+ * Returns null when it cannot be read, which must be treated as "say nothing":
+ * warning about a directory that is actually trusted is its own small lie.
+ */
+export function codexFolderTrusted(
+  cwd: string,
+  configPath = join(homedir(), ".codex", "config.toml"),
+): boolean | null {
+  let text: string;
+  try {
+    text = readFileSync(configPath, "utf8");
+  } catch {
+    return null;
+  }
+  // Deliberately not a TOML parser: this is one key in one section shape, and
+  // conch has no TOML dependency by design. Walked line by line rather than
+  // matched with a regex — the first version used a `\z` end-anchor, which is
+  // Perl and not JavaScript, so it silently failed whenever the section
+  // happened to be the LAST one in the file. It passed against the real config
+  // because that section was not last, which is the kind of luck a test should
+  // not depend on.
+  const header = `[projects."${cwd}"]`;
+  let inSection = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (line.startsWith("[")) {
+      // A new section ends the one we care about, whether or not it is ours.
+      if (inSection) return false;
+      inSection = line === header;
+      continue;
+    }
+    if (!inSection) continue;
+    const match = /^trust_level\s*=\s*"([^"]*)"/.exec(line);
+    if (match) return match[1] === "trusted";
+  }
+  // Either the section never appeared, or it appeared without the key. Both
+  // mean Codex will ask.
+  return false;
+}
+
 /** Most-recent Codex threads to list, so a heavy day cannot flood the ledger. */
 const CODEX_ROW_LIMIT = 6;
 
@@ -149,7 +204,11 @@ export function codexThreadLabel(row: {
   title?: string | null;
 }): string | undefined {
   for (const candidate of [row.name, row.agent_nickname, row.title]) {
-    const trimmed = candidate?.trim();
+    // Collapse newlines and runs of space before anything else. A Codex title
+    // is whatever was typed, and `codex mcp login\n  mobbin` arrived with a
+    // real newline in it — which a one-line row cannot render, so it broke the
+    // list rather than being truncated by it.
+    const trimmed = candidate?.replace(/\s+/g, " ").trim();
     if (trimmed) return trimmed.length > 40 ? `${trimmed.slice(0, 39)}…` : trimmed;
   }
   return undefined;
@@ -532,7 +591,13 @@ export function readCodexThreads(
         // probes used to build this. Those are one-shot runs that already
         // exited; nobody is sitting in one waiting to be announced at. Only
         // interactive front-ends belong in a ledger of sessions you talk to.
-        `SELECT id, cwd, name, agent_nickname, title, rollout_path, updated_at_ms
+        // `SELECT *` deliberately. Naming the columns meant that a Codex whose
+        // schema lacked any one of them failed the whole query and emptied the
+        // ledger — and this reader deals with someone else's database, which
+        // has already gained and lost columns across versions. Every field is
+        // read defensively from the row below, so an absent one is simply
+        // undefined rather than fatal.
+        `SELECT *
            FROM threads
           WHERE archived = 0
             AND source IN ('cli', 'vscode')
@@ -573,9 +638,28 @@ export function readCodexThreads(
     }
 
     const entries: CodexSessionEntry[] = threads
-      .filter((row) =>
-        openIds.has(String(row.id)) || Number(row.updated_at_ms ?? 0) >= cutoff
-      )
+      .filter((row) => {
+        // A thread nobody spoke in is not a session.
+        //
+        // `codex mcp login mobbin` — Tyler re-authenticating an MCP server —
+        // opened a thread, did its job and exited, and conch then listed it as
+        // a session for eight hours. The row records the truth plainly: no user
+        // event ever fired and no tokens were ever spent.
+        //
+        // Only applied to threads that are NOT open. A session that genuinely
+        // just started also has no user event yet, and it holds a lock, so the
+        // live check above keeps it.
+        const live = openIds.has(String(row.id));
+        // Absent columns mean "cannot tell", NOT "zero". Treating them as zero
+        // would hide every session the moment Codex renamed or dropped either
+        // one — a silent empty ledger, which is the worst way for a reader to
+        // fail. Only a row that positively says nothing happened is dropped.
+        const spoke = row.has_user_event === undefined || row.tokens_used === undefined
+          ? true
+          : Boolean(Number(row.has_user_event)) || Boolean(Number(row.tokens_used));
+        if (!live && !spoke) return false;
+        return live || Number(row.updated_at_ms ?? 0) >= cutoff;
+      })
       .slice(0, CODEX_ROW_LIMIT)
       .map((row) => ({
       sessionId: String(row.id),

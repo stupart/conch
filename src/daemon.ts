@@ -55,6 +55,7 @@ import {
   TerminalQuestionController,
 } from "./terminal-question.ts";
 import {
+  codexFolderTrusted,
   codexHomeDir,
   detectCodexTurnEnds,
   isInterAgentEnvelope,
@@ -582,6 +583,8 @@ export interface RuntimeControlDispatchOptions {
   start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | Promise<void>;
   /** Whether Claude Code already trusts a folder; absent or null means unknown. */
   folderTrusted?(cwd: string): boolean | null;
+  /** Whether Codex already trusts a folder; absent or null means unknown. */
+  codexFolderTrusted?(cwd: string): boolean | null;
   close(sessionId: string): void | Promise<void>;
   report(message: Extract<RuntimeControlMessage, { kind: "app-error" }>): void | Promise<void>;
 }
@@ -629,6 +632,23 @@ export async function dispatchRuntimeControlMessage(
       };
     }
     if (message.kind === "session-start") {
+      // Ask before launching, not after. Codex stops on a full-screen trust
+      // prompt in a directory it has not been told about, and a session held
+      // there never starts and never registers — indistinguishable, from
+      // outside, from one that failed. Unlike Claude's equivalent, this answer
+      // CAN be supplied at launch, so conch offers the choice instead of
+      // starting something that will sit there.
+      if (
+        message.backend === "codex"
+        && message.trustFolder !== true
+        && message.cwd
+        && options.codexFolderTrusted?.(message.cwd) === false
+      ) {
+        return {
+          handled: true,
+          response: { kind: "session-needs-trust", backend: "codex", cwd: message.cwd },
+        };
+      }
       // Answered BEFORE launching, because afterwards it is unanswerable: a
       // session held on the trust prompt writes no registry file, so conch
       // cannot tell "still deciding" from "never started" from the outside.
@@ -1540,6 +1560,26 @@ export async function runDaemon(cfg: Config): Promise<void> {
       ?? sessionStates.get(id)?.label
       ?? known?.label
       ?? (session ? sessionLabel(session, session.cwd) : id.slice(0, 8));
+  }
+  /**
+   * Translate a session id at the door, when it names a session that conch is
+   * addressing per window.
+   *
+   * Window keys are conch's own invention (see `window-key.ts`), so anything
+   * from outside — an agent that knows its own `session_id`, a hand-typed
+   * `conch wake <id>` — legitimately asks by the session. Nothing else in here
+   * has to know: by the time a message is dispatched it names a window.
+   */
+  function addressWindow(value: unknown): unknown {
+    if (typeof value !== "object" || value === null) return value;
+    const id = (value as { sessionId?: unknown }).sessionId;
+    if (typeof id !== "string" || !id || isKnownSessionId(id)) return value;
+    const windows = [...panelSessions.values()]
+      .filter((s) => s.agentSessionId === id)
+      .sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+    // Two windows and no way to tell which was meant: the newest, the same
+    // answer `findSession` gives an ambiguous id.
+    return windows[0] ? { ...value, sessionId: windows[0].sessionId } : value;
   }
   function isKnownSessionId(id: string): boolean {
     return panelSessions.has(id)
@@ -4779,8 +4819,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // Read at start time, so changing the setting affects the next session
       // you launch rather than needing a daemon restart.
       bypassPermissions: cfg.bypassPermissions,
+      ...(message.trustFolder === true ? { trustFolder: true as const } : {}),
     }),
     folderTrusted: (cwd) => claudeFolderTrusted(cwd),
+    codexFolderTrusted: (cwd) => codexFolderTrusted(cwd),
     close: closeLiveSession,
     report: (message) => {
       appendConchError(
@@ -4804,7 +4846,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       handled = true;
       let response: ControlResponse | undefined;
       try {
-        const value: unknown = JSON.parse(line);
+        const value: unknown = addressWindow(JSON.parse(line));
         const runtime = await dispatchRuntimeControlMessage(
           value,
           runtimeControlDispatchOptions,
@@ -4855,6 +4897,25 @@ export async function runDaemon(cfg: Config): Promise<void> {
         // reading instead of an opinion, and a trend across a session is what
         // answers it. Low Power Mode is called out because it throttles the
         // CPU and has already been mistaken for a conch bug once.
+        // Why the phone talked.
+        //
+        // It speaks through iOS's own synthesiser, so nothing it says has ever
+        // appeared in this log — and when Tyler asked why conch spoke aloud in
+        // manual mode, the honest answer was that the Mac had not, and the
+        // phone leaves no trace either way. That is the same shape as the wake
+        // that could not be attributed: unanswerable until the thing doing it
+        // says so.
+        if (
+          typeof value === "object" && value !== null
+          && (value as { kind?: unknown }).kind === "phone-spoke"
+        ) {
+          const note = value as Record<string, unknown>;
+          const reason = typeof note.reason === "string" ? note.reason : "unknown";
+          const text = typeof note.text === "string" ? note.text.slice(0, 60) : "";
+          log(`phone spoke (${reason}): ${JSON.stringify(text)}`);
+          sock.end(JSON.stringify({ kind: "ack" }) + "\n");
+          return;
+        }
         if (
           typeof value === "object" && value !== null
           && (value as { kind?: unknown }).kind === "phone-device"
@@ -5589,8 +5650,18 @@ function printHelp(): void {
 }
 
 function log(msg: string): void {
-  const t = new Date().toTimeString().slice(0, 8);
-  logAbove(`[conch ${t}] ${msg}`);
+  // Date first, because this file is not a session — it is five days long.
+  //
+  // It carried the time only, and the log is never rotated, so entries from
+  // different days sat next to each other looking simultaneous. That is not
+  // theoretical: investigating why conch spoke aloud, I read "manual — holding
+  // honeyb" as current evidence twice, and both lines were from the previous
+  // day. A timestamp that can mislead the person reading it is worse than no
+  // timestamp, because it is trusted.
+  const now = new Date();
+  const day = `${now.getMonth() + 1}/${now.getDate()}`;
+  const t = now.toTimeString().slice(0, 8);
+  logAbove(`[conch ${day} ${t}] ${msg}`);
 }
 
 /** Seconds since the user last touched keyboard or mouse (macOS HID idle time). */
