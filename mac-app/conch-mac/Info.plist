@@ -4,6 +4,8 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>conch</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -11,8 +13,6 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>conch</string>
-	<key>CFBundleDisplayName</key>
 	<string>conch</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
@@ -29,6 +29,8 @@
 	</dict>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>conch listens when you press its microphone, so your spoken reply reaches the session you are talking to. Audio is transcribed on this Mac and is never uploaded.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>
