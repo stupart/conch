@@ -52,3 +52,35 @@ test("the mic still reports how long it took to open", () => {
   expect(daemon).toContain("micRequestedAt = Date.now();");
   expect(daemon).toContain("s after the press");
 });
+
+/**
+ * The reported number has to be the one a person feels.
+ *
+ * "0.0s after the press" was true and useless: it was printed where conch
+ * DECIDES to listen, before the recorder is armed, so it measured the daemon
+ * agreeing with itself. Tyler pressed the button and said "it's still a while"
+ * against a log claiming instant. The honest instant is the arm — sox open on
+ * the device and able to hear you — so that is where it is measured.
+ */
+test("press-to-open is measured at the arm, not at the decision", () => {
+  const loop = daemon.slice(daemon.indexOf("async function conversationLoop"));
+  // The statement itself, not everything preceding it — `reportArmed` is
+  // defined earlier in this function and legitimately contains the phrase.
+  const start = loop.indexOf('log(`listening → ');
+  expect(start).toBeGreaterThan(-1);
+  const decision = loop.slice(start, loop.indexOf("\n", start));
+
+  // The decision line must not carry a timing claim any more.
+  expect(decision).not.toContain("after the press");
+
+  // The arm callback owns it, and clears the stamp so a later arm in the same
+  // exchange cannot re-report a press that already opened.
+  const report = daemon.slice(daemon.indexOf("const reportArmed = ()"));
+  const body = report.slice(0, report.indexOf("\n    };"));
+  expect(body).toContain("micRequestedAt = null;");
+  expect(body).toContain("mic armed ");
+
+  // ...and it is actually wired into the recorder's armed transition.
+  expect(daemon).toContain("onArmed?.();");
+  expect(loop).toContain("reportArmed,");
+});
