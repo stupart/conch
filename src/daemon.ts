@@ -1812,7 +1812,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
     if (!cueCfg.micCues) return;
     const started = Date.now();
     await speech.playCue(CUE_SOUND[kind], `${kind} mic cue`);
-    if (kind === "open") await Bun.sleep(350); // let the cue's tail decay before sox arms
     // Reported only when it is slow enough to be felt. The cue is a sound plus
     // a deliberate settle, so it is never free — but if it grows into seconds
     // it is indistinguishable from the mic being broken, which is exactly how
@@ -3926,7 +3925,23 @@ export async function runDaemon(cfg: Config): Promise<void> {
       return;
     }
     if (!initialDictationCapture && !deferredInitialExternal) {
-      await micCue(cfg, "open");
+      // Fired, not awaited. This was the whole delay: the daemon's own timing
+      // print says `mic cue took 3.9s` on a 3.9s open, so the courtesy sound
+      // WAS the wait. A 0.56s tink costs ~0.8s of fixed afplay overhead in a
+      // shell and considerably more here, where it contends with the warm TTS
+      // worker for the audio device.
+      //
+      // It also read as dishonest: the cue's job is to tell you the mic is
+      // open, and it was playing to completion BEFORE that was true. Firing it
+      // means it now sounds at roughly the moment it describes.
+      //
+      // The trade, stated plainly: sox may arm while the tink is still audible
+      // and capture a little of it, which the awaited 350ms decay used to
+      // prevent. That is a short system sound, not speech, and VAD is there to
+      // find speech — against a guaranteed multi-second delay on every single
+      // press, which is what made the button feel broken. If a stray leading
+      // token ever shows up in a transcript, this is the line that did it.
+      void micCue(cfg, "open");
       if (shuttingDown || interruptedByPause()) {
         emitRecorderTraces(
           seededSegments.flatMap((segment) => segment.diagnosticIds),
