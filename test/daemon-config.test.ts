@@ -516,17 +516,13 @@ describe("daemon config controller", () => {
     expect(render).toContain(
       "withoutDismissedSessions(registryLive, dismissedSessionIds)",
     );
-    expect(render).toContain("...prioritizedSessionIds");
-    expect(render).toContain("...dismissedSessionIds");
-    expect(completePrune).toContain("...pending.keys()");
-    expect(completePrune).toContain("pending.delete(id)");
-    expect(completePrune).toContain("eventOrder.prune(liveIds)");
-    expect(closedCleanup).toContain("pending.delete(event.sessionId)");
+    expect(completePrune).toContain("ledger.forgetGone(liveIds)");
+    expect(closedCleanup).toContain("ledger.forget(event.sessionId)");
+    expect(closedCleanup).toContain("if (lastTurn?.sessionId === event.sessionId) lastTurn = null");
     expect(dismiss).toContain("dismissedSessionIds.add(target.sessionId)");
     expect(dismiss).toContain("if (lastTurn?.sessionId === target.sessionId) lastTurn = null");
     expect(dismiss).toContain("hold: dismissedHeldTurns");
     expect(dismiss).not.toContain("setSessionMutedWithDigest");
-    expect(daemonSource).toContain("dismissedSessionIds.delete(event.sessionId)");
 
     const quietGate = daemonSource.slice(
       daemonSource.indexOf("const controlDisposition = gateTurnForControls"),
