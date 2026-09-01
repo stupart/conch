@@ -1,0 +1,136 @@
+name: release
+
+# Publishes a conch release and points the Homebrew tap at it.
+#
+# The failure this exists to prevent: the tap sat on v0.2.1 for 327 commits —
+# including a fix for a microphone that could not hear — because releasing was a
+# checklist. Anyone who ran `brew install` in that window got software that did
+# not work, and nothing told them.
+#
+# Triggered by a version tag, not by every push to main. Releasing per commit
+# would mean a full signed build per merge and a stream of update notices for
+# something that changed a comment. To make brew track main directly, uncomment
+# the auto-tag job at the bottom: it turns "merged to main" into "tagged", and
+# the tag lands here.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "x.y.z to publish"
+        required: true
+
+jobs:
+  publish:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+
+      - name: resolve version
+        id: v
+        run: |
+          VERSION="${{ inputs.version }}"
+          [ -n "$VERSION" ] || VERSION="${GITHUB_REF_NAME#v}"
+          echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "bad version '$VERSION'" >&2; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # Both gates before anything is published. A release is the one artifact
+      # nobody can take back once someone has installed it.
+      - run: bun test
+      - run: bunx tsc --noEmit
+
+      # The signing identity is not a detail. macOS ties the microphone grant to
+      # it, so an app signed by a DIFFERENT identity — or ad-hoc — is a new app
+      # to TCC, and every upgrade would silently drop the permission that makes
+      # conch able to hear at all. Same cert as local builds, or no release.
+      - name: import signing identity
+        env:
+          CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          if [ -z "$CERT_P12_BASE64" ]; then
+            echo "::error::MACOS_CERT_P12_BASE64 is not set. A release without the Developer ID would ship an app macOS treats as a different one, dropping every user's microphone permission on upgrade." >&2
+            exit 1
+          fi
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          PASS="$(uuidgen)"
+          security create-keychain -p "$PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 900 "$KEYCHAIN"
+          security unlock-keychain -p "$PASS" "$KEYCHAIN"
+          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PASS" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: build
+        run: scripts/build-release.sh "${{ steps.v.outputs.version }}"
+
+      # build-release.sh degrades to a CLI-only tarball with a warning when the
+      # app fails to build. That warning has to be a refusal here: the app is the
+      # half carrying NSMicrophoneUsageDescription and the audio-input
+      # entitlement, so a CLI-only release delivers a conch whose recorder can
+      # never be granted a microphone.
+      - name: verify the artifact
+        run: |
+          set -euo pipefail
+          for arch in arm64 x64; do
+            tar -tzf "dist/conch-macos-$arch.tar.gz" | grep -q "conch.app/" \
+              || { echo "::error::$arch tarball has no conch.app — the app is what holds the mic permission" >&2; exit 1; }
+          done
+          WORK=$(mktemp -d); tar -xzf dist/conch-macos-arm64.tar.gz -C "$WORK"
+          codesign --verify --strict "$WORK/conch.app" \
+            || { echo "::error::conch.app signature is invalid" >&2; exit 1; }
+          codesign -dv "$WORK/conch.app" 2>&1 | grep -q "TeamIdentifier=5DRS8F56M2" \
+            || { echo "::error::conch.app is signed by the wrong identity — upgrades would drop the microphone grant" >&2; exit 1; }
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.v.outputs.version }}" dist/conch-macos-*.tar.gz \
+            --title "conch ${{ steps.v.outputs.version }}" --generate-notes
+
+      # Same job as the publish, deliberately. A release the tap does not point
+      # at is the exact failure being fixed, so they cannot come apart.
+      - name: bump the tap
+        env:
+          GH_TOKEN: ${{ secrets.TAP_TOKEN }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          [ -n "$GH_TOKEN" ] || { echo "::error::TAP_TOKEN is not set — the release would publish with the tap left pointing at the old version" >&2; exit 1; }
+          ARM_SHA=$(shasum -a 256 dist/conch-macos-arm64.tar.gz | cut -d' ' -f1)
+          X64_SHA=$(shasum -a 256 dist/conch-macos-x64.tar.gz | cut -d' ' -f1)
+          TAP=$(mktemp -d)
+          gh repo clone stupart/homebrew-tap "$TAP" -- -q
+          F="$TAP/Formula/conch.rb"
+          sed -i '' \
+            -e "s|^  version \".*\"|  version \"$VERSION\"|" \
+            -e "s|download/v[0-9.]*/conch-macos-arm64|download/v$VERSION/conch-macos-arm64|" \
+            -e "s|download/v[0-9.]*/conch-macos-x64|download/v$VERSION/conch-macos-x64|" \
+            "$F"
+          awk -v arm="$ARM_SHA" -v x64="$X64_SHA" '
+            /sha256 "/ { n++; if (n == 1) sub(/sha256 "[^"]*"/, "sha256 \"" arm "\""); else if (n == 2) sub(/sha256 "[^"]*"/, "sha256 \"" x64 "\"") }
+            { print }
+          ' "$F" > "$F.new" && mv "$F.new" "$F"
+          grep -q "$ARM_SHA" "$F" || { echo "::error::arm64 sha did not land" >&2; exit 1; }
+          grep -q "version \"$VERSION\"" "$F" || { echo "::error::version did not land" >&2; exit 1; }
+          git -C "$TAP" -c user.name=conch-release -c user.email=noreply@github.com \
+            commit -qam "conch $VERSION"
+          git -C "$TAP" push -q
+
+# To make brew follow main directly, add a job here that bumps the patch version
+# and pushes a tag on every push to main. Left off on purpose: it means a full
+# signed build per merge and an update notice for every commit, including the
+# ones that only touch docs. Tag when there is something worth installing.
