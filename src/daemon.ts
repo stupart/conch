@@ -36,6 +36,17 @@ import type { RecorderHandle } from "./dictation-controller.ts";
 import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
 import { renameProviderSession } from "./provider-rename.ts";
 import { classify, classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
+import {
+  describeNotice,
+  fetchLatestVersion,
+  isCheckDue,
+  readVersionCheck,
+  runningFromSource,
+  updateNotice,
+  versionCheckPath,
+  writeVersionCheck,
+} from "./version-check.ts";
+import { CONCH_VERSION } from "./version.ts";
 import { isCodexTranscriptPath, lastAssistantText, splitSentences, stripMarkdown, firstSentences, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
 import { PhoneUploads } from "./phone-uploads.ts";
 import { CONCH_DATA } from "./config.ts";
@@ -2000,6 +2011,40 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let panelRenderVersion = 0;
   let lastPublishedPanelState: PublishedState | null = null;
   let lastPanelModel: PanelModel | null = null;
+  /**
+   * Say once a day when the conch running is not the newest one published.
+   *
+   * Homebrew never upgrades an installed package by itself — `brew update` only
+   * refreshes metadata — so without this a person stays on whatever they first
+   * installed, forever. That is not hypothetical: the release that shipped a
+   * microphone which could not hear would have sat on someone's machine with
+   * the fix already published and nothing to tell them.
+   *
+   * Deliberately a notice and not an upgrade. conch holds a microphone and
+   * drives other people's terminals; replacing the binary underneath a running
+   * voice loop is not something it should do to someone mid-sentence.
+   *
+   * Never awaited, never fatal, and once a day even across restarts — the
+   * record is written whether the check succeeded or not, so an outage cannot
+   * turn into a request on every daemon start.
+   */
+  function checkForUpdate(): void {
+    if (runningFromSource()) return; // a checkout upgrades with git pull
+    const path = versionCheckPath();
+    const state = readVersionCheck(path);
+    const now = Date.now();
+    if (!isCheckDue(state, now, 24 * 60 * 60 * 1000)) {
+      const known = updateNotice(CONCH_VERSION, state?.latest, false);
+      if (known) log(describeNotice(known));
+      return;
+    }
+    void fetchLatestVersion().then((latest) => {
+      writeVersionCheck(path, { checkedAt: Date.now(), ...(latest ? { latest } : {}) });
+      const notice = updateNotice(CONCH_VERSION, latest ?? undefined, false);
+      if (notice) log(describeNotice(notice));
+    }).catch(() => {});
+  }
+
   const warmedTranscripts = new Set<string>();
   let warmQueue: Promise<unknown> = Promise.resolve();
   const reportedMissingCodexPid = new Set<string>();
@@ -5318,6 +5363,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   } catch {}
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);
   if (pause.paused) log("starting in manual mode (persisted) — p or `conch resume` turns auto on");
+  checkForUpdate(); // fire and forget; never blocks the daemon coming up
   rendererLifecycle.enter();
   setState(restState());
   void renderSessionPanel(); // show the dashboard immediately
