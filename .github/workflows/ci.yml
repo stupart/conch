@@ -1,0 +1,31 @@
+name: ci
+
+# There was no CI. That is how a red main got merged on 2026-08-31: the suite
+# was piped into `tail`, the exit code went unread, and nothing downstream
+# disagreed. A human reading output is not a gate.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # macOS because conch shells out to macOS binaries throughout, and the
+    # tests read real process trees. A linux runner would be green for reasons
+    # that say nothing about whether conch works.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: tests
+        run: bun test
+      # Separate step, and not optional: `bun test` does not typecheck, and the
+      # daemon's largest function is executed by no test at all — so tsc is the
+      # only automated thing that reads it the way the runtime does. It has
+      # already caught a refactor that moved a function without exporting it
+      # while all 1138 tests passed.
+      - name: typecheck
+        run: bunx tsc --noEmit
