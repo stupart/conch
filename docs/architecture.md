@@ -112,12 +112,21 @@ confirmed the loop is not being starved: injection measures 0.7–1.2s and the
 
 ## What is wrong with it
 
-**`daemon.ts` is 5,615 lines.** That is the real answer to "does it need a
-refactor". It holds the queue, the voice loop, the panel model, the socket
-server, session lifecycle, the phone bridge wiring, wake resolution and the
-control dispatch. Nothing in it is *wrong*, and its comments are unusually
-good, but it is the file where every feature lands and where two writers
-collide — which happened during the parity pass.
+**`daemon.ts` is 5,811 lines — but the line count was never the problem.**
+Lines 1–1466 are ~35 exported, individually tested functions and they are fine.
+The problem is that `runDaemon` is a single ~4,200-line function with 37 nested
+functions closing over 152 locals. That is where every feature lands and where
+two writers collide.
+
+Inside it sat **14 collections keyed by session id**, maintained by hand, with
+two near-identical blocks meaning "this session is gone, forget everything
+about it". A7 is what made that urgent rather than untidy: it changed what those
+keys MEAN (a window key where two windows share one id), and all fourteen had to
+agree at once. `SessionLedger` (`session-ledger.ts`) now owns them with one
+`forget(id)` — the first cut of the refactor, and the one that removed a bug
+class rather than moving lines. It is deliberately a thin lifecycle owner: the
+Maps and Sets stay public, because hot render paths spread them and hand them
+straight to controllers.
 
 The seams are already visible and would split cleanly:
 
@@ -132,9 +141,26 @@ The seams are already visible and would split cleanly:
 write pass and the marketplace, because both add control messages and both will
 otherwise land in the same 5,615-line file.
 
-**Second: two ways to run the daemon.** `conch install` puts it in launchd
-inside tmux; the Mac app hosts its own. Two owners is what made "adopted" a
-permanent state, and it is the root of three separate bugs already recorded.
+**Second: two ways to run the daemon, and the daemon's parent owns the
+microphone.** `conch install` puts it in launchd; the Mac app hosts its own and
+adopts whatever is already answering the socket. Two owners is what made
+"adopted" a permanent state, and it has now produced two more bugs worth
+naming, because neither is obvious from the code:
+
+- **A stale daemon survives an app rebuild.** Rebuilding and relaunching the app
+  re-adopts the old daemon, so it can run days-old code while every deploy looks
+  successful. Killing the daemon is what forces a new one.
+- **Whoever parents the daemon owns its microphone permission.** macOS attributes
+  a child's audio access to the responsible app bundle. While the daemon ran
+  standalone its `sox` was attributed to Terminal, which is granted; making it a
+  child of `conch.app` moved that attribution to a bundle with no
+  `NSMicrophoneUsageDescription` and no grant — so sox opened the device,
+  received silence, whisper failed on an empty buffer, and the log said
+  `listening` throughout. Nothing anywhere reported it. The app now declares the
+  usage string and carries `com.apple.security.device.audio-input`, which
+  Hardened Runtime requires independently of the permission database. **The
+  signing identity is part of this contract**: TCC keys the grant to it, so an
+  app signed by a different cert is a new app and loses the permission.
 
 ## What this means for building on top
 
@@ -145,3 +171,20 @@ the feature without any daemon work because the bridge forwards generically.
 
 The marketplace, model switching and the write pass all fit that shape. What
 they do NOT fit is the current size of `daemon.ts`.
+
+## Releasing
+
+`scripts/release.sh <version>` does the whole thing: gates, build, tag, publish,
+and the Homebrew tap bump in one pass. It exists because the tap sat pinned to
+v0.2.1 for 327 commits — including the microphone fix above — while
+`build-release.sh` was sitting right there, able to do the build the entire
+time. Nothing ran it, because releasing was a checklist.
+
+It refuses a CLI-only tarball. The app is the half carrying the microphone
+entitlement, so shipping without it would deliver a conch whose recorder can
+never be granted a microphone.
+
+`.github/workflows/ci.yml` runs the suite and `tsc` on every push and PR, and
+reports how far main has drifted from the newest release. `release.yml` can
+publish from a tag once a signing identity is available to it — by secret, or by
+a self-hosted runner where the certificate never leaves the machine.
