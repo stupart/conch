@@ -184,6 +184,8 @@ export class WhisperServerClient {
   private tail: Promise<void> = Promise.resolve();
   private warmRequests = new Set<AbortController>();
   private recovery: (reason: WhisperRecoveryReason) => void = () => {};
+  /** Told what actually went wrong, so a failure is diagnosable rather than just named. */
+  private note: (message: string) => void = () => {};
   private readonly request: (url: string, init?: RequestInit) => Promise<Response>;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<boolean>;
 
@@ -198,6 +200,11 @@ export class WhisperServerClient {
 
   setRecoveryHandler(handler?: (reason: WhisperRecoveryReason) => void): void {
     this.recovery = handler ?? (() => {});
+  }
+
+  /** Where to report the underlying error behind a `request-failed`. */
+  setNoteHandler(handler?: (message: string) => void): void {
+    this.note = handler ?? (() => {});
   }
 
   resetHealth(): void {
@@ -348,8 +355,16 @@ export class WhisperServerClient {
           throw error;
         }
       }, signal);
-    } catch {
+    } catch (error) {
       this.resetHealth();
+      // Say WHAT failed. This caught and discarded the error, so five hours of
+      // logs could report `whisper-server recovery requested: request-failed`
+      // on nearly every capture without ever naming the cause — and the health
+      // reset above means the next transcription takes the slow cold path, so
+      // this is not free noise. A cancellation on the way down is expected and
+      // says so rather than looking like a fault.
+      const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      try { this.note(detail); } catch {}
       // The daemon installs ServerSupervisor.requestRecovery here. It only
       // enqueues/coalesces background work and is never awaited by this path.
       try { this.recovery("request-failed"); } catch {}

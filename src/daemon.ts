@@ -1606,6 +1606,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     log,
   });
   whisperServerClient.setRecoveryHandler((reason) => whisperSupervisor?.requestRecovery(reason));
+  whisperServerClient.setNoteHandler((detail) => log(`whisper request failed — ${detail}`));
   const speech = new SpeechManager(
     { speakCancellable: backendSpeakCancellable, stopSpeaking: backendStopSpeaking },
     (operation, output) => withNormalMicClosed(
