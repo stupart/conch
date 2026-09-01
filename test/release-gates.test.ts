@@ -76,3 +76,37 @@ test("CI runs both gates on every push and PR", () => {
   expect(ci).toContain("run: bunx tsc --noEmit");
   expect(ci).toContain("pull_request:");
 });
+
+/**
+ * A release from CI must be signed with the SAME identity as a local one.
+ *
+ * macOS ties the microphone grant to the code signing identity, so an app
+ * signed ad-hoc or by a different cert is a new app to TCC — and every upgrade
+ * would silently drop the permission that makes conch able to hear at all.
+ * That is the bug this whole release exists to deliver the fix for, so the
+ * workflow refuses rather than shipping it back.
+ */
+test("the release workflow refuses an unsigned or wrongly-signed app", () => {
+  const wf = read(".github/workflows/release.yml");
+
+  expect(wf).toContain("MACOS_CERT_P12_BASE64 is not set");
+  expect(wf).toContain("codesign --verify --strict");
+  expect(wf).toContain("TeamIdentifier=5DRS8F56M2");
+  expect(wf).toContain('grep -q "conch.app/"');
+
+  // Publishing and the tap bump live in one job so they cannot come apart.
+  expect(wf).toContain("bump the tap");
+  expect(wf).toContain("TAP_TOKEN is not set");
+
+  // Tag-triggered, not per-commit: a signed build per merge, and an update
+  // notice for a docs change, is not what "keep brew current" should cost.
+  expect(wf).toContain('tags: ["v*"]');
+});
+
+test("CI reports how far the tap is behind main", () => {
+  const ci = read(".github/workflows/ci.yml");
+  expect(ci).toContain("release-gap:");
+  expect(ci).toContain("git rev-list --count");
+  // A warning, not a failure — being ahead of a release is normal.
+  expect(ci).toContain("::warning::main is $AHEAD commits ahead");
+});

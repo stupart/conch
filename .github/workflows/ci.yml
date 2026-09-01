@@ -29,3 +29,27 @@ jobs:
       # while all 1138 tests passed.
       - name: typecheck
         run: bunx tsc --noEmit
+
+  # Staleness has to be visible somewhere, or it is only discovered by a user
+  # installing software that does not work. This does not fail the build — being
+  # ahead of a release is normal — it just makes the gap impossible to not know.
+  release-gap:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: how far is the tap behind
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=$(gh release view --json tagName --jq .tagName 2>/dev/null || echo "")
+          if [ -z "$TAG" ]; then echo "::warning::no release published yet"; exit 0; fi
+          AHEAD=$(git rev-list --count "$TAG"..HEAD)
+          echo "main is $AHEAD commits ahead of $TAG"
+          if [ "$AHEAD" -gt 25 ]; then
+            echo "::warning::main is $AHEAD commits ahead of $TAG — anyone installing from Homebrew is getting $TAG"
+          fi
+          echo "main is **$AHEAD commits** ahead of \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
