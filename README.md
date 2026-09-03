@@ -73,11 +73,24 @@ conch setup                        # models, hooks, service, and app plugins
 ```bash
 git clone https://github.com/stupart/conch.git && cd conch
 bun install
-bun link           # puts `conch` on your PATH, running from source
-conch setup        # installs/configures everything and starts the service
+bun link                    # puts `conch` on your PATH, running from source
+scripts/build-app.sh        # builds and installs conch.app — see below
+conch setup --no-service    # the app owns the daemon; don't also install the service
 ```
 
 Requires [Bun](https://bun.sh). Running from source means edits take effect immediately; the brew binary is a frozen `bun build --compile` build.
+
+**The app is not optional, and a source checkout does not come with one.** `brew install` ships `conch.app` inside the formula tarball; cloning gives you the CLI and the daemon only. The app matters beyond having a window: it declares `NSMicrophoneUsageDescription` and carries the `com.apple.security.device.audio-input` entitlement, and macOS attributes the daemon's microphone use to the app bundle that spawned it. Without the app, the recorder opens the device, receives silence, and nothing anywhere reports it.
+
+`scripts/build-app.sh` needs **Xcode** (not just the Command Line Tools) and a **Developer ID Application** certificate for team `5DRS8F56M2` — the project signs manually and will fail without one. Check with:
+
+```bash
+security find-identity -v -p codesigning   # must list Developer ID Application ... 5DRS8F56M2
+```
+
+On a second machine, **create a new certificate there** rather than exporting the private key from the first: Xcode → Settings → Accounts → Manage Certificates → **+** → Developer ID Application. The private key is generated locally and never crosses the network. That is safe here because the app's designated requirement pins the *team*, not a certificate serial — so a second cert from the same team produces an app macOS treats as the same app, and the microphone grant survives.
+
+Pick one install per machine. Two `conch` on `$PATH` — a brew one and a linked checkout — is how the app and the daemon end up on different versions without anything saying so.
 </details>
 
 Setup leaves conch running as a background service that launches at login and self-heals within ~15s of a crash. In any Claude Code session that was already open during setup, type `/hooks` once to reload its configuration; sessions opened afterward pick conch up automatically. Finish a turn and conch will speak it, play a tink, and open the mic. Allow macOS microphone access when prompted; if the prompt was missed or the loop stays quiet, run `conch doctor`.
