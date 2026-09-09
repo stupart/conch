@@ -216,7 +216,12 @@ ${prose}`);
       join(repoRoot, "src", "cli.ts"),
       "--outfile",
       binary,
-    ]);
+    ], {
+      // `--outfile` decides where the BINARY goes; the ~60MB `.bun-build`
+      // intermediate goes to cwd regardless. Run from the tmpdir so it lands
+      // there and dies with `roots`. Four of them reached main via `git add -A`.
+      cwd: root,
+    });
     expect(build.exitCode).toBe(0);
 
     const install = Bun.spawnSync([binary, "install-plugin"], {
