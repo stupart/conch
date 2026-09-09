@@ -76,12 +76,25 @@ printf '%s' "$CONCH_INTERNAL"
     // not the code's: askClaude was killing the child correctly every time.
     const bin = await script(`
 printf '%s' "$$" > "${pidPath}"
-cat >/dev/null
+read -r line || :
+[ "$line" = go ] || exit 0
 exec sleep 30
 `);
+    // macOS assesses a freshly written executable on its FIRST launch: measured
+    // at ~350ms on a new machine, ~5ms on every launch after. A 100ms timeout
+    // killed the child before its first line ran, so the pid file never
+    // appeared and this test died on ENOENT instead of failing honestly — every
+    // run, on a machine where raw spawn is 0.3ms. Pay that cost once, here,
+    // outside the timed window. stdin is closed, so `read` sees EOF with an
+    // empty line and the stub exits without sleeping; only the prompt "go"
+    // reaches the sleep. `|| :` and not `|| exit`: askClaude writes the prompt
+    // with no trailing newline, so `read` returns non-zero even when it HAS
+    // read "go" — an `exit` there let the child die on its own and left the
+    // kill below untested. A mutation that never killed passed.
+    Bun.spawnSync([bin], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     const started = performance.now();
 
-    expect(await askClaude("prompt", { bin, timeoutMs: 100 })).toBeNull();
+    expect(await askClaude("go", { bin, timeoutMs: 100 })).toBeNull();
     expect(performance.now() - started).toBeLessThan(2_000);
 
     const pid = readFileSync(pidPath, "utf8").trim();

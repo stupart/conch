@@ -232,6 +232,11 @@ export async function checkTts(
  */
 export async function checkAgentBinaries(
   run: (argv: string[]) => Promise<{ stdout: string; ok: boolean }> = defaultRun,
+  // Injected alongside `run`, not called directly. With `Bun.which` inline the
+  // tests could stub the shell side but had to read the HOST for what conch
+  // resolves, so their expected answer depended on where `claude` happened to
+  // be installed — and CI, which has no claude at all, had never been green.
+  which: (agent: string) => string | null = (agent) => Bun.which(agent),
 ): Promise<DoctorProbeResult> {
   const lines: string[] = [];
   let divergent = false;
@@ -239,7 +244,7 @@ export async function checkAgentBinaries(
   for (const agent of ["claude", "codex"] as const) {
     const mine = (await run(["/bin/sh", "-lc", `command -v ${agent}`])).stdout.trim();
     const shell = (await run(["/bin/zsh", "-lc", `command -v ${agent}`])).stdout.trim();
-    const used = Bun.which(agent) ?? "";
+    const used = which(agent) ?? "";
     if (!used) {
       lines.push(`${agent}: not on conch's PATH`);
       divergent = true;
