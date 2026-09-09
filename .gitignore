@@ -22,3 +22,7 @@ docs/codebase-analysis/
 # a build run in the wrong directory. Xcode uses the same trick for its own
 # DerivedData.
 *.noindex/
+
+# bun build --compile leaves these in the working directory mid-build. Four of
+# them (254MB of Mach-O) reached main via `git add -A` on 2026-09-10.
+*.bun-build
