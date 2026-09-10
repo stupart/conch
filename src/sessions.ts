@@ -50,6 +50,13 @@ export interface SessionInfo {
   /** Session implementation; absent on legacy Claude registry projections. */
   backend?: "claude" | "codex";
   name?: string;
+  /**
+   * Who chose `name`. Claude Code 2.1.25x+ writes a registry name at start
+   * whether or not anyone typed one: `"derived"` is its own cwd-slug-plus-hex
+   * (`arch-e9`), `"user"` is a /rename. Absent on older versions, where a
+   * registry name only ever came from a person — so absent reads as "user".
+   */
+  nameSource?: "user" | "derived";
   cwd?: string;
   pid?: number;
   /** Claude Code's own live state: "busy" | "idle" | "shell" (authoritative for working-vs-waiting). */
@@ -204,7 +211,16 @@ function currentName(info: SessionInfo, claudeDir: string): SessionInfo {
     ?? liveTranscriptPath(claudeDir, info.cwd, info.sessionId);
   if (!path) return info;
   const titles = readClaudeTitles(path);
-  const name = titles.custom ?? info.name ?? titles.generated;
+  // A registry name Claude Code DERIVED is a fallback, not a choice. It used to
+  // outrank the generated title — correct when a registry name could only come
+  // from a person, wrong once Claude Code started writing `arch-e9` at startup
+  // for every session: the slug masked real titles, and where none existed it
+  // beat the plain directory name. Tyler: "the mac app names of sessions are a
+  // bit off". A typed name still wins over a generated title, as before.
+  const typed = info.nameSource === "derived" ? undefined : info.name;
+  const name = titles.custom ?? typed ?? titles.generated;
+  // `undefined` here is deliberate: sessionLabel then falls to the directory,
+  // which says where the work is; `arch-e9` says the same with noise attached.
   return name === info.name ? info : { ...info, name };
 }
 
@@ -214,6 +230,9 @@ function toInfo(entry: any, backend?: SessionInfo["backend"]): SessionInfo {
     sessionId: entry.sessionId,
     ...(backend ? { backend } : {}),
     name: entry.name,
+    ...(entry.nameSource === "user" || entry.nameSource === "derived"
+      ? { nameSource: entry.nameSource }
+      : {}),
     cwd: entry.cwd,
     ...(typeof entry.startedAt === "number" ? { startedAt: entry.startedAt } : {}),
     pid: entry.pid,
