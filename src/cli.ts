@@ -40,7 +40,7 @@ const HELP = `conch — a voice loop for Claude Code and Codex
 
 Getting started:
   conch setup                    run this once — installs everything
-  conch setup [--no-service] [--no-plugin]  opt out of automatic integrations
+  conch setup [--service|--no-service] [--no-plugin]  override the automatic integrations
   conch | conch dashboard        open the live dashboard (ctrl-b d detaches)
 
 Everyday:
