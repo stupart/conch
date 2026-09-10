@@ -144,12 +144,13 @@ describe("control server over a real Unix socket", () => {
     expect(frame.length).toBe(64_001);
     p.socket.write(frame);
     expect(await within(p.done)).toBe("");
-    // Preserve the original contract here: destroy, with no wire reply. Bun
-    // 1.4 also emits end after destroy, so the unchanged EOF handler may still
-    // dispatch buffered JSON. That pre-existing defect is reported, not fixed
-    // by this extraction; asserting no dispatch here would tighten behavior.
     // The server destroyed its side rather than leaving an open half-connection.
     expect(p.socket.writableEnded).toBe(false);
+    // Bun 1.4 emits `end` after `destroy()`. The EOF handler used to parse and
+    // dispatch the refused frame from there, so an oversized mutation reached
+    // the application with no acknowledgement (A16). Refused means refused.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(f.calls.configuration).toHaveLength(0);
     await within(f.server.close(), "destroyed connection to close");
   });
 
