@@ -30,7 +30,7 @@ only by what exists.
 
 ## The four seams
 
-`daemon.ts` is 4,954 lines. `docs/architecture.md` names where it splits:
+`daemon.ts` is 5,213 lines (it was 4,954 after cut three; the C9b holder wiring landed in it). `docs/architecture.md` names where it splits:
 
 - **Q** `event-queue.ts` — extracted: pending events, drain, command barriers,
   cancellation bookkeeping, and audition exclusion; intake stays in the daemon
@@ -192,12 +192,17 @@ remaining features add control messages or queue behaviour, and all five would
 land in the same 5,615-line file — the one where two writers already collided
 during the parity pass.
 
-*Status 2026-09-10:* three cuts are merged — `SessionLedger` (#98 era),
-`EventQueue` (#118) and `control-server.ts` (#121) — and `daemon.ts` is 4,954
-lines. **Q** and **C** are done, so the five features above can land in their
-own files now. **V** (`voice-loop.ts`) and **R** (`session-registry.ts`) remain;
-C9b constrains R's completeness contract and V's audio arbitration, so the
-next cut is chosen by the C9b recon rather than by size.
+*Status 2026-09-11, after a night of agent-built PRs (#120–#158):* **Q** and
+**C** are extracted; E8 put the two agents behind one adapter table (26
+backend branches → 3, the rest are R's registry seam); C9b shipped its
+device identity (A0), the LAN two-Mac slice (A1) and the audio holder with
+Take it (Cut B), leaving the relay path (A2) and cross-Mac dictation (Cut C).
+`daemon.ts` is 5,213 lines — it grew back with the holder wiring, which is
+the argument for **V** (`voice-loop.ts`) as the next cut, and **R**
+(`session-registry.ts`) follows from C9b's completeness contract. 28 rows
+are struck, 17 open; of those, B3/B5/B6/C1/C2/C3/C5/C6/C11 need a product
+decision before code, A5/A6/A13 need a reproduction, and A15's two defaults
+(`phone` on, a default relay URL) are Tyler's one-liners.
 
 Specifically:
 
