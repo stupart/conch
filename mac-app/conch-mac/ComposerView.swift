@@ -327,6 +327,7 @@ struct ComposerView: View {
                     }
                     .padding(.vertical, Self.fieldInsetY)
                     .padding(.horizontal, Self.fieldInsetX)
+                    .background(ComposerPasteBridge { urls in attach(urls) })
 
                 if draft.isEmpty {
                     Text("Message \(sessionLabel)")
@@ -492,23 +493,26 @@ struct ComposerView: View {
         panel.canChooseDirectories = false
         panel.allowedContentTypes = [.image, .pdf, .plainText]
         guard panel.runModal() == .OK else { return }
-        let wasEmpty = attachments.isEmpty
-        attachments.append(contentsOf: panel.urls.filter { !attachments.contains($0) })
-        if wasEmpty, !attachments.isEmpty { onDraftStarted() }
+        attach(panel.urls)
     }
 
     private func load(_ providers: [NSItemProvider]) {
         for provider in providers {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 guard let url else { return }
-                Task { @MainActor in
-                    guard !attachments.contains(url) else { return }
-                    let wasEmpty = attachments.isEmpty
-                    attachments.append(url)
-                    if wasEmpty { onDraftStarted() }
-                }
+                Task { @MainActor in attach([url]) }
             }
         }
+    }
+
+    /// The one rule for adding attachments, whether dropped, pasted or picked:
+    /// no duplicates, and the first one claims the draft for this session.
+    private func attach(_ urls: [URL]) {
+        let fresh = urls.filter { !attachments.contains($0) }
+        guard !fresh.isEmpty else { return }
+        let wasEmpty = attachments.isEmpty
+        attachments.append(contentsOf: fresh)
+        if wasEmpty { onDraftStarted() }
     }
 }
 
@@ -593,7 +597,92 @@ private extension View {
         introspectTextView { view in
             view.textContainerInset = .zero
             view.textContainer?.lineFragmentPadding = 0
+            // A dropped file must reach the composer's `.onDrop`, not this
+            // editor. NSTextView registers for file drops and inserts the PATH
+            // as text, and it is the deeper view under the pointer, so it won
+            // every drop on the text area — Tyler dragged two screenshots in
+            // and got two paths in the message. Keep every other type (text
+            // drags still work); only files are the composer's business.
+            let files: Set<NSPasteboard.PasteboardType> = [
+                .fileURL, NSPasteboard.PasteboardType("NSFilenamesPboardType"),
+            ]
+            let kept = view.registeredDraggedTypes.filter { !files.contains($0) }
+            view.unregisterDraggedTypes()
+            view.registerForDraggedTypes(kept)
         }
+    }
+}
+
+/// Cmd+V with an image on the clipboard becomes an attachment.
+///
+/// The editor is an NSTextView, and its own paste knows only text: an image
+/// pasted into it either vanished or arrived as a path. A screenshot on the
+/// clipboard is the same intent as a dropped one, so it lands the same way.
+/// Same shape as the dashboard key monitor — a local keyDown monitor gated on
+/// this window and on the composer's editor being first responder — and
+/// removed with the view, so a re-rendered composer never stacks two.
+private struct ComposerPasteBridge: NSViewRepresentable {
+    let onPaste: ([URL]) -> Void
+
+    final class Coordinator {
+        var monitor: Any?
+        weak var probe: NSView?
+        var onPaste: ([URL]) -> Void
+        init(onPaste: @escaping ([URL]) -> Void) { self.onPaste = onPaste }
+        deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(onPaste: onPaste) }
+
+    func makeNSView(context: Context) -> NSView {
+        let probe = NSView(frame: .zero)
+        let coordinator = context.coordinator
+        coordinator.probe = probe
+        coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                  event.charactersIgnoringModifiers?.lowercased() == "v",
+                  let window = coordinator.probe?.window,
+                  event.window === window,
+                  let editor = window.firstResponder as? NSTextView,
+                  editor.isEditable,
+                  let container = coordinator.probe?.superview?.superview,
+                  editor.isDescendant(of: container) else {
+                return event
+            }
+            let urls = Self.imageAttachments(on: .general)
+            guard !urls.isEmpty else { return event } // plain text: the editor's paste
+            coordinator.onPaste(urls)
+            return nil
+        }
+        return probe
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onPaste = onPaste
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        if let monitor = coordinator.monitor { NSEvent.removeMonitor(monitor) }
+        coordinator.monitor = nil
+    }
+
+    private static let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "heic", "webp", "tiff"]
+
+    /// Image files on the pasteboard, or image DATA written to a temp file so
+    /// it can be attached like any other. Anything else is not ours.
+    static func imageAttachments(on pasteboard: NSPasteboard) -> [URL] {
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL] {
+            let images = urls.filter { $0.isFileURL && imageExtensions.contains($0.pathExtension.lowercased()) }
+            if !images.isEmpty { return images }
+        }
+        guard let image = NSImage(pasteboard: pasteboard),
+              let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return [] }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("conch-paste-\(UUID().uuidString).png")
+        do { try png.write(to: url) } catch { return [] }
+        return [url]
     }
 }
 
