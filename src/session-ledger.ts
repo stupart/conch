@@ -100,6 +100,9 @@ export class SessionLedger {
       ...this.pausedSessionIds,
       ...this.prioritizedSessionIds,
       ...this.dismissedSessionIds,
+      // A11: this set is checked BEFORE the global pause gate, so a stale
+      // entry is a closed session that can still speak through manual mode.
+      ...this.resumedSessionIds,
       ...this.sessionHeldTurns.keys(),
       ...this.dismissedHeldTurns.keys(),
       ...this.latestTurnBySession.keys(),

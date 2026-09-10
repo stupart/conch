@@ -101,7 +101,10 @@ describe("SessionLedger", () => {
       if (name !== "injectedAt") expect(collection.has(gone.sessionId)).toBe(false);
     }
     expect(ledger.injectedAt.has("injected-only")).toBe(true);
-    expect(ledger.resumedSessionIds.has("resumed-only")).toBe(true);
+    // A11: a session living ONLY here used to be invisible to the prune, and
+    // membership is checked before the pause gate — so a closed session
+    // could keep speaking through manual mode. Pruned like everything else.
+    expect(ledger.resumedSessionIds.has("resumed-only")).toBe(false);
     expect(ledger.eventOrder.isCurrent(gone)).toBe(false);
     expect(ledger.eventOrder.isCurrent(live)).toBe(true);
     expect(ledger.eventOrder.isCurrent(orderOnly)).toBe(false);
