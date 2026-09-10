@@ -1302,7 +1302,12 @@ export function createTheaterRenderer(
         io.write(escape);
       } catch {}
     }
-    logAbove(`copied ${text.length} chars`);
+    // Dated and owned: this line is written by whichever TTY process ran the
+    // theater, into a log the daemon shares, and it fired ninety times on a
+    // day nobody was selecting anything (A7). Without a time and a pid there
+    // was no way to say which process, or when.
+    const now = new Date();
+    logAbove(`[conch ${now.getMonth() + 1}/${now.getDate()} ${now.toTimeString().slice(0, 8)}] copied ${text.length} chars (pid ${process.pid})`);
   };
 
   const pointerEvent = (event: TheaterPointerInput): void => {
