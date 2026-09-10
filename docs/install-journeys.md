@@ -31,9 +31,9 @@ them on the new laptop on 2026-09-10; the ones already fixed say so.
 
 | step | what they type or see | goes quiet when | state |
 |---|---|---|---|
-| 1 | `git clone && bun install && bun link` | a brew `conch` is also on PATH; app and daemon end up on different versions | documented; open: `conch doctor` should name both binaries |
+| 1 | `git clone && bun install && bun link` | a brew `conch` is also on PATH; app and daemon end up on different versions | **fixed**: `conch doctor` warns when more than one `conch` is on PATH, names each path, and says to keep one |
 | 2 | `scripts/build-app.sh` | no Xcode, or no Developer ID cert for the team; the script refuses with a clear line | **fixed**: the script names the identity it needs and the README says to create a new cert on a second machine, never export the key |
-| 3 | `conch setup --no-service` | forgetting `--no-service` installs a launchd daemon next to the app's; two daemons fight over the socket and the mic | documented; open: `conch setup` should detect the app and default to `--no-service` |
+| 3 | `conch setup` | forgetting `--no-service` installed a launchd daemon next to the app's; two daemons fight over the socket and the mic | **fixed**: `conch setup` sees `/Applications/conch.app`, leaves the daemon to it, and prints why; `--service` forces the launchd service |
 | 4 | the app adopts a daemon started from a terminal, and that daemon dies | the window kept saying "Running — started outside this app" over a dead socket | **fixed** (A2): the app polls an adopted daemon and starts its own within 3 s |
 
 ## Path 3 — Phone

@@ -6,7 +6,7 @@ import { CONCH_DATA } from "./config.ts";
 import { readState } from "./daemon-state.ts";
 import { runInstallPlugin } from "./plugin-install.ts";
 import { resolveMlxAudioPython } from "./tts-worker.ts";
-import { checkAgentBinaries, checkMicrophone, checkTts, formatDoctorProbe } from "./doctor-checks.ts";
+import { checkAgentBinaries, checkConchBinaries, checkMicrophone, checkTts, formatDoctorProbe } from "./doctor-checks.ts";
 import { CONCH_VERSION } from "./version.ts";
 
 const SERVICE_LABEL = "com.conch.daemon";
@@ -146,9 +146,14 @@ function conchInvocation(): string {
   return IS_COMPILED ? `"${process.execPath}"` : `"${process.execPath}" "${CLI_ENTRY}"`;
 }
 
+/** Where `scripts/build-app.sh` and the brew formula put the Mac app. */
+export const INSTALLED_APP_PATH = "/Applications/conch.app";
+
 export interface SetupSelection {
   service: boolean;
   plugin: boolean;
+  /** Why the service was left off without being asked to; printed where it would have installed. */
+  serviceNotice?: string;
 }
 
 export interface SetupOptions extends SetupSelection {
@@ -230,18 +235,36 @@ export function renderHardDependencyFailure(
   return lines.join("\n");
 }
 
-/** Parse setup's two independent opt-outs without making their order significant. */
-export function parseSetupArgs(args: readonly string[]): SetupSelection {
-  const allowed = new Set(["--no-service", "--no-plugin"]);
+/**
+ * Parse setup's opt-outs without making their order significant.
+ *
+ * The Mac app hosts its own daemon (DaemonHost.swift), so when it is installed
+ * the launchd service is a second daemon fighting the app's over the socket and
+ * the microphone. Forgetting `--no-service` on a source install was how that
+ * happened; now the app's presence is the default and `--service` forces it.
+ */
+export function parseSetupArgs(
+  args: readonly string[],
+  appInstalled: boolean = existsSync(INSTALLED_APP_PATH),
+): SetupSelection {
+  const allowed = new Set(["--service", "--no-service", "--no-plugin"]);
   const unknown = args.find((arg) => !allowed.has(arg));
   if (unknown) {
     throw new Error(
-      `unknown setup option: ${unknown}\nusage: conch setup [--no-service] [--no-plugin]`,
+      `unknown setup option: ${unknown}\nusage: conch setup [--service|--no-service] [--no-plugin]`,
     );
   }
+  const leftToApp = appInstalled && !args.includes("--service") && !args.includes("--no-service");
   return {
-    service: !args.includes("--no-service"),
+    service: args.includes("--service") || !(args.includes("--no-service") || appInstalled),
     plugin: !args.includes("--no-plugin"),
+    ...(leftToApp
+      ? {
+        serviceNotice: `Skipping the background service: ${INSTALLED_APP_PATH} is installed and `
+          + "runs the daemon itself — open the app if it is not running. "
+          + "To install the launchd service anyway: `conch setup --service`.",
+      }
+      : {}),
   };
 }
 
@@ -265,6 +288,8 @@ export async function runSetupIntegrations(
     console.log("\nInstalling the background service…");
     await installers.service(cfg, "install");
     service = "installed";
+  } else if (options.serviceNotice) {
+    console.log(`\n${options.serviceNotice}`);
   }
 
   if (options.plugin) {
@@ -874,6 +899,7 @@ export async function runDoctor(cfg: Config): Promise<void> {
   // They are advisory: an ambiently silent input or an unavailable output
   // should produce a concrete recovery action without masking otherwise sound
   // installation state behind a hard doctor failure.
+  console.log(formatDoctorProbe(checkConchBinaries()));
   console.log(formatDoctorProbe(await checkAgentBinaries()));
   console.log(formatDoctorProbe(await checkMicrophone()));
   console.log(formatDoctorProbe(await checkTts(cfg)));

@@ -15,6 +15,7 @@ const KNOWN_COLLECTIONS = [
   "sessionHeldTurns",
   "dismissedHeldTurns",
   "latestTurnBySession",
+  "reportedMissingCodexPid",
 ];
 
 const FORGET_EXEMPT_COLLECTIONS = new Set([
@@ -70,6 +71,8 @@ describe("SessionLedger", () => {
       expect(collection.has(live.sessionId)).toBe(true);
       expect(collection.has(gone.sessionId)).toBe(FORGET_EXEMPT_COLLECTIONS.has(name));
     }
+    // A12: the roadmap's stated fix — the pid warning latch clears with the session.
+    expect(ledger.reportedMissingCodexPid.has(gone.sessionId)).toBe(false);
     expect(ledger.eventOrder.isCurrent(gone)).toBe(false);
     expect(ledger.eventOrder.isCurrent(live)).toBe(true);
     expect(ledger.isKnown(gone.sessionId)).toBe(false);
@@ -90,6 +93,7 @@ describe("SessionLedger", () => {
     }
     ledger.injectedAt.set("injected-only", 456);
     ledger.resumedSessionIds.add("resumed-only");
+    ledger.reportedMissingCodexPid.add("pid-only");
     expect(ledger.eventOrder.accept(gone)).toBe(true);
     expect(ledger.eventOrder.accept(live)).toBe(true);
     expect(ledger.eventOrder.accept(orderOnly)).toBe(true);
@@ -105,6 +109,9 @@ describe("SessionLedger", () => {
     // membership is checked before the pause gate — so a closed session
     // could keep speaking through manual mode. Pruned like everything else.
     expect(ledger.resumedSessionIds.has("resumed-only")).toBe(false);
+    // A12: a Codex session that closed pid-less (or failed to close) lived ONLY
+    // here for the daemon's lifetime, suppressing the warning on id reuse.
+    expect(ledger.reportedMissingCodexPid.has("pid-only")).toBe(false);
     expect(ledger.eventOrder.isCurrent(gone)).toBe(false);
     expect(ledger.eventOrder.isCurrent(live)).toBe(true);
     expect(ledger.eventOrder.isCurrent(orderOnly)).toBe(false);

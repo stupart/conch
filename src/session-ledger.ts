@@ -69,6 +69,9 @@ export class SessionLedger {
   readonly sessionHeldTurns = new Map<string, TurnEvent>();
   readonly dismissedHeldTurns = new Map<string, TurnEvent>();
   readonly latestTurnBySession = new Map<string, TurnEvent>();
+  // A12: the "Codex row has no pid" warning latch — one record per unresolved
+  // interval. Lived in the daemon closure before, where nothing pruned it.
+  readonly reportedMissingCodexPid = new Set<string>();
 
   isKnown(sessionId: string): boolean {
     return this.sessionStates.has(sessionId)
@@ -92,6 +95,7 @@ export class SessionLedger {
     this.dismissedHeldTurns.delete(sessionId);
     this.latestTurnBySession.delete(sessionId);
     this.pending.delete(sessionId);
+    this.reportedMissingCodexPid.delete(sessionId);
   }
 
   forgetGone(liveIds: ReadonlySet<string>): void {
@@ -107,6 +111,8 @@ export class SessionLedger {
       ...this.dismissedHeldTurns.keys(),
       ...this.latestTurnBySession.keys(),
       ...this.pending.keys(),
+      // A12: `closeLiveSession` adds on a failed close, so an id can live ONLY here.
+      ...this.reportedMissingCodexPid,
     ]);
     for (const id of trackedIds) {
       if (liveIds.has(id)) continue;

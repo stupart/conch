@@ -1,3 +1,5 @@
+import { accessSync, constants } from "node:fs";
+import { join } from "node:path";
 import type { Config } from "./config.ts";
 import { speakCancellable } from "./speak.ts";
 import type { AudioSpawner, WatchdogProcess } from "./audio-watchdog.ts";
@@ -11,7 +13,7 @@ const TTS_PROBE_TIMEOUT_MS = 5_000;
 export interface DoctorProbeResult {
   /** Live probes are advisory: callers should display this, not use it as the doctor's exit status. */
   ok: boolean;
-  label: "microphone" | "TTS" | "agents";
+  label: "microphone" | "TTS" | "agents" | "conch";
   message: string;
   action?: string;
 }
@@ -276,6 +278,42 @@ export async function checkAgentBinaries(
       }
       : {}),
   };
+}
+
+/**
+ * Every `conch` on PATH, in PATH order. Two is the from-source trap: a brew
+ * binary plus a `bun link`ed checkout, so the app and the daemon end up on
+ * different versions and nothing says so. Advisory, like the agents check.
+ */
+export function checkConchBinaries(
+  path: string = process.env.PATH ?? "",
+  isExecutable: (file: string) => boolean = defaultIsExecutable,
+): DoctorProbeResult {
+  const found: string[] = [];
+  // ponytail: dedupes repeated PATH dirs, not symlinks to one file; resolve realpath if two aliases ever warn.
+  for (const dir of new Set(path.split(":").filter(Boolean))) {
+    const candidate = join(dir, "conch");
+    if (isExecutable(candidate)) found.push(candidate);
+  }
+  if (found.length < 2) {
+    return { ok: true, label: "conch", message: `conch: ${found[0] ?? "not on PATH"}` };
+  }
+  return {
+    ok: false,
+    label: "conch",
+    message: `conch: ${found.length} on PATH — ${found.join(", ")} (the first wins)`,
+    action: "Pick one install per machine: remove the one you do not want, or reorder "
+      + "PATH, so the app and the daemon run the same version.",
+  };
+}
+
+function defaultIsExecutable(file: string): boolean {
+  try {
+    accessSync(file, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function defaultRun(argv: string[]): Promise<{ stdout: string; ok: boolean }> {

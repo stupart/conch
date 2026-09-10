@@ -191,8 +191,13 @@ export class ServerSupervisor<RequestReason extends string = string> {
       return;
     }
     this.clearTimer();
-    this.status = "recovering";
-    this.log(`${this.service} recovery requested: ${reason}`);
+    // A ready adopted server is polled (see markReady). That canary is a
+    // routine check, not a recovery: it neither flips status nor logs, or a
+    // healthy server would write two lines every 30 s for as long as it lives.
+    if (!(reason === "periodic-probe" && this.status === "ready")) {
+      this.status = "recovering";
+      this.log(`${this.service} recovery requested: ${reason}`);
+    }
     const work = this.recover(reason);
     let tracked!: Promise<void>;
     tracked = work.catch((error) => {
@@ -261,6 +266,12 @@ export class ServerSupervisor<RequestReason extends string = string> {
     if (inspected === "deferred") {
       this.deferRecovery(reason);
       return;
+    }
+    if (this.status === "ready") {
+      // Only the routine canary arrives here still "ready": the adopted
+      // server it was watching has gone. From this line on it is a recovery.
+      this.status = "recovering";
+      this.log(`adopted ${this.service} stopped answering (${inspected})`);
     }
     if (reason === "periodic-probe" && inspected === "unready") {
       this.enterFallback(`${this.service} periodic canary is still failing; ${this.fallback}`);
@@ -513,10 +524,15 @@ export class ServerSupervisor<RequestReason extends string = string> {
 
   private markReady(message: string): void {
     if (this.stopped()) return;
+    if (this.status !== "ready") this.log(message);
     this.status = "ready";
     this.replacementAttempts = 0;
     this.clearTimer();
-    this.log(message);
+    // An owned child reports its own exit. An adopted server is someone
+    // else's process and reports nothing, so it is polled the way the Mac
+    // app polls an adopted daemon (A2): when it stops answering, the next
+    // recovery starts our own instead of latching to the fallback forever.
+    if (this.ownership === "adopted") this.armPeriodicProbe();
   }
 
   private enterFallback(message: string): void {

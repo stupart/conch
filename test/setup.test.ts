@@ -9,6 +9,7 @@ import {
   formatBytes,
   formatProgress,
   hardDependencyInstallCommand,
+  INSTALLED_APP_PATH,
   missingHardDependencies,
   parseSetupArgs,
   progressReporter,
@@ -20,19 +21,68 @@ import {
 
 describe("one-command setup", () => {
   test("enables the service and plugin by default and parses either opt-out order", () => {
-    expect(parseSetupArgs([])).toEqual({ service: true, plugin: true });
-    expect(parseSetupArgs(["--no-service"])).toEqual({
+    // `appInstalled` is pinned so the answer does not depend on whether the
+    // machine running the tests has the Mac app in /Applications.
+    expect(parseSetupArgs([], false)).toEqual({ service: true, plugin: true });
+    expect(parseSetupArgs(["--no-service"], false)).toEqual({
       service: false,
       plugin: true,
     });
-    expect(parseSetupArgs(["--no-plugin", "--no-service"])).toEqual({
+    expect(parseSetupArgs(["--no-plugin", "--no-service"], false)).toEqual({
       service: false,
       plugin: false,
     });
-    expect(parseSetupArgs(["--no-service", "--no-plugin"])).toEqual({
+    expect(parseSetupArgs(["--no-service", "--no-plugin"], false)).toEqual({
       service: false,
       plugin: false,
     });
+  });
+
+  test("leaves the service to an installed Mac app unless --service forces it", () => {
+    // The app hosts its own daemon; a launchd service next to it is a second
+    // daemon fighting over the socket and the mic (install-journeys, path 2
+    // step 3). Forgetting `--no-service` used to be how that happened.
+    const left = parseSetupArgs([], true);
+    expect(left.service).toBe(false);
+    expect(left.plugin).toBe(true);
+    expect(left.serviceNotice).toContain(INSTALLED_APP_PATH);
+    expect(left.serviceNotice).toContain("`conch setup --service`");
+
+    expect(parseSetupArgs(["--service"], true)).toEqual({ service: true, plugin: true });
+    expect(parseSetupArgs(["--no-plugin", "--service"], true)).toEqual({
+      service: true,
+      plugin: false,
+    });
+    // An explicit opt-out is not a surprise, so it gets no notice.
+    expect(parseSetupArgs(["--no-service"], true)).toEqual({ service: false, plugin: true });
+    // Without the app nothing changes, and forcing is a no-op.
+    expect(parseSetupArgs(["--service"], false)).toEqual({ service: true, plugin: true });
+  });
+
+  test("prints why the service was left off, where it would have been installed", async () => {
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...data: any[]) => { logs.push(data.map(String).join(" ")); };
+    try {
+      const completion = await runSetupIntegrations(
+        {} as Config,
+        {
+          service: false,
+          serviceNotice: "Skipping the background service: the app owns the daemon.",
+          plugin: false,
+          absBun: "/absolute/bun",
+          absCli: "/absolute/cli.ts",
+        },
+        {
+          service: async () => { throw new Error("service should not run"); },
+          plugin: async () => { throw new Error("plugin should not run"); },
+        },
+      );
+      expect(completion).toEqual({ service: "skipped", plugin: "skipped" });
+      expect(logs.join("\n")).toContain("Skipping the background service: the app owns the daemon.");
+    } finally {
+      console.log = originalLog;
+    }
   });
 
   test("rejects unknown setup options before doing installation work", () => {
@@ -217,7 +267,7 @@ describe("one-command setup", () => {
     expect(stdout).toContain("Getting started:");
     expect(stdout).toContain("conch setup                    run this once — installs everything");
     expect(stdout).toContain("Optional / manual setup:");
-    expect(stdout).toContain("--no-service");
+    expect(stdout).toContain("[--service|--no-service]");
     expect(stdout).toContain("--no-plugin");
     expect(stdout.trimEnd().split("\n").length).toBeLessThanOrEqual(25);
   });
