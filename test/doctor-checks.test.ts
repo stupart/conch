@@ -5,6 +5,7 @@ import {
   checkConchBinaries,
   checkMicrophone,
   checkTts,
+  checkWhisperServer,
   formatDoctorProbe,
   microphoneProbeCommand,
   MICROPHONE_PROBE_DURATION_MS,
@@ -143,5 +144,44 @@ describe("conch binaries on PATH", () => {
     expect(from).toBeGreaterThan(-1);
     const doctor = source.slice(from, source.indexOf("function binaryExists", from));
     expect(doctor).toContain("formatDoctorProbe(checkConchBinaries())");
+  });
+});
+
+describe("whisper-server state (D2)", () => {
+  const cfg = { ...config(), whisperPort: 8642, whisperIdleUnloadMins: 20 };
+  const record = { pid: 4242, port: 8642, daemonPid: 999, startedAt: 1 };
+  const deps = (listening: boolean, alive: number[], spawn: typeof record | null = record) => ({
+    listening: async () => listening,
+    record: () => spawn,
+    alive: (pid: number) => alive.includes(pid),
+  });
+
+  test("says warm (owned or adopted), unloaded, or not listening — never as a fault", async () => {
+    const owned = await checkWhisperServer(cfg, deps(true, [4242, 999]));
+    expect(owned).toEqual({ ok: true, label: "whisper-server", message: "whisper-server: warm on :8642 (owned by conch daemon 999)" });
+    // Listening, but the recorded daemon is dead, or the record is for another port: someone else's.
+    expect((await checkWhisperServer(cfg, deps(true, [4242]))).message).toContain("adopted");
+    expect((await checkWhisperServer(cfg, deps(true, [4242, 999], { ...record, port: 8643 }))).message).toContain("adopted");
+    expect((await checkWhisperServer(cfg, deps(true, [], null))).message).toContain("adopted");
+    // Its daemon is up and nothing listens: idle-unloaded (or still warming).
+    const unloaded = await checkWhisperServer(cfg, deps(false, [999]));
+    expect(unloaded.ok).toBeTrue();
+    expect(unloaded.message).toContain("whisper-server: unloaded — daemon 999 is up");
+    expect(unloaded.message).toContain("20 min");
+    // With the window off nothing was unloaded, so the line must not say so.
+    const never = await checkWhisperServer({ ...cfg, whisperIdleUnloadMins: 0 }, deps(false, [999]));
+    expect(never.message).not.toContain("unloaded —");
+    expect(never.message).toContain("whisper-idle-unload is 0");
+    expect((await checkWhisperServer(cfg, deps(false, []))).message).toBe("whisper-server: not listening on :8642 — starts with the daemon");
+    expect((await checkWhisperServer({ ...cfg, whisperPort: 0 }, deps(true, [4242, 999]))).message).toContain("cold cli only");
+    expect(formatDoctorProbe(unloaded)).toStartWith("✅");
+  });
+
+  test("doctor prints it", () => {
+    const source = readFileSync(new URL("../src/install.ts", import.meta.url), "utf8");
+    const from = source.indexOf("export async function runDoctor");
+    expect(from).toBeGreaterThan(-1);
+    const doctor = source.slice(from, source.indexOf("function binaryExists", from));
+    expect(doctor).toContain("formatDoctorProbe(await checkWhisperServer(cfg))");
   });
 });

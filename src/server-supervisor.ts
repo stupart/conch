@@ -4,7 +4,7 @@ import {
   type WatchdogWarning,
 } from "./audio-watchdog.ts";
 
-export type ServerSupervisorStatus = "disabled" | "starting" | "ready" | "recovering" | "fallback" | "stopped";
+export type ServerSupervisorStatus = "disabled" | "starting" | "ready" | "recovering" | "fallback" | "unloaded" | "stopped";
 export type ServerOwnership = "none" | "adopted" | "owned";
 export type ServerLifecycleRecoveryReason = "readiness-failed" | "child-exit" | "periodic-probe";
 export type ServerRecoveryReason<RequestReason extends string = never> =
@@ -50,6 +50,12 @@ export interface ServerSupervisorOptions {
   schedule?: (callback: () => void, ms: number) => ServerTimer;
   terminate?: (child: WatchdogProcess, signal: AbortSignal) => Promise<void>;
   exclusive?: <T>(task: (signal: AbortSignal) => Promise<T>, signal: AbortSignal) => Promise<T>;
+  /**
+   * Idle window after which an OWNED ready server is stopped to free its
+   * memory (D2); 0 or absent never unloads. Read at every arm, so a live
+   * setting change applies at the next transcription without a restart.
+   */
+  idleUnloadMs?: () => number;
 }
 
 const DEFAULT_RETRY_DELAYS_MS = [500, 1_000, 2_000];
@@ -101,6 +107,7 @@ export class ServerSupervisor<RequestReason extends string = string> {
   private recovery: Promise<void> | null = null;
   private pendingChildExit = false;
   private timer: ServerTimer | null = null;
+  private idleTimer: ServerTimer | null = null;
   private readonly lifecycle = new AbortController();
   private readonly log: WatchdogWarning;
   private readonly retryDelaysMs: number[];
@@ -176,9 +183,39 @@ export class ServerSupervisor<RequestReason extends string = string> {
     }
   }
 
+  /**
+   * A mic is about to open (D2). An idle-unloaded server reloads now, with
+   * the same bounded start as daemon boot, so the model load overlaps the bell
+   * and the announcement instead of the first utterance; if it is not ready in
+   * time the request path falls back to the cold cli as it always did. A warm
+   * server just gets its idle clock restarted: a mic opening is not idle.
+   */
+  prewarm(): void {
+    if (this.status !== "unloaded") return this.armIdleUnload();
+    this.log(`${this.service} reloading — a mic is about to open`);
+    void this.start();
+  }
+
+  /** (Re)start the idle clock: a transcription was served, or the window changed. */
+  armIdleUnload(): void {
+    this.clearIdleTimer();
+    const ms = this.options.idleUnloadMs?.() ?? 0;
+    if (this.stopped() || ms <= 0 || this.status !== "ready" || this.ownership !== "owned") return;
+    const timer = this.schedule(() => {
+      if (this.idleTimer !== timer) return;
+      this.idleTimer = null;
+      this.unloadIdle(ms);
+    }, ms);
+    timer.unref?.();
+    this.idleTimer = timer;
+  }
+
   /** Coalesced, fire-and-forget recovery trigger used by the speech path. */
   requestRecovery(reason: ServerRecoveryReason<RequestReason>): void {
     if (!this.options.enabled || this.stopped()) return;
+    // Unloaded on purpose. A retiring child's exit or a stale failure must not
+    // bring it straight back; only prewarm() does, when a mic is about to open.
+    if (this.status === "unloaded") return;
     // Once a bounded burst is exhausted, every ordinary failure stays latched
     // to the fallback. Only the periodic timer may open another bounded burst;
     // otherwise a repeatedly-crashing child could create an unbounded loop.
@@ -227,6 +264,7 @@ export class ServerSupervisor<RequestReason extends string = string> {
     this.status = "stopped";
     this.lifecycle.abort();
     this.clearTimer();
+    this.clearIdleTimer();
     // New requests must fail closed before an owned listener is killed. This
     // is especially important when shutdown retains/drains diagnostic audio.
     try { this.options.resetReadiness(); } catch {}
@@ -258,6 +296,28 @@ export class ServerSupervisor<RequestReason extends string = string> {
 
   private stopped(): boolean {
     return this.status === "stopped" || this.lifecycle.signal.aborted;
+  }
+
+  /**
+   * Stop an owned server nobody has used for the idle window. The kill takes
+   * the same critical section as a replacement, so a request never enters the
+   * server between its last inference and the SIGTERM. Ownership drops to
+   * "none" when the retired child exits; an adopted server never comes here.
+   */
+  private unloadIdle(ms: number): void {
+    if (this.stopped() || this.recovery || this.status !== "ready" || this.ownership !== "owned") return;
+    this.status = "unloaded";
+    this.clearTimer();
+    this.log(
+      `${this.service} idle for ${Math.round(ms / 60_000)} min — unloaded to free its memory; reloads when a mic is about to open`,
+    );
+    void this.exclusive(async (signal) => {
+      const previous = this.retireOwnedChild();
+      if (previous) await this.terminate(previous, signal);
+      this.options.resetReadiness();
+    }, this.lifecycle.signal).catch((error) => {
+      if (!this.stopped()) this.log(`${this.service} unload failed: ${String(error)}`);
+    });
   }
 
   private async recover(reason: ServerRecoveryReason<RequestReason>): Promise<void> {
@@ -533,6 +593,7 @@ export class ServerSupervisor<RequestReason extends string = string> {
     // app polls an adopted daemon (A2): when it stops answering, the next
     // recovery starts our own instead of latching to the fallback forever.
     if (this.ownership === "adopted") this.armPeriodicProbe();
+    this.armIdleUnload();
   }
 
   private enterFallback(message: string): void {
@@ -572,5 +633,10 @@ export class ServerSupervisor<RequestReason extends string = string> {
   private clearTimer(): void {
     this.timer?.cancel();
     this.timer = null;
+  }
+
+  private clearIdleTimer(): void {
+    this.idleTimer?.cancel();
+    this.idleTimer = null;
   }
 }

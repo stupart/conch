@@ -186,6 +186,8 @@ export class WhisperServerClient {
   private recovery: (reason: WhisperRecoveryReason) => void = () => {};
   /** Told what actually went wrong, so a failure is diagnosable rather than just named. */
   private note: (message: string) => void = () => {};
+  /** Told after every warm transcription, so the supervisor's idle clock restarts (D2). */
+  private served: () => void = () => {};
   private readonly request: (url: string, init?: RequestInit) => Promise<Response>;
   private readonly sleep: (ms: number, signal?: AbortSignal) => Promise<boolean>;
 
@@ -205,6 +207,10 @@ export class WhisperServerClient {
   /** Where to report the underlying error behind a `request-failed`. */
   setNoteHandler(handler?: (message: string) => void): void {
     this.note = handler ?? (() => {});
+  }
+
+  setServedHandler(handler?: () => void): void {
+    this.served = handler ?? (() => {});
   }
 
   resetHealth(): void {
@@ -324,7 +330,7 @@ export class WhisperServerClient {
     this.warmRequests.add(request);
     const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), request.signal]);
     try {
-      return await this.runExclusive(async (laneSignal) => {
+      const result = await this.runExclusive(async (laneSignal) => {
         // Health may have changed while this request waited behind another.
         if (!this.healthy) return { status: "unavailable" } as const;
         try {
@@ -355,6 +361,8 @@ export class WhisperServerClient {
           throw error;
         }
       }, signal);
+      if (result.status === "ok") { try { this.served(); } catch {} }
+      return result;
     } catch (error) {
       this.resetHealth();
       // Say WHAT failed. This caught and discarded the error, so five hours of
