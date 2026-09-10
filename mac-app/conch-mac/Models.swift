@@ -168,6 +168,8 @@ struct LiveState: Decodable, Equatable, Sendable {
     let state: String
     let label: String
     let partial: String
+    /// How loud the mic is, 0..1, while it is open. 0 whenever it is shut.
+    let level: Double
     let transcriptPrefix: String
     let reading: ReadingProgress?
     /// A finished dictation meant for the composer. Applied once, by `id`.
@@ -177,6 +179,7 @@ struct LiveState: Decodable, Equatable, Sendable {
         state: String = "idle",
         label: String = "",
         partial: String = "",
+        level: Double = 0,
         transcriptPrefix: String = "",
         reading: ReadingProgress? = nil,
         dictated: Dictation? = nil
@@ -184,6 +187,7 @@ struct LiveState: Decodable, Equatable, Sendable {
         self.state = state
         self.label = label
         self.partial = partial
+        self.level = level
         self.transcriptPrefix = transcriptPrefix
         self.reading = reading
         self.dictated = dictated
@@ -193,6 +197,7 @@ struct LiveState: Decodable, Equatable, Sendable {
         case state
         case label
         case partial
+        case level
         case transcriptPrefix
         case reading
         case dictated
@@ -203,6 +208,7 @@ struct LiveState: Decodable, Equatable, Sendable {
         state = (try? container.decodeIfPresent(String.self, forKey: .state)) ?? "idle"
         label = (try? container.decodeIfPresent(String.self, forKey: .label)) ?? ""
         partial = (try? container.decodeIfPresent(String.self, forKey: .partial)) ?? ""
+        level = (try? container.decodeIfPresent(Double.self, forKey: .level)) ?? 0
         transcriptPrefix =
             (try? container.decodeIfPresent(String.self, forKey: .transcriptPrefix)) ?? ""
         reading = try? container.decodeIfPresent(ReadingProgress.self, forKey: .reading)

@@ -1618,6 +1618,7 @@ function sameLiveData(left: LiveState, right: LiveState): boolean {
   return left.state === right.state
     && left.label === right.label
     && left.partial === right.partial
+    && left.level === right.level
     && left.transcriptPrefix === right.transcriptPrefix
     && (
       left.reading === right.reading
@@ -1705,6 +1706,9 @@ export function setState(state: ConchState, label = "", partial = ""): void {
     state,
     label,
     partial,
+    // Same state, same label — a partial update mid-dictation — keeps the
+    // level; any transition drops it, so a shut mic never shows one.
+    ...(!transition && live.level !== undefined ? { level: live.level } : {}),
     ...(transcriptPrefix !== undefined ? { transcriptPrefix } : {}),
     ...(reading ? { reading } : {}),
     // Carried forward deliberately: a dictation the app has not applied yet
@@ -1717,6 +1721,21 @@ export function setState(state: ConchState, label = "", partial = ""): void {
   activeRenderer.live(live);
   if (transition) onLive?.(); // repaint the panel so the active row shows the new live state
   if (dataChanged) onLiveData?.();
+}
+
+/**
+ * How loud the mic is right now, 0..1, while listening or recording.
+ *
+ * Quantised to hundredths: the recorder reports ten times a second and the
+ * published state must not churn on noise-floor jitter. Ignored while the mic
+ * is shut, and dropped by the next transition (see `setState`).
+ */
+export function setMicLevel(level: number): void {
+  if (live.state !== "recording" && live.state !== "listening") return;
+  const next: LiveState = { ...live, level: Math.round(Math.min(1, Math.max(0, level)) * 100) / 100 };
+  if (sameLiveData(live, next)) return;
+  live = next;
+  onLiveData?.();
 }
 
 /** The static key hints, pinned at the very bottom under everything. */

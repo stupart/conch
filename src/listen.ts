@@ -1,4 +1,4 @@
-import { chmodSync, statSync, unlinkSync, readFileSync } from "node:fs";
+import { chmodSync, closeSync, fstatSync, openSync, readFileSync, readSync, statSync, unlinkSync } from "node:fs";
 import type { Config } from "./config.ts";
 import { transcribePcm, serverUp } from "./transcribe.ts";
 import {
@@ -36,12 +36,54 @@ export function rawCaptureFileGrew(previousBytes: number, currentBytes: number):
 // growth check can cancel the idle deadline before that gap drains the capture.
 export const CAPTURE_WATCHDOG_INTERVAL_MS = 100;
 const PARTIAL_TRANSCRIPTION_INTERVAL_MS = 700;
+/** 100ms of 16kHz mono int16 — one watchdog tick of audio, read from the tail. */
+export const LEVEL_WINDOW_BYTES = 3_200;
+
+/**
+ * How loud the last window was, 0..1 on a dB scale: -50 dBFS and below is 0,
+ * full scale is 1. Speech sits around -30..-15 dBFS, so a linear RMS would
+ * leave the meter nearly still while someone talks — which is the fixed pulse
+ * this replaces, only quieter.
+ */
+export function pcmLevel(pcm: Uint8Array): number {
+  const samples = pcm.length >> 1;
+  if (samples === 0) return 0;
+  const view = new DataView(pcm.buffer, pcm.byteOffset, samples * 2);
+  let sum = 0;
+  for (let i = 0; i < samples; i++) {
+    const sample = view.getInt16(i * 2, true) / 32768;
+    sum += sample * sample;
+  }
+  const rms = Math.sqrt(sum / samples);
+  if (rms <= 0) return 0;
+  const db = 20 * Math.log10(rms);
+  return Math.min(1, Math.max(0, (db + 50) / 50));
+}
+
+/** The last `bytes` of a raw capture, or the whole file when it is shorter. */
+export function readPcmTail(path: string, bytes: number): Uint8Array {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    const length = Math.min(bytes, size);
+    const out = new Uint8Array(length);
+    readSync(fd, out, 0, length, size - length);
+    return out;
+  } catch {
+    return new Uint8Array(0);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
 
 export interface ListenHooks {
   /** armed = mic open & waiting; capturing = speech detected; transcribing = whisper running */
   onState?: (state: "armed" | "capturing" | "transcribing") => void;
   /** near-real-time partial transcript while you're still talking (warm server only) */
   onPartial?: (text: string) => void;
+  /** how loud the mic is, 0..1, every watchdog tick once speech has started */
+  onLevel?: (level: number) => void;
 }
 
 export interface ListenResult {
@@ -699,6 +741,9 @@ function armContinuousRecorder(
   const watchdog = setInterval(() => {
     const now = Date.now();
     observeSpeechStart(now);
+    // Every tick while capturing, from the tail — the partial path reads the
+    // whole file, and a long dictation is megabytes.
+    if (speechStartedAt !== null && hooks.onLevel) hooks.onLevel(pcmLevel(readPcmTail(raw, LEVEL_WINDOW_BYTES)));
     if (speechStartedAt !== null && (now - speechStartedAt) / 1000 >= cfg.maxUtteranceSecs) {
       stopReason = "max";
       markKill(capture, "max");

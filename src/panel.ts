@@ -8,6 +8,8 @@ export interface PanelLiveState {
   state: PanelConchState;
   label: string;
   partial: string;
+  /** Mic input level 0..1 while listening or recording; absent otherwise. */
+  level?: number;
   /** Published committed transcript; theater draws it before the current live partial. */
   transcriptPrefix?: string;
   /** Chunk-level reading progress. The audio backend does not expose word timing. */
@@ -225,6 +227,7 @@ export interface PublishedState {
     state: PanelConchState;
     label: string;
     partial?: string;
+    level?: number;
     transcriptPrefix?: string;
     /// `truncated` marks a tail: the publisher caps long text and keeps the
     /// END, so a client cannot tell a capped long reply from a short whole one
@@ -295,6 +298,7 @@ function publishedLiveState(live: PanelLiveState): PublishedState["live"] {
     state: live.state,
     label: live.label,
     ...(live.partial ? { partial: live.partial } : {}),
+    ...(live.level !== undefined ? { level: live.level } : {}),
     ...(live.transcriptPrefix
       ? { transcriptPrefix: live.transcriptPrefix }
       : {}),

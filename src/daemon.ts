@@ -150,6 +150,7 @@ import {
   scrollTheaterPane,
   setKeybar,
   setLogsVisible,
+  setMicLevel,
   setReadingProgress,
   setState,
   setTranscriptPrefix,
@@ -635,7 +636,8 @@ export function listenHooks(
   status: {
     setState(state: ConchState, label?: string, partial?: string): void;
     setTranscriptPrefix(prefix: string): void;
-  } = { setState, setTranscriptPrefix },
+    setMicLevel?(level: number): void;
+  } = { setState, setTranscriptPrefix, setMicLevel },
   /** Called the first time the recorder actually arms — the honest "you can talk now". */
   onArmed?: () => void,
 ): ListenHooks {
@@ -664,6 +666,7 @@ export function listenHooks(
       status.setState("recording", label, text);
       refreshTranscriptPrefix();
     },
+    onLevel: (level) => status.setMicLevel?.(level),
   };
 }
 

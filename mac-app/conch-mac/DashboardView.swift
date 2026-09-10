@@ -1412,6 +1412,12 @@ private struct ConversationPane: View {
         return state.live.state
     }
 
+    private func voiceLevel(for row: SessionRow) -> Double {
+        guard let state else { return 0 }
+        guard state.live.label.isEmpty || state.live.label == row.label else { return 0 }
+        return state.live.level
+    }
+
     private var dictationForFocusedRow: String {
         guard let state, let row = focusedRow else { return "" }
         guard state.live.label.isEmpty || state.live.label == row.label else { return "" }
@@ -1776,6 +1782,7 @@ private struct ConversationPane: View {
             dictation: dictationForFocusedRow,
             isWorking: row.status == .working,
             voiceState: voiceState(for: row),
+            voiceLevel: voiceLevel(for: row),
             onSend: { text in
                 store.send(.inject(sessionId: row.id, label: row.label, text: text))
             },
