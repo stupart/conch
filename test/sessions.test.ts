@@ -2,18 +2,7 @@ import { expect, test, describe } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import {
-  findSessionByName,
-  findSessionBySpokenName,
-  findSession,
-  isEngageable,
-  normalizeSessionLabel,
-  registrySnapshot,
-  renameSessionLabel,
-  sessionGoneFromSnapshot,
-  sessionLabel,
-  setLabelOverride,
-} from "../src/sessions.ts";
+import { findSessionByName, findSessionBySpokenName, findSession, isEngageable, normalizeSessionLabel, registrySnapshot, renameSessionLabel, sessionGoneFromSnapshot, sessionLabel, setLabelOverride } from "../src/sessions.ts";
 import { activeSessionIdForRows, buildPanelRows } from "../src/panel.ts";
 import { setVoiceOverride, voiceFor } from "../src/speak.ts";
 import { loadConfig } from "../src/config.ts";
@@ -380,6 +369,41 @@ describe("one session, two terminals", () => {
     const f = fixture();
     f.write(39889, { sessionId: "gen", name: "arch site", startedAt: 1_000 });
     f.transcript("/Users/t/arch", "gen", [{ type: "ai-title", aiTitle: "Pull latest code changes" }]);
+    const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
+    expect(snap!.infos[0].name).toBe("arch site");
+    rmSync(f.claudeDir, { recursive: true, force: true });
+  });
+
+  test("a derived registry name yields to the generated title", async () => {
+    // Claude Code 2.1.25x+ writes `arch-e9` into the registry at startup with
+    // nameSource "derived". Treating it as a person's name masked every
+    // generated title behind a cwd slug and two hex digits.
+    const f = fixture();
+    f.write(39889, { sessionId: "d1", name: "arch-e9", nameSource: "derived", startedAt: 1_000 });
+    f.transcript("/Users/t/arch", "d1", [{ type: "ai-title", aiTitle: "Pull latest code changes" }]);
+    const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
+    expect(snap!.infos[0].name).toBe("Pull latest code changes");
+    rmSync(f.claudeDir, { recursive: true, force: true });
+  });
+
+  test("a derived registry name with no title falls to the directory", async () => {
+    // `Arch` says where the work is; `arch-e9` says the same with noise on.
+    const f = fixture();
+    f.write(39889, { sessionId: "d2", name: "arch-e9", nameSource: "derived", startedAt: 1_000 });
+    f.transcript("/Users/t/arch", "d2", []);
+    const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
+    const info = snap!.infos[0];
+    expect(info.name).toBeUndefined();
+    expect(sessionLabel(info, info.cwd, { labelsPath: join(f.claudeDir, "conch-config", "labels.json") })).toBe("arch");
+    rmSync(f.claudeDir, { recursive: true, force: true });
+  });
+
+  test("a name a person typed still beats the generated title, explicitly sourced", async () => {
+    // The old behaviour, now stated: "user" is what /rename writes, and an
+    // absent nameSource (older Claude Code) reads the same way.
+    const f = fixture();
+    f.write(39889, { sessionId: "u1", name: "arch site", nameSource: "user", startedAt: 1_000 });
+    f.transcript("/Users/t/arch", "u1", [{ type: "ai-title", aiTitle: "Pull latest code changes" }]);
     const snap = await registrySnapshot(f.claudeDir, opts(f.claudeDir));
     expect(snap!.infos[0].name).toBe("arch site");
     rmSync(f.claudeDir, { recursive: true, force: true });
