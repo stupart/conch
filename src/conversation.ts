@@ -422,7 +422,13 @@ const TOOL_KINDS: ReadonlyArray<readonly [ToolKind, RegExp]> = [
   ["file_read", /^(read|notebookread|view|cat_file)$/i],
   ["search", /^(glob|grep|ls|find|list_dir|codebase_search)$/i],
   ["web_search", /^(websearch|webfetch|web_search|fetch|browse)$/i],
-  ["subagent", /^(task|agent|workflow|dispatch_agent)$/i],
+  // `write_stdin` is the ChatGPT app's Codex talking to a process it spawned —
+  // in practice a nested agent, and what comes back is that agent's prose. It
+  // used to fall through to command_execution, so a reply full of markdown
+  // rendered as a raw monospace log with its asterisks showing. Tyler, side by
+  // side with Codex's own terminal, which draws it as a table with bold and
+  // links: "can we fix the formatting here?"
+  ["subagent", /^(task|agent|workflow|dispatch_agent|write_stdin)$/i],
   ["plan", /^(todowrite|update_plan|exit_plan_mode|todoread)$/i],
   ["question", /^(askuserquestion|ask_user_question|user_input)$/i],
 ];

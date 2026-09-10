@@ -409,13 +409,28 @@ struct ConversationStackView: View {
             // Output is the bulk of a transcript and almost never what you are
             // looking for; it stays behind a tap.
             if expanded, !result.isEmpty {
-                Text(result)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(ConchPalette.textDim)
-                    .textSelection(.enabled)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(ConchPalette.hover, in: RoundedRectangle(cornerRadius: 8))
+                // A nested agent's reply is prose and gets the conversation's
+                // markdown; everything else is a log and stays raw monospace.
+                // Decided by the daemon's classification, deliberately not by
+                // sniffing whether the text "looks like" markdown — that is
+                // how a log file gets mangled.
+                if item.tool?.kind == .subagent {
+                    Text(AttributedString.conchMarkdown(result))
+                        .font(ConchTypography.font(size: 12.5))
+                        .foregroundStyle(ConchPalette.textPrimary)
+                        .textSelection(.enabled)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(ConchPalette.hover, in: RoundedRectangle(cornerRadius: 8))
+                } else {
+                    Text(result)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(ConchPalette.textDim)
+                        .textSelection(.enabled)
+                        .padding(10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(ConchPalette.hover, in: RoundedRectangle(cornerRadius: 8))
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

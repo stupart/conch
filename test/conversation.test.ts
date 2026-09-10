@@ -476,6 +476,16 @@ describe("telling one kind of tool call from another", () => {
     expect(toolKind("local_shell")).toBe("command_execution");
   });
 
+  test("talking to a spawned agent is a subagent, not a shell command", () => {
+    // The ChatGPT app's Codex wraps everything in `exec` and drives nested
+    // agents through `tools.write_stdin({...})`. Classified as a command, the
+    // agent's reply — markdown prose — rendered as a raw monospace log.
+    expect(toolKind("exec", "const r = await tools.write_stdin({ id: 1, chars: \"go\" })")).toBe("subagent");
+    expect(toolKind("write_stdin")).toBe("subagent");
+    // ...while a real command stays a command.
+    expect(toolKind("exec", "await tools.exec_command({ cmd: \"ls\" })")).toBe("command_execution");
+  });
+
   test("both agents' names for changing a file agree", () => {
     expect(toolKind("Edit")).toBe("file_change");
     expect(toolKind("Write")).toBe("file_change");
