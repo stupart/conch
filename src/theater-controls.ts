@@ -32,7 +32,7 @@ export const FOOTER_KEYBAR =
   "  \x1b[2m↑↓ park · space talk · p auto/manual · ? help · q quit\x1b[0m";
 
 export const DASHBOARD_HELP_KEYS =
-  "  \x1b[1mkeys\x1b[0m   \x1b[36m↑↓\x1b[0m park   \x1b[36mi\x1b[0m prompt   \x1b[36mx\x1b[0m interrupt   \x1b[36m⏎\x1b[0m actions   \x1b[36mn\x1b[0m new   \x1b[36mu\x1b[0m restore   \x1b[36mr\x1b[0m recite   \x1b[36mspace\x1b[0m dictate / stop   \x1b[36mp\x1b[0m auto/manual   \x1b[36ml\x1b[0m logs   \x1b[36mv\x1b[0m voices   \x1b[36m?\x1b[0m help   \x1b[36mq\x1b[0m quit";
+  "  \x1b[1mkeys\x1b[0m   \x1b[36m↑↓\x1b[0m park   \x1b[36mi\x1b[0m prompt   \x1b[36mx\x1b[0m interrupt   \x1b[36m⏎\x1b[0m actions   \x1b[36mn\x1b[0m new   \x1b[36mu\x1b[0m restore   \x1b[36mr\x1b[0m recite   \x1b[36mo\x1b[0m open deliverable   \x1b[36mspace\x1b[0m dictate / stop   \x1b[36mp\x1b[0m auto/manual   \x1b[36ml\x1b[0m logs   \x1b[36mv\x1b[0m voices   \x1b[36m?\x1b[0m help   \x1b[36mq\x1b[0m quit";
 
 export const DASHBOARD_HELP_CONTROLS =
   "  \x1b[2mparked cursor stays put: \x1b[36mesc\x1b[0m\x1b[2m releases it   ·   \x1b[36mp\x1b[0m\x1b[2m makes that session manual   ·   no cursor: it changes the whole app   ·   manual HOLDS + replays\x1b[0m";

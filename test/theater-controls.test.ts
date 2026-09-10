@@ -80,6 +80,7 @@ describe("dashboard control copy", () => {
     expect(all).toContain("u restore");
     expect(all).not.toContain("m mute");
     expect(all).not.toContain("unmute");
+    expect(plain(DASHBOARD_HELP_KEYS)).toContain("o open deliverable");
     expect(terminalCellWidth(THEATER_KEYBAR)).toBeLessThanOrEqual(119);
   });
 
@@ -104,5 +105,20 @@ describe("dashboard control copy", () => {
     );
     expect(source).toContain("setKeybar(theaterMode ? THEATER_KEYBAR : FOOTER_KEYBAR)");
     expect(source).not.toContain('c === "m"');
+  });
+
+  test("daemon hands o to the renderer's deliverable seam only after every modal", async () => {
+    const source = await Bun.file(new URL("../src/daemon.ts", import.meta.url)).text();
+    const raw = source.slice(
+      source.indexOf('process.stdin.on("data"'),
+      source.indexOf("function printHelp"),
+    );
+    expect(raw).toContain('theaterMode && c === "o"');
+    expect(raw).toContain("log(openTheaterReview(theaterActionTarget()))");
+    // A typed "o" belongs to an open rename field or prompt line first.
+    expect(raw).toContain("terminalComposer?.handleKey(c)");
+    expect(raw.indexOf("terminalComposer?.handleKey(c)")).toBeLessThan(
+      raw.indexOf('theaterMode && c === "o"'),
+    );
   });
 });
