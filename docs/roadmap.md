@@ -168,7 +168,7 @@ Still worth doing separately (not blocking):
 |---|---|---|
 | D1 | **Kokoro by mode** — manual unloads it; auto warms it. ~650MB. | V |
 | D2 | **whisper pre-warmed on a signal**, idle-unloaded. ~628MB. | V |
-| D3 | **An orphaned whisper-server is adopted forever.** Same ownership gap as A2/A3. | C |
+| D3 | ~~**An orphaned whisper-server is adopted forever.**~~ — **fixed** (2026-09-10). Two halves of A2's gap: a ready adopted server was never re-probed (`markReady` cleared the timer, and someone else's process has no exit promise), and the supervisor only ever kills what this daemon spawned, so the server a hard-killed daemon left behind was adopted by every daemon after it — never stopped, never replaced when it wedged, never reloaded after a model change. Now an adopted server is polled every 30 s and the daemon starts its own when it stops answering; each spawn records its pid in `~/.cache/conch/whisper-server.json`, and the next daemon kills that pid before adopting anything — only if its daemon is dead and the pid is still a whisper-server on the port. A stranger on the port is still adopted and never killed; one that stays up but wedged still means the cold cli, and Kokoro has the same gap untouched. | C |
 
 ## E. Polish
 

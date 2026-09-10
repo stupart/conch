@@ -56,6 +56,7 @@ import {
 } from "./speak.ts";
 import { SpeechManager } from "./speech-manager.ts";
 import { ServerSupervisor } from "./server-supervisor.ts";
+import { reapOrphanedWhisper, recordSpawnedWhisper } from "./whisper-orphan.ts";
 import { TtsSupervisor } from "./tts-supervisor.ts";
 import { ManagedTtsWorker, resolveMlxAudioPython } from "./tts-worker.ts";
 import {
@@ -4500,7 +4501,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (!existsSync(cfg.whisperServerBin)) {
         throw new Error(`binary not found at ${cfg.whisperServerBin}`);
       }
-      return Bun.spawn(
+      const child = Bun.spawn(
         [
           cfg.whisperServerBin,
           "-m", cfg.whisperModel,
@@ -4514,6 +4515,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
         ],
         { stdout: "ignore", stderr: "ignore" },
       );
+      // So the next daemon can tell this server from a stranger on the port (D3).
+      recordSpawnedWhisper(child.pid, cfg.whisperPort);
+      return child;
     },
     resetReadiness: () => whisperServerClient.resetHealth(),
     exclusive: (task, signal) => whisperServerClient.runExclusive(task, signal),
@@ -4605,9 +4609,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
     log(`whisper-server binary not found at ${cfg.whisperServerBin} — using the cold cli path`);
   }
   if (cfg.whisperPort) {
-    void whisperSupervisor.start().catch((error) => {
-      if (!shuttingDown) log(`whisper-server startup failed — using the cold cli: ${error}`);
-    });
+    const supervisor = whisperSupervisor;
+    // A hard-killed daemon leaves its whisper-server listening, and the
+    // supervisor would adopt it: never stopped, never replaced, never
+    // reloaded after a model change (D3). Reap it first — only by the pid a
+    // conch daemon recorded as its own spawn, and only if that daemon is dead.
+    void reapOrphanedWhisper(cfg.whisperPort)
+      .then(
+        (pid) => { if (pid) log(`killed whisper-server ${pid}, orphan of a dead conch daemon — starting our own`); },
+        (error) => log(`whisper-server orphan check failed — adopting whatever listens: ${error}`),
+      )
+      .then(() => supervisor.start())
+      .catch((error) => {
+        if (!shuttingDown) log(`whisper-server startup failed — using the cold cli: ${error}`);
+      });
   }
 
   /** Make log-backed controls visible even after the content pane was collapsed. */
