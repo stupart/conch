@@ -178,6 +178,7 @@ import {
   findSessionBySpokenName,
   findTranscript,
   renameSessionLabel,
+  subagentSessions,
   type RegistrySnapshot,
   type SessionInfo,
   claudeFolderTrusted,
@@ -1643,9 +1644,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
       ledger.forgetGone(liveIds);
     }
     const live = withoutDismissedSessions(registryLive, dismissedSessionIds);
+    // Live background subagents, nested under their parents (C4). Rows and
+    // conversations only: `live` stays the set of sessions conch can address,
+    // so nothing below can wake, inject into, announce for or latch one.
+    const nested = live.flatMap((session) =>
+      subagentSessions(session, session.transcriptPath ?? findTranscript(cfg.claudeDir, session.sessionId))
+    );
+    const visible = [...live, ...nested];
     const liveState = getLiveState(); // what conch is doing right now, if anything
     const orderedRows = buildPanelRows({
-      sessions: live,
+      sessions: visible,
       sessionStates,
       pausedSessionIds,
       live: liveState,
@@ -1721,7 +1729,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // without the daemon having to guess which that is.
     const conversationsBySession = Object.fromEntries(
       (await Promise.all(
-        live.slice(0, MAX_PUBLISHED_CONVERSATIONS).map(async (session) => {
+        visible.slice(0, MAX_PUBLISHED_CONVERSATIONS).map(async (session) => {
           const path = session.transcriptPath
             ?? findTranscript(cfg.claudeDir, session.sessionId);
           if (!path) return null;
@@ -1841,7 +1849,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         Date.now(),
         labelForSessionId,
         new Map(
-          live.flatMap((session) =>
+          visible.flatMap((session) =>
             session.transcriptPath ? [[session.sessionId, session.transcriptPath] as const] : []
           ),
         ),

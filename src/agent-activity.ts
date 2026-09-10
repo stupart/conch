@@ -2,6 +2,7 @@ import {
   closeSync,
   fstatSync,
   openSync,
+  readFileSync,
   readSync,
   readdirSync,
   statSync,
@@ -113,7 +114,12 @@ function messageText(entry: any): string {
     .join("\n");
 }
 
-function taskNotificationText(entry: any): string {
+/**
+ * The text of a `<task-notification>`, wherever Claude Code filed it: a user
+ * message when the parent was idle, a queued-command attachment or a
+ * queue-operation when it was mid-turn.
+ */
+export function taskNotificationText(entry: any): string {
   if (entry?.type === "user" && entry?.origin?.kind === "task-notification") {
     return messageText(entry);
   }
@@ -130,25 +136,63 @@ function taskNotificationText(entry: any): string {
   return "";
 }
 
+/** Row id for a subagent: the agent id under a prefix no session id carries. */
+export const SUBAGENT_ROW_PREFIX = "agent-";
+
+export function subagentRowId(agentId: string): string {
+  return `${SUBAGENT_ROW_PREFIX}${agentId}`;
+}
+
 /**
- * True when this session has a background *sub-agent* whose newest transcript
- * state is still launched (no completion notification yet) and whose log file
- * is fresh. AGENTS ONLY — a background Bash (`run_in_background`) is deliberately
- * ignored: it is often a persistent process (dev server, watcher, tail) that
- * never writes a completion, so counting it would keep the session silent
- * forever. A background agent re-wakes the session when it finishes; a
- * background Bash just runs off to the side, so the turn is genuinely done.
- * The reverse scan is bounded to fresh candidates and a 32 MiB tail, so old
- * transcript launches cannot resurrect stale work while live agents may still
- * span nearby user turns.
+ * Where Claude Code writes a subagent's own transcript: beside the parent's,
+ * under `<sessionId>/subagents/agent-<id>.jsonl`, with `.meta.json` next to it
+ * carrying the agent type and description.
  */
-export function sessionHasLiveBackgroundWork(transcriptPath: string): boolean {
+export function sidechainTranscriptPath(parentTranscriptPath: string, agentId: string): string {
+  const sessionId = basename(parentTranscriptPath, extname(parentTranscriptPath));
+  return join(dirname(parentTranscriptPath), sessionId, "subagents", `agent-${agentId}.jsonl`);
+}
+
+export interface LiveAgent {
+  agentId: string;
+  /** The sidechain transcript — the same JSONL shape as the parent's. */
+  transcriptPath: string;
+  description?: string;
+  agentType?: string;
+  /** When it was spawned (its meta file's mtime), epoch-ms. */
+  startedAt?: number;
+}
+
+/**
+ * The background *sub-agents* this session has in flight, from what Claude
+ * Code writes to disk: a fresh sidechain under the session's directory, and a
+ * parent transcript whose newest word on that agent is its launch — no
+ * completion notification yet. AGENTS ONLY — a background Bash
+ * (`run_in_background`) is deliberately ignored: it is often a persistent
+ * process (dev server, watcher, tail) that never writes a completion, so
+ * counting it would keep the session silent forever. A background agent
+ * re-wakes the session when it finishes; a background Bash just runs off to
+ * the side, so the turn is genuinely done.
+ *
+ * A subagent has no registry entry and no pid of its own — it runs inside the
+ * parent's process — so this is the only way to know one exists. The reverse
+ * scan is bounded to fresh candidates and a 32 MiB tail, so old transcript
+ * launches cannot resurrect stale work while live agents may still span nearby
+ * user turns.
+ *
+ * ponytail: a synchronous Agent call (no `isAsync`) is not listed while it
+ * runs — its tool_result only lands at completion, so the parent transcript
+ * has nothing yet that names the agent. Add the meta file's `toolUseId` as a
+ * second candidate if that ever matters.
+ */
+export function liveBackgroundAgents(transcriptPath: string): LiveAgent[] {
   try {
     const now = Date.now();
     const sessionId = basename(transcriptPath, extname(transcriptPath));
     const projectDir = dirname(transcriptPath);
+    const sidechains = join(projectDir, sessionId, "subagents");
     const agents = freshIds(
-      join(projectDir, sessionId, "subagents"),
+      sidechains,
       // Spawn metadata can land before the transcript. It contributes only a
       // candidate id; the parent transcript still proves launch/completion.
       (name) => name.match(/^agent-(.+?)(?:\.jsonl|\.meta\.json)$/)?.[1],
@@ -156,9 +200,9 @@ export function sessionHasLiveBackgroundWork(transcriptPath: string): boolean {
       LIVE_WINDOW_MS,
     );
 
-    if (!agents.size) return false;
+    if (!agents.size) return [];
 
-    let live = false;
+    const live: string[] = [];
     visitLinesNewestFirst(transcriptPath, (buffer) => containsCandidate(buffer, agents), (line) => {
       if (!containsCandidate(line, agents)) return false;
       let entry: any;
@@ -178,10 +222,9 @@ export function sessionHasLiveBackgroundWork(transcriptPath: string): boolean {
       } else if (entry?.type === "user" && entry?.toolUseResult && typeof entry.toolUseResult === "object") {
         const result = entry.toolUseResult;
         if (typeof result.agentId === "string" && agents.has(result.agentId)) {
-          if (result.isAsync === true) {
-            live = true;
-            return true;
-          }
+          // Newest first, so a launch met here is the last word on the agent:
+          // it is still out there.
+          if (result.isAsync === true) live.push(result.agentId);
           // A synchronous Agent uses the same artifact naming convention but is
           // already complete when its tool_result is written.
           agents.delete(result.agentId);
@@ -190,8 +233,30 @@ export function sessionHasLiveBackgroundWork(transcriptPath: string): boolean {
 
       return !agents.size;
     });
-    return live;
+    return live.map((agentId) => describeAgent(sidechains, agentId));
   } catch {
-    return false;
+    return [];
   }
+}
+
+function describeAgent(sidechains: string, agentId: string): LiveAgent {
+  const agent: LiveAgent = {
+    agentId,
+    transcriptPath: join(sidechains, `agent-${agentId}.jsonl`),
+  };
+  const metaPath = join(sidechains, `agent-${agentId}.meta.json`);
+  try {
+    agent.startedAt = statSync(metaPath).mtimeMs;
+    const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+    if (typeof meta?.description === "string" && meta.description) agent.description = meta.description;
+    if (typeof meta?.agentType === "string" && meta.agentType) agent.agentType = meta.agentType;
+  } catch {
+    // No meta file, or a torn one: the id alone is still a real agent.
+  }
+  return agent;
+}
+
+/** True when this session has a background sub-agent still in flight. */
+export function sessionHasLiveBackgroundWork(transcriptPath: string): boolean {
+  return liveBackgroundAgents(transcriptPath).length > 0;
 }
