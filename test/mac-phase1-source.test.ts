@@ -77,10 +77,18 @@ describe("the Mac composer belongs to one session", () => {
   test("an attachment claims the session just as typing does", () => {
     // Without this, live-session following can move the pane after a file was
     // attached and leave that file poised to send through another row's closure.
-    const chooser = composer.slice(composer.indexOf("private func chooseFiles()"));
-    expect(chooser).toMatch(/attachments\.append[\s\S]*onDraftStarted\(\)/);
-    const drop = composer.slice(composer.indexOf("private func load("));
-    expect(drop).toMatch(/attachments\.append\(url\)[\s\S]*onDraftStarted\(\)/);
+    // Every way in — picker, drop, paste — goes through one rule, so the claim
+    // is pinned once, where it lives, with presence asserted first.
+    const attachAt = composer.indexOf("private func attach(_ urls: [URL])");
+    expect(attachAt).toBeGreaterThan(-1);
+    const attach = composer.slice(attachAt, composer.indexOf("\n    }", attachAt));
+    expect(attach).toMatch(/attachments\.append\(contentsOf: fresh\)[\s\S]*onDraftStarted\(\)/);
+    const chooserAt = composer.indexOf("private func chooseFiles()");
+    expect(chooserAt).toBeGreaterThan(-1);
+    expect(composer.slice(chooserAt, chooserAt + 600)).toContain("attach(panel.urls)");
+    const loadAt = composer.indexOf("private func load(");
+    expect(loadAt).toBeGreaterThan(-1);
+    expect(composer.slice(loadAt, loadAt + 400)).toContain("attach([url])");
   });
 
   test("image attachments render a thumbnail instead of only a filename", () => {
