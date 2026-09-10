@@ -851,8 +851,19 @@ private struct ArtifactPreview: View {
 
     var body: some View {
         Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: 10) {
+            // The artifact itself, first, at a height that fits a conversation.
+            // An icon and a filename told you a deliverable EXISTED; this shows
+            // what it is. Tyler, side by side with the card: "preview the
+            // actual artifact in conch instead of this random card UI".
+            //
+            // Not the Deliverable pane's renderers: those are NSScrollViews,
+            // and a scroller inside the conversation's scroller captures the
+            // wheel. A bounded, clipped render of the head is enough to
+            // recognise the thing; the gesture below still opens it whole.
+            inlinePreview
             HStack(alignment: .top, spacing: 11) {
-                thumbnail
+                if inlinePreviewKind == nil { thumbnail }
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Deliverable")
                         .font(ConchTypography.font(size: 9.5, weight: .medium))
@@ -876,6 +887,7 @@ private struct ArtifactPreview: View {
                 Image(systemName: "arrow.up.left.and.arrow.down.right")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(ConchPalette.textFaint)
+            }
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -917,6 +929,67 @@ private struct ArtifactPreview: View {
                         .foregroundStyle(ConchPalette.statusReview.opacity(0.85))
                 )
         }
+    }
+
+    private enum InlinePreviewKind { case image, document }
+
+    /// Which inline render this artifact gets, or nil for icon-only. Only
+    /// absolute local paths qualify — a relative link resolves against the
+    /// app's cwd, not the session's, which is why the daemon now publishes
+    /// them absolute.
+    private var inlinePreviewKind: InlinePreviewKind? {
+        guard let link = artifact.link, link.hasPrefix("/") else { return nil }
+        switch (link as NSString).pathExtension.lowercased() {
+        case "png", "jpg", "jpeg", "gif", "heic", "webp": return localImage == nil ? nil : .image
+        case "md", "markdown", "txt": return documentHead == nil ? nil : .document
+        default: return nil
+        }
+    }
+
+    @ViewBuilder
+    private var inlinePreview: some View {
+        switch inlinePreviewKind {
+        case .image:
+            if let image = localImage {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: 260, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+        case .document:
+            if let head = documentHead {
+                // The same markdown path the replies use, so a deliverable
+                // reads like the conversation it arrived in. Clipped, then
+                // faded, so the cut reads as "there is more" rather than as
+                // the file ending mid-word.
+                Text(AttributedString.conchMarkdown(head))
+                    .font(ConchTypography.font(size: 12.5))
+                    .foregroundStyle(ConchPalette.textPrimary)
+                    .lineLimit(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .mask(
+                        LinearGradient(
+                            stops: [.init(color: .black, location: 0.72), .init(color: .clear, location: 1)],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                    )
+            }
+        case nil:
+            EmptyView()
+        }
+    }
+
+    /// The first few KB of a text deliverable. Bounded by construction: a
+    /// 5MB log must not be read whole to draw fourteen lines of it.
+    private var documentHead: String? {
+        guard let link = artifact.link, link.hasPrefix("/"),
+              let handle = FileHandle(forReadingAtPath: link) else { return nil }
+        defer { try? handle.close() }
+        let data = handle.readData(ofLength: 6 * 1024)
+        guard let text = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
     }
 
     private var localImage: NSImage? {
