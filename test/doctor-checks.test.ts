@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { loadConfig } from "../src/config.ts";
 import {
+  checkConchBinaries,
   checkMicrophone,
   checkTts,
   formatDoctorProbe,
@@ -102,5 +104,44 @@ describe("TTS doctor probe", () => {
     expect(result.action).toContain("selected sound output and volume");
     expect(result.action).toContain("conch setup");
     expect(formatDoctorProbe(result)).toStartWith("⚠️");
+  });
+});
+
+describe("conch binaries on PATH", () => {
+  const executable = (...files: string[]) => (file: string) => files.includes(file);
+
+  test("names every conch on PATH when there is more than one", () => {
+    // The from-source trap: a brew binary and a `bun link`ed checkout both on
+    // PATH, so the app and the daemon run different versions and nothing says
+    // so. The first on PATH is the one a shell runs.
+    const result = checkConchBinaries(
+      "/opt/homebrew/bin:/Users/me/.bun/bin:/usr/bin",
+      executable("/opt/homebrew/bin/conch", "/Users/me/.bun/bin/conch"),
+    );
+    expect(result).toMatchObject({ ok: false, label: "conch" });
+    expect(result.message).toContain("2 on PATH");
+    expect(result.message).toContain("/opt/homebrew/bin/conch, /Users/me/.bun/bin/conch");
+    expect(result.action).toContain("Pick one install per machine");
+    expect(formatDoctorProbe(result)).toStartWith("⚠️");
+  });
+
+  test("one conch, or a PATH that repeats its directory, is not a warning", () => {
+    // PATH commonly lists /opt/homebrew/bin twice; that is one install.
+    const result = checkConchBinaries(
+      "/opt/homebrew/bin:/usr/bin::/opt/homebrew/bin",
+      executable("/opt/homebrew/bin/conch"),
+    );
+    expect(result).toEqual({ ok: true, label: "conch", message: "conch: /opt/homebrew/bin/conch" });
+    expect(checkConchBinaries("/usr/bin", executable()).ok).toBe(true);
+  });
+
+  test("doctor runs the check", () => {
+    // The seam: the check is unit-tested above, but only this line makes
+    // `conch doctor` print it.
+    const source = readFileSync(new URL("../src/install.ts", import.meta.url), "utf8");
+    const from = source.indexOf("export async function runDoctor");
+    expect(from).toBeGreaterThan(-1);
+    const doctor = source.slice(from, source.indexOf("function binaryExists", from));
+    expect(doctor).toContain("formatDoctorProbe(checkConchBinaries())");
   });
 });
