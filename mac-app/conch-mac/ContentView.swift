@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var renameDraft = ""
     @State private var isShowingKeyboardShortcuts = false
     @State private var isShowingSessionStart = false
+    @State private var isShowingCommandPalette = false
     /// SwiftUI's own way to open the Settings scene. Doing it by sending
     /// showSettingsWindow: to nil is the usual hack and breaks between
     /// releases; this is the supported route on macOS 14+.
@@ -100,6 +101,7 @@ struct ContentView: View {
                     onToggleLogs: store.toggleLogDrawer,
                     onConnectPhone: connectPhone,
                     onShowKeyboardShortcuts: showKeyboardShortcuts,
+                    onShowCommandPalette: showCommandPalette,
                     onTalkOrStop: talkOrStop,
                     onPauseOrResume: pauseOrResume,
                     onRecite: recite,
@@ -124,7 +126,7 @@ struct ContentView: View {
         .background(ConchPalette.bg)
         .background(
             DashboardInputMonitor(
-                isEnabled: expandedReview == nil && remoteSelection == nil && !isShowingKeyboardShortcuts,
+                isEnabled: expandedReview == nil && remoteSelection == nil && !isShowingKeyboardShortcuts && !isShowingCommandPalette,
                 onKey: handleDashboardKey
             )
         )
@@ -136,6 +138,18 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isShowingSessionStart) {
             StartSessionSheet()
+        }
+        // ⌘K (B4): scoped to the selected session, or the one conch is
+        // speaking for — the same fallback Recite uses.
+        .sheet(isPresented: $isShowingCommandPalette) {
+            CommandPaletteSheet(row: actionTarget, onSelect: selectSession) {
+                isShowingCommandPalette = false
+            }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .showCommandPalette)
+        ) { _ in
+            showCommandPalette()
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .showKeyboardShortcuts)
@@ -297,6 +311,10 @@ struct ContentView: View {
 
     private func showKeyboardShortcuts() {
         isShowingKeyboardShortcuts = true
+    }
+
+    private func showCommandPalette() {
+        isShowingCommandPalette = true
     }
 
     private func handleDashboardKey(_ key: DashboardKey) -> Bool {
@@ -658,6 +676,7 @@ private struct KeyboardShortcutsSheet: View {
         ShortcutHelpRow(command: "↑ / ↓", result: "Select"),
         ShortcutHelpRow(command: "Esc", result: "Release selection / close"),
         ShortcutHelpRow(command: "Right-click a row", result: "Rename, dismiss"),
+        ShortcutHelpRow(command: "⌘K", result: "Command palette"),
         ShortcutHelpRow(command: "⌘,", result: "Settings"),
         ShortcutHelpRow(command: "?", result: "This list"),
     ]
