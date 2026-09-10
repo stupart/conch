@@ -40,6 +40,8 @@ final class DaemonHost: ObservableObject {
     private var outputPipe: Pipe?
     private var restartAttempts = 0
     private var restartWork: DispatchWorkItem?
+    /// Polls an adopted daemon's socket; nil when the daemon is ours or absent.
+    private var adoptedProbe: Timer?
     /// Deliberately not `Bundle.main` — the daemon and the socket path have to
     /// agree, and the daemon reads this same default.
     private let socketPath = ProcessInfo.processInfo.environment["CONCH_SOCKET"] ?? "/tmp/conch.sock"
@@ -55,6 +57,7 @@ final class DaemonHost: ObservableObject {
 
         if socketAnswers() {
             state = .adopted
+            watchAdoptedDaemon()
             return
         }
 
@@ -108,6 +111,8 @@ final class DaemonHost: ObservableObject {
     /// process because our window closed would be a surprise.
     func stop() {
         restartWork?.cancel()
+        adoptedProbe?.invalidate()
+        adoptedProbe = nil
         restartAttempts = 0
         guard let task = process else {
             if case .adopted = state {} else { state = .stopped }
@@ -130,6 +135,33 @@ final class DaemonHost: ObservableObject {
     }
 
     // MARK: - Internals
+
+    /// An adopted daemon is someone else's process, so there is no exit
+    /// callback when it dies. The app sat on a dead socket twice in one day
+    /// (A2): hooks failing, the phone gone, and the window still saying
+    /// "Running — started outside this app". Poll the socket instead, and when
+    /// it stops answering, start our own — which is what the toggle promises.
+    private func watchAdoptedDaemon() {
+        adoptedProbe?.invalidate()
+        let probe = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.probeAdoptedDaemon() }
+        }
+        RunLoop.main.add(probe, forMode: .common)
+        adoptedProbe = probe
+    }
+
+    private func probeAdoptedDaemon() {
+        guard case .adopted = state else {
+            adoptedProbe?.invalidate()
+            adoptedProbe = nil
+            return
+        }
+        guard !socketAnswers() else { return }
+        adoptedProbe?.invalidate()
+        adoptedProbe = nil
+        state = .stopped
+        start()
+    }
 
     private func handleExit(_ finished: Process) {
         guard process === finished else { return } // a stop() we already handled
