@@ -689,10 +689,11 @@ describe("daemon config controller", () => {
       cursorBranch.indexOf("event.review ? sentences.length"),
     );
 
-    const turnEndStatus = daemonSource.slice(
-      daemonSource.indexOf('if (event.type === "turn-end" && !setSessionState('),
-      daemonSource.indexOf("if (cancelledAudioCommands.delete(event))", daemonSource.indexOf('if (event.type === "turn-end" && !setSessionState(')),
-    );
+    const turnEndStatusAt = daemonSource.indexOf('if (event.type === "turn-end" && !setSessionState(');
+    expect(turnEndStatusAt).toBeGreaterThan(-1);
+    const cancellationAt = daemonSource.indexOf("if (eventQueue.consumeCancellation(event))", turnEndStatusAt);
+    expect(cancellationAt).toBeGreaterThan(turnEndStatusAt);
+    const turnEndStatus = daemonSource.slice(turnEndStatusAt, cancellationAt);
     expect(turnEndStatus).toContain('"waiting"');
     expect(turnEndStatus).not.toContain('"review" : "waiting"');
     expect(turnEndStatus).toContain("event.review?.summary");
@@ -1295,12 +1296,12 @@ describe("an inject never waits for the voice engine", () => {
     // Both markers must EXIST before the slice means anything: a missing one
     // gives -1, slice(-1) is the last character, and `not.toContain` passes
     // on an empty body.
-    const drainAt = source.indexOf("async function drain()");
+    const queueSource = readFileSync(new URL("../src/event-queue.ts", import.meta.url), "utf8");
+    const drainAt = queueSource.indexOf("async #drain(): Promise<void>");
     expect(drainAt).toBeGreaterThan(-1);
-    const drain = source.slice(drainAt);
-    const handleAt = drain.indexOf("async function handle(");
-    expect(handleAt).toBeGreaterThan(-1);
-    const body = drain.slice(0, handleAt);
+    const finallyAt = queueSource.indexOf("    } finally {", drainAt);
+    expect(finallyAt).toBeGreaterThan(drainAt);
+    const body = queueSource.slice(drainAt, finallyAt);
     expect(body).not.toContain("await ttsStartup");
   });
 
