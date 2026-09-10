@@ -446,7 +446,9 @@ describe("D2 wiring inside runDaemon", () => {
 
     const turn = between("if (audibleTurn && (await userRespondedSince(", "const announce = await speakInterruptible(");
     const turnPrewarm = turn.indexOf("if (audibleTurn) whisperSupervisor?.prewarm()");
-    const bell = turn.indexOf("if (audibleTurn) await ringBell()");
+    // The bell's gate became `voicedHere` with C9b Cut B (audible somewhere,
+    // voiced HERE); the prewarm still has to precede it.
+    const bell = turn.indexOf("if (voicedHere) await ringBell()");
     expect(turnPrewarm).toBeGreaterThan(-1);
     expect(bell).toBeGreaterThan(turnPrewarm);
   });

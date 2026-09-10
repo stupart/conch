@@ -40,6 +40,15 @@ import {
   existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { loadDeviceId } from "./device-identity.ts";
+import {
+  AudioHolder,
+  AudioOutbox,
+  PresentedItems,
+  presentedTo,
+  speechAllowedHere,
+  type AudioControl,
+  type AudioOutboxItem,
+} from "./audio-holder.ts";
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
@@ -71,7 +80,7 @@ import {
 } from "./listen.ts";
 import type { RecorderHandle } from "./dictation-controller.ts";
 import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
-import { renameProviderSession } from "./provider-rename.ts";
+import { injectProviderCommand, renameProviderSession } from "./provider-rename.ts";
 import { classify, classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
 import {
   describeNotice,
@@ -169,6 +178,7 @@ import {
   findSessionBySpokenName,
   findTranscript,
   renameSessionLabel,
+  subagentSessions,
   type RegistrySnapshot,
   type SessionInfo,
   claudeFolderTrusted,
@@ -450,14 +460,17 @@ export function retainMatchingPhoneBridge(
 /** Sink-aware reservation seam, exported so the post-await race stays tested. */
 export async function reserveNormalMicForSink(options: {
   sink(): AudioSink;
+  /** C9b Cut B: false while another Mac holds this daemon's audio. Re-checked after the await, like the sink. */
+  voicedHere?(): boolean;
   shuttingDown(): boolean;
   setReserved(value: boolean): void;
   quiescent(): Promise<void>;
 }): Promise<boolean> {
-  if (options.sink() === "phone") return false;
+  const here = (): boolean => options.sink() === "mac" && (options.voicedHere?.() ?? true);
+  if (!here()) return false;
   options.setReserved(true);
   await options.quiescent();
-  if (!options.shuttingDown() && options.sink() === "mac") return true;
+  if (!options.shuttingDown() && here()) return true;
   options.setReserved(false);
   return false;
 }
@@ -720,6 +733,8 @@ export function buildDaemonPublishedState(
   /** Codex rollouts live at paths only its database knows; Claude's are found by id. */
   sessionTranscriptPaths?: ReadonlyMap<string, string>,
   sessionContexts?: ReadonlyMap<string, SessionContextUsage>,
+  /** C9b Cut B: the holder record and the outbox, published on every complete document. */
+  audio?: { control: AudioControl; outbox: AudioOutboxItem[] },
 ): PublishedState {
   return buildPublishedState(
     ownerDeviceId,
@@ -734,6 +749,7 @@ export function buildDaemonPublishedState(
       labelForSessionId,
       prioritizedSessionIds,
       contextForSessionId: (sessionId) => sessionContexts?.get(sessionId),
+      ...(audio ? { audio } : {}),
     },
   );
 }
@@ -809,6 +825,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
     done: Promise<void>;
   } | null = null;
   const audioLease = new AudioSinkLease();
+  // C9b Cut B: WHICH MAC makes this daemon's sound. The lease above stays the
+  // phone's local sink selector (phone wins on its daemon, F2); the holder is
+  // the identified, revisioned, expiring answer between Macs. Every
+  // sound-making site consults both.
+  const audioHolder = new AudioHolder();
+  const audioOutbox = new AudioOutbox(Date.now());
+  const presented = new PresentedItems(Date.now());
+  let holderExpiry: ReturnType<typeof setTimeout> | null = null;
   let shuttingDown = false;
   let normalMicReserved = false;
   let bargeHandoffOpen = false;
@@ -967,9 +991,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
     (operation, output) => withNormalMicClosed(
       normalMicOpen,
       operation,
-      () => audioLease.sink === "phone"
-        ? Promise.resolve(undefined as Awaited<ReturnType<typeof output>>)
-        : output(),
+      // The speech gate: local holder AND no phone, or the lane stays silent.
+      () => speechAllowedHere(audioHolder.holder, audioLease.sink)
+        ? output()
+        : Promise.resolve(undefined as Awaited<ReturnType<typeof output>>),
     ),
     {
       warn: log,
@@ -1040,10 +1065,40 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // Two open mics is not a degraded mode, it is a broken one.
     return reserveNormalMicForSink({
       sink: () => audioLease.sink,
+      voicedHere: () => audioHolder.isLocal(),
       shuttingDown: () => shuttingDown,
       setReserved: (value) => { normalMicReserved = value; },
       quiescent: () => speech.quiescent(),
     });
+  };
+
+  /**
+   * Why `speak` would drop a line right now, or null when it will reach the
+   * speech lane. Kept in step with the two checks at the top of `speak` — the
+   * synchronous `audio-present` entry has to answer "held" without awaiting.
+   */
+  const speakBlocker = (volunteered: boolean): "mic-open" | "manual" | null =>
+    normalMicOpen() ? "mic-open" : pause.paused && !volunteered ? "manual" : null;
+
+  /** Hand a line to the holder's Mac (C9b Cut B). The holder's app carries it over; this Mac stays silent. */
+  const presentElsewhere = (holder: string, text: string, voice: string, label: string, localSessionKey: string): void => {
+    const item = audioOutbox.push({ text, voice, label, session: { ownerDeviceId, localSessionKey } });
+    log(`handed "${label || "announcement"}" to ${holder.slice(0, 8)} (#${item.seq})`);
+    void renderSessionPanel();
+  };
+
+  /** Republish when a lease lapses so the window sees audio return (named simplification #1). */
+  const armHolderExpiry = (expiresAt: number | null): void => {
+    if (holderExpiry) clearTimeout(holderExpiry);
+    holderExpiry = null;
+    if (expiresAt === null) return;
+    holderExpiry = setTimeout(() => {
+      holderExpiry = null;
+      if (!audioHolder.isLocal()) return; // renewed since
+      log("audio lease expired — this Mac speaks again");
+      void renderSessionPanel();
+    }, Math.max(0, expiresAt - Date.now()) + 5);
+    holderExpiry.unref?.();
   };
 
   const speak = async (
@@ -1054,6 +1109,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // `conch speak`. Those are answers, not conch volunteering, so manual mode
     // does not silence them.
     volunteered = false,
+    // The session this line belongs to, when the caller knows it; a yielded
+    // daemon tags the outbox item with it so the holder can name it (C9b).
+    sessionId = "",
   ): Promise<void> => {
     // The phone owning the voice has to mean it HERE, at the one place every
     // path funnels through. Gating the announce path alone left wake, recite,
@@ -1103,6 +1161,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // conch volunteering, not about refusing to answer.
     if (pause.paused && !volunteered) {
       log(`held "${label || "announcement"}" — manual mode`);
+      return;
+    }
+
+    // C9b Cut B, outbox site 2 of 2 (F6): another Mac holds this daemon's
+    // audio. Only what a person asked for out loud travels — a recite, an
+    // explicit `conch speak`; every other line returns silently, exactly as
+    // the phone branch below does. Between the manual check and the state
+    // change, so nothing is ever left latched "speaking" (F3).
+    const holder = presentedTo(audioHolder.holder, audioLease.sink);
+    if (holder) {
+      if (volunteered) presentElsewhere(holder, text, voiceFor(speechCfg, label), label, sessionId);
+      else log(`held "${label || "announcement"}" — ${holder.slice(0, 8)} has the audio`);
       return;
     }
 
@@ -1589,9 +1659,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
       ledger.forgetGone(liveIds);
     }
     const live = withoutDismissedSessions(registryLive, dismissedSessionIds);
+    // Live background subagents, nested under their parents (C4). Rows and
+    // conversations only: `live` stays the set of sessions conch can address,
+    // so nothing below can wake, inject into, announce for or latch one.
+    const nested = live.flatMap((session) =>
+      subagentSessions(session, session.transcriptPath ?? findTranscript(cfg.claudeDir, session.sessionId))
+    );
+    const visible = [...live, ...nested];
     const liveState = getLiveState(); // what conch is doing right now, if anything
     const orderedRows = buildPanelRows({
-      sessions: live,
+      sessions: visible,
       sessionStates,
       pausedSessionIds,
       live: liveState,
@@ -1667,7 +1744,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // without the daemon having to guess which that is.
     const conversationsBySession = Object.fromEntries(
       (await Promise.all(
-        live.slice(0, MAX_PUBLISHED_CONVERSATIONS).map(async (session) => {
+        visible.slice(0, MAX_PUBLISHED_CONVERSATIONS).map(async (session) => {
           const path = session.transcriptPath
             ?? findTranscript(cfg.claudeDir, session.sessionId);
           if (!path) return null;
@@ -1787,11 +1864,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
         Date.now(),
         labelForSessionId,
         new Map(
-          live.flatMap((session) =>
+          visible.flatMap((session) =>
             session.transcriptPath ? [[session.sessionId, session.transcriptPath] as const] : []
           ),
         ),
         sessionContexts,
+        { control: audioHolder.record, outbox: audioOutbox.items },
       );
       publishedStateWriter.request();
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
@@ -1986,7 +2064,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // Explicit previews bypass both modal pause gating and a label-keyed
       // persisted pin; an empty selection label makes the one-item ring win.
       // Asked for out loud, so manual does not silence it.
-      return speak(speechCfg, event.announce, event.voice ? "" : event.label, true);
+      return speak(speechCfg, event.announce, event.voice ? "" : event.label, true, event.sessionId);
     }
     handlingEvent = event;
     handlingPauseGeneration = pause.capture();
@@ -2018,6 +2096,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // manual/dismiss gate and make that session audible from another surface.
     const controlledTurn = shouldHandleTurnAudibly(event, cfg.workingMic);
     const audibleTurn = controlledTurn && audioLease.sink === "mac";
+    // C9b Cut B (F1): a yielded turn is audible SOMEWHERE, so the checks
+    // below keep running on `audibleTurn`. Only the sound is gated on HERE.
+    const voicedHere = audibleTurn && audioHolder.isLocal();
     if (
       audibleTurn
       && sessionGoneFromSnapshot(
@@ -2085,7 +2166,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // don't burn battery on sox/whisper. Telegram (the other hook) still
     // pings the phone. `conch wake` always cuts through.
     // Only reach for ioreg when the away-timer is actually armed (default off) —
-    if (event.type !== "wake" && event.type !== "recite" && cfg.awayAfterSecs) {
+    // and never while another Mac holds the audio: HID idle is THIS Mac's
+    // physical presence, not the session's (C9b Cut B, F7).
+    if (event.type !== "wake" && event.type !== "recite" && cfg.awayAfterSecs && audioHolder.isLocal()) {
       const idle = await idleSeconds() ?? 0; // null probe → 0 → not away (fail safe)
       if (idle >= cfg.awayAfterSecs) {
         log(`away (idle ${Math.round(idle / 60)}m) — staying quiet for "${event.label}"`);
@@ -2135,7 +2218,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         log(`recite -> "${target.label}"`);
         if (cfg.revealOnTurn && target.pid) void revealSessionWindow(target.pid);
         resetReadingProgress();
-        await speak(cfg, `${target.label}:`, target.label, true);
+        await speak(cfg, `${target.label}:`, target.label, true, target.sessionId);
         if (shuttingDown || interruptedByPause()) return;
         // event.announce is intentionally empty, so conversationLoop starts at
         // sentence zero. autoTurn=false avoids the keyboard-activity mic gate.
@@ -2158,6 +2241,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
 
     if (event.type === "wake") {
+      // C9b Cut B: the ear is on the other Mac. Refused before the courtesy
+      // line, so nothing below can speak or open a mic here (F6).
+      const heldBy = presentedTo(audioHolder.holder, audioLease.sink);
+      if (heldBy) return log(`wake refused — ${heldBy.slice(0, 8)} has the audio`);
       const target = resolveWakeTarget(event, latestVisibleTurn()); // named wake carries its own session
       if (!target) {
         log("wake with nothing to wake — no session has announced yet");
@@ -2269,8 +2356,17 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (audibleTurn) whisperSupervisor?.prewarm();
       // The hook hands the bell to the daemon so it cannot ring over a live mic.
       // Track the exact turn before this first cancellable audio boundary.
-      if (audibleTurn) await ringBell();
+      if (voicedHere) await ringBell();
       if (interruptedByPause()) return;
+
+      // C9b Cut B, outbox site 1 of 2 (F6): audible somewhere, but not here.
+      // The announcement goes to the holder's Mac; no reading, no mic, and
+      // the turn stays latched so a later wake or recite still finds it.
+      if (audibleTurn && !voicedHere) {
+        presentElsewhere(audioHolder.holder, event.announce, voiceFor(cfg, event.label), event.label, event.sessionId);
+        lastTurn = event;
+        return;
+      }
 
       // Surface the session's window as conch starts talking to it — raised so
       // you can watch, but WITHOUT stealing focus (AXRaise). Suppressed while
@@ -2363,8 +2459,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
   }> {
     if (interrupted()) return { heard: "", cut: true };
     // The phone owns the voice AND the ear: this path both speaks and arms the
-    // Mac's recorder, so it must return before either.
-    if (audioLease.isPhone()) return { heard: "", cut: false };
+    // Mac's recorder, so it must return before either. So does another Mac
+    // holding this daemon's audio (C9b Cut B) — the announcement itself was
+    // handed over at the turn site; the remaining chunks stay silent here.
+    if (audioLease.isPhone() || !audioHolder.isLocal()) return { heard: "", cut: false };
     setState("speaking", event.label);
     if (!cfg.bargeThresholdPct || disabled) {
       const playback = speech.speakCancellable(cfg, text, event.label);
@@ -2379,11 +2477,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // the manager's audio FIFO. Its actual-start gate checks this precondition
     // again before the intentional high-threshold barge recorder is armed.
     await speech.quiescent();
-    if (audioLease.isPhone()) return { heard: "", cut: false };
+    if (audioLease.isPhone() || !audioHolder.isLocal()) return { heard: "", cut: false };
     if (stopKey || interrupted()) return { heard: "", cut: true };
     assertNormalMicClosed("barge-in TTS");
     const result = await speech.runInterruptible(cfg, text, event.label, async (startSpeech) => {
-      if (audioLease.isPhone()) return { heard: "", cut: false };
+      if (audioLease.isPhone() || !audioHolder.isLocal()) return { heard: "", cut: false };
       if (interrupted()) return { heard: "", cut: true };
       const barge = armBargeRecorder(cfg, traceParent, nextTraceSequence?.() ?? 1);
       const speechRun = startSpeech();
@@ -3297,8 +3395,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // and the Mac opening its mic in the same second anyway, then both machines
     // transcribing Tyler and both injecting. The gap was that only the
     // reading-gap branch of this loop ever called reserveNormalMic.
-    if (audioLease.isPhone()) {
-      log(`mic held — the phone has the ear ("${event.label}")`);
+    // Another Mac holding this daemon's audio holds the ear too (C9b Cut B).
+    if (audioLease.isPhone() || !audioHolder.isLocal()) {
+      log(`mic held — ${audioLease.isPhone() ? "the phone" : "the other Mac"} has the ear ("${event.label}")`);
       emitRecorderTraces(
         seededSegments.flatMap((segment) => segment.diagnosticIds),
         { intent: "text-handled", bufferCountAfterReduction: null },
@@ -4129,6 +4228,21 @@ export async function runDaemon(cfg: Config): Promise<void> {
     restore: restoreDismissedSession,
     // Same raise `revealOnTurn` uses: Terminal.app by tty, no focus steal.
     reveal: (target) => target.pid ? revealSessionWindow(target.pid) : Promise.resolve(false),
+    // B2: `/model <model>` typed into the session's own prompt, the way the
+    // `/rename` sync is — Claude Code or Codex handles it natively.
+    setModel: (target, model) => injectProviderCommand(cfg, target, `/model ${model}`).then((delivery) => {
+      if (delivery.kind === "delivered") {
+        log(`sent /model ${model} to "${target.label}" via ${delivery.via}`);
+        return true;
+      }
+      recordDaemonError(
+        "session-model",
+        `Could not send /model ${model} to the session: ${delivery.reason}`,
+        target.sessionId,
+        { model, backend: target.backend ?? "claude" },
+      );
+      return false;
+    }),
   };
   sessionActionsOverlay = new SessionActionsOverlay({
     controller: sessionActions,
@@ -4302,6 +4416,66 @@ export async function runDaemon(cfg: Config): Promise<void> {
         void renderSessionPanel();
       }
       return { kind: "audio-sink-ack", sink: audioLease.sink };
+    }
+    // C9b Cut B: one voice across two Macs. `audio-take` is this Mac's own
+    // app taking its audio back; `audio-release` is the holder's app handing it
+    // back; both bump the revision so a stale claim loses.
+    if (message.kind === "audio-take" || message.kind === "audio-release") {
+      const wasLocal = audioHolder.isLocal();
+      const record = message.kind === "audio-take" ? audioHolder.take() : audioHolder.release();
+      armHolderExpiry(null);
+      if (!wasLocal) {
+        log(`audio ${message.kind === "audio-take" ? "taken back" : "released"} — this Mac speaks again (rev ${record.revision})`);
+      }
+      void renderSessionPanel();
+      return { kind: "audio-ack", revision: record.revision };
+    }
+    if (message.kind === "audio-yield") {
+      const { holder, revision, leaseMs } = message;
+      const verdict = audioHolder.assess(holder, revision);
+      if (verdict === "stale") {
+        return { kind: "audio-error", code: "stale-revision", revision: audioHolder.record.revision };
+      }
+      if (verdict === "grant") {
+        // The transfer is SYNCHRONOUS, mirroring the phone claim exactly (F5):
+        // kill what is sounding, drop what is queued, close the mic, and only
+        // THEN flip the record — in the same tick, so no drained turn can enter
+        // `speak` with the holder still local. The recorder drain finishing
+        // later does not conflict with the other Mac speaking.
+        speech.cancelCurrent();
+        speech.cancelPendingAudio();
+        activeDictation?.requestExternal("spacebar", "audio-yield");
+        void Promise.resolve(killActiveRecorders()).catch(() => {});
+      }
+      const outcome = audioHolder.yield(holder, revision, leaseMs);
+      if (outcome.kind === "stale") {
+        return { kind: "audio-error", code: "stale-revision", revision: outcome.revision };
+      }
+      armHolderExpiry(outcome.record.expiresAt);
+      if (verdict === "grant") {
+        log(`audio yielded to ${holder.slice(0, 8)} — this Mac is silent (rev ${outcome.record.revision})`);
+        void renderSessionPanel();
+      }
+      return { kind: "audio-ack", revision: outcome.record.revision, stopped: verdict === "grant" };
+    }
+    if (message.kind === "audio-present") {
+      const { source, seq, text, voice, label, host, at } = message.item;
+      const admission = presented.check(source, seq, at);
+      if (admission !== "admit") return { kind: "audio-error", code: "dropped" };
+      // Only what `speak` would actually enqueue is admitted (F4): a held item
+      // is answered without being recorded, and the holder's app retries it.
+      if (speakBlocker(false) || !speechAllowedHere(audioHolder.holder, audioLease.sink)) {
+        return { kind: "audio-error", code: "held" };
+      }
+      presented.record(source, seq);
+      // Labelled for the other Mac so this window never matches it to a local row.
+      const heading = `${host || source.slice(0, 8)} · ${label}`;
+      log(`presenting "${heading}" (#${seq})`);
+      // Through `speak`, never `speech.speak`: the mic-open guard and the
+      // manager gate live there. A `say`-engine daemon ignores the voice.
+      void speak(voice ? { ...cfg, ttsVoices: [voice] } : cfg, text, heading)
+        .catch((error) => log(`presenting "${heading}" failed: ${error}`));
+      return { kind: "audio-ack", revision: audioHolder.record.revision, seq };
     }
     if (message.kind === "phone-spoke") {
       const { reason, text } = message;

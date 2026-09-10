@@ -25,6 +25,13 @@
  * over a metered relay on every render.
  */
 
+import {
+  SUBAGENT_ROW_PREFIX,
+  sidechainTranscriptPath,
+  subagentRowId,
+  taskNotificationText,
+} from "./agent-activity.ts";
+
 export type ConversationItemKind =
   | "user"
   | "assistant"
@@ -61,6 +68,13 @@ export interface ConversationToolDetail {
   status: "running" | "done" | "error";
   /** Tool output, kept separate so a viewer can collapse it. */
   result?: string;
+  /**
+   * The subagent this Task/Agent call started (C4): its row id, and its own
+   * transcript once the reader knows where the parent's lives. A viewer can
+   * open that transcript from the block that started it — the row for a
+   * finished agent is gone, but the file is not.
+   */
+  subagent?: { id: string; transcriptPath?: string };
 }
 
 export interface ConversationItem {
@@ -244,6 +258,13 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
   const at = Date.parse(entry.timestamp ?? "") || undefined;
   const parts: any[] = Array.isArray(entry.message?.content) ? entry.message.content : [];
 
+  // A background agent reporting back. Claude Code files this three ways
+  // (a user message, a queued command, a queue operation) depending on what
+  // the parent was doing; whichever arrives, the block that started the agent
+  // is finished. Then carry on: the user-message form is also a task material.
+  const notice = taskNotificationText(entry);
+  if (notice) finishSubagent(conversation, notice);
+
   if (entry.type === "user") {
     const results = parts.filter((part) => part?.type === "tool_result");
     if (results.length) {
@@ -253,12 +274,17 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
         const callId = typeof result.tool_use_id === "string" ? result.tool_use_id : null;
         const target = callId ? conversation.items[`tool:${callId}`] : undefined;
         if (!target?.tool) continue;
+        // An Agent's result names the agent it started. For a background one
+        // the result arrives at launch, so the block is still RUNNING: the
+        // agent is out there, and only its task notification ends it.
+        const launched = subagentLaunch(entry.toolUseResult);
         upsertConversationItem(conversation, {
           ...target,
           tool: {
             ...target.tool,
-            status: result.is_error ? "error" : "done",
+            status: result.is_error ? "error" : launched?.async ? "running" : "done",
             result: claudeResultText(result.content),
+            ...(launched ? { subagent: { id: launched.id } } : {}),
           },
         });
       }
@@ -364,6 +390,47 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
       ...(asked ? { question: asked } : {}),
       ...(changed ? { change: changed } : {}),
     });
+  }
+}
+
+/** What an Agent tool_result says about the agent it started, if anything. */
+function subagentLaunch(toolUseResult: unknown): { id: string; async: boolean } | null {
+  const result = toolUseResult as { agentId?: unknown; isAsync?: unknown } | null | undefined;
+  if (!result || typeof result !== "object" || typeof result.agentId !== "string" || !result.agentId) {
+    return null;
+  }
+  return { id: subagentRowId(result.agentId), async: result.isAsync === true };
+}
+
+/** A task notification ends the subagent block it names — once, whichever form it arrives in. */
+function finishSubagent(conversation: Conversation, notice: string): void {
+  const taskId = notice.match(/<task-id>\s*([^<]+?)\s*<\/task-id>/)?.[1];
+  if (!taskId) return;
+  const status = notice.match(/<status>\s*([^<]+?)\s*<\/status>/)?.[1] ?? "";
+  const subagentId = subagentRowId(taskId);
+  for (const key of conversation.order) {
+    const item = conversation.items[key];
+    if (item?.tool?.subagent?.id !== subagentId || item.tool.status !== "running") continue;
+    upsertConversationItem(conversation, {
+      ...item,
+      tool: { ...item.tool, status: /kill|fail|error/i.test(status) ? "error" : "done" },
+    });
+  }
+}
+
+/**
+ * Give every subagent block the path of the transcript it started, now that
+ * the parent's own path is known. The reducer sees lines, not files, so this
+ * runs once per read rather than once per line.
+ */
+export function attachSidechainPaths(conversation: Conversation, parentTranscriptPath: string): void {
+  for (const key of conversation.order) {
+    const agent = conversation.items[key]?.tool?.subagent;
+    if (!agent || agent.transcriptPath) continue;
+    agent.transcriptPath = sidechainTranscriptPath(
+      parentTranscriptPath,
+      agent.id.slice(SUBAGENT_ROW_PREFIX.length),
+    );
   }
 }
 
@@ -995,7 +1062,9 @@ export async function readConversationTail(
   }
   const lines = text.split("\n");
   if (start > 0) lines.shift();
-  return buildConversation(sessionId, lines, format);
+  const conversation = buildConversation(sessionId, lines, format);
+  if (format === "claude") attachSidechainPaths(conversation, transcriptPath);
+  return conversation;
 }
 
 /** A conversation trimmed to what is worth putting on a wire. */

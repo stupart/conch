@@ -143,6 +143,7 @@ struct DashboardView: View {
     let onSelectRemote: (RemoteSessionID) -> Void
     @EnvironmentObject private var store: StateStore
     @EnvironmentObject private var daemon: DaemonHost
+    @EnvironmentObject private var audio: AudioHolderStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let state: PublishedState?
@@ -233,6 +234,85 @@ struct DashboardView: View {
                     Rectangle()
                         .fill(ConchPalette.divider)
                         .frame(height: 1)
+                }
+
+                // C9b Cut B. Another Mac holds this one's voice and ear: say so,
+                // and offer the one control that changes it. Typed sends and
+                // everything else keep working; only the mic and the mode
+                // control below are dimmed.
+                if let host = audio.controlledBy {
+                    HStack(spacing: 10) {
+                        Image(systemName: "speaker.slash")
+                            .font(.system(size: 10.5, weight: .medium))
+                        Text("Controlled by \(host) —")
+                            .font(ConchTypography.font(size: 11.5))
+                        Button("Take it", action: audio.takeIt)
+                            .buttonStyle(.plain)
+                            .font(ConchTypography.font(size: 11, weight: .medium))
+                            .foregroundStyle(ConchPalette.brandCyan)
+                        Spacer(minLength: 8)
+                    }
+                    .foregroundStyle(ConchPalette.textDim)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ConchPalette.raised)
+
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(height: 1)
+                } else if !audio.silentHosts.isEmpty {
+                    // Drawn from the PEER's document, and only while it is online.
+                    HStack(spacing: 10) {
+                        Image(systemName: "speaker.wave.2")
+                            .font(.system(size: 10.5, weight: .medium))
+                        Text("You hold audio · \(audio.silentHosts.joined(separator: ", ")) is silent")
+                            .font(ConchTypography.font(size: 11.5))
+                        Spacer(minLength: 8)
+                        Button("Give it back", action: audio.releaseAll)
+                            .buttonStyle(.plain)
+                            .font(ConchTypography.font(size: 11, weight: .medium))
+                            .foregroundStyle(ConchPalette.textDim)
+                    }
+                    .foregroundStyle(ConchPalette.brandCyan)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ConchPalette.raised)
+
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(height: 1)
+                } else if !audio.takeableHosts.isEmpty {
+                    // Both Macs local: the first transfer has to start somewhere.
+                    HStack(spacing: 10) {
+                        Image(systemName: "speaker.wave.1")
+                            .font(.system(size: 10.5, weight: .medium))
+                        Text("\(audio.takeableHosts.joined(separator: ", ")) speaks for itself —")
+                            .font(ConchTypography.font(size: 11.5))
+                        Button("Take it", action: audio.takeIt)
+                            .buttonStyle(.plain)
+                            .font(ConchTypography.font(size: 11, weight: .medium))
+                            .foregroundStyle(ConchPalette.brandCyan)
+                        Spacer(minLength: 8)
+                    }
+                    .foregroundStyle(ConchPalette.textDim)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ConchPalette.raised)
+
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(height: 1)
+                }
+                if let note = audio.message {
+                    Text(note)
+                        .font(ConchTypography.font(size: 11))
+                        .foregroundStyle(ConchPalette.statusWaiting)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 if store.pluginHintVisible {
@@ -466,6 +546,7 @@ private struct DashboardHeader: View {
                 isManual: isManual,
                 modeScope: modeScope,
                 isLogDrawerOpen: isLogDrawerOpen,
+                audioHeldElsewhere: state?.audioControl.isLocal == false,
                 actions: actions
             )
         }
@@ -483,6 +564,8 @@ private struct HeaderControls: View {
     let isManual: Bool
     let modeScope: String
     let isLogDrawerOpen: Bool
+    /// C9b Cut B: another Mac holds the audio, so auto/manual is not this window's to set.
+    let audioHeldElsewhere: Bool
     let actions: DashboardActions
 
     var body: some View {
@@ -491,6 +574,7 @@ private struct HeaderControls: View {
             ModeToggle(
                 isManual: isManual,
                 scope: modeScope,
+                isDisabled: audioHeldElsewhere,
                 action: actions.onPauseOrResume
             )
             HeaderButton(
@@ -612,6 +696,8 @@ private struct SessionLedger: View {
                                         onCancelRename: actions.onCancelRename,
                                         onDismiss: { actions.onDismiss(row) }
                                     )
+                                    // Folder-style: a subagent sits under its parent (C4).
+                                    .padding(.leading, row.parentSessionId == nil ? 0 : 18)
                                     .id(row.id)
                                 }
 
@@ -1436,6 +1522,41 @@ private struct ConversationPane: View {
     private var selectedRow: SessionRow? {
         guard let selectedSessionID else { return nil }
         return state?.rows.first { $0.id == selectedSessionID }
+            ?? subagentRow(id: selectedSessionID)
+    }
+
+    /// A subagent opened from the block that started it, when the daemon lists
+    /// no row for it (C4). The daemon publishes rows only for agents still in
+    /// flight, but the transcript of a finished one is still on disk and the
+    /// tool block still names it — so the pane builds the row from that block
+    /// and reads the transcript the way it reads any session's last reply.
+    private func subagentRow(id: SessionRow.ID) -> SessionRow? {
+        guard let conversations = state?.conversations else { return nil }
+        for conversation in conversations.values {
+            guard let item = conversation.items.first(where: { $0.tool?.subagent?.id == id }) else {
+                continue
+            }
+            return SessionRow(
+                id: id,
+                label: item.text.isEmpty ? id : item.text,
+                backend: "claude",
+                status: nil,
+                at: nil,
+                needsResponse: false,
+                detail: nil,
+                review: nil,
+                paused: false,
+                live: nil,
+                active: false,
+                snippet: nil,
+                transcriptPath: item.tool?.subagent?.transcriptPath,
+                voice: nil,
+                prioritized: false,
+                navSelected: false,
+                parentSessionId: conversation.sessionId
+            )
+        }
+        return nil
     }
 
     private var liveRow: SessionRow? {
@@ -1448,8 +1569,12 @@ private struct ConversationPane: View {
            let replied = state.rows.first(where: { $0.id == replyID }) {
             return replied
         }
+        // Never a subagent row: conch speaks for sessions, and a subagent's
+        // label is a task description, not an address (C4).
         if !state.live.label.isEmpty,
-           let labelled = state.rows.first(where: { $0.label == state.live.label }) {
+           let labelled = state.rows.first(where: {
+               $0.parentSessionId == nil && $0.label == state.live.label
+           }) {
             return labelled
         }
         return state.rows.first(where: \.active)
@@ -1609,7 +1734,17 @@ private struct ConversationPane: View {
                             },
                             artifact: row.review,
                             onOpenArtifact: { showsConversation = false },
-                            onFreeform: { composerFocusRequest += 1 }
+                            onFreeform: { composerFocusRequest += 1 },
+                            onOpenSubagent: { agent in
+                                // Its live row when the daemon lists one, else
+                                // a row built from the block — the same pane
+                                // either way, and the parent's row is the way
+                                // back (C4).
+                                if let target = state?.rows.first(where: { $0.id == agent.id })
+                                    ?? subagentRow(id: agent.id) {
+                                    onSelectSession(target)
+                                }
+                            }
                         )
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
@@ -1625,7 +1760,8 @@ private struct ConversationPane: View {
                     // Typing belongs where you are reading. Putting the composer
                     // here rather than in a separate panel means the reply you
                     // are answering is directly above the field you answer in.
-                    if let row = focusedRow {
+                    // A subagent has no pane of its own to type into (C4).
+                    if let row = focusedRow, row.parentSessionId == nil {
                         composer(for: row)
                     }
                 }
@@ -1711,6 +1847,21 @@ private struct ConversationPane: View {
     /// identity and context pressure remain visible without interaction.
     private func sessionBar(for row: SessionRow) -> some View {
         HStack(spacing: 8) {
+            // The way back from a subagent to the session it runs inside (C4).
+            if let parentID = row.parentSessionId,
+               let parent = state?.rows.first(where: { $0.id == parentID }) {
+                Button { onSelectSession(parent) } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(ConchPalette.textDim)
+                        .frame(width: 20, height: 26)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Back to \(parent.label)")
+                .accessibilityLabel("Back to \(parent.label)")
+            }
+
             // Click the title to raise the session's terminal (C10). It is a
             // button only when the daemon knows the process: a session conch
             // merely observes has nothing to raise and must not look clickable.
@@ -1732,26 +1883,30 @@ private struct ConversationPane: View {
                     .fixedSize(horizontal: true, vertical: false)
             }
 
-            Menu {
-                Button("What this session carries…") {
-                    inspectingSession = row
+            // A subagent is not a session: nothing to inspect, no process to
+            // close (C4).
+            if row.parentSessionId == nil {
+                Menu {
+                    Button("What this session carries…") {
+                        inspectingSession = row
+                    }
+                    Divider()
+                    Button("Close session…", role: .destructive) {
+                        sessionPendingClose = row
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(ConchPalette.textDim)
+                        .frame(width: 28, height: 26)
+                        .contentShape(Rectangle())
                 }
-                Divider()
-                Button("Close session…", role: .destructive) {
-                    sessionPendingClose = row
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(ConchPalette.textDim)
-                    .frame(width: 28, height: 26)
-                    .contentShape(Rectangle())
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Session actions")
+                .accessibilityLabel("Actions for \(row.label)")
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Session actions")
-            .accessibilityLabel("Actions for \(row.label)")
         }
         .padding(.leading, 14)
         .padding(.trailing, 8)
@@ -1806,6 +1961,7 @@ private struct ConversationPane: View {
             isWorking: row.status == .working,
             voiceState: voiceState(for: row),
             voiceLevel: voiceLevel(for: row),
+            audioHeldElsewhere: state?.audioControl.isLocal == false,
             onSend: { text in
                 store.send(.inject(sessionId: row.id, label: row.label, text: text))
             },
@@ -2812,11 +2968,13 @@ private struct AllSessionsRow: View {
 private struct ModeToggle: View {
     let isManual: Bool
     let scope: String
+    var isDisabled = false
     let action: () -> Void
 
     @State private var isHovered = false
 
     private var help: String {
+        if isDisabled { return "Controlled by another Mac — press Take it to switch modes here." }
         return isManual
             ? "Manual — conch stays quiet and waits. Switch \(scope) to auto."
             : "Auto — finished turns read aloud and the mic opens itself. Switch \(scope) to manual."
@@ -2848,6 +3006,8 @@ private struct ModeToggle: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.35 : 1)
         .onHover { isHovered = $0 }
         .help(help)
         .accessibilityLabel(help)
