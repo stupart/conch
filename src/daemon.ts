@@ -40,6 +40,7 @@ import {
   existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { loadDeviceId } from "./device-identity.ts";
+import { clearIdentity, writeIdentity } from "./daemon-identity.ts";
 import {
   AudioHolder,
   AudioOutbox,
@@ -4567,6 +4568,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // moment in which a grace timer could fire — the kill has to land now.
     const recorderDrain = killActiveRecorders({ immediate: !diagnosticsEnabled });
     void controlServer.close();
+    clearIdentity(); // the socket and the claim to it go together
     whisperServerClient.cancelWarmRequests();
     whisperSupervisor?.close();
     ttsSupervisor?.close();
@@ -4693,6 +4695,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // Losing the ownership race is not a crash for the supervisor to retry.
     process.exit(0);
   }
+  // Only the socket's owner may claim to be the daemon (A2): the Mac app reads
+  // this to say who started what it adopted, and to tell its own child apart.
+  writeIdentity();
   syncPhoneBridge();
   void rehydrateFromTranscripts();
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);

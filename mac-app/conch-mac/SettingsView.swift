@@ -589,27 +589,37 @@ private struct DaemonPowerRow: View {
 
             Spacer(minLength: 12)
 
-            // An adopted daemon belongs to a terminal or an old launchd agent.
-            // Offering a switch that cannot honestly turn it off would be worse
-            // than saying plainly where it came from.
-            if case .adopted = daemon.state {
-                Text("started elsewhere")
+            // An adopted daemon belongs to a terminal or a launchd agent. The
+            // switch stays — hiding it read as "the app lost its toggle" (A2) —
+            // but disabled, with the reason beside it, and when launchd is the
+            // owner, the one fix the app can make on its own (A3).
+            if daemon.adoptedIdentity?.startedBy == "launchd" {
+                Button("Let the app own it") { daemon.takeOverFromLaunchd() }
+                    .controlSize(.small)
+            }
+            if adopted {
+                Text("the app can't stop what it didn't start")
                     .font(ConchTypography.font(size: 11))
                     .foregroundStyle(ConchPalette.textDim)
-            } else {
-                Toggle("", isOn: Binding(
-                    get: { daemon.isOurs || daemon.state == .starting },
-                    set: { wanted in wanted ? daemon.start() : daemon.stop() }
-                ))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
             }
+            Toggle("", isOn: Binding(
+                get: { daemon.isOurs || daemon.state == .starting || adopted },
+                set: { wanted in wanted ? daemon.start() : daemon.stop() }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .disabled(adopted)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 11)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(ConchPalette.raised)
+    }
+
+    private var adopted: Bool {
+        if case .adopted = daemon.state { return true }
+        return false
     }
 
     private var indicator: Color {
@@ -624,10 +634,21 @@ private struct DaemonPowerRow: View {
     private var detail: String {
         switch daemon.state {
         case .running(let pid): return "Running · pid \(pid)"
-        case .adopted: return "Running — started outside this app"
+        case .adopted: return adoptedDetail
         case .starting: return "Starting…"
         case .stopped: return "Off — voice, hooks, and the phone are all asleep"
         case .failed(let reason): return reason
+        }
+    }
+
+    /// Who started it, from the daemon's identity file. The old wording is
+    /// kept only for a daemon too old to have written one.
+    private var adoptedDetail: String {
+        guard let identity = daemon.adoptedIdentity else { return "Running — started outside this app" }
+        switch identity.startedBy {
+        case "launchd": return "Running — started by the launchd service"
+        case "terminal": return "Running — started from a terminal (pid \(identity.pid))"
+        default: return "Running — started by another copy of this app (pid \(identity.pid))"
         }
     }
 }
