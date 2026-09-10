@@ -192,6 +192,13 @@ remaining features add control messages or queue behaviour, and all five would
 land in the same 5,615-line file — the one where two writers already collided
 during the parity pass.
 
+*Status 2026-09-10:* three cuts are merged — `SessionLedger` (#98 era),
+`EventQueue` (#118) and `control-server.ts` (#121) — and `daemon.ts` is 4,954
+lines. **Q** and **C** are done, so the five features above can land in their
+own files now. **V** (`voice-loop.ts`) and **R** (`session-registry.ts`) remain;
+C9b constrains R's completeness contract and V's audio arbitration, so the
+next cut is chosen by the C9b recon rather than by size.
+
 Specifically:
 
 - **C** (`control-server.ts`) is touched by B3, B4, B6, C1, C2, C3, D3, A2, A3,
