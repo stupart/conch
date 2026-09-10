@@ -181,7 +181,7 @@ Still worth doing separately (not blocking):
 | E5 | Behaviour rules for both apps, written down and made true. | UI |
 | E6 | Thread management — archive, pin, snooze. Dismiss and restore cover most of it. | R |
 | E7 | Live Activities on the phone. | UI |
-| E8 | One universal adapter shape, so a third backend is a table entry. | R |
+| E8 | ~~One universal adapter shape, so a third backend is a table entry.~~ — **done** (2026-09-11): `src/agent-adapter.ts` holds one `AgentAdapter` row per agent (`claudeAdapter`, `codexAdapter`, looked up by `adapterFor(backend)`); the backend branches in the generic modules went from 26 sites to 3 (daemon.ts 9→0, session-lifecycle.ts 6→0, provider-rename.ts 1→0, resumable.ts 2→0, sessions.ts 3→1, agent-capabilities.ts 5→2 — the three left are the two wire validators and `toInfo`, which R owns). A third backend is one union member and one row; `test/agent-adapter.test.ts` registers a fake one and drives label, resume, transcript, picker and capability reads through it. | R |
 
 ---
 

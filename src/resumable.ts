@@ -1,6 +1,7 @@
 import { existsSync, closeSync, openSync, readSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import { adapterFor, agentAdapters, type SessionBackend } from "./agent-adapter.ts";
 import { readClaudeTitle } from "./claude-title.ts";
 import {
   codexHomeDir,
@@ -40,18 +41,21 @@ const DEFAULT_LIMIT = 200;
 const CLAUDE_HEAD_LINES = 40;
 const CLAUDE_HEAD_BYTES = 256 * 1024;
 
-interface ClaudeCandidate {
-  backend: "claude";
+/** What one agent's history offers before the row is finished: enough to sort, and to resolve. */
+export interface ResumableCandidate {
+  backend: SessionBackend;
   sessionId: string;
-  path: string;
   updatedAt: number;
+}
+
+export interface ClaudeResumableCandidate extends ResumableCandidate {
+  backend: "claude";
+  path: string;
 }
 
 interface CodexCandidate extends ResumableSession {
   backend: "codex";
 }
-
-type Candidate = ClaudeCandidate | CodexCandidate;
 
 interface ClaudeHeadRead {
   session: ResumableSession | null;
@@ -79,7 +83,7 @@ function fallbackLabel(cwd: string, sessionId: string): string {
   return codexThreadLabel({ title: candidate }) ?? candidate;
 }
 
-function readCodexCandidates(
+export function readCodexCandidates(
   options: ReadResumableSessionsOptions,
 ): { candidates: CodexCandidate[]; complete: boolean } {
   const codexHome = codexHomeDir(options);
@@ -122,15 +126,15 @@ function readCodexCandidates(
   }
 }
 
-function readClaudeCandidates(
+export function readClaudeCandidates(
   options: ReadResumableSessionsOptions,
-): { candidates: ClaudeCandidate[]; complete: boolean } {
+): { candidates: ClaudeResumableCandidate[]; complete: boolean } {
   const claudeHome = claudeHomeDir(options);
   if (!claudeHome) return { candidates: [], complete: true };
   const projects = join(claudeHome, "projects");
   if (!existsSync(projects)) return { candidates: [], complete: true };
 
-  const candidates: ClaudeCandidate[] = [];
+  const candidates: ClaudeResumableCandidate[] = [];
   let complete = true;
   let projectDirs;
   try {
@@ -196,7 +200,7 @@ function userText(record: Record<string, unknown>): string | undefined {
   return contentText((record.message as { content?: unknown }).content);
 }
 
-function readClaudeSessionHead(candidate: ClaudeCandidate): ClaudeHeadRead {
+export function readClaudeSessionHead(candidate: ClaudeResumableCandidate): ClaudeHeadRead {
   let fd: number | undefined;
   try {
     fd = openSync(candidate.path, "r");
@@ -298,8 +302,8 @@ function matches(session: ResumableSession, query: string): boolean {
 }
 
 /**
- * Read resumable history from both backends without checking whether a session
- * is currently live. Claude files are statted first and opened lazily in
+ * Read resumable history from every agent in the table without checking whether
+ * a session is currently live. Claude files are statted first and opened lazily in
  * newest-first order, so an unfiltered 200-row request never parses all history.
  */
 export function readResumableSessionsResult(
@@ -307,23 +311,20 @@ export function readResumableSessionsResult(
 ): ResumableSessionsRead {
   const limit = normalizedLimit(options.limit);
   const query = options.query?.trim().toLocaleLowerCase() ?? "";
-  const codex = readCodexCandidates(options);
-  const claude = readClaudeCandidates(options);
-  const candidates: Candidate[] = [...codex.candidates, ...claude.candidates];
+  const reads = agentAdapters().map((adapter) => adapter.resumableCandidates(options));
+  const candidates = reads.flatMap((read) => read.candidates);
   candidates.sort((a, b) =>
     b.updatedAt - a.updatedAt
     || a.backend.localeCompare(b.backend)
     || a.sessionId.localeCompare(b.sessionId)
   );
 
-  let complete = codex.complete && claude.complete;
+  let complete = reads.every((read) => read.complete);
   const sessions: ResumableSession[] = [];
   let index = 0;
   for (; index < candidates.length && sessions.length < limit; index += 1) {
     const candidate = candidates[index]!;
-    const head = candidate.backend === "codex"
-      ? { session: candidate, complete: true }
-      : readClaudeSessionHead(candidate);
+    const head = adapterFor(candidate.backend).resolveResumable(candidate);
     if (!head.complete) complete = false;
     const { session } = head;
     if (!session) {

@@ -81,6 +81,7 @@ import {
 } from "./listen.ts";
 import type { RecorderHandle } from "./dictation-controller.ts";
 import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
+import { adapterFor, transcriptFormatFor } from "./agent-adapter.ts";
 import { injectProviderCommand, renameProviderSession } from "./provider-rename.ts";
 import { classify, classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
 import {
@@ -94,7 +95,7 @@ import {
   writeVersionCheck,
 } from "./version-check.ts";
 import { CONCH_VERSION } from "./version.ts";
-import { isCodexTranscriptPath, lastAssistantText, splitSentences, stripMarkdown, firstSentences, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
+import { lastAssistantText, splitSentences, stripMarkdown, firstSentences, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
 import { PhoneUploads } from "./phone-uploads.ts";
 import { CONCH_DATA } from "./config.ts";
 import {
@@ -113,7 +114,6 @@ import {
   TerminalQuestionController,
 } from "./terminal-question.ts";
 import {
-  codexFolderTrusted,
   codexHomeDir,
   detectCodexTurnEnds,
   isInterAgentEnvelope,
@@ -182,7 +182,6 @@ import {
   subagentSessions,
   type RegistrySnapshot,
   type SessionInfo,
-  claudeFolderTrusted,
 } from "./sessions.ts";
 import {
   SessionLedger,
@@ -631,7 +630,7 @@ export function shouldReportMissingCodexPid(
   session: Pick<SessionInfo, "sessionId" | "backend" | "pid">,
   reported: Set<string>,
 ): boolean {
-  if (session.backend === "codex" && !session.pid) {
+  if (adapterFor(session.backend).rowsMayLackPid && !session.pid) {
     if (reported.has(session.sessionId)) return false;
     reported.add(session.sessionId);
     return true;
@@ -1646,7 +1645,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (shouldReportMissingCodexPid(session, reportedMissingCodexPid)) {
         recordDaemonError(
           "session-routing",
-          "Codex row has no pid",
+          `${adapterFor(session.backend).displayName} row has no pid`,
           session.sessionId,
           { cwd: session.cwd ?? "", status: session.status ?? "unknown" },
         );
@@ -1733,11 +1732,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           || live.find((session) => session.sessionId === sessionId)?.transcriptPath
           || findTranscript(cfg.claudeDir, sessionId);
         if (!path) return Promise.resolve(null);
-        return readConversationTail(
-          path,
-          sessionId,
-          isCodexTranscriptPath(path) ? "codex" : "claude",
-        ).catch(() => null);
+        return readConversationTail(path, sessionId, transcriptFormatFor(path)).catch(() => null);
       })(),
     ]);
     // One per visible row. The reads are tail-only and bounded, and doing them
@@ -1749,11 +1744,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
           const path = session.transcriptPath
             ?? findTranscript(cfg.claudeDir, session.sessionId);
           if (!path) return null;
-          const read = await readConversationTail(
-            path,
-            session.sessionId,
-            isCodexTranscriptPath(path) ? "codex" : "claude",
-          ).catch(() => null);
+          const read = await readConversationTail(path, session.sessionId, transcriptFormatFor(path))
+            .catch(() => null);
           if (!read || read.order.length === 0) return null;
           return [
             session.sessionId,
@@ -1767,10 +1759,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         const path = session.transcriptPath
           ?? findTranscript(cfg.claudeDir, session.sessionId);
         if (!path) return null;
-        const context = await readSessionContextUsage(
-          path,
-          isCodexTranscriptPath(path) ? "codex" : "claude",
-        ).catch(() => null);
+        const context = await readSessionContextUsage(path, transcriptFormatFor(path)).catch(() => null);
         return context ? [session.sessionId, context] as const : null;
       }))).filter((entry): entry is NonNullable<typeof entry> => entry !== null),
     );
@@ -2544,7 +2533,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         const conversation = await readConversationTail(
           event.transcriptPath,
           event.sessionId,
-          isCodexTranscriptPath(event.transcriptPath) ? "codex" : "claude",
+          transcriptFormatFor(event.transcriptPath),
         );
         const reply = choiceReplyForConversation(text, conversation);
         if (reply !== text) log(`matched spoken choice -> ${JSON.stringify(reply)}`);
@@ -4127,11 +4116,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
     if (!session) throw new Error("session is not live");
     if (!session.pid) {
-      if (session.backend === "codex") {
+      const agent = adapterFor(session.backend);
+      if (agent.rowsMayLackPid) {
         reportedMissingCodexPid.add(session.sessionId);
         recordDaemonError(
           "session-close",
-          "Codex row has no pid",
+          `${agent.displayName} row has no pid`,
           session.sessionId,
           { cwd: session.cwd ?? "", status: session.status ?? "unknown" },
         );
@@ -4182,13 +4172,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
       log(`renamed "${target.label}" -> "${renamed.label}"${
         renamed.voiceMigrated ? " (voice pin migrated)" : ""
       }`);
+      const agent = adapterFor(target.backend).displayName;
       void renameProviderSession(cfg, target, renamed.label).then((provider) => {
         if (provider.kind === "delivered") {
-          log(`synced Claude Code label via ${provider.via}`);
+          log(`synced ${agent} label via ${provider.via}`);
         } else if (provider.kind === "unroutable") {
           recordDaemonError(
             "session-rename",
-            `Conch renamed the session, but Claude Code did not: ${provider.reason}`,
+            `Conch renamed the session, but ${agent} did not: ${provider.reason}`,
             target.sessionId,
             { label: renamed.label, backend: target.backend ?? "claude" },
           );
@@ -4196,7 +4187,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }).catch((error) => {
         recordDaemonError(
           "session-rename",
-          `Conch renamed the session, but Claude Code did not: ${
+          `Conch renamed the session, but ${agent} did not: ${
             error instanceof Error ? error.message : String(error)
           }`,
           target.sessionId,
@@ -4363,7 +4354,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         ...(process.env.CONCH_CONFIG_DIR === undefined
           ? {}
           : { configDir: process.env.CONCH_CONFIG_DIR }),
-        ...(message.backend !== "claude" || process.env.CLAUDE_CONFIG_DIR === undefined
+        ...(process.env.CLAUDE_CONFIG_DIR === undefined
           ? {}
           : { claudeHome: cfg.claudeDir }),
       });
@@ -4375,8 +4366,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       bypassPermissions: cfg.bypassPermissions,
       ...(message.trustFolder === true ? { trustFolder: true as const } : {}),
     }),
-    folderTrusted: (cwd) => claudeFolderTrusted(cwd),
-    codexFolderTrusted: (cwd) => codexFolderTrusted(cwd),
+    folderTrusted: adapterFor("claude").folderTrusted,
+    codexFolderTrusted: adapterFor("codex").folderTrusted,
     close: closeLiveSession,
     report: (message) => {
       appendConchError(

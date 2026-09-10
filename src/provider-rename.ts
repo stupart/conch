@@ -1,3 +1,4 @@
+import { adapterFor } from "./agent-adapter.ts";
 import type { Config } from "./config.ts";
 import {
   injectText,
@@ -33,8 +34,9 @@ export async function renameProviderSession(
   label: string,
   inject: ProviderRenameInjector = injectText,
 ): Promise<ProviderRenameResult> {
-  if (target.backend === "codex") return { kind: "unsupported" };
-  return injectProviderCommand(cfg, target, `/rename ${label}`, inject);
+  const command = adapterFor(target.backend).renameCommand(label);
+  if (command === null) return { kind: "unsupported" };
+  return injectProviderCommand(cfg, target, command, inject);
 }
 
 /**

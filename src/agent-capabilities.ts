@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { adapterFor, agentAdapters } from "./agent-adapter.ts";
 import { codexThreadDbPaths, openReadOnly } from "./codex-threads.ts";
 
 export type AgentCapabilityBackend = "claude" | "codex";
@@ -373,7 +374,7 @@ function usageEvidence(usage: UsageRecord | undefined): AgentCapabilityEvidence 
   };
 }
 
-class Collector {
+export class Collector {
   readonly entities: AgentCapabilityEntity[] = [];
   readonly diagnostics: AgentCapabilityDiagnostic[] = [];
   readonly ids = new Set<string>();
@@ -494,12 +495,14 @@ function redirectedConfigDir(options: ReadAgentCapabilitiesOptions): string | un
   return options.configDir ?? process.env.CONCH_CONFIG_DIR;
 }
 
-function homes(options: ReadAgentCapabilitiesOptions): {
+export interface AgentCapabilityHomes {
   claudeHome: string | null;
   claudeStatePath: string | null;
   codexHome: string | null;
   agentsHome: string | null;
-} {
+}
+
+function homes(options: ReadAgentCapabilitiesOptions): AgentCapabilityHomes {
   const redirected = redirectedConfigDir(options);
   const claudeHome = options.claudeHome
     ?? (redirected ? null : process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"));
@@ -934,7 +937,7 @@ function addMcpServer(name: string, rawDefinition: unknown, context: McpReadCont
   const explicitlyEnabled = booleanValue(definition.enabled);
   const enabled = context.parentEnabled === false
     ? false
-    : explicitlyEnabled ?? context.parentEnabled ?? (context.backend === "codex" ? true : null);
+    : explicitlyEnabled ?? context.parentEnabled ?? adapterFor(context.backend).mcpEnabledDefault;
   let unavailableDetail = context.policyUnavailable ?? null;
   if (!unavailableDetail && context.requiresProjectTrust && context.projectTrusted !== true) {
     unavailableDetail = "Codex ignores project-scoped executable configuration until this project is trusted.";
@@ -1052,11 +1055,11 @@ function addMcpServer(name: string, rawDefinition: unknown, context: McpReadCont
   return true;
 }
 
+/** The agent's own manifest directory first, then every other agent's. */
 function manifestAt(root: string, backend: AgentCapabilityBackend): string | null {
-  const candidates = backend === "claude"
-    ? [join(root, ".claude-plugin", "plugin.json"), join(root, ".codex-plugin", "plugin.json")]
-    : [join(root, ".codex-plugin", "plugin.json"), join(root, ".claude-plugin", "plugin.json")];
-  return candidates.find((path) => existsSync(path)) ?? null;
+  const own = adapterFor(backend).pluginManifestDir;
+  const dirs = [own, ...agentAdapters().map((adapter) => adapter.pluginManifestDir).filter((dir) => dir !== own)];
+  return dirs.map((dir) => join(root, dir, "plugin.json")).find((path) => existsSync(path)) ?? null;
 }
 
 function manifestDisplayName(manifest: JsonRecord | null, fallback: string): string {
@@ -1084,7 +1087,7 @@ function claudeProjectDecision(
   return "unspecified";
 }
 
-function readClaude(
+export function readClaude(
   options: ReadAgentCapabilitiesOptions,
   collector: Collector,
   claudeHome: string,
@@ -1541,7 +1544,7 @@ function codexMcpRequirementPolicy(
   return {};
 }
 
-function readCodex(
+export function readCodex(
   options: ReadAgentCapabilitiesOptions,
   collector: Collector,
   codexHome: string,
@@ -1835,7 +1838,7 @@ function threadConfigurationString(
 }
 
 /** Read only the non-secret configuration receipt Codex persisted for one thread. */
-function readCodexThreadConfiguration(
+export function readCodexThreadConfiguration(
   options: ReadAgentCapabilitiesOptions,
   collector: Collector,
   codexHome: string,
@@ -2074,21 +2077,8 @@ export function readAgentCapabilities(options: ReadAgentCapabilitiesOptions): Ag
   const cwd = resolve(options.cwd);
   const resolvedOptions = { ...options, cwd };
   const resolvedHomes = homes(resolvedOptions);
-  let projectTrust: AgentProjectTrust | undefined;
-  let threadConfiguration: AgentThreadConfiguration | undefined;
-  if (options.backend === "claude") {
-    if (resolvedHomes.claudeHome && resolvedHomes.claudeStatePath) {
-      projectTrust = readClaude(
-        resolvedOptions,
-        collector,
-        resolvedHomes.claudeHome,
-        resolvedHomes.claudeStatePath,
-      );
-    }
-  } else if (resolvedHomes.codexHome) {
-    projectTrust = readCodex(resolvedOptions, collector, resolvedHomes.codexHome, resolvedHomes.agentsHome);
-    threadConfiguration = readCodexThreadConfiguration(resolvedOptions, collector, resolvedHomes.codexHome);
-  }
+  const { projectTrust, threadConfiguration } = adapterFor(options.backend)
+    .readCapabilities(resolvedOptions, collector, resolvedHomes);
   applyObservations(options.backend, options.observations ?? [], collector);
   collector.entities.sort((a, b) =>
     KIND_ORDER[a.kind] - KIND_ORDER[b.kind]
