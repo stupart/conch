@@ -7,7 +7,6 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
-  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -15,8 +14,8 @@ import {
   migrateVoiceOverride,
   type VoiceOverrideOptions,
 } from "./speak.ts";
+import { adapterFor, agentAdapters } from "./agent-adapter.ts";
 import {
-  findCodexTranscript,
   readCodexSessions,
   type CodexSessionRegistryOptions,
 } from "./codex-sessions.ts";
@@ -24,7 +23,6 @@ import { readCodexThreads } from "./codex-threads.ts";
 import { liveTranscriptPath, readClaudeTitles } from "./claude-title.ts";
 import { parseWindowKey, windowKey, windowPidFromAncestry } from "./window-key.ts";
 import { HELP_SESSION_LABEL, helpSessionDir } from "./help-session.ts";
-import { liveBackgroundAgents, subagentRowId } from "./agent-activity.ts";
 
 const LABELS_FILE = join(homedir(), ".config/conch/labels.json");
 const MAX_SESSION_LABEL_LENGTH = 40;
@@ -555,20 +553,8 @@ export function subagentSessions(
   parent: SessionInfo,
   transcriptPath: string | undefined,
 ): SessionInfo[] {
-  if (!transcriptPath || parent.backend === "codex" || parent.parentSessionId) return [];
-  return liveBackgroundAgents(transcriptPath).map((agent) => ({
-    sessionId: subagentRowId(agent.agentId),
-    parentSessionId: parent.sessionId,
-    backend: "claude" as const,
-    name: agent.description ?? `agent ${agent.agentId.slice(0, 7)}`,
-    cwd: parent.cwd,
-    // In flight by construction; a finished one is not listed at all.
-    status: "busy",
-    ...(agent.startedAt !== undefined
-      ? { startedAt: agent.startedAt, statusUpdatedAt: agent.startedAt }
-      : {}),
-    transcriptPath: agent.transcriptPath,
-  }));
+  if (!transcriptPath || parent.parentSessionId) return [];
+  return adapterFor(parent.backend).subagentSessions(parent, transcriptPath);
 }
 
 /** All engageable (top-level interactive CLI) live sessions from the registry. */
@@ -618,7 +604,7 @@ export async function findSessionBySpokenName(
     : findSessionByName(claudeDir, collapsed, options);
 }
 
-/** Locate a Claude project transcript, then fall back to Codex's owned registry path. */
+/** Each agent's own lookup, in table order: Claude's project directory, then Codex's registry. */
 export function findTranscript(
   claudeDir: string,
   sessionId: string,
@@ -628,15 +614,9 @@ export function findTranscript(
   // still asks for the session's file. Stripped here rather than at the ten
   // call sites, all of which mean the same thing by it.
   sessionId = parseWindowKey(sessionId).sessionId;
-  const projects = join(claudeDir, "projects");
-  try {
-    for (const dir of readdirSync(projects)) {
-      const candidate = join(projects, dir, `${sessionId}.jsonl`);
-      try {
-        statSync(candidate);
-        return candidate;
-      } catch {}
-    }
-  } catch {}
-  return findCodexTranscript(sessionId, options);
+  for (const adapter of agentAdapters()) {
+    const path = adapter.findTranscript(sessionId, { claudeDir, ...options });
+    if (path) return path;
+  }
+  return undefined;
 }

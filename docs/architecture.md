@@ -125,6 +125,27 @@ is never engageable: no pid, no pane, never the active session. A finished
 subagent has no row, but the block that started it still names it, so the Mac
 opens its transcript from there.
 
+**Where the two agents differ, the difference is a table row (E8).**
+`src/agent-adapter.ts` holds one `AgentAdapter` per agent: the executable and
+how it spells resume, the flag that skips its permission prompts, whether trust
+can be passed at launch, its rename command, which transcript reader its files
+need, how its subagents and resumable history are read, where its plugin
+manifest sits, and its half of the capability inventory. The generic modules —
+`session-lifecycle.ts`, `provider-rename.ts`, `sessions.ts`, `resumable.ts`,
+`agent-capabilities.ts`, and the daemon's transcript and row paths — ask
+`adapterFor(backend)` instead of branching, and where an agent has no
+implementation the row returns exactly what the branch used to (`null`, `""`,
+`[]`) rather than inventing parity. A third backend is one union member and one
+row: the table is typed over the closed union, so the typecheck refuses one
+without the other, and `test/agent-adapter.test.ts` registers a fake agent to
+prove the generic paths need nothing else. What stays outside the table is
+deliberate: the registry read itself (`registrySnapshot`, which is R's seam),
+the parser dispatch in `conversation.ts`, `snippet.ts` and `context-meter.ts`
+that keys on transcript *format* rather than agent, the wire validators, the
+two hook entrypoints (Claude pushes, Codex is polled — the asymmetry above), and
+the two-question trust flow in `control-server.ts`, whose `session-needs-trust`
+reply is typed to Codex on the wire.
+
 ## Async, and where it is honest
 
 Bun, single-threaded, `async`/`await` throughout. Everything expensive is a

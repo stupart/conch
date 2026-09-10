@@ -1,8 +1,9 @@
 import { homedir } from "node:os";
 import { statSync } from "node:fs";
+import { adapterFor, shellQuote, type SessionBackend } from "./agent-adapter.ts";
 import { ensureHelpSession, helpSessionDir } from "./help-session.ts";
 
-export type SessionBackend = "claude" | "codex";
+export type { SessionBackend };
 
 export interface StartSessionRequest {
   backend: SessionBackend;
@@ -51,14 +52,11 @@ export interface SessionLifecycleDependencies {
   exitPollIntervalMs?: number;
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`;
-}
-
 /** Extra launch constraints for a cloud id passed as a CLI option's value. */
 export function teleportRequestError(request: StartSessionRequest): string | undefined {
   if (request.teleportSessionId === undefined) return;
-  if (request.backend === "codex") return "Codex has no teleport";
+  const adapter = adapterFor(request.backend);
+  if (!adapter.teleportArgs) return `${adapter.displayName} has no teleport`;
   if (request.resumeSessionId !== undefined) return "resumeSessionId and teleportSessionId are mutually exclusive";
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$/.test(request.teleportSessionId.trim())) {
     return "teleport session id must contain only letters, numbers, underscores or hyphens, and start with a letter or number";
@@ -72,38 +70,19 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
   const error = teleportRequestError(request);
   if (error) throw new Error(error);
   const cwd = request.cwd?.trim() || homedir();
-  const executable = request.backend === "claude" ? "claude" : "codex";
+  const adapter = adapterFor(request.backend);
   const resume = request.resumeSessionId?.trim();
   const teleport = request.teleportSessionId?.trim();
-  const args = teleport
-    ? ` --teleport ${shellQuote(teleport)}`
+  const args = teleport && adapter.teleportArgs
+    ? adapter.teleportArgs(shellQuote(teleport))
     : resume
-    ? request.backend === "claude"
-      ? ` --resume ${shellQuote(resume)}`
-      : ` resume ${shellQuote(resume)}`
+    ? adapter.resumeArgs(shellQuote(resume))
     : "";
   // Before the subcommand's own arguments, not after: `codex resume <id>` takes
   // the id as a positional, and a global flag trailing it reads as a second one.
-  const bypass = request.bypassPermissions ? ` ${bypassFlag(request.backend)}` : "";
-  // Only Codex has this: Claude Code's trust decision cannot be supplied on the
-  // command line, which is why conch checks it beforehand and explains instead.
-  const trust = request.trustFolder && request.backend === "codex"
-    ? ` -c ${shellQuote(`projects."${cwd}".trust_level="trusted"`)}`
-    : "";
-  return `cd -- ${shellQuote(cwd)} && exec ${executable}${bypass}${trust}${args}`;
-}
-
-/**
- * The verified flag for each agent, spelled the way each agent spells it.
- *
- * Read from `--help` on the installed binaries rather than from memory: Codex
- * has renamed this more than once, and there is no `--yolo` alias in the
- * current build despite the name people use for it.
- */
-function bypassFlag(backend: SessionBackend): string {
-  return backend === "claude"
-    ? "--dangerously-skip-permissions"
-    : "--dangerously-bypass-approvals-and-sandbox";
+  const bypass = request.bypassPermissions ? ` ${adapter.bypassPermissionsFlag}` : "";
+  const trust = request.trustFolder ? adapter.trustFolderArgs(cwd) : "";
+  return `cd -- ${shellQuote(cwd)} && exec ${adapter.executable}${bypass}${trust}${args}`;
 }
 
 function defaultSpawn(argv: string[]): SessionLifecycleProcess {
@@ -145,7 +124,7 @@ export async function startTerminalSession(
 ): Promise<void> {
   const command = terminalSessionCommand(request);
   const spawn = dependencies.spawn ?? defaultSpawn;
-  const executable = request.backend === "claude" ? "claude" : "codex";
+  const { executable } = adapterFor(request.backend);
   const which = dependencies.which ?? ((name: string) => Bun.which(name));
   if (!which(executable)) throw new Error(`${executable} is not installed or is not on PATH`);
   const cwd = request.cwd?.trim() || homedir();
