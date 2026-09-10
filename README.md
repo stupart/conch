@@ -58,7 +58,7 @@ house.
 
 ## Install
 
-macOS. Two commands:
+macOS. Two commands. (Where each path goes quiet, and what is left to fix: [docs/install-journeys.md](docs/install-journeys.md).)
 
 ```bash
 brew install stupart/tap/conch     # binary + sox/tmux/whisper-cpp
