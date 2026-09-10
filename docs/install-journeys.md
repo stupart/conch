@@ -42,7 +42,7 @@ them on the new laptop on 2026-09-10; the ones already fixed say so.
 |---|---|---|---|
 | 1 | Settings → Phone app | `phone` defaults off, so the first thing a new machine shows is an error — and until today the tab reported it as "Could not read the daemon's pairing reply" | **fixed** in part (A15): the tab shows the daemon's own words and the exact `conch set phone true`. **Open, Tyler's call**: default `phone` on, or turn it on when the tab is opened |
 | 2 | scan the QR | the QR only exists with a relay, and `phone-relay-url` is empty on a fresh machine; the Worker URL lived only in the old Mac's settings | **fixed** in part: the tab names the setting and the command. **Open, Tyler's call**: ship the deployed relay URL as the default so a fresh install gets a QR with no setup |
-| 3 | the phone connects | the pairing is one-per-phone; pairing a new Mac silently un-pairs the old | documented in `PairingStore`; open: say it on the phone before replacing |
+| 3 | the phone connects | the pairing is one-per-phone; pairing a new Mac silently un-pairs the old | **fixed**: before saving a different Mac the phone asks "Replace <current host or relay endpoint>?" with Replace / Keep current; the same Mac with a fresh code needs no prompt. Still one pairing per phone — holding two Macs is the two-Mac work (roadmap C9), not this |
 
 ## Two Macs: how to try it
 

@@ -10,6 +10,9 @@ struct PairingView: View {
     @State private var checking = false
     @State private var problem: String?
     @State private var scanningRelay = false
+    /// A pairing that would replace a different Mac's, held until the person
+    /// says so. The store keeps exactly one and `save` overwrites in silence.
+    @State private var replacement: (current: BridgeClient.Pairing, candidate: BridgeClient.Pairing)?
     @FocusState private var focused: Field?
 
     private enum Field { case host, code }
@@ -162,6 +165,31 @@ struct PairingView: View {
             }
             .ignoresSafeArea()
         }
+        .confirmationDialog(
+            Text("Replace \(replacement?.current.displayHost ?? "the current Mac")?"),
+            isPresented: Binding(
+                get: { replacement != nil },
+                set: { if !$0 { replacement = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: replacement
+        ) { pending in
+            Button("Replace", role: .destructive) { onPaired(pending.candidate) }
+            Button("Keep current", role: .cancel) {}
+        } message: { pending in
+            Text("This phone pairs with one Mac at a time. "
+                 + "Replacing forgets \(pending.current.displayHost).")
+        }
+    }
+
+    /// The one door to `onPaired`. A stored pairing for a different Mac stops
+    /// here and asks; the same Mac with a fresh code walks straight through.
+    private func commit(_ candidate: BridgeClient.Pairing) {
+        if let current = PairingStore.load(), current.identity != candidate.identity {
+            replacement = (current, candidate)
+        } else {
+            onPaired(candidate)
+        }
     }
 
     private func connect() {
@@ -174,7 +202,7 @@ struct PairingView: View {
             if looksLikeRelayCode {
                 do {
                     let relay = try RelayPairingPayload.decodePairingCode(trimmedCode)
-                    onPaired(.relay(relay))
+                    commit(.relay(relay))
                 } catch {
                     problem = error.localizedDescription
                 }
@@ -185,7 +213,7 @@ struct PairingView: View {
             if looksLikeShortCode {
                 switch await redeemPairingCode(host: trimmedHost, code: trimmedCode) {
                 case let .token(token):
-                    onPaired(.lan(host: trimmedHost, token: token))
+                    commit(.lan(host: trimmedHost, token: token))
                 case let .failed(reason):
                     problem = reason
                 }
@@ -197,7 +225,7 @@ struct PairingView: View {
             let candidate = BridgeClient.Pairing.lan(host: trimmedHost, token: trimmedCode)
             switch await probePairing(candidate) {
             case .ok:
-                onPaired(candidate)
+                commit(candidate)
             case .badCode:
                 problem = "That code didn't match — run conch pair on the Mac for a new one."
             case let .unreachable(reason):
