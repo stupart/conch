@@ -232,6 +232,7 @@ enum ConchSessionCommand: String, Encodable, Sendable {
     case rename
     case dismiss
     case restore
+    case reveal
 }
 
 struct ConchSessionCommandRequest: Encodable, Sendable {

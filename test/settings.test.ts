@@ -387,7 +387,7 @@ describe("control-message validation", () => {
     }
   });
 
-  test("recognizes and canonicalizes the six closed session-command shapes", () => {
+  test("recognizes and canonicalizes the seven closed session-command shapes", () => {
     expect(SESSION_COMMANDS).toEqual([
       "rename",
       "set-voice",
@@ -395,6 +395,7 @@ describe("control-message validation", () => {
       "prioritize",
       "dismiss",
       "restore",
+      "reveal",
     ]);
 
     const cases: Array<{ input: unknown; output: SessionControlMessage }> = [
@@ -421,6 +422,10 @@ describe("control-message validation", () => {
       {
         input: { kind: "session-command", sessionId: "session-1", command: "restore" },
         output: { kind: "session-command", sessionId: "session-1", command: "restore" },
+      },
+      {
+        input: { kind: "session-command", sessionId: "session-1", command: "reveal" },
+        output: { kind: "session-command", sessionId: "session-1", command: "reveal" },
       },
     ];
 

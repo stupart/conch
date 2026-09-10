@@ -33,6 +33,8 @@ export interface SessionActionsController {
   close(target: Readonly<SessionActionsTarget>): Promise<boolean | void>;
   /** Restore a previously dismissed session to the active dashboard. */
   restore(sessionId: string): boolean | void;
+  /** Raise the session's terminal window without taking focus. Resolves false when nothing was raised. */
+  reveal?(target: Readonly<SessionActionsTarget>): Promise<boolean>;
 }
 
 export type SessionActionMutation =
@@ -42,6 +44,7 @@ export type SessionActionMutation =
   | { command: "prioritize"; value: boolean }
   | { command: "dismiss" }
   | { command: "close" }
+  | { command: "reveal" }
   | { command: "restore" };
 
 /** One closed command-to-controller adapter shared by terminal UI and socket IPC. */
@@ -65,6 +68,8 @@ export function invokeSessionAction(
       return controller.close({ ...target });
     case "restore":
       return controller.restore(target.sessionId);
+    case "reveal":
+      return controller.reveal?.({ ...target }) ?? false;
   }
 }
 
