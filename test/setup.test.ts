@@ -1,12 +1,17 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "../src/config.ts";
 import {
+  HOOKS_WIRED_LINE,
+  downloadModel,
+  formatBytes,
+  formatProgress,
   hardDependencyInstallCommand,
   missingHardDependencies,
   parseSetupArgs,
+  progressReporter,
   renderHardDependencyFailure,
   renderSetupReady,
   runInstall,
@@ -224,5 +229,156 @@ describe("one-command setup", () => {
     expect(proc.exitCode).toBe(1);
     expect(proc.stderr.toString()).toContain("unknown setup option: --mystery");
     expect(proc.stdout.toString()).not.toContain("conch setup — getting");
+  });
+});
+
+// Path 1 of docs/install-journeys.md: the three places `conch setup` went
+// quiet — a download that looked hung, hooks that open sessions never reloaded,
+// and a manual mode persisted from an old install that nobody was told about.
+describe("setup says what it does", () => {
+  test("sizes read the way a person says them, and an unknown size is said rather than guessed", () => {
+    expect(formatBytes(885_098)).toBe("885 KB");
+    expect(formatBytes(574_041_195)).toBe("574 MB");
+    expect(formatBytes(1_620_000_000)).toBe("1.62 GB");
+    expect(formatProgress(120_000_000, 574_041_195)).toBe("120 MB / 574 MB (20%)");
+    expect(formatProgress(574_041_195, 574_041_195)).toBe("574 MB / 574 MB (100%)");
+    expect(formatProgress(120_000_000)).toBe("120 MB / size unknown");
+    expect(formatProgress(120_000_000, 0)).toBe("120 MB / size unknown");
+  });
+
+  test("progress redraws in place on a terminal and prints once per 10% when piped", () => {
+    const tty: string[] = [];
+    const redraw = progressReporter(10_000_000, { write: (text) => tty.push(text), tty: true });
+    for (let done = 0; done <= 10_000_000; done += 1_000_000) redraw(done);
+    expect(tty).toHaveLength(11);
+    expect(tty.every((text) => text.startsWith("\r"))).toBe(true);
+    redraw(10_000_000); // same text again: nothing to redraw
+    expect(tty).toHaveLength(11);
+
+    const piped: string[] = [];
+    const print = progressReporter(10_000_000, { write: (text) => piped.push(text), tty: false });
+    for (let done = 0; done <= 10_000_000; done += 10_000) print(done);
+    expect(piped).toHaveLength(11);
+    expect(piped[0]).toBe("   0 KB / 10 MB (0%)\n");
+    expect(piped[10]).toBe("   10 MB / 10 MB (100%)\n");
+    expect(piped.some((text) => text.includes("\r"))).toBe(false);
+
+    const unknown: string[] = [];
+    const every100 = progressReporter(undefined, { write: (text) => unknown.push(text), tty: false });
+    for (let done = 0; done <= 250_000_000; done += 1_000_000) every100(done);
+    expect(unknown).toEqual([
+      "   0 KB / size unknown\n",
+      "   100 MB / size unknown\n",
+      "   200 MB / size unknown\n",
+    ]);
+  });
+
+  test("a download says size and destination before the first byte, then the bytes, and refuses an error page", async () => {
+    const body = new Uint8Array(2_000_000);
+    const server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const path = new URL(req.url).pathname;
+        if (path === "/sized") return new Response(body);
+        if (path === "/chunked") {
+          return new Response(new ReadableStream({
+            start(controller) {
+              controller.enqueue(body.subarray(0, 1_000_000));
+              controller.enqueue(body.subarray(1_000_000));
+              controller.close();
+            },
+          }));
+        }
+        return new Response("<html>not found</html>", { status: 404 });
+      },
+    });
+    const root = mkdtempSync(join(tmpdir(), "conch-setup-download-"));
+    const lines: string[] = [];
+    const out = { write: (text: string) => void lines.push(text), tty: false };
+    try {
+      const dest = join(root, "model.bin");
+      await downloadModel({ url: `${server.url}sized`, label: "test model", minBytes: 1_000 }, dest, out);
+      expect(lines[0]).toBe(`⬇️  test model: 2 MB → ${dest}\n`);
+      expect(lines.at(-1)).toBe("   2 MB / 2 MB (100%)\n");
+      expect(lines.length).toBeLessThanOrEqual(12);
+      expect(readFileSync(dest).length).toBe(2_000_000);
+      expect(existsSync(`${dest}.part`)).toBe(false);
+
+      lines.length = 0;
+      const chunked = join(root, "chunked.bin");
+      await downloadModel({ url: `${server.url}chunked`, label: "chunked model", minBytes: 1_000 }, chunked, out);
+      expect(lines[0]).toBe(`⬇️  chunked model: size unknown → ${chunked}\n`);
+      expect(lines).toHaveLength(2); // one progress line per 100 MB when the size is unknown
+      expect(lines[1]).toMatch(/^ {3}\d+ [KM]B \/ size unknown\n$/);
+      expect(readFileSync(chunked).length).toBe(2_000_000);
+
+      const small = join(root, "small.bin");
+      await expect(downloadModel({ url: `${server.url}sized`, label: "x", minBytes: 5_000_000 }, small, out))
+        .rejects.toThrow("too small");
+      expect(existsSync(`${small}.part`)).toBe(false);
+      expect(existsSync(small)).toBe(false);
+
+      await expect(downloadModel({ url: `${server.url}missing`, label: "x", minBytes: 1 }, join(root, "missing.bin"), out))
+        .rejects.toThrow("HTTP 404");
+    } finally {
+      server.stop(true);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("says the /hooks step for open sessions only when hooks were actually written", async () => {
+    const root = mkdtempSync(join(tmpdir(), "conch-setup-hooks-line-"));
+    const claudeDir = join(root, ".claude");
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    const said = () => log.mock.calls.some((args) => args.join(" ").includes(HOOKS_WIRED_LINE));
+    try {
+      expect(HOOKS_WIRED_LINE).toContain("already open needs `/hooks` typed once");
+      expect(HOOKS_WIRED_LINE).toContain("opened from now on pick conch up automatically");
+
+      await runInstall({ claudeDir } as Config);
+      expect(said()).toBe(true);
+
+      log.mockClear();
+      await runInstall({ claudeDir } as Config); // already wired: open sessions have nothing to reload
+      expect(said()).toBe(false);
+      expect(log.mock.calls.some((args) => args.join(" ").includes("Nothing to do."))).toBe(true);
+    } finally {
+      log.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("ready output says which mode the daemon starts in and the one way to flip it", () => {
+    const manual = renderSetupReady(
+      { service: "installed", plugin: "installed" },
+      { color: false, paused: true },
+    );
+    expect(manual).toContain("MODE — manual (persisted from a previous install)");
+    expect(manual).toContain("`conch resume`");
+    expect(manual).not.toContain("MODE — auto");
+
+    const auto = renderSetupReady(
+      { service: "installed", plugin: "installed" },
+      { color: false, paused: false },
+    );
+    expect(auto).toContain("MODE — auto: conch speaks after every finished turn");
+    expect(auto).toContain("`conch pause`");
+    expect(auto).not.toContain("persisted");
+
+    // No state passed reads as auto, the daemon's own default.
+    expect(renderSetupReady({ service: "skipped", plugin: "skipped" }, { color: false }))
+      .toContain("MODE — auto");
+  });
+
+  test("setup feeds the daemon's persisted mode into the banner and streams models through the downloader", () => {
+    // `runSetup` is the one function here no test can execute (it installs for
+    // real), so its two wirings are guarded as text: marker first, then placement.
+    const src = readFileSync(join(import.meta.dir, "..", "src", "install.ts"), "utf8");
+    expect(src).toContain("readState().paused");
+    expect(src).toContain("renderSetupReady(completion, { codexNeedsInstall, paused: readState().paused })");
+    const download = "await downloadModel(m, join(modelsDir, m.file))";
+    expect(src).toContain(download);
+    expect(src.slice(src.indexOf(download), src.indexOf(download) + 300))
+      .toContain("Check your connection and re-run");
   });
 });
