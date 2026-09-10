@@ -96,7 +96,9 @@ struct ConchPairingView: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(ConchPalette.textPrimary)
             Text("Your phone can only reach this Mac on the same Wi-Fi. To use conch "
-                 + "from anywhere, deploy the relay and set phone-relay-url in Advanced.")
+                 + "from anywhere, deploy the relay (relay/README.md) and set "
+                 + "phone-relay-url in Settings, or run: "
+                 + "conch set phone-relay-url https://<worker>.workers.dev")
                 .font(.callout)
                 .foregroundStyle(ConchPalette.textDim)
                 .fixedSize(horizontal: false, vertical: true)
@@ -135,6 +137,13 @@ struct ConchRelayPairing: Decodable, Equatable {
     let endpoint: String
     let roomId: String
     let secret: String
+}
+
+/// What the daemon sends instead of a pairing when it cannot open one —
+/// today, `phone` being off. Its text is the remedy, so it is shown as is.
+struct ConchSessionError: Decodable {
+    let kind: String
+    let error: String
 }
 
 struct ConchPairingOpen: Decodable, Equatable {
@@ -208,6 +217,15 @@ final class ConchPairingStore: ObservableObject {
                 pairing = opened
                 qrImage = opened.relay.flatMap(Self.qr(for:))
             } catch {
+                // A refusal is a different shape from a pairing, and it failed to
+                // decode as one for weeks — a fresh install has `phone` off, and
+                // the tab said "Could not read the daemon's pairing reply" over
+                // a reply that plainly said what to do.
+                if let refusal = try? JSONDecoder().decode(ConchSessionError.self, from: data),
+                   refusal.kind == "session-error" {
+                    self.error = refusal.error
+                    return
+                }
                 // A pairing that cannot be decoded must not be shown as usable:
                 // a half-rendered QR that scans into a broken pairing is worse
                 // than saying plainly that it failed.
