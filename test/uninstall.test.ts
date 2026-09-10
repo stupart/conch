@@ -15,8 +15,7 @@ import {
   parseUninstallArgs,
   removeConchHooks,
   removeManagedInstructionBlocks,
-  runUninstall,
-} from "../src/uninstall.ts";
+  runUninstall, isConchHookCommand } from "../src/uninstall.ts";
 
 const begin = "<!-- conch:begin -->";
 const end = "<!-- conch:end -->";
@@ -273,4 +272,11 @@ describe("an agent scope never touches the install itself", () => {
     expect(summary.serviceRemoved).toBeFalse();
     expect(summary.modelsRemovedBytes).toBe(0);
   });
+});
+
+test("a hook command from a capitalised source checkout is still conch's", () => {
+  // ~/Projects/Conch/src/cli.ts — the segment match was case-sensitive, so
+  // `conch uninstall` from that checkout left its own hooks in place.
+  expect(isConchHookCommand('"/opt/homebrew/bin/bun" "/Users/t/Projects/Conch/src/cli.ts" hook', "claude")).toBe(true);
+  expect(isConchHookCommand('"/opt/homebrew/bin/bun" "/Users/t/Projects/Other/src/cli.ts" hook', "claude")).toBe(false);
 });
