@@ -363,14 +363,19 @@ struct ResumableSession: Decodable, Identifiable, Hashable {
     ///
     /// Home itself is spelled out, same as the Mac: a bare "~" on its own line
     /// reads as missing data rather than as a place.
-    var shortCwd: String {
-        guard let range = cwd.range(of: #"^/Users/[^/]+"#, options: .regularExpression) else {
-            return cwd
-        }
-        let home = String(cwd[range])
-        if cwd == home { return "Home" }
-        return "~" + cwd.dropFirst(home.count)
+    var shortCwd: String { shortHomePath(cwd) }
+}
+
+/// `/Users/you/project` → `~/project`; home itself → `Home`. Shared by the
+/// resume rows and the fresh-session folder list, so both say a place the
+/// same way.
+func shortHomePath(_ cwd: String) -> String {
+    guard let range = cwd.range(of: #"^/Users/[^/]+"#, options: .regularExpression) else {
+        return cwd
     }
+    let home = String(cwd[range])
+    if cwd == home { return "Home" }
+    return "~" + cwd.dropFirst(home.count)
 }
 
 /// One message in a session's conversation — the shape the daemon publishes for
