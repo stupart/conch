@@ -51,6 +51,8 @@ wait behind anything at all.
 
 ## 2. Control in — RPC over a Unix socket
 
+LAN `/ws?role=observer` subscriptions receive complete owner-tagged documents but do not count toward phone audio presence (absent/`phone` roles keep their existing behavior); `/state` advertises observer support so Mac clients can safely poll older bridges.
+
 `/tmp/conch.sock`, one JSON object per line, one reply per request. Not REST:
 there are no resources or verbs, just `{kind, ...}` messages —
 `session-start`, `session-close`, `resumable`, `agent-capabilities`,
@@ -149,7 +151,7 @@ synchronously and answered with an empty reply that does not wait for
 injection. The C9b seam is reserved here as an optional
 `{kind: "control-envelope", ownerDeviceId, body}` wrapper checked BEFORE any
 local read: a foreign owner gets a typed `routing-error` and never falls
-through to local lookup; no client sends one yet. C9b A0 now loads the owner id
+through to local lookup; the Mac’s LAN remote-session client now sends this envelope. C9b A0 now loads the owner id
 from `device-id` in the settings config directory and publishes it as
 `ownerDeviceId` on every complete document; it survives daemon restarts.
 Signals, exit and shutdown

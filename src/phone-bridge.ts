@@ -261,7 +261,7 @@ export class PhoneBridgeApplication {
   readonly #dependencies: PhoneBridgeDependencies;
   readonly #token: string;
   readonly #pairing = new PairingWindow();
-  readonly #stateSinks = new Set<PhoneStateSink>();
+  readonly #stateSinks = new Map<PhoneStateSink, "phone" | "observer">();
 
   constructor(dependencies: PhoneBridgeDependencies, options: { token: string }) {
     this.#dependencies = dependencies;
@@ -273,30 +273,34 @@ export class PhoneBridgeApplication {
   }
 
   /** Register a successfully authenticated state stream and send its snapshot. */
-  subscribeState(sink: PhoneStateSink): void {
-    const previousCount = this.#stateSinks.size;
-    this.#stateSinks.add(sink);
-    if (this.#stateSinks.size !== previousCount) {
-      this.#dependencies.onClientsChanged?.(this.#stateSinks.size);
+  subscribeState(sink: PhoneStateSink, role: "phone" | "observer" = "phone"): void {
+    const previousCount = this.clientCount();
+    this.#stateSinks.set(sink, role);
+    if (this.clientCount() !== previousCount) {
+      this.#dependencies.onClientsChanged?.(this.clientCount());
     }
     const state = this.#dependencies.getState();
     if (!state) return;
     const frame = JSON.stringify(state);
-    // Remember what a joining client was just handed, so the next publish does
-    // not immediately resend the same state it already has.
-    this.#lastPublishedFrame = normalisedFrame(frame);
+    // Only the first subscriber has now seen this snapshot. A joining observer
+    // must not consume a pending update meant for the existing subscribers.
+    if (this.#stateSinks.size === 1) this.#lastPublishedFrame = normalisedFrame(frame);
     if (!sendPhoneFrame(sink, frame)) {
       this.unsubscribeState(sink);
     }
   }
 
   unsubscribeState(sink: PhoneStateSink): void {
+    const previousCount = this.clientCount();
     if (!this.#stateSinks.delete(sink)) return;
-    this.#dependencies.onClientsChanged?.(this.#stateSinks.size);
+    if (this.clientCount() !== previousCount) {
+      this.#dependencies.onClientsChanged?.(this.clientCount());
+    }
   }
 
+  /** Audio presence counts phones only; observers still receive every frame. */
   clientCount(): number {
-    return this.#stateSinks.size;
+    return [...this.#stateSinks.values()].filter((role) => role === "phone").length;
   }
 
   #lastPublishedFrame = "";
@@ -322,16 +326,17 @@ export class PhoneBridgeApplication {
     const comparable = normalisedFrame(frame);
     if (comparable === this.#lastPublishedFrame) return;
     this.#lastPublishedFrame = comparable;
-    let changed = false;
-    for (const sink of this.#stateSinks) {
+    const previousCount = this.clientCount();
+    for (const sink of this.#stateSinks.keys()) {
       // A sink that cannot be written to is gone; keeping it in the set makes
       // the audio lease look alive forever.
       if (!sendPhoneFrame(sink, frame)) {
         this.#stateSinks.delete(sink);
-        changed = true;
       }
     }
-    if (changed) this.#dependencies.onClientsChanged?.(this.#stateSinks.size);
+    if (this.clientCount() !== previousCount) {
+      this.#dependencies.onClientsChanged?.(this.clientCount());
+    }
   }
 
   handle(req: Request, context: PhoneRequestContext = {}): PhoneRequestResult {
@@ -374,9 +379,13 @@ export class PhoneBridgeApplication {
     }
 
     if (url.pathname === "/ws") {
+      const role = url.searchParams.get("role") ?? "phone";
+      if (role !== "phone" && role !== "observer") {
+        return new Response("unknown subscriber role", { status: 400 });
+      }
       const upgraded = context.upgradeState?.(
         req,
-        (sink) => this.subscribeState(sink),
+        (sink) => this.subscribeState(sink, role),
       ) ?? false;
       return upgraded
         ? undefined
@@ -384,7 +393,11 @@ export class PhoneBridgeApplication {
     }
 
     if (url.pathname === "/state") {
-      return Response.json(this.#dependencies.getState() ?? { v: 0 });
+      // Older bridges ignore the role query. A Mac must poll those bridges,
+      // never open a socket that could accidentally sustain phone presence.
+      return Response.json(this.#dependencies.getState() ?? { v: 0 }, {
+        headers: { "X-Conch-Observer": "1" },
+      });
     }
 
     // Published state carries ONE reply — whichever session last finished a
@@ -524,18 +537,18 @@ export function createPhoneBridgeServer(
   const port = options.port ?? PHONE_BRIDGE_DEFAULT_PORT;
   const lanSockets = new Set<PhoneStateSink>();
 
-  const server = Bun.serve({
+  const server = Bun.serve<{ subscribe: (sink: PhoneStateSink) => void }>({
     port,
     hostname: options.hostname ?? "0.0.0.0",
     fetch(req, srv) {
       return application.handle(req, {
-        upgradeState: (request) => srv.upgrade(request),
+        upgradeState: (request, subscribe) => srv.upgrade(request, { data: { subscribe } }),
       });
     },
     websocket: {
       open(ws) {
         lanSockets.add(ws);
-        application.subscribeState(ws);
+        ws.data.subscribe(ws);
       },
       close(ws) {
         lanSockets.delete(ws);

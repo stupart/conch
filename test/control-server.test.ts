@@ -154,6 +154,21 @@ describe("control server over a real Unix socket", () => {
     }
   });
 
+  test("A1 persisted-owner inject equals an unwrapped turn and foreign inject has zero local reads", async () => {
+    const f = await fixture({ persistentIdentity: true });
+    expect(await f.request(inject)).toBe("");
+    expect(await f.request({ kind: "control-envelope", ownerDeviceId: await loadDeviceId(f.root), body: inject })).toBe("");
+    expect(f.calls.turn).toHaveLength(2);
+    expect({ ...f.calls.turn[1], eventAt: 0 }).toEqual({ ...f.calls.turn[0], eventAt: 0 });
+    expect(f.calls.turn[1]).toMatchObject({ type: "inject", sessionId: "local-key", label: "canonical", announce: "deliver this", cwd: "/local", pid: 42, transcriptPath: "/local/turn.jsonl" });
+    f.reads.resolve.length = 0;
+    f.reads.current.length = 0;
+    const response = JSON.parse(await f.request({ kind: "control-envelope", ownerDeviceId: "other-mac", body: inject }));
+    expect(response).toMatchObject({ kind: "routing-error", code: "foreign-owner" });
+    expect(f.reads).toEqual({ resolve: [], current: [] });
+    expect(f.calls.turn).toHaveLength(2);
+  });
+
   test("newline framing waits for a complete line and ignores a second line in the frame", async () => {
     const f = await fixture();
     const p = await f.peer();

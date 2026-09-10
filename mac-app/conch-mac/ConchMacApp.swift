@@ -7,11 +7,13 @@ import UserNotifications
 struct ConchMacApp: App {
     @NSApplicationDelegateAdaptor(ConchAppDelegate.self) private var appDelegate
     @StateObject private var store = StateStore()
+    @StateObject private var remotes = RemoteMacStore()
 
     var body: some Scene {
         WindowGroup("conch") {
             ContentView()
                 .environmentObject(store)
+                .environmentObject(remotes)
                 .environmentObject(appDelegate.daemon)
                 .frame(minWidth: 640, minHeight: 400)
                 .preferredColorScheme(.dark)
@@ -78,6 +80,7 @@ struct ConchMacApp: App {
             // EnvironmentObject.error, straight out of ConchSettingsView.body).
             // Every scene that reads these has to be handed them itself.
             .environmentObject(store)
+            .environmentObject(remotes)
             .environmentObject(appDelegate.daemon)
         }
     }

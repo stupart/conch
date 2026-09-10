@@ -19,6 +19,8 @@ struct ConchPairingView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                RemoteMacPairingsView()
+
                 status
 
                 if let pairing = store.pairing {
