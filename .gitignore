@@ -26,3 +26,6 @@ docs/codebase-analysis/
 # bun build --compile leaves these in the working directory mid-build. Four of
 # them (254MB of Mach-O) reached main via `git add -A` on 2026-09-10.
 *.bun-build
+
+# Agent worktrees are checkouts, never content
+.claude/worktrees/

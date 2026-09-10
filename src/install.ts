@@ -6,7 +6,7 @@ import { CONCH_DATA } from "./config.ts";
 import { readState } from "./daemon-state.ts";
 import { runInstallPlugin } from "./plugin-install.ts";
 import { resolveMlxAudioPython } from "./tts-worker.ts";
-import { checkAgentBinaries, checkConchBinaries, checkMicrophone, checkTts, checkWhisperServer, formatDoctorProbe } from "./doctor-checks.ts";
+import { checkAgentBinaries, checkConchBinaries, checkKokoro, checkMicrophone, checkTts, checkWhisperServer, formatDoctorProbe } from "./doctor-checks.ts";
 import { CONCH_VERSION } from "./version.ts";
 
 const SERVICE_LABEL = "com.conch.daemon";
@@ -927,6 +927,7 @@ export async function runDoctor(cfg: Config): Promise<void> {
   console.log(formatDoctorProbe(await checkMicrophone()));
   console.log(formatDoctorProbe(await checkTts(cfg)));
   console.log(formatDoctorProbe(await checkWhisperServer(cfg)));
+  console.log(formatDoctorProbe(await checkKokoro(cfg)));
 
   if (!ok) process.exit(1);
 }

@@ -108,6 +108,8 @@ export class ServerSupervisor<RequestReason extends string = string> {
   private pendingChildExit = false;
   private timer: ServerTimer | null = null;
   private idleTimer: ServerTimer | null = null;
+  private unloadTimer: ServerTimer | null = null;
+  private started = false;
   private readonly lifecycle = new AbortController();
   private readonly log: WatchdogWarning;
   private readonly retryDelaysMs: number[];
@@ -145,7 +147,9 @@ export class ServerSupervisor<RequestReason extends string = string> {
 
   /** Initial bounded canary. Later repair never extends daemon startup/drain. */
   async start(): Promise<boolean> {
-    if (!this.options.enabled || this.stopped()) return false;
+    // Unloaded on purpose (D1): a boot in manual mode never loads it; prewarm() does.
+    if (!this.options.enabled || this.stopped() || this.status === "unloaded") return false;
+    this.started = true;
     this.status = "starting";
     try {
       const initial = await this.inspect();
@@ -190,10 +194,35 @@ export class ServerSupervisor<RequestReason extends string = string> {
    * time the request path falls back to the cold cli as it always did. A warm
    * server just gets its idle clock restarted: a mic opening is not idle.
    */
-  prewarm(): void {
+  prewarm(why = "a mic is about to open"): void {
+    this.clearUnloadTimer();
     if (this.status !== "unloaded") return this.armIdleUnload();
-    this.log(`${this.service} reloading — a mic is about to open`);
+    this.log(`${this.service} reloading — ${why}`);
+    this.status = "starting";
     void this.start();
+  }
+
+  /**
+   * Manual mode (D1): stop an owned server after a grace, so a quick p/p does
+   * not thrash the model; prewarm() cancels it. A boot or a recovery in
+   * flight is not unloadable yet: the timer tries again after the same grace.
+   * A grace of 0 unloads now — a daemon booting in manual mode calls this
+   * before start(), so the model is never loaded at all. Adopted: never.
+   */
+  unloadAfter(ms: number, why: string): void {
+    this.clearUnloadTimer();
+    if (!this.options.enabled || this.stopped() || this.status === "unloaded" || this.ownership === "adopted") return;
+    if (ms <= 0) {
+      this.unload(why);
+      return;
+    }
+    const timer = this.schedule(() => {
+      if (this.unloadTimer !== timer) return;
+      this.unloadTimer = null;
+      if (!this.unload(why)) this.unloadAfter(ms, why);
+    }, ms);
+    timer.unref?.();
+    this.unloadTimer = timer;
   }
 
   /** (Re)start the idle clock: a transcription was served, or the window changed. */
@@ -204,7 +233,7 @@ export class ServerSupervisor<RequestReason extends string = string> {
     const timer = this.schedule(() => {
       if (this.idleTimer !== timer) return;
       this.idleTimer = null;
-      this.unloadIdle(ms);
+      this.unload(`idle for ${Math.round(ms / 60_000)} min — unloaded to free its memory; reloads when a mic is about to open`);
     }, ms);
     timer.unref?.();
     this.idleTimer = timer;
@@ -265,6 +294,7 @@ export class ServerSupervisor<RequestReason extends string = string> {
     this.lifecycle.abort();
     this.clearTimer();
     this.clearIdleTimer();
+    this.clearUnloadTimer();
     // New requests must fail closed before an owned listener is killed. This
     // is especially important when shutdown retains/drains diagnostic audio.
     try { this.options.resetReadiness(); } catch {}
@@ -299,18 +329,21 @@ export class ServerSupervisor<RequestReason extends string = string> {
   }
 
   /**
-   * Stop an owned server nobody has used for the idle window. The kill takes
-   * the same critical section as a replacement, so a request never enters the
-   * server between its last inference and the SIGTERM. Ownership drops to
-   * "none" when the retired child exits; an adopted server never comes here.
+   * Stop an owned server: idle for the window (D2), or manual mode (D1). The
+   * kill takes the same critical section as a replacement, so a request never
+   * enters the server between its last inference and the SIGTERM. Ownership
+   * drops to "none" when the retired child exits; an adopted server never
+   * comes here. False means "not yet": a boot or a recovery in flight would
+   * spawn straight after, and the D1 grace timer retries.
    */
-  private unloadIdle(ms: number): void {
-    if (this.stopped() || this.recovery || this.status !== "ready" || this.ownership !== "owned") return;
+  private unload(why: string): boolean {
+    if (this.stopped() || this.status === "unloaded" || this.ownership === "adopted") return true;
+    const inFlight = this.recovery || this.status === "recovering" || (this.status === "starting" && this.started);
+    if (inFlight) return false;
     this.status = "unloaded";
     this.clearTimer();
-    this.log(
-      `${this.service} idle for ${Math.round(ms / 60_000)} min — unloaded to free its memory; reloads when a mic is about to open`,
-    );
+    this.clearIdleTimer();
+    this.log(`${this.service} ${why}`);
     void this.exclusive(async (signal) => {
       const previous = this.retireOwnedChild();
       if (previous) await this.terminate(previous, signal);
@@ -318,6 +351,7 @@ export class ServerSupervisor<RequestReason extends string = string> {
     }, this.lifecycle.signal).catch((error) => {
       if (!this.stopped()) this.log(`${this.service} unload failed: ${String(error)}`);
     });
+    return true;
   }
 
   private async recover(reason: ServerRecoveryReason<RequestReason>): Promise<void> {
@@ -638,5 +672,10 @@ export class ServerSupervisor<RequestReason extends string = string> {
   private clearIdleTimer(): void {
     this.idleTimer?.cancel();
     this.idleTimer = null;
+  }
+
+  private clearUnloadTimer(): void {
+    this.unloadTimer?.cancel();
+    this.unloadTimer = null;
   }
 }

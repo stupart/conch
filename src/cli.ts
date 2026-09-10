@@ -44,9 +44,9 @@ Getting started:
   conch | conch dashboard        open the live dashboard (ctrl-b d detaches)
 
 Everyday:
-  conch wake [name] | recite [name]       talk again | reread the latest reply
-  conch sessions | resumable [query] | rename <session> <name>  list live/past | save a name
-  conch pause | resume                     manual (hold) | auto (read and listen)
+  conch wake [name] | recite [name] | pause | resume  talk again | reread | manual (hold) | auto
+  conch sessions | resumable [query]       list live sessions | past ones to resume
+  conch rename <session> <name> | model <session> <model>  save a name | type /model into it
 
 Voice and settings:
   conch voice <session> [voice] | voices   show/pin or audition voices
@@ -426,6 +426,51 @@ switch (command) {
     console.log(`[conch] ${oldLabel} -> ${renamedLabel} (persisted to ~/.config/conch/labels.json)${
       voiceMigrated ? "; voice pin migrated" : ""
     }${providerWarning}`);
+    break;
+  }
+  case "model": {
+    // B2: the daemon types `/model <model>` into the session; the agent does
+    // the switching. No daemon-down fallback — there is nothing to persist.
+    const [query, model, ...extra] = rest;
+    if (!query || !model || extra.length > 0) {
+      console.error("usage: conch model <session> <model>");
+      process.exit(1);
+    }
+    const { findSessionByName, sessionLabel } = await import("./sessions.ts");
+    const session = await findSessionByName(cfg.claudeDir, query);
+    if (!session) {
+      console.error(`[conch] no live session matching "${query}"`);
+      process.exit(1);
+    }
+    const label = sessionLabel(session, session.cwd);
+    const result = await sendControlMessage(cfg.socketPath, {
+      kind: "session-command",
+      sessionId: session.sessionId,
+      command: "set-model",
+      model,
+    });
+    if (!result.ok) {
+      const diagnostic = result.diagnostic ? `: ${result.diagnostic}` : "";
+      console.error(`[conch] ${result.reason}${diagnostic}`);
+      process.exit(1);
+    }
+    if (result.response.kind === "session-error") {
+      console.error(`[conch] ${result.response.error}`);
+      process.exit(1);
+    }
+    if (
+      result.response.kind !== "session-ack"
+      || result.response.sessionId !== session.sessionId
+      || result.response.command !== "set-model"
+    ) {
+      console.error("[conch] ack-unknown: daemon reply did not match the model request");
+      process.exit(1);
+    }
+    if (!result.response.changed) {
+      console.error(`[conch] ${label} has no terminal window to type /model into`);
+      process.exit(1);
+    }
+    console.log(`[conch] /model ${model} -> ${label}`);
     break;
   }
   case "pause":

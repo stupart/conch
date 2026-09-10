@@ -122,7 +122,7 @@ uv tool install --with "misaki[en]" \
   "mlx-audio[server]"
 ```
 
-That's it — the daemon uses the `mlx_audio.server` launcher only to locate its isolated Python, then starts a Conch-owned worker with no HTTP listener. The worker loads Kokoro once, warms the MLX/G2P path, and accepts private JSON lines over stdin/stdout. A request timeout or crash hard-kills that exact child and starts a fresh one; while it is loading or restarting, speech immediately degrades to `say`.
+That's it — the daemon uses the `mlx_audio.server` launcher only to locate its isolated Python, then starts a Conch-owned worker with no HTTP listener. The worker loads Kokoro once, warms the MLX/G2P path, and accepts private JSON lines over stdin/stdout. A request timeout or crash hard-kills that exact child and starts a fresh one; while it is loading or restarting, speech immediately degrades to `say`. Manual mode unloads the worker after a minute (freeing its memory) and auto mode warms it again; explicit speech in between goes through `say`.
 
 **Every session gets its own voice**: labels are hashed onto a ring of 8 Kokoro voices, so dayloop always sounds like dayloop and you can tell sessions apart by ear. Audition the ring with `conch voices` (or press `v` in the dashboard to hear each LIVE session in its assigned voice), pin any session with `conch voice dayloop bm_george` (persisted), or customize the ring with `CONCH_TTS_VOICES` (any of Kokoro's 50+ voices). Force `CONCH_TTS=say` to opt out, or set `CONCH_TTS=server` to temporarily restore the legacy HTTP backend.
 
