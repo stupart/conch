@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import type { WatchdogProcess } from "../src/audio-watchdog.ts";
 import {
   requireUncancelledProbe,
@@ -421,5 +422,145 @@ describe("Kokoro supervisor", () => {
     const work = Promise.resolve(false);
     controller.abort(new DOMException("lane cancelled", "AbortError"));
     await expect(requireUncancelledProbe(work, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+  });
+});
+
+describe("Kokoro by mode (D1)", () => {
+  const GRACE_MS = 60_000;
+  const WHY = "unloaded — manual mode; reloads in auto mode";
+  /** Fire-and-forget work (an unload, a prewarm's start) settles in a few microtask turns. */
+  async function until(condition: () => boolean): Promise<void> {
+    for (let tick = 0; tick < 50 && !condition(); tick++) await Bun.sleep(0);
+    expect(condition()).toBeTrue();
+  }
+  const live = (h: ReturnType<typeof harness>) => h.timers.filter((timer) => !timer.cancelled);
+  /** The fake clock does not retire a fired one-shot by itself. */
+  const fire = (timer: { callback: () => void; cancelled: boolean }) => {
+    timer.callback();
+    timer.cancelled = true;
+  };
+
+  test("manual mode unloads an owned server after the grace, a quick p/p does not, and auto mode reloads it", async () => {
+    const h = harness();
+    h.presence.push(false);
+    h.readiness.push(true);
+    expect(await h.supervisor.start()).toBeTrue();
+
+    // p then p again inside the grace: the pending unload is cancelled, nothing is killed.
+    h.supervisor.unloadAfter(GRACE_MS, WHY);
+    expect(live(h).map((timer) => timer.ms)).toEqual([GRACE_MS]);
+    h.supervisor.prewarm("auto mode");
+    expect(live(h)).toHaveLength(0);
+    expect(h.terminated).toHaveLength(0);
+    expect(h.supervisor.snapshot()).toMatchObject({ status: "ready", ownership: "owned" });
+
+    // The grace elapses: terminated inside the lane, readiness reset, one log line.
+    h.supervisor.unloadAfter(GRACE_MS, WHY);
+    fire(live(h)[0]!);
+    await until(() => h.terminated.length === 1);
+    expect(h.terminated).toEqual([h.children[0]!]);
+    expect(h.resets.length).toBeGreaterThanOrEqual(1);
+    expect(h.supervisor.snapshot()).toMatchObject({ status: "unloaded", periodicArmed: false });
+    expect(h.logs.filter((line) => line === `kokoro ${WHY}`)).toHaveLength(1);
+
+    // Unloaded on purpose: the retired child's exit, a speech's recovery request and a
+    // boot start() do not bring it back.
+    h.children[0]!.exit.resolve(0);
+    await Bun.sleep(0);
+    h.supervisor.requestRecovery("synth-timeout");
+    await h.supervisor.settled();
+    expect(await h.supervisor.start()).toBeFalse();
+    expect(h.children).toHaveLength(1);
+    expect(h.supervisor.snapshot()).toMatchObject({ status: "unloaded", ownership: "none" });
+
+    // Auto mode: reload with the bounded start; a second signal while warming is no second spawn.
+    h.presence.push(false);
+    h.readiness.push(true);
+    h.supervisor.prewarm("auto mode");
+    h.supervisor.prewarm("auto mode");
+    await until(() => h.supervisor.snapshot().status === "ready");
+    expect(h.children).toHaveLength(2);
+    expect(h.logs.filter((line) => line === "kokoro reloading — auto mode")).toHaveLength(1);
+    h.supervisor.close();
+  });
+
+  test("booting in manual mode never starts it, a grace landing mid-boot waits, and an adopted server is never unloaded", async () => {
+    // Boot in manual mode: unload before start(), so start() is a no-op and no probe runs.
+    const cold = harness();
+    cold.supervisor.unloadAfter(0, WHY);
+    expect(cold.supervisor.snapshot()).toMatchObject({ status: "unloaded", ownership: "none" });
+    expect(await cold.supervisor.start()).toBeFalse();
+    expect(cold.children).toHaveLength(0);
+    expect(cold.logs.filter((line) => line === `kokoro ${WHY}`)).toHaveLength(1);
+    cold.presence.push(false);
+    cold.readiness.push(true);
+    cold.supervisor.prewarm("auto mode");
+    await until(() => cold.supervisor.snapshot().status === "ready");
+    expect(cold.children).toHaveLength(1);
+    cold.supervisor.close();
+
+    // A boot in flight is not unloadable yet: the grace re-arms and lands once it is ready.
+    const booting = harness();
+    const presence = deferred<boolean>();
+    booting.presence.push(presence.promise);
+    booting.readiness.push(true);
+    const starting = booting.supervisor.start();
+    booting.supervisor.unloadAfter(GRACE_MS, WHY);
+    fire(live(booting)[0]!);
+    expect(booting.supervisor.snapshot().status).toBe("starting");
+    expect(live(booting).map((timer) => timer.ms)).toEqual([GRACE_MS]);
+    presence.resolve(false);
+    expect(await starting).toBeTrue();
+    fire(live(booting)[0]!);
+    await until(() => booting.terminated.length === 1);
+    expect(booting.supervisor.snapshot().status).toBe("unloaded");
+    booting.supervisor.close();
+
+    // Someone else's process is never unloaded, in any mode: only the D3 poll runs.
+    const adopted = harness();
+    adopted.presence.push(true);
+    adopted.readiness.push(true);
+    expect(await adopted.supervisor.start()).toBeTrue();
+    adopted.supervisor.unloadAfter(GRACE_MS, WHY);
+    expect(live(adopted).map((timer) => timer.ms)).toEqual([30_000]);
+    expect(adopted.supervisor.snapshot()).toMatchObject({ status: "ready", ownership: "adopted" });
+    adopted.supervisor.close();
+  });
+});
+
+describe("D1 wiring inside runDaemon", () => {
+  // runDaemon runs in no test; its wiring is pinned by source, the way D2's is.
+  const daemonSource = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
+
+  function between(startMarker: string, endMarker: string): string {
+    const start = daemonSource.indexOf(startMarker);
+    expect(start).toBeGreaterThan(-1);
+    const end = daemonSource.indexOf(endMarker, start);
+    expect(end).toBeGreaterThan(start);
+    return daemonSource.slice(start, end);
+  }
+
+  test("a mode change unloads after the grace or prewarms, whichever engine is live", () => {
+    expect(daemonSource).toContain("const KOKORO_MANUAL_GRACE_MS = 60_000");
+    const helper = between("const kokoroByMode = (paused: boolean", "pause = new PauseController({");
+    expect(helper).toContain("for (const engine of [ttsWorker, ttsSupervisor])");
+    expect(helper).toContain('if (paused) engine?.unloadAfter(graceMs, "unloaded — manual mode; reloads in auto mode")');
+    expect(helper).toContain('else engine?.prewarm("auto mode")');
+    // Both markers must EXIST before their order means anything.
+    const mode = between("setModeState: (paused) => {", "speak: (text) => speak(cfg, text)");
+    const state = mode.indexOf('setState(paused ? "paused" : "idle")');
+    const kokoro = mode.indexOf("kokoroByMode(paused)");
+    expect(state).toBeGreaterThan(-1);
+    expect(kokoro).toBeGreaterThan(state);
+  });
+
+  test("a daemon booting in manual mode unloads before either engine starts", () => {
+    const boot = between("ttsSupervisor = new TtsSupervisor({", "const whisperBinaryAvailable");
+    const unload = boot.indexOf("if (pause.paused) kokoroByMode(true, 0)");
+    const worker = boot.indexOf("void ttsWorker.start()");
+    const server = boot.indexOf("ttsStartup = ttsSupervisor.start()");
+    expect(unload).toBeGreaterThan(-1);
+    expect(worker).toBeGreaterThan(unload);
+    expect(server).toBeGreaterThan(unload);
   });
 });

@@ -28,6 +28,8 @@ The native macOS app is conch's primary UI. It shows the live session ledger and
 
 The app is currently built from source. Open `mac-app/conch-mac.xcodeproj` in Xcode, select the `conch-mac` scheme, and press Run. Keep using the terminal dashboard (`conch`) as the SSH/remote fallback.
 
+**Stuck, or not sure how something works?** The New session sheet has a third mode, **Help with conch** (also `conch help-session`): a Claude Code session in conch's own folder, `~/.config/conch/help/`, whose `CLAUDE.md` conch writes for it — what conch is, where the settings, errors, daemon log and published state live on this Mac, the rules for touching them (read the log before guessing, never kill the daemon by pattern, ask before changing a setting), and the usual reasons the loop goes quiet. It shows in the ledger as **conch help** and has no more power than any other session: the same plugin tools and the same CLI. It is not started for you — a session costs money and attention — so it is one click away instead.
+
 ## Your phone
 
 <img src="docs/iphone-ledger.png" alt="conch on iPhone: a ledger of live sessions, each row showing what it wants — arch-website needs an answer, dayloop is being read aloud, conch has work to look at. A session that is merely working says nothing." width="300" align="right">
@@ -122,7 +124,7 @@ uv tool install --with "misaki[en]" \
   "mlx-audio[server]"
 ```
 
-That's it — the daemon uses the `mlx_audio.server` launcher only to locate its isolated Python, then starts a Conch-owned worker with no HTTP listener. The worker loads Kokoro once, warms the MLX/G2P path, and accepts private JSON lines over stdin/stdout. A request timeout or crash hard-kills that exact child and starts a fresh one; while it is loading or restarting, speech immediately degrades to `say`.
+That's it — the daemon uses the `mlx_audio.server` launcher only to locate its isolated Python, then starts a Conch-owned worker with no HTTP listener. The worker loads Kokoro once, warms the MLX/G2P path, and accepts private JSON lines over stdin/stdout. A request timeout or crash hard-kills that exact child and starts a fresh one; while it is loading or restarting, speech immediately degrades to `say`. Manual mode unloads the worker after a minute (freeing its memory) and auto mode warms it again; explicit speech in between goes through `say`.
 
 **Every session gets its own voice**: labels are hashed onto a ring of 8 Kokoro voices, so dayloop always sounds like dayloop and you can tell sessions apart by ear. Audition the ring with `conch voices` (or press `v` in the dashboard to hear each LIVE session in its assigned voice), pin any session with `conch voice dayloop bm_george` (persisted), or customize the ring with `CONCH_TTS_VOICES` (any of Kokoro's 50+ voices). Force `CONCH_TTS=say` to opt out, or set `CONCH_TTS=server` to temporarily restore the legacy HTTP backend.
 
@@ -155,6 +157,7 @@ The worker itself adds no package beyond the installed `mlx-audio`, NumPy, `misa
 | `conch unset <key>` | Remove a saved value and revert to env/default |
 | `conch settings` | List all curated settings, effective values, and sources |
 | `conch doctor` | Verify dependencies, live microphone input, and the configured TTS path |
+| `conch help-session` | Open a Claude session that knows conch — how to use it, and why it has gone quiet |
 
 ## Voice commands
 

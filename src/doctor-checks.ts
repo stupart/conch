@@ -1,7 +1,8 @@
 import { accessSync, constants } from "node:fs";
 import { join } from "node:path";
 import type { Config } from "./config.ts";
-import { processAlive } from "./daemon-identity.ts";
+import { processAlive, readIdentity, type DaemonIdentity } from "./daemon-identity.ts";
+import { readState } from "./daemon-state.ts";
 import { speakCancellable } from "./speak.ts";
 import { readWhisperRecord, type WhisperSpawnRecord } from "./whisper-orphan.ts";
 import type { AudioSpawner, WatchdogProcess } from "./audio-watchdog.ts";
@@ -15,7 +16,7 @@ const TTS_PROBE_TIMEOUT_MS = 5_000;
 export interface DoctorProbeResult {
   /** Live probes are advisory: callers should display this, not use it as the doctor's exit status. */
   ok: boolean;
-  label: "microphone" | "TTS" | "agents" | "conch" | "whisper-server";
+  label: "microphone" | "TTS" | "agents" | "conch" | "whisper-server" | "kokoro";
   message: string;
   action?: string;
 }
@@ -61,6 +62,58 @@ export async function checkWhisperServer(cfg: Config, deps: WhisperServerProbeDe
         : `whisper-server: not listening on :${port} — daemon ${daemon} is up (still warming, or on the cold cli); whisper-idle-unload is 0, so it was not unloaded`
       : `whisper-server: not listening on :${port} — starts with the daemon`,
   };
+}
+
+export interface KokoroProbeDeps {
+  daemon?: () => DaemonIdentity | null;
+  /** The pid of the Kokoro worker a live daemon owns, or null. */
+  workerPid?: (daemonPid: number) => number | null;
+  listening?: (port: number) => Promise<boolean>;
+  paused?: () => boolean;
+}
+
+/**
+ * Which Kokoro state a person is looking at (D1): warm, unloaded because the
+ * daemon is in manual mode, or not loaded (still warming, or voices via say).
+ * Read from outside the daemon: the worker is the daemon's child, and manual
+ * mode is the one boolean in the state file. Always informational.
+ */
+export async function checkKokoro(cfg: Config, deps: KokoroProbeDeps = {}): Promise<DoctorProbeResult> {
+  const label = "kokoro" as const;
+  if (cfg.ttsEngine === "say") return { ok: true, label, message: "kokoro: off (CONCH_TTS=say) — voices via say" };
+  if (cfg.ttsEngine === "server" && !cfg.ttsPort) {
+    return { ok: true, label, message: "kokoro: off (CONCH_TTS_PORT=0) — voices via say" };
+  }
+  const daemon = (deps.daemon ?? readIdentity)();
+  if (cfg.ttsEngine === "server") {
+    if (await (deps.listening ?? defaultListening)(cfg.ttsPort)) {
+      return { ok: true, label, message: `kokoro: warm on :${cfg.ttsPort} (legacy server)` };
+    }
+  } else if (daemon) {
+    const pid = (deps.workerPid ?? findKokoroWorker)(daemon.pid);
+    if (pid) return { ok: true, label, message: `kokoro: warm (worker pid ${pid}, owned by conch daemon ${daemon.pid})` };
+  }
+  if (!daemon) return { ok: true, label, message: "kokoro: not loaded — starts with the daemon" };
+  const paused = (deps.paused ?? (() => readState().paused))();
+  return {
+    ok: true,
+    label,
+    message: paused
+      ? `kokoro: unloaded — daemon ${daemon.pid} is in manual mode; reloads in auto mode`
+      : `kokoro: not loaded — daemon ${daemon.pid} is in auto mode (still warming, or voices via say)`,
+  };
+}
+
+/** The daemon's own child running the materialized worker script, by ppid. */
+function findKokoroWorker(daemonPid: number): number | null {
+  const ps = Bun.spawnSync(["ps", "-Ao", "pid=,ppid=,command="]);
+  for (const line of ps.stdout.toString().split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (match && Number(match[2]) === daemonPid && /\/tts-worker-[0-9a-f]+\.py(\s|$)/.test(match[3]!)) {
+      return Number(match[1]);
+    }
+  }
+  return null;
 }
 
 async function defaultListening(port: number): Promise<boolean> {

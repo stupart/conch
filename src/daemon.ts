@@ -40,6 +40,7 @@ import {
   existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { loadDeviceId } from "./device-identity.ts";
+import { clearIdentity, writeIdentity } from "./daemon-identity.ts";
 import {
   AudioHolder,
   AudioOutbox,
@@ -974,6 +975,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
   whisperServerClient.setNoteHandler((detail) => log(`whisper request failed — ${detail}`));
   // D2: every warm transcription (partials included) restarts the idle-unload clock.
   whisperServerClient.setServedHandler(() => whisperSupervisor?.armIdleUnload());
+  // D1: Kokoro by mode. Manual mode volunteers nothing, so the owned Kokoro
+  // (~650MB) is unloaded after a grace long enough that a quick p/p does not
+  // thrash the model; auto mode warms it again. Explicit speech while it is
+  // unloaded goes through `say`, exactly as while it is loading. Whichever
+  // engine is live acts; the other is a no-op.
+  const KOKORO_MANUAL_GRACE_MS = 60_000;
+  const kokoroByMode = (paused: boolean, graceMs = KOKORO_MANUAL_GRACE_MS): void => {
+    for (const engine of [ttsWorker, ttsSupervisor]) {
+      if (paused) engine?.unloadAfter(graceMs, "unloaded — manual mode; reloads in auto mode");
+      else engine?.prewarm("auto mode");
+    }
+  };
   const speech = new SpeechManager(
     { speakCancellable: backendSpeakCancellable, stopSpeaking: backendStopSpeaking },
     (operation, output) => withNormalMicClosed(
@@ -1006,7 +1019,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
     cancelPendingAudio: () => speech.cancelPendingAudio(),
     persist: (paused) => writeState({ paused }),
     render: () => void renderSessionPanel(),
-    setModeState: (paused) => setState(paused ? "paused" : "idle"),
+    setModeState: (paused) => {
+      setState(paused ? "paused" : "idle");
+      kokoroByMode(paused);
+    },
     log,
     speak: (text) => speak(cfg, text),
     liveSessionIds: async () => (await registrySnapshot(cfg.claudeDir))?.liveIds ?? null,
@@ -4590,6 +4606,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // moment in which a grace timer could fire — the kill has to land now.
     const recorderDrain = killActiveRecorders({ immediate: !diagnosticsEnabled });
     void controlServer.close();
+    clearIdentity(); // the socket and the claim to it go together
     whisperServerClient.cancelWarmRequests();
     whisperSupervisor?.close();
     ttsSupervisor?.close();
@@ -4641,13 +4658,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   if (!ttsBinaryAvailable && cfg.ttsEngine === "server") {
     log(`CONCH_TTS=server but ${cfg.ttsServerBin} not found (uv tool install "mlx-audio[server]") — voices via say`);
   }
-  if (cfg.ttsEngine === "worker") {
-    // Loading and the first Metal/G2P warmup may take seconds (or download on a
-    // cold install). Do not hold the turn queue: say is live during startup.
-    void ttsWorker.start().catch((error) => {
-      if (!shuttingDown) log(`tts worker startup failed — voices via say: ${error}`);
-    });
-  } else if (cfg.ttsEngine === "server") {
+  if (cfg.ttsEngine === "server") {
     ttsSupervisor = new TtsSupervisor({
       enabled: Boolean(cfg.ttsPort) && ttsBinaryAvailable,
       probePresence: (signal) => probeTtsServerPresence(cfg, 1_500, signal),
@@ -4663,7 +4674,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }),
       log,
     });
-
+  }
+  // D1: a daemon booting in manual mode never loads Kokoro; auto mode will.
+  if (pause.paused) kokoroByMode(true, 0);
+  if (cfg.ttsEngine === "worker") {
+    // Loading and the first Metal/G2P warmup may take seconds (or download on a
+    // cold install). Do not hold the turn queue: say is live during startup.
+    void ttsWorker.start().catch((error) => {
+      if (!shuttingDown) log(`tts worker startup failed — voices via say: ${error}`);
+    });
+  } else if (ttsSupervisor) {
     // Assign synchronously before listen: early hook events queue behind this
     // one full-body compatibility canary. Later repair is fire-and-forget.
     ttsStartup = ttsSupervisor.start().then(() => {}).catch((error) => {
@@ -4716,6 +4736,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // Losing the ownership race is not a crash for the supervisor to retry.
     process.exit(0);
   }
+  // Only the socket's owner may claim to be the daemon (A2): the Mac app reads
+  // this to say who started what it adopted, and to tell its own child apart.
+  writeIdentity();
   syncPhoneBridge();
   void rehydrateFromTranscripts();
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);

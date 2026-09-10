@@ -23,6 +23,7 @@ import {
 import { readCodexThreads } from "./codex-threads.ts";
 import { liveTranscriptPath, readClaudeTitles } from "./claude-title.ts";
 import { parseWindowKey, windowKey, windowPidFromAncestry } from "./window-key.ts";
+import { HELP_SESSION_LABEL, helpSessionDir } from "./help-session.ts";
 import { liveBackgroundAgents, subagentRowId } from "./agent-activity.ts";
 
 const LABELS_FILE = join(homedir(), ".config/conch/labels.json");
@@ -403,8 +404,12 @@ export function sessionLabel(
       if (override) return override;
     }
   }
-  if (info?.name) return info.name;
   const dir = cwd ?? info?.cwd ?? process.cwd();
+  // conch's own session keeps conch's name: above the registry name, because a
+  // title Claude generates from the first question would otherwise replace it
+  // after one turn; below the override, so `conch rename` still works on it.
+  if (dir === helpSessionDir()) return HELP_SESSION_LABEL;
+  if (info?.name) return info.name;
   return dir.split("/").filter(Boolean).pop() ?? "claude";
 }
 
