@@ -30,12 +30,13 @@ only by what exists.
 
 ## The four seams
 
-`daemon.ts` is 5,615 lines. `docs/architecture.md` names where it splits:
+`daemon.ts` is 4,954 lines. `docs/architecture.md` names where it splits:
 
 - **Q** `event-queue.ts` — extracted: pending events, drain, command barriers,
   cancellation bookkeeping, and audition exclusion; intake stays in the daemon
 - **V** `voice-loop.ts` — wake → speak → listen → deliver
-- **C** `control-server.ts` — the socket, dispatch, the one validation boundary
+- **C** `control-server.ts` — extracted: framing, validation, dispatch, replies,
+  lifecycle, and the reserved C9b owner envelope; device effects stay in the daemon
 - **R** `session-registry.ts` — reconciling Claude's registry with Codex's DBs
 - **UI** — the two apps and the TUI; no daemon change at all
 
@@ -60,6 +61,7 @@ only by what exists.
 | A13 | **Clicking a doc link in the Mac app's conversation errored.** Reported 2026-09-10 in the asset generator session; the error text was not captured, so this is filed as a symptom, not a diagnosis. Distinct from A10 (the terminal never consuming the artifact link) — this is the app's own link handling in the conversation pane. First step next time it happens: read the exact error before touching anything. | UI |
 | A14 | **Two things the split recon found and did not fix.** (1) The "inject and interrupt are silent" story is too strong: delivery failures and interrupt failures can call `speak`, and delivery passes through voice Q&A (`daemon.ts` around 2636/3152/3237/4652). (2) Immediate `handle` calls — the inject/interrupt path that skips the drain — reset the shared `stopKey` and `micOpen`; that is a concurrency seam worth a behavioural test of its own, not something to fix inside an extraction. Both are Codex's findings; the frame-cap ordering it also found is fixed. | C |
 | A15 | **A fresh install's pairing tab is a dead end.** `phone` defaults off and `phone-relay-url` defaults empty, so the first thing a new machine shows under Phone app is an error — and the tab reported the daemon's `session-error` as "Could not read the daemon's pairing reply" because it decoded only the pairing shape (2026-09-10, the new laptop; the QR needs the relay, the relay needs the URL, and the URL lived only on the old Mac's settings). **Fixed** in part: the tab now shows the daemon's refusal verbatim, and the refusal and the no-relay copy name the setting, the tab that exists, and the exact `conch set` command. **Open, Tyler's call:** ship `https://conch-relay.tylerstupart.workers.dev` as the built-in default so the QR appears with no setup at all — every install would then route through one Cloudflare account (rooms are secret-keyed, the relay sees only encrypted bytes, but the traffic and the bill are his), or keep bring-your-own-relay and make `phone` default on. | UI |
+| A16 | **An oversized socket frame can still be dispatched after the connection is destroyed.** On Bun 1.4.0 `sock.destroy()` on the 64 KB cap can still emit `end` with `sock.destroyed === true`; the EOF handler's `handled` flag is still false, so it parses and dispatches the buffered JSON while the client gets no bytes. Codex reproduced it against the ORIGINAL handler with a 64,001-character `get-config` padded with spaces — a parseable oversized mutation could reach application logic unacknowledged. Cut three preserved the behaviour deliberately (extraction, not fix). Fix: the EOF handler returns when `sock.destroyed`, with an executable test over a real socket. | C |
 | A11 | **A closed session can keep its pass through manual mode.** `resumedSessionIds` is deleted inside the render prune, but it is not one of the eight collections `trackedIds` is built from, so an id living only there is never iterated and never pruned. It matters more than its size: membership is checked BEFORE the global pause gate (`instant-controls.ts:188`), so that a session resumed by name speaks while everything else stays held — a stale entry is a closed session that can speak through manual mode. Usually pruned via `sessionStates`/`latestTurnBySession`; the gap is when it is not. Fix: add it to `trackedIds`. Found by Codex during the ledger recon; `SessionLedger` pins today's behaviour in a test, so the fix shows up as a deliberate flip. | C |
 | A12 | **`reportedMissingCodexPid` never forgets a closed session.** Only cleared for a session still being rendered WITH a pid (`daemon.ts:1287`), so a Codex session that closes pid-less stays for the daemon's lifetime; `closeLiveSession` can also add on a failed close. Unbounded but tiny, and the only behavioural risk is a suppressed warning on id reuse. Fix: delete it in `SessionLedger.forget`. | C |
 
