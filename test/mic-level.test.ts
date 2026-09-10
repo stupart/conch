@@ -94,3 +94,14 @@ test("the level reaches the apps", () => {
   expect(composer).toContain(".animation(.easeOut(duration: 0.12), value: voiceLevel)");
   expect(composer).toContain('.symbolEffect(.variableColor.iterative, isActive: voiceState == "listening")');
 });
+
+test("the daemon hands the recorder's level to the live state", () => {
+  const daemon = read("src/daemon.ts");
+  const at = daemon.indexOf("export function listenHooks(");
+  expect(at).toBeGreaterThan(-1);
+  const end = daemon.indexOf("\n}\n", at);
+  expect(end).toBeGreaterThan(-1);
+  const hooks = daemon.slice(at, end);
+  expect(hooks).toContain("} = { setState, setTranscriptPrefix, setMicLevel },");
+  expect(hooks).toContain("onLevel: (level) => status.setMicLevel?.(level),");
+});

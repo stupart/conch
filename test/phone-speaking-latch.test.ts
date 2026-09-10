@@ -15,17 +15,27 @@ describe("the speaking state is always bounded", () => {
   const source = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
 
   test("taking the phone audio path arms a bound", () => {
+    expect(source).toContain("if (audioLease.sink === \"phone\")");
     const branch = source.slice(source.indexOf('if (audioLease.sink === "phone")'));
     expect(branch.slice(0, 200)).toContain("armPhoneSpeechLatch(text)");
   });
 
   test("the phone reporting it finished cancels the bound", () => {
-    const handler = source.slice(source.indexOf("const speaking = (value as"));
+    const control = readFileSync(new URL("../src/control-server.ts", import.meta.url), "utf8");
+    const decodeAt = control.indexOf('if (value.kind === "phone-speaking")');
+    expect(decodeAt).toBeGreaterThan(-1);
+    const decoded = control.slice(decodeAt, decodeAt + 400);
+    expect(decoded).toContain("const speaking = value.speaking === true;");
+    expect(decoded).toContain('rawLabel.slice(0, 120)');
+    const handlerAt = source.indexOf('if (message.kind === "phone-speaking")');
+    expect(handlerAt).toBeGreaterThan(-1);
+    const handler = source.slice(handlerAt);
     expect(handler.slice(0, 1200)).toContain("clearPhoneSpeechLatch()");
   });
 
   // The phone that was reading is gone, so its finish report is never coming.
   test("losing the phone clears a stuck speaking state", () => {
+    expect(source).toContain("phone disconnected — audio back on this Mac");
     const disconnect = source.slice(source.indexOf("phone disconnected — audio back on this Mac"));
     expect(disconnect.slice(0, 700)).toContain("clearPhoneSpeechLatch()");
     expect(disconnect.slice(0, 700)).toContain('setState("idle")');
@@ -46,6 +56,7 @@ describe("every route into speaking has a way back out", () => {
   // "Reading aloud" with nothing playing — while the first fix only bounded
   // the path where the DAEMON initiates phone speech.
   test("the phone announcing its own speech is bounded", () => {
+    expect(source).toContain("if (speaking && label)");
     const handler = source.slice(source.indexOf("if (speaking && label)"));
     expect(handler.slice(0, 800)).toContain("armPhoneSpeechLatch()");
   });

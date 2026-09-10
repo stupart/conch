@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 describe("phone telemetry", () => {
   const root = new URL("../mobile/conch-ios/conch-ios/", import.meta.url);
   const telemetry = readFileSync(new URL("DeviceTelemetry.swift", root), "utf8");
+  const control = readFileSync(new URL("../src/control-server.ts", import.meta.url), "utf8");
   const daemon = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
 
   // resident_size flatters the app by excluding dirty pages that still count
@@ -47,11 +48,14 @@ describe("phone telemetry", () => {
     // What iOS will actually let an app have, counting space it would purge,
     // rather than the raw free bytes.
     expect(telemetry).toContain("volumeAvailableCapacityForImportantUsage");
-    expect(daemon).toContain("GB FREE");
+    expect(control).toContain("GB FREE");
   });
 
   test("the daemon logs a sample rather than acting on it", () => {
-    expect(daemon).toContain('kind === "phone-device"');
-    expect(daemon).toContain("LOW POWER MODE");
+    expect(control).toContain('kind === "phone-device"');
+    expect(control).toContain("LOW POWER MODE");
+    const handlerAt = daemon.indexOf('if (message.kind === "phone-device")');
+    expect(handlerAt).toBeGreaterThan(-1);
+    expect(daemon.slice(handlerAt, handlerAt + 220)).toContain("log(message.summary)");
   });
 });

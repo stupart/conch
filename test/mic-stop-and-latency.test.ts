@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { dispatchSocketTurnEvent } from "../src/daemon.ts";
+import { dispatchSocketTurnEvent } from "../src/control-server.ts";
 import type { TurnEvent } from "../src/hook.ts";
 
 const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
