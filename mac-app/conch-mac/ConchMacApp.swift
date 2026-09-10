@@ -6,15 +6,35 @@ import UserNotifications
 @main
 struct ConchMacApp: App {
     @NSApplicationDelegateAdaptor(ConchAppDelegate.self) private var appDelegate
-    @StateObject private var store = StateStore()
-    @StateObject private var remotes = RemoteMacStore()
+    @StateObject private var store: StateStore
+    @StateObject private var remotes: RemoteMacStore
+    /// C9b Cut B: reads both stores above; built here so it can.
+    @StateObject private var audio: AudioHolderStore
+
+    init() {
+        let store = StateStore()
+        let remotes = RemoteMacStore()
+        _store = StateObject(wrappedValue: store)
+        _remotes = StateObject(wrappedValue: remotes)
+        _audio = StateObject(wrappedValue: AudioHolderStore(local: store, remotes: remotes))
+    }
 
     var body: some Scene {
         WindowGroup("conch") {
             ContentView()
                 .environmentObject(store)
                 .environmentObject(remotes)
+                .environmentObject(audio)
                 .environmentObject(appDelegate.daemon)
+                .onReceive(
+                    NotificationCenter.default.publisher(
+                        for: NSApplication.willTerminateNotification
+                    )
+                ) { _ in
+                    // Fire-and-forget (F14d): nothing here waits on a socket.
+                    // A lost release costs the other Mac one lease of silence.
+                    audio.releaseOnQuit()
+                }
                 .frame(minWidth: 640, minHeight: 400)
                 .preferredColorScheme(.dark)
                 .background(WindowBackgroundConfigurator())
@@ -81,6 +101,7 @@ struct ConchMacApp: App {
             // Every scene that reads these has to be handed them itself.
             .environmentObject(store)
             .environmentObject(remotes)
+            .environmentObject(audio)
             .environmentObject(appDelegate.daemon)
         }
     }

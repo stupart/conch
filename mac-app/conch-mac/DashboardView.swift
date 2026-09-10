@@ -143,6 +143,7 @@ struct DashboardView: View {
     let onSelectRemote: (RemoteSessionID) -> Void
     @EnvironmentObject private var store: StateStore
     @EnvironmentObject private var daemon: DaemonHost
+    @EnvironmentObject private var audio: AudioHolderStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let state: PublishedState?
@@ -233,6 +234,85 @@ struct DashboardView: View {
                     Rectangle()
                         .fill(ConchPalette.divider)
                         .frame(height: 1)
+                }
+
+                // C9b Cut B. Another Mac holds this one's voice and ear: say so,
+                // and offer the one control that changes it. Typed sends and
+                // everything else keep working; only the mic and the mode
+                // control below are dimmed.
+                if let host = audio.controlledBy {
+                    HStack(spacing: 10) {
+                        Image(systemName: "speaker.slash")
+                            .font(.system(size: 10.5, weight: .medium))
+                        Text("Controlled by \(host) —")
+                            .font(ConchTypography.font(size: 11.5))
+                        Button("Take it", action: audio.takeIt)
+                            .buttonStyle(.plain)
+                            .font(ConchTypography.font(size: 11, weight: .medium))
+                            .foregroundStyle(ConchPalette.brandCyan)
+                        Spacer(minLength: 8)
+                    }
+                    .foregroundStyle(ConchPalette.textDim)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ConchPalette.raised)
+
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(height: 1)
+                } else if !audio.silentHosts.isEmpty {
+                    // Drawn from the PEER's document, and only while it is online.
+                    HStack(spacing: 10) {
+                        Image(systemName: "speaker.wave.2")
+                            .font(.system(size: 10.5, weight: .medium))
+                        Text("You hold audio · \(audio.silentHosts.joined(separator: ", ")) is silent")
+                            .font(ConchTypography.font(size: 11.5))
+                        Spacer(minLength: 8)
+                        Button("Give it back", action: audio.releaseAll)
+                            .buttonStyle(.plain)
+                            .font(ConchTypography.font(size: 11, weight: .medium))
+                            .foregroundStyle(ConchPalette.textDim)
+                    }
+                    .foregroundStyle(ConchPalette.brandCyan)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ConchPalette.raised)
+
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(height: 1)
+                } else if !audio.takeableHosts.isEmpty {
+                    // Both Macs local: the first transfer has to start somewhere.
+                    HStack(spacing: 10) {
+                        Image(systemName: "speaker.wave.1")
+                            .font(.system(size: 10.5, weight: .medium))
+                        Text("\(audio.takeableHosts.joined(separator: ", ")) speaks for itself —")
+                            .font(ConchTypography.font(size: 11.5))
+                        Button("Take it", action: audio.takeIt)
+                            .buttonStyle(.plain)
+                            .font(ConchTypography.font(size: 11, weight: .medium))
+                            .foregroundStyle(ConchPalette.brandCyan)
+                        Spacer(minLength: 8)
+                    }
+                    .foregroundStyle(ConchPalette.textDim)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ConchPalette.raised)
+
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(height: 1)
+                }
+                if let note = audio.message {
+                    Text(note)
+                        .font(ConchTypography.font(size: 11))
+                        .foregroundStyle(ConchPalette.statusWaiting)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 4)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 if store.pluginHintVisible {
@@ -466,6 +546,7 @@ private struct DashboardHeader: View {
                 isManual: isManual,
                 modeScope: modeScope,
                 isLogDrawerOpen: isLogDrawerOpen,
+                audioHeldElsewhere: state?.audioControl.isLocal == false,
                 actions: actions
             )
         }
@@ -483,6 +564,8 @@ private struct HeaderControls: View {
     let isManual: Bool
     let modeScope: String
     let isLogDrawerOpen: Bool
+    /// C9b Cut B: another Mac holds the audio, so auto/manual is not this window's to set.
+    let audioHeldElsewhere: Bool
     let actions: DashboardActions
 
     var body: some View {
@@ -491,6 +574,7 @@ private struct HeaderControls: View {
             ModeToggle(
                 isManual: isManual,
                 scope: modeScope,
+                isDisabled: audioHeldElsewhere,
                 action: actions.onPauseOrResume
             )
             HeaderButton(
@@ -1806,6 +1890,7 @@ private struct ConversationPane: View {
             isWorking: row.status == .working,
             voiceState: voiceState(for: row),
             voiceLevel: voiceLevel(for: row),
+            audioHeldElsewhere: state?.audioControl.isLocal == false,
             onSend: { text in
                 store.send(.inject(sessionId: row.id, label: row.label, text: text))
             },
@@ -2812,11 +2897,13 @@ private struct AllSessionsRow: View {
 private struct ModeToggle: View {
     let isManual: Bool
     let scope: String
+    var isDisabled = false
     let action: () -> Void
 
     @State private var isHovered = false
 
     private var help: String {
+        if isDisabled { return "Controlled by another Mac — press Take it to switch modes here." }
         return isManual
             ? "Manual — conch stays quiet and waits. Switch \(scope) to auto."
             : "Auto — finished turns read aloud and the mic opens itself. Switch \(scope) to manual."
@@ -2848,6 +2935,8 @@ private struct ModeToggle: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .opacity(isDisabled ? 0.35 : 1)
         .onHover { isHovered = $0 }
         .help(help)
         .accessibilityLabel(help)

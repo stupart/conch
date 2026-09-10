@@ -44,6 +44,33 @@ them on the new laptop on 2026-09-10; the ones already fixed say so.
 | 2 | scan the QR | the QR only exists with a relay, and `phone-relay-url` is empty on a fresh machine; the Worker URL lived only in the old Mac's settings | **fixed** in part: the tab names the setting and the command. **Open, Tyler's call**: ship the deployed relay URL as the default so a fresh install gets a QR with no setup |
 | 3 | the phone connects | the pairing is one-per-phone; pairing a new Mac silently un-pairs the old | documented in `PairingStore`; open: say it on the phone before replacing |
 
+## Two Macs: how to try it
+
+Both Macs run the conch app (it hosts the daemon) with `phone` on, on the same
+LAN. Call them A (the one you are sitting at) and B.
+
+1. **Pair.** On B: Settings → Phone app; note the host and the six-digit code.
+   On A: Settings → Phone app → Other Macs → "Add another Mac…", enter B's
+   host, port (8674) and the code. B's sessions appear under B's host in A's
+   ledger; typed sends already work from here.
+2. **Take it.** Each Mac starts local: both speak and listen for their own
+   sessions, exactly as before. Once B is online in A's ledger, A's window
+   shows "<B host> speaks for itself — Take it". Press **Take it** on the Mac
+   in front of you. From then on B's window shows "Controlled by <A host> —
+   Take it", and pressing that moves the voice back the other way.
+3. **What you should hear where.** After A takes it: B stops mid-word if it
+   was reading, B's mic closes, and B's window dims its composer mic and the
+   Auto/Manual control. A's window shows "You hold audio · <B host> is
+   silent". When a session on B finishes a turn, A rings no bell for it but
+   speaks the announcement, labelled "<B host> · <session>", in that
+   session's voice. A recite on B is spoken on A; a wake on B is refused in
+   B's log. B's own sessions still show every state change in B's window,
+   and typing into them on either Mac works as before.
+4. **Giving it back.** Press Take it on B (or "Give it back" on A). If A's
+   app quits or loses the LAN, B speaks again by itself within 90 seconds.
+   A phone paired to B still wins on B: while the phone holds B's audio, B's
+   announcements go to the phone, not to A.
+
 ## The minimum, if the two open decisions go the simple way
 
 Brew path: `brew install stupart/tap/conch`, allow the microphone, scan the
