@@ -1,3 +1,4 @@
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import {
   chmod,
@@ -8,7 +9,7 @@ import {
 } from "node:fs/promises";
 import { CONCH_VERSION } from "../src/version.ts";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative, isAbsolute } from "node:path";
 import {
   MCP_PROTOCOL_VERSION,
   MCP_TOOLS,
@@ -878,6 +879,51 @@ describe("real MCP tool handlers with injected dependencies", () => {
       },
     });
     expect(h.calls.opened).toEqual([link]);
+  });
+
+  test("review_to_front publishes a relative file link as an absolute path", async () => {
+    // The tool stats a relative link against its own cwd — the session's — so
+    // validation passed, and then the raw string reached the Mac app, which
+    // resolved it against ITS cwd and previewed the deliverable as missing.
+    // Absolute on the wire, or the app cannot find the file the tool just
+    // confirmed exists.
+    const root = mkdtempSync(join(tmpdir(), "conch-review-link-"));
+    const absolute = join(root, "handoff.md");
+    writeFileSync(absolute, "# handoff\n");
+    const relativeLink = relative(process.cwd(), absolute);
+    expect(isAbsolute(relativeLink)).toBe(false);
+
+    const h = fakeHarness();
+    const handlers = createMcpToolHandlers({
+      claudeDir: "/virtual/claude",
+      socketPath: "/virtual/conch.sock",
+    }, h.dependencies);
+
+    await callTool(handlers, "review_to_front", {
+      summary: "the handoff",
+      link: relativeLink,
+      session: "Build",
+    });
+
+    const published = (h.calls.daemon[0]?.event as { review?: { link?: string } }).review?.link;
+    expect(published).toBe(absolute);
+    expect(h.calls.opened).toEqual([absolute]);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("review_to_front leaves a web link exactly as given", async () => {
+    const h = fakeHarness();
+    const handlers = createMcpToolHandlers({
+      claudeDir: "/virtual/claude",
+      socketPath: "/virtual/conch.sock",
+    }, h.dependencies);
+    await callTool(handlers, "review_to_front", {
+      summary: "a page",
+      link: "https://example.com/review",
+      session: "Build",
+    });
+    const published = (h.calls.daemon[0]?.event as { review?: { link?: string } }).review?.link;
+    expect(published).toBe("https://example.com/review");
   });
 
   test("review_to_front requires the worker session and lists live session labels", async () => {
