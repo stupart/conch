@@ -93,6 +93,12 @@ final class DaemonHost: ObservableObject {
         // Names us as the owner in the daemon's identity file, so another copy
         // of this app adopting it can say so rather than "outside this app".
         environment["CONCH_STARTED_BY"] = "app"
+        environment["PATH"] = DaemonHost.daemonPath(inherited: environment["PATH"])
+        // A Finder- or login-item-launched app carries the bare system PATH,
+        // so the daemon it spawns could not find `mlx_audio.server` (Kokoro,
+        // under ~/.local/bin) or a brew tool the way the launchd service can:
+        // the service plist lists these same directories (src/install.ts).
+        // Found the night of 2026-09-10: Kokoro installed, daemon still on `say`.
         task.environment = environment
 
         // Capture output rather than inheriting: a GUI app has no terminal, so
@@ -249,6 +255,20 @@ final class DaemonHost: ObservableObject {
         // crash loop; otherwise a daemon restarted five times over a long
         // session would refuse to come back.
         restartAttempts = 0
+    }
+
+    /// The PATH the daemon needs, whatever the app was launched with: brew,
+    /// uv tools (mlx_audio.server), bun, then whatever was inherited.
+    static func daemonPath(inherited: String?, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String {
+        let wanted = [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            home.appendingPathComponent(".local/bin").path,
+            home.appendingPathComponent(".bun/bin").path,
+        ]
+        let existing = (inherited ?? "/usr/bin:/bin:/usr/sbin:/sbin").split(separator: ":").map(String.init)
+        var seen = Set<String>()
+        return (wanted + existing).filter { seen.insert($0).inserted }.joined(separator: ":")
     }
 
     /// Is a daemon already listening?
