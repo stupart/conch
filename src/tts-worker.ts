@@ -250,14 +250,20 @@ export function materializeTtsWorkerScript(): string {
  * Resolve the interpreter belonging to the installed mlx_audio.server tool.
  * uv console scripts use an absolute shebang into their isolated environment.
  */
-export function resolveMlxAudioPython(explicit: string, serverBin: string): string | null {
+export function resolveMlxAudioPython(explicit: string, serverBin: string, home = homedir()): string | null {
   const requested = explicit.trim();
   if (requested) {
     const resolved = requested.includes("/") ? requested : Bun.which(requested);
     return resolved && existsSync(resolved) ? resolved : null;
   }
 
-  const launcher = serverBin.includes("/") ? serverBin : Bun.which(serverBin);
+  // `uv tool install` puts the launcher in ~/.local/bin, which is on the
+  // launchd service's PATH and the app-spawned daemon's PATH but not on every
+  // shell's — so `conch doctor` said "not found" while the daemon had Kokoro
+  // (2026-09-11). Look there when PATH does not have it.
+  const launcher = serverBin.includes("/")
+    ? serverBin
+    : Bun.which(serverBin) ?? [join(home, ".local", "bin", serverBin)].find((candidate) => existsSync(candidate)) ?? null;
   if (!launcher || !existsSync(launcher)) return null;
   try {
     const firstLine = readFileSync(launcher, "utf8").split(/\r?\n/, 1)[0] ?? "";
