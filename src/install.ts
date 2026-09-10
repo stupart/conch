@@ -584,15 +584,57 @@ export function serviceRestartCommands(tmux: string, uid: number): string[][] {
   ];
 }
 
+/**
+ * `conch service off`, and what the Mac app's "Let the app own it" runs (A3):
+ * unload the agent by its label — never a kill by pattern — and drop the plist
+ * so login does not bring it back. Both effects are injected for the test.
+ */
+export function serviceOff(
+  uid: number,
+  plistPath: string,
+  run: (argv: string[]) => unknown = (argv) => Bun.spawnSync(argv),
+  unlink: (path: string) => void = unlinkSync,
+): void {
+  run(["launchctl", "bootout", `gui/${uid}/${SERVICE_LABEL}`]);
+  try {
+    unlink(plistPath);
+  } catch {}
+}
+
+export function renderServicePlist(
+  { daemonArgv, conchRoot, path, carriedEnv }: { daemonArgv: string[]; conchRoot: string; path: string; carriedEnv: string },
+): string {
+  // CONCH_STARTED_BY is how the daemon's identity file names launchd as its
+  // owner, which is what lets the Mac app say so instead of "outside this app".
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${SERVICE_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>${daemonArgv.map((arg) => `<string>${arg}</string>`).join("")}</array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>WorkingDirectory</key><string>${conchRoot}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>${path}</string>
+    <key>CONCH_KEYSTROKE_FALLBACK</key><string>1</string>
+    <key>CONCH_STARTED_BY</key><string>launchd</string>${carriedEnv}
+  </dict>
+  <key>StandardOutPath</key><string>/tmp/conch-supervisor.log</string>
+  <key>StandardErrorPath</key><string>/tmp/conch-supervisor.log</string>
+</dict>
+</plist>
+`;
+}
+
 export async function runService(cfg: Config, action: "install" | "off"): Promise<void> {
   const uid = process.getuid?.() ?? 501;
   const plistPath = join(homedir(), "Library/LaunchAgents", `${SERVICE_LABEL}.plist`);
 
   if (action === "off") {
-    Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${SERVICE_LABEL}`]);
-    try {
-      unlinkSync(plistPath);
-    } catch {}
+    serviceOff(uid, plistPath);
     console.log("[conch] service removed — the daemon it was running has stopped");
     return;
   }
@@ -628,26 +670,7 @@ export async function runService(cfg: Config, action: "install" | "off"): Promis
     "/usr/bin",
     "/bin",
   ].join(":");
-  const plist = `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>${SERVICE_LABEL}</string>
-  <key>ProgramArguments</key>
-  <array>${daemonArgv.map((arg) => `<string>${arg}</string>`).join("")}</array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>WorkingDirectory</key><string>${conchRoot}</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key><string>${path}</string>
-    <key>CONCH_KEYSTROKE_FALLBACK</key><string>1</string>${carriedEnv}
-  </dict>
-  <key>StandardOutPath</key><string>/tmp/conch-supervisor.log</string>
-  <key>StandardErrorPath</key><string>/tmp/conch-supervisor.log</string>
-</dict>
-</plist>
-`;
+  const plist = renderServicePlist({ daemonArgv, conchRoot, path, carriedEnv });
   mkdirSync(dirname(plistPath), { recursive: true });
   await Bun.write(plistPath, plist);
 
