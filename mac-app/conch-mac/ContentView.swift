@@ -326,6 +326,7 @@ private struct StartSessionSheet: View {
     fileprivate enum StartMode: String, CaseIterable, Identifiable {
         case new = "New"
         case resume = "Resume"
+        case teleport = "Teleport by ID…"
         var id: String { rawValue }
     }
 
@@ -337,6 +338,8 @@ private struct StartSessionSheet: View {
     @State private var cwd = FileManager.default.homeDirectoryForCurrentUser.path
     @State private var isStarting = false
     @State private var error: String?
+    @State private var teleportSessionId = ""
+    @State private var openedTeleport = false
     /// The directory Codex will not run in until it is told to, if any.
     @State private var pendingTrust: String?
     /// Directories answered "yes" in this sheet. Deliberately not persisted:
@@ -351,12 +354,20 @@ private struct StartSessionSheet: View {
     @State private var isLoadingResumable = false
 
     private var canStart: Bool {
-        !isStarting && (mode == .new || resumeSelection != nil)
+        guard !isStarting, !openedTeleport else { return false }
+        switch mode {
+        case .new: return true
+        case .resume: return resumeSelection != nil
+        case .teleport:
+            return !teleportSessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && cwd.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/")
+        }
     }
 
     /// A resumed session brings its own agent and its own folder. Asking again
     /// is a question with a known answer and a wrong setting available.
     private var effectiveBackend: ConchAgentBackend {
+        if mode == .teleport { return .claude }
         guard mode == .resume, let picked = resumeSelection else { return backend }
         return picked.backend.lowercased() == "codex" ? .codex : .claude
     }
@@ -380,15 +391,21 @@ private struct StartSessionSheet: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .disabled(isStarting)
 
-            if mode == .new {
-                Picker("Agent", selection: $backend) {
-                    ForEach(ConchAgentBackend.allCases) { backend in
-                        Text(backend.label).tag(backend)
+            if mode != .resume {
+                if mode == .new {
+                    Picker("Agent", selection: $backend) {
+                        ForEach(ConchAgentBackend.allCases) { backend in
+                            Text(backend.label).tag(backend)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                } else {
+                    TextField("Claude cloud session ID", text: $teleportSessionId)
+                        .textFieldStyle(.roundedBorder)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Working folder")
@@ -412,10 +429,19 @@ private struct StartSessionSheet: View {
                 )
             }
 
-            Text(footnote)
-                .font(ConchTypography.font(size: 11.5))
-                .foregroundStyle(ConchPalette.textDim)
-                .fixedSize(horizontal: false, vertical: true)
+            if mode == .teleport {
+                Text("Teleport — create a local copy.")
+                    .font(ConchTypography.font(size: 11.5, weight: .semibold))
+                Text("Opens this Claude session in Terminal on this Mac, in \(effectiveCwd.trimmingCharacters(in: .whitespacesAndNewlines)). New work stays on this Mac and does not update the original Claude app session. Requires internet access and the same Claude.ai account. Claude may switch Git branches and ask to stash local changes, including untracked files.")
+                    .font(ConchTypography.font(size: 11.5))
+                    .foregroundStyle(ConchPalette.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(footnote)
+                    .font(ConchTypography.font(size: 11.5))
+                    .foregroundStyle(ConchPalette.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if let error {
                 Text(error)
@@ -428,7 +454,7 @@ private struct StartSessionSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button(isStarting ? "Starting…" : "Start") {
+                Button(isStarting ? "Opening…" : (mode == .teleport ? "Open in Terminal" : "Start")) {
                     start()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -438,6 +464,11 @@ private struct StartSessionSheet: View {
         .padding(24)
         .frame(width: 430)
         .background(ConchPalette.bg)
+        .alert("Opened in Terminal on this Mac", isPresented: $openedTeleport) {
+            Button("Done") { dismiss() }
+        } message: {
+            Text("Continue in Terminal to open your local copy. Claude may ask you to sign in or trust the folder. This does not confirm that the session downloaded or the workspace is ready.")
+        }
         .alert(
             "Do you trust this folder?",
             isPresented: Binding(
@@ -517,6 +548,7 @@ private struct StartSessionSheet: View {
             let outcome = await store.startSession(
                 backend: effectiveBackend,
                 resumeSessionId: mode == .resume ? resumeSelection?.sessionId : nil,
+                teleportSessionId: mode == .teleport ? teleportSessionId : nil,
                 cwd: effectiveCwd,
                 trustFolder: trustedFolders.contains(effectiveCwd)
             )
@@ -534,6 +566,11 @@ private struct StartSessionSheet: View {
                 return
             case .started:
                 break
+            }
+            if mode == .teleport {
+                isStarting = false
+                openedTeleport = true
+                return
             }
             // Started is not the same as running.
             //

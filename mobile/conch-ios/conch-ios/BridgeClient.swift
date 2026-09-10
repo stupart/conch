@@ -333,8 +333,9 @@ final class BridgeClient: ObservableObject {
     ///
     /// `cwd` is either the fresh folder the person typed or the folder carried
     /// by a picked historical session.
-    func startSession(backend: AgentBackend, resumeSessionId: String?, cwd: String? = nil) async -> Bool {
+    func startSession(backend: AgentBackend, resumeSessionId: String?, teleportSessionId: String? = nil, cwd: String? = nil) async -> Bool {
         let resumeID = resumeSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let teleportID = teleportSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let workingDirectory = cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         var message: [String: Any] = [
             "kind": "session-start",
@@ -343,11 +344,14 @@ final class BridgeClient: ObservableObject {
         if !resumeID.isEmpty {
             message["resumeSessionId"] = resumeID
         }
+        if !teleportID.isEmpty {
+            message["teleportSessionId"] = teleportID
+        }
         if !workingDirectory.isEmpty {
             message["cwd"] = workingDirectory
         }
         guard let reply = await postControlRaw(message) else {
-            let failure = "The Mac didn't confirm that \(backend.title) started."
+            let failure = "The Mac didn't confirm that \(backend.title) opened in Terminal."
             lastError = failure
             _ = await reportAppError(operation: "session-start", message: failure)
             return false
@@ -360,8 +364,9 @@ final class BridgeClient: ObservableObject {
         }
         guard reply["kind"] as? String == "session-started",
               reply["backend"] as? String == backend.rawValue,
-              reply["resumed"] as? Bool == !resumeID.isEmpty else {
-            let failure = "The Mac didn't confirm that \(backend.title) started."
+              reply["resumed"] as? Bool == !resumeID.isEmpty,
+              (reply["teleported"] as? Bool == true) == !teleportID.isEmpty else {
+            let failure = "The Mac didn't confirm that \(backend.title) opened in Terminal."
             lastError = failure
             _ = await reportAppError(operation: "session-start", message: failure)
             return false

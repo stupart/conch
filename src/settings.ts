@@ -17,6 +17,7 @@ import {
   type AgentCapabilitiesRead,
 } from "./agent-capabilities.ts";
 import type { ResumableSession } from "./resumable.ts";
+import { teleportRequestError } from "./session-lifecycle.ts";
 import { normalizeSessionLabel } from "./sessions.ts";
 import { isValidVoiceName } from "./speak.ts";
 
@@ -740,6 +741,7 @@ export type RuntimeControlMessage =
     /** Answering Codex's trust prompt in advance, for this launch only. */
     trustFolder?: boolean;
     resumeSessionId?: string;
+    teleportSessionId?: string;
     /** Optional because a phone has no meaningful Mac filesystem picker. */
     cwd?: string;
   }
@@ -833,6 +835,8 @@ export type RuntimeControlResponse =
     kind: "session-started";
     backend: "claude" | "codex";
     resumed: boolean;
+    /** Opened in Terminal; does not verify authentication, download or checkout. */
+    teleported?: true;
     /** The terminal will ask you to trust this folder before the agent starts. */
     awaitingTrust?: boolean;
   }
@@ -1074,6 +1078,12 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
       if (!validated.ok) return validated;
       resumeSessionId = validated.value;
     }
+    let teleportSessionId: string | undefined;
+    if (value.teleportSessionId !== undefined) {
+      const validated = validateSessionId(value.teleportSessionId);
+      if (!validated.ok) return validated;
+      teleportSessionId = validated.value;
+    }
     let cwd: string | undefined;
     if (value.cwd !== undefined) {
       const validated = boundedPrintable(value.cwd, "cwd", 4_096);
@@ -1081,6 +1091,8 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
       if (!validated.value.startsWith("/")) return { ok: false, err: "cwd must be an absolute path" };
       cwd = validated.value;
     }
+    const teleportError = teleportRequestError({ backend: value.backend, resumeSessionId, teleportSessionId, cwd });
+    if (teleportError) return { ok: false, err: teleportError };
     return {
       ok: true,
       value: {
@@ -1090,6 +1102,7 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
         // because they said so — it is never inferred.
         ...(value.trustFolder === true ? { trustFolder: true as const } : {}),
         ...(resumeSessionId ? { resumeSessionId } : {}),
+        ...(teleportSessionId ? { teleportSessionId } : {}),
         ...(cwd ? { cwd } : {}),
       },
     };
@@ -1215,6 +1228,7 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
         kind: "session-started",
         backend: value.backend,
         resumed: value.resumed,
+        ...(value.teleported === true ? { teleported: true as const } : {}),
         ...(value.awaitingTrust === true ? { awaitingTrust: true } : {}),
       },
     };

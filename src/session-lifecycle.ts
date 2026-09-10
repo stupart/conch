@@ -6,6 +6,8 @@ export type SessionBackend = "claude" | "codex";
 export interface StartSessionRequest {
   backend: SessionBackend;
   resumeSessionId?: string;
+  /** Claude cloud session to open as a new local copy, never a live join. */
+  teleportSessionId?: string;
   cwd?: string;
   /**
    * Start without permission prompts: `--dangerously-skip-permissions` for
@@ -52,12 +54,29 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
+/** Extra launch constraints for a cloud id passed as a CLI option's value. */
+export function teleportRequestError(request: StartSessionRequest): string | undefined {
+  if (request.teleportSessionId === undefined) return;
+  if (request.backend === "codex") return "Codex has no teleport";
+  if (request.resumeSessionId !== undefined) return "resumeSessionId and teleportSessionId are mutually exclusive";
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,255}$/.test(request.teleportSessionId.trim())) {
+    return "teleport session id must contain only letters, numbers, underscores or hyphens, and start with a letter or number";
+  }
+  if (!request.cwd?.trim()) return "cwd is required for teleport";
+  if (!request.cwd.trim().startsWith("/")) return "cwd must be an absolute path";
+}
+
 /** A Terminal-started agent replaces its shell, so leaving the agent also completes the tab cleanly. */
 export function terminalSessionCommand(request: StartSessionRequest): string {
+  const error = teleportRequestError(request);
+  if (error) throw new Error(error);
   const cwd = request.cwd?.trim() || homedir();
   const executable = request.backend === "claude" ? "claude" : "codex";
   const resume = request.resumeSessionId?.trim();
-  const args = resume
+  const teleport = request.teleportSessionId?.trim();
+  const args = teleport
+    ? ` --teleport ${shellQuote(teleport)}`
+    : resume
     ? request.backend === "claude"
       ? ` --resume ${shellQuote(resume)}`
       : ` resume ${shellQuote(resume)}`
@@ -123,6 +142,7 @@ export async function startTerminalSession(
   request: StartSessionRequest,
   dependencies: SessionLifecycleDependencies = {},
 ): Promise<void> {
+  const command = terminalSessionCommand(request);
   const spawn = dependencies.spawn ?? defaultSpawn;
   const executable = request.backend === "claude" ? "claude" : "codex";
   const which = dependencies.which ?? ((name: string) => Bun.which(name));
@@ -134,7 +154,6 @@ export async function startTerminalSession(
   } catch {
     throw new Error(`session directory does not exist: ${cwd}`);
   }
-  const command = terminalSessionCommand(request);
   const child = spawn([
     "osascript",
     "-e", "on run argv",
