@@ -874,6 +874,11 @@ export function createControlServer(options: ControlServerOptions): ControlServe
       if (newline !== -1) void handleLine(buf.slice(0, newline));
     });
     sock.on("end", () => {
+      // Bun 1.4 emits `end` after `destroy()`, and the cap above destroys with
+      // `handled` still false — so the oversized frame it just refused was
+      // parsed and dispatched from here, unacknowledged (A16). A destroyed
+      // connection has nothing left to answer.
+      if (sock.destroyed) return;
       if (!handled && buf.trim()) void handleLine(buf.trim());
       else if (!handled) sock.end();
     });
