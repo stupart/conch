@@ -80,7 +80,7 @@ import {
 } from "./listen.ts";
 import type { RecorderHandle } from "./dictation-controller.ts";
 import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
-import { renameProviderSession } from "./provider-rename.ts";
+import { injectProviderCommand, renameProviderSession } from "./provider-rename.ts";
 import { classify, classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
 import {
   describeNotice,
@@ -4205,6 +4205,21 @@ export async function runDaemon(cfg: Config): Promise<void> {
     restore: restoreDismissedSession,
     // Same raise `revealOnTurn` uses: Terminal.app by tty, no focus steal.
     reveal: (target) => target.pid ? revealSessionWindow(target.pid) : Promise.resolve(false),
+    // B2: `/model <model>` typed into the session's own prompt, the way the
+    // `/rename` sync is — Claude Code or Codex handles it natively.
+    setModel: (target, model) => injectProviderCommand(cfg, target, `/model ${model}`).then((delivery) => {
+      if (delivery.kind === "delivered") {
+        log(`sent /model ${model} to "${target.label}" via ${delivery.via}`);
+        return true;
+      }
+      recordDaemonError(
+        "session-model",
+        `Could not send /model ${model} to the session: ${delivery.reason}`,
+        target.sessionId,
+        { model, backend: target.backend ?? "claude" },
+      );
+      return false;
+    }),
   };
   sessionActionsOverlay = new SessionActionsOverlay({
     controller: sessionActions,

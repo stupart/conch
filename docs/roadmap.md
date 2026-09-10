@@ -135,7 +135,7 @@ Still worth doing separately (not blocking):
 | | add | lands in |
 |---|---|---|
 | B1 | ~~**Per-kind metadata in the inspector**~~ — **done**. Transport and endpoint, plugin version and marketplace, skill visibility and who may invoke it, tool approval mode: a summary line on every row, the full set in the expanded detail. The readers already carried it; the Swift model was discarding it, which is why two `context7` servers read identically when one runs a local binary and the other reaches a remote host. | UI |
-| B2 | **Change the model mid-session.** Both agents expose `/model`; Codex records per-thread model + effort, which the inspector already shows. Same shape as rename: a local slash command into a routable session. | V + UI |
+| B2 | ~~**Change the model mid-session.**~~ — **done**. A `set-model` session command the daemon delivers as a typed `/model <model>` through the same `injectText` route as the `/rename` sync (`conch model <session> <model>`, and a Model row with a field in the Mac inspector); no effort argument, because the installed Codex's `/model` is a picker with no argument form. | V + UI |
 | B3 | **The write pass** — toggle plugins, skills, MCP servers, and per-tool permissions. Needs diff preview, scope, atomic write, readback, rollback, and the "next session" label. | C |
 | B4 | **The slash-command palette** — conch's own commands, provider commands, skills, MCP prompts, session actions, in one place. | C + UI |
 | B5 | **Approvals** (the four-way decision) and **checkpoint/revert**. Both blocked on ten seconds with permissions on. | V |
