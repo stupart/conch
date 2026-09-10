@@ -23,7 +23,7 @@ describe("iPhone Phase 2 daily controls", () => {
     );
 
     expect(ledger).toContain("StartSessionSheet(bridge: bridge)");
-    expect(ledger).toContain('Toggle("Resume an existing session"');
+    expect(ledger).toContain('case resume = "Resume"');
     expect(ledger).toContain("ForEach(BridgeClient.AgentBackend.allCases)");
     expect(ledger).toContain('Text("Working folder")');
     expect(ledger).toContain('TextField("/Users/you/project", text: $workingFolder)');

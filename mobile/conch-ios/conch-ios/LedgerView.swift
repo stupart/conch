@@ -576,10 +576,19 @@ struct ContextMeter: View {
 }
 
 private struct StartSessionSheet: View {
+    private enum StartMode: String, CaseIterable, Identifiable {
+        case new = "New"
+        case resume = "Resume"
+        case teleport = "Teleport by ID…"
+        var id: String { rawValue }
+    }
+
     @ObservedObject var bridge: BridgeClient
     @Environment(\.dismiss) private var dismiss
     @State private var backend = BridgeClient.AgentBackend.claude
-    @State private var resuming = false
+    @State private var mode = StartMode.new
+    @State private var teleportSessionId = ""
+    @State private var openedTeleport = false
     @State private var workingFolder = ""
     @State private var starting = false
     @State private var error: String?
@@ -590,12 +599,40 @@ private struct StartSessionSheet: View {
     @State private var resumable: [ResumableSession] = []
     @State private var isLoadingResumable = false
 
+    private var resuming: Bool { mode == .resume }
+
+    private var canStart: Bool {
+        guard !starting, !openedTeleport else { return false }
+        switch mode {
+        case .new: return true
+        case .resume: return resumeSelection != nil
+        case .teleport:
+            return !teleportSessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && freshWorkingFolder?.hasPrefix("/") == true
+        }
+    }
+
+    private var effectiveBackend: BridgeClient.AgentBackend {
+        if mode == .teleport { return .claude }
+        if resuming { return resumeSelection?.backend.lowercased() == "codex" ? .codex : .claude }
+        return backend
+    }
+
     var body: some View {
         NavigationStack {
             Form {
+                Section {
+                    Picker("Session", selection: $mode) {
+                        ForEach(StartMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(starting)
+                }
                 // A resumed session brings its own agent — asking again is a
                 // question with a known answer and a wrong setting available.
-                if !resuming {
+                if mode == .new {
                     Section("Agent") {
                         Picker("Agent", selection: $backend) {
                             ForEach(BridgeClient.AgentBackend.allCases) { backend in
@@ -604,7 +641,16 @@ private struct StartSessionSheet: View {
                         }
                         .pickerStyle(.segmented)
                     }
+                }
 
+                if !resuming {
+                    if mode == .teleport {
+                        Section("Claude cloud session ID") {
+                            TextField("Cloud session ID", text: $teleportSessionId)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                        }
+                    }
                     Section {
                         TextField("/Users/you/project", text: $workingFolder)
                             .textInputAutocapitalization(.never)
@@ -612,15 +658,22 @@ private struct StartSessionSheet: View {
                     } header: {
                         Text("Working folder")
                     } footer: {
-                        Text("An absolute folder on your Mac. Leave blank to start in your Mac home folder.")
+                        Text(mode == .teleport
+                            ? "An absolute folder on your Mac is required."
+                            : "An absolute folder on your Mac. Leave blank to start in your Mac home folder.")
                     }
                 }
 
-                Section {
-                    Toggle("Resume an existing session", isOn: $resuming)
-                } footer: {
-                    if !resuming {
-                        Text("The agent starts in a new Terminal window on your Mac.")
+                if mode == .teleport {
+                    Section {
+                        Text("Teleport — create a local copy.")
+                            .fontWeight(.semibold)
+                        Text("Opens this Claude session in Terminal on your Mac, in \(freshWorkingFolder ?? "the selected folder"). New work stays on your Mac and does not update the original Claude app session. Requires internet access and the same Claude.ai account. Claude may switch Git branches and ask to stash local changes, including untracked files.")
+                    }
+                } else if mode == .new {
+                    Section {
+                        Text("The agent opens in a new Terminal window on your Mac.")
+                            .foregroundStyle(Palette.textDim)
                     }
                 }
 
@@ -637,7 +690,7 @@ private struct StartSessionSheet: View {
             }
             .scrollContentBackground(.hidden)
             .background(Palette.bg)
-            .navigationTitle(resuming ? "Resume session" : "New session")
+            .navigationTitle(mode == .teleport ? "Teleport by ID…" : (resuming ? "Resume session" : "New session"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -645,12 +698,17 @@ private struct StartSessionSheet: View {
                         .disabled(starting)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(resuming ? "Resume" : "Start") { start() }
-                        .disabled(starting || (resuming && resumeSelection == nil))
+                    Button(mode == .teleport ? "Open in Terminal" : (resuming ? "Resume" : "Start")) { start() }
+                        .disabled(!canStart)
                 }
             }
         }
         .preferredColorScheme(.dark)
+        .alert("Opened in Terminal on your Mac", isPresented: $openedTeleport) {
+            Button("Done") { dismiss() }
+        } message: {
+            Text("Continue in Terminal on your Mac to open your local copy. Claude may ask you to sign in or trust the folder. This does not confirm that the session downloaded or the workspace is ready.")
+        }
         // `task(id:)` rather than `onChange`, so this fires when the sheet
         // APPEARS already in resume mode as well as when the toggle flips —
         // keying it to the toggle alone left a sheet opened straight into
@@ -726,19 +784,21 @@ private struct StartSessionSheet: View {
     }
 
     private func start() {
+        guard canStart else { return }
         starting = true
         error = nil
         Task {
             let started = await bridge.startSession(
-                backend: resuming
-                    ? (resumeSelection?.backend.lowercased() == "codex" ? .codex : .claude)
-                    : backend,
+                backend: effectiveBackend,
                 resumeSessionId: resuming ? resumeSelection?.sessionId : nil,
+                teleportSessionId: mode == .teleport ? teleportSessionId : nil,
                 cwd: resuming ? resumeSelection?.cwd : freshWorkingFolder
             )
             starting = false
-            if started { dismiss() }
-            else { error = bridge.lastError ?? "Couldn't start that session." }
+            if started {
+                if mode == .teleport { openedTeleport = true }
+                else { dismiss() }
+            } else { error = bridge.lastError ?? "Couldn't open that session in Terminal." }
         }
     }
 

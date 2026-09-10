@@ -341,6 +341,7 @@ export async function applyRuntimeControlMessage(
         kind: "session-started",
         backend: message.backend,
         resumed: Boolean(message.resumeSessionId),
+        ...(message.teleportSessionId ? { teleported: true as const } : {}),
         ...(awaitingTrust ? { awaitingTrust: true } : {}),
       };
     }

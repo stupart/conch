@@ -351,14 +351,17 @@ final class StateStore: ObservableObject {
     func startSession(
         backend: ConchAgentBackend,
         resumeSessionId: String?,
+        teleportSessionId: String? = nil,
         cwd: String?,
         trustFolder: Bool = false
     ) async -> StartOutcome {
         let resumed = Self.nonempty(resumeSessionId)
+        let teleport = Self.nonempty(teleportSessionId)
         let workingDirectory = Self.nonempty(cwd)
         let request = ConchSessionStartRequest(
             backend: backend,
             resumeSessionId: resumed,
+            teleportSessionId: teleport,
             cwd: workingDirectory,
             trustFolder: trustFolder ? true : nil
         )
@@ -382,7 +385,10 @@ final class StateStore: ObservableObject {
                 return .needsTrust(cwd: needs.cwd)
             case let .started(started)
                 where started.backend == backend.rawValue
-                    && started.resumed == (resumed != nil):
+                    && started.resumed == (resumed != nil)
+                    && (started.teleported == true) == (teleport != nil):
+                // A teleport acknowledgement only confirms the Terminal launch.
+                if teleport != nil { return .started }
                 // Not an error, but not nothing either: the session will not
                 // appear until the trust prompt in Terminal is answered.
                 return started.awaitingTrust == true

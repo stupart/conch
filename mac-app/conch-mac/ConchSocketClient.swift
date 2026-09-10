@@ -119,6 +119,7 @@ struct ConchSessionStartRequest: Encodable, Sendable {
     let kind = "session-start"
     let backend: ConchAgentBackend
     let resumeSessionId: String?
+    let teleportSessionId: String?
     let cwd: String?
     /// Answering Codex's trust question in advance, for this launch only. Only
     /// ever set because a person said yes in conch.
@@ -127,11 +128,13 @@ struct ConchSessionStartRequest: Encodable, Sendable {
     init(
         backend: ConchAgentBackend,
         resumeSessionId: String?,
+        teleportSessionId: String? = nil,
         cwd: String?,
         trustFolder: Bool? = nil
     ) {
         self.backend = backend
         self.resumeSessionId = resumeSessionId
+        self.teleportSessionId = teleportSessionId
         self.cwd = cwd
         self.trustFolder = trustFolder
     }
@@ -179,6 +182,8 @@ struct ConchSessionCloseRequest: Encodable, Sendable {
 struct ConchSessionStartedReply: Decodable, Equatable, Sendable {
     let backend: String
     let resumed: Bool
+    /// Terminal opened; Claude's cloud operation may still be pending.
+    let teleported: Bool?
     /// Claude Code will ask you to trust this folder before it starts, and
     /// writes no registry file until you answer — so conch cannot see the
     /// session and the app looks broken.
