@@ -1,8 +1,43 @@
-import { createServer, connect } from "node:net";
+import {
+  createControlServer,
+  type DeviceCommand,
+  type DeviceControlResponse,
+  type ConfigController,
+  type SessionCommandDispatchOptions,
+  type RuntimeControlDispatchOptions,
+  type SocketTurnEventCallbacks,
+  enrichTargetedAudioCommand,
+  dispatchSocketTurnEvent,
+  applySessionCommand,
+  applyRuntimeControlMessage,
+  applyConfigControlMessage,
+} from "./control-server.ts";
+export {
+  type ConfigController,
+  type ConfigControlPersistence,
+  type SocketControlDispatch,
+  type SessionCommandPauseLifecycle,
+  type SessionCommandDispatchOptions,
+  dispatchSessionControlMessage,
+  dispatchControlMessage,
+  type RuntimeControlDispatchOptions,
+  dispatchRuntimeControlMessage,
+  type SocketTurnEventValidation,
+  type PublishedInjectScope,
+  scopePublishedInjectEvent,
+  validateSocketTurnEvent,
+  validateAndScopeSocketTurnEvent,
+  type TargetedAudioCommandContext,
+  enrichTargetedAudioCommand,
+  type SocketTurnEventCallbacks,
+  isLightweightTargetedAudioCommand,
+  dispatchSocketTurnEvent,
+  anotherDaemonIsListening,
+} from "./control-server.ts";
 import { appendFileSync } from "node:fs";
 import { currentTurnText } from "./transcript-turn.ts";
 import {
-  chmodSync, existsSync, unlinkSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+  existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
@@ -215,17 +250,12 @@ import {
   SETTING_DESCRIPTORS,
   SETTING_REGISTRY,
   configSnapshotEntry,
-  isControlMessageCandidate,
   loadSettingResolutions,
   loadSettingsFile,
   resolveSettingFromLoaded,
   settingsPathFor,
   unsetSetting,
-  validateControlMessage,
-  validateRuntimeControlMessage,
-  validateSessionControlMessage,
   writeSetting,
-  type ControlResponse,
   type ConfigAck,
   type ConfigControlMessage,
   type ConfigControlResponse,
@@ -233,13 +263,9 @@ import {
   type SettingKey,
   type SettingResolution,
   type SettingValue,
-  type SessionControlMessage,
-  type SessionControlResponse,
-  type RuntimeControlMessage,
 } from "./settings.ts";
 import { SettingsOverlay } from "./settings-overlay.ts";
 import {
-  invokeSessionAction,
   RestoreSessionsOverlay,
   SessionActionsOverlay,
   type SessionActionsController,
@@ -248,11 +274,9 @@ import {
 import { createPublishThrottle } from "./publish-throttle.ts";
 import {
   readResumableSessionsResult,
-  type ResumableSessionsRead,
 } from "./resumable.ts";
 import {
   readAgentCapabilities,
-  type AgentCapabilitiesRead,
   type AgentCapabilityObservation,
 } from "./agent-capabilities.ts";
 
@@ -275,16 +299,6 @@ export interface ConfigControllerOptions {
   env?: Readonly<Record<string, string | undefined>>;
   settingsPath?: string;
   onLiveChange?(key: SettingKey, value: SettingValue): void;
-}
-
-export interface ConfigController {
-  handle(message: ConfigControlMessage): ConfigControlResponse;
-}
-
-export interface ConfigControlPersistence {
-  settingsPath: string;
-  set(path: string, key: unknown, value: unknown): unknown;
-  unset(path: string, key: unknown): unknown;
 }
 
 function withHookDiagnostic(resolution: SettingResolution, env: string): SettingResolution {
@@ -390,342 +404,6 @@ export function createConfigController(cfg: Config, options: ConfigControllerOpt
   };
 }
 
-export type SocketControlDispatch =
-  | { handled: false }
-  | { handled: true; response: ControlResponse };
-
-export interface SessionCommandPauseLifecycle {
-  open(): void;
-  close(): void;
-}
-
-export interface SessionCommandDispatchOptions {
-  controller: SessionActionsController;
-  pause: SessionCommandPauseLifecycle;
-  targetForSessionId(sessionId: string): SessionActionsTarget | null;
-  isDismissed?(sessionId: string): boolean;
-}
-
-function sessionCommandError(error: unknown): SessionControlResponse {
-  return {
-    kind: "session-error",
-    error: error instanceof Error ? error.message : String(error),
-  };
-}
-
-function sessionCommandAck(
-  message: SessionControlMessage,
-  changed: boolean,
-  label?: string,
-): SessionControlResponse {
-  return {
-    kind: "session-ack",
-    sessionId: message.sessionId,
-    command: message.command,
-    ...(label ? { label } : {}),
-    changed,
-  };
-}
-
-/** Closed, synchronous routing through the same controller used by the terminal overlay. */
-function applySessionControlMessage(
-  message: SessionControlMessage,
-  options: SessionCommandDispatchOptions,
-): SessionControlResponse {
-  const { controller } = options;
-  const target = options.targetForSessionId(message.sessionId);
-
-  if (message.command === "restore") {
-    const result = invokeSessionAction(
-      controller,
-      target ?? { sessionId: message.sessionId, label: "" },
-      { command: "restore" },
-    );
-    const restored = options.targetForSessionId(message.sessionId) ?? target;
-    return sessionCommandAck(message, result === true, restored?.label);
-  }
-  if (!target) return sessionCommandAck(message, false);
-
-  switch (message.command) {
-    case "rename": {
-      const stored = invokeSessionAction(
-        controller,
-        target,
-        { command: "rename", label: message.label },
-      );
-      const current = options.targetForSessionId(message.sessionId);
-      const label = current?.label
-        ?? (typeof stored === "string" && stored.trim() ? stored : message.label);
-      return sessionCommandAck(message, label !== target.label, label);
-    }
-    case "set-voice": {
-      const result = invokeSessionAction(
-        controller,
-        target,
-        { command: "set-voice", voice: message.voice },
-      );
-      const current = options.targetForSessionId(message.sessionId) ?? target;
-      return sessionCommandAck(message, result !== false, current.label);
-    }
-    case "reset-voice": {
-      const result = invokeSessionAction(
-        controller,
-        target,
-        { command: "reset-voice" },
-      );
-      const current = options.targetForSessionId(message.sessionId) ?? target;
-      return sessionCommandAck(message, result !== false, current.label);
-    }
-    case "prioritize": {
-      const before = controller.isPrioritized(message.sessionId);
-      const result = invokeSessionAction(
-        controller,
-        target,
-        { command: "prioritize", value: message.value },
-      );
-      const after = controller.isPrioritized(message.sessionId);
-      const current = options.targetForSessionId(message.sessionId) ?? target;
-      return sessionCommandAck(
-        message,
-        typeof result === "boolean" ? result : before !== after,
-        current.label,
-      );
-    }
-    case "dismiss": {
-      if (options.isDismissed?.(message.sessionId)) {
-        return sessionCommandAck(message, false, target.label);
-      }
-      const result = invokeSessionAction(
-        controller,
-        target,
-        { command: "dismiss" },
-      );
-      const current = options.targetForSessionId(message.sessionId) ?? target;
-      return sessionCommandAck(message, result !== false, current.label);
-    }
-  }
-}
-
-/**
- * Validate hostile input and guarantee the owner-keyed silent pause is released,
- * including when a controller mutation throws.
- */
-export function dispatchSessionControlMessage(
-  value: unknown,
-  options: SessionCommandDispatchOptions,
-): SessionControlResponse {
-  const validated = validateSessionControlMessage(value);
-  if (!validated.ok) return { kind: "session-error", error: validated.err };
-
-  try {
-    options.pause.open();
-    try {
-      return applySessionControlMessage(validated.value, options);
-    } finally {
-      options.pause.close();
-    }
-  } catch (error) {
-    return sessionCommandError(error);
-  }
-}
-
-/** Distinguish config control before any value can be cast into TurnEvent. */
-export function dispatchControlMessage(
-  value: unknown,
-  controller: ConfigController,
-  sessionOptions?: SessionCommandDispatchOptions,
-  configPersistence?: ConfigControlPersistence,
-): SocketControlDispatch {
-  if (!isControlMessageCandidate(value)) return { handled: false };
-  const validated = validateControlMessage(value);
-  if (!validated.ok) {
-    const sessionCandidate = socketRecord(value) && value.kind === "session-command";
-    return {
-      handled: true,
-      response: sessionCandidate
-        ? { kind: "session-error", error: validated.err }
-        : { kind: "config-error", error: validated.err },
-    };
-  }
-  if (validated.value.kind === "session-command") {
-    return {
-      handled: true,
-      response: sessionOptions
-        ? dispatchSessionControlMessage(validated.value, sessionOptions)
-        : { kind: "session-error", error: "session commands are unavailable" },
-    };
-  }
-  if (
-    validated.value.kind === "resumable"
-    || validated.value.kind === "agent-capabilities"
-    || validated.value.kind === "session-start"
-    || validated.value.kind === "session-close"
-    || validated.value.kind === "app-error"
-  ) return { handled: false };
-
-  if (validated.value.kind !== "get-config" && configPersistence) {
-    try {
-      if (validated.value.kind === "set-config") {
-        configPersistence.set(
-          configPersistence.settingsPath,
-          validated.value.key,
-          validated.value.value,
-        );
-      } else {
-        configPersistence.unset(
-          configPersistence.settingsPath,
-          validated.value.key,
-        );
-      }
-    } catch (error) {
-      return {
-        handled: true,
-        response: {
-          kind: "config-error",
-          error: `not saved: ${error instanceof Error ? error.message : String(error)}`,
-        },
-      };
-    }
-  }
-  return { handled: true, response: controller.handle(validated.value) };
-}
-
-export interface RuntimeControlDispatchOptions {
-  listResumable(
-    message: Extract<RuntimeControlMessage, { kind: "resumable" }>,
-  ): ResumableSessionsRead | Promise<ResumableSessionsRead>;
-  readCapabilities?(
-    message: Extract<RuntimeControlMessage, { kind: "agent-capabilities" }>,
-  ): AgentCapabilitiesRead | Promise<AgentCapabilitiesRead>;
-  start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | Promise<void>;
-  /** Whether Claude Code already trusts a folder; absent or null means unknown. */
-  folderTrusted?(cwd: string): boolean | null;
-  /** Whether Codex already trusts a folder; absent or null means unknown. */
-  codexFolderTrusted?(cwd: string): boolean | null;
-  close(sessionId: string): void | Promise<void>;
-  report(message: Extract<RuntimeControlMessage, { kind: "app-error" }>): void | Promise<void>;
-}
-
-/** Process/UI controls stay outside the synchronous settings controller so AppleScript cannot block config reads. */
-export async function dispatchRuntimeControlMessage(
-  value: unknown,
-  options: RuntimeControlDispatchOptions,
-): Promise<SocketControlDispatch> {
-  if (!socketRecord(value) || (
-    value.kind !== "session-start"
-    && value.kind !== "session-close"
-    && value.kind !== "app-error"
-    && value.kind !== "resumable"
-    && value.kind !== "agent-capabilities"
-  )) return { handled: false };
-
-  const validated = validateRuntimeControlMessage(value);
-  if (!validated.ok) {
-    return { handled: true, response: { kind: "session-error", error: validated.err } };
-  }
-  const message = validated.value;
-  try {
-    if (message.kind === "resumable") {
-      const result = await options.listResumable(message);
-      return {
-        handled: true,
-        response: {
-          kind: "resumable",
-          sessions: result.sessions,
-          complete: result.complete,
-        },
-      };
-    }
-    if (message.kind === "agent-capabilities") {
-      if (!options.readCapabilities) {
-        throw new Error("agent capability inventory is unavailable");
-      }
-      return {
-        handled: true,
-        response: {
-          kind: "agent-capabilities",
-          inventory: await options.readCapabilities(message),
-        },
-      };
-    }
-    if (message.kind === "session-start") {
-      // Ask before launching, not after. Codex stops on a full-screen trust
-      // prompt in a directory it has not been told about, and a session held
-      // there never starts and never registers — indistinguishable, from
-      // outside, from one that failed. Unlike Claude's equivalent, this answer
-      // CAN be supplied at launch, so conch offers the choice instead of
-      // starting something that will sit there.
-      if (
-        message.backend === "codex"
-        && message.trustFolder !== true
-        && message.cwd
-        && options.codexFolderTrusted?.(message.cwd) === false
-      ) {
-        return {
-          handled: true,
-          response: { kind: "session-needs-trust", backend: "codex", cwd: message.cwd },
-        };
-      }
-      // Answered BEFORE launching, because afterwards it is unanswerable: a
-      // session held on the trust prompt writes no registry file, so conch
-      // cannot tell "still deciding" from "never started" from the outside.
-      const awaitingTrust = message.backend === "claude"
-        && message.cwd !== undefined
-        && options.folderTrusted?.(message.cwd) === false;
-      await options.start(message);
-      return {
-        handled: true,
-        response: {
-          kind: "session-started",
-          backend: message.backend,
-          resumed: Boolean(message.resumeSessionId),
-          ...(awaitingTrust ? { awaitingTrust: true } : {}),
-        },
-      };
-    }
-    if (message.kind === "session-close") {
-      await options.close(message.sessionId);
-      return {
-        handled: true,
-        response: { kind: "session-closed", sessionId: message.sessionId },
-      };
-    }
-    await options.report(message);
-    return { handled: true, response: { kind: "app-error-ack" } };
-  } catch (error) {
-    return { handled: true, response: sessionCommandError(error) };
-  }
-}
-
-const TURN_EVENT_TYPES = new Set<TurnEvent["type"]>([
-  "inject",
-  "interrupt",
-  "turn-end",
-  "needs-you",
-  "wake",
-  "recite",
-  "spacebar",
-  "pause",
-  "resume",
-  "speak",
-  "working",
-]);
-
-const SPARSE_TURN_EVENT_TYPES = new Set<TurnEvent["type"]>([
-  // Stopping a session needs only to know WHICH session; the label and the
-  // announce text every other event carries would be ceremony.
-  "interrupt",
-  "wake",
-  "recite",
-  "spacebar",
-  "pause",
-  "resume",
-]);
-
-export type SocketTurnEventValidation =
-  | { ok: true; value: TurnEvent }
-  | { ok: false; err: string };
-
 export type AudioSink = "mac" | "phone";
 
 /** Small state machine for the phone's client-backed audio lease. */
@@ -780,152 +458,6 @@ export async function reserveNormalMicForSink(options: {
   return false;
 }
 
-export type PublishedInjectScope =
-  | { ok: true; value: TurnEvent }
-  | { ok: false; err: string };
-
-/** Replace every caller-controlled routing field with daemon-owned session data. */
-export function scopePublishedInjectEvent(
-  event: TurnEvent,
-  published: Pick<PublishedState, "rows"> | null,
-  canonical: {
-    label?: string;
-    cwd?: string;
-    pid?: number;
-    transcriptPath?: string;
-  } = {},
-  now = Date.now(),
-): PublishedInjectScope {
-  const sessionId = event.sessionId.trim();
-  const suppliedLabel = event.label.trim();
-  const announce = event.announce.trim();
-  if (!sessionId) return { ok: false, err: "sessionId is required for inject" };
-  if (!suppliedLabel) return { ok: false, err: "label is required for inject" };
-  if (!announce) return { ok: false, err: "announce is required for inject" };
-  const row = published?.rows.find((candidate) => candidate.id === sessionId);
-  if (!row) return { ok: false, err: "inject target is not a live published session" };
-
-  const {
-    pid: _callerPid,
-    cwd: _callerCwd,
-    transcriptPath: _callerTranscriptPath,
-    eventAt: _callerEventAt,
-    ...safe
-  } = event;
-  return {
-    ok: true,
-    value: {
-      ...safe,
-      sessionId,
-      label: canonical.label?.trim() || row.label || suppliedLabel,
-      announce,
-      eventAt: now,
-      ...(canonical.cwd ? { cwd: canonical.cwd } : {}),
-      ...(canonical.pid !== undefined ? { pid: canonical.pid } : {}),
-      ...(canonical.transcriptPath ? { transcriptPath: canonical.transcriptPath } : {}),
-    },
-  };
-}
-
-function socketRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/** Validate and normalize the newline-delimited TurnEvent wire shape. */
-export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidation {
-  if (!socketRecord(value)) return { ok: false, err: "turn event must be a JSON object" };
-  if (typeof value.type !== "string" || !TURN_EVENT_TYPES.has(value.type as TurnEvent["type"])) {
-    return { ok: false, err: "turn event type is missing or unknown" };
-  }
-  const type = value.type as TurnEvent["type"];
-
-  for (const field of ["sessionId", "label", "cwd", "announce", "transcriptPath", "ntype", "voice"] as const) {
-    if (value[field] !== undefined && typeof value[field] !== "string") {
-      return { ok: false, err: `${field} must be a string` };
-    }
-  }
-  for (const field of ["pid", "mark", "eventAt"] as const) {
-    if (
-      value[field] !== undefined
-      && (typeof value[field] !== "number" || !Number.isFinite(value[field]))
-    ) {
-      return { ok: false, err: `${field} must be a finite number` };
-    }
-  }
-  if (value.backgroundWork !== undefined && value.backgroundWork !== true) {
-    return { ok: false, err: "backgroundWork must be true when present" };
-  }
-  if (value.review !== undefined) {
-    if (!socketRecord(value.review) || typeof value.review.summary !== "string") {
-      return { ok: false, err: "review must contain a string summary" };
-    }
-    if (value.review.link !== undefined && typeof value.review.link !== "string") {
-      return { ok: false, err: "review link must be a string" };
-    }
-  }
-
-  // Hook/state traffic and explicit speech retain the original complete shape.
-  // Dashboard controls are intentionally sparse and normalized for the daemon.
-  if (!SPARSE_TURN_EVENT_TYPES.has(type)) {
-    for (const field of ["sessionId", "label", "announce"] as const) {
-      if (typeof value[field] !== "string") {
-        return { ok: false, err: `${field} is required for ${type}` };
-      }
-      if (type === "inject" && value[field].trim().length === 0) {
-        return { ok: false, err: `${field} must not be empty for inject` };
-      }
-    }
-  } else if (
-    (type === "wake" || type === "recite" || type === "interrupt")
-    && typeof value.sessionId !== "string"
-  ) {
-    return { ok: false, err: `sessionId is required for ${type}` };
-  }
-
-  // `origin` decides whether manual mode will open the mic, so it is the one
-  // field where a malformed value must not be carried through as truthy junk.
-  if (value.origin !== undefined && value.origin !== "user" && value.origin !== "agent") {
-    return { ok: false, err: "origin must be \"user\" or \"agent\"" };
-  }
-  if (value.compose !== undefined && value.compose !== true) {
-    return { ok: false, err: "compose must be true when present" };
-  }
-
-  return {
-    ok: true,
-    value: {
-      ...value,
-      type,
-      sessionId: typeof value.sessionId === "string" ? value.sessionId : "",
-      label: typeof value.label === "string" ? value.label : "",
-      announce: typeof value.announce === "string" ? value.announce : "",
-    } as TurnEvent,
-  };
-}
-
-/** One boundary for hostile socket input plus daemon-owned phone inject routing. */
-export function validateAndScopeSocketTurnEvent(
-  value: unknown,
-  published: Pick<PublishedState, "rows"> | null,
-  canonicalFor: (sessionId: string) => {
-    cwd?: string;
-    pid?: number;
-    transcriptPath?: string;
-  } = () => ({}),
-  now = Date.now(),
-): SocketTurnEventValidation {
-  const validated = validateSocketTurnEvent(value);
-  if (!validated.ok || validated.value.type !== "inject") return validated;
-  const sessionId = validated.value.sessionId.trim();
-  const row = published?.rows.find((candidate) => candidate.id === sessionId);
-  return scopePublishedInjectEvent(
-    validated.value,
-    published,
-    row ? { label: row.label, ...canonicalFor(sessionId) } : {},
-    now,
-  );
-}
-
 /** Only a genuine turn end, or an explicitly opted-in reclassified Stop, owns audio. */
 export function shouldHandleTurnAudibly(
   event: Pick<TurnEvent, "type" | "backgroundWork">,
@@ -970,98 +502,6 @@ export function resolveWakeTarget(wake: TurnEvent, lastTurn: TurnEvent | null): 
 /** Wake/adopted exchanges listen first; ordinary turns read the remaining response first. */
 export function startsConversationByListening(event: Pick<TurnEvent, "type">, announcedCapture = false): boolean {
   return event.type === "wake" || announcedCapture;
-}
-
-export interface TargetedAudioCommandContext {
-  session?: Pick<SessionInfo, "cwd" | "pid"> | null;
-  known?: TurnEvent | null;
-  label?: string;
-  transcriptPath?: string;
-}
-
-/** Fill the daemon-owned routing metadata omitted by lightweight dashboard clients. */
-export function enrichTargetedAudioCommand(
-  event: InstantAudioCommand,
-  context: TargetedAudioCommandContext,
-): InstantAudioCommand {
-  const known = context.known ?? undefined;
-  const session = context.session ?? undefined;
-  const transcriptPath = event.transcriptPath
-    || known?.transcriptPath
-    || context.transcriptPath;
-  return {
-    ...known,
-    ...event,
-    label: event.label || context.label || known?.label || event.sessionId.slice(0, 8),
-    announce: event.announce ?? "",
-    cwd: event.cwd ?? session?.cwd ?? known?.cwd,
-    pid: event.pid ?? session?.pid ?? known?.pid,
-    ...(transcriptPath ? { transcriptPath } : {}),
-    ...(event.type === "recite" ? { mark: undefined } : {}),
-  };
-}
-
-export interface SocketTurnEventCallbacks {
-  busy(): boolean;
-  /** Is a microphone actually open? Not the same question as `busy`. */
-  capturing?(): boolean;
-  stopSpacebar(): void;
-  /** Told when a stop arrived with nothing running, so it leaves a trace. */
-  droppedStop?(): void;
-  setSessionPaused(sessionId: string, paused: boolean): void;
-  isDismissedSession?(sessionId: string): boolean;
-  enrichAudioCommand(event: InstantAudioCommand): InstantAudioCommand;
-  enqueueInstant(event: InstantAudioCommand): void;
-  enqueue(event: TurnEvent): void;
-}
-
-/** Sparse dashboard commands carry only identity; CLI/MCP commands pre-resolve routing. */
-export function isLightweightTargetedAudioCommand(event: InstantAudioCommand): boolean {
-  return event.cwd === undefined
-    && event.pid === undefined
-    && event.transcriptPath === undefined
-    && event.mark === undefined;
-}
-
-/** Route dashboard/CLI socket commands through the same instant seams as terminal keys. */
-export function dispatchSocketTurnEvent(
-  incoming: TurnEvent,
-  callbacks: SocketTurnEventCallbacks,
-): void {
-  const event = incoming;
-  if (event.type === "spacebar") {
-    // `busy` is the DRAIN LOOP's flag, and a microphone can be open while it is
-    // false — observed, not inferred: six stops in one attempt logged as
-    // ignored by the line below while the mic was audibly listening. So this
-    // asked "is the queue working?" when the only question that matters is
-    // "is the microphone open?". (An earlier version of this comment blamed an
-    // instant path that bypasses the queue; `enqueueInstant` in fact calls
-    // `enqueue`, so that was wrong — the fix stands on the log, not on that
-    // story.) `capturing` is the daemon's own `normalMicOpen()`, the same
-    // predicate `stopReciting` uses to decide whether it is closing a mic.
-    if (callbacks.busy() || callbacks.capturing?.()) callbacks.stopSpacebar();
-    else callbacks.droppedStop?.();
-    return;
-  }
-
-  if (event.sessionId) {
-    if (callbacks.isDismissedSession?.(event.sessionId)) return;
-    if (event.type === "pause" || event.type === "resume") {
-      callbacks.setSessionPaused(event.sessionId, event.type === "pause");
-      return;
-    }
-    if (event.type === "wake" || event.type === "recite") {
-      const command = event as InstantAudioCommand;
-      if (isLightweightTargetedAudioCommand(command)) {
-        callbacks.enqueueInstant(callbacks.enrichAudioCommand(command));
-      } else {
-        callbacks.enqueue(command);
-      }
-      return;
-    }
-  }
-
-  callbacks.enqueue(event);
 }
 
 /** Ordinals are safe to rewrite only while the transcript still contains an unanswered option row. */
@@ -1329,38 +769,6 @@ export async function rehydrateLatestTurns(options: {
     restored += 1;
   }
   return restored;
-}
-
-/**
- * Is a live daemon already listening on this socket?
- *
- * The file existing means nothing — a unix socket outlives the process that
- * created it, which is why "unlink and rebind" felt safe and was not. Connect
- * instead: only an answer proves someone is home. A refusal (ECONNREFUSED)
- * means the file is a leftover and is safe to remove.
- */
-export async function anotherDaemonIsListening(
-  socketPath: string,
-  timeoutMs = 500,
-): Promise<boolean> {
-  if (!existsSync(socketPath)) return false;
-  return await new Promise<boolean>((resolve) => {
-    let settled = false;
-    const socket = connect({ path: socketPath });
-    const finish = (answer: boolean): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try { socket.destroy(); } catch {}
-      resolve(answer);
-    };
-    // A socket that accepts but never speaks is still an owner; treat a
-    // timeout as OCCUPIED rather than stale, because deleting a live
-    // daemon's socket is the failure this exists to prevent.
-    const timer = setTimeout(() => finish(true), timeoutMs);
-    socket.once("connect", () => finish(true));
-    socket.once("error", () => finish(false));
-  });
 }
 
 export async function runDaemon(cfg: Config): Promise<void> {
@@ -4821,252 +4229,137 @@ export async function runDaemon(cfg: Config): Promise<void> {
       );
     },
   };
-  const server = createServer({ allowHalfOpen: true }, (sock) => {
-    let buf = "";
-    let handled = false;
-    sock.on("error", () => {}); // a hook killed mid-write (ECONNRESET) must not throw
-    const handleLine = async (line: string): Promise<void> => {
-      if (handled) return;
-      handled = true;
-      let response: ControlResponse | undefined;
+  // Device operations remain whole: the server decodes, the daemon owns effects.
+  function deviceCommand(message: DeviceCommand): DeviceControlResponse {
+    if (message.kind === "audio-sink") {
+      const previous = audioLease.sink;
+      const requested = message.sink;
+      const connectedClients = phoneApplication?.clientCount() ?? 0;
+      const claimingPhone = requested === "phone"
+        && connectedClients > 0
+        && previous !== "phone";
+      if (claimingPhone) {
+        // Tear down physical Mac audio before publishing phone ownership.
+        // The callback is synchronous, so no new daemon work can enter the
+        // old lease between this stop and request() below.
+        speech.cancelCurrent();
+        speech.cancelPendingAudio();
+        activeDictation?.requestExternal("spacebar", "phone-audio-claim");
+        void Promise.resolve(killActiveRecorders()).catch(() => {});
+      }
+      const wanted = audioLease.request(requested, connectedClients);
+      if (wanted !== previous) {
+        log(audioLease.sink === "phone"
+          ? "phone has the audio — this Mac is quiet"
+          : "audio back on this Mac");
+        void renderSessionPanel();
+      }
+      return { kind: "audio-sink-ack", sink: audioLease.sink };
+    }
+    if (message.kind === "phone-spoke") {
+      const { reason, text } = message;
+      log(`phone spoke (${reason}): ${JSON.stringify(text)}`);
+      return { kind: "ack" };
+    }
+    if (message.kind === "phone-device") {
+      // Telemetry is logged, never acted on.
+      log(message.summary);
+      return { kind: "phone-device-ack" };
+    }
+    if (message.kind === "system-woke") {
+      log("the Mac woke — re-dialling the relay");
       try {
-        const value: unknown = addressWindow(JSON.parse(line));
-        const runtime = await dispatchRuntimeControlMessage(
-          value,
-          runtimeControlDispatchOptions,
-        );
-        if (runtime.handled) {
-          sock.end(JSON.stringify(runtime.response) + "\n");
-          return;
-        }
-        // `conch pair` asks the RUNNING daemon to open a pairing window: the
-        // bridge lives in that process, so only it can offer a code.
-        if (
-          typeof value === "object" && value !== null
-          && (value as { kind?: unknown }).kind === "audio-sink"
-        ) {
-          const previous = audioLease.sink;
-          const requested = (value as { sink?: unknown }).sink;
-          const connectedClients = phoneApplication?.clientCount() ?? 0;
-          const claimingPhone = requested === "phone"
-            && connectedClients > 0
-            && previous !== "phone";
-          if (claimingPhone) {
-            // Tear down physical Mac audio before publishing phone ownership.
-            // The callback is synchronous, so no new daemon work can enter the
-            // old lease between this stop and request() below.
-            speech.cancelCurrent();
-            speech.cancelPendingAudio();
-            activeDictation?.requestExternal("spacebar", "phone-audio-claim");
-            void Promise.resolve(killActiveRecorders()).catch(() => {});
-          }
-          const wanted = audioLease.request(requested, connectedClients);
-          if (wanted !== previous) {
-            log(audioLease.sink === "phone"
-              ? "phone has the audio — this Mac is quiet"
-              : "audio back on this Mac");
-            void renderSessionPanel();
-          }
-          sock.end(JSON.stringify({ kind: "audio-sink-ack", sink: audioLease.sink }) + "\n");
-          return;
-        }
-        // The phone is the only thing that knows when the PHONE finishes
-        // reading. With the audio lease held, speak() returns immediately, so
-        // the Mac sets "speaking" and the caller clears it milliseconds later
-        // — the glyph flashes and the ledger says "Waiting for you" for a
-        // session being read aloud. Tyler: "the reason I can't tell which one
-        // is speaking is cause the state is broken."
-        // What conch costs the phone it runs on. Logged rather than acted on:
-        // the point is to be able to answer "is this draining my phone" with a
-        // reading instead of an opinion, and a trend across a session is what
-        // answers it. Low Power Mode is called out because it throttles the
-        // CPU and has already been mistaken for a conch bug once.
-        // Why the phone talked.
-        //
-        // It speaks through iOS's own synthesiser, so nothing it says has ever
-        // appeared in this log — and when Tyler asked why conch spoke aloud in
-        // manual mode, the honest answer was that the Mac had not, and the
-        // phone leaves no trace either way. That is the same shape as the wake
-        // that could not be attributed: unanswerable until the thing doing it
-        // says so.
-        if (
-          typeof value === "object" && value !== null
-          && (value as { kind?: unknown }).kind === "phone-spoke"
-        ) {
-          const note = value as Record<string, unknown>;
-          const reason = typeof note.reason === "string" ? note.reason : "unknown";
-          const text = typeof note.text === "string" ? note.text.slice(0, 60) : "";
-          log(`phone spoke (${reason}): ${JSON.stringify(text)}`);
-          sock.end(JSON.stringify({ kind: "ack" }) + "\n");
-          return;
-        }
-        if (
-          typeof value === "object" && value !== null
-          && (value as { kind?: unknown }).kind === "phone-device"
-        ) {
-          const sample = value as Record<string, unknown>;
-          const mb = Number(sample.footprintMB ?? 0).toFixed(0);
-          const battery = typeof sample.battery === "number"
-            ? `${Math.round(sample.battery * 100)}% ${String(sample.batteryState ?? "")}`
-            : String(sample.batteryState ?? "unknown");
-          const minutes = Math.round(Number(sample.uptime ?? 0) / 60);
-          const free = typeof sample.freeGB === "number" ? sample.freeGB : null;
-          const flags = [
-            sample.thermal !== "nominal" ? `thermal ${sample.thermal}` : "",
-            sample.lowPower === true ? "LOW POWER MODE" : "",
-            // Called out rather than merely reported. A nearly full phone slows
-            // everything on it, and nothing else conch measures can say so —
-            // memory, battery and thermal all read healthy while Tyler's phone
-            // was crawling for exactly this reason.
-            free !== null && free < 5 ? `ONLY ${free.toFixed(1)}GB FREE` : "",
-          ].filter(Boolean).join(", ");
-          const disk = free !== null ? ` · ${free.toFixed(1)}GB free` : "";
-          log(`phone: ${mb}MB · battery ${battery}${disk} · up ${minutes}m${flags ? ` · ${flags}` : ""}`);
-          sock.end(JSON.stringify({ kind: "phone-device-ack" }) + "\n");
-          return;
-        }
-        // The Mac app telling us the machine woke.
-        //
-        // This is the honest signal: the app receives
-        // NSWorkspace.didWakeNotification and the daemon is its child, so the
-        // fact travels one socket write instead of being inferred. The polling
-        // version of this asked the process to wake ten times a minute forever
-        // to notice an event that happens twice a day, which is the shape of
-        // thing conch keeps deciding not to do elsewhere.
-        if (
-          typeof value === "object" && value !== null
-          && (value as { kind?: unknown }).kind === "system-woke"
-        ) {
-          log("the Mac woke — re-dialling the relay");
-          try {
-            phoneRelay?.reconnectNow();
-          } catch (error) {
-            log(`relay re-dial failed: ${error}`);
-          }
-          // Sessions may have come and gone while the lid was shut, and the
-          // panel is the only thing that would notice.
-          void renderSessionPanel();
-          sock.end(JSON.stringify({ kind: "system-woke-ack" }) + "\n");
-          return;
-        }
-        if (
-          typeof value === "object" && value !== null
-          && (value as { kind?: unknown }).kind === "phone-speaking"
-        ) {
-          const speaking = (value as { speaking?: unknown }).speaking === true;
-          const rawLabel = (value as { label?: unknown }).label;
-          const label = typeof rawLabel === "string" ? rawLabel.slice(0, 120) : "";
-          // Only while the phone actually owns the audio: a stale report from
-          // a backgrounded phone must not silence or mislabel this Mac.
-          if (audioLease.isPhone()) {
-            if (speaking && label) {
-              setState("speaking", label);
-              // Bound it here too. This is the path that actually latched on
-              // Tyler's phone: it reported that it had STARTED reading and the
-              // matching stop never arrived, so the dashboard sat at "Reading
-              // aloud" with nothing playing. Every route into the speaking
-              // state needs a way back out that does not depend on a message
-              // crossing a relay that drops.
-              armPhoneSpeechLatch();
-            } else if (!speaking) {
-              clearPhoneSpeechLatch();
-              setState("idle");
-            }
-            void renderSessionPanel();
-          }
-          sock.end(JSON.stringify({ kind: "phone-speaking-ack", speaking }) + "\n");
-          return;
-        }
-        if (
-          typeof value === "object" && value !== null
-          && (value as { kind?: unknown }).kind === "open-pairing"
-        ) {
-          syncPhoneBridge();
-          if (!phoneBridge) {
-            response = {
-              kind: "session-error",
-              // Shown verbatim in the app's pairing tab and by `conch pair`, so
-              // it has to carry the remedy: a fresh install has `phone` off.
-              error: "Phone access is off. Turn on \"phone\" in Settings, or run: conch set phone true",
-            };
-          } else {
-            const code = mintPairingCode();
-            phoneBridge.offerPairingCode(code);
-            log("pairing window open (2 min)");
-            response = {
-              kind: "pairing-open",
-              code: code.code,
-              expiresAt: code.expiresAt,
-              port: phoneBridge.port,
-              ...(activeRelayPairing ? { relay: activeRelayPairing } : {}),
-            } as unknown as ControlResponse;
-          }
-          sock.end(JSON.stringify(response) + "\n");
-          return;
-        }
-        const control = dispatchControlMessage(
-          value,
-          configController,
-          sessionCommandDispatchOptions,
-          {
-            settingsPath: daemonSettingsPath,
-            set: writeSetting,
-            unset: unsetSetting,
-          },
-        );
-        if (control.handled) response = control.response;
-        else {
-          const turn = validateAndScopeSocketTurnEvent(
-            value,
-            lastPublishedPanelState,
-            (sessionId) => {
-              const session = panelSessions.get(sessionId);
-              return {
-                cwd: session?.cwd,
-                pid: session?.pid,
-                transcriptPath: findTranscript(cfg.claudeDir, sessionId),
-              };
-            },
-          );
-          if (!turn.ok) {
-            log(`ignoring malformed event: ${turn.err}`);
-            if (socketRecord(value) && value.type === "inject") {
-              response = { kind: "session-error", error: turn.err };
-            }
-          } else {
-            dispatchSocketTurnEvent(turn.value, socketTurnCallbacks);
-          }
-        }
-      } catch {
-        log("ignoring malformed event");
+        phoneRelay?.reconnectNow();
+      } catch (error) {
+        log(`relay re-dial failed: ${error}`);
       }
-      if (response) sock.end(JSON.stringify(response) + "\n");
-      else sock.end();
-    };
-    sock.on("data", (data) => {
-      if (handled) return;
-      // A peer that never sends a newline would otherwise grow this string
-      // until the daemon OOMs. Cap the frame and drop the connection.
-      //
-      // Append FIRST. The check used to run on the buffer before the incoming
-      // chunk was added, so a single oversized chunk that happened to end in a
-      // newline was appended and parsed anyway — the cap only ever caught the
-      // slow-drip case. Found by Codex during the split recon.
-      buf += data.toString();
-      if (buf.length > 64_000) {
-        sock.destroy();
-        return;
+      // Sessions may have come and gone while the lid was shut, and the
+      // panel is the only thing that would notice.
+      void renderSessionPanel();
+      return { kind: "system-woke-ack" };
+    }
+    if (message.kind === "phone-speaking") {
+      const { speaking, label } = message;
+      // Only while the phone actually owns the audio: a stale report from
+      // a backgrounded phone must not silence or mislabel this Mac.
+      if (audioLease.isPhone()) {
+        if (speaking && label) {
+          setState("speaking", label);
+          // Bound it here too. This is the path that actually latched on
+          // Tyler's phone: it reported that it had STARTED reading and the
+          // matching stop never arrived, so the dashboard sat at "Reading
+          // aloud" with nothing playing. Every route into the speaking
+          // state needs a way back out that does not depend on a message
+          // crossing a relay that drops.
+          armPhoneSpeechLatch();
+        } else if (!speaking) {
+          clearPhoneSpeechLatch();
+          setState("idle");
+        }
+        void renderSessionPanel();
       }
-      const newline = buf.indexOf("\n");
-      if (newline !== -1) void handleLine(buf.slice(0, newline));
-    });
-    sock.on("end", () => {
-      if (!handled && buf.trim()) void handleLine(buf.trim());
-      else if (!handled) sock.end();
-    });
+      return { kind: "phone-speaking-ack", speaking };
+    }
+    if (message.kind === "open-pairing") {
+      let response: DeviceControlResponse;
+      syncPhoneBridge();
+      if (!phoneBridge) {
+        response = {
+          kind: "session-error",
+          // Shown verbatim in the app's pairing tab and by `conch pair`, so
+          // it has to carry the remedy: a fresh install has `phone` off.
+          error: "Phone access is off. Turn on \"phone\" in Settings, or run: conch set phone true",
+        };
+      } else {
+        const code = mintPairingCode();
+        phoneBridge.offerPairingCode(code);
+        log("pairing window open (2 min)");
+        response = {
+          kind: "pairing-open",
+          code: code.code,
+          expiresAt: code.expiresAt,
+          port: phoneBridge.port,
+          ...(activeRelayPairing ? { relay: activeRelayPairing } : {}),
+        };
+      }
+      return response;
+    }
+    const exhaustive: never = message;
+    return exhaustive;
+  }
+  const controlServer = createControlServer({
+    socketPath: cfg.socketPath,
+    // C9b will supply persistent device identity. For now this opaque owner
+    // belongs only to this daemon lifetime and no client sends an envelope.
+    ownerDeviceId: crypto.randomUUID(),
+    log,
+    sessions: {
+      resolve: addressWindow,
+      current: (sessionId) => {
+        const row = lastPublishedPanelState?.rows.find((candidate) => candidate.id === sessionId);
+        if (!row) return { published: false };
+        const session = panelSessions.get(sessionId);
+        return {
+          published: true,
+          label: row.label,
+          cwd: session?.cwd,
+          pid: session?.pid,
+          transcriptPath: findTranscript(cfg.claudeDir, sessionId),
+        };
+      },
+    },
+    application: {
+      configuration: (message) => applyConfigControlMessage(message, configController, {
+        settingsPath: daemonSettingsPath,
+        set: writeSetting,
+        unset: unsetSetting,
+      }),
+      session: (message) => applySessionCommand(message, sessionCommandDispatchOptions),
+      runtime: (message) => applyRuntimeControlMessage(message, runtimeControlDispatchOptions),
+      turn: (event) => dispatchSocketTurnEvent(event, socketTurnCallbacks),
+      device: deviceCommand,
+    },
   });
-
-  server.on("error", (e) => log(`socket server error: ${e}`));
 
   let shutdownStarted = false;
   const shutdown = async (): Promise<void> => {
@@ -5092,14 +4385,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // diagnostics we `process.exit(0)` a few lines down, so there is no later
     // moment in which a grace timer could fire — the kill has to land now.
     const recorderDrain = killActiveRecorders({ immediate: !diagnosticsEnabled });
-    if (server.listening) server.close();
+    void controlServer.close();
     whisperServerClient.cancelWarmRequests();
     whisperSupervisor?.close();
     ttsSupervisor?.close();
     ttsWorker.close();
-    try {
-      unlinkSync(cfg.socketPath);
-    } catch {}
     // KEEP_RAW diagnostics are exact opt-in. The default path stays lean and
     // exits after synchronous cancellation instead of waiting on transcription.
     if (!diagnosticsEnabled) process.exit(0);
@@ -5212,29 +4502,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
     log,
   });
 
-  // ONE daemon. This used to unlink unconditionally, so a second daemon
-  // silently stole the socket from a live one — which is how a supervisor
-  // whose liveness check never matched could kill and recreate conch every
-  // five seconds and still look like it was working. Two daemons also means
-  // two mics, two speakers, and two writers to the same state file.
-  //
-  // A socket FILE proves nothing: it outlives the process that made it. Only
-  // connecting proves someone is home.
-  if (await anotherDaemonIsListening(cfg.socketPath)) {
+  if (!await controlServer.start()) {
     log(`another conch daemon already owns ${cfg.socketPath} — this one is exiting`);
-    // 0, not 1: a supervisor treats a nonzero exit as a crash and retries
-    // harder. Losing a race is the system working, not failing.
+    // Losing the ownership race is not a crash for the supervisor to retry.
     process.exit(0);
   }
-  if (existsSync(cfg.socketPath)) unlinkSync(cfg.socketPath); // genuinely stale
-  server.listen(cfg.socketPath);
   syncPhoneBridge();
   void rehydrateFromTranscripts();
-  // The socket accepts mic-opening, speech, and settings mutations, so it must
-  // not be world-writable in /tmp. Darwin enforces socket mode on connect(2).
-  try {
-    chmodSync(cfg.socketPath, 0o600);
-  } catch {}
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);
   if (pause.paused) log("starting in manual mode (persisted) — p or `conch resume` turns auto on");
   checkForUpdate(); // fire and forget; never blocks the daemon coming up

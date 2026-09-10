@@ -18,6 +18,8 @@ describe("waking up", () => {
   // child, so the fact should travel one socket write rather than being
   // inferred ten times a minute forever.
   test("the app tells the daemon directly", () => {
+    const control = readFileSync(new URL("../src/control-server.ts", import.meta.url), "utf8");
+    expect(control).toContain('value.kind === "system-woke"');
     expect(source).toContain('kind === "system-woke"');
     const handler = source.slice(source.indexOf('kind === "system-woke"'));
     expect(handler.slice(0, 700)).toContain("reconnectNow()");
@@ -31,7 +33,10 @@ describe("waking up", () => {
       new URL("../mac-app/conch-mac/ConchMacApp.swift", import.meta.url),
       "utf8",
     );
+    expect(app).toContain("didBecomeActiveNotification");
+    expect(app).toContain("didWakeNotification");
     const active = app.slice(app.indexOf("didBecomeActiveNotification"));
+    expect(active).toContain("didWakeNotification");
     const untilWake = active.slice(0, active.indexOf("didWakeNotification"));
     expect(untilWake).not.toContain("reportSystemWake");
     const wake = app.slice(app.indexOf("didWakeNotification"));
@@ -40,6 +45,7 @@ describe("waking up", () => {
 
   test("a gap in wall-clock is treated as sleep", () => {
     expect(source).toContain("WAKE_GAP_MS");
+    expect(source).toContain("const WAKE_TICK_MS");
     const detector = source.slice(source.indexOf("const WAKE_TICK_MS"));
     expect(detector.slice(0, 1400)).toContain("reconnectNow()");
   });
@@ -50,6 +56,7 @@ describe("waking up", () => {
   // ten seconds forever to shave that is the trade conch refuses everywhere
   // else, and Tyler caught it being made here.
   test("the backstop ticks rarely", () => {
+    expect(source).toMatch(/WAKE_TICK_MS = ([0-9_]+)/);
     const tick = Number(/WAKE_TICK_MS = ([0-9_]+)/.exec(source)![1]!.replace(/_/g, ""));
     expect(tick).toBeGreaterThanOrEqual(60_000);
   });
@@ -57,13 +64,16 @@ describe("waking up", () => {
   // The tick has to be much shorter than the gap it detects, or a slow tick is
   // indistinguishable from a nap and the daemon re-dials on ordinary lag.
   test("the tick is well inside the gap it looks for", () => {
+    expect(source).toMatch(/WAKE_TICK_MS = ([0-9_]+)/);
     const tick = Number(/WAKE_TICK_MS = ([0-9_]+)/.exec(source)![1]!.replace(/_/g, ""));
+    expect(source).toMatch(/WAKE_GAP_MS = ([0-9_]+)/);
     const gap = Number(/WAKE_GAP_MS = ([0-9_]+)/.exec(source)![1]!.replace(/_/g, ""));
     expect(gap).toBeGreaterThan(tick * 3);
   });
 
   // An unref'd timer must never be the reason a shutting-down daemon lingers.
   test("the watch does not hold the process open", () => {
+    expect(source).toContain("const wakeWatch = setInterval");
     const detector = source.slice(source.indexOf("const wakeWatch = setInterval"));
     expect(detector.slice(0, 900)).toContain("unref");
   });
