@@ -37,6 +37,7 @@ interface WorkerHarness {
 function makeHarness(options: {
   wedgeFlush?: boolean;
   malformedReady?: boolean;
+  log?: (message: string) => void;
 } = {}): WorkerHarness {
   if (!PYTHON) throw new Error("python3 is required for the TTS worker protocol test");
   const root = mkdtempSync(join(tmpdir(), "conch-tts-worker-test-"));
@@ -93,7 +94,7 @@ function makeHarness(options: {
     retryDelaysMs: [0],
     periodicRetryMs: 1_000,
     outputDir: root,
-    log() {},
+    log: options.log ?? (() => {}),
   });
   const harness = { worker, root, recordPath, pids, exits, kills };
   harnesses.push(harness);
@@ -353,6 +354,74 @@ describe("managed TTS worker JSONL protocol", () => {
     expect(await harness.worker.start()).toBeFalse();
     expect(harness.kills).toContainEqual({ pid, signal: "SIGKILL" });
     expect(readdirSync(harness.root).filter((name) => name.endsWith(".wav"))).toEqual([]);
+  });
+});
+
+describe("Kokoro by mode (D1)", () => {
+  const WHY = "unloaded — manual mode; reloads in auto mode";
+
+  test("manual mode unloads the warm worker after the grace, speech then goes to say, and auto mode reloads it", async () => {
+    const logs: string[] = [];
+    const harness = makeHarness({ log: (message) => { logs.push(message); } });
+    expect(await harness.worker.start()).toBeTrue();
+    const firstPid = harness.worker.snapshot().pid!;
+
+    // p then p again inside the grace: the pending unload is cancelled, nothing is killed.
+    harness.worker.unloadAfter(200, WHY);
+    harness.worker.prewarm("auto mode");
+    await Bun.sleep(250);
+    expect(harness.worker.snapshot()).toMatchObject({ status: "ready", pid: firstPid });
+    expect(harness.kills).toEqual([]);
+
+    // The grace elapses: SIGKILLed, one log line, and speech is refused without a restart —
+    // the request path's recovery request and a boot start() are both no-ops while unloaded.
+    harness.worker.unloadAfter(20, WHY);
+    await waitUntil(() => harness.worker.snapshot().status === "unloaded");
+    expect(harness.kills).toContainEqual({ pid: firstPid, signal: "SIGKILL" });
+    expect(logs.filter((line) => line === `kokoro worker ${WHY}`)).toHaveLength(1);
+    expect(harness.worker.isReady()).toBeFalse();
+    await expect(request(harness.worker, "hello")).rejects.toBeInstanceOf(TtsWorkerUnavailableError);
+    harness.worker.requestRecovery("speech requested while unavailable");
+    expect(await harness.worker.start()).toBeFalse();
+    await harness.worker.settled();
+    await Bun.sleep(20);
+    expect(harness.pids).toHaveLength(1);
+    expect(harness.worker.snapshot().status).toBe("unloaded");
+
+    // Auto mode reloads it; a second signal while warming is no second spawn.
+    harness.worker.prewarm("auto mode");
+    harness.worker.prewarm("auto mode");
+    await harness.worker.settled();
+    expect(harness.worker.snapshot()).toMatchObject({ status: "ready", spawnAttempts: 2 });
+    expect(harness.pids).toHaveLength(2);
+    expect(logs.filter((line) => line === "kokoro worker reloading — auto mode")).toHaveLength(1);
+    expect((await request(harness.worker, "hello again")).samples).toBeGreaterThan(0);
+  });
+
+  test("booting in manual mode never loads it, and a grace landing mid-synthesis waits for the request", async () => {
+    // Boot: unload before start(); start() is then a no-op and nothing is spawned until auto mode.
+    const cold = makeHarness();
+    cold.worker.unloadAfter(0, WHY);
+    expect(cold.worker.snapshot().status).toBe("unloaded");
+    expect(await cold.worker.start()).toBeFalse();
+    expect(cold.pids).toHaveLength(0);
+    cold.worker.prewarm("auto mode");
+    await cold.worker.settled();
+    expect(cold.worker.snapshot().status).toBe("ready");
+    expect(cold.pids).toHaveLength(1);
+
+    // Mid-synthesis the grace retries: the request still ends the way it would have (a
+    // timeout and a hard restart), and the replacement is unloaded once it is ready.
+    const busy = makeHarness();
+    expect(await busy.worker.start()).toBeTrue();
+    const pending = request(busy.worker, "__hang__", 150);
+    busy.worker.unloadAfter(20, WHY);
+    await Bun.sleep(60);
+    expect(busy.worker.snapshot().status).not.toBe("unloaded");
+    await expect(pending).rejects.toBeInstanceOf(TtsWorkerTimeoutError);
+    await waitUntil(() => busy.worker.snapshot().status === "unloaded", 3_000);
+    expect(busy.pids).toHaveLength(2);
+    expect(busy.kills.map((kill) => kill.pid).sort()).toEqual([...busy.pids].sort());
   });
 });
 
