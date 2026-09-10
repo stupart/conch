@@ -41,7 +41,12 @@ export const STATE_FILE = "/tmp/conch-state.json";
 export const SESSIONS_FILE = "/tmp/conch-sessions.json";
 // Every log line is always appended here (for debugging) but only shown in the
 // pane when logs are toggled on — the dashboard stays clean by default.
-export const LOG_FILE = "/tmp/conch-daemon.log";
+// Overridable so the TEST SUITE does not write into the live daemon's log:
+// `test/preload.ts` points it at a temp file. Ninety "copied N chars" lines a
+// day with nobody selecting anything (A7) were the theater tests, run ~30
+// times, each appending its three fixture copies here — with UTC timestamps,
+// because bun test runs in UTC.
+export const LOG_FILE = process.env.CONCH_LOG_FILE || "/tmp/conch-daemon.log";
 
 /**
  * Publish a whole session snapshot with a same-directory atomic rename.
