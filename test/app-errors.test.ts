@@ -59,6 +59,44 @@ describe("structured app errors", () => {
     expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 
+  test("keeps a digest of the daemon's state, never the conversations", () => {
+    temp = mkdtempSync(join(tmpdir(), "conch-errors-"));
+    const path = join(temp, "errors.jsonl");
+    const essay = "x".repeat(300_000);
+    appendConchError(
+      { source: "daemon", operation: "inject", message: "clipboard" },
+      {
+        v: 1,
+        ts: 9,
+        mode: { muted: false, paused: true, holding: 1 },
+        live: { state: "recording", label: "arch", partial: "p".repeat(5_000), level: 0.4, transcriptPrefix: essay },
+        reply: { sessionId: "s1", text: essay, spokenChars: 0 },
+        preview: { sessionId: "s1", text: essay, spokenChars: 0 },
+        conversation: { sessionId: "s1", items: [] } as never,
+        conversations: { s1: { sessionId: "s1", items: [] } as never },
+        rows: [{
+          id: "s1", label: "arch", backend: "codex", status: "working", active: true, paused: false, live: "recording",
+          needsResponse: false, muted: false, snippet: essay, transcriptPath: "/x", detail: essay,
+        }],
+        dismissed: ["s2"],
+        dismissedRows: [{ id: "s2", label: "old" }],
+      },
+      path,
+    );
+    const line = readFileSync(path, "utf8");
+    // Three of these used to be 462 KB. A record is a few lines of context.
+    expect(line.length).toBeLessThan(4_000);
+    const record = JSON.parse(line);
+    expect(record.daemonState).toEqual({
+      v: 1,
+      ts: 9,
+      mode: { muted: false, paused: true, holding: 1 },
+      live: { state: "recording", label: "arch", partial: "p".repeat(200), level: 0.4 },
+      rows: [{ id: "s1", label: "arch", backend: "codex", status: "working", active: true, paused: false, live: "recording" }],
+      dismissed: ["s2"],
+    });
+  });
+
   test("rotates a bounded history before appending the next record", () => {
     temp = mkdtempSync(join(tmpdir(), "conch-errors-"));
     const path = join(temp, "errors.jsonl");
