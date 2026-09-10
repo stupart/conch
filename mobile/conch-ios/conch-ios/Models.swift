@@ -7,6 +7,7 @@ import SwiftUI
 /// lesson the hard way.
 struct PublishedState: Decodable, Equatable {
     var v: Int = 1
+    var ownerDeviceId = ""
     var ts: Double = 0
     var mode = Mode()
     var live = Live()
@@ -191,6 +192,7 @@ struct PublishedState: Decodable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case v, ts, mode, live, rows, dismissed, dismissedRows, reply, conversations
+        case ownerDeviceId
     }
 
     init() {}
@@ -198,6 +200,7 @@ struct PublishedState: Decodable, Equatable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         v = (try? c.decodeIfPresent(Int.self, forKey: .v)) ?? 1
+        ownerDeviceId = (try? c.decodeIfPresent(String.self, forKey: .ownerDeviceId)) ?? ""
         ts = (try? c.decodeIfPresent(Double.self, forKey: .ts)) ?? 0
         mode = (try? c.decodeIfPresent(Mode.self, forKey: .mode)) ?? Mode()
         live = (try? c.decodeIfPresent(Live.self, forKey: .live)) ?? Live()

@@ -38,7 +38,8 @@ import { appendFileSync } from "node:fs";
 import { currentTurnText } from "./transcript-turn.ts";
 import {
   existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { loadDeviceId } from "./device-identity.ts";
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
@@ -706,6 +707,7 @@ export function injectTimeoutFor(line: string): number {
 }
 
 export function buildDaemonPublishedState(
+  ownerDeviceId: string,
   cfg: Config,
   model: PanelModel,
   snippets: ReadonlyMap<string, string>,
@@ -718,6 +720,7 @@ export function buildDaemonPublishedState(
   sessionContexts?: ReadonlyMap<string, SessionContextUsage>,
 ): PublishedState {
   return buildPublishedState(
+    ownerDeviceId,
     model,
     snippets,
     dismissedSessionIds,
@@ -776,6 +779,8 @@ export async function rehydrateLatestTurns(options: {
 
 export async function runDaemon(cfg: Config): Promise<void> {
   prepareLogFile();
+  const daemonSettingsPath = settingsPathFor();
+  const ownerDeviceId = await loadDeviceId(dirname(daemonSettingsPath), log);
   // Read cfg.haikuTimeoutSecs at call time — the config socket mutates cfg in
   // place for live settings, so a fresh read here honors `conch set haiku-timeout`
   // without a daemon restart.
@@ -1752,6 +1757,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       lastPanelModel = model;
       renderPanel(model);
       lastPublishedPanelState = buildDaemonPublishedState(
+        ownerDeviceId,
         cfg,
         model,
         new Map(
@@ -3947,7 +3953,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
     log(`⏹ stopped "${label}" via ${via}`);
   }
 
-  const daemonSettingsPath = settingsPathFor();
   const configController = createConfigController(cfg, {
     settingsPath: daemonSettingsPath,
     onLiveChange: (key, value) => {
@@ -4344,9 +4349,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
   }
   const controlServer = createControlServer({
     socketPath: cfg.socketPath,
-    // C9b will supply persistent device identity. For now this opaque owner
-    // belongs only to this daemon lifetime and no client sends an envelope.
-    ownerDeviceId: crypto.randomUUID(),
+    ownerDeviceId,
     log,
     sessions: {
       resolve: addressWindow,

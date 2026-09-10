@@ -12,6 +12,7 @@ import {
   type RoutingRefusal,
 } from "../src/control-server.ts";
 import type { SessionControlResponse } from "../src/settings.ts";
+import { loadDeviceId } from "../src/device-identity.ts";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -46,6 +47,7 @@ async function fixture(overrides: {
   application?: Partial<ControlApplication>;
   sessions?: Partial<LocalControlSessions>;
   stale?: boolean;
+  persistentIdentity?: boolean;
 } = {}) {
   // A short /tmp path also fits Darwin's sockaddr_un limit.
   const root = mkdtempSync("/tmp/conch-control-");
@@ -84,7 +86,9 @@ async function fixture(overrides: {
     ...overrides.sessions,
   };
   const options: ControlServerOptions = {
-    socketPath, ownerDeviceId: "this-mac", log: (line) => logs.push(line), sessions, application,
+    socketPath,
+    ownerDeviceId: overrides.persistentIdentity ? await loadDeviceId(root) : "this-mac",
+    log: (line) => logs.push(line), sessions, application,
   };
   if (overrides.stale) writeFileSync(socketPath, "leftover");
   const server = createControlServer(options);
@@ -123,6 +127,33 @@ const inject = {
 };
 
 describe("control server over a real Unix socket", () => {
+  test("persisted owner envelopes survive a server restart and foreign owners never read local state", async () => {
+    const f = await fixture({ persistentIdentity: true });
+    const learnedId = f.options.ownerDeviceId;
+    for (let boot = 0; boot < 2; boot += 1) {
+      if (boot === 1) {
+        await f.server.close();
+        const ownerDeviceId = await loadDeviceId(f.root);
+        expect(ownerDeviceId).toBe(learnedId);
+        const restarted = createControlServer({ ...f.options, ownerDeviceId });
+        f.servers.push(restarted);
+        expect(await restarted.start()).toBe(true);
+      }
+      for (const ownerDeviceId of [undefined, learnedId]) {
+        expect(await f.request({ kind: "control-envelope", ownerDeviceId, body: inject })).toBe("");
+      }
+      expect(f.calls.turn).toHaveLength((boot + 1) * 2);
+      const beforeReads = structuredClone(f.reads);
+      const beforeCalls = structuredClone(f.calls);
+      const refusal: RoutingRefusal = JSON.parse(await f.request({
+        kind: "control-envelope", ownerDeviceId: "foreign-device", body: inject,
+      }));
+      expect(refusal).toMatchObject({ kind: "routing-error", code: "foreign-owner" });
+      expect(f.reads).toEqual(beforeReads);
+      expect(f.calls).toEqual(beforeCalls);
+    }
+  });
+
   test("newline framing waits for a complete line and ignores a second line in the frame", async () => {
     const f = await fixture();
     const p = await f.peer();

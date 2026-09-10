@@ -17,6 +17,7 @@ import {
 function publishedState(ts: number, label: string): PublishedState {
   return {
     v: 1,
+    ownerDeviceId: "test-device",
     ts,
     mode: { muted: false, paused: false, holding: 0 },
     live: { state: "idle", label: "" },

@@ -4,6 +4,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
     static let knownVersion = 1
 
     let v: Int
+    let ownerDeviceId: String
     let newerDaemon: Bool
     let ts: TimeInterval
     let mode: ModeState
@@ -19,6 +20,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case v
+        case ownerDeviceId
         case ts
         case mode
         case live
@@ -33,6 +35,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
 
     init(
         v: Int,
+        ownerDeviceId: String = "",
         ts: TimeInterval,
         mode: ModeState,
         live: LiveState,
@@ -45,6 +48,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         dismissedRows: [DismissedSessionRow]
     ) {
         self.v = v
+        self.ownerDeviceId = ownerDeviceId
         newerDaemon = v > Self.knownVersion
         self.ts = ts
         self.mode = mode
@@ -71,6 +75,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         }
 
         v = version
+        ownerDeviceId = (try? container.decodeIfPresent(String.self, forKey: .ownerDeviceId)) ?? ""
         newerDaemon = version > Self.knownVersion
         rows = Self.decodeLossyArray(
             SessionRow.self,
@@ -110,6 +115,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
     /// from invalidating the entire SwiftUI dashboard four times a second.
     func hasSamePresentation(as other: PublishedState) -> Bool {
         v == other.v
+            && ownerDeviceId == other.ownerDeviceId
             && mode == other.mode
             && live == other.live
             && reply == other.reply

@@ -149,8 +149,10 @@ synchronously and answered with an empty reply that does not wait for
 injection. The C9b seam is reserved here as an optional
 `{kind: "control-envelope", ownerDeviceId, body}` wrapper checked BEFORE any
 local read: a foreign owner gets a typed `routing-error` and never falls
-through to local lookup; no client sends one yet, and the owner id is
-per-process until C9b supplies device identity. Signals, exit and shutdown
+through to local lookup; no client sends one yet. C9b A0 now loads the owner id
+from `device-id` in the settings config directory and publishes it as
+`ownerDeviceId` on every complete document; it survives daemon restarts.
+Signals, exit and shutdown
 ordering stay in the daemon. The server is tested over real Unix sockets
 against a stub application; the daemon's wiring of the five entries is pinned
 by a source guard, because `runDaemon` still runs in no test.
