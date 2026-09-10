@@ -58,7 +58,7 @@ Optional / manual setup:
   conch service [install|off] | uninstall [--models]  manage or remove the install
   conch install-plugin | uninstall-plugin  manage the Claude Code / Codex plugin
   conch install [--codex] | pair   wire hooks · connect the iPhone app
-  conch doctor | version           run live checks | print the package version
+  conch doctor | help-session | version   live checks | a Claude session that knows conch | version
 
 Internal entrypoints: conch hook | codex-hook | daemon | mcp
 `;
@@ -567,6 +567,17 @@ switch (command) {
       break;
     }
     console.log(target);
+    break;
+  }
+  case "help-session": {
+    if (rest.length > 0) {
+      console.error("usage: conch help-session");
+      process.exit(1);
+    }
+    const { startHelpSession } = await import("./session-lifecycle.ts");
+    const { HELP_SESSION_LABEL } = await import("./help-session.ts");
+    const cwd = await startHelpSession({ bypassPermissions: cfg.bypassPermissions });
+    console.log(`[conch] opened "${HELP_SESSION_LABEL}" in Terminal, in ${cwd}`);
     break;
   }
   case "doctor":
