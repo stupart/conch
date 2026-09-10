@@ -51,6 +51,8 @@ export interface PanelRowModel {
   label: string;
   /** Which agent runs this session; absent means Claude. */
   backend?: "claude" | "codex";
+  /** A subagent row: nested under this session, never the active one (C4). */
+  parentSessionId?: string;
   /** Known context usage for the TUI row; absent is unknown, never zero. */
   context?: SessionContextUsage;
   status: SessionStatus | null;
@@ -201,6 +203,12 @@ export interface PublishedSessionRow {
    * the model would have used.
    */
   backend?: "claude" | "codex";
+  /**
+   * Present on a subagent row: the session it runs inside. A viewer indents
+   * it under that row and never treats it as a session of its own — it has
+   * no process to type into or raise, and it is never the one being announced.
+   */
+  parentSessionId?: string;
   context?: SessionContextUsage;
   status: SessionStatus | null;
   /** Epoch-ms for the status currently visible on this row. */
@@ -420,6 +428,7 @@ export function buildPublishedState(
         id: row.sessionId,
         label: row.label,
         ...(row.backend ? { backend: row.backend } : {}),
+        ...(row.parentSessionId ? { parentSessionId: row.parentSessionId } : {}),
         status: row.status,
         ...(row.at !== undefined ? { at: row.at } : {}),
         ...(transcriptPath ? { transcriptPath } : {}),
@@ -485,7 +494,7 @@ const ROW_LIVE_STATES = new Set<PanelConchState>(["listening", "recording", "spe
 
 /** Build rows in the canonical panel order used by rendering and interaction. */
 export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[] {
-  return options.sessions
+  const rows = options.sessions
     .map((session): PanelRowModel => {
       const latched = options.sessionStates.get(session.sessionId);
       const visibleState = reconcilePanelState(session, latched);
@@ -508,11 +517,14 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
       const review = status !== "working" && latched?.review
         ? { ...latched.review, at: latched.at }
         : undefined;
-      const active = session.sessionId === options.activeSessionId;
+      // A subagent is never the active session: it is part of its parent's
+      // turn, and the announcement that follows belongs to the parent.
+      const active = !session.parentSessionId && session.sessionId === options.activeSessionId;
       return {
         sessionId: session.sessionId,
         label: sessionLabel(session, session.cwd),
         ...(session.backend ? { backend: session.backend } : {}),
+        ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
         ...(options.contextBySessionId?.get(session.sessionId)
           ? { context: { ...options.contextBySessionId.get(session.sessionId)! } }
           : {}),
@@ -534,11 +546,22 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         // A known process is what the title's click can try to raise (C10).
         ...(session.pid ? { revealable: true } : {}),
       };
-    })
+    });
+  const top = rows
+    .filter((row) => !row.parentSessionId)
     .sort((a, b) => (
       STATUS_RANK[a.status ?? "working"] - STATUS_RANK[b.status ?? "working"]
       || a.label.localeCompare(b.label)
     ));
+  // Folder-style: a subagent sits directly under its parent, oldest first,
+  // rather than competing with sessions on status. One whose parent is not in
+  // the list has nowhere to sit and is dropped, not promoted to a session.
+  return top.flatMap((parent) => [
+    parent,
+    ...rows
+      .filter((row) => row.parentSessionId === parent.sessionId)
+      .sort((a, b) => (a.at ?? 0) - (b.at ?? 0) || a.label.localeCompare(b.label)),
+  ]);
 }
 
 export interface NumberedPanelSessionRow {
@@ -566,7 +589,7 @@ export function numberPanelSessionRows(
 
 /** Resolve label-based auto-follow against the exact order visible in the panel. */
 export function activeSessionIdForRows(
-  rows: readonly Pick<PanelRowModel, "sessionId" | "label">[],
+  rows: readonly Pick<PanelRowModel, "sessionId" | "label" | "parentSessionId">[],
   live: Pick<PanelLiveState, "state" | "label">,
   options: {
     preferredSessionId?: string | null;
@@ -577,7 +600,9 @@ export function activeSessionIdForRows(
   if (options.preferredSessionId && options.liveSessionIds?.has(options.preferredSessionId)) {
     return options.preferredSessionId;
   }
-  return rows.find((row) => row.label === live.label)?.sessionId ?? null;
+  // Never a subagent row: conch speaks for sessions, and a subagent's label
+  // is its task description, which is no address at all.
+  return rows.find((row) => !row.parentSessionId && row.label === live.label)?.sessionId ?? null;
 }
 
 /** Run a panel commit only when its async inputs still belong to the newest render. */
@@ -645,8 +670,10 @@ const LIVE_GLYPH: Partial<Record<PanelConchState, string>> = {
 export function dashboardRowsForModel(model: PanelModel): string[] {
   return model.rows.map((row) => {
     const cursor = row.navSelected ? "\x1b[36m▸\x1b[0m " : "  ";
+    // A subagent is indented under its parent (C4); every other row is unchanged.
+    const label = row.parentSessionId ? `  ↳ ${row.label}` : row.label;
     if (row.paused) {
-      return `${cursor}\x1b[2m${row.label.slice(0, 26).padEnd(27)}⏸ manual\x1b[0m`;
+      return `${cursor}\x1b[2m${label.slice(0, 26).padEnd(27)}⏸ manual\x1b[0m`;
     }
     // Footer mode historically keyed its live glyph by label. Keep that exact
     // behavior here; theater uses the unambiguous active/liveGlyph model fields.
@@ -658,7 +685,7 @@ export function dashboardRowsForModel(model: PanelModel): string[] {
           ? STATUS_GLYPH[row.status]
           : "\x1b[2m· idle\x1b[0m");
     const detail = row.review?.summary ?? row.detail;
-    return `${cursor}${row.label.slice(0, 26).padEnd(27)}${glyph}${detail ? ` \x1b[2m(${detail})\x1b[0m` : ""}`;
+    return `${cursor}${label.slice(0, 26).padEnd(27)}${glyph}${detail ? ` \x1b[2m(${detail})\x1b[0m` : ""}`;
   });
 }
 

@@ -398,7 +398,7 @@ describe("control-message validation", () => {
     }
   });
 
-  test("recognizes and canonicalizes the seven closed session-command shapes", () => {
+  test("recognizes and canonicalizes the eight closed session-command shapes", () => {
     expect(SESSION_COMMANDS).toEqual([
       "rename",
       "set-voice",
@@ -407,6 +407,7 @@ describe("control-message validation", () => {
       "dismiss",
       "restore",
       "reveal",
+      "set-model",
     ]);
 
     const cases: Array<{ input: unknown; output: SessionControlMessage }> = [
@@ -438,6 +439,10 @@ describe("control-message validation", () => {
         input: { kind: "session-command", sessionId: "session-1", command: "reveal" },
         output: { kind: "session-command", sessionId: "session-1", command: "reveal" },
       },
+      {
+        input: { kind: "session-command", sessionId: "session-1", command: "set-model", model: " sonnet[1m] " },
+        output: { kind: "session-command", sessionId: "session-1", command: "set-model", model: "sonnet[1m]" },
+      },
     ];
 
     for (const { input, output } of cases) {
@@ -463,6 +468,16 @@ describe("control-message validation", () => {
       { kind: "session-command", sessionId: "session-1", command: "set-voice", voice: "not a voice!" },
       { kind: "session-command", sessionId: "session-1", command: "prioritize", value: "true" },
       { kind: "session-command", sessionId: "session-1", command: "delete-everything" },
+      // set-model becomes one argument to `/model`: bounded, printable, one
+      // word, never an option.
+      { kind: "session-command", sessionId: "session-1", command: "set-model" },
+      { kind: "session-command", sessionId: "session-1", command: "set-model", model: "" },
+      { kind: "session-command", sessionId: "session-1", command: "set-model", model: "   " },
+      { kind: "session-command", sessionId: "session-1", command: "set-model", model: "-opus" },
+      { kind: "session-command", sessionId: "session-1", command: "set-model", model: "opus\nrm -rf" },
+      { kind: "session-command", sessionId: "session-1", command: "set-model", model: "opus high" },
+      { kind: "session-command", sessionId: "session-1", command: "set-model", model: "x".repeat(129) },
+      { kind: "session-command", sessionId: "session-1", command: "set-model", model: 42 },
     ];
 
     for (const input of hostile) {

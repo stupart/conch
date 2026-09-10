@@ -144,6 +144,13 @@ function applySessionControlMessage(
       void invokeSessionAction(controller, target, { command: "reveal" });
       return sessionCommandAck(message, target.pid !== undefined, target.label);
     }
+    case "set-model": {
+      // Same shape as reveal: the typing is tmux/AppleScript against the
+      // session's window and the reply must not wait on it. `changed` means
+      // "there is a window to deliver to"; the daemon logs the delivery itself.
+      void invokeSessionAction(controller, target, { command: "set-model", model: message.model });
+      return sessionCommandAck(message, target.pid !== undefined, target.label);
+    }
     case "dismiss": {
       if (options.isDismissed?.(message.sessionId)) {
         return sessionCommandAck(message, false, target.label);
