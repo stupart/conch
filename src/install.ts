@@ -601,6 +601,19 @@ export function serviceOff(
   } catch {}
 }
 
+/**
+ * launchd exec's ProgramArguments directly — no shell — so every element is
+ * one argv word and nothing may carry quotes. The compiled branch used
+ * `conchInvocation()`, a SHELL-quoted string, so a brew install wrote
+ * `"/opt/homebrew/bin/conch"` (quotes included) as argv[0] and the service
+ * never started. Found by the A2/A3 agent, 2026-09-11.
+ */
+export function serviceDaemonArgv(compiled: boolean, execPath: string, conchRoot: string): string[] {
+  return compiled
+    ? [execPath, "daemon"]
+    : [execPath, join(conchRoot, "src", "cli.ts"), "daemon"];
+}
+
 export function renderServicePlist(
   { daemonArgv, conchRoot, path, carriedEnv }: { daemonArgv: string[]; conchRoot: string; path: string; carriedEnv: string },
 ): string {
@@ -658,9 +671,7 @@ export async function runService(cfg: Config, action: "install" | "off"): Promis
 
   // launchd exec's this directly — no shell, so every word is its own argv
   // entry and nothing needs quoting.
-  const daemonArgv = IS_COMPILED
-    ? [conchInvocation(), "daemon"]
-    : [process.execPath, join(conchRoot, "src", "cli.ts"), "daemon"];
+  const daemonArgv = serviceDaemonArgv(IS_COMPILED, process.execPath, conchRoot);
 
   const path = [
     "/opt/homebrew/bin",
