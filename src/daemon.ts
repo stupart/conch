@@ -146,6 +146,7 @@ import {
   logsShown,
   onLiveChange,
   onLiveDataChange,
+  openTheaterReview,
   publishSessionsFile,
   renderPanel,
   resizeRenderer,
@@ -4948,6 +4949,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
           origin: "user",
         });
       }
+      // The deliverable's link is the row's to consume: `o` hands it to macOS.
+      else if (theaterMode && c === "o") log(openTheaterReview(theaterActionTarget()));
       else if (dispatchTheaterControlKey(c, theaterControls)) {}
       else if (c === "?" || c === "h") {
         revealLogPane();

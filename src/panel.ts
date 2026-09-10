@@ -56,7 +56,10 @@ export interface PanelRowModel {
   /** Epoch-ms for the status currently visible on this row. */
   at?: number;
   detail?: string;
-  review?: { summary: string; link?: string; at: number };
+  /** `opened` exists only on the terminal renderer's own copy, set once `o` has
+   * handed the link to macOS — its equivalent of the Mac app's seen set. The
+   * publisher copies summary/link/at explicitly, so it never reaches the wire. */
+  review?: { summary: string; link?: string; at: number; opened?: boolean };
   paused: boolean;
   muted: boolean;
   liveGlyph: PanelConchState | null;

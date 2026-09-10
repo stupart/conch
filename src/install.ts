@@ -1,8 +1,9 @@
 import { join, dirname } from "node:path";
-import { existsSync, mkdirSync, chmodSync, unlinkSync, statSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, chmodSync, unlinkSync, rmSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
 import { CONCH_DATA } from "./config.ts";
+import { readState } from "./daemon-state.ts";
 import { runInstallPlugin } from "./plugin-install.ts";
 import { resolveMlxAudioPython } from "./tts-worker.ts";
 import { checkAgentBinaries, checkConchBinaries, checkMicrophone, checkTts, checkWhisperServer, formatDoctorProbe } from "./doctor-checks.ts";
@@ -122,7 +123,7 @@ const MODELS = [
   {
     file: "ggml-large-v3-turbo-q5_0.bin",
     url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
-    label: "whisper large-v3-turbo (~1.6 GB)",
+    label: "whisper large-v3-turbo (~574 MB)",
     minBytes: 500_000_000, // guards against a 404-page masquerading as the model
   },
   {
@@ -170,6 +171,8 @@ export interface SetupReadyOptions {
   codexNeedsInstall?: boolean;
   /** Injectable for stable string tests; defaults to terminal color support. */
   color?: boolean;
+  /** The daemon's persisted state (`readState()`): a manual mode left by an old install is said here, not found by silence. */
+  paused?: boolean;
 }
 
 export interface HardDependency {
@@ -321,6 +324,9 @@ export function renderSetupReady(
   const then = completion.service === "skipped"
     ? "│ THEN — Run `conch daemon` to start the voice loop; leave it open, then\n│ finish a turn. conch reads it aloud, plays a tink, and opens the mic."
     : "│ THEN — Just finish a turn. conch reads it aloud, plays a tink, and opens\n│ the mic; talk, pause, and your words go back into that session.";
+  const mode = options.paused
+    ? "│ MODE — manual (persisted from a previous install): conch stays silent until\n│ you press p in `conch` or run `conch resume`."
+    : "│ MODE — auto: conch speaks after every finished turn; p in `conch` or\n│ `conch pause` makes it manual.";
   const installed = [
     "hooks",
     ...(completion.plugin === "installed" ? ["plugin"] : []),
@@ -339,6 +345,8 @@ export function renderSetupReady(
 ${pickup}
 │
 ${then}
+│
+${mode}
 │
 │ macOS will ask for microphone access the first time something speaks. Allow it.
 │ If you miss the prompt, run \`conch doctor\`.
@@ -411,10 +419,12 @@ export async function runSetup(
       continue;
     }
     mkdirSync(modelsDir, { recursive: true });
-    const dest = join(modelsDir, m.file);
-    console.log(`⬇️  ${m.label}`);
-    await downloadModel(m.url, dest, m.minBytes);
-    console.log(`   → ${dest}`);
+    try {
+      await downloadModel(m, join(modelsDir, m.file));
+    } catch (error) {
+      console.error(`❌ ${error instanceof Error ? error.message : String(error)}. Check your connection and re-run \`conch setup\`.`);
+      process.exit(1);
+    }
   }
 
   // 3. Kokoro voices (optional). The server extra is retained solely so
@@ -462,33 +472,79 @@ export async function runSetup(
 
   const codexNeedsInstall = codexWasPresent
     && !(await codexHooksAreWiredAt(codexDir));
-  console.log(`\n${renderSetupReady(completion, { codexNeedsInstall })}`);
+  console.log(`\n${renderSetupReady(completion, { codexNeedsInstall, paused: readState().paused })}`);
 }
 
-/** curl a model to a temp path, size-check it, then atomically move into place. */
-async function downloadModel(url: string, dest: string, minBytes: number): Promise<void> {
+/** Where download progress goes; injectable so a test can read it back. */
+export interface DownloadOutput {
+  write(text: string): void;
+  tty: boolean;
+}
+
+/** "885 KB", "574 MB", "1.62 GB" — coarse on purpose, so a redraw only fires when the text reads differently. */
+export function formatBytes(n: number): string {
+  if (n < 1_000_000) return `${Math.round(n / 1_000)} KB`;
+  if (n < 1_000_000_000) return `${Math.round(n / 1_000_000)} MB`;
+  return `${(n / 1_000_000_000).toFixed(2)} GB`;
+}
+
+/** "120 MB / 574 MB (20%)", or "120 MB / size unknown" when the server sent no Content-Length. */
+export function formatProgress(done: number, total?: number): string {
+  if (!total) return `${formatBytes(done)} / size unknown`;
+  return `${formatBytes(done)} / ${formatBytes(total)} (${Math.floor((done / total) * 100)}%)`;
+}
+
+/**
+ * A progress line that redraws in place on a terminal. Piped (CI, a log file)
+ * it prints once per 10% — once per 100 MB when the size is unknown — so the
+ * log stays readable.
+ */
+export function progressReporter(total: number | undefined, out: DownloadOutput): (done: number) => void {
+  let last: string | number = "";
+  return (done) => {
+    const line = formatProgress(done, total);
+    const key = out.tty ? line : total ? Math.floor((done / total) * 10) : Math.floor(done / 100_000_000);
+    if (key === last) return;
+    last = key;
+    out.write(out.tty ? `\r   ${line}\x1b[K` : `   ${line}\n`);
+  };
+}
+
+/**
+ * Stream a model to a temp path with a progress line, size-check it, then
+ * atomically move it into place. Throws on an HTTP error or a too-small file
+ * (a 404 page masquerading as the model); the caller says what to do next.
+ *
+ * This was a curl subprocess. Its bar showed neither the total nor the bytes,
+ * and nothing said how big the file was before it began, so on a slow
+ * connection `conch setup` looked hung for the length of a 574 MB download.
+ */
+export async function downloadModel(
+  model: { url: string; label: string; minBytes: number },
+  dest: string,
+  out: DownloadOutput = { write: (text) => process.stdout.write(text), tty: Boolean(process.stdout.isTTY) },
+): Promise<void> {
   const tmp = `${dest}.part`;
-  try {
-    unlinkSync(tmp);
-  } catch {}
-  const proc = Bun.spawn(["curl", "-L", "--fail", "--progress-bar", "-o", tmp, url], {
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  const code = await proc.exited;
-  if (code !== 0) {
-    console.error(`❌ download failed (curl exit ${code}). Check your connection and re-run \`conch setup\`.`);
-    process.exit(1);
+  rmSync(tmp, { force: true });
+  const res = await fetch(model.url);
+  if (!res.ok || !res.body) throw new Error(`download failed (HTTP ${res.status})`);
+  const total = Number(res.headers.get("content-length")) || undefined;
+  out.write(`⬇️  ${model.label}: ${total ? formatBytes(total) : "size unknown"} → ${dest}\n`);
+  const report = progressReporter(total, out);
+  const sink = Bun.file(tmp).writer();
+  let done = 0;
+  for await (const chunk of res.body) {
+    sink.write(chunk);
+    done += chunk.byteLength;
+    report(done);
   }
-  const size = existsSync(tmp) ? statSync(tmp).size : 0;
-  if (size < minBytes) {
-    try {
-      unlinkSync(tmp);
-    } catch {}
-    console.error(`❌ downloaded file is too small (${size} bytes) — the URL may have returned an error page.`);
-    process.exit(1);
+  await sink.end();
+  if (out.tty) out.write("\n");
+  if (done < model.minBytes) {
+    rmSync(tmp, { force: true });
+    throw new Error(`downloaded file is too small (${done} bytes) — the URL may have returned an error page`);
   }
-  renameSync(tmp, dest); // same dir → atomic, no 1.6 GB re-copy
+  renameSync(tmp, dest); // same dir → atomic, no 574 MB re-copy
 }
 
 /**
@@ -737,6 +793,10 @@ Verify Codex hook activation:
   confirm: After Codex starts, run \`conch sessions\` and check that the Codex session is listed.`);
 }
 
+/** Said only when hooks were actually written: an unchanged install has nothing for open sessions to reload. */
+export const HOOKS_WIRED_LINE =
+  "Done. Any Claude Code session already open needs `/hooks` typed once; sessions opened from now on pick conch up automatically.";
+
 /**
  * Merge conch's hooks into ~/.claude/settings.json and put the review handoff
  * contract in global CLAUDE.md. Existing content in both files is preserved;
@@ -757,7 +817,11 @@ export async function runInstall(cfg: Config): Promise<void> {
   let changed = false;
   for (const event of ["Stop", "Notification", "UserPromptSubmit"]) {
     const entries: HookEntry[] = (settings.hooks[event] ??= []);
-    const already = entries.some((e) => e.hooks?.some((h) => h.command?.includes("conch") && h.command?.includes("hook")));
+    // Exact match first, as the Codex merge does. The loose match alone missed a
+    // source checkout whose path has no lowercase "conch" in it (~/Projects/Conch),
+    // so every re-run appended a fresh copy of each hook and "Done" fired every time.
+    const already = entries.some((e) => e.hooks?.some((h) =>
+      h.command === command || (h.command?.includes("conch") && h.command?.includes("hook"))));
     if (already) {
       console.log(`${event}: conch hook already wired, skipping`);
       continue;
@@ -781,7 +845,7 @@ export async function runInstall(cfg: Config): Promise<void> {
     await Bun.write(settingsPath, JSON.stringify(settings, null, 2) + "\n");
   }
   if (changed) {
-    console.log("\nDone. Open /hooks in Claude Code (or restart sessions) to reload config.");
+    console.log(`\n${HOOKS_WIRED_LINE}`);
   } else {
     console.log("\nNothing to do.");
   }

@@ -45,7 +45,7 @@ for (const [platform, source, location, folder] of [
       expect(source).toContain("teleportSessionId: mode == .teleport ? teleportSessionId : nil");
       expect(source).toContain(platform === "Mac"
         ? "cwd: effectiveCwd"
-        : "cwd: resuming ? resumeSelection?.cwd : freshWorkingFolder");
+        : "let cwd = resuming ? resumeSelection?.cwd : freshWorkingFolder");
       expect(source).toContain(platform === "Mac"
         ? "resumeSessionId: mode == .resume ? resumeSelection?.sessionId : nil"
         : "resumeSessionId: resuming ? resumeSelection?.sessionId : nil");
