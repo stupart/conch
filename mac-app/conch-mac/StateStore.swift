@@ -922,7 +922,9 @@ final class StateStore: ObservableObject {
             conversations: sourceState.conversations,
             rows: rows,
             dismissed: sourceState.dismissed,
-            dismissedRows: dismissedRows
+            dismissedRows: dismissedRows,
+            audioControl: sourceState.audioControl,
+            audioOutbox: sourceState.audioOutbox
         )
         if state?.hasSamePresentation(as: next) != true {
             state = next

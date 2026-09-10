@@ -541,7 +541,7 @@ describe("daemon config controller", () => {
     );
 
     expect(branch).toContain("lastAssistantText(target.transcriptPath)");
-    expect(branch).toContain("await speak(cfg, `${target.label}:`, target.label, true)");
+    expect(branch).toContain("await speak(cfg, `${target.label}:`, target.label, true, target.sessionId)");
     expect(branch).toContain("await conversationLoop(");
     expect(branch).toContain("false,\n          pauseGeneration");
     expect(branch).not.toContain("ringBell");

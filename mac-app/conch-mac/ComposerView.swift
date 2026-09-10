@@ -122,6 +122,10 @@ struct ComposerView: View {
     /// How loud the mic is, 0..1, while recording. It drives the halo, so the
     /// button says "I can hear you" rather than only "I am on".
     let voiceLevel: Double
+    /// C9b Cut B: another Mac holds this daemon's voice and ear. The mic is the
+    /// one control here that would open it, so it alone is dimmed and disabled;
+    /// typing, attaching and sending keep working.
+    var audioHeldElsewhere = false
     let onSend: (String) -> Task<Bool, Never>
     let onInterrupt: () -> Void
     let onTalk: () -> Void
@@ -195,8 +199,10 @@ struct ComposerView: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .help(micHelp)
-                .accessibilityLabel(micHelp)
+                .disabled(audioHeldElsewhere)
+                .opacity(audioHeldElsewhere ? 0.35 : 1)
+                .help(audioHeldElsewhere ? "Controlled by another Mac — press Take it to talk here" : micHelp)
+                .accessibilityLabel(audioHeldElsewhere ? "Controlled by another Mac — press Take it to talk here" : micHelp)
 
                 if let micCaption {
                     Text(micCaption)

@@ -33,6 +33,7 @@
 		A100000000000000000000950 /* DirectHTTPTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000950 /* DirectHTTPTransport.swift */; };
 		A100000000000000000000951 /* RemoteMacStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000951 /* RemoteMacStore.swift */; };
 		A100000000000000000000952 /* RemoteMacViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000952 /* RemoteMacViews.swift */; };
+		A100000000000000000000953 /* AudioHolderStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000953 /* AudioHolderStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -64,6 +65,7 @@
 		A200000000000000000000950 /* DirectHTTPTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectHTTPTransport.swift; sourceTree = "<group>"; };
 		A200000000000000000000951 /* RemoteMacStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMacStore.swift; sourceTree = "<group>"; };
 		A200000000000000000000952 /* RemoteMacViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMacViews.swift; sourceTree = "<group>"; };
+		A200000000000000000000953 /* AudioHolderStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioHolderStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -99,6 +101,7 @@
 				A200000000000000000000952 /* RemoteMacViews.swift */,
 				A200000000000000000000951 /* RemoteMacStore.swift */,
 				A200000000000000000000950 /* DirectHTTPTransport.swift */,
+				A200000000000000000000953 /* AudioHolderStore.swift */,
 				A20000000000000000000006 /* ReviewView.swift */,
 				A20000000000000000000007 /* WebView.swift */,
 				A2000000000000000000000C /* ConchSocketClient.swift */,
@@ -221,6 +224,7 @@
 				A100000000000000000000952 /* RemoteMacViews.swift in Sources */,
 				A100000000000000000000951 /* RemoteMacStore.swift in Sources */,
 				A100000000000000000000950 /* DirectHTTPTransport.swift in Sources */,
+				A100000000000000000000953 /* AudioHolderStore.swift in Sources */,
 				A10000000000000000000006 /* ReviewView.swift in Sources */,
 				A10000000000000000000007 /* WebView.swift in Sources */,
 				A1000000000000000000000A /* ConchSocketClient.swift in Sources */,
