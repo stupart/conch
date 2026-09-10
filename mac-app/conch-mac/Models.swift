@@ -376,12 +376,28 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
             }
         }
 
+        /// The subagent a Task/Agent call started (C4): its row id while it
+        /// runs, and its own transcript for as long as the file exists.
+        struct Subagent: Decodable, Equatable, Sendable {
+            let id: String
+            let transcriptPath: String?
+
+            private enum CodingKeys: String, CodingKey { case id, transcriptPath }
+
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                id = try c.decode(String.self, forKey: .id)
+                transcriptPath = try? c.decodeIfPresent(String.self, forKey: .transcriptPath)
+            }
+        }
+
         var name = ""
         var kind = Kind.unknown
         var status = "running"
         var result: String?
+        var subagent: Subagent?
 
-        private enum CodingKeys: String, CodingKey { case name, kind, status, result }
+        private enum CodingKeys: String, CodingKey { case name, kind, status, result, subagent }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -392,6 +408,7 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
             kind = (try? c.decodeIfPresent(Kind.self, forKey: .kind)) ?? .unknown
             status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? "running"
             result = try? c.decodeIfPresent(String.self, forKey: .result)
+            subagent = try? c.decodeIfPresent(Subagent.self, forKey: .subagent)
         }
     }
 
@@ -672,6 +689,10 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     /// The daemon knows this session's process, so a click on its title can
     /// try to raise its terminal. False for a session conch only observes.
     let revealable: Bool
+    /// Present on a subagent row (C4): the session it runs inside. Such a row
+    /// is indented under that session, has no composer, and is never the one
+    /// conch is speaking for. Older daemons never send it.
+    let parentSessionId: String?
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -692,6 +713,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case prioritized
         case navSelected
         case revealable
+        case parentSessionId
     }
 
     init(
@@ -712,7 +734,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         voice: String?,
         prioritized: Bool,
         navSelected: Bool,
-        revealable: Bool = false
+        revealable: Bool = false,
+        parentSessionId: String? = nil
     ) {
         self.id = id
         self.label = label
@@ -732,6 +755,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.prioritized = prioritized
         self.navSelected = navSelected
         self.revealable = revealable
+        self.parentSessionId = parentSessionId
     }
 
     init(from decoder: Decoder) throws {
@@ -759,6 +783,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             (try? container.decodeIfPresent(Bool.self, forKey: .navSelected)) ?? false
         revealable =
             (try? container.decodeIfPresent(Bool.self, forKey: .revealable)) ?? false
+        parentSessionId =
+            try? container.decodeIfPresent(String.self, forKey: .parentSessionId)
     }
 
     func replacingLabel(with label: String) -> SessionRow {
@@ -780,7 +806,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             voice: voice,
             prioritized: prioritized,
             navSelected: navSelected,
-            revealable: revealable
+            revealable: revealable,
+            parentSessionId: parentSessionId
         )
     }
 }

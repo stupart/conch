@@ -103,6 +103,28 @@ That asymmetry is the single largest source of complexity in the codebase, and
 it is not accidental: it is what lets conch attach to sessions it did not start
 without touching them.
 
+**Claude's subagents are a third shape, and they are read from disk only.** A
+Task/Agent call runs inside the parent's process: it gets no
+`~/.claude/sessions/<pid>.json`, so `registrySnapshot` can never list one, and
+it fires `SubagentStop`, not `Stop` — conch registers only Stop, Notification
+and UserPromptSubmit, and `hook.ts` drops SubagentStop explicitly, which is
+what keeps a finishing subagent from being announced as the parent's turn. What
+Claude Code does write is a sidechain transcript at
+`<project>/<sessionId>/subagents/agent-<id>.jsonl` (with `agentType`,
+`description` and `toolUseId` in `agent-<id>.meta.json` beside it), the
+parent's tool_result carrying `toolUseResult.agentId` (`isAsync: true` for a
+background agent), and a `<task-notification>` in the parent when it reports
+back — in one of three carriers, depending on whether the parent was idle.
+Nothing on disk says "still running"; `agent-activity.ts` derives it as a fresh
+sidechain whose newest mention in the parent is its launch. That one reader
+serves both the hook (a Stop with live background agents is "working", not
+"waiting") and the dashboard (C4): a live subagent becomes a row with
+`parentSessionId`, nested under its parent, whose transcript is the sidechain —
+the same JSONL shape, so the conversation reader shows it unchanged. Such a row
+is never engageable: no pid, no pane, never the active session. A finished
+subagent has no row, but the block that started it still names it, so the Mac
+opens its transcript from there.
+
 ## Async, and where it is honest
 
 Bun, single-threaded, `async`/`await` throughout. Everything expensive is a
