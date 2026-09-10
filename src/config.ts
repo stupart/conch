@@ -27,6 +27,8 @@ export interface Config {
   whisperServerBin: string;
   /** port for the warm whisper-server the daemon manages; 0 disables it */
   whisperPort: number;
+  /** minutes without a transcription before an owned whisper-server is unloaded; 0 never (D2) */
+  whisperIdleUnloadMins: number;
   whisperModel: string;
   vadModel: string;
   /** TTS voice for `say`; empty string = system default */
@@ -166,6 +168,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     whisperCli: env.CONCH_WHISPER_CLI ?? firstExisting(join(seashellRoot, "whisper.cpp/build/bin/whisper-cli"), join(BREW, "whisper-cli")),
     whisperServerBin: env.CONCH_WHISPER_SERVER ?? firstExisting(join(seashellRoot, "whisper.cpp/build/bin/whisper-server"), join(BREW, "whisper-server")),
     whisperPort: zeroable(env.CONCH_WHISPER_PORT, 8642),
+    whisperIdleUnloadMins: settings["whisper-idle-unload"].value as number,
     whisperModel: env.CONCH_WHISPER_MODEL ?? firstExisting(join(seashellRoot, "models", WHISPER_MODEL_FILE), join(CONCH_DATA, "models", WHISPER_MODEL_FILE)),
     vadModel: env.CONCH_VAD_MODEL ?? firstExisting(join(seashellRoot, "whisper.cpp/models", VAD_MODEL_FILE), join(CONCH_DATA, "models", VAD_MODEL_FILE)),
     voice: env.CONCH_VOICE ?? "",

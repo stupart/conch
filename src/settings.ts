@@ -51,6 +51,7 @@ export const SETTING_KEYS = [
   "announce-sentences",
   "announce-max-chars",
   "say-rate",
+  "whisper-idle-unload",
 ] as const;
 
 export type SettingKey = typeof SETTING_KEYS[number];
@@ -80,7 +81,8 @@ export type SettingField =
   | "meetingAutopause"
   | "speakSentences"
   | "speakMaxChars"
-  | "sayRate";
+  | "sayRate"
+  | "whisperIdleUnloadMins";
 export type HandoffOrder = "newest" | "oldest" | "urgency";
 export type SettingValue = number | boolean | string;
 export type SettingApply = "live" | "hook";
@@ -471,6 +473,20 @@ export const SETTING_DESCRIPTORS = [
     bounds: zeroableInteger,
     apply: "live",
     help: "macOS say words per minute; 0 uses the system default",
+  },
+  {
+    key: "whisper-idle-unload",
+    field: "whisperIdleUnloadMins",
+    env: "CONCH_WHISPER_IDLE_UNLOAD_MINS",
+    kind: "number",
+    // The warm whisper-server holds ~628MB for as long as it lives, even when
+    // nobody has spoken for hours (D2). Twenty minutes of no transcription and
+    // it is stopped; it reloads the moment a mic is about to open.
+    default: 20,
+    parse: numberParser(zeroable, "a number of minutes (0 never unloads)"),
+    bounds: zeroable,
+    apply: "live",
+    help: "minutes without a transcription before the warm whisper-server (~628MB) is unloaded; it reloads when a mic is about to open; 0 keeps it loaded",
   },
 ] as const satisfies readonly SettingDescriptor[];
 
