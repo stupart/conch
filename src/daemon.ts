@@ -2482,9 +2482,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
       beforeInject ? commit : undefined,
       { allowBlindFallback: options.allowBlindFallback },
     );
-    if (interrupted) return false;
+    // Undelivered words go back to the composer (A8). The app clears its
+    // draft the moment the daemon ACCEPTS a send, which is before anything is
+    // typed anywhere — so an inject that then stops (interrupted) or lands
+    // on the clipboard had already erased the only copy on screen. The
+    // dictation channel exists to hand text to a composer once, by id, for
+    // exactly one session; a failed delivery is the same shape.
+    if (interrupted) {
+      publishDictation(text, event.sessionId);
+      return false;
+    }
 
     if (via === "clipboard") {
+      publishDictation(text, event.sessionId);
       // Name the cause: "keystroke-fallback-off" means the session isn't in a
       // tmux pane AND typing is disabled, so EVERY utterance lands here — a
       // config problem, not a transient one. Without this the log line is
