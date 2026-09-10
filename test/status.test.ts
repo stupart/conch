@@ -9,7 +9,9 @@ import {
   getLiveState,
   installRendererLifecycle,
   onLiveDataChange,
+  openTheaterReview,
   relativeAge,
+  renderPanel,
   scrollTheaterPane,
   setReadingProgress,
   setLogsVisible,
@@ -25,6 +27,7 @@ import {
 } from "../src/status.ts";
 import {
   type PanelModel,
+  type PanelRowModel,
 } from "../src/panel.ts";
 
 const ACTIVE_FOOTER_GOLDEN = "\n"
@@ -67,6 +70,7 @@ function recordingIO(options: { columns?: number; rows?: number; tty?: boolean }
   const writes: string[] = [];
   const prints: string[] = [];
   const copies: string[] = [];
+  const opens: string[] = [];
   const io: RendererIO = {
     stdoutTTY: options.tty ?? true,
     stdinTTY: options.tty ?? true,
@@ -77,8 +81,11 @@ function recordingIO(options: { columns?: number; rows?: number; tty?: boolean }
     copy: (text) => {
       copies.push(text);
     },
+    open: (link) => {
+      opens.push(link);
+    },
   };
-  return { io, writes, prints, copies };
+  return { io, writes, prints, copies, opens };
 }
 
 describe("terminal Phase 2 surfaces", () => {
@@ -393,6 +400,101 @@ describe("footer renderer seam", () => {
     }));
 
     expect(writes).toEqual([ACTIVE_FOOTER_GOLDEN]);
+  });
+});
+
+describe("theater deliverables", () => {
+  const HERO_AT = 1_757_000_000_000;
+  const idle = { state: "idle", label: "", partial: "" } as const;
+  const deliverableRow = (overrides: Partial<PanelRowModel> = {}): PanelRowModel => ({
+    sessionId: "hero",
+    label: "hero-site",
+    status: "waiting",
+    at: HERO_AT,
+    review: { summary: "Hero v3 render", link: "/tmp/hero-v3.png", at: HERO_AT },
+    paused: false,
+    muted: false,
+    liveGlyph: null,
+    active: false,
+    navSelected: false,
+    ...overrides,
+  });
+  const plainFrame = (frame: string): string[] => frame
+    .replace(/^\x1b\[H/, "")
+    .split("\n")
+    .map((line) => line.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ""));
+  const ledgerLine = (frame: string): string =>
+    plainFrame(frame).find((line) => line.includes("hero-site"))!;
+
+  test("the link rides on the row and sits inline above the parked pane", () => {
+    const { io, writes } = recordingIO({ columns: 120, rows: 8 });
+    const renderer = createTheaterRenderer(io);
+    renderer.enter();
+
+    renderer.panel(sampleModel({ panelOpen: false, live: idle, reply: null, rows: [deliverableRow()] }));
+    const collapsed = plainFrame(writes.at(-1)!);
+    expect(ledgerLine(writes.at(-1)!)).toContain("⭐ needs review (Hero v3 render · /tmp/hero-v3.png)");
+    expect(collapsed[0]).toContain("⭐1 to look at");
+
+    renderer.panel(sampleModel({
+      panelOpen: true,
+      live: idle,
+      reply: null,
+      preview: { sessionId: "hero", text: "Rendered the hero at 2x.", spokenChars: 0 },
+      rows: [deliverableRow({ navSelected: true })],
+    }));
+    // Header and rule carry no seam; the body starts on the third frame line.
+    const pane = plainFrame(writes.at(-1)!).map((line) => (line.split("│")[1] ?? "").trim());
+    expect(pane.slice(2, 6)).toEqual([
+      "⭐ Hero v3 render",
+      "/tmp/hero-v3.png",
+      "",
+      "Rendered the hero at 2x.",
+    ]);
+    expect(pane).toContain("‹hero-site› · o open · esc back · space talk");
+  });
+
+  test("o hands the deliverable to open once, calms the row, and a newer review re-arms it", () => {
+    const { io, writes, opens } = recordingIO({ columns: 120, rows: 8 });
+    const { kind, renderer } = configureRenderer({}, io);
+    expect(kind).toBe("theater");
+    renderer.enter();
+    const frame = (rows: PanelRowModel[]) =>
+      sampleModel({ panelOpen: false, live: idle, reply: null, rows });
+
+    renderPanel(frame([deliverableRow()]));
+    expect(openTheaterReview(null)).toBe("nothing to open — park a session with a deliverable");
+    expect(opens).toEqual([]);
+    expect(openTheaterReview("hero")).toBe("opened /tmp/hero-v3.png");
+    expect(opens).toEqual(["/tmp/hero-v3.png"]);
+    let ledger = ledgerLine(writes.at(-1)!);
+    expect(ledger).not.toContain("needs review");
+    expect(ledger).toContain("○ waiting for you (Hero v3 render · /tmp/hero-v3.png)");
+    expect(plainFrame(writes.at(-1)!)[0]).not.toContain("to look at");
+
+    // The daemon republishes the same review constantly; it stays consumed.
+    renderPanel(frame([deliverableRow()]));
+    expect(ledgerLine(writes.at(-1)!)).not.toContain("needs review");
+
+    // A newer review from the same session is new work to look at.
+    renderPanel(frame([deliverableRow({
+      review: { summary: "Hero v4 render", link: "/tmp/hero-v4.png", at: HERO_AT + 1 },
+    })]));
+    ledger = ledgerLine(writes.at(-1)!);
+    expect(ledger).toContain("⭐ needs review (Hero v4 render · /tmp/hero-v4.png)");
+    expect(plainFrame(writes.at(-1)!)[0]).toContain("⭐1 to look at");
+
+    // No link, nothing to hand over — and nothing is consumed.
+    renderPanel(frame([deliverableRow({ review: { summary: "Wrote the notes", at: HERO_AT + 2 } })]));
+    expect(openTheaterReview("hero")).toBe("no link was published for ‹hero-site›'s review");
+    expect(opens).toEqual(["/tmp/hero-v3.png"]);
+    expect(ledgerLine(writes.at(-1)!)).toContain("⭐ needs review (Wrote the notes)");
+    renderer.shutdown();
+
+    // The byte-frozen footer has no deliverable seam.
+    configureRenderer({ CONCH_TUI: "footer" }, io);
+    expect(openTheaterReview("hero")).toBe("nothing to open — the theater dashboard owns o");
+    expect(opens).toEqual(["/tmp/hero-v3.png"]);
   });
 });
 
