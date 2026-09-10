@@ -751,7 +751,11 @@ describe("daemon config controller", () => {
       daemonSource.indexOf("async function handleTurn"),
       daemonSource.indexOf('if (event.type === "wake")'),
     );
-    const audibleAt = handleEntry.indexOf("const audibleTurn = shouldHandleTurnAudibly");
+    // `controlledTurn`, not the old `audibleTurn`: production renamed it and this
+    // search kept returning -1, which sorts before every real index — so the
+    // ordering below passed with its marker missing. Presence is asserted first.
+    const audibleAt = handleEntry.indexOf("const controlledTurn = shouldHandleTurnAudibly");
+    expect(audibleAt).toBeGreaterThan(-1);
     const closedAt = handleEntry.indexOf("&& sessionGoneFromSnapshot(");
     const statusAt = handleEntry.indexOf("// Dashboard status");
     expect(closedAt).toBeGreaterThan(audibleAt);
@@ -1288,8 +1292,15 @@ describe("an inject never waits for the voice engine", () => {
   const source = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
 
   test("the queue no longer blocks on startup before dispatching", () => {
-    const drain = source.slice(source.indexOf("async function drain()"));
-    const body = drain.slice(0, drain.indexOf("async function handle("));
+    // Both markers must EXIST before the slice means anything: a missing one
+    // gives -1, slice(-1) is the last character, and `not.toContain` passes
+    // on an empty body.
+    const drainAt = source.indexOf("async function drain()");
+    expect(drainAt).toBeGreaterThan(-1);
+    const drain = source.slice(drainAt);
+    const handleAt = drain.indexOf("async function handle(");
+    expect(handleAt).toBeGreaterThan(-1);
+    const body = drain.slice(0, handleAt);
     expect(body).not.toContain("await ttsStartup");
   });
 

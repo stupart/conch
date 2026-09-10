@@ -1030,14 +1030,15 @@ export function dispatchSocketTurnEvent(
 ): void {
   const event = incoming;
   if (event.type === "spacebar") {
-    // `busy` is the DRAIN LOOP's flag, and an open mic is not always inside it:
-    // a lightweight targeted wake takes the instant path, which never sets it.
-    // So this asked "is the queue working?" when the only question that matters
-    // is "is the microphone open?" — and dropped the stop while conch was
-    // audibly listening. Six of them in one attempt, all logged as ignored by
-    // the line below, which is how we found it. `capturing` is the daemon's own
-    // `normalMicOpen()`, the same predicate `stopReciting` uses to decide
-    // whether it is closing a mic or just stopping speech.
+    // `busy` is the DRAIN LOOP's flag, and a microphone can be open while it is
+    // false — observed, not inferred: six stops in one attempt logged as
+    // ignored by the line below while the mic was audibly listening. So this
+    // asked "is the queue working?" when the only question that matters is
+    // "is the microphone open?". (An earlier version of this comment blamed an
+    // instant path that bypasses the queue; `enqueueInstant` in fact calls
+    // `enqueue`, so that was wrong — the fix stands on the log, not on that
+    // story.) `capturing` is the daemon's own `normalMicOpen()`, the same
+    // predicate `stopReciting` uses to decide whether it is closing a mic.
     if (callbacks.busy() || callbacks.capturing?.()) callbacks.stopSpacebar();
     else callbacks.droppedStop?.();
     return;
@@ -5178,11 +5179,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (handled) return;
       // A peer that never sends a newline would otherwise grow this string
       // until the daemon OOMs. Cap the frame and drop the connection.
+      //
+      // Append FIRST. The check used to run on the buffer before the incoming
+      // chunk was added, so a single oversized chunk that happened to end in a
+      // newline was appended and parsed anyway — the cap only ever caught the
+      // slow-drip case. Found by Codex during the split recon.
+      buf += data.toString();
       if (buf.length > 64_000) {
         sock.destroy();
         return;
       }
-      buf += data.toString();
       const newline = buf.indexOf("\n");
       if (newline !== -1) void handleLine(buf.slice(0, newline));
     });
