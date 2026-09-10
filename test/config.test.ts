@@ -55,6 +55,7 @@ describe("loadConfig tunable layering", () => {
         "announce-sentences": 4,
         "announce-max-chars": 480,
         "say-rate": 0,
+        "whisper-idle-unload": 45,
       }),
     });
     expect(cfg).toMatchObject({
@@ -76,6 +77,7 @@ describe("loadConfig tunable layering", () => {
       speakSentences: 4,
       speakMaxChars: 480,
       sayRate: 0,
+      whisperIdleUnloadMins: 45,
     });
   });
 

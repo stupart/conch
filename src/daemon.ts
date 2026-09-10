@@ -155,6 +155,7 @@ import {
   logsShown,
   onLiveChange,
   onLiveDataChange,
+  openTheaterReview,
   publishSessionsFile,
   renderPanel,
   resizeRenderer,
@@ -970,6 +971,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
   });
   whisperServerClient.setRecoveryHandler((reason) => whisperSupervisor?.requestRecovery(reason));
   whisperServerClient.setNoteHandler((detail) => log(`whisper request failed — ${detail}`));
+  // D2: every warm transcription (partials included) restarts the idle-unload clock.
+  whisperServerClient.setServedHandler(() => whisperSupervisor?.armIdleUnload());
   const speech = new SpeechManager(
     { speakCancellable: backendSpeakCancellable, stopSpeaking: backendStopSpeaking },
     (operation, output) => withNormalMicClosed(
@@ -2266,6 +2269,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
         // cheap to make the path say so itself rather than reconstruct it from
         // two log timestamps after the fact.
         micRequestedAt = Date.now();
+        // D2: the mic WILL open. Reload an idle-unloaded whisper-server under
+        // the courtesy line below rather than under the first utterance.
+        whisperSupervisor?.prewarm();
         if (cfg.revealOnTurn && target.pid) void revealSessionWindow(target.pid); // surface it, no focus steal
         resetReadingProgress();
         // The courtesy line must never delay the thing it is announcing.
@@ -2321,6 +2327,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
       let conversationSequence = 0;
       const nextConversationSequence = () => ++conversationSequence;
       resetReadingProgress();
+      // D2: every gate has passed, so the mic will open once the reply is read.
+      // Reload an idle-unloaded whisper-server now, under the bell and the
+      // announcement, so the first utterance after a long quiet is warm.
+      if (audibleTurn) whisperSupervisor?.prewarm();
       // The hook hands the bell to the daemon so it cannot ring over a live mic.
       // Track the exact turn before this first cancellable audio boundary.
       if (voicedHere) await ringBell();
@@ -4050,6 +4060,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     onLiveChange: (key, value) => {
       if (key === "meeting-autopause") meetingMic?.setEnabled(value === true);
       if (key === "phone" || key === "phone-port" || key === "phone-relay-url") syncPhoneBridge();
+      if (key === "whisper-idle-unload") whisperSupervisor?.armIdleUnload(); // re-arm with the new window (cfg is already updated)
     },
   });
   // These controllers own settings/session-action data and side effects for
@@ -4641,6 +4652,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
   whisperServerClient.resetHealth();
   whisperSupervisor = new ServerSupervisor<WhisperRecoveryReason>({
     enabled: Boolean(cfg.whisperPort),
+    // D2: read live — the config controller assigns into this same cfg object.
+    idleUnloadMs: () => cfg.whisperIdleUnloadMins * 60_000,
     language: {
       service: "whisper-server",
       readiness: "transcription-ready",
@@ -5087,6 +5100,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
           origin: "user",
         });
       }
+      // The deliverable's link is the row's to consume: `o` hands it to macOS.
+      else if (theaterMode && c === "o") log(openTheaterReview(theaterActionTarget()));
       else if (dispatchTheaterControlKey(c, theaterControls)) {}
       else if (c === "?" || c === "h") {
         revealLogPane();

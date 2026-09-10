@@ -41,7 +41,12 @@ export const STATE_FILE = "/tmp/conch-state.json";
 export const SESSIONS_FILE = "/tmp/conch-sessions.json";
 // Every log line is always appended here (for debugging) but only shown in the
 // pane when logs are toggled on — the dashboard stays clean by default.
-export const LOG_FILE = "/tmp/conch-daemon.log";
+// Overridable so the TEST SUITE does not write into the live daemon's log:
+// `test/preload.ts` points it at a temp file. Ninety "copied N chars" lines a
+// day with nobody selecting anything (A7) were the theater tests, run ~30
+// times, each appending its three fixture copies here — with UTC timestamps,
+// because bun test runs in UTC.
+export const LOG_FILE = process.env.CONCH_LOG_FILE || "/tmp/conch-daemon.log";
 
 /**
  * Publish a whole session snapshot with a same-directory atomic rename.
@@ -125,6 +130,8 @@ export interface Renderer {
   scrollPane?(deltaLines: number): void;
   pointerEvent?(event: TheaterPointerInput): void;
   clearSelection?(): boolean;
+  /** `o`: hand a session's deliverable to macOS `open`; returns the line to log. */
+  openReview?(sessionId: string | null): string;
 }
 
 export interface RendererIO {
@@ -138,6 +145,8 @@ export interface RendererIO {
   print(line: string): void;
   /** Native clipboard safety net; omitted by renderer tests. */
   copy?(text: string): void | Promise<void>;
+  /** macOS `open` for a deliverable path or URL; renderer tests record it instead. */
+  open?(link: string): void;
 }
 
 function processRendererIO(): RendererIO {
@@ -150,6 +159,9 @@ function processRendererIO(): RendererIO {
     write: (text) => process.stdout.write(text),
     print: (line) => console.log(line),
     copy: (text) => toClipboard(text),
+    open: (link) => {
+      Bun.spawn(["open", "--", link], { stdout: "ignore", stderr: "ignore" });
+    },
   };
 }
 
@@ -363,7 +375,7 @@ export function theaterStatusHeader(model: PanelModel): string {
   let reviewCount = 0;
   for (const row of model.rows) {
     if (row.status) counts[row.status]++;
-    if (row.review) reviewCount++;
+    if (row.review && !row.review.opened) reviewCount++;
   }
 
   const parts = ["conch"];
@@ -406,9 +418,14 @@ export function relativeAge(at: number, now: number): string {
   return `${Math.floor(elapsed / day)}d`;
 }
 
+/** The Mac app keys its seen set on row id + review time; the terminal matches it. */
+function reviewIdentity(row: PanelRowModel): string {
+  return `${row.sessionId}\u001f${row.review?.at ?? ""}`;
+}
+
 function rowState(row: PanelRowModel): string {
   if (row.muted || row.paused) return "paused";
-  if (row.review) return "review";
+  if (row.review && !row.review.opened) return "review";
   // The top line owns conch's live activity; the ledger keeps each session's
   // underlying status so speaking/recording is never announced twice.
   return row.status ?? "idle";
@@ -416,7 +433,7 @@ function rowState(row: PanelRowModel): string {
 
 function fullStatus(row: PanelRowModel): string {
   if (row.muted || row.paused) return "\x1b[2m⏸ manual\x1b[22m";
-  if (row.review) return "\x1b[33m⭐ needs review\x1b[39m";
+  if (row.review && !row.review.opened) return "\x1b[33m⭐ needs review\x1b[39m";
   switch (row.status) {
     case "needs": return "\x1b[33m❗ needs a response\x1b[39m";
     case "waiting": return "\x1b[32m○ waiting for you\x1b[39m";
@@ -426,7 +443,10 @@ function fullStatus(row: PanelRowModel): string {
 }
 
 function inlineRowDetail(row: PanelRowModel): string {
-  if (row.review) return row.review.summary;
+  // The link rides beside the summary so the row says what `o` will open.
+  if (row.review) {
+    return row.review.link ? `${row.review.summary} · ${row.review.link}` : row.review.summary;
+  }
   if (row.status === "needs") return row.detail ?? "";
   return "";
 }
@@ -737,10 +757,16 @@ function theaterContentLines(
     const selectedText = selectedRow.active && state === "speaking" && selectedReply
       ? model.live.reading?.text || selectedReply.text
       : selectedPreview?.text || selectedReply?.text || "";
-    const doc = wrapPlainText(
-      plainTheaterDocumentText(selectedText),
-      width,
-    ).map(({ text }) => ({ text }));
+    // The deliverable sits inline above the reply, as it does in the apps. A
+    // terminal cannot render the artifact, so the link itself is the preview.
+    const review = selectedRow.review;
+    const artifact = review
+      ? [`⭐ ${review.summary}`, ...(review.link ? [review.link] : []), ""]
+      : [];
+    const doc = [
+      ...artifact.flatMap((line) => line ? wrapPlainText(line, width) : [{ text: "" }]),
+      ...wrapPlainText(plainTheaterDocumentText(selectedText), width),
+    ].map(({ text }) => ({ text }));
     return scrollableTheaterContent(
       doc,
       `selected:${selectedRow.sessionId}`,
@@ -748,7 +774,7 @@ function theaterContentLines(
       height,
       paneOffset,
       selection,
-      { note: `‹${selectedRow.label}› · esc back · space talk` },
+      { note: `‹${selectedRow.label}›${review?.link ? " · o open" : ""} · esc back · space talk` },
     );
   }
 
@@ -1092,6 +1118,16 @@ export function createTheaterRenderer(
   let paneLayout: PaneLayout | null = null;
   const selection = new TheaterSelection();
   const logLines: string[] = [];
+  // Which deliverables `o` has handed to macOS, keyed like the Mac app's seen
+  // set (session + review time) so a newer review re-arms the row. Local to
+  // this terminal, never published — the Mac keeps its own the same way.
+  const openedReviews = new Set<string>();
+  const markOpenedReviews = (next: PanelModel): PanelModel => ({
+    ...next,
+    rows: next.rows.map((row) => row.review && openedReviews.has(reviewIdentity(row))
+      ? { ...row, review: { ...row.review, opened: true } }
+      : row),
+  });
 
   const repaint = (): void => {
     if (!entered) return;
@@ -1365,12 +1401,22 @@ export function createTheaterRenderer(
 
   return {
     panel(next): void {
-      model = next;
+      model = markOpenedReviews(next);
       repaint();
     },
     live(next): void {
       if (model) model = { ...model, live: next };
       repaint(); // partial-only updates must remain live even without onLiveChange
+    },
+    openReview(sessionId): string {
+      const row = model?.rows.find((candidate) => candidate.sessionId === sessionId);
+      if (!row?.review) return "nothing to open — park a session with a deliverable";
+      if (!row.review.link) return `no link was published for ‹${row.label}›'s review`;
+      io.open?.(row.review.link);
+      openedReviews.add(reviewIdentity(row));
+      if (model) model = markOpenedReviews(model);
+      repaint();
+      return `opened ${row.review.link}`;
     },
     keybar(line): void {
       keybar = line;
@@ -1532,8 +1578,14 @@ export function configureRenderer(
     scrollPane: drawn.scrollPane?.bind(drawn),
     pointerEvent: drawn.pointerEvent?.bind(drawn),
     clearSelection: drawn.clearSelection?.bind(drawn),
+    openReview: drawn.openReview?.bind(drawn),
   };
   return { kind: activeRendererKind, renderer: activeRenderer };
+}
+
+/** `o`: hand the parked (or last) session's deliverable to macOS `open`; returns the line to log. */
+export function openTheaterReview(sessionId: string | null): string {
+  return activeRenderer.openReview?.(sessionId) ?? "nothing to open — the theater dashboard owns o";
 }
 
 /** Scroll the current theater document in screen-line direction. */

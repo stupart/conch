@@ -68,13 +68,16 @@ const expected = {
   "announce-sentences": ["speakSentences", "CONCH_SPEAK_SENTENCES", "hook", 2],
   "announce-max-chars": ["speakMaxChars", "CONCH_SPEAK_MAX_CHARS", "hook", 350],
   "say-rate": ["sayRate", "CONCH_SAY_RATE", "live", 210],
+  // D2: the warm whisper-server (~628MB) is unloaded after this many idle
+  // minutes and reloaded when a mic is about to open; 0 keeps it loaded.
+  "whisper-idle-unload": ["whisperIdleUnloadMins", "CONCH_WHISPER_IDLE_UNLOAD_MINS", "live", 20],
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 26 curated, default-bearing knobs", () => {
+  test("contains exactly the 27 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(26);
+    expect(SETTING_DESCRIPTORS).toHaveLength(27);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });
@@ -157,6 +160,14 @@ describe("settings parser", () => {
     expect(parse("say-rate", 210)).toEqual({ ok: true, value: 210 });
     expect(parse("say-rate", -1).ok).toBe(false);
     expect(parse("say-rate", 210.5).ok).toBe(false);
+  });
+
+  test("whisper-idle-unload is minutes, zero meaning never", () => {
+    expect(parse("whisper-idle-unload", 0)).toEqual({ ok: true, value: 0 });
+    expect(parse("whisper-idle-unload", "20")).toEqual({ ok: true, value: 20 });
+    expect(parse("whisper-idle-unload", 2.5)).toEqual({ ok: true, value: 2.5 });
+    expect(parse("whisper-idle-unload", -1).ok).toBe(false);
+    expect(parse("whisper-idle-unload", "never").ok).toBe(false);
   });
 
   test("boolean parsing is strict", () => {
