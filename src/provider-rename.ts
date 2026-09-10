@@ -40,6 +40,17 @@ export async function renameProviderSession(
 }
 
 /**
+ * A line the agent would read as one of its own slash commands — `/compact`,
+ * `/model opus`, `/ponytail:ponytail args` — as opposed to a message that
+ * merely starts with a slash, such as a path (`/Users/me/x.txt`). The Mac
+ * composer, the phone and the command palette (B4) all arrive as `inject`;
+ * this decides which door the daemon takes.
+ */
+export function isProviderCommandLine(text: string): boolean {
+  return /^\/[A-Za-z][\w:-]*(?:\s|$)/.test(text.trim());
+}
+
+/**
  * Type one of the agent's own slash commands into the session's prompt, the
  * way a typed message reaches it (`injectText`), so the agent handles it
  * natively. A local command must submit even when ordinary composer

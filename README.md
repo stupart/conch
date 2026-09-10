@@ -28,6 +28,8 @@ The native macOS app is conch's primary UI. It shows the live session ledger and
 
 The app is currently built from source. Open `mac-app/conch-mac.xcodeproj` in Xcode, select the `conch-mac` scheme, and press Run. Keep using the terminal dashboard (`conch`) as the SSH/remote fallback.
 
+**Stuck, or not sure how something works?** The New session sheet has a third mode, **Help with conch** (also `conch help-session`): a Claude Code session in conch's own folder, `~/.config/conch/help/`, whose `CLAUDE.md` conch writes for it — what conch is, where the settings, errors, daemon log and published state live on this Mac, the rules for touching them (read the log before guessing, never kill the daemon by pattern, ask before changing a setting), and the usual reasons the loop goes quiet. It shows in the ledger as **conch help** and has no more power than any other session: the same plugin tools and the same CLI. It is not started for you — a session costs money and attention — so it is one click away instead.
+
 ## Your phone
 
 <img src="docs/iphone-ledger.png" alt="conch on iPhone: a ledger of live sessions, each row showing what it wants — arch-website needs an answer, dayloop is being read aloud, conch has work to look at. A session that is merely working says nothing." width="300" align="right">
@@ -155,6 +157,7 @@ The worker itself adds no package beyond the installed `mlx-audio`, NumPy, `misa
 | `conch unset <key>` | Remove a saved value and revert to env/default |
 | `conch settings` | List all curated settings, effective values, and sources |
 | `conch doctor` | Verify dependencies, live microphone input, and the configured TTS path |
+| `conch help-session` | Open a Claude session that knows conch — how to use it, and why it has gone quiet |
 
 ## Voice commands
 

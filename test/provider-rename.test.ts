@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Config } from "../src/config.ts";
 import {
   injectProviderCommand,
+  isProviderCommandLine,
   renameProviderSession,
   type ProviderRenameInjector,
 } from "../src/provider-rename.ts";
@@ -90,5 +91,47 @@ describe("provider rename routing", () => {
       kind: "unroutable",
       reason: "window-not-focusable",
     });
+  });
+});
+
+/**
+ * B4: a typed message that IS a slash command takes the door B2 built,
+ * whoever typed it — the composer, the phone, or the palette. The message
+ * route would match it against a pending question, offer it to voice Q&A,
+ * honour auto-submit off, and re-press Return twice when the transcript did
+ * not grow — into the picker a bare `/model` opens.
+ */
+describe("slash lines through inject", () => {
+  test("a command line is one the agent would parse, not any leading slash", () => {
+    for (const line of ["/compact", "/model opus", "  /model  ", "/ponytail:ponytail args", "/mcp__linear__issue x", "/fast"]) {
+      expect(isProviderCommandLine(line), line).toBeTrue();
+    }
+    for (const line of ["/Users/me/notes.txt look at this", "/", "/ hello", "hello /compact", "", "//"]) {
+      expect(isProviderCommandLine(line), line).toBeFalse();
+    }
+  });
+
+  test("the daemon's inject handler takes the provider door before the message route", () => {
+    const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
+    const start = daemon.indexOf('if (event.type === "inject") {');
+    expect(start).toBeGreaterThan(-1);
+    const handler = daemon.slice(start, daemon.indexOf('if (event.type === "speak") {', start));
+    const markers = [
+      "speech.cancelCurrent()",
+      "if (isProviderCommandLine(event.announce)) {",
+      "await injectProviderCommand(cfg, { pid: event.pid }, line)",
+      'recordDaemonError(\n            "session-command",',
+      "const delivered = await deliver(target, event.announce",
+    ];
+    let position = 0;
+    for (const marker of markers) {
+      const at = handler.indexOf(marker, position);
+      expect(at, `missing or out of order: ${marker}`).toBeGreaterThan(-1);
+      position = at + marker.length;
+    }
+    // The command branch returns, so nothing below it can also deliver the line.
+    const branch = handler.slice(handler.indexOf("if (isProviderCommandLine("), handler.indexOf("const target: TurnEvent"));
+    expect(branch).toContain("return;");
+    expect(branch).not.toContain("deliver(");
   });
 });

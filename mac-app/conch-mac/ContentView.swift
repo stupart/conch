@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var renameDraft = ""
     @State private var isShowingKeyboardShortcuts = false
     @State private var isShowingSessionStart = false
+    @State private var isShowingCommandPalette = false
     /// SwiftUI's own way to open the Settings scene. Doing it by sending
     /// showSettingsWindow: to nil is the usual hack and breaks between
     /// releases; this is the supported route on macOS 14+.
@@ -100,6 +101,7 @@ struct ContentView: View {
                     onToggleLogs: store.toggleLogDrawer,
                     onConnectPhone: connectPhone,
                     onShowKeyboardShortcuts: showKeyboardShortcuts,
+                    onShowCommandPalette: showCommandPalette,
                     onTalkOrStop: talkOrStop,
                     onPauseOrResume: pauseOrResume,
                     onRecite: recite,
@@ -124,7 +126,7 @@ struct ContentView: View {
         .background(ConchPalette.bg)
         .background(
             DashboardInputMonitor(
-                isEnabled: expandedReview == nil && remoteSelection == nil && !isShowingKeyboardShortcuts,
+                isEnabled: expandedReview == nil && remoteSelection == nil && !isShowingKeyboardShortcuts && !isShowingCommandPalette,
                 onKey: handleDashboardKey
             )
         )
@@ -136,6 +138,18 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isShowingSessionStart) {
             StartSessionSheet()
+        }
+        // ⌘K (B4): scoped to the selected session, or the one conch is
+        // speaking for — the same fallback Recite uses.
+        .sheet(isPresented: $isShowingCommandPalette) {
+            CommandPaletteSheet(row: actionTarget, onSelect: selectSession) {
+                isShowingCommandPalette = false
+            }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .showCommandPalette)
+        ) { _ in
+            showCommandPalette()
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .showKeyboardShortcuts)
@@ -299,6 +313,10 @@ struct ContentView: View {
         isShowingKeyboardShortcuts = true
     }
 
+    private func showCommandPalette() {
+        isShowingCommandPalette = true
+    }
+
     private func handleDashboardKey(_ key: DashboardKey) -> Bool {
         switch key {
         case .talkOrStop:
@@ -332,8 +350,14 @@ private struct StartSessionSheet: View {
         case new = "New"
         case resume = "Resume"
         case teleport = "Teleport by ID…"
+        case help = "Help with conch"
         var id: String { rawValue }
     }
+
+    /// conch's own folder. The daemon creates it and writes its CLAUDE.md when
+    /// the session starts (`session-lifecycle.ts`); the app only names it.
+    private static let helpSessionDir = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".config/conch/help", isDirectory: true).path
 
     @EnvironmentObject private var store: StateStore
     @Environment(\.dismiss) private var dismiss
@@ -361,7 +385,7 @@ private struct StartSessionSheet: View {
     private var canStart: Bool {
         guard !isStarting, !openedTeleport else { return false }
         switch mode {
-        case .new: return true
+        case .new, .help: return true
         case .resume: return resumeSelection != nil
         case .teleport:
             return !teleportSessionId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -373,12 +397,17 @@ private struct StartSessionSheet: View {
     /// is a question with a known answer and a wrong setting available.
     private var effectiveBackend: ConchAgentBackend {
         if mode == .teleport { return .claude }
+        if mode == .help { return .claude }
         guard mode == .resume, let picked = resumeSelection else { return backend }
         return picked.backend.lowercased() == "codex" ? .codex : .claude
     }
 
     private var effectiveCwd: String {
-        mode == .resume ? (resumeSelection?.cwd ?? cwd) : cwd
+        switch mode {
+        case .resume: return resumeSelection?.cwd ?? cwd
+        case .help: return Self.helpSessionDir
+        case .new, .teleport: return cwd
+        }
     }
 
     var body: some View {
@@ -398,7 +427,14 @@ private struct StartSessionSheet: View {
             .labelsHidden()
             .disabled(isStarting)
 
-            if mode != .resume {
+            if mode == .help {
+                Text("Help with conch — a Claude session that knows the app.")
+                    .font(ConchTypography.font(size: 11.5, weight: .semibold))
+                Text("Ask it how to do something in conch, or why it has gone quiet: it reads the daemon log, settings and errors on this Mac, runs `conch doctor`, and can see and steer your other sessions. It opens in Terminal, in conch\u{2019}s own folder, and shows here as \u{201C}conch help\u{201D}.")
+                    .font(ConchTypography.font(size: 11.5))
+                    .foregroundStyle(ConchPalette.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if mode != .resume {
                 if mode == .new {
                     Picker("Agent", selection: $backend) {
                         ForEach(ConchAgentBackend.allCases) { backend in
@@ -441,7 +477,7 @@ private struct StartSessionSheet: View {
                     .font(ConchTypography.font(size: 11.5))
                     .foregroundStyle(ConchPalette.textDim)
                     .fixedSize(horizontal: false, vertical: true)
-            } else {
+            } else if mode != .help {
                 Text(footnote)
                     .font(ConchTypography.font(size: 11.5))
                     .foregroundStyle(ConchPalette.textDim)
@@ -640,6 +676,7 @@ private struct KeyboardShortcutsSheet: View {
         ShortcutHelpRow(command: "↑ / ↓", result: "Select"),
         ShortcutHelpRow(command: "Esc", result: "Release selection / close"),
         ShortcutHelpRow(command: "Right-click a row", result: "Rename, dismiss"),
+        ShortcutHelpRow(command: "⌘K", result: "Command palette"),
         ShortcutHelpRow(command: "⌘,", result: "Settings"),
         ShortcutHelpRow(command: "?", result: "This list"),
     ]

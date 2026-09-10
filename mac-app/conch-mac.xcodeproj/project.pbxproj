@@ -13,6 +13,7 @@
 		A10000000000000000000932 /* ComposerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000932 /* ComposerView.swift */; };
 		A10000000000000000000903 /* DebugSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000903 /* DebugSnapshot.swift */; };
 		A10000000000000000000942 /* CapabilityInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000942 /* CapabilityInspectorView.swift */; };
+		A10000000000000000000943 /* CommandPaletteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000943 /* CommandPaletteView.swift */; };
 		A10000000000000000000941 /* AgentCapabilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000941 /* AgentCapabilities.swift */; };
 		A10000000000000000000940 /* ResumePickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000940 /* ResumePickerView.swift */; };
 		A10000000000000000000001 /* ConchMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* ConchMacApp.swift */; };
@@ -51,6 +52,7 @@
 		A20000000000000000000932 /* ComposerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerView.swift; sourceTree = "<group>"; };
 		A20000000000000000000903 /* DebugSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugSnapshot.swift; sourceTree = "<group>"; };
 		A20000000000000000000942 /* CapabilityInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CapabilityInspectorView.swift; sourceTree = "<group>"; };
+		A20000000000000000000943 /* CommandPaletteView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPaletteView.swift; sourceTree = "<group>"; };
 		A20000000000000000000941 /* AgentCapabilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentCapabilities.swift; sourceTree = "<group>"; };
 		A20000000000000000000940 /* ResumePickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResumePickerView.swift; sourceTree = "<group>"; };
 		A20000000000000000000009 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -115,6 +117,7 @@
 				A20000000000000000000932 /* ComposerView.swift */,
 				A20000000000000000000903 /* DebugSnapshot.swift */,
 				A20000000000000000000942 /* CapabilityInspectorView.swift */,
+				A20000000000000000000943 /* CommandPaletteView.swift */,
 				A20000000000000000000941 /* AgentCapabilities.swift */,
 				A20000000000000000000940 /* ResumePickerView.swift */,
 				A20000000000000000000009 /* Info.plist */,
@@ -213,6 +216,7 @@
 				A10000000000000000000932 /* ComposerView.swift in Sources */,
 				A10000000000000000000903 /* DebugSnapshot.swift in Sources */,
 				A10000000000000000000942 /* CapabilityInspectorView.swift in Sources */,
+				A10000000000000000000943 /* CommandPaletteView.swift in Sources */,
 				A10000000000000000000941 /* AgentCapabilities.swift in Sources */,
 				A10000000000000000000940 /* ResumePickerView.swift in Sources */,
 				A10000000000000000000902 /* ConversationStackView.swift in Sources */,
