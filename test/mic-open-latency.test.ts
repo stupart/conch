@@ -43,10 +43,13 @@ test("a dictation into the composer opens the mic without announcing first", () 
  */
 test("a stop with nothing running is logged, not swallowed", () => {
   const daemon = read("src/daemon.ts");
-  const branch = daemon.slice(
-    daemon.indexOf('if (event.type === "spacebar") {'),
-  );
-  const body = branch.slice(0, branch.indexOf("\n  }"));
+  const control = read("src/control-server.ts");
+  const start = control.indexOf('if (event.type === "spacebar") {');
+  expect(start).toBeGreaterThan(-1);
+  const branch = control.slice(start);
+  const end = branch.indexOf("\n  }");
+  expect(end).toBeGreaterThan(-1);
+  const body = branch.slice(0, end);
   expect(body).toContain("callbacks.droppedStop?.()");
   expect(daemon).toContain('droppedStop: () => log("stop arrived with nothing running — ignored")');
 });

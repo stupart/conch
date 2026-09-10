@@ -56,10 +56,9 @@ there are no resources or verbs, just `{kind, ...}` messages —
 `session-start`, `session-close`, `resumable`, `agent-capabilities`,
 `app-error`, `get-config`, plus the `TurnEvent` shapes.
 
-Validated at exactly one boundary (`src/settings.ts`,
-`dispatchRuntimeControlMessage` in `daemon.ts`), which is why adding
-`agent-capabilities` was a type, a validator branch and a handler rather than a
-new endpoint.
+Validated at exactly one boundary (`src/settings.ts`, applied by
+`control-server.ts`), which is why adding `agent-capabilities` was a type, a
+validator branch and a handler rather than a new endpoint.
 
 The phone reaches the same socket through `phone-bridge.ts`, which forwards
 control lines generically with no allowlist. That is why the phone's resume
@@ -112,7 +111,7 @@ confirmed the loop is not being starved: injection measures 0.7–1.2s and the
 
 ## What is wrong with it
 
-**`daemon.ts` is 5,811 lines — but the line count was never the problem.**
+**`daemon.ts` was 5,811 lines (4,954 after three cuts) — but the line count was never the problem.**
 Lines 1–1466 are ~35 exported, individually tested functions and they are fine.
 The problem is that `runDaemon` is a single ~4,200-line function with 37 nested
 functions closing over 152 locals. That is where every feature lands and where
@@ -136,17 +135,36 @@ shutdown gating, transcript warming, event ordering, immediate inject/interrupt
 dispatch, latest-turn latching, and synchronous mode transitions all precede
 submission. The daemon also keeps audio, pause state, and shutdown cleanup.
 
+`control-server.ts` is the third cut: the Unix socket itself — framing (the
+64 KB cap checked AFTER appending, one handled request per connection,
+half-open EOF), parsing, classification, the settings and turn validators,
+inject scoping, dispatch and reply serialization, and an explicit `start()` /
+`close()` lifecycle that owns the stale-path check and mode 0600. It takes a
+socket path, an opaque owner id, and five typed application entries —
+configuration, session, runtime, turn, device — plus two local reads (resolve
+an address; is this session published, and where). It never sees recorders,
+speech, latches or the ledger: a device command such as selecting phone audio
+is one complete daemon-side operation. Accepted turns are delivered
+synchronously and answered with an empty reply that does not wait for
+injection. The C9b seam is reserved here as an optional
+`{kind: "control-envelope", ownerDeviceId, body}` wrapper checked BEFORE any
+local read: a foreign owner gets a typed `routing-error` and never falls
+through to local lookup; no client sends one yet, and the owner id is
+per-process until C9b supplies device identity. Signals, exit and shutdown
+ordering stay in the daemon. The server is tested over real Unix sockets
+against a stub application; the daemon's wiring of the five entries is pinned
+by a source guard, because `runDaemon` still runs in no test.
+
 The remaining seams are already visible:
 
 | would become | what it owns |
 |---|---|
 | `voice-loop.ts` | wake → speak → listen → deliver |
-| `control-server.ts` | the socket, dispatch, and the one validation boundary |
 | `session-registry.ts` | reconciling Claude's registry with Codex's databases |
 
 `daemon.ts` would keep wiring them together. This is worth doing BEFORE the
 write pass and the marketplace, because both add control messages and both will
-otherwise land in the same 5,615-line file.
+otherwise land in the same 4,954-line file.
 
 **Second: two ways to run the daemon, and the daemon's parent owns the
 microphone.** `conch install` puts it in launchd; the Mac app hosts its own and
