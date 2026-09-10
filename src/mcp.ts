@@ -1,4 +1,5 @@
 import { stat } from "node:fs/promises";
+import { resolve } from "node:path";
 import { loadConfig, type Config } from "./config.ts";
 import { CONCH_VERSION } from "./version.ts";
 import { sendToDaemon, type TurnEvent } from "./hook.ts";
@@ -489,6 +490,15 @@ async function requiredReviewSession(
 const SAFE_REVIEW_LINK =
   "link must be an http(s) URL or an existing, non-executable regular file";
 
+function isWebUrl(link: string): boolean {
+  try {
+    const url = new URL(link);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 async function validateReviewLink(link: string): Promise<void> {
   let url: URL | undefined;
   try {
@@ -827,8 +837,17 @@ export function createMcpToolHandlers(
         dependencies,
       );
       const rawLink = optionalString(argumentsObject, "link");
-      const link = rawLink?.trim();
-      if (link) await validateReviewLink(link);
+      const trimmed = rawLink?.trim();
+      if (trimmed) await validateReviewLink(trimmed);
+      // Absolute by the time it leaves here. validateReviewLink stats a
+      // relative path against THIS process's cwd — the session's — and passes;
+      // the raw string then reached the Mac app, which resolved it against its
+      // own cwd and found nothing. So a deliverable given as
+      // `codebase-analysis/handoff.md` validated fine and previewed as missing,
+      // while this tool's own description promises it renders inline. Resolved
+      // against the same cwd the stat used, so the file that was checked is the
+      // file that is linked. URLs pass through untouched.
+      const link = trimmed && !isWebUrl(trimmed) ? resolve(trimmed) : trimmed;
       const session = await resolveSession(query, config, dependencies);
       const label = dependencies.sessionLabel(session, session.cwd);
       const transcriptPath = dependencies.findTranscript(
