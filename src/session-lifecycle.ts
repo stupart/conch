@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { statSync } from "node:fs";
+import { ensureHelpSession, helpSessionDir } from "./help-session.ts";
 
 export type SessionBackend = "claude" | "codex";
 
@@ -148,6 +149,9 @@ export async function startTerminalSession(
   const which = dependencies.which ?? ((name: string) => Bun.which(name));
   if (!which(executable)) throw new Error(`${executable} is not installed or is not on PATH`);
   const cwd = request.cwd?.trim() || homedir();
+  // The help session's folder is conch's to create, and this is the one door
+  // every launch goes through (CLI, the app's sheet via the daemon, the TUI).
+  if (cwd === helpSessionDir()) ensureHelpSession();
   const isDirectory = dependencies.isDirectory ?? ((path: string) => statSync(path).isDirectory());
   try {
     if (!isDirectory(cwd)) throw new Error();
@@ -170,6 +174,20 @@ export async function startTerminalSession(
   if (code !== 0) {
     throw new Error((await stderr).trim() || `Terminal returned ${code}`);
   }
+}
+
+/**
+ * `conch help-session`: Claude Code in conch's own folder. Launched directly
+ * rather than through the daemon's socket because a daemon that is down is the
+ * most likely reason someone wants help. Returns the folder it opened.
+ */
+export async function startHelpSession(
+  request: Pick<StartSessionRequest, "bypassPermissions"> = {},
+  dependencies: SessionLifecycleDependencies = {},
+): Promise<string> {
+  const cwd = helpSessionDir();
+  await startTerminalSession({ backend: "claude", cwd, ...request }, dependencies);
+  return cwd;
 }
 
 async function defaultTtyForPid(pid: number): Promise<string> {
