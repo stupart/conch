@@ -293,6 +293,33 @@ final class StateStore: ObservableObject {
         Task { _ = await socketClient.request(request) }
     }
 
+    /// Ask the daemon to type `/model <model>` into the session (B2). Returns
+    /// the daemon's answer in its own words, because the inspector shows it
+    /// verbatim rather than pretending to know what the agent did with it.
+    func setModel(id: SessionRow.ID, model: String) async -> String {
+        let request = ConchSessionCommandRequest(sessionId: id, command: .setModel, model: model)
+        switch await socketClient.request(request) {
+        case let .reply(data):
+            guard let reply = try? JSONDecoder().decode(ConchSessionCommandReply.self, from: data) else {
+                return "invalid reply from daemon"
+            }
+            switch reply {
+            case let .acknowledgement(acknowledgement):
+                return acknowledgement.changed
+                    ? "sent /model \(model) to the session"
+                    : "not sent: the session has no terminal window to type into"
+            case let .error(error):
+                return error.error
+            case .unknown:
+                return "unexpected reply from daemon"
+            }
+        case .connectFailed:
+            return "daemon not running"
+        case .timeout:
+            return "daemon did not reply"
+        }
+    }
+
     func resumableSessions(query: String) async -> [ResumableSession] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let outcome = await socketClient.request(
@@ -659,8 +686,8 @@ final class StateStore: ObservableObject {
         transportErrorSessionIDs.remove(context.id)
 
         switch context.command {
-        case .reveal:
-            // A raise changes no row; there is nothing to reconcile.
+        case .reveal, .setModel:
+            // A raise or a typed /model changes no row; there is nothing to reconcile.
             break
         case .rename:
             guard let canonicalLabel = acknowledgement.label else { return }
@@ -725,7 +752,7 @@ final class StateStore: ObservableObject {
         )
 
         switch context.command {
-        case .rename, .reveal:
+        case .rename, .reveal, .setModel:
             break
         case .dismiss:
             if optimisticDismissals[context.id]?.generation == context.generation {

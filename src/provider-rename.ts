@@ -9,10 +9,11 @@ export interface ProviderRenameTarget {
   pid?: number;
 }
 
-export type ProviderRenameResult =
-  | { kind: "unsupported" }
+export type ProviderCommandResult =
   | { kind: "unroutable"; reason: string }
   | { kind: "delivered"; via: "tmux" | "osascript-focused" };
+
+export type ProviderRenameResult = ProviderCommandResult | { kind: "unsupported" };
 
 export type ProviderRenameInjector = (
   cfg: Config,
@@ -33,15 +34,27 @@ export async function renameProviderSession(
   inject: ProviderRenameInjector = injectText,
 ): Promise<ProviderRenameResult> {
   if (target.backend === "codex") return { kind: "unsupported" };
-  if (!target.pid) return { kind: "unroutable", reason: "session has no routable pid" };
+  return injectProviderCommand(cfg, target, `/rename ${label}`, inject);
+}
 
-  // This is Claude Code's local `immediate` command. It must submit even when
-  // ordinary composer auto-submit is disabled, and a failed metadata sync must
-  // never replace the person's clipboard with a slash command.
+/**
+ * Type one of the agent's own slash commands into the session's prompt, the
+ * way a typed message reaches it (`injectText`), so the agent handles it
+ * natively. A local command must submit even when ordinary composer
+ * auto-submit is disabled, and a failed delivery must never replace the
+ * person's clipboard with a slash command.
+ */
+export async function injectProviderCommand(
+  cfg: Config,
+  target: Readonly<ProviderRenameTarget>,
+  line: string,
+  inject: ProviderRenameInjector = injectText,
+): Promise<ProviderCommandResult> {
+  if (!target.pid) return { kind: "unroutable", reason: "session has no routable pid" };
   const result = await inject(
     { ...cfg, autoSubmit: true },
     target.pid,
-    `/rename ${label}`,
+    line,
     undefined,
     { allowBlindFallback: false, copyToClipboard: async () => {} },
   );

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Config } from "../src/config.ts";
 import {
+  injectProviderCommand,
   renameProviderSession,
   type ProviderRenameInjector,
 } from "../src/provider-rename.ts";
@@ -11,6 +12,28 @@ const config = {
   autoSubmit: false,
   keystrokeFallback: true,
 } as Config;
+
+describe("provider command injection", () => {
+  test("types the literal line, auto-submitted, without clipboard fallback — for either agent", async () => {
+    const calls: Array<{ cfg: Config; pid: number | undefined; text: string; options: unknown }> = [];
+    const inject: ProviderRenameInjector = async (cfg, pid, text, _before, options) => {
+      calls.push({ cfg, pid, text, options });
+      return { via: "osascript-focused" };
+    };
+
+    await expect(injectProviderCommand(config, { backend: "codex", pid: 7 }, "/model gpt-5", inject))
+      .resolves.toEqual({ kind: "delivered", via: "osascript-focused" });
+    expect(calls).toEqual([{
+      cfg: { ...config, autoSubmit: true },
+      pid: 7,
+      text: "/model gpt-5",
+      options: { allowBlindFallback: false, copyToClipboard: expect.any(Function) },
+    }]);
+    await expect(injectProviderCommand(config, { backend: "claude" }, "/model opus", inject))
+      .resolves.toEqual({ kind: "unroutable", reason: "session has no routable pid" });
+    expect(calls).toHaveLength(1);
+  });
+});
 
 describe("provider rename routing", () => {
   test("the shared session controller invokes provider routing after local persistence", () => {

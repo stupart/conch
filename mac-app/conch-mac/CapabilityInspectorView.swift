@@ -21,7 +21,12 @@ struct CapabilityInspectorView: View {
     /// Debug captures open every row, so a screenshot can prove what the
     /// detail actually renders. Never set from the UI.
     var expandAll: Bool = false
+    /// Types `/model <model>` into the session and returns the daemon's answer
+    /// in its own words (B2). nil hides the field, for captures with no daemon.
+    var onSetModel: (@Sendable (String) async -> String)? = nil
     @State private var expanded: Set<String> = []
+    @State private var modelDraft = ""
+    @State private var modelResult: String?
 
     private static let order = ["mcp-server", "plugin", "skill"]
 
@@ -91,6 +96,37 @@ struct CapabilityInspectorView: View {
                         .foregroundStyle(ConchPalette.textFaint)
                 }
             }
+            // B2: the one row that is a control. The value is what Codex
+            // RECORDED for this thread; Claude Code writes nothing conch can
+            // read exactly, so it says "not reported" rather than guessing.
+            // Apply asks the daemon to type `/model <model>` into the session
+            // and shows the daemon's answer — never a claim about what the
+            // agent did with it.
+            HStack(spacing: 8) {
+                Text("Model")
+                    .font(ConchTypography.font(size: 11))
+                    .foregroundStyle(ConchPalette.textFaint)
+                Text(currentModel)
+                    .font(ConchTypography.font(size: 11))
+                    .foregroundStyle(ConchPalette.textDim)
+                    .textSelection(.enabled)
+                Spacer(minLength: 8)
+                if let onSetModel {
+                    TextField("new model", text: $modelDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .font(ConchTypography.font(size: 11))
+                        .frame(width: 170)
+                        .onSubmit { apply(onSetModel) }
+                    Button("Apply") { apply(onSetModel) }
+                        .disabled(modelDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+            if let modelResult {
+                Text(modelResult)
+                    .font(ConchTypography.font(size: 10.5))
+                    .foregroundStyle(ConchPalette.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let capabilities, !capabilities.complete {
                 // Deliberately does not name a cause. Incompleteness also
                 // arises from a row limit or a missing package, so claiming
@@ -116,6 +152,21 @@ struct CapabilityInspectorView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var currentModel: String {
+        if isLoading && capabilities == nil { return "reading…" }
+        guard let thread = capabilities?.context.threadConfiguration, let model = thread.model else {
+            return "not reported"
+        }
+        return [model, thread.reasoningEffort].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    private func apply(_ send: @escaping @Sendable (String) async -> String) {
+        let model = modelDraft.trimmingCharacters(in: .whitespaces)
+        guard !model.isEmpty else { return }
+        modelResult = "sending /model \(model)…"
+        Task { @MainActor in modelResult = await send(model) }
     }
 
     private func threadLine(_ thread: AgentCapabilities.ThreadConfiguration) -> String {
@@ -468,7 +519,8 @@ struct CapabilityInspectorSheet: View {
             capabilities: capabilities,
             isLoading: isLoading,
             sessionLabel: row.label,
-            expandAll: expandAll
+            expandAll: expandAll,
+            onSetModel: { model in await store.setModel(id: row.id, model: model) }
         )
         .frame(width: 620, height: 560)
         .overlay(alignment: .topTrailing) {

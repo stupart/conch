@@ -282,3 +282,69 @@ describe("rename CLI daemon hand-off", () => {
     }
   });
 });
+
+/**
+ * `conch model <session> <model>` (B2) follows rename's shape — resolve the
+ * session by name, send one session command, report the daemon's answer —
+ * minus the daemon-down fallback, because there is nothing local to persist:
+ * the daemon types `/model <model>` into the session and the agent switches.
+ */
+describe("model CLI daemon hand-off", () => {
+  test("sends set-model for the named session and reports the delivery", async () => {
+    const f = fixture();
+    writeLiveSession(f);
+    const daemon = await controlServer(f.socketPath, {
+      kind: "session-ack",
+      sessionId: "session-123",
+      command: "set-model",
+      label: "Build",
+      changed: true,
+    });
+    try {
+      const result = await runCli(f, ["model", "Build", "opus"]);
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain("/model opus -> Build");
+      expect(daemon.messages).toEqual([{
+        kind: "session-command",
+        sessionId: "session-123",
+        command: "set-model",
+        model: "opus",
+      }]);
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  test("a session with no window to type into is a failure, in the daemon's words", async () => {
+    const f = fixture();
+    writeLiveSession(f);
+    const daemon = await controlServer(f.socketPath, {
+      kind: "session-ack",
+      sessionId: "session-123",
+      command: "set-model",
+      label: "Build",
+      changed: false,
+    });
+    try {
+      const result = await runCli(f, ["model", "Build", "opus"]);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain("no terminal window");
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  test("usage: exactly one session and one model, and the daemon must be up", async () => {
+    const f = fixture();
+    writeLiveSession(f);
+    for (const args of [["model"], ["model", "Build"], ["model", "Build", "opus", "high"]]) {
+      const result = await runCli(f, args);
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr).toContain("usage: conch model <session> <model>");
+    }
+    const down = await runCli(f, ["model", "Build", "opus"]);
+    expect(down.exitCode).not.toBe(0);
+    expect(down.stderr).toContain("daemon-down");
+  });
+});
