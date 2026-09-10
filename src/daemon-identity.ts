@@ -98,7 +98,7 @@ export function readIdentity(
   }
 }
 
-function processAlive(pid: number): boolean {
+export function processAlive(pid: number): boolean {
   try {
     // Signal 0 tests for existence without touching the process.
     process.kill(pid, 0);

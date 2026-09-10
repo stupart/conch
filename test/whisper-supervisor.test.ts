@@ -241,6 +241,42 @@ describe("whisper-server supervision", () => {
     expect(client.serverUp()).toBeFalse();
   });
 
+  test("an adopted server is polled while ready, quietly, and replaced by our own when it stops answering", async () => {
+    // An adopted server is someone else's process: no exit promise fires when
+    // it dies. Before D3 a ready adopted server was never re-probed, so its
+    // death cost one lost utterance to notice, and only the request path could.
+    const logs: string[] = [];
+    const h = harness({ log: (message) => { logs.push(message); } });
+    h.presence.push(true);
+    h.readiness.push(true);
+    expect(await h.supervisor.start()).toBeTrue();
+    expect(h.supervisor.snapshot()).toMatchObject({ status: "ready", ownership: "adopted", periodicArmed: true });
+    expect(h.timers.at(-1)!.ms).toBe(30_000);
+
+    // Still answering: no log line, status never flickers, the poll re-arms.
+    const quiet = logs.length;
+    h.presence.push(true);
+    h.readiness.push(true);
+    h.timers.findLast((timer) => !timer.cancelled)!.callback();
+    await h.supervisor.settled();
+    expect(logs).toHaveLength(quiet);
+    expect(h.supervisor.snapshot()).toMatchObject({ status: "ready", ownership: "adopted", periodicArmed: true });
+
+    // Gone: the poll notices, says so, and starts our own — never killing anything.
+    h.presence.push(false, false, false);
+    h.readiness.push(true);
+    h.timers.findLast((timer) => !timer.cancelled)!.callback();
+    await h.supervisor.settled();
+    expect(logs.slice(quiet)).toEqual([
+      "adopted whisper-server stopped answering (absent)",
+      "whisper-server recovered after 1 replacement attempt(s)",
+    ]);
+    expect(h.terminated).toHaveLength(0);
+    expect(h.children).toHaveLength(1);
+    expect(h.supervisor.snapshot()).toMatchObject({ status: "ready", ownership: "owned", periodicArmed: false });
+    h.supervisor.close();
+  });
+
   test("owned shutdown invalidates readiness before killing the child", async () => {
     const h = harness();
     h.presence.push(false);
