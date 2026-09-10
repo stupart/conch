@@ -170,24 +170,23 @@ await new Promise(() => {});
 });
 
 test("raw growth cancels a 600ms idle deadline before the fallback read gap drains", async () => {
+  // The recorder's first byte is on disk before Bun.spawn returns, so the only
+  // clocks left in the race are the watchdog interval and the idle deadline.
+  // Bun fires expired timers in due order, so the 100ms tick runs before the
+  // 600ms deadline however long a loaded machine starves the event loop. The
+  // former child-process fake lost the race whenever its bun boot outlived the
+  // deadline, which several xcodebuild jobs were enough to cause.
   const root = mkdtempSync(join(tmpdir(), "conch-listen-growth-test-"));
-  const fakeSox = join(root, "sox");
-  const fakeSoxReady = join(root, "sox-ready");
-  writeFileSync(fakeSox, `#!/usr/bin/env bun
-import { writeFileSync } from "node:fs";
-const raw = process.argv[process.argv.indexOf("raw") + 1];
-process.on("SIGINT", () => process.exit(0));
-writeFileSync(raw, new Uint8Array([1]));
-writeFileSync(${JSON.stringify(fakeSoxReady)}, new Uint8Array());
-await new Promise(() => {});
-`);
-  chmodSync(fakeSox, 0o755);
   const bun = Bun as any;
   const originalSpawn = bun.spawn;
-  bun.spawn = (command: string[], options: any) => originalSpawn(
-    [fakeSox, ...command.slice(1)],
-    options,
-  );
+  bun.spawn = (command: string[]) => {
+    writeFileSync(command[command.indexOf("raw") + 1], new Uint8Array([1]));
+    let exit!: (code: number) => void;
+    const exited = new Promise<number>((resolve) => {
+      exit = resolve;
+    });
+    return { exited, kill: () => exit(0) };
+  };
   let session: ReturnType<typeof createDictationSession> | undefined;
 
   try {
@@ -200,13 +199,11 @@ await new Promise(() => {});
       { idleWindowSecs: 0.6 },
     );
     session.start();
-    for (let attempt = 0; attempt < 400 && !existsSync(fakeSoxReady); attempt++) {
-      await Bun.sleep(5);
-    }
-    expect(existsSync(fakeSoxReady)).toBe(true);
 
-    // This crosses the exact minimum fallback gap from daemon.ts. The former
-    // 700ms watchdog lost this race before it could observe the first byte.
+    // Due after the deadline, so it resolves only once the deadline's own due
+    // time has passed: this crosses the exact minimum fallback gap from
+    // daemon.ts. The former 700ms watchdog lost this race before it could
+    // observe the first byte.
     await Bun.sleep(650);
     expect(states).toContain("capturing");
     expect(session.state).toBe("running");
