@@ -4983,7 +4983,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
         ) {
           syncPhoneBridge();
           if (!phoneBridge) {
-            response = { kind: "session-error", error: "phone bridge is off" };
+            response = {
+              kind: "session-error",
+              // Shown verbatim in the app's pairing tab and by `conch pair`, so
+              // it has to carry the remedy: a fresh install has `phone` off.
+              error: "Phone access is off. Turn on \"phone\" in Settings, or run: conch set phone true",
+            };
           } else {
             const code = mintPairingCode();
             phoneBridge.offerPairingCode(code);
