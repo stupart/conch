@@ -65,6 +65,16 @@ final class BridgeClient: ObservableObject {
             case let .relay(payload): "Relay · \(payload.endpointURL.host ?? payload.endpoint)"
             }
         }
+
+        /// Which Mac this reaches: the host, or the relay endpoint and room.
+        /// The credential is left out on purpose — `conch pair` mints a new
+        /// token for the same Mac, and that is a re-pair, not a replacement.
+        var identity: String {
+            switch self {
+            case let .lan(host, _): "lan \(host)"
+            case let .relay(payload): "relay \(payload.endpoint) \(payload.roomId)"
+            }
+        }
     }
 
     init(pairing: Pairing) {
@@ -770,6 +780,8 @@ enum PairingStore {
         return .lan(host: account, token: token)
     }
 
+    /// One pairing per phone: this replaces whatever is stored. PairingView
+    /// asks before it lets a different Mac in here.
     static func save(_ pairing: BridgeClient.Pairing) {
         guard let data = try? JSONEncoder().encode(StoredPairing(pairing)) else { return }
         delete()

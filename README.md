@@ -255,6 +255,7 @@ The full environment-variable surface remains available (put overrides in the ho
 | `CONCH_SAY_VOLUME` | `0.4` | `say` fallback loudness — tuned to match Kokoro (raw `say` is ~3× louder) |
 | `CONCH_SEASHELL_ROOT` | `~/whisper-cli` | first place probed for the whisper.cpp build + models; falls back to a brew `whisper-cpp` install and `~/.cache/conch/models` |
 | `CONCH_WHISPER_PORT` | `8642` | warm whisper-server port; `0` = cold cli only |
+| `CONCH_WHISPER_IDLE_UNLOAD_MINS` | `20` | unload the warm whisper-server (~628MB) after this many minutes without a transcription; it reloads the moment a mic is about to open; `0` keeps it loaded (`conch set whisper-idle-unload …`) |
 | `CONCH_AWAY_AFTER_SECS` | `0` (off) | opt-in: silence everything after N seconds of keyboard idle |
 | `CONCH_MEETING_AUTOPAUSE` | `0` (off) | silently pause while another app is using the default microphone |
 | `CONCH_TTS` | `worker` | `worker` (owned, no HTTP) / `server` (legacy rollback) / `say`; old `auto` aliases to `worker` |

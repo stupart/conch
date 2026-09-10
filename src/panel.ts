@@ -1,6 +1,7 @@
 import { sessionLabel, type SessionInfo } from "./sessions.ts";
 import type { PublishedConversation } from "./conversation.ts";
 import type { SessionContextUsage } from "./context-meter.ts";
+import type { AudioControl, AudioOutboxItem } from "./audio-holder.ts";
 
 export type PanelConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
 
@@ -273,6 +274,10 @@ export interface PublishedState {
   rows: PublishedSessionRow[];
   dismissed: string[];
   dismissedRows: Array<{ id: string; label: string }>;
+  /** C9b Cut B: who makes this daemon's sound. Absent from older daemons means local. */
+  audioControl?: AudioControl;
+  /** What a yielded daemon could not say itself; the holder's app carries it over. */
+  audioOutbox?: AudioOutboxItem[];
 }
 
 const MAX_PUBLISHED_CONVERSATION_CHARS = 4_000;
@@ -399,12 +404,14 @@ export function buildPublishedState(
     labelForSessionId?(sessionId: string): string | undefined;
     prioritizedSessionIds?: ReadonlySet<string>;
     contextForSessionId?(sessionId: string): SessionContextUsage | undefined;
+    audio?: { control: AudioControl; outbox: AudioOutboxItem[] };
   } = {},
 ): PublishedState {
   return {
     v: 1,
     ownerDeviceId,
     ts: now,
+    ...(options.audio ? { audioControl: options.audio.control, audioOutbox: options.audio.outbox } : {}),
     mode: { ...model.mode },
     live: publishedLiveState(model.live),
     ...(model.reply ? { reply: publishedReply(model.reply) } : {}),

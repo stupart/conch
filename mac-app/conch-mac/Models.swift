@@ -17,6 +17,10 @@ struct PublishedState: Decodable, Equatable, Sendable {
     let rows: [SessionRow]
     let dismissed: [String]
     let dismissedRows: [DismissedSessionRow]
+    /// C9b Cut B: who makes this daemon's sound. Older daemons publish nothing here, which means local.
+    let audioControl: AudioControl
+    /// What a yielded daemon could not say itself. Presentation-irrelevant: forwarded, never drawn.
+    let audioOutbox: [AudioOutboxItem]
 
     private enum CodingKeys: String, CodingKey {
         case v
@@ -31,6 +35,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         case rows
         case dismissed
         case dismissedRows
+        case audioControl
+        case audioOutbox
     }
 
     init(
@@ -45,7 +51,9 @@ struct PublishedState: Decodable, Equatable, Sendable {
         conversations: [String: Conversation]? = nil,
         rows: [SessionRow],
         dismissed: [String],
-        dismissedRows: [DismissedSessionRow]
+        dismissedRows: [DismissedSessionRow],
+        audioControl: AudioControl = AudioControl(),
+        audioOutbox: [AudioOutboxItem] = []
     ) {
         self.v = v
         self.ownerDeviceId = ownerDeviceId
@@ -60,6 +68,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.rows = rows
         self.dismissed = dismissed
         self.dismissedRows = dismissedRows
+        self.audioControl = audioControl
+        self.audioOutbox = audioOutbox
     }
 
     init(from decoder: Decoder) throws {
@@ -95,6 +105,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
             from: container,
             forKey: .dismissedRows
         )
+        audioControl = (try? container.decodeIfPresent(AudioControl.self, forKey: .audioControl)) ?? AudioControl()
+        audioOutbox = Self.decodeLossyArray(AudioOutboxItem.self, from: container, forKey: .audioOutbox)
     }
 
     private static func decodeLossyArray<Element: Decodable>(
@@ -125,7 +137,42 @@ struct PublishedState: Decodable, Equatable, Sendable {
             && rows == other.rows
             && dismissed == other.dismissed
             && dismissedRows == other.dismissedRows
+            // The holder decides which controls are live, so a change must
+            // repaint (F13). The outbox is deliberately NOT compared: the
+            // remote path forwards every frame unconditionally, and drawing
+            // nothing from it keeps the heartbeat rule above intact.
+            && audioControl == other.audioControl
     }
+}
+
+/// C9b Cut B: which device makes a daemon's sound. `local` means the daemon's own Mac.
+struct AudioControl: Decodable, Equatable, Sendable {
+    let holder: String
+    let revision: Int
+    let expiresAt: TimeInterval?
+
+    init(holder: String = "local", revision: Int = 0, expiresAt: TimeInterval? = nil) {
+        self.holder = holder
+        self.revision = revision
+        self.expiresAt = expiresAt
+    }
+
+    var isLocal: Bool { holder == "local" }
+}
+
+/// An announcement a yielded daemon could not make itself; the holder's app carries it over once.
+struct AudioOutboxItem: Decodable, Equatable, Sendable {
+    struct SessionReference: Codable, Equatable, Sendable {
+        let ownerDeviceId: String
+        let localSessionKey: String
+    }
+
+    let seq: Int
+    let text: String
+    let voice: String
+    let label: String
+    let session: SessionReference
+    let at: TimeInterval
 }
 
 struct DismissedSessionRow: Decodable, Equatable, Identifiable, Sendable {

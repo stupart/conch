@@ -144,6 +144,13 @@ function applySessionControlMessage(
       void invokeSessionAction(controller, target, { command: "reveal" });
       return sessionCommandAck(message, target.pid !== undefined, target.label);
     }
+    case "set-model": {
+      // Same shape as reveal: the typing is tmux/AppleScript against the
+      // session's window and the reply must not wait on it. `changed` means
+      // "there is a window to deliver to"; the daemon logs the delivery itself.
+      void invokeSessionAction(controller, target, { command: "set-model", model: message.model });
+      return sessionCommandAck(message, target.pid !== undefined, target.label);
+    }
     case "dismiss": {
       if (options.isDismissed?.(message.sessionId)) {
         return sessionCommandAck(message, false, target.label);
@@ -677,20 +684,95 @@ export interface ControlSessionReference {
   localSessionKey: string;
 }
 
+/** An announcement another Mac could not make itself, carried by the holder's app (C9b Cut B). */
+export interface AudioPresentItem {
+  /** The yielded daemon's ownerDeviceId. */
+  source: string;
+  seq: number;
+  text: string;
+  voice: string;
+  label: string;
+  /** The holder's app names the host; the daemon only knows the owner id. */
+  host: string;
+  at: number;
+  session: ControlSessionReference;
+}
+
 export type DeviceCommand =
   | { kind: "audio-sink"; sink: "phone" | "mac" }
   | { kind: "phone-spoke"; reason: string; text: string }
   | { kind: "phone-device"; summary: string }
   | { kind: "system-woke" }
   | { kind: "phone-speaking"; speaking: boolean; label: string; session?: ControlSessionReference }
-  | { kind: "open-pairing" };
+  | { kind: "open-pairing" }
+  | { kind: "audio-take" }
+  | { kind: "audio-yield"; holder: string; revision: number; leaseMs: number }
+  | { kind: "audio-release" }
+  | { kind: "audio-present"; item: AudioPresentItem };
+
+export type AudioControlResponse =
+  | { kind: "audio-ack"; revision: number; stopped?: boolean; seq?: number }
+  | { kind: "audio-error"; code: "stale-revision" | "held" | "dropped" | "invalid"; revision?: number; error?: string };
 
 export type DeviceControlResponse =
   | { kind: "audio-sink-ack"; sink: "phone" | "mac" }
   | { kind: "ack" | "phone-device-ack" | "system-woke-ack" }
   | { kind: "phone-speaking-ack"; speaking: boolean }
+  | AudioControlResponse
   | PairingOpen
   | SessionError;
+
+const AUDIO_COMMAND_KINDS = new Set(["audio-take", "audio-yield", "audio-release", "audio-present"]);
+
+export type AudioCommandDecode =
+  | { ok: true; value: Extract<DeviceCommand, { kind: `audio-${"take" | "yield" | "release" | "present"}` }> }
+  | { ok: false; err: string };
+
+/**
+ * The audio-holder commands name a DEVICE, never a session, so they are decoded
+ * after the owner check and before any session resolution. Strict, unlike the
+ * legacy coercions below: a malformed revision must not become a grant.
+ */
+export function decodeAudioCommand(value: unknown): AudioCommandDecode | null {
+  if (!socketRecord(value) || typeof value.kind !== "string" || !AUDIO_COMMAND_KINDS.has(value.kind)) return null;
+  if (value.kind === "audio-take" || value.kind === "audio-release") return { ok: true, value: { kind: value.kind } };
+  if (value.kind === "audio-yield") {
+    const holder = typeof value.holder === "string" ? value.holder.trim() : "";
+    if (!holder || holder === "local" || holder.length > 120) return { ok: false, err: "holder must name a device" };
+    if (!Number.isSafeInteger(value.revision) || (value.revision as number) < 0) {
+      return { ok: false, err: "revision must be a non-negative integer" };
+    }
+    if (typeof value.leaseMs !== "number" || !Number.isFinite(value.leaseMs) || value.leaseMs <= 0) {
+      return { ok: false, err: "leaseMs must be a positive number" };
+    }
+    return { ok: true, value: { kind: "audio-yield", holder, revision: value.revision as number, leaseMs: value.leaseMs } };
+  }
+  const source = typeof value.source === "string" ? value.source.trim() : "";
+  if (!source || source.length > 120) return { ok: false, err: "source must name a device" };
+  if (!Number.isSafeInteger(value.seq)) return { ok: false, err: "seq must be an integer" };
+  const text = typeof value.text === "string" ? value.text.trim() : "";
+  if (!text || text.length > 8_000) return { ok: false, err: "text must be a non-empty string" };
+  if (typeof value.at !== "number" || !Number.isFinite(value.at)) return { ok: false, err: "at must be a finite number" };
+  const session = socketRecord(value.session) ? value.session : {};
+  const ownerDeviceId = typeof session.ownerDeviceId === "string" ? session.ownerDeviceId : "";
+  const localSessionKey = typeof session.localSessionKey === "string" ? session.localSessionKey : "";
+  return {
+    ok: true,
+    value: {
+      kind: "audio-present",
+      item: {
+        source,
+        seq: value.seq as number,
+        text,
+        voice: typeof value.voice === "string" ? value.voice.slice(0, 120) : "",
+        label: typeof value.label === "string" ? value.label.slice(0, 120) : "",
+        host: typeof value.host === "string" ? value.host.slice(0, 120) : "",
+        at: value.at,
+        session: { ownerDeviceId, localSessionKey },
+      },
+    },
+  };
+}
 
 /** Keep these legacy coercions permissive: this is decoding, not a protocol upgrade. */
 function decodeDeviceCommand(value: unknown): DeviceCommand | null {
@@ -813,6 +895,17 @@ export function createControlServer(options: ControlServerOptions): ControlServe
             return;
           }
           body = body.body;
+        }
+        // C9b Cut B: the audio-holder commands are decoded here, after the
+        // owner check and BEFORE any session resolution — they name a device.
+        // The device entry is synchronous, so the transfer flips in one tick.
+        const audio = decodeAudioCommand(body);
+        if (audio) {
+          response = audio.ok
+            ? application.device(audio.value)
+            : { kind: "audio-error", code: "invalid", error: audio.err };
+          sock.end(JSON.stringify(response) + "\n");
+          return;
         }
         const value = sessions.resolve(body);
         // Retain the legacy runtime-first async boundary even for other kinds.

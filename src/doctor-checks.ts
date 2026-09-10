@@ -1,7 +1,9 @@
 import { accessSync, constants } from "node:fs";
 import { join } from "node:path";
 import type { Config } from "./config.ts";
+import { processAlive } from "./daemon-identity.ts";
 import { speakCancellable } from "./speak.ts";
+import { readWhisperRecord, type WhisperSpawnRecord } from "./whisper-orphan.ts";
 import type { AudioSpawner, WatchdogProcess } from "./audio-watchdog.ts";
 
 export const MICROPHONE_PROBE_DURATION_MS = 300;
@@ -13,9 +15,61 @@ const TTS_PROBE_TIMEOUT_MS = 5_000;
 export interface DoctorProbeResult {
   /** Live probes are advisory: callers should display this, not use it as the doctor's exit status. */
   ok: boolean;
-  label: "microphone" | "TTS" | "agents" | "conch";
+  label: "microphone" | "TTS" | "agents" | "conch" | "whisper-server";
   message: string;
   action?: string;
+}
+
+export interface WhisperServerProbeDeps {
+  /** Does anything answer on the port? */
+  listening?: (port: number) => Promise<boolean>;
+  record?: () => WhisperSpawnRecord | null;
+  alive?: (pid: number) => boolean;
+}
+
+/**
+ * Which whisper-server state a person is looking at (D2): warm and owned by a
+ * live conch daemon, warm but adopted (someone else's, never killed), or not
+ * listening while its daemon is up — idle-unloaded, or still warming. Read
+ * from outside the daemon: the port, plus the spawn record D3 leaves behind.
+ * Always informational; none of these is a fault.
+ */
+export async function checkWhisperServer(cfg: Config, deps: WhisperServerProbeDeps = {}): Promise<DoctorProbeResult> {
+  const label = "whisper-server" as const;
+  const port = cfg.whisperPort;
+  if (!port) return { ok: true, label, message: "whisper-server: off (CONCH_WHISPER_PORT=0) — cold cli only" };
+  const listening = await (deps.listening ?? defaultListening)(port);
+  const record = (deps.record ?? readWhisperRecord)();
+  const alive = deps.alive ?? processAlive;
+  const daemon = record && record.port === port && alive(record.daemonPid) ? record.daemonPid : null;
+  const owned = daemon !== null && alive(record!.pid);
+  if (listening) {
+    return {
+      ok: true,
+      label,
+      message: owned
+        ? `whisper-server: warm on :${port} (owned by conch daemon ${daemon})`
+        : `whisper-server: warm on :${port} (adopted — not started by a live conch daemon; never killed)`,
+    };
+  }
+  return {
+    ok: true,
+    label,
+    message: daemon
+      ? cfg.whisperIdleUnloadMins
+        ? `whisper-server: unloaded — daemon ${daemon} is up but nothing listens on :${port} (idle for ${cfg.whisperIdleUnloadMins} min, or still warming); it reloads when a mic is about to open`
+        : `whisper-server: not listening on :${port} — daemon ${daemon} is up (still warming, or on the cold cli); whisper-idle-unload is 0, so it was not unloaded`
+      : `whisper-server: not listening on :${port} — starts with the daemon`,
+  };
+}
+
+async function defaultListening(port: number): Promise<boolean> {
+  try {
+    await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(1_500) });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export interface MicrophoneCapture {

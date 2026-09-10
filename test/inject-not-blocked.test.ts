@@ -76,7 +76,7 @@ describe("manual mode means conch does not speak first", () => {
   // mean "conch cannot talk", which is not what it is for.
   test("speech a person asked for still happens", () => {
     for (const asked of [
-      'await speak(cfg, `${target.label}:`, target.label, true)',
+      'await speak(cfg, `${target.label}:`, target.label, true, target.sessionId)',
       // Bounded by a race so a sick TTS cannot hold the mic shut, but still
       // volunteered=true — the confirmation is asked for, not offered.
       'speak(cfg, `Mic open for ${target.label}.`, target.label, true)',

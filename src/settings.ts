@@ -51,6 +51,7 @@ export const SETTING_KEYS = [
   "announce-sentences",
   "announce-max-chars",
   "say-rate",
+  "whisper-idle-unload",
 ] as const;
 
 export type SettingKey = typeof SETTING_KEYS[number];
@@ -80,7 +81,8 @@ export type SettingField =
   | "meetingAutopause"
   | "speakSentences"
   | "speakMaxChars"
-  | "sayRate";
+  | "sayRate"
+  | "whisperIdleUnloadMins";
 export type HandoffOrder = "newest" | "oldest" | "urgency";
 export type SettingValue = number | boolean | string;
 export type SettingApply = "live" | "hook";
@@ -472,6 +474,20 @@ export const SETTING_DESCRIPTORS = [
     apply: "live",
     help: "macOS say words per minute; 0 uses the system default",
   },
+  {
+    key: "whisper-idle-unload",
+    field: "whisperIdleUnloadMins",
+    env: "CONCH_WHISPER_IDLE_UNLOAD_MINS",
+    kind: "number",
+    // The warm whisper-server holds ~628MB for as long as it lives, even when
+    // nobody has spoken for hours (D2). Twenty minutes of no transcription and
+    // it is stopped; it reloads the moment a mic is about to open.
+    default: 20,
+    parse: numberParser(zeroable, "a number of minutes (0 never unloads)"),
+    bounds: zeroable,
+    apply: "live",
+    help: "minutes without a transcription before the warm whisper-server (~628MB) is unloaded; it reloads when a mic is about to open; 0 keeps it loaded",
+  },
 ] as const satisfies readonly SettingDescriptor[];
 
 export const SETTING_REGISTRY: ReadonlyMap<string, SettingDescriptor> = new Map(
@@ -713,6 +729,7 @@ export const SESSION_COMMANDS = [
   "dismiss",
   "restore",
   "reveal",
+  "set-model",
 ] as const;
 
 export type SessionCommand = typeof SESSION_COMMANDS[number];
@@ -725,7 +742,9 @@ export type SessionControlMessage =
   | { kind: "session-command"; sessionId: string; command: "dismiss" }
   | { kind: "session-command"; sessionId: string; command: "restore" }
   /** Raise the session's terminal window; a click on its title in the app. */
-  | { kind: "session-command"; sessionId: string; command: "reveal" };
+  | { kind: "session-command"; sessionId: string; command: "reveal" }
+  /** Type `/model <model>` into the session's own prompt; the agent handles it natively (B2). */
+  | { kind: "session-command"; sessionId: string; command: "set-model"; model: string };
 
 export type RuntimeControlMessage =
   | { kind: "resumable"; query?: string; limit?: number }
@@ -906,6 +925,7 @@ export function isControlMessageCandidate(value: unknown): boolean {
 
 const MAX_SESSION_ID_LENGTH = 256;
 const MAX_SESSION_LABEL_INPUT_LENGTH = 4_096;
+const MAX_MODEL_LENGTH = 128;
 const MAX_ERROR_OPERATION_LENGTH = 200;
 const MAX_ERROR_MESSAGE_LENGTH = 8_192;
 const MAX_ERROR_STATE_LENGTH = 32 * 1024;
@@ -977,6 +997,15 @@ export function validateSessionControlMessage(value: unknown): ParseResult<Sessi
         return { ok: false, err: "prioritize: value must be boolean" };
       }
       return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: "prioritize", value: value.value } };
+    case "set-model": {
+      const model = boundedPrintable(value.model, "set-model: model", MAX_MODEL_LENGTH);
+      if (!model.ok) return model;
+      // One argument to `/model`, never an option: a leading `-` reads as a
+      // flag and whitespace would smuggle a second argument into the prompt.
+      if (model.value.startsWith("-")) return { ok: false, err: "set-model: model cannot start with -" };
+      if (/\s/.test(model.value)) return { ok: false, err: "set-model: model cannot contain whitespace" };
+      return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: "set-model", model: model.value } };
+    }
     case "reset-voice":
     case "dismiss":
     case "restore":

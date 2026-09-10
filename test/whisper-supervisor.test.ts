@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import type { WatchdogProcess } from "../src/audio-watchdog.ts";
 import type { Config } from "../src/config.ts";
 import {
@@ -286,5 +287,169 @@ describe("whisper-server supervision", () => {
     h.supervisor.close();
     expect(h.resets).toHaveLength(1);
     expect(h.children[0]!.kills).toEqual(["SIGKILL"]);
+  });
+});
+
+describe("idle unload and prewarm (D2)", () => {
+  const IDLE_MS = 20 * 60_000;
+  const POLL_MS = 30_000;
+  /** Fire-and-forget work (an unload, a prewarm's start) settles in a few microtask turns. */
+  async function until(condition: () => boolean): Promise<void> {
+    for (let tick = 0; tick < 50 && !condition(); tick++) await Bun.sleep(0);
+    expect(condition()).toBeTrue();
+  }
+
+  test("an owned server idle for the window is stopped once, and the mic signal reloads it", async () => {
+    // The warm server held ~628MB for the daemon's whole life; before D2 the
+    // only stop was shutdown. The fake clock is the harness's timer list.
+    const logs: string[] = [];
+    const h = harness({ idleUnloadMs: () => IDLE_MS, log: (message) => { logs.push(message); } });
+    h.presence.push(false);
+    h.readiness.push(true);
+    expect(await h.supervisor.start()).toBeTrue();
+    const idleTimers = () => h.timers.filter((timer) => !timer.cancelled && timer.ms === IDLE_MS);
+    expect(idleTimers()).toHaveLength(1);
+
+    // A served transcription restarts the clock rather than adding a second one.
+    const first = idleTimers()[0]!;
+    h.supervisor.armIdleUnload();
+    expect(first.cancelled).toBeTrue();
+    expect(idleTimers()).toHaveLength(1);
+
+    // The window elapses: the owned child is terminated inside the request
+    // lane, readiness is invalidated, and the log says so exactly once.
+    const spent = idleTimers()[0]!;
+    spent.callback();
+    spent.cancelled = true; // a fired one-shot is spent; the fake clock does not retire it by itself
+    await until(() => h.terminated.length === 1);
+    expect(h.terminated).toEqual([h.children[0]!]);
+    expect(h.resets.length).toBeGreaterThanOrEqual(1);
+    expect(h.supervisor.snapshot()).toMatchObject({ status: "unloaded", periodicArmed: false });
+    expect(logs.filter((line) => line.includes("idle for 20 min — unloaded"))).toHaveLength(1);
+
+    // The retired child's exit must not restart it: that is what "unloaded" means.
+    h.children[0]!.exit.resolve(0);
+    await Bun.sleep(0);
+    expect(h.supervisor.snapshot()).toMatchObject({ status: "unloaded", ownership: "none" });
+    h.supervisor.requestRecovery("request-failed");
+    await h.supervisor.settled();
+    expect(h.children).toHaveLength(1);
+
+    // A mic is about to open: reload with the same bounded start as boot. A
+    // second signal while it is still warming is a no-op, not a second spawn.
+    h.presence.push(false);
+    h.readiness.push(true);
+    h.supervisor.prewarm();
+    h.supervisor.prewarm();
+    await until(() => h.supervisor.snapshot().status === "ready");
+    expect(h.children).toHaveLength(2);
+    expect(h.supervisor.snapshot()).toMatchObject({ status: "ready", ownership: "owned" });
+    expect(logs.filter((line) => line === "whisper-server reloading — a mic is about to open")).toHaveLength(1);
+    expect(idleTimers()).toHaveLength(1); // and the clock is running again
+    h.supervisor.close();
+    expect(idleTimers()).toHaveLength(0);
+  });
+
+  test("a warm server treats the mic signal as activity, and an adopted one is never unloaded", async () => {
+    const h = harness({ idleUnloadMs: () => IDLE_MS });
+    h.presence.push(false);
+    h.readiness.push(true);
+    expect(await h.supervisor.start()).toBeTrue();
+    const idle = h.timers.findLast((timer) => !timer.cancelled)!;
+    h.supervisor.prewarm();
+    expect(idle.cancelled).toBeTrue();
+    expect(h.children).toHaveLength(1);
+    expect(h.timers.filter((timer) => !timer.cancelled).map((timer) => timer.ms)).toEqual([IDLE_MS]);
+    h.supervisor.close();
+
+    // Someone else's process: only the D3 poll runs, never an idle clock.
+    const adopted = harness({ idleUnloadMs: () => IDLE_MS });
+    adopted.presence.push(true);
+    adopted.readiness.push(true);
+    expect(await adopted.supervisor.start()).toBeTrue();
+    expect(adopted.supervisor.snapshot()).toMatchObject({ status: "ready", ownership: "adopted" });
+    adopted.supervisor.armIdleUnload();
+    expect(adopted.timers.filter((timer) => !timer.cancelled).map((timer) => timer.ms)).toEqual([POLL_MS]);
+    adopted.supervisor.close();
+  });
+
+  test("the window is read live: 0 disarms, a new value re-arms at the next transcription", async () => {
+    let minutes = 20;
+    const h = harness({ idleUnloadMs: () => minutes * 60_000 });
+    h.presence.push(false);
+    h.readiness.push(true);
+    expect(await h.supervisor.start()).toBeTrue();
+    const armed = () => h.timers.filter((timer) => !timer.cancelled).map((timer) => timer.ms);
+    expect(armed()).toEqual([20 * 60_000]);
+    minutes = 0;
+    h.supervisor.armIdleUnload();
+    expect(armed()).toEqual([]);
+    minutes = 5;
+    h.supervisor.armIdleUnload();
+    expect(armed()).toEqual([5 * 60_000]);
+    h.supervisor.close();
+  });
+
+  test("the client reports each served warm transcription and nothing for a canary or a failure", async () => {
+    const responses = [
+      new Response("root", { status: 200 }),
+      Response.json({ text: "" }),
+      Response.json({ text: "hello" }),
+      new Response("down", { status: 503 }),
+    ];
+    const client = new WhisperServerClient({
+      request: async () => responses.shift() ?? new Response("unexpected", { status: 500 }),
+    });
+    const cfg = { whisperPort: 8642 } as Config;
+    let served = 0;
+    client.setServedHandler(() => { served++; });
+    expect(await client.probeReadyUnlocked(cfg, 1_000)).toBeTrue();
+    expect(served).toBe(0);
+    expect((await client.transcribeWarm(cfg, new Uint8Array(44), 1_000)).status).toBe("ok");
+    expect(served).toBe(1);
+    expect((await client.transcribeWarm(cfg, new Uint8Array(44), 1_000)).status).toBe("failed");
+    expect(served).toBe(1);
+  });
+});
+
+describe("D2 wiring inside runDaemon", () => {
+  // runDaemon runs in no test; its wiring is pinned by source, the way the
+  // audio-lease and control-server seams are.
+  const daemonSource = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
+
+  function between(startMarker: string, endMarker: string): string {
+    const start = daemonSource.indexOf(startMarker);
+    expect(start).toBeGreaterThan(-1);
+    const end = daemonSource.indexOf(endMarker, start);
+    expect(end).toBeGreaterThan(start);
+    return daemonSource.slice(start, end);
+  }
+
+  test("served transcriptions re-arm the clock, the window is read live, and a setting change re-arms", () => {
+    expect(daemonSource).toContain("whisperServerClient.setServedHandler(() => whisperSupervisor?.armIdleUnload())");
+    const construction = between(
+      "whisperSupervisor = new ServerSupervisor<WhisperRecoveryReason>({",
+      "resetReadiness: () => whisperServerClient.resetHealth()",
+    );
+    expect(construction).toContain("idleUnloadMs: () => cfg.whisperIdleUnloadMins * 60_000");
+    expect(daemonSource).toContain('if (key === "whisper-idle-unload") whisperSupervisor?.armIdleUnload()');
+  });
+
+  test("a wake prewarms before its courtesy line, and a finished turn prewarms before the bell", () => {
+    // Both markers must EXIST before their order means anything: indexOf
+    // returns -1 for a missing line, and -1 sorts before every real index.
+    const wake = between('if (event.type === "wake") {', "await conversationLoop(target");
+    const stamp = wake.indexOf("micRequestedAt = Date.now()");
+    const wakePrewarm = wake.indexOf("whisperSupervisor?.prewarm()");
+    expect(stamp).toBeGreaterThan(-1);
+    expect(wakePrewarm).toBeGreaterThan(stamp);
+
+    const turn = between("if (audibleTurn && (await userRespondedSince(", "const announce = await speakInterruptible(");
+    const turnPrewarm = turn.indexOf("if (audibleTurn) whisperSupervisor?.prewarm()");
+    // The bell's gate became `voicedHere` with C9b Cut B (audible somewhere,
+    // voiced HERE); the prewarm still has to precede it.
+    const bell = turn.indexOf("if (voicedHere) await ringBell()");
+    expect(turnPrewarm).toBeGreaterThan(-1);
+    expect(bell).toBeGreaterThan(turnPrewarm);
   });
 });

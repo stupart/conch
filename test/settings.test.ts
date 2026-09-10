@@ -68,13 +68,16 @@ const expected = {
   "announce-sentences": ["speakSentences", "CONCH_SPEAK_SENTENCES", "hook", 2],
   "announce-max-chars": ["speakMaxChars", "CONCH_SPEAK_MAX_CHARS", "hook", 350],
   "say-rate": ["sayRate", "CONCH_SAY_RATE", "live", 210],
+  // D2: the warm whisper-server (~628MB) is unloaded after this many idle
+  // minutes and reloaded when a mic is about to open; 0 keeps it loaded.
+  "whisper-idle-unload": ["whisperIdleUnloadMins", "CONCH_WHISPER_IDLE_UNLOAD_MINS", "live", 20],
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 26 curated, default-bearing knobs", () => {
+  test("contains exactly the 27 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(26);
+    expect(SETTING_DESCRIPTORS).toHaveLength(27);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });
@@ -157,6 +160,14 @@ describe("settings parser", () => {
     expect(parse("say-rate", 210)).toEqual({ ok: true, value: 210 });
     expect(parse("say-rate", -1).ok).toBe(false);
     expect(parse("say-rate", 210.5).ok).toBe(false);
+  });
+
+  test("whisper-idle-unload is minutes, zero meaning never", () => {
+    expect(parse("whisper-idle-unload", 0)).toEqual({ ok: true, value: 0 });
+    expect(parse("whisper-idle-unload", "20")).toEqual({ ok: true, value: 20 });
+    expect(parse("whisper-idle-unload", 2.5)).toEqual({ ok: true, value: 2.5 });
+    expect(parse("whisper-idle-unload", -1).ok).toBe(false);
+    expect(parse("whisper-idle-unload", "never").ok).toBe(false);
   });
 
   test("boolean parsing is strict", () => {
@@ -387,7 +398,7 @@ describe("control-message validation", () => {
     }
   });
 
-  test("recognizes and canonicalizes the seven closed session-command shapes", () => {
+  test("recognizes and canonicalizes the eight closed session-command shapes", () => {
     expect(SESSION_COMMANDS).toEqual([
       "rename",
       "set-voice",
@@ -396,6 +407,7 @@ describe("control-message validation", () => {
       "dismiss",
       "restore",
       "reveal",
+      "set-model",
     ]);
 
     const cases: Array<{ input: unknown; output: SessionControlMessage }> = [
@@ -427,6 +439,10 @@ describe("control-message validation", () => {
         input: { kind: "session-command", sessionId: "session-1", command: "reveal" },
         output: { kind: "session-command", sessionId: "session-1", command: "reveal" },
       },
+      {
+        input: { kind: "session-command", sessionId: "session-1", command: "set-model", model: " sonnet[1m] " },
+        output: { kind: "session-command", sessionId: "session-1", command: "set-model", model: "sonnet[1m]" },
+      },
     ];
 
     for (const { input, output } of cases) {
@@ -452,6 +468,16 @@ describe("control-message validation", () => {
       { kind: "session-command", sessionId: "session-1", command: "set-voice", voice: "not a voice!" },
       { kind: "session-command", sessionId: "session-1", command: "prioritize", value: "true" },
       { kind: "session-command", sessionId: "session-1", command: "delete-everything" },
+      // set-model becomes one argument to `/model`: bounded, printable, one
+      // word, never an option.
+      { kind: "session-command", sessionId: "session-1", command: "set-model" },
+      { kind: "session-command", sessionId: "session-1", command: "set-model", model: "" },
+      { kind: "session-command", sessionId: "session-1", command: "set-model", model: "   " },
+      { kind: "session-command", sessionId: "session-1", command: "set-model", model: "-opus" },
+      { kind: "session-command", sessionId: "session-1", command: "set-model", model: "opus\nrm -rf" },
+      { kind: "session-command", sessionId: "session-1", command: "set-model", model: "opus high" },
+      { kind: "session-command", sessionId: "session-1", command: "set-model", model: "x".repeat(129) },
+      { kind: "session-command", sessionId: "session-1", command: "set-model", model: 42 },
     ];
 
     for (const input of hostile) {

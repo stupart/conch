@@ -181,6 +181,32 @@ ordering stay in the daemon. The server is tested over real Unix sockets
 against a stub application; the daemon's wiring of the five entries is pinned
 by a source guard, because `runDaemon` still runs in no test.
 
+**One voice across two Macs (C9b Cut B).** `AudioSinkLease` was never a lease:
+two hardcoded values and no holder. `src/audio-holder.ts` is the arbiter the
+second Mac needed — a record `{holder, revision, expiresAt}` per daemon, in
+memory and published as `audioControl`, with one acceptance rule: a higher
+revision wins, an equal revision from the same holder only extends the lease,
+an equal revision after expiry is a re-yield, anything else is refused as
+stale. Take it on Mac A sends `audio-take` to A's own daemon, then `audio-yield`
+to every paired daemon inside its owner envelope; on B the transfer is the
+phone-claim sequence, synchronous at the device entry (kill speech, drop the
+queue, close the mic, THEN flip the record, THEN ack), so nothing drained
+after the cancel can enter `speak` with the holder still local. A yielded
+daemon keeps the whole turn pipeline — session-closed check, already-responded
+check, dashboard state — and only the sound is gated on "here": exactly two
+sites hand text to a bounded `audioOutbox` (the turn announcement, and `speak`
+for a recite or explicit `conch speak`); everything else returns silently, the
+idle probe is skipped, and a wake is refused before its courtesy line. A's app,
+as B's observer, forwards each `(ownerDeviceId, seq)` once as `audio-present`;
+A's daemon routes it through `speak()` (never around the mic guard), records the
+sequence only when the line is actually enqueued, answers `held` otherwise so
+the app retries on its 30 s renewal tick, and drops anything older than its
+own start. The lease returns audio to local when it lapses — a Mac muted
+forever because the other app quit is the worse failure — and the phone keeps
+winning on its own daemon. All of it is pinned by exact-site source guards and
+executable tests over the module and the socket; the two-Mac path itself has
+only been run on one machine.
+
 The remaining seams are already visible:
 
 | would become | what it owns |

@@ -238,6 +238,7 @@ enum ConchSessionCommand: String, Encodable, Sendable {
     case dismiss
     case restore
     case reveal
+    case setModel = "set-model"
 }
 
 struct ConchSessionCommandRequest: Encodable, Sendable {
@@ -245,15 +246,18 @@ struct ConchSessionCommandRequest: Encodable, Sendable {
     let sessionId: String
     let command: ConchSessionCommand
     let label: String?
+    let model: String?
 
     init(
         sessionId: String,
         command: ConchSessionCommand,
-        label: String? = nil
+        label: String? = nil,
+        model: String? = nil
     ) {
         self.sessionId = sessionId
         self.command = command
         self.label = label
+        self.model = model
     }
 }
 
