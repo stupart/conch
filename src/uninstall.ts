@@ -156,8 +156,12 @@ function shellWords(command: string): string[] | null {
 function isConchSourceCli(path: string): boolean {
   const normalized = path.replaceAll("\\", "/");
   if (!normalized.endsWith("/src/cli.ts")) return false;
+  // Case-insensitive: Tyler's checkout is ~/Projects/Conch, and the install
+  // side already matched hooks by exact command — an uninstall that could
+  // not recognise its own source-checkout hooks left them behind (#139).
   return normalized
     .split("/")
+    .map((part) => part.toLowerCase())
     .some((part) => part === "conch" || part.startsWith("conch-"));
 }
 
