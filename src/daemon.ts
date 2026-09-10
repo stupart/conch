@@ -81,7 +81,7 @@ import {
 } from "./listen.ts";
 import type { RecorderHandle } from "./dictation-controller.ts";
 import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
-import { injectProviderCommand, renameProviderSession } from "./provider-rename.ts";
+import { injectProviderCommand, isProviderCommandLine, renameProviderSession } from "./provider-rename.ts";
 import { classify, classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
 import {
   describeNotice,
@@ -2043,6 +2043,29 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // Sending IS the interruption — you have already moved on, and no answer
       // to the previous turn is worth hearing over your own next question.
       speech.cancelCurrent();
+
+      // A slash line IS the agent's own command (B4), so it takes the door B2
+      // built for `/model` rather than the message route below: no spoken-
+      // choice matching, no voice Q&A, submitted even with auto-submit off,
+      // and no confirm-by-transcript loop — that loop re-presses Return when
+      // the transcript does not grow, and a bare `/model` is a picker, so the
+      // retries would choose for you.
+      if (isProviderCommandLine(event.announce)) {
+        const line = event.announce.trim();
+        const delivery = await injectProviderCommand(cfg, { pid: event.pid }, line);
+        if (delivery.kind === "delivered") {
+          log(`typed ${line} into "${event.label}" via ${delivery.via}`);
+        } else {
+          log(`could not type ${line} into "${event.label}": ${delivery.reason}`);
+          recordDaemonError(
+            "session-command",
+            `Could not type ${line} into the session: ${delivery.reason}`,
+            event.sessionId,
+            { line },
+          );
+        }
+        return;
+      }
 
       // The phone's voice path: text transcribed ON the phone, delivered into
       // the named session through the exact machinery Mac dictation uses —

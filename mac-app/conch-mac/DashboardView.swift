@@ -131,6 +131,8 @@ struct DashboardActions {
     /// Opens Settings on the Phone tab, where the pairing QR lives.
     let onConnectPhone: () -> Void
     let onShowKeyboardShortcuts: () -> Void
+    /// ⌘K (B4): the command palette for the selected session.
+    let onShowCommandPalette: () -> Void
     let onTalkOrStop: () -> Void
     let onPauseOrResume: () -> Void
     let onRecite: () -> Void
@@ -605,6 +607,11 @@ private struct HeaderControls: View {
                 help: isLogDrawerOpen ? "Hide logs" : "Show logs",
                 isSelected: isLogDrawerOpen,
                 action: actions.onToggleLogs
+            )
+            HeaderButton(
+                symbol: "command",
+                help: "Command palette (⌘K)",
+                action: actions.onShowCommandPalette
             )
             HeaderButton(
                 symbol: "questionmark",

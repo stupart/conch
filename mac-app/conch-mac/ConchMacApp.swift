@@ -65,6 +65,17 @@ struct ConchMacApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            // ⌘K (B4). A menu item so the shortcut is discoverable and works
+            // whatever has focus; the view opens it, like Keyboard Shortcuts.
+            CommandMenu("Session") {
+                Button("Command Palette…") {
+                    NotificationCenter.default.post(
+                        name: .showCommandPalette,
+                        object: nil
+                    )
+                }
+                .keyboardShortcut("k", modifiers: .command)
+            }
             CommandGroup(after: .help) {
                 Button("Keyboard Shortcuts") {
                     NotificationCenter.default.post(
