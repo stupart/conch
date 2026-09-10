@@ -225,6 +225,8 @@ export interface PublishedSessionRow {
 
 export interface PublishedState {
   v: 1;
+  /** Stable identity of the daemon installation that owns every local session key. */
+  ownerDeviceId: string;
   ts: number;
   mode: DashboardMode;
   live: {
@@ -373,6 +375,7 @@ export function panelReplyText(
 
 /** Build the versioned, renderer-independent state exposed to external consumers. */
 export function buildPublishedState(
+  ownerDeviceId: string,
   model: PanelModel,
   snippets: ReadonlyMap<string, string>,
   dismissed: ReadonlySet<string>,
@@ -389,6 +392,7 @@ export function buildPublishedState(
 ): PublishedState {
   return {
     v: 1,
+    ownerDeviceId,
     ts: now,
     mode: { ...model.mode },
     live: publishedLiveState(model.live),

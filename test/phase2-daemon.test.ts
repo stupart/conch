@@ -198,7 +198,7 @@ describe("Phase 2 session metadata", () => {
       reply: null,
       panelOpen: true,
     };
-    const published = buildPublishedState(model, new Map(), new Set(), 1, {
+    const published = buildPublishedState("test-device", model, new Map(), new Set(), 1, {
       contextForSessionId: () => ({ usedTokens: 160_000, limitTokens: 200_000 }),
     });
     expect(published.rows[0]?.context).toEqual({ usedTokens: 160_000, limitTokens: 200_000 });

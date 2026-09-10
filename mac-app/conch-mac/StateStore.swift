@@ -908,6 +908,7 @@ final class StateStore: ObservableObject {
 
         let next = PublishedState(
             v: sourceState.v,
+            ownerDeviceId: sourceState.ownerDeviceId,
             ts: sourceState.ts,
             mode: sourceState.mode,
             live: sourceState.live,

@@ -183,6 +183,7 @@ describe("buildPublishedState — external session snapshot", () => {
     };
 
     const published = buildPublishedState(
+      "test-device",
       model,
       new Map([
         ["needs", "Need: latest reply"],
@@ -205,6 +206,7 @@ describe("buildPublishedState — external session snapshot", () => {
 
     expect(published).toEqual({
       v: 1,
+      ownerDeviceId: "test-device",
       ts: 1_234_567,
       mode: { muted: false, paused: true, holding: 2 },
       live: {
@@ -272,6 +274,7 @@ describe("buildPublishedState — external session snapshot", () => {
     });
 
     const published = buildPublishedState(
+      "test-device",
       model,
       new Map(),
       new Set(),
@@ -302,7 +305,7 @@ describe("buildPublishedState — external session snapshot", () => {
     });
     model.preview = null;
 
-    const published = buildPublishedState(model, new Map(), new Set(), 10);
+    const published = buildPublishedState("test-device", model, new Map(), new Set(), 10);
 
     expect(published.live).toEqual({ state: "idle", label: "" });
     expect("partial" in published.live).toBe(false);
@@ -365,6 +368,7 @@ describe("buildPublishedState — external session snapshot", () => {
       );
 
       const published = buildDaemonPublishedState(
+        "test-device",
         loadConfig({ env: { CLAUDE_CONFIG_DIR: claudeDir } }),
         model,
         new Map(),
@@ -432,7 +436,7 @@ describe("buildPublishedState — external session snapshot", () => {
     });
     model.preview = { sessionId: "parked", text, spokenChars: text.length };
 
-    const published = buildPublishedState(model, new Map(), new Set(), 10);
+    const published = buildPublishedState("test-device", model, new Map(), new Set(), 10);
 
     // The reading text is capped by the same function, so it carries the same
     // flag — a viewer tracking reading progress is looking at a tail too.
@@ -472,7 +476,7 @@ describe("buildPublishedState — external session snapshot", () => {
       navSelectedId: null,
       reply: { sessionId: "short", text: "all of it", spokenChars: 9 },
     });
-    const published = buildPublishedState(model, new Map(), new Set(), 10);
+    const published = buildPublishedState("test-device", model, new Map(), new Set(), 10);
     expect(published.reply).toEqual({
       sessionId: "short",
       text: "all of it",
@@ -871,7 +875,7 @@ describe("previewForPanelSelection — async cursor stale guard", () => {
       reply: { sessionId: "active", text: "Earlier reply", spokenChars: 0 },
     });
     model.preview = { sessionId: "parked", text: "Parked preview", spokenChars: 0 };
-    const initial = buildPublishedState(model, new Map(), new Set(), 10);
+    const initial = buildPublishedState("test-device", model, new Map(), new Set(), 10);
 
     const progressed = refreshPublishedConversationState(
       initial,
