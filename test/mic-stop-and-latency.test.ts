@@ -54,7 +54,7 @@ test("a stop with nothing running at all is reported, not swallowed", () => {
 test("the physical key asks the same question as the socket", () => {
   // Both paths decide whether space stops or opens. They must not disagree:
   // when they did, space fell through and opened a SECOND wake on a live mic.
-  expect(daemon).toContain('if (busy || normalMicOpen()) stopReciting("spacebar");');
+  expect(daemon).toContain('if (eventQueue.busy() || normalMicOpen()) stopReciting("spacebar");');
   expect(daemon).toContain("capturing: () => normalMicOpen(),");
 });
 

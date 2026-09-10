@@ -32,7 +32,8 @@ only by what exists.
 
 `daemon.ts` is 5,615 lines. `docs/architecture.md` names where it splits:
 
-- **Q** `event-queue.ts` — the queue, drain, enqueue, the serial invariant
+- **Q** `event-queue.ts` — extracted: pending events, drain, command barriers,
+  cancellation bookkeeping, and audition exclusion; intake stays in the daemon
 - **V** `voice-loop.ts` — wake → speak → listen → deliver
 - **C** `control-server.ts` — the socket, dispatch, the one validation boundary
 - **R** `session-registry.ts` — reconciling Claude's registry with Codex's DBs

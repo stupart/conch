@@ -136,10 +136,11 @@ import {
 } from "./sessions.ts";
 import {
   SessionLedger,
-  STATE_EVENT_TYPES,
   eventTimestamp,
 } from "./session-ledger.ts";
 export { TurnEventOrder } from "./session-ledger.ts";
+import { EventQueue } from "./event-queue.ts";
+export { insertQueuedEvent, takeNextQueuedEvent } from "./event-queue.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
 import {
   activeSessionIdForRows,
@@ -232,7 +233,6 @@ import {
   type SettingKey,
   type SettingResolution,
   type SettingValue,
-  type HandoffOrder,
   type SessionControlMessage,
   type SessionControlResponse,
   type RuntimeControlMessage,
@@ -1138,104 +1138,6 @@ export async function resolveNameAddressRoute(
   return { kind: "deliver", event, text };
 }
 
-const HANDOFF_URGENCY: Partial<Record<TurnEvent["type"], number>> = {
-  working: 1,
-  "turn-end": 2,
-  "needs-you": 3,
-};
-const MODE_CONTROL_TYPES = new Set<TurnEvent["type"]>(["pause", "resume"]);
-const NO_INSTANT_QUEUE_BARRIERS = { has: (_event: TurnEvent): boolean => false };
-
-/**
- * Keep mode acknowledgements last as before, while an opt-in dashboard
- * takeover stays ahead of every ordinary command/state arrival that follows it.
- */
-export function insertQueuedEvent(
-  queue: TurnEvent[],
-  event: TurnEvent,
-  instantBarriers: { has(event: TurnEvent): boolean } = NO_INSTANT_QUEUE_BARRIERS,
-): boolean {
-  const instant = instantBarriers.has(event);
-  const duplicateIndex = event.type === "inject" || (event.type === "speak" && !event.sessionId)
-    ? -1
-    : queue.findIndex(
-      (queued) => queued.sessionId === event.sessionId && queued.type === event.type,
-    );
-  if (duplicateIndex !== -1) {
-    const duplicate = queue[duplicateIndex]!;
-    // An ordinary socket command cannot silently dislodge the dashboard
-    // takeover that already interrupted the active exchange. A later instant
-    // edge or mode/space cancellation removes that protection explicitly.
-    if (instantBarriers.has(duplicate) && !instant) return false;
-    queue.splice(duplicateIndex, 1);
-  }
-
-  if (MODE_CONTROL_TYPES.has(event.type)) {
-    queue.push(event);
-    return true;
-  }
-
-  const modeIndex = queue.findIndex((queued) => MODE_CONTROL_TYPES.has(queued.type));
-  if (instant) {
-    if (modeIndex === -1) queue.push(event);
-    else queue.splice(modeIndex, 0, event);
-    return true;
-  }
-
-  const barrierIndex = queue.findIndex(
-    (queued) => MODE_CONTROL_TYPES.has(queued.type) || instantBarriers.has(queued),
-  );
-  if (barrierIndex === -1) queue.push(event);
-  else queue.splice(barrierIndex, 0, event);
-  return true;
-}
-
-/**
- * Remove the next queued session event without sorting the queue. Imperative
- * events are LIFO barriers: only the state-event cohort newer than the latest
- * command is reordered, preserving wake/speak/mode command semantics. Session
- * priority narrows that eligible cohort but can never reach below the barrier.
- */
-export function takeNextQueuedEvent(
-  queue: TurnEvent[],
-  order: HandoffOrder,
-  prioritized: ReadonlySet<string> = new Set(),
-): TurnEvent | undefined {
-  if (!queue.length) return undefined;
-
-  let latestCommand = -1;
-  for (let i = queue.length - 1; i >= 0; i--) {
-    if (!STATE_EVENT_TYPES.has(queue[i]!.type)) {
-      latestCommand = i;
-      break;
-    }
-  }
-  const cohortStart = latestCommand + 1;
-  if (cohortStart === queue.length) return queue.pop();
-
-  const prioritizedIndices: number[] = [];
-  if (prioritized.size) {
-    for (let i = cohortStart; i < queue.length; i++) {
-      if (prioritized.has(queue[i]!.sessionId)) prioritizedIndices.push(i);
-    }
-  }
-  const candidates = prioritizedIndices.length
-    ? prioritizedIndices
-    : Array.from({ length: queue.length - cohortStart }, (_, index) => cohortStart + index);
-
-  let selected = order === "newest"
-    ? candidates[candidates.length - 1]!
-    : candidates[0]!;
-  if (order === "urgency") {
-    for (const i of candidates.slice(1)) {
-      const candidate = HANDOFF_URGENCY[queue[i]!.type] ?? 0;
-      const current = HANDOFF_URGENCY[queue[selected]!.type] ?? 0;
-      if (candidate >= current) selected = i; // equal urgency => newer arrival
-    }
-  }
-  return queue.splice(selected, 1)[0];
-}
-
 /** Keep dismissed sessions live in the registry while omitting their dashboard rows. */
 export function withoutDismissedSessions<T extends Pick<SessionInfo, "sessionId">>(
   sessions: readonly T[],
@@ -1477,9 +1379,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
     setReadingProgress(text, spokenChars);
   };
   const diagnosticsEnabled = recorderDiagnosticsEnabled();
-  const queue: TurnEvent[] = [];
-  let busy = false;
-  let busyLabel = "none";
   let lastTurn: TurnEvent | null = null;
   const persisted = readState(); // survives restarts — see STATE_FILE
   let pause!: PauseController; // "away" mode: quiet, but HOLD finished sessions to replay on resume
@@ -1511,6 +1410,23 @@ export async function runDaemon(cfg: Config): Promise<void> {
     dismissedHeldTurns,
     latestTurnBySession,
   } = ledger;
+  const eventQueue = new EventQueue({
+    handle,
+    handoffOrder: () => cfg.handoffOrder,
+    prioritized: prioritizedSessionIds,
+    shuttingDown: () => shuttingDown,
+    consumeStopKey: () => consumeStopKey(),
+    onError: (event, error) => {
+      log(`error handling ${event.type} "${event.label}": ${error}`);
+      speech.cancelCurrent();
+    },
+    onIdle: () => setState(restState()),
+    log,
+    trace: traceQueue,
+  });
+  const cancelQueuedWakes = (sessionId?: string): void => {
+    markQueuedWakesForControl(eventQueue.pending, (event) => eventQueue.cancel(event), sessionId);
+  };
   const resumeTransitions = new WeakMap<TurnEvent, Promise<PauseResumeResult>>();
   // Footer mode keeps its established persistent picker untouched. Theater uses
   // a separate active anchor + explicitly released parked cursor below.
@@ -1530,12 +1446,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let terminalComposer: TerminalComposer | null = null;
   let terminalQuestionController: TerminalQuestionController | null = null;
   let meetingMic: MicClaimPoller | null = null;
-  const cancelledAudioCommands = new WeakSet<TurnEvent>();
-  const instantQueueBarriers = new WeakSet<TurnEvent>();
-  const cancelQueuedAudioCommand = (event: TurnEvent): void => {
-    cancelledAudioCommands.add(event);
-    instantQueueBarriers.delete(event);
-  };
   // The turn currently being handled, used by PauseController's scoped edge.
   let recitingEvent: TurnEvent | null = null;
   let handlingEvent: TurnEvent | null = null;
@@ -1668,13 +1578,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
     resumedSessionIds,
     sessionHeldTurns,
     enqueue,
-    markInstantQueued: (event) => instantQueueBarriers.add(event),
-    cancelQueuedWakes: (sessionId) =>
-      markQueuedWakesForControl(
-        queue,
-        cancelQueuedAudioCommand,
-        sessionId,
-      ),
+    markInstantQueued: (event) => eventQueue.markInstantQueued(event),
+    cancelQueuedWakes,
     labelFor: labelForSessionId,
     log,
     render: () => void renderSessionPanel(),
@@ -1966,44 +1871,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       const transition = instantControls.applyGlobal(event.type as "pause" | "resume");
       if (transition) resumeTransitions.set(event, transition);
     }
-    insertQueuedEvent(queue, event, instantQueueBarriers);
-    void drain();
-  }
-
-  async function drain(): Promise<void> {
-    // The queue drains one event at a time behind a `busy` flag, so ONE event
-    // that never settles silently strands every event after it — injects
-    // included. That is what made a message look session-specific when it was
-    // not: probes into two different idle sessions both hung, with nothing in
-    // the log, because neither ever left the queue.
-    traceQueue(busy ? `blocked behind "${busyLabel}" (${queue.length} waiting)` : `drain start (${queue.length})`);
-    if (busy) return;
-    busy = true;
-    try {
-      if (shuttingDown) return;
-      if (stopKey && queue.length) {
-        const skipped = takeNextQueuedEvent(queue, cfg.handoffOrder, prioritizedSessionIds)!;
-        stopKey = false;
-        log(`⏹ spacebar — skipped queued ${skipped.type} for "${skipped.label}" during TTS startup`);
-      }
-      while (queue.length) {
-        const event = takeNextQueuedEvent(queue, cfg.handoffOrder, prioritizedSessionIds)!;
-        try {
-          busyLabel = `${event.type}:${event.label}`;
-          traceQueue(`handle ${busyLabel}`);
-          await handle(event);
-          traceQueue(`done ${busyLabel}`);
-        } catch (e) {
-          // one bad event (closed pane, missing binary, socket reset, a throw
-          // from any spawn) must not take the whole daemon down mid-exchange.
-          log(`error handling ${event.type} "${event.label}": ${e}`);
-          speech.cancelCurrent();
-        }
-      }
-    } finally {
-      busy = false;
-      setState(restState());
-    }
+    void eventQueue.submit(event);
   }
 
   // The at-rest status reflects the one lossless quiet mode.
@@ -2595,7 +2463,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     newLabel: string,
   ): void {
     const events = new Set<TurnEvent>([
-      ...queue,
+      ...eventQueue.pending,
       ...pending.values(),
       ...sessionHeldTurns.values(),
       ...latestTurnBySession.values(),
@@ -2751,7 +2619,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       event.review,
     )) return;
 
-    if (cancelledAudioCommands.delete(event)) {
+    if (eventQueue.consumeCancellation(event)) {
       return log(`cancelled queued ${event.type} for "${event.label}"`);
     }
 
@@ -4795,13 +4663,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
         hold: dismissedHeldTurns,
         preserveHeld: true,
       });
-      for (let index = queue.length - 1; index >= 0; index--) {
-        const queued = queue[index]!;
-        if (queued.type === "speak" && queued.sessionId === target.sessionId) {
-          queue.splice(index, 1);
-        }
-      }
-      markQueuedWakesForControl(queue, cancelQueuedAudioCommand, target.sessionId);
+      eventQueue.removePending((event) => event.type === "speak" && event.sessionId === target.sessionId);
+      cancelQueuedWakes(target.sessionId);
       theaterNavigation.release();
       log(`dismissed "${target.label}" — announcements stopped; session keeps running`);
       void renderSessionPanel();
@@ -4857,7 +4720,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     });
   };
   const socketTurnCallbacks: SocketTurnEventCallbacks = {
-    busy: () => busy,
+    busy: () => eventQueue.busy(),
     capturing: () => normalMicOpen(),
     stopSpacebar: () => stopReciting("spacebar"),
     droppedStop: () => log("stop arrived with nothing running — ignored"),
@@ -5214,7 +5077,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     meetingMic?.close();
     phoneRelay?.stop();
     phoneBridge?.stop();
-    queue.length = 0;
+    eventQueue.clear();
     speech.close(); // cancel and seal speech, cues, and in-flight/future canaries
     // Close the controller's rearm gate synchronously before taking the
     // recorder snapshot. No await is allowed before this request.
@@ -5472,11 +5335,10 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   /** Audition every live session in its assigned voice — `conch voice <session> <voice>` reassigns. */
   async function auditionVoices(): Promise<void> {
-    if (busy) return log("busy — audition after the current exchange");
+    if (eventQueue.busy()) return log("busy — audition after the current exchange");
     if (pause.paused) return log("manual mode — resume before auditioning voices");
-    busy = true;
-    const controlGeneration = pause.capture();
-    try {
+    await eventQueue.exclusive(async () => {
+      const controlGeneration = pause.capture();
       const rows = await numberedSessions();
       if (pause.interrupted(controlGeneration) || pause.paused) return;
       if (!rows.length) return log("no live sessions");
@@ -5489,11 +5351,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (!pause.interrupted(controlGeneration) && !pause.paused) {
         logAbove('  \x1b[2mreassign: conch voice <session> <kokoro-voice>\x1b[0m');
       }
-    } finally {
-      busy = false;
-      setState(restState());
-      void drain();
-    }
+    });
   }
 
   function wakeByNumber(n: number): void {
@@ -5612,7 +5470,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     speech.cancelPendingAudio();
     // Space remains the guaranteed stop even when an instant takeover is
     // queued behind the old exchange's deliberately un-killed Whisper job.
-    markQueuedWakesForControl(queue, cancelQueuedAudioCommand);
+    cancelQueuedWakes();
     activeDictation?.requestExternal("spacebar");
     log(activeDictation?.session.micOpen || micOpen ? `⏹ ${src} — closing mic` : `⏹ ${src} — stopped`);
   }
@@ -5667,7 +5525,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (sessionActionsOverlay?.handleKey(c)) return;
       if (restoreSessionsOverlay?.handleKey(c)) return;
       if (sessionStartOverlay?.handleKey(c)) return;
-      if (terminalComposer?.isOpen() && c === " " && busy) {
+      if (terminalComposer?.isOpen() && c === " " && eventQueue.busy()) {
         stopReciting("spacebar");
         return;
       }
@@ -5729,7 +5587,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         // and a mic opened by the instant path leaves `busy` false. Without
         // `normalMicOpen()` this fell through and opened a SECOND wake while
         // the first was still listening.
-        if (busy || normalMicOpen()) stopReciting("spacebar");
+        if (eventQueue.busy() || normalMicOpen()) stopReciting("spacebar");
         else if (theaterMode && theaterActionTarget()) dictateToTerminalComposer(theaterActionTarget()!);
         else if (selectedId) wakeBySessionId(selectedId); // talk to the selected session
         else enqueue({ type: "wake", sessionId: "", label: "", announce: "", origin: "user" }); // else the last-announced
