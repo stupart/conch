@@ -61,7 +61,8 @@ test("the Mac app makes the title a button only when the row says it can be rais
   const dashboard = read("mac-app/conch-mac/DashboardView.swift");
   const at = dashboard.indexOf("private func sessionBar(for row: SessionRow) -> some View {");
   expect(at).toBeGreaterThan(-1);
-  const bar = dashboard.slice(at, at + 900);
+  // The bar also carries a subagent's way back (C4) ahead of the title.
+  const bar = dashboard.slice(at, at + 1_600);
   expect(bar).toContain("if row.revealable {");
   expect(bar).toContain("Button { store.reveal(row) } label: { sessionTitle(row) }");
   const store = read("mac-app/conch-mac/StateStore.swift");

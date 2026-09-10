@@ -27,6 +27,7 @@ export type TtsWorkerStatus =
   | "ready"
   | "restarting"
   | "down"
+  | "unloaded"
   | "stopped";
 
 export interface TtsWorkerSnapshot {
@@ -302,6 +303,7 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
   private pending: PendingRequest | null = null;
   private recovery: Promise<boolean> | null = null;
   private periodicTimer: ReturnType<typeof setTimeout> | null = null;
+  private unloadTimer: ReturnType<typeof setTimeout> | null = null;
   private requestCounter = 0;
   private readonly outputFiles = new Set<string>();
   private readonly lifecycle = new AbortController();
@@ -338,7 +340,8 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
   }
 
   start(): Promise<boolean> {
-    if (!this.options.enabled || this.stopped()) return Promise.resolve(false);
+    // Unloaded on purpose (D1): a boot in manual mode never loads it; prewarm() does.
+    if (!this.options.enabled || this.stopped() || this.status === "unloaded") return Promise.resolve(false);
     if (this.isReady()) return Promise.resolve(true);
     return this.beginRecovery("startup");
   }
@@ -346,7 +349,39 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
   requestRecovery(reason: string): void {
     if (!this.options.enabled || this.stopped()) return;
     if (this.isReady()) return;
+    // Unloaded on purpose (D1): speech while unloaded goes through say, exactly
+    // as while loading, and must not pull the model back. Only prewarm() does.
+    if (this.status === "unloaded") return;
     void this.beginRecovery(reason);
+  }
+
+  /**
+   * Manual mode (D1): stop the owned worker after a grace, so a quick p/p does
+   * not thrash the model; prewarm() cancels it. A worker mid-(re)start or
+   * mid-synthesis is not unloadable yet: the timer tries again after the same
+   * grace. A grace of 0 unloads now — a daemon booting in manual mode calls
+   * this before start(), so the model is never loaded at all.
+   */
+  unloadAfter(ms: number, why: string): void {
+    this.clearUnloadTimer();
+    if (!this.options.enabled || this.stopped() || this.status === "unloaded") return;
+    if (ms <= 0) {
+      this.unload(why);
+      return;
+    }
+    this.unloadTimer = setTimeout(() => {
+      this.unloadTimer = null;
+      if (!this.unload(why)) this.unloadAfter(ms, why);
+    }, ms);
+    this.unloadTimer.unref?.();
+  }
+
+  /** Auto mode (D1): reload an unloaded worker; a warm one just loses its pending unload. */
+  prewarm(why: string): void {
+    this.clearUnloadTimer();
+    if (this.status !== "unloaded") return;
+    this.log(`kokoro worker reloading — ${why}`);
+    void this.beginRecovery("startup");
   }
 
   async synthesize(request: TtsWorkerSynthesisRequest): Promise<TtsWorkerSynthesisResult> {
@@ -437,6 +472,7 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
     this.status = "stopped";
     this.lifecycle.abort();
     this.clearPeriodic();
+    this.clearUnloadTimer();
     this.readyWaiter?.reject(new TtsWorkerUnavailableError("Kokoro worker stopped"));
     this.readyWaiter = null;
     this.failPending(new TtsWorkerUnavailableError("Kokoro worker stopped"));
@@ -454,6 +490,26 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
 
   private stopped(): boolean {
     return this.status === "stopped" || this.lifecycle.signal.aborted;
+  }
+
+  /**
+   * False means "not yet": a (re)start in flight would spawn straight after,
+   * and a synthesis in flight would time out into a hard restart. Both settle
+   * within seconds; the D1 grace timer retries.
+   */
+  private unload(why: string): boolean {
+    if (this.stopped() || this.status === "unloaded") return true;
+    if (this.recovery || this.pending) return false;
+    this.status = "unloaded";
+    this.clearPeriodic();
+    this.retireCurrent(false);
+    this.log(`kokoro worker ${why}`);
+    return true;
+  }
+
+  private clearUnloadTimer(): void {
+    if (this.unloadTimer) clearTimeout(this.unloadTimer);
+    this.unloadTimer = null;
   }
 
   private beginRecovery(reason: string): Promise<boolean> {
@@ -712,7 +768,7 @@ export class ManagedTtsWorker implements TtsWorkerBackend {
   }
 
   private hardRestart(reason: string): void {
-    if (this.stopped()) return;
+    if (this.stopped() || this.status === "unloaded") return;
     this.hardRestarts++;
     this.status = "restarting";
     this.lastError = reason;

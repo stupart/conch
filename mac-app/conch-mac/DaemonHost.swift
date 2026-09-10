@@ -35,6 +35,17 @@ final class DaemonHost: ObservableObject {
     /// The last few lines the daemon printed, so a failure is visible in the
     /// app instead of only in a log file nobody opens.
     @Published private(set) var recentOutput: [String] = []
+    /// Who started the daemon we adopted, from the identity file the daemon
+    /// writes once it owns the socket (`daemon-identity.ts`). Nil when the
+    /// daemon is ours, absent, or too old to have written one.
+    @Published private(set) var adoptedIdentity: Identity?
+
+    struct Identity: Decodable, Equatable {
+        let pid: Int32
+        let version: String
+        /// "app" | "terminal" | "launchd" — what the launcher's CONCH_STARTED_BY declared.
+        let startedBy: String
+    }
 
     private var process: Process?
     private var outputPipe: Pipe?
@@ -56,6 +67,7 @@ final class DaemonHost: ObservableObject {
         if case .running = state { return }
 
         if socketAnswers() {
+            adoptedIdentity = DaemonHost.readIdentity()
             state = .adopted
             watchAdoptedDaemon()
             return
@@ -78,6 +90,9 @@ final class DaemonHost: ObservableObject {
         // The daemon types into other terminals when it cannot reach a pane
         // directly; without this it silently does nothing on those sessions.
         environment["CONCH_KEYSTROKE_FALLBACK"] = "1"
+        // Names us as the owner in the daemon's identity file, so another copy
+        // of this app adopting it can say so rather than "outside this app".
+        environment["CONCH_STARTED_BY"] = "app"
         task.environment = environment
 
         // Capture output rather than inheriting: a GUI app has no terminal, so
@@ -134,6 +149,44 @@ final class DaemonHost: ObservableObject {
         start()
     }
 
+    /// A3's one button. The launchd agent is the other owner that made
+    /// "adopted" a permanent state. Run the equivalent of `conch service off`
+    /// — unload by label and drop the plist, never a kill by pattern — then
+    /// start our own through the same start() that probes the socket first,
+    /// so this can never stack a second daemon either.
+    func takeOverFromLaunchd() {
+        guard adoptedIdentity?.startedBy == "launchd",
+              let command = DaemonHost.launchCommand(subcommand: ["service", "off"]) else { return }
+        adoptedProbe?.invalidate()
+        adoptedProbe = nil
+        state = .starting
+        let task = Process()
+        task.executableURL = command.executable
+        task.arguments = command.arguments
+        if let directory = command.workingDirectory { task.currentDirectoryURL = directory }
+        task.terminationHandler = { [weak self] _ in
+            Task { @MainActor in await self?.startOnceSocketQuiet() }
+        }
+        do {
+            try task.run()
+        } catch {
+            state = .failed(error.localizedDescription)
+        }
+    }
+
+    /// `launchctl bootout` returns as the job is removed, while the daemon may
+    /// still be unlinking its socket. Wait for that, briefly, so start() does
+    /// not simply re-adopt the daemon we just asked to leave.
+    private func startOnceSocketQuiet() async {
+        let deadline = Date().addingTimeInterval(5)
+        while socketAnswers(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        adoptedIdentity = nil
+        state = .stopped
+        start()
+    }
+
     // MARK: - Internals
 
     /// An adopted daemon is someone else's process, so there is no exit
@@ -159,6 +212,7 @@ final class DaemonHost: ObservableObject {
         guard !socketAnswers() else { return }
         adoptedProbe?.invalidate()
         adoptedProbe = nil
+        adoptedIdentity = nil
         state = .stopped
         start()
     }
@@ -224,6 +278,22 @@ final class DaemonHost: ObservableObject {
         return connected == 0
     }
 
+    // MARK: - Who owns an adopted daemon
+
+    /// `~/.cache/conch/daemon.json`, written by the daemon once it owns the
+    /// socket and removed on its way out (`daemon-identity.ts`). A record whose
+    /// pid is gone is no record: a stale file must never name an owner.
+    static func readIdentity(
+        path: String = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/conch/daemon.json").path,
+        alive: (Int32) -> Bool = { kill($0, 0) == 0 || errno == EPERM }
+    ) -> Identity? {
+        guard let data = FileManager.default.contents(atPath: path),
+              let identity = try? JSONDecoder().decode(Identity.self, from: data),
+              alive(identity.pid) else { return nil }
+        return identity
+    }
+
     // MARK: - Finding the daemon
 
     struct LaunchCommand {
@@ -236,13 +306,14 @@ final class DaemonHost: ObservableObject {
     /// nothing else installed. Fall back to a checkout for development, where
     /// the bundled binary would be stale the moment anyone edits the source.
     static func launchCommand(
+        subcommand: [String] = ["daemon"],
         bundle: Bundle = .main,
         fileExists: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> LaunchCommand? {
         if let bundled = bundle.url(forResource: "conch-daemon", withExtension: nil),
            fileExists(bundled.path) {
-            return LaunchCommand(executable: bundled, arguments: ["daemon"], workingDirectory: nil)
+            return LaunchCommand(executable: bundled, arguments: subcommand, workingDirectory: nil)
         }
 
         let checkout = home.appendingPathComponent("conch")
@@ -251,7 +322,7 @@ final class DaemonHost: ObservableObject {
         if FileManager.default.fileExists(atPath: entry.path), fileExists(bun.path) {
             return LaunchCommand(
                 executable: bun,
-                arguments: [entry.path, "daemon"],
+                arguments: [entry.path] + subcommand,
                 workingDirectory: checkout
             )
         }

@@ -42,6 +42,9 @@ struct ConversationStackView: View {
     /// so this points at it rather than growing a second text field inside the
     /// question.
     var onFreeform: () -> Void = {}
+    /// Open the subagent a Task/Agent block started, in this same pane (C4).
+    /// The daemon says which agent that was; the pane decides how to show it.
+    var onOpenSubagent: (ConversationItem.Tool.Subagent) -> Void = { _ in }
     /// Sticks to the bottom only when already there, so reading history is not
     /// yanked away by an arriving message.
     @State private var pinnedToBottom = true
@@ -374,38 +377,57 @@ struct ConversationStackView: View {
         let expanded = expandedToolIDs.contains(item.id)
         let result = item.tool?.result ?? ""
         return VStack(alignment: .leading, spacing: 6) {
-            Button {
-                guard !result.isEmpty else { return }
-                if expanded { expandedToolIDs.remove(item.id) } else { expandedToolIDs.insert(item.id) }
-            } label: {
-                HStack(spacing: 8) {
-                    // The dot carried status; the glyph carries what KIND of
-                    // work this was. A stripe of identical dots is what made a
-                    // Codex session read as an undifferentiated string of tool
-                    // calls — you could not tell an edit from a shell command
-                    // without reading every line.
-                    Image(systemName: (item.tool?.kind ?? .unknown).symbol)
-                        .font(.system(size: 9.5))
-                        .foregroundStyle(statusColor(item.tool?.status))
-                        .frame(width: 12)
-                    Text(item.tool?.name ?? "tool")
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(ConchPalette.textDim)
-                    if !item.text.isEmpty {
-                        Text(item.text)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(ConchPalette.textFaint)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    if !result.isEmpty {
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 8))
-                            .foregroundStyle(ConchPalette.textFaint)
+            HStack(spacing: 8) {
+                Button {
+                    guard !result.isEmpty else { return }
+                    if expanded { expandedToolIDs.remove(item.id) } else { expandedToolIDs.insert(item.id) }
+                } label: {
+                    HStack(spacing: 8) {
+                        // The dot carried status; the glyph carries what KIND of
+                        // work this was. A stripe of identical dots is what made a
+                        // Codex session read as an undifferentiated string of tool
+                        // calls — you could not tell an edit from a shell command
+                        // without reading every line.
+                        Image(systemName: (item.tool?.kind ?? .unknown).symbol)
+                            .font(.system(size: 9.5))
+                            .foregroundStyle(statusColor(item.tool?.status))
+                            .frame(width: 12)
+                        Text(item.tool?.name ?? "tool")
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(ConchPalette.textDim)
+                        if !item.text.isEmpty {
+                            Text(item.text)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(ConchPalette.textFaint)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        if !result.isEmpty {
+                            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 8))
+                                .foregroundStyle(ConchPalette.textFaint)
+                        }
                     }
                 }
+                .buttonStyle(.plain)
+                // A nested agent is reachable from the block that started it (C4).
+                // Only when the daemon named one: a Task block with no agent id is
+                // some other agent's tool, and there is nothing to open.
+                if item.tool?.kind == .subagent, let agent = item.tool?.subagent {
+                    Button {
+                        onOpenSubagent(agent)
+                    } label: {
+                        Image(systemName: "arrow.up.right.square")
+                            .font(.system(size: 10))
+                            .foregroundStyle(ConchPalette.textDim)
+                            .frame(width: 18, height: 18)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open this agent's transcript")
+                    .accessibilityLabel("Open agent \(item.text)")
+                }
             }
-            .buttonStyle(.plain)
             // Output is the bulk of a transcript and almost never what you are
             // looking for; it stays behind a tap.
             if expanded, !result.isEmpty {

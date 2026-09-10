@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { loadConfig } from "../src/config.ts";
 import {
   checkConchBinaries,
+  checkKokoro,
   checkMicrophone,
   checkTts,
   checkWhisperServer,
@@ -183,5 +184,45 @@ describe("whisper-server state (D2)", () => {
     expect(from).toBeGreaterThan(-1);
     const doctor = source.slice(from, source.indexOf("function binaryExists", from));
     expect(doctor).toContain("formatDoctorProbe(await checkWhisperServer(cfg))");
+  });
+});
+
+describe("kokoro state (D1)", () => {
+  const daemon = { pid: 999, version: "x", startedBy: "terminal" as const, startedAt: 1 };
+  const deps = (options: { daemon?: boolean; worker?: number | null; listening?: boolean; paused?: boolean }) => ({
+    daemon: () => ((options.daemon ?? true) ? daemon : null),
+    workerPid: () => options.worker ?? null,
+    listening: async () => options.listening ?? false,
+    paused: () => options.paused ?? false,
+  });
+  const worker = { ...config(), ttsEngine: "worker" as const };
+
+  test("says warm, unloaded in manual mode, or not loaded — never as a fault", async () => {
+    expect(await checkKokoro(worker, deps({ worker: 4321 }))).toEqual({
+      ok: true,
+      label: "kokoro",
+      message: "kokoro: warm (worker pid 4321, owned by conch daemon 999)",
+    });
+    const unloaded = await checkKokoro(worker, deps({ paused: true }));
+    expect(unloaded.message).toBe("kokoro: unloaded — daemon 999 is in manual mode; reloads in auto mode");
+    expect(formatDoctorProbe(unloaded)).toStartWith("✅");
+    expect((await checkKokoro(worker, deps({}))).message)
+      .toBe("kokoro: not loaded — daemon 999 is in auto mode (still warming, or voices via say)");
+    expect((await checkKokoro(worker, deps({ daemon: false, paused: true }))).message)
+      .toBe("kokoro: not loaded — starts with the daemon");
+    expect((await checkKokoro({ ...worker, ttsEngine: "say" }, deps({ worker: 4321 }))).message).toContain("CONCH_TTS=say");
+    // The legacy server is read from its port, not the process table.
+    const server = { ...worker, ttsEngine: "server" as const, ttsPort: 8880 };
+    expect((await checkKokoro(server, deps({ listening: true, worker: 4321 }))).message).toBe("kokoro: warm on :8880 (legacy server)");
+    expect((await checkKokoro(server, deps({ paused: true }))).message).toContain("manual mode");
+    expect((await checkKokoro({ ...server, ttsPort: 0 }, deps({ listening: true }))).message).toContain("CONCH_TTS_PORT=0");
+  });
+
+  test("doctor prints it", () => {
+    const source = readFileSync(new URL("../src/install.ts", import.meta.url), "utf8");
+    const from = source.indexOf("export async function runDoctor");
+    expect(from).toBeGreaterThan(-1);
+    const doctor = source.slice(from, source.indexOf("function binaryExists", from));
+    expect(doctor).toContain("formatDoctorProbe(await checkKokoro(cfg))");
   });
 });

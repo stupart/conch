@@ -24,6 +24,7 @@ import { readCodexThreads } from "./codex-threads.ts";
 import { liveTranscriptPath, readClaudeTitles } from "./claude-title.ts";
 import { parseWindowKey, windowKey, windowPidFromAncestry } from "./window-key.ts";
 import { HELP_SESSION_LABEL, helpSessionDir } from "./help-session.ts";
+import { liveBackgroundAgents, subagentRowId } from "./agent-activity.ts";
 
 const LABELS_FILE = join(homedir(), ".config/conch/labels.json");
 const MAX_SESSION_LABEL_LENGTH = 40;
@@ -50,6 +51,13 @@ export interface SessionInfo {
   startedAt?: number;
   /** Session implementation; absent on legacy Claude registry projections. */
   backend?: "claude" | "codex";
+  /**
+   * Present on a subagent row: the session it runs inside (C4). Such a row
+   * never comes from the registry — Claude Code writes no entry for a
+   * subagent — so nothing can wake, inject into or announce for it; it is
+   * shown nested under its parent, and its transcript can be read.
+   */
+  parentSessionId?: string;
   name?: string;
   /**
    * Who chose `name`. Claude Code 2.1.25x+ writes a registry name at start
@@ -529,6 +537,38 @@ export async function registrySnapshot(
   // make the combined liveness view incomplete.
   if (!claudeAvailable && !codex.available) return null;
   return { infos, liveIds, complete };
+}
+
+/**
+ * A Claude session's live background subagents, as rows nested under it.
+ *
+ * There is no registry entry to read: a subagent runs inside the parent's
+ * process and Claude Code records it only as a sidechain transcript under the
+ * parent's project directory, plus the launch and completion lines in the
+ * parent's own transcript. `liveBackgroundAgents` reads exactly those, so a
+ * row here is one Claude Code itself still considers in flight — never a
+ * guess from a label or a timestamp. The row carries the sidechain as its
+ * transcript, which is the same JSONL shape as any session's, so the
+ * conversation reader shows it unchanged.
+ */
+export function subagentSessions(
+  parent: SessionInfo,
+  transcriptPath: string | undefined,
+): SessionInfo[] {
+  if (!transcriptPath || parent.backend === "codex" || parent.parentSessionId) return [];
+  return liveBackgroundAgents(transcriptPath).map((agent) => ({
+    sessionId: subagentRowId(agent.agentId),
+    parentSessionId: parent.sessionId,
+    backend: "claude" as const,
+    name: agent.description ?? `agent ${agent.agentId.slice(0, 7)}`,
+    cwd: parent.cwd,
+    // In flight by construction; a finished one is not listed at all.
+    status: "busy",
+    ...(agent.startedAt !== undefined
+      ? { startedAt: agent.startedAt, statusUpdatedAt: agent.startedAt }
+      : {}),
+    transcriptPath: agent.transcriptPath,
+  }));
 }
 
 /** All engageable (top-level interactive CLI) live sessions from the registry. */
