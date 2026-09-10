@@ -4085,6 +4085,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       log(`closed "${target.label}" cleanly`);
     },
     restore: restoreDismissedSession,
+    // Same raise `revealOnTurn` uses: Terminal.app by tty, no focus steal.
+    reveal: (target) => target.pid ? revealSessionWindow(target.pid) : Promise.resolve(false),
   };
   sessionActionsOverlay = new SessionActionsOverlay({
     controller: sessionActions,

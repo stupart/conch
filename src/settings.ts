@@ -711,6 +711,7 @@ export const SESSION_COMMANDS = [
   "prioritize",
   "dismiss",
   "restore",
+  "reveal",
 ] as const;
 
 export type SessionCommand = typeof SESSION_COMMANDS[number];
@@ -721,7 +722,9 @@ export type SessionControlMessage =
   | { kind: "session-command"; sessionId: string; command: "reset-voice" }
   | { kind: "session-command"; sessionId: string; command: "prioritize"; value: boolean }
   | { kind: "session-command"; sessionId: string; command: "dismiss" }
-  | { kind: "session-command"; sessionId: string; command: "restore" };
+  | { kind: "session-command"; sessionId: string; command: "restore" }
+  /** Raise the session's terminal window; a click on its title in the app. */
+  | { kind: "session-command"; sessionId: string; command: "reveal" };
 
 export type RuntimeControlMessage =
   | { kind: "resumable"; query?: string; limit?: number }
@@ -973,6 +976,7 @@ export function validateSessionControlMessage(value: unknown): ParseResult<Sessi
     case "reset-voice":
     case "dismiss":
     case "restore":
+    case "reveal":
       return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: value.command } };
   }
 }

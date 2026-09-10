@@ -663,6 +663,9 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     let voice: String?
     let prioritized: Bool
     let navSelected: Bool
+    /// The daemon knows this session's process, so a click on its title can
+    /// try to raise its terminal. False for a session conch only observes.
+    let revealable: Bool
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -682,6 +685,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case voice
         case prioritized
         case navSelected
+        case revealable
     }
 
     init(
@@ -701,7 +705,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         transcriptPath: String?,
         voice: String?,
         prioritized: Bool,
-        navSelected: Bool
+        navSelected: Bool,
+        revealable: Bool = false
     ) {
         self.id = id
         self.label = label
@@ -720,6 +725,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.voice = voice
         self.prioritized = prioritized
         self.navSelected = navSelected
+        self.revealable = revealable
     }
 
     init(from decoder: Decoder) throws {
@@ -745,6 +751,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             (try? container.decodeIfPresent(Bool.self, forKey: .prioritized)) ?? false
         navSelected =
             (try? container.decodeIfPresent(Bool.self, forKey: .navSelected)) ?? false
+        revealable =
+            (try? container.decodeIfPresent(Bool.self, forKey: .revealable)) ?? false
     }
 
     func replacingLabel(with label: String) -> SessionRow {
@@ -765,7 +773,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             transcriptPath: transcriptPath,
             voice: voice,
             prioritized: prioritized,
-            navSelected: navSelected
+            navSelected: navSelected,
+            revealable: revealable
         )
     }
 }

@@ -1690,15 +1690,29 @@ private struct ConversationPane: View {
         }
     }
 
+    private func sessionTitle(_ row: SessionRow) -> some View {
+        Text(row.label)
+            .font(ConchTypography.font(size: 12.5, weight: .medium))
+            .foregroundStyle(ConchPalette.textPrimary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+    }
+
     /// Close lives behind the least accidental control in the pane, while the
     /// identity and context pressure remain visible without interaction.
     private func sessionBar(for row: SessionRow) -> some View {
         HStack(spacing: 8) {
-            Text(row.label)
-                .font(ConchTypography.font(size: 12.5, weight: .medium))
-                .foregroundStyle(ConchPalette.textPrimary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            // Click the title to raise the session's terminal (C10). It is a
+            // button only when the daemon knows the process: a session conch
+            // merely observes has nothing to raise and must not look clickable.
+            if row.revealable {
+                Button { store.reveal(row) } label: { sessionTitle(row) }
+                    .buttonStyle(.plain)
+                    .help("Bring this session's terminal to the front")
+                    .accessibilityLabel("Bring \(row.label) to the front")
+            } else {
+                sessionTitle(row)
+            }
 
             AgentBadge(backend: row.backend)
 

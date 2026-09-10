@@ -62,6 +62,8 @@ export interface PanelRowModel {
   liveGlyph: PanelConchState | null;
   active: boolean;
   navSelected: boolean;
+  /** The daemon knows the session's process, so a click on the title can try to raise its terminal. */
+  revealable?: boolean;
 }
 
 export interface PanelReplyModel {
@@ -213,6 +215,8 @@ export interface PublishedSessionRow {
   muted: boolean;
   live: PanelConchState | null;
   active: boolean;
+  /** Present when the daemon knows the session's process and can try to raise its terminal (C10). */
+  revealable?: boolean;
   snippet?: string;
   /** A finished deliverable attached to this waiting row. Carries the link so
    * external consumers can render it, not just the summary. */
@@ -417,6 +421,7 @@ export function buildPublishedState(
         muted: row.muted,
         live: row.liveGlyph,
         active: row.active,
+        ...(row.revealable ? { revealable: true as const } : {}),
         ...(snippets.has(row.sessionId)
           ? { snippet: snippets.get(row.sessionId)! }
           : {}),
@@ -512,6 +517,8 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         liveGlyph: active && ROW_LIVE_STATES.has(options.live.state) ? options.live.state : null,
         active,
         navSelected: session.sessionId === options.navSelectedId,
+        // A known process is what the title's click can try to raise (C10).
+        ...(session.pid ? { revealable: true } : {}),
       };
     })
     .sort((a, b) => (

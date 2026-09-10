@@ -137,6 +137,13 @@ function applySessionControlMessage(
         current.label,
       );
     }
+    case "reveal": {
+      // Fire and forget: the raise is AppleScript against Terminal.app, and
+      // the reply must not wait on it. `changed` means "there is a process to
+      // try" — a session conch only observes has nothing to raise.
+      void invokeSessionAction(controller, target, { command: "reveal" });
+      return sessionCommandAck(message, target.pid !== undefined, target.label);
+    }
     case "dismiss": {
       if (options.isDismissed?.(message.sessionId)) {
         return sessionCommandAck(message, false, target.label);

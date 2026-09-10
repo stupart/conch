@@ -283,6 +283,16 @@ final class StateStore: ObservableObject {
     /// Returns an empty list rather than an error on failure: this feeds a
     /// picker that already says "No past sessions found", and a modal error on
     /// top of an empty list tells you the same thing twice.
+    /// Bring a session's terminal window to the front (C10). Fire and forget:
+    /// the daemon answers before AppleScript has raised anything, and a
+    /// session it only observes has nothing to raise — the row says so, and
+    /// the title is not a button for those.
+    func reveal(_ row: SessionRow) {
+        guard row.revealable else { return }
+        let request = ConchSessionCommandRequest(sessionId: row.id, command: .reveal)
+        Task { _ = await socketClient.request(request) }
+    }
+
     func resumableSessions(query: String) async -> [ResumableSession] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let outcome = await socketClient.request(
@@ -643,6 +653,9 @@ final class StateStore: ObservableObject {
         transportErrorSessionIDs.remove(context.id)
 
         switch context.command {
+        case .reveal:
+            // A raise changes no row; there is nothing to reconcile.
+            break
         case .rename:
             guard let canonicalLabel = acknowledgement.label else { return }
             labelOverrides[context.id] = LabelOverride(
@@ -706,7 +719,7 @@ final class StateStore: ObservableObject {
         )
 
         switch context.command {
-        case .rename:
+        case .rename, .reveal:
             break
         case .dismiss:
             if optimisticDismissals[context.id]?.generation == context.generation {
