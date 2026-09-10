@@ -825,6 +825,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     sessionHeldTurns,
     dismissedHeldTurns,
     latestTurnBySession,
+    reportedMissingCodexPid,
   } = ledger;
   const eventQueue = new EventQueue({
     handle,
@@ -1332,7 +1333,6 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
   const warmedTranscripts = new Set<string>();
   let warmQueue: Promise<unknown> = Promise.resolve();
-  const reportedMissingCodexPid = new Set<string>();
   const recordDaemonError = (
     operation: string,
     message: string,
