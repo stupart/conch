@@ -119,6 +119,9 @@ struct ComposerView: View {
     /// What conch's microphone is doing right now: "", "listening", "recording",
     /// "transcribing", "speaking".
     let voiceState: String
+    /// How loud the mic is, 0..1, while recording. It drives the halo, so the
+    /// button says "I can hear you" rather than only "I am on".
+    let voiceLevel: Double
     let onSend: (String) -> Task<Bool, Never>
     let onInterrupt: () -> Void
     let onTalk: () -> Void
@@ -177,9 +180,18 @@ struct ComposerView: View {
                         .frame(width: 28, height: 28)
                         .background(Circle().fill(micBackground))
                         .foregroundStyle(micForeground)
-                        .symbolEffect(
-                            .variableColor.iterative,
-                            isActive: voiceState == "listening" || voiceState == "recording"
+                        // Armed and waiting: the fixed pulse. Hearing you: the
+                        // halo, sized by the level the recorder reports ten
+                        // times a second. It pulsed identically whether conch
+                        // was hearing you or hearing nothing, which was exactly
+                        // the state the missing mic permission hid.
+                        .symbolEffect(.variableColor.iterative, isActive: voiceState == "listening")
+                        .overlay(
+                            Circle()
+                                .stroke(ConchPalette.brandCyan.opacity(0.25 + 0.75 * voiceLevel), lineWidth: 2)
+                                .scaleEffect(1 + 0.6 * voiceLevel)
+                                .opacity(voiceState == "recording" ? 1 : 0)
+                                .animation(.easeOut(duration: 0.12), value: voiceLevel)
                         )
                 }
                 .buttonStyle(.plain)
