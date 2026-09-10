@@ -5,6 +5,7 @@ struct ContentView: View {
     @EnvironmentObject private var store: StateStore
 
     @State private var expandedReviewID: ReviewItem.ID?
+    @State private var remoteSelection: RemoteSessionID?
     @State private var selectedSessionID: SessionRow.ID?
     @State private var renamingSessionID: SessionRow.ID?
     @State private var renameDraft = ""
@@ -80,6 +81,7 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             DashboardView(
+                onSelectRemote: { remoteSelection = $0 },
                 state: store.state,
                 selectedSessionID: selectedSessionID,
                 renamingSessionID: renamingSessionID,
@@ -122,10 +124,13 @@ struct ContentView: View {
         .background(ConchPalette.bg)
         .background(
             DashboardInputMonitor(
-                isEnabled: expandedReview == nil && !isShowingKeyboardShortcuts,
+                isEnabled: expandedReview == nil && remoteSelection == nil && !isShowingKeyboardShortcuts,
                 onKey: handleDashboardKey
             )
         )
+        .sheet(item: $remoteSelection) { target in
+            RemoteSessionView(target: target)
+        }
         .sheet(isPresented: $isShowingKeyboardShortcuts) {
             KeyboardShortcutsSheet()
         }

@@ -140,6 +140,7 @@ struct DashboardActions {
 }
 
 struct DashboardView: View {
+    let onSelectRemote: (RemoteSessionID) -> Void
     @EnvironmentObject private var store: StateStore
     @EnvironmentObject private var daemon: DaemonHost
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -243,6 +244,7 @@ struct DashboardView: View {
 
                 HStack(spacing: 0) {
                     SessionLedger(
+                        onSelectRemote: onSelectRemote,
                         state: state,
                         selectedSessionID: selectedSessionID,
                         renamingSessionID: renamingSessionID,
@@ -540,6 +542,7 @@ private struct HeaderButton: View {
 
 
 private struct SessionLedger: View {
+    let onSelectRemote: (RemoteSessionID) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let state: PublishedState?
@@ -626,6 +629,7 @@ private struct SessionLedger: View {
                                         .id("dismissed:\(row.id)")
                                     }
                                 }
+                                RemoteMacGroups(onSelect: onSelectRemote)
                             }
                             .padding(.horizontal, 8)
                             .padding(.vertical, 8)
@@ -660,7 +664,12 @@ private struct SessionLedger: View {
                     }
                 }
             } else {
-                DashboardEmptyState(hasSnapshot: state != nil)
+                ScrollView {
+                    VStack {
+                        DashboardEmptyState(hasSnapshot: state != nil)
+                        RemoteMacGroups(onSelect: onSelectRemote)
+                    }
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

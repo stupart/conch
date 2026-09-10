@@ -30,6 +30,9 @@
 		A1000000000000000000000C /* TranscriptContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000000E /* TranscriptContent.swift */; };
 		B10000000000000000000001 /* SettingsProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000001 /* SettingsProtocol.swift */; };
 		B10000000000000000000002 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* SettingsView.swift */; };
+		A100000000000000000000950 /* DirectHTTPTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000950 /* DirectHTTPTransport.swift */; };
+		A100000000000000000000951 /* RemoteMacStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000951 /* RemoteMacStore.swift */; };
+		A100000000000000000000952 /* RemoteMacViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000952 /* RemoteMacViews.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -58,6 +61,9 @@
 		A2000000000000000000000E /* TranscriptContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptContent.swift; sourceTree = "<group>"; };
 		B20000000000000000000001 /* SettingsProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsProtocol.swift; sourceTree = "<group>"; };
 		B20000000000000000000002 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A200000000000000000000950 /* DirectHTTPTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectHTTPTransport.swift; sourceTree = "<group>"; };
+		A200000000000000000000951 /* RemoteMacStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMacStore.swift; sourceTree = "<group>"; };
+		A200000000000000000000952 /* RemoteMacViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMacViews.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -90,6 +96,9 @@
 				A20000000000000000000004 /* ContentView.swift */,
 				A20000000000000000000005 /* DashboardView.swift */,
 				A20000000000000000000090 /* PairingView.swift */,
+				A200000000000000000000952 /* RemoteMacViews.swift */,
+				A200000000000000000000951 /* RemoteMacStore.swift */,
+				A200000000000000000000950 /* DirectHTTPTransport.swift */,
 				A20000000000000000000006 /* ReviewView.swift */,
 				A20000000000000000000007 /* WebView.swift */,
 				A2000000000000000000000C /* ConchSocketClient.swift */,
@@ -209,6 +218,9 @@
 				A10000000000000000000004 /* ContentView.swift in Sources */,
 				A10000000000000000000005 /* DashboardView.swift in Sources */,
 				A10000000000000000000090 /* PairingView.swift in Sources */,
+				A100000000000000000000952 /* RemoteMacViews.swift in Sources */,
+				A100000000000000000000951 /* RemoteMacStore.swift in Sources */,
+				A100000000000000000000950 /* DirectHTTPTransport.swift in Sources */,
 				A10000000000000000000006 /* ReviewView.swift in Sources */,
 				A10000000000000000000007 /* WebView.swift in Sources */,
 				A1000000000000000000000A /* ConchSocketClient.swift in Sources */,
