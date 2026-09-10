@@ -170,6 +170,7 @@ struct DashboardView: View {
                 DashboardHeader(
                     state: state,
                     selectedSessionID: selectedSessionID,
+                    titleBarInset: proxy.safeAreaInsets.top,
                     isLogDrawerOpen: store.isLogDrawerOpen,
                     daemonMessage: store.daemonMessage,
                     newerDaemonWarningVisible: store.newerDaemonWarningVisible,
@@ -365,6 +366,15 @@ struct DashboardView: View {
                 }
 
             }
+            // E1. The window hides its title bar but SwiftUI still insets
+            // content below the strip the traffic lights sit in (32pt on
+            // macOS 26), so the 38pt header stacked under 32pt of nothing.
+            // The stack extends under the strip and the header BECOMES it:
+            // wordmark, status and app controls beside the traffic lights,
+            // and the ledger starts 39pt higher. The reader outside stays
+            // inset on purpose — a reader that ignores the strip reports its
+            // height as 0, and the header needs the number.
+            .ignoresSafeArea(.container, edges: .top)
         }
         .background(ConchPalette.bg)
         .font(ConchTypography.font(size: 12.5))
@@ -427,11 +437,19 @@ private struct PluginHintBar: View {
 private struct DashboardHeader: View {
     let state: PublishedState?
     let selectedSessionID: SessionRow.ID?
+    /// The title-bar strip this row now lives in: 32pt on macOS 26 with the
+    /// window's own title bar hidden, 0 in full screen where the traffic
+    /// lights are gone and the row keeps a plain 28pt of its own.
+    let titleBarInset: CGFloat
     let isLogDrawerOpen: Bool
     let daemonMessage: String?
     let newerDaemonWarningVisible: Bool
     let onDismissNewerDaemonWarning: () -> Void
     let actions: DashboardActions
+
+    /// Measured on macOS 26: the zoom button ends at x=69 and the lights sit
+    /// 9pt in from the edge, so the wordmark gets the same 9pt after them.
+    private static let trafficLightClearance: CGFloat = 78
 
     private var selectedRow: SessionRow? {
         guard let selectedSessionID else { return nil }
@@ -539,9 +557,9 @@ private struct DashboardHeader: View {
             // The bottom strip held Talk — a duplicate of the mic now sitting in
             // the composer — plus mode, Settings, Logs and ?. The session
             // actions belong beside the session; the rest belong in the app's
-            // own chrome. Deleting the strip gives the ledger and composer the
-            // full height of the window, and stops the header being 42pt of
-            // wordmark.
+            // own chrome. Deleting the strip gave the ledger and composer the
+            // full height of the window; E1 then folded this row into the
+            // title-bar strip, so the wordmark costs no height at all.
             HeaderControls(
                 isManual: isManual,
                 modeScope: modeScope,
@@ -551,9 +569,9 @@ private struct DashboardHeader: View {
             )
         }
         .lineLimit(1)
-        .padding(.leading, 16)
+        .padding(.leading, titleBarInset > 0 ? Self.trafficLightClearance : 16)
         .padding(.trailing, 8)
-        .frame(height: 38)
+        .frame(height: max(titleBarInset, 28))
         .background(ConchPalette.bg)
     }
 }

@@ -174,7 +174,7 @@ Still worth doing separately (not blocking):
 
 | | | lands in |
 |---|---|---|
-| E1 | Reclaim the top of the Mac window — 42pt of header above the content. | UI |
+| E1 | ~~Reclaim the top of the Mac window — 42pt of header above the content.~~ — **done**: the window already hid its title bar, but SwiftUI kept content below the 32pt strip the traffic lights sit in, so the 38pt header row (plus its divider) stacked under an empty strip; the dashboard's stack now extends under the strip and the header row IS the strip — wordmark, status and the mode/Settings/logs/? controls beside the traffic lights, 78pt in to clear them, 28pt of its own in full screen — and the ledger starts 39pt higher. Nothing moved into a system toolbar; every control kept its label, help text and 26pt hit target. | UI |
 | E2 | A design pass on the Mac app, once it is fluid. | UI |
 | E3 | Better phone transcription; the bench is written and waiting on one recording. | V |
 | E4 | Better phone reading, configurable. | V |
