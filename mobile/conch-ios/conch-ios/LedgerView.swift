@@ -589,9 +589,15 @@ private struct StartSessionSheet: View {
     @State private var mode = StartMode.new
     @State private var teleportSessionId = ""
     @State private var openedTeleport = false
-    @State private var workingFolder = ""
+    // The last folder this phone used is the likeliest next one.
+    @State private var workingFolder = RecentFolders.load().first ?? ""
+    @State private var recents = RecentFolders.load()
     @State private var starting = false
     @State private var error: String?
+    // Codex trust, the way the Mac does it: the daemon asks BEFORE launching,
+    // the answer is kept for this sheet only and sent back as `trustFolder`.
+    @State private var pendingTrust: String?
+    @State private var trustedFolders: Set<String> = []
 
     // Resume
     @State private var resumeQuery = ""
@@ -655,6 +661,27 @@ private struct StartSessionSheet: View {
                         TextField("/Users/you/project", text: $workingFolder)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
+                        // Folders this phone has started sessions in, newest
+                        // first. Typing or tapping one is the whole picker:
+                        // there is no folder browser over the wire in this slice.
+                        ForEach(recents, id: \.self) { folder in
+                            Button {
+                                workingFolder = folder
+                            } label: {
+                                HStack {
+                                    Text(shortHomePath(folder))
+                                        .foregroundStyle(Palette.textPrimary)
+                                        .lineLimit(1)
+                                        .truncationMode(.head)
+                                    Spacer()
+                                    if folder == freshWorkingFolder {
+                                        Image(systemName: "checkmark")
+                                            .foregroundStyle(Palette.textDim)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
                     } header: {
                         Text("Working folder")
                     } footer: {
@@ -672,7 +699,7 @@ private struct StartSessionSheet: View {
                     }
                 } else if mode == .new {
                     Section {
-                        Text("The agent opens in a new Terminal window on your Mac.")
+                        Text(freshFootnote)
                             .foregroundStyle(Palette.textDim)
                     }
                 }
@@ -708,6 +735,31 @@ private struct StartSessionSheet: View {
             Button("Done") { dismiss() }
         } message: {
             Text("Continue in Terminal on your Mac to open your local copy. Claude may ask you to sign in or trust the folder. This does not confirm that the session downloaded or the workspace is ready.")
+        }
+        .alert(
+            "Do you trust this folder?",
+            isPresented: Binding(
+                get: { pendingTrust != nil },
+                set: { if !$0 { pendingTrust = nil } }
+            )
+        ) {
+            // Codex's own two options, in its own order — the same alert the
+            // Mac shows, because it is Codex's question, not conch's.
+            Button("Yes, continue") {
+                guard let cwd = pendingTrust else { return }
+                pendingTrust = nil
+                trustedFolders.insert(cwd)
+                start()
+            }
+            Button("No, cancel", role: .cancel) { pendingTrust = nil }
+        } message: {
+            Text(
+                "\(pendingTrust ?? "")\n\nWorking with untrusted contents comes with "
+                + "higher risk of prompt injection. Trusting the directory allows "
+                + "project-local config, hooks, and exec policies to load.\n\n"
+                + "conch will tell Codex this for this session only, and will not "
+                + "change your Codex configuration."
+            )
         }
         // `task(id:)` rather than `onChange`, so this fires when the sheet
         // APPEARS already in resume mode as well as when the toggle flips —
@@ -783,28 +835,70 @@ private struct StartSessionSheet: View {
         return "Restarts \(agent) in \(picked.shortCwd), in a new Terminal window on your Mac."
     }
 
+    /// Say where a fresh session will land, the way the resume footnote does:
+    /// a blank field is not "nowhere", it is the Mac's home folder, and that
+    /// is worth reading before tapping Start.
+    private var freshFootnote: String {
+        let folder = freshWorkingFolder.map(shortHomePath) ?? "your Mac home folder"
+        return "Opens \(backend.title) in \(folder), in a new Terminal window on your Mac."
+    }
+
     private func start() {
         guard canStart else { return }
         starting = true
         error = nil
         Task {
-            let started = await bridge.startSession(
+            let cwd = resuming ? resumeSelection?.cwd : freshWorkingFolder
+            let outcome = await bridge.startSession(
                 backend: effectiveBackend,
                 resumeSessionId: resuming ? resumeSelection?.sessionId : nil,
                 teleportSessionId: mode == .teleport ? teleportSessionId : nil,
-                cwd: resuming ? resumeSelection?.cwd : freshWorkingFolder
+                cwd: cwd,
+                trustFolder: cwd.map(trustedFolders.contains) ?? false
             )
             starting = false
-            if started {
+            switch outcome {
+            case .failed:
+                // The daemon's words when it has them ("session directory
+                // does not exist: …"); the generic line only when it has none.
+                error = bridge.lastError ?? "Couldn't open that session in Terminal."
+            case let .needsTrust(cwd):
+                pendingTrust = cwd
+            case .started:
+                // Remembered only once the daemon accepted it: a folder it
+                // refused is not one worth offering again.
+                if !resuming, let folder = freshWorkingFolder {
+                    recents = RecentFolders.remember(folder)
+                }
                 if mode == .teleport { openedTeleport = true }
                 else { dismiss() }
-            } else { error = bridge.lastError ?? "Couldn't open that session in Terminal." }
+            }
         }
     }
 
     private var freshWorkingFolder: String? {
         let trimmed = workingFolder.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+/// Folders this phone has started fresh sessions in, newest first, in
+/// UserDefaults. The first entry is the last one used.
+// ponytail: five strings in UserDefaults; a folder browser over the wire is
+// the next slice, when typing a path on a phone proves too much.
+enum RecentFolders {
+    static let key = "recentWorkingFolders"
+    static let limit = 5
+
+    static func load() -> [String] {
+        UserDefaults.standard.stringArray(forKey: key) ?? []
+    }
+
+    @discardableResult
+    static func remember(_ folder: String) -> [String] {
+        let updated = Array(([folder] + load().filter { $0 != folder }).prefix(limit))
+        UserDefaults.standard.set(updated, forKey: key)
+        return updated
     }
 }
 

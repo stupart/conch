@@ -333,7 +333,21 @@ final class BridgeClient: ObservableObject {
     ///
     /// `cwd` is either the fresh folder the person typed or the folder carried
     /// by a picked historical session.
-    func startSession(backend: AgentBackend, resumeSessionId: String?, teleportSessionId: String? = nil, cwd: String? = nil) async -> Bool {
+    enum SessionStart {
+        case started
+        /// Nothing was started: Codex would stop on its trust prompt in this
+        /// folder, so the daemon asks first. The same reply the Mac handles.
+        case needsTrust(cwd: String)
+        case failed
+    }
+
+    func startSession(
+        backend: AgentBackend,
+        resumeSessionId: String?,
+        teleportSessionId: String? = nil,
+        cwd: String? = nil,
+        trustFolder: Bool = false
+    ) async -> SessionStart {
         let resumeID = resumeSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let teleportID = teleportSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let workingDirectory = cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -341,6 +355,10 @@ final class BridgeClient: ObservableObject {
             "kind": "session-start",
             "backend": backend.rawValue,
         ]
+        // Only ever true because the person answered Codex's question here.
+        if trustFolder {
+            message["trustFolder"] = true
+        }
         if !resumeID.isEmpty {
             message["resumeSessionId"] = resumeID
         }
@@ -354,13 +372,21 @@ final class BridgeClient: ObservableObject {
             let failure = "The Mac didn't confirm that \(backend.title) opened in Terminal."
             lastError = failure
             _ = await reportAppError(operation: "session-start", message: failure)
-            return false
+            return .failed
         }
+        // The daemon's own words ("session directory does not exist: …"),
+        // shown as they are: a folder typed on a phone is the likeliest thing
+        // on this sheet to be wrong, and the daemon is the one that looked.
         if reply["kind"] as? String == "session-error",
            let failure = reply["error"] as? String {
             lastError = failure
             _ = await reportAppError(operation: "session-start", message: failure)
-            return false
+            return .failed
+        }
+        if reply["kind"] as? String == "session-needs-trust",
+           let cwd = reply["cwd"] as? String {
+            lastError = nil
+            return .needsTrust(cwd: cwd)
         }
         guard reply["kind"] as? String == "session-started",
               reply["backend"] as? String == backend.rawValue,
@@ -369,10 +395,10 @@ final class BridgeClient: ObservableObject {
             let failure = "The Mac didn't confirm that \(backend.title) opened in Terminal."
             lastError = failure
             _ = await reportAppError(operation: "session-start", message: failure)
-            return false
+            return .failed
         }
         lastError = nil
-        return true
+        return .started
     }
 
     /// There is deliberately no kill fallback: a missing acknowledgement is

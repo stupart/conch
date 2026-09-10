@@ -140,7 +140,7 @@ Still worth doing separately (not blocking):
 | B4 | **The slash-command palette** — conch's own commands, provider commands, skills, MCP prompts, session actions, in one place. | C + UI |
 | B5 | **Approvals** (the four-way decision) and **checkpoint/revert**. Both blocked on ten seconds with permissions on. | V |
 | B6 | **Errors that find us** — step 3 of the error work: an agent watches the structured log and investigates unprompted. | C |
-| B7 | **Phone: a working folder for fresh sessions.** The image-only half is done (see A9: a picture with no words goes direct). What remains is the folder picker for a fresh session on the phone. | UI |
+| B7 | ~~**Phone: a working folder for fresh sessions.**~~ — **done** (2026-09-10): the New session sheet's working folder is remembered per phone (last used, plus five recents in UserDefaults, offered as rows under the field), sent as `cwd`, and the sheet says where the session lands — blank means the Mac home folder; a daemon refusal ("session directory does not exist") is shown in the daemon's words, and Codex's trust question is asked on the phone with its own options, as on the Mac. In scope: typing a path or tapping a recent. Not in scope: no folder browser over the wire — that is the next slice if typing proves too much. The image-only half was already done (A9). | UI |
 
 ## C. Beyond parity — what conch can do that neither agent can
 
