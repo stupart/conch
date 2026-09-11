@@ -67,6 +67,20 @@ control lines generically with no allowlist. That is why the phone's resume
 picker needed no daemon work at all — the capability already existed the moment
 the daemon understood the message.
 
+The write pass (B3) is the same shape with a file at the end. `config-toggle`
+and `config-rollback` are two more runtime kinds, validated in `settings.ts`
+and handled inside `applyRuntimeControlMessage` with no daemon wiring at all:
+`src/config-write.ts` plans the edit against the agent's own file (Claude's
+`settings.json` and `~/.claude.json`, Codex's `config.toml`), answers with the
+unified diff, and only an apply writes — temp file and rename under Claude's
+own `<file>.lock`, `<file>.conch-backup-<ms>` kept to the newest three, and a
+readback that refuses and restores the previous bytes when the file does not
+parse or lacks the change. It is the first message that changes something
+outside conch, so its refusals cross the wire in the module's own words, the
+apply carries the preview's hash so a file that moved in between is refused
+rather than overwritten, and every surface that offers it says "next session",
+because a running session is exactly what a config file cannot reach.
+
 ## 3. State out — a file, not a stream
 
 The daemon writes the whole visible world to `/tmp/conch-sessions.json` and the

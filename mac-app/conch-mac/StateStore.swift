@@ -320,6 +320,32 @@ final class StateStore: ObservableObject {
         }
     }
 
+    /// What the daemon said to a config toggle: the plan (previewed or
+    /// written), or its refusal in its own words.
+    enum ConfigToggleOutcome: Equatable {
+        case plan(ConchConfigToggleReply)
+        case refused(String)
+    }
+
+    /// Ask the daemon to preview or write a plugin / MCP server switch (B3).
+    /// The daemon owns the file; this only relays and never paraphrases.
+    func toggleCapability(_ request: ConchConfigToggleRequest) async -> ConfigToggleOutcome {
+        switch await socketClient.request(request, timeout: Self.sessionLifecycleTimeout) {
+        case let .reply(data):
+            if let error = try? JSONDecoder().decode(ConchSessionErrorReply.self, from: data) {
+                return .refused(error.error)
+            }
+            if let reply = try? JSONDecoder().decode(ConchConfigToggleReply.self, from: data) {
+                return .plan(reply)
+            }
+            return .refused("invalid reply from daemon")
+        case .connectFailed:
+            return .refused("daemon not running")
+        case .timeout:
+            return .refused("daemon did not reply")
+        }
+    }
+
     func resumableSessions(query: String) async -> [ResumableSession] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let outcome = await socketClient.request(
