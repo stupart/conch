@@ -462,12 +462,15 @@ export function pruneSessionCommandSets(
   }
 }
 
-/** One record per unresolved interval preserves the signal without adding the same row every 20 seconds. */
+/**
+ * One record per unresolved interval preserves the signal without adding the same row every 20 seconds.
+ * A row that says why it has no pid (`noTerminal`: closed, or an app-server holds it) is not a miss.
+ */
 export function shouldReportMissingCodexPid(
-  session: Pick<SessionInfo, "sessionId" | "backend" | "pid">,
+  session: Pick<SessionInfo, "sessionId" | "backend" | "pid" | "noTerminal">,
   reported: Set<string>,
 ): boolean {
-  if (adapterFor(session.backend).rowsMayLackPid && !session.pid) {
+  if (adapterFor(session.backend).rowsMayLackPid && !session.pid && !session.noTerminal) {
     if (reported.has(session.sessionId)) return false;
     reported.add(session.sessionId);
     return true;

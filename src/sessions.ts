@@ -103,6 +103,13 @@ export interface SessionInfo {
    * read.
    */
   transcriptPath?: string;
+  /**
+   * Why nothing can type into or raise this row, when nothing can (Codex): the
+   * thread is closed — no process holds its writer lock — or its holder is an
+   * app-server with no terminal. The pid is 0 either way; this says which, so
+   * neither is reported as a pid conch failed to find.
+   */
+  noTerminal?: string;
 }
 
 /**
@@ -276,6 +283,9 @@ function toInfo(entry: any, backend?: SessionInfo["backend"]): SessionInfo {
     entrypoint: entry.entrypoint,
     ...(typeof entry.transcriptPath === "string" && entry.transcriptPath
       ? { transcriptPath: entry.transcriptPath }
+      : {}),
+    ...(typeof entry.noTerminal === "string" && entry.noTerminal
+      ? { noTerminal: entry.noTerminal }
       : {}),
   };
 }
@@ -576,8 +586,9 @@ export async function registrySnapshot(
  * shell runs `claude` as codex → (sandbox) → zsh → claude, so the started
  * session's ancestor chain reaches the starter's pid. Both registries carry
  * pids: Claude's `<pid>.json`, Codex's hook registry, and an observed Codex
- * thread's lock holder (`readCodexThreadPid`). A row without a pid — a Codex
- * thread whose lock nobody holds — can be neither starter nor started, and a
+ * thread's lock holder (`codexThreadRoute`). A row without a pid — a Codex
+ * thread whose lock nobody holds, or an app-server holds — can be neither
+ * starter nor started, and a
  * chain that leaves the table (a `ps` mid-exit) marks nothing. Nearest known
  * ancestor wins, so a chain of three nests each under the one just above it.
  */
