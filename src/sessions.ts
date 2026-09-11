@@ -21,7 +21,7 @@ import {
 } from "./codex-sessions.ts";
 import { readCodexThreads } from "./codex-threads.ts";
 import { liveTranscriptPath, readClaudeTitles } from "./claude-title.ts";
-import { parseWindowKey, windowKey, windowPidFromAncestry } from "./window-key.ts";
+import { parseWindowKey, processParentTable, windowKey, windowPidFromAncestry } from "./window-key.ts";
 import { HELP_SESSION_LABEL, helpSessionDir } from "./help-session.ts";
 
 const LABELS_FILE = join(homedir(), ".config/conch/labels.json");
@@ -35,6 +35,11 @@ export interface LabelOverrideOptions {
 
 export interface RenameSessionLabelOptions extends LabelOverrideOptions, VoiceOverrideOptions {}
 export interface SessionLookupOptions extends LabelOverrideOptions, CodexSessionRegistryOptions {}
+
+export interface RegistrySnapshotOptions extends CodexSessionRegistryOptions {
+  /** Every process's parent pid; injectable so a test can hand in a fake tree. Defaults to one `ps`. */
+  processParents?: () => Promise<ReadonlyMap<number, number> | null>;
+}
 
 export interface SessionInfo {
   /**
@@ -56,6 +61,14 @@ export interface SessionInfo {
    * shown nested under its parent, and its transcript can be read.
    */
   parentSessionId?: string;
+  /**
+   * Present when another live session's process is an ancestor of this one's
+   * (C15): a `codex` that Claude Code's Bash tool started, or a `claude` that
+   * Codex's shell did. Read from the process tree and the registries' pids —
+   * never from labels or timing. Unlike `parentSessionId` this row is a full
+   * session: it has its own pid, is announced, and can be typed into.
+   */
+  startedBySessionId?: string;
   name?: string;
   /**
    * Who chose `name`. Claude Code 2.1.25x+ writes a registry name at start
@@ -445,7 +458,7 @@ export function sessionGoneFromSnapshot(
  */
 export async function registrySnapshot(
   claudeDir: string,
-  options: CodexSessionRegistryOptions = {},
+  options: RegistrySnapshotOptions = {},
 ): Promise<RegistrySnapshot | null> {
   const dir = join(claudeDir, "sessions");
   let files: string[] = [];
@@ -457,7 +470,7 @@ export async function registrySnapshot(
     claudeAvailable = false;
     claudeMissing = (error as NodeJS.ErrnoException).code === "ENOENT";
   }
-  const infos: SessionInfo[] = [];
+  let infos: SessionInfo[] = [];
   const claudeEntries: any[] = [];
   const liveIds = new Set<string>();
   let complete = claudeAvailable || claudeMissing;
@@ -529,12 +542,54 @@ export async function registrySnapshot(
   }
   if (!observed.complete) complete = false;
 
+  // Sessions one of the others started (C15). One `ps` per snapshot, and only
+  // when two known processes exist to relate — a lone session has no starter.
+  // ponytail: ~30 ms per read on a 1200-process Mac; cache the table by pid
+  // set if a profile ever shows it.
+  if (infos.filter((info) => info.pid).length >= 2) {
+    const parents = await (options.processParents ?? processParentTable)();
+    if (parents) infos = withStartedBy(infos, parents);
+  }
+
   // No readable source at all retains the legacy "total uncertainty" result.
   // A readable Codex registry can still supply useful sessions when Claude's
   // directory is absent. ENOENT is known-empty; other Claude read failures
   // make the combined liveness view incomplete.
   if (!claudeAvailable && !codex.available) return null;
   return { infos, liveIds, complete };
+}
+
+/**
+ * Which session started which, from the process tree alone.
+ *
+ * Claude Code's Bash tool runs `codex` as claude → zsh → codex, and Codex's
+ * shell runs `claude` as codex → (sandbox) → zsh → claude, so the started
+ * session's ancestor chain reaches the starter's pid. Both registries carry
+ * pids: Claude's `<pid>.json`, Codex's hook registry, and an observed Codex
+ * thread's lock holder (`readCodexThreadPid`). A row without a pid — a Codex
+ * thread whose lock nobody holds — can be neither starter nor started, and a
+ * chain that leaves the table (a `ps` mid-exit) marks nothing. Nearest known
+ * ancestor wins, so a chain of three nests each under the one just above it.
+ */
+export function withStartedBy(
+  infos: readonly SessionInfo[],
+  parents: ReadonlyMap<number, number>,
+): SessionInfo[] {
+  const byPid = new Map<number, SessionInfo>();
+  for (const info of infos) if (info.pid && info.pid > 0) byPid.set(info.pid, info);
+  return infos.map((info) => {
+    if (!info.pid || !byPid.has(info.pid)) return info;
+    let pid = parents.get(info.pid);
+    // The bound is only a cycle guard for a bogus table; a real tree ends at 1.
+    for (let hop = 0; hop < 32 && pid !== undefined && pid > 1; hop += 1) {
+      const starter = byPid.get(pid);
+      if (starter && starter.sessionId !== info.sessionId) {
+        return { ...info, startedBySessionId: starter.sessionId };
+      }
+      pid = parents.get(pid);
+    }
+    return info;
+  });
 }
 
 /**

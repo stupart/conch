@@ -60,7 +60,7 @@ export async function windowPidFromAncestry(
   startPid: number = process.pid,
 ): Promise<number | undefined> {
   if (candidates.size === 0) return undefined;
-  const parents = await parentTable();
+  const parents = await processParentTable();
   if (!parents) return undefined;
   let pid = startPid;
   // A hook sits a couple of levels below its window (bun under a shell under
@@ -75,7 +75,8 @@ export async function windowPidFromAncestry(
   return undefined;
 }
 
-async function parentTable(): Promise<Map<number, number> | null> {
+/** Every process's parent, from one `ps`; null when the table cannot be read. */
+export async function processParentTable(): Promise<Map<number, number> | null> {
   try {
     const proc = Bun.spawn(["ps", "-Ao", "pid=,ppid="], { stdout: "pipe", stderr: "ignore" });
     const text = await new Response(proc.stdout).text();

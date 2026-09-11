@@ -19,6 +19,7 @@ import { basename, dirname, join } from "node:path";
 import {
   dashboardPanelLines,
   dashboardRowsForModel,
+  nestedUnder,
   type PanelConchState,
   type PanelLiveState,
   type PanelModel,
@@ -455,7 +456,8 @@ function rowLead(row: PanelRowModel): string {
   const cursor = row.navSelected
     ? "\x1b[38;2;88;201;212m▸\x1b[39m"
     : " ";
-  return `${cursor} `;
+  // A subagent (C4) or a started session (C15) sits under its row, as in the footer.
+  return `${cursor} ${nestedUnder(row) ? "↳ " : ""}`;
 }
 
 function appendRelativeAge(
