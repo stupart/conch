@@ -12,7 +12,12 @@ struct SessionView: View {
     let sessionId: String
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    #if DEBUG
+    /// `-conchFixtureReview YES` opens the deliverable on arrival, for the snapshot script.
+    @State private var showReview = UserDefaults.standard.bool(forKey: "conchFixtureReview")
+    #else
     @State private var showReview = false
+    #endif
     @State private var sendFailed = false
     @FocusState private var typing: Bool
     @State private var pickedPhoto: PhotosPickerItem?
@@ -199,6 +204,11 @@ struct SessionView: View {
                 // its own declaration and nowhere else — so opening a session
                 // left you at the TOP of the conversation. Tyler: "when I open
                 // it up I often have to scroll back down to the bottom again."
+                #if DEBUG
+                // `-conchFixtureTop YES`: stay at the top, so the snapshot
+                // script can photograph the start of a long conversation.
+                if UserDefaults.standard.bool(forKey: "conchFixtureTop") { return }
+                #endif
                 scrollToBottom(scroller, animated: false)
             }
             .onChange(of: conversationRevision) { _, _ in

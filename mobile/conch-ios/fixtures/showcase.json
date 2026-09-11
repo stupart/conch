@@ -1,0 +1,438 @@
+{
+  "v": 1,
+  "ownerDeviceId": "fixture-mac",
+  "ts": 1760000000000,
+  "mode": {
+    "muted": false,
+    "paused": false,
+    "holding": 0
+  },
+  "live": {
+    "state": "idle",
+    "label": ""
+  },
+  "reply": {
+    "sessionId": "claude-readability",
+    "text": " Why long replies read dense on the phone\n\nThe stack draws every item at the same weight, so a long answer and a one-line tool row compete for attention. Three things make it worse:\n\n- Body text is 15pt with tight line spacing: fine for a sentence, tiring for a page.\n- Tool rows sit flush against prose, with no gap that says the agent stopped talking here.\n- Inline code like Palette.raised renders at body size, so it reads louder than the words around it.\n\n What I changed\n\n1. Raised paragraph spacing in MarkdownView from 6 to 10 points.\n2. Gave a tool row a 12pt top margin when it follows an assistant message.\n3. Dropped inline code to 0.92em and tinted its background.\n\nThe numbers live in one place now:\n\nswift\nenum Spacing {\n    static let paragraph: CGFloat = 10\n    static let toolAfterProse: CGFloat = 12\n    static let inlineCodeScale: CGFloat = 0.92\n}\n\n\n Before and after\n\n Surface  Before  After \n ---  ---  --- \n Paragraph gap  6pt  10pt \n Tool row after prose  0pt  12pt \n Inline code  1.0em  0.92em \n\nMeasured at the default Dynamic Type size; larger sizes scale with it.\n\n Where to look\n\n- The reasoning is in the [architecture notes](docs/architecture.md), under Publishing.\n- Apple's guidance: [Human Interface Guidelines: Typography](https://developer.apple.com/design/human-interface-guidelines/typography).\n- The renderer is mobile/conch-ios/conch-ios/MarkdownView.swift, and the stack that spaces items is ConversationStack.swift.\n\nSource guards pass. Want the same spacing on the Mac pane?",
+    "spokenChars": 0,
+    "markdown": "## Why long replies read dense on the phone\n\nThe stack draws every item at the same weight, so a long answer and a one-line tool row compete for attention. Three things make it worse:\n\n- **Body text is 15pt** with tight line spacing: fine for a sentence, tiring for a page.\n- Tool rows sit flush against prose, with no gap that says *the agent stopped talking here*.\n- Inline code like `Palette.raised` renders at body size, so it reads louder than the words around it.\n\n### What I changed\n\n1. Raised paragraph spacing in `MarkdownView` from 6 to 10 points.\n2. Gave a tool row a 12pt top margin when it follows an assistant message.\n3. Dropped inline code to 0.92em and tinted its background.\n\nThe numbers live in one place now:\n\n```swift\nenum Spacing {\n    static let paragraph: CGFloat = 10\n    static let toolAfterProse: CGFloat = 12\n    static let inlineCodeScale: CGFloat = 0.92\n}\n```\n\n### Before and after\n\n| Surface | Before | After |\n| --- | --- | --- |\n| Paragraph gap | 6pt | 10pt |\n| Tool row after prose | 0pt | 12pt |\n| Inline code | 1.0em | 0.92em |\n\nMeasured at the default Dynamic Type size; larger sizes scale with it.\n\n### Where to look\n\n- The reasoning is in the [architecture notes](docs/architecture.md), under *Publishing*.\n- Apple's guidance: [Human Interface Guidelines: Typography](https://developer.apple.com/design/human-interface-guidelines/typography).\n- The renderer is mobile/conch-ios/conch-ios/MarkdownView.swift, and the stack that spaces items is `ConversationStack.swift`.\n\nSource guards pass. Want the same spacing on the Mac pane?"
+  },
+  "conversations": {
+    "claude-readability": {
+      "sessionId": "claude-readability",
+      "truncated": false,
+      "items": [
+        {
+          "id": "r1",
+          "rev": 1,
+          "kind": "user",
+          "text": "Long replies are hard to read on the phone. Can you tighten the typography in the conversation view?",
+          "at": 1759997630000
+        },
+        {
+          "id": "r2",
+          "rev": 2,
+          "kind": "thinking",
+          "text": "Start with how MarkdownView spaces blocks, then how the stack separates items.",
+          "at": 1759997660000
+        },
+        {
+          "id": "r3",
+          "rev": 3,
+          "kind": "tool",
+          "text": "mobile/conch-ios/conch-ios/MarkdownView.swift",
+          "at": 1759997690000,
+          "tool": {
+            "kind": "file_read",
+            "name": "Read",
+            "wireName": "Read",
+            "status": "done",
+            "result": "216 lines"
+          }
+        },
+        {
+          "id": "r4",
+          "rev": 4,
+          "kind": "tool",
+          "text": "",
+          "at": 1759997720000,
+          "tool": {
+            "kind": "plan",
+            "name": "TodoWrite",
+            "wireName": "TodoWrite",
+            "status": "done"
+          },
+          "plan": [
+            {
+              "text": "Measure current block spacing",
+              "status": "done"
+            },
+            {
+              "text": "Adjust paragraph and tool-row gaps",
+              "status": "done"
+            },
+            {
+              "text": "Check the larger Dynamic Type sizes",
+              "status": "running"
+            }
+          ]
+        },
+        {
+          "id": "r5",
+          "rev": 5,
+          "kind": "tool",
+          "text": "mobile/conch-ios/conch-ios/MarkdownView.swift",
+          "at": 1759997750000,
+          "tool": {
+            "kind": "file_change",
+            "name": "Edit",
+            "wireName": "Edit",
+            "status": "done"
+          },
+          "change": {
+            "file": "MarkdownView.swift",
+            "removed": [
+              "            .padding(.bottom, 6)"
+            ],
+            "added": [
+              "            .padding(.bottom, Spacing.paragraph)"
+            ],
+            "truncated": false
+          }
+        },
+        {
+          "id": "r6",
+          "rev": 6,
+          "kind": "tool",
+          "text": "Run the iOS source guards",
+          "at": 1759997780000,
+          "tool": {
+            "kind": "command_execution",
+            "name": "Bash",
+            "wireName": "Bash",
+            "status": "done",
+            "result": "bun test test/ios-phase1-source.test.ts\n 41 pass\n 0 fail"
+          }
+        },
+        {
+          "id": "r7",
+          "rev": 7,
+          "kind": "material",
+          "text": "Simulator build finished",
+          "at": 1759997810000,
+          "material": {
+            "kind": "task",
+            "title": "Background task finished",
+            "detail": "xcodebuild: BUILD SUCCEEDED",
+            "status": "done"
+          }
+        },
+        {
+          "id": "r8",
+          "rev": 8,
+          "kind": "assistant",
+          "text": "## Why long replies read dense on the phone\n\nThe stack draws every item at the same weight, so a long answer and a one-line tool row compete for attention. Three things make it worse:\n\n- **Body text is 15pt** with tight line spacing: fine for a sentence, tiring for a page.\n- Tool rows sit flush against prose, with no gap that says *the agent stopped talking here*.\n- Inline code like `Palette.raised` renders at body size, so it reads louder than the words around it.\n\n### What I changed\n\n1. Raised paragraph spacing in `MarkdownView` from 6 to 10 points.\n2. Gave a tool row a 12pt top margin when it follows an assistant message.\n3. Dropped inline code to 0.92em and tinted its background.\n\nThe numbers live in one place now:\n\n```swift\nenum Spacing {\n    static let paragraph: CGFloat = 10\n    static let toolAfterProse: CGFloat = 12\n    static let inlineCodeScale: CGFloat = 0.92\n}\n```\n\n### Before and after\n\n| Surface | Before | After |\n| --- | --- | --- |\n| Paragraph gap | 6pt | 10pt |\n| Tool row after prose | 0pt | 12pt |\n| Inline code | 1.0em | 0.92em |\n\nMeasured at the default Dynamic Type size; larger sizes scale with it.\n\n### Where to look\n\n- The reasoning is in the [architecture notes](docs/architecture.md), under *Publishing*.\n- Apple's guidance: [Human Interface Guidelines: Typography](https://developer.apple.com/design/human-interface-guidelines/typography).\n- The renderer is mobile/conch-ios/conch-ios/MarkdownView.swift, and the stack that spaces items is `ConversationStack.swift`.\n\nSource guards pass. Want the same spacing on the Mac pane?",
+          "at": 1759997840000
+        }
+      ]
+    },
+    "claude-question": {
+      "sessionId": "claude-question",
+      "truncated": false,
+      "items": [
+        {
+          "id": "q1",
+          "rev": 9,
+          "kind": "user",
+          "text": "Move settings.json to the new schema.",
+          "at": 1759997870000
+        },
+        {
+          "id": "q2",
+          "rev": 10,
+          "kind": "tool",
+          "text": "src/settings.ts",
+          "at": 1759997900000,
+          "tool": {
+            "kind": "file_read",
+            "name": "Read",
+            "wireName": "Read",
+            "status": "done",
+            "result": "912 lines"
+          }
+        },
+        {
+          "id": "q3",
+          "rev": 11,
+          "kind": "assistant",
+          "text": "Three keys in your `settings.json` have no home in the new schema: `legacy-voice`, `hold-ms`, and `ptt-key`.",
+          "at": 1759997930000
+        },
+        {
+          "id": "q4",
+          "rev": 12,
+          "kind": "tool",
+          "text": "",
+          "at": 1759997960000,
+          "tool": {
+            "kind": "question",
+            "name": "AskUserQuestion",
+            "wireName": "AskUserQuestion",
+            "status": "running"
+          },
+          "question": {
+            "header": "Legacy keys",
+            "question": "What should happen to the three settings the new schema drops?",
+            "options": [
+              {
+                "label": "Keep them under legacy",
+                "description": "Moved into a `legacy` block; nothing reads them."
+              },
+              {
+                "label": "Drop them",
+                "description": "Removed from the file. The defaults already match."
+              },
+              {
+                "label": "Ask me per key"
+              }
+            ],
+            "multiSelect": false
+          }
+        }
+      ]
+    },
+    "claude-relay-audit": {
+      "sessionId": "claude-relay-audit",
+      "truncated": true,
+      "items": [
+        {
+          "id": "a1",
+          "rev": 13,
+          "kind": "user",
+          "text": "Audit the relay reconnect paths. Use subagents so it goes faster.",
+          "at": 1759997990000
+        },
+        {
+          "id": "a2",
+          "rev": 14,
+          "kind": "tool",
+          "text": "Explore: relay reconnect paths",
+          "at": 1759998020000,
+          "tool": {
+            "kind": "subagent",
+            "name": "Agent",
+            "wireName": "Agent",
+            "status": "running",
+            "subagent": {
+              "id": "agent-a1f3"
+            }
+          }
+        },
+        {
+          "id": "a3",
+          "rev": 15,
+          "kind": "tool",
+          "text": "Explore: pairing store",
+          "at": 1759998050000,
+          "tool": {
+            "kind": "subagent",
+            "name": "Agent",
+            "wireName": "Agent",
+            "status": "running",
+            "subagent": {
+              "id": "agent-b7e2"
+            }
+          }
+        },
+        {
+          "id": "a4",
+          "rev": 16,
+          "kind": "assistant",
+          "text": "Two agents are reading the transport and the pairing store. I'll merge what they find.",
+          "at": 1759998080000
+        }
+      ]
+    },
+    "codex-listen-flake": {
+      "sessionId": "codex-listen-flake",
+      "truncated": false,
+      "items": [
+        {
+          "id": "x1",
+          "rev": 17,
+          "kind": "user",
+          "text": "test/listen.test.ts fails about one run in ten. Find out why.",
+          "at": 1759998110000
+        },
+        {
+          "id": "x2",
+          "rev": 18,
+          "kind": "tool",
+          "text": "bun test test/listen.test.ts",
+          "at": 1759998140000,
+          "tool": {
+            "kind": "command_execution",
+            "name": "exec",
+            "wireName": "exec",
+            "status": "done",
+            "result": "1 fail: mic window closes before the stub speaks (timed out after 5000ms)"
+          }
+        },
+        {
+          "id": "x3",
+          "rev": 19,
+          "kind": "tool",
+          "text": "rg -n \"setTimeout\" src/voice-loop.ts",
+          "at": 1759998170000,
+          "tool": {
+            "kind": "search",
+            "name": "exec",
+            "wireName": "exec",
+            "status": "running"
+          }
+        }
+      ]
+    },
+    "codex-release-notes": {
+      "sessionId": "codex-release-notes",
+      "truncated": false,
+      "items": [
+        {
+          "id": "n1",
+          "rev": 20,
+          "kind": "user",
+          "text": "Draft release notes for 0.2.1.",
+          "at": 1759998200000
+        },
+        {
+          "id": "n2",
+          "rev": 21,
+          "kind": "assistant",
+          "text": "Drafted `docs/release-0.2.1.md`: six fixes, one new setting, no breaking changes.",
+          "at": 1759998230000
+        }
+      ]
+    }
+  },
+  "rows": [
+    {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": true,
+      "id": "claude-readability",
+      "label": "phone readability",
+      "backend": "claude",
+      "status": "waiting",
+      "at": 1759999880000,
+      "cwd": "/Users/you/Projects/conch",
+      "context": {
+        "usedTokens": 118000,
+        "limitTokens": 200000
+      },
+      "review": {
+        "summary": "Readability pass: spacing and inline code",
+        "link": "docs/architecture.md",
+        "at": 1759999940000
+      }
+    },
+    {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "claude-question",
+      "label": "settings migration",
+      "backend": "claude",
+      "status": "needs",
+      "at": 1759999760000,
+      "detail": "Claude is asking what to do with three legacy settings",
+      "cwd": "/Users/you/Projects/conch",
+      "context": {
+        "usedTokens": 64000,
+        "limitTokens": 1000000
+      }
+    },
+    {
+      "needsResponse": false,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "claude-relay-audit",
+      "label": "relay audit",
+      "backend": "claude",
+      "status": "working",
+      "at": 1759999940000,
+      "cwd": "/Users/you/Projects/conch",
+      "context": {
+        "usedTokens": 402000,
+        "limitTokens": 1000000
+      }
+    },
+    {
+      "needsResponse": false,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "agent-a1f3",
+      "label": "Explore: relay reconnect paths",
+      "backend": "claude",
+      "status": "working",
+      "at": 1759999940000,
+      "parentSessionId": "claude-relay-audit"
+    },
+    {
+      "needsResponse": false,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "agent-b7e2",
+      "label": "Explore: pairing store",
+      "backend": "claude",
+      "status": "working",
+      "at": 1759999880000,
+      "parentSessionId": "claude-relay-audit"
+    },
+    {
+      "needsResponse": false,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "codex-listen-flake",
+      "label": "flaky listen test",
+      "backend": "codex",
+      "status": "working",
+      "at": 1759999640000,
+      "cwd": "/Users/you/Projects/conch"
+    },
+    {
+      "needsResponse": false,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "codex-release-notes",
+      "label": "release notes",
+      "backend": "codex",
+      "status": "waiting",
+      "at": 1759994300000,
+      "cwd": "/Users/you/Projects/conch",
+      "noTerminal": "closed: no Codex process has this thread open"
+    }
+  ],
+  "dismissed": [
+    "claude-old-spike"
+  ],
+  "dismissedRows": [
+    {
+      "id": "claude-old-spike",
+      "label": "old spike"
+    }
+  ]
+}

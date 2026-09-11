@@ -18,6 +18,14 @@ struct LedgerView: View {
     @State private var pendingPassive: Bool?
     @State private var sessionActionError: String?
     @State private var showingSessionActionError = false
+    /// The open session. DEBUG seeds it from a launch argument, so the
+    /// snapshot script can photograph a session without anyone tapping.
+    @State private var path: [String] = {
+        #if DEBUG
+        if let id = UserDefaults.standard.string(forKey: "conchFixtureSession") { return [id] }
+        #endif
+        return []
+    }()
 
     /// The running binary's own build time — the only claim about which
     /// build this is that cannot be stale.
@@ -32,7 +40,7 @@ struct LedgerView: View {
     }()
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Group {
                 if let state = bridge.state,
                    !state.rows.isEmpty || !state.dismissedRows.isEmpty {
