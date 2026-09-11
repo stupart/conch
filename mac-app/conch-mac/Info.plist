@@ -33,6 +33,8 @@
 	<string>conch connects to Macs you pair on your LAN to show their sessions and send your typed replies.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>conch types your spoken or typed reply into the Terminal window of the session you are talking to, and brings that window forward when you click its title.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>conch listens when you press its microphone, so your spoken reply reaches the session you are talking to. Audio is transcribed on this Mac and is never uploaded.</string>
 	<key>NSPrincipalClass</key>
