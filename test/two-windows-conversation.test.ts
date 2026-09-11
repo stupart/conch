@@ -240,9 +240,26 @@ describe("conch_transcript_tail reads through the same loader", () => {
     expect(daemon).toContain("readConversationTail(path, sessionId, transcriptFormatFor(path), { window: session })");
     expect(daemon).toContain("readConversationTail(path, session.sessionId, transcriptFormatFor(path), { window: session })");
     expect(daemon).toContain("{ window: panelSessions.get(event.sessionId) },");
-    // Three call sites, every one of them handing over the window: no reader
-    // of the conversation is left that could show the other window's branch.
-    expect(daemon.match(/readConversationTail\(/g)).toHaveLength(3);
+    // Four call sites, every one handing over the window: no reader of the
+    // conversation is left that could show the other window's branch.
+    expect(daemon.match(/readConversationTail\(/g)).toHaveLength(4);
+    // The reply in the TUI's preview and footer, the phone's reply, and what
+    // recite and read-full say: one helper, which sends a window key to the
+    // loader. The flat-file reader is left to that helper's lone-session
+    // branch and to Codex, which never has two windows on one id.
+    expect(daemon).toContain("async function lastReplyFor(path: string, sessionId: string)");
+    const helper = daemon.slice(daemon.indexOf("async function lastReplyFor(path: string, sessionId: string)"));
+    expect(helper).toContain("if (!isWindowKey(sessionId)) return lastAssistantText(path);");
+    expect(helper).toContain("window: panelSessions.get(sessionId),");
+    expect(helper).toContain("return lastAssistantReply(conversation);");
+    expect(helper.indexOf("if (!isWindowKey(sessionId))")).toBeLessThan(helper.indexOf("return lastAssistantReply(conversation);"));
+    expect(daemon).toContain("? lastReplyFor(contentEvent.transcriptPath, contentEvent.sessionId)");
+    expect(daemon).toContain("previewPath && previewId ? lastReplyFor(previewPath, previewId)");
+    expect(daemon).toContain("path && !isWindowKey(sessionId) ? await currentTurnText(path)");
+    expect(daemon).toContain("const finalMessage = path ? await lastReplyFor(path, sessionId)");
+    expect(daemon).toContain("lastReplyFor(target.transcriptPath, target.sessionId),");
+    expect(daemon).toContain("await lastReplyFor(event.transcriptPath!, event.sessionId)");
+    expect(daemon.match(/lastAssistantText\(/g)).toHaveLength(2);
 
     const sessions = read("src/sessions.ts");
     expect(sessions).toContain("? { bridgeSessionId: entry.bridgeSessionId }");
