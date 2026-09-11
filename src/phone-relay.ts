@@ -48,6 +48,8 @@ export interface PhoneRelayHandle {
 
 export interface PhoneRelayDependencies {
   log(message: string): void;
+  /** Liveness tick period. Tests shorten it so a fake clock can drive the keepalive. */
+  tickMs?: number;
 }
 
 export function relayPairingPath(home: string = homedir()): string {
@@ -147,6 +149,17 @@ const RELAY_HEADER_MAX_BYTES = 16 * 1024;
 const RELAY_HEADER_MAX_COUNT = 64;
 const RELAY_PATH_MAX_BYTES = 8 * 1024;
 const RELAY_LIVENESS_MS = 30_000;
+// Cloudflare closes a WebSocket that carries nothing in either direction (its
+// docs say so and ask for a client heartbeat; measured on this relay as a 1006
+// exactly 6010 s after open — 10 s for the room to hibernate, then 100 min).
+// The phone pings every 10 s while it is here; with no phone, nothing follows
+// the Mac's hello. A protocol ping is answered at the edge without waking the
+// room and is not a conch frame, so the deployed Worker needs no change.
+const RELAY_KEEPALIVE_MS = 30_000;
+// A socket open this long was a working link, not a failing dial: re-dial it
+// at once. Shorter lives keep the backoff so an accept-then-close relay can't
+// be hammered.
+const RELAY_SETTLED_MS = 30_000;
 const RELAY_REORDER_WINDOW = 64;
 const RELAY_MAX_STATE_BYTES = 2 * 1024 * 1024;
 
@@ -1047,7 +1060,7 @@ export function createPhoneRelay(
     }, jittered);
   };
 
-  const disconnect = (expectedSocket: WebSocket, code = 1006) => {
+  const disconnect = (expectedSocket: WebSocket, code = 1006, settled = false) => {
     if (socket !== expectedSocket) return;
     socket = null;
     peer?.close();
@@ -1056,7 +1069,16 @@ export function createPhoneRelay(
     livenessTimer = null;
     // 4001 means a newer Mac daemon took this room. Reconnecting the old one
     // would create an eviction loop, so only an explicit reconnect revives it.
-    if (code !== 4001) scheduleReconnect();
+    if (code === 4001) return;
+    // A settled link that dropped (A5) used to wait out a backoff that only a
+    // phone handshake reset — up to 30 s with nobody paired — for a relay that
+    // accepted the next dial instantly every time.
+    if (settled) {
+      delayMs = 500;
+      connect();
+    } else {
+      scheduleReconnect();
+    }
   };
 
   const connect = () => {
@@ -1064,6 +1086,10 @@ export function createPhoneRelay(
     const connectionGeneration = ++generation;
     const ws = new WebSocket(relayWebSocketURL(pairing));
     socket = ws;
+    let openedAt = 0;
+    let lastFrameAt = 0;
+    let lastPingAt = 0;
+    const settled = () => openedAt > 0 && Date.now() - openedAt >= RELAY_SETTLED_MS;
     const sendWire = async (wire: string) => {
       if (socket !== ws || ws.readyState !== WebSocket.OPEN) throw new Error("relay socket closed");
       while (ws.bufferedAmount > 512 * 1024) {
@@ -1071,6 +1097,7 @@ export function createPhoneRelay(
         if (socket !== ws || ws.readyState !== WebSocket.OPEN) throw new Error("relay socket closed");
       }
       ws.send(wire);
+      lastFrameAt = Date.now();
     };
     peer = new MacRelayPeer(
       application,
@@ -1095,6 +1122,7 @@ export function createPhoneRelay(
     ws.addEventListener("open", () => {
       if (socket !== ws || connectionGeneration !== generation) return;
       dependencies.log("phone relay connected");
+      openedAt = lastFrameAt = lastPingAt = Date.now();
       sendHello();
       let lastTick = Date.now();
       livenessTimer = setInterval(() => {
@@ -1120,10 +1148,16 @@ export function createPhoneRelay(
         if (peer?.expireIfStale()) {
           try { ws.close(4002, "relay session stale"); } catch {}
           disconnect(ws, 4002);
+          return;
         }
-      }, 5_000);
+        if (now - Math.max(lastFrameAt, lastPingAt) >= RELAY_KEEPALIVE_MS) {
+          lastPingAt = now;
+          try { ws.ping(); } catch {}
+        }
+      }, dependencies.tickMs ?? 5_000);
     });
     ws.addEventListener("message", (event) => {
+      lastFrameAt = Date.now();
       const currentPeer = peer;
       if (!currentPeer || socket !== ws) return;
       void messageText(event.data)
@@ -1131,12 +1165,19 @@ export function createPhoneRelay(
         .catch((error) => dependencies.log(`phone relay rejected a frame: ${String(error)}`));
     });
     ws.addEventListener("close", (event) => {
-      dependencies.log(`phone relay disconnected (${event.code})`);
-      disconnect(ws, event.code);
+      // Enough to diagnose the next drop from the log alone: a 1006 whose
+      // "last frame" and "open" both read ~6010 s is the idle timeout with the
+      // keepalive not counting; a recent ping and a 1006 is the network.
+      const now = Date.now();
+      const ago = (at: number) => `${Math.round((now - at) / 1000)}s`;
+      dependencies.log(openedAt
+        ? `phone relay disconnected (${event.code}) — open ${ago(openedAt)}, last frame ${ago(lastFrameAt)} ago, last ping ${ago(lastPingAt)} ago`
+        : `phone relay disconnected (${event.code}) — before open`);
+      disconnect(ws, event.code, settled());
     });
     ws.addEventListener("error", () => {
       try { ws.close(); } catch {}
-      disconnect(ws);
+      disconnect(ws, 1006, settled());
     });
   };
 
