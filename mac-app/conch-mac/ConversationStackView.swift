@@ -79,6 +79,13 @@ struct ConversationStackView: View {
                             .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.bottom, 4)
                     }
+                    if conversation.shared {
+                        Text("Shared with another window — both windows' messages are shown")
+                            .font(.system(size: 11))
+                            .foregroundStyle(ConchPalette.textFaint)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.bottom, 4)
+                    }
                     ForEach(conversation.items) { item in
                         row(for: item).id(item.id)
                     }

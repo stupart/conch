@@ -35,6 +35,12 @@ struct ConversationStack: View {
                     .foregroundStyle(Palette.textFaint)
                     .frame(maxWidth: .infinity, alignment: .center)
             }
+            if conversation.shared {
+                Text("Shared with another window — both windows' messages are shown")
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textFaint)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
             ForEach(conversation.items) { item in
                 row(item).id(item.id)
             }

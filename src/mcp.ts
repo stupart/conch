@@ -31,11 +31,12 @@ import {
   type SettingKey,
 } from "./settings.ts";
 import {
-  lastAssistantText,
   sanitizeReviewSummary,
   splitSentences,
   transcriptMark,
 } from "./snippet.ts";
+import { lastAssistantReply, readConversationTail } from "./conversation.ts";
+import { transcriptFormatFor } from "./agent-adapter.ts";
 
 export const MCP_PROTOCOL_VERSION = "2024-11-05";
 export const MCP_SESSIONS_FILE = "/tmp/conch-sessions.json";
@@ -329,7 +330,7 @@ export interface McpDependencies {
   getSettingDescriptor: typeof getSettingDescriptor;
   parseSetting: typeof parseSetting;
   transcriptMark(transcriptPath: string): Promise<number>;
-  lastAssistantText(transcriptPath: string): Promise<string>;
+  lastAssistantText(transcriptPath: string, session: Readonly<SessionInfo>): Promise<string>;
   splitSentences(text: string): string[];
   openLink(link: string): void;
   now(): number;
@@ -353,7 +354,17 @@ export const defaultMcpDependencies: McpDependencies = {
   getSettingDescriptor,
   parseSetting,
   transcriptMark,
-  lastAssistantText,
+  // The loader the apps' panes read through, so a window of a shared session
+  // answers from its own branch of the transcript (A8).
+  async lastAssistantText(transcriptPath, session) {
+    const conversation = await readConversationTail(
+      transcriptPath,
+      session.sessionId,
+      transcriptFormatFor(transcriptPath),
+      { window: session },
+    );
+    return lastAssistantReply(conversation);
+  },
   splitSentences,
   openLink(link) {
     Bun.spawn(["open", "--", link], { stdout: "ignore", stderr: "ignore" });
@@ -961,7 +972,7 @@ export function createMcpToolHandlers(
           `transcript not found for "${dependencies.sessionLabel(session, session.cwd)}"`,
         );
       }
-      const text = await dependencies.lastAssistantText(transcriptPath);
+      const text = await dependencies.lastAssistantText(transcriptPath, session);
       return dependencies.splitSentences(text).slice(-countValue).join(" ");
     },
 

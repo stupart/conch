@@ -540,7 +540,9 @@ describe("daemon config controller", () => {
       daemonSource.indexOf('if (event.type === "wake")', daemonSource.indexOf('if (event.type === "recite")')),
     );
 
-    expect(branch).toContain("lastAssistantText(target.transcriptPath)");
+    // `lastReplyFor` is the existing reader for a lone session; a window of a
+    // shared session reads its own branch instead (A8).
+    expect(branch).toContain("lastReplyFor(target.transcriptPath, target.sessionId)");
     expect(branch).toContain("await speak(cfg, `${target.label}:`, target.label, true, target.sessionId)");
     expect(branch).toContain("await conversationLoop(");
     expect(branch).toContain("false,\n          pauseGeneration");

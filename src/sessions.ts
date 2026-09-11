@@ -52,6 +52,12 @@ export interface SessionInfo {
   agentSessionId?: string;
   /** When this window started — the tie-break when one id has two of them. */
   startedAt?: number;
+  /**
+   * This window's bridge session (`session_<s>`, Claude Code 2.1.266). The
+   * transcript's `bridge-session` records carry `cse_<s>`, which is how a
+   * window of a shared transcript is matched to its own branch (A8).
+   */
+  bridgeSessionId?: string;
   /** Session implementation; absent on legacy Claude registry projections. */
   backend?: "claude" | "codex";
   /**
@@ -255,6 +261,10 @@ function toInfo(entry: any, backend?: SessionInfo["backend"]): SessionInfo {
       : {}),
     cwd: entry.cwd,
     ...(typeof entry.startedAt === "number" ? { startedAt: entry.startedAt } : {}),
+    // Null while the window's job is parked elsewhere; absent before 2.1.26x.
+    ...(typeof entry.bridgeSessionId === "string" && entry.bridgeSessionId
+      ? { bridgeSessionId: entry.bridgeSessionId }
+      : {}),
     pid: entry.pid,
     status: entry.status,
     statusUpdatedAt: typeof entry.statusUpdatedAt === "number"
