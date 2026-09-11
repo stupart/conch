@@ -3,6 +3,7 @@ import {
   choiceReplyForConversation,
   dispatchRuntimeControlMessage,
   injectTimeoutFor,
+  isMissingCodexPid,
   shouldReportMissingCodexPid,
 } from "../src/daemon.ts";
 import { buildConversation } from "../src/conversation.ts";
@@ -185,6 +186,22 @@ describe("Phase 2 session metadata", () => {
     expect(shouldReportMissingCodexPid({ ...missing, pid: 42 }, reported)).toBe(false);
     expect(shouldReportMissingCodexPid(missing, reported)).toBe(true);
     expect(shouldReportMissingCodexPid({ sessionId: "a", backend: "claude", pid: 0 }, reported)).toBe(false);
+  });
+
+  test("a Codex row that says why it has no pid is not a miss, on the poll or on close", async () => {
+    const reason = "closed: no Codex process has this thread open";
+    expect(isMissingCodexPid({ backend: "codex", pid: 0 })).toBe(true);
+    expect(isMissingCodexPid({ backend: "codex", pid: 0, noTerminal: reason })).toBe(false);
+    expect(isMissingCodexPid({ backend: "codex", pid: 42 })).toBe(false);
+    expect(isMissingCodexPid({ backend: "claude", pid: 0 })).toBe(false);
+    const daemon = await Bun.file(new URL("../src/daemon.ts", import.meta.url)).text();
+    const start = daemon.indexOf("const closeLiveSession = async");
+    const end = daemon.indexOf("const sessionActions:", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const close = daemon.slice(start, end);
+    expect(close).toContain("if (isMissingCodexPid(session))");
+    expect(close).toContain("throw new Error(session.noTerminal ?? \"session has no routable pid\")");
   });
 
   test("published rows carry a proportional context numerator and denominator", () => {
