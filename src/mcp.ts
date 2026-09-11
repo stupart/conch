@@ -1,5 +1,7 @@
 import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
+import type { AudioControl } from "./audio-holder.ts";
+import { audioTimeoutMs } from "./audio-watchdog.ts";
 import { loadConfig, type Config } from "./config.ts";
 import { CONCH_VERSION } from "./version.ts";
 import { sendToDaemon, type TurnEvent } from "./hook.ts";
@@ -101,7 +103,27 @@ export interface PublishedState {
   dismissed: string[];
   /** Added in v1 without removing the legacy id-only list. */
   dismissedRows?: Array<{ id: string; label: string }>;
+  /** C9b Cut B: who makes this daemon's sound. Absent from older daemons means local. */
+  audioControl?: AudioControl;
 }
+
+/**
+ * The settings an agent may CHANGE. Voice and timing only — topology (`phone`,
+ * `phone-port`, `phone-relay-url`) and security (`bypass-permissions`) are the
+ * user's, by name, forever; the tool used to say "curated" and accept every
+ * key the registry knew. Reads stay unbounded, like the other read-only tools.
+ */
+export const AGENT_TUNABLE_SETTINGS = [
+  "end-silence",
+  "voice-speed",
+  "haiku-timeout",
+  "read-full",
+  "announce-summary",
+  "whisper-idle-unload",
+] as const satisfies readonly SettingKey[];
+
+/** A `conch_speak` is a confirmation, not a narration; longer is refused, never cut. */
+export const MAX_SPEAK_CHARS = 600;
 
 interface JsonSchema {
   type?: string | readonly string[];
@@ -164,7 +186,7 @@ export const MCP_TOOLS = [
   },
   {
     name: "conch_speak",
-    description: "Speak text through the running conch daemon.",
+    description: `Speak up to ${MAX_SPEAK_CHARS} characters aloud through the running conch daemon. Longer text is refused, not cut; a second call while one is still being spoken is refused.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -181,13 +203,23 @@ export const MCP_TOOLS = [
   },
   {
     name: "conch_mode",
-    description: "Switch conch between auto and manual. Auto reads finished turns aloud and opens the mic on its own; manual does neither, while everything else keeps working and the user reads instead. `pause` means manual and `resume` means auto.",
+    description: "Switch a session between auto and manual. Auto reads finished turns aloud and opens the mic on its own; manual does neither, while everything else keeps working and the user reads instead. `pause` means manual and `resume` means auto. Without `session` or `scope` this switches only YOUR session; every session at once needs `scope: \"all\"` explicitly.",
     inputSchema: {
       type: "object",
       properties: {
         action: {
           type: "string",
           enum: ["pause", "resume"],
+        },
+        session: {
+          type: "string",
+          minLength: 1,
+          description: "Live session id or name to switch instead of your own.",
+        },
+        scope: {
+          type: "string",
+          enum: ["all"],
+          description: "\"all\" switches every session — the whole daemon. Only when the user asked for that.",
         },
       },
       required: ["action"],
@@ -209,7 +241,7 @@ export const MCP_TOOLS = [
   },
   {
     name: "conch_config",
-    description: "Get, set, or unset a curated conch daemon setting.",
+    description: `Get any conch daemon setting; set or unset only ${AGENT_TUNABLE_SETTINGS.join(", ")}. Changing any other key is refused with the \`conch set\` command the user can run themselves.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -417,6 +449,40 @@ async function sendTurn(
   return { sent: true, event };
 }
 
+/**
+ * Where a wake or recite lands, in words.
+ *
+ * `sendToDaemon` is fire-and-forget, so the daemon's own refusal ("wake
+ * refused — <holder> has the audio", C9b Cut B) reaches only its log. The
+ * published `audioControl` is the same fact, and this reads it so the agent is
+ * told instead of retrying. The phone's claim is not published, so it can only
+ * be named as a possibility.
+ */
+async function audioWhere(
+  sessionsPath: string,
+  dependencies: McpDependencies,
+): Promise<string> {
+  let control: AudioControl | undefined;
+  try {
+    const raw = await dependencies.readSessionsFile(sessionsPath);
+    const parsed: unknown = raw === null ? null : JSON.parse(raw);
+    if (isRecord(parsed) && isRecord(parsed.audioControl)) {
+      control = parsed.audioControl as unknown as AudioControl;
+    }
+  } catch {
+    // No readable published state: an older daemon, which is local.
+  }
+  if (
+    control
+    && control.holder !== "local"
+    && (control.expiresAt === null || control.expiresAt > dependencies.now())
+  ) {
+    return `refused: this Mac has yielded its audio to ${control.holder}, so nothing`
+      + " opens or speaks here until that Mac's app releases it or the lease expires";
+  }
+  return "this Mac, or the phone when it holds the audio";
+}
+
 async function resolveSession(
   query: string,
   config: McpRuntimeConfig,
@@ -570,6 +636,11 @@ export function createMcpToolHandlers(
   dependencies: McpDependencies = defaultMcpDependencies,
 ): McpToolHandlers {
   const sessionsPath = config.sessionsPath ?? MCP_SESSIONS_FILE;
+  // One pending speak per calling session. This server is the session's own
+  // child process, so one variable IS per session.
+  // ponytail: the window is audioTimeoutMs's estimate, because sendToDaemon
+  // never reads a reply; upgrade to the daemon's ack if speak ever gets one.
+  let speakingUntil = 0;
 
   return {
     async conch_sessions(argumentsValue) {
@@ -597,17 +668,19 @@ export function createMcpToolHandlers(
       const argumentsObject = toolArguments(argumentsValue);
       allowOnly(argumentsObject, ["session"]);
       const query = optionalString(argumentsObject, "session");
+      const audio = await audioWhere(sessionsPath, dependencies);
       if (!query) {
-        return sendTurn(config, dependencies, {
+        const sent = await sendTurn(config, dependencies, {
           type: "wake",
           sessionId: "",
           label: "",
           announce: "",
           origin: "agent",
         });
+        return { ...sent, audio };
       }
       const session = await resolveSession(query, config, dependencies);
-      return sendTurn(config, dependencies, {
+      const sent = await sendTurn(config, dependencies, {
         type: "wake",
         sessionId: session.sessionId,
         label: dependencies.sessionLabel(session, session.cwd),
@@ -620,19 +693,22 @@ export function createMcpToolHandlers(
         announce: "",
         origin: "agent",
       });
+      return { ...sent, audio };
     },
 
     async conch_recite(argumentsValue) {
       const argumentsObject = toolArguments(argumentsValue);
       allowOnly(argumentsObject, ["session"]);
       const query = optionalString(argumentsObject, "session");
+      const audio = await audioWhere(sessionsPath, dependencies);
       if (!query) {
-        return sendTurn(config, dependencies, {
+        const sent = await sendTurn(config, dependencies, {
           type: "recite",
           sessionId: "",
           label: "",
           announce: "",
         });
+        return { ...sent, audio };
       }
       const session = await resolveSession(query, config, dependencies);
       const label = dependencies.sessionLabel(session, session.cwd);
@@ -643,7 +719,7 @@ export function createMcpToolHandlers(
       if (!transcriptPath) {
         throw new Error(`nothing to recite for "${label}" — transcript not found`);
       }
-      return sendTurn(config, dependencies, {
+      const sent = await sendTurn(config, dependencies, {
         type: "recite",
         sessionId: session.sessionId,
         label,
@@ -653,6 +729,7 @@ export function createMcpToolHandlers(
         mark: await dependencies.transcriptMark(transcriptPath),
         announce: "",
       });
+      return { ...sent, audio };
     },
 
     async conch_speak(argumentsValue) {
@@ -660,26 +737,73 @@ export function createMcpToolHandlers(
       allowOnly(argumentsObject, ["text", "voice"]);
       const text = requiredString(argumentsObject, "text");
       const voice = optionalString(argumentsObject, "voice");
-      return sendTurn(config, dependencies, {
+      if (text.length > MAX_SPEAK_CHARS) {
+        throw new ToolInputError(
+          `text is ${text.length} characters and conch_speak reads at most `
+            + `${MAX_SPEAK_CHARS} — it is not cut for you. Say the short version and `
+            + "leave the rest in your reply, which is announced anyway.",
+        );
+      }
+      if (dependencies.now() < speakingUntil) {
+        throw new ToolInputError(
+          "already speaking for this session — wait for it to finish, or put "
+            + "the words in your reply instead.",
+        );
+      }
+      const sent = await sendTurn(config, dependencies, {
         type: "speak",
         sessionId: "",
         label: "",
         announce: text,
         ...(voice === undefined ? {} : { voice }),
       });
+      speakingUntil = dependencies.now() + audioTimeoutMs(text);
+      return sent;
     },
 
     async conch_mode(argumentsValue) {
       const argumentsObject = toolArguments(argumentsValue);
-      allowOnly(argumentsObject, ["action"]);
+      allowOnly(argumentsObject, ["action", "session", "scope"]);
       const action = requiredString(argumentsObject, "action");
       if (action !== "pause" && action !== "resume") {
         throw new ToolInputError("action must be pause or resume");
       }
+      const scope = optionalString(argumentsObject, "scope");
+      const query = optionalString(argumentsObject, "session");
+      if (scope !== undefined && scope !== "all") {
+        throw new ToolInputError(
+          'scope must be "all" — omit it to switch only your own session',
+        );
+      }
+      if (scope === "all") {
+        // The whole daemon, the same bare event the Mac's global button sends.
+        if (query) {
+          throw new ToolInputError('session and scope: "all" cannot be used together');
+        }
+        return sendTurn(config, dependencies, {
+          type: action,
+          sessionId: "",
+          label: "",
+          announce: "",
+        });
+      }
+      // One session, the same scoped event the Mac's per-row control sends:
+      // the daemon routes a pause/resume that names a session to
+      // setSessionPaused, never to the global flip.
+      const session = query
+        ? await resolveSession(query, config, dependencies)
+        : await callerSession(config, dependencies);
+      if (!session) {
+        throw new ToolInputError(
+          `${action} needs a session and this server has no calling session — `
+            + "pass `session` to name one, or `scope: \"all\"` to switch every "
+            + `session (which the user can also do with \`conch ${action}\`)`,
+        );
+      }
       return sendTurn(config, dependencies, {
         type: action,
-        sessionId: "",
-        label: "",
+        sessionId: session.sessionId,
+        label: dependencies.sessionLabel(session, session.cwd),
         announce: "",
       });
     },
@@ -743,6 +867,20 @@ export function createMcpToolHandlers(
       }
       if ((hasValue || shouldUnset) && !hasKey) {
         throw new ToolInputError("key is required when setting or unsetting a value");
+      }
+      // The allowlist, before the registry lookup: a key the registry knows
+      // but an agent may not touch is refused by name, with the command the
+      // user runs instead.
+      if (
+        (hasValue || shouldUnset)
+        && !(AGENT_TUNABLE_SETTINGS as readonly unknown[]).includes(argumentsObject.key)
+      ) {
+        const key = String(argumentsObject.key);
+        throw new ToolInputError(
+          `"${key}" is not a setting an agent may change; agents may set only `
+            + `${AGENT_TUNABLE_SETTINGS.join(", ")}. Ask the user to run `
+            + `\`conch ${shouldUnset ? `unset ${key}` : `set ${key} <value>`}\` themselves.`,
+        );
       }
 
       let canonicalKey: SettingKey | undefined;
