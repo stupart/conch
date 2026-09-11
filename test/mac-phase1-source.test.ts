@@ -138,7 +138,12 @@ describe("Mac conversation links keep the native clickable path", () => {
     expect(conversation).toContain("Text(AttributedString.conchMarkdown(item.text))");
     expect(conversation).toContain("interpretedSyntax: .inlineOnlyPreservingWhitespace");
     expect(conversation).not.toContain(".allowsHitTesting(false)");
-    expect(conversation).not.toContain("openURL");
+    // The one override that IS allowed, and required (A13): SwiftUI's default
+    // action handed a schemeless link straight to LaunchServices, which
+    // answered -50 in a Finder alert. The stack's own OpenURLAction is what
+    // resolves a path against the session's folder and reports a failure;
+    // test/open-link.test.ts pins its shape.
+    expect(conversation).toContain(".environment(\\.openURL, OpenURLAction { url in");
   });
 
   test("the fallback AppKit renderer preserves rich selectable attributed text", () => {

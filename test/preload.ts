@@ -10,3 +10,9 @@ import { join } from "node:path";
 if (!process.env.CONCH_LOG_FILE) {
   process.env.CONCH_LOG_FILE = join(mkdtempSync(join(tmpdir(), "conch-test-log-")), "daemon.log");
 }
+// The inject step log follows the daemon log's directory, but say so
+// explicitly: 117 `pid=none` ghosts in the live /tmp file were this suite
+// (audit 5a), and an explicit override is what the log-path test pins.
+if (!process.env.CONCH_INJECT_DEBUG_LOG) {
+  process.env.CONCH_INJECT_DEBUG_LOG = join(process.env.CONCH_LOG_FILE, "..", "inject-debug.log");
+}

@@ -47,11 +47,15 @@ test("reveal asks the controller and acks by whether there was a process to try"
   expect((unknown.reply() as { changed: boolean }).changed).toBe(false);
 });
 
-test("the daemon raises through revealSessionWindow, and only for a known process", () => {
+test("the daemon raises through revealSessionWindow, via the one logged door, and only for a known process", () => {
   const daemon = read("src/daemon.ts");
   expect(daemon).toContain(
-    "reveal: (target) => target.pid ? revealSessionWindow(target.pid) : Promise.resolve(false),",
+    'reveal: (target) => target.pid ? raiseWindow(target.pid, "app") : Promise.resolve(false),',
   );
+  // raiseWindow is revealSessionWindow plus a log line (A17: a raise used to leave no trace).
+  const door = daemon.indexOf("const raiseWindow = async (pid: number, why: string)");
+  expect(door).toBeGreaterThan(-1);
+  expect(daemon.slice(door, door + 300)).toContain("await revealSessionWindow(pid);");
   const panel = read("src/panel.ts");
   expect(panel).toContain("...(session.pid ? { revealable: true } : {}),");
   expect(panel).toContain("...(row.revealable ? { revealable: true as const } : {}),");

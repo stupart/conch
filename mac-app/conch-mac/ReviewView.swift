@@ -87,6 +87,7 @@ private struct ReviewSurface: View {
                 if let link = item.link {
                     ReviewContent(
                         link: link,
+                        rowID: item.rowID,
                         isWebLoading: $isWebLoading
                     )
                     .id(item.id)
@@ -174,6 +175,8 @@ private struct MissingDeliverableView: View {
 
 private struct ReviewContent: View {
     let link: String
+    /// The session this deliverable belongs to; what an open failure is filed under.
+    let rowID: String
 
     /// Scheme + host together: on a bar whose job is marking a trust boundary,
     /// http:// and https:// must not look alike.
@@ -185,8 +188,25 @@ private struct ReviewContent: View {
     @Binding var isWebLoading: Bool
     @State private var navigationFailure: DeliverableNavigationFailure?
     @State private var reloadID = UUID()
+    @EnvironmentObject private var store: StateStore
+    /// A link or file this pane could not open, in the OS's own words with
+    /// the resolved target, shown here rather than as a Finder alert (A13).
+    @State private var linkFailure: String?
 
     var body: some View {
+        content.overlay(alignment: .bottom) { LinkFailureLine(message: $linkFailure) }
+    }
+
+    /// Every open from this pane goes through the one door that reports
+    /// (A13); `cwd` is the document's own folder for a link inside a rendered
+    /// deliverable, which is what its author meant a relative link against.
+    private func open(_ link: String, cwd: String? = nil, reveal: Bool = false) {
+        linkFailure = nil
+        store.openLink(link, cwd: cwd, rowId: rowID, reveal: reveal) { linkFailure = $0 }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         switch DeliverableSource(link: link) {
         case let .image(url):
             DeliverableImageView(url: url)
@@ -208,7 +228,9 @@ private struct ReviewContent: View {
                     isWebLoading = false
                 }
         case let .markdown(url):
-            DeliverableDocumentView(url: url, renderMarkdown: true)
+            DeliverableDocumentView(url: url, renderMarkdown: true) { link in
+                open(link, cwd: url.deletingLastPathComponent().path)
+            }
                 .background(ConchPalette.bg)
                 .onAppear {
                     isWebLoading = false
@@ -238,9 +260,7 @@ private struct ReviewContent: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(ConchPalette.textDim)
                     .textSelection(.enabled)
-                Button("Reveal in Finder") {
-                    NSWorkspace.shared.activateFileViewerSelecting([url])
-                }
+                Button("Reveal in Finder") { open(url.path, reveal: true) }
                 .padding(.top, 4)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -287,9 +307,7 @@ private struct ReviewContent: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 8)
-                    Button("Open in browser") {
-                        if let url = URL(string: link) { NSWorkspace.shared.open(url) }
-                    }
+                    Button("Open in browser") { open(link) }
                     .buttonStyle(.link)
                     .font(ConchTypography.font(size: 11))
                 }
@@ -338,9 +356,7 @@ private struct ReviewContent: View {
                         onDismiss: {
                             navigationFailure = nil
                         },
-                        onOpenInBrowser: {
-                            NSWorkspace.shared.open(failure.url)
-                        }
+                        onOpenInBrowser: { open(failure.url.absoluteString) }
                     )
                 }
                 }
@@ -654,13 +670,22 @@ private struct DeliverablePDFView: NSViewRepresentable {
 private struct DeliverableDocumentView: NSViewRepresentable {
     let url: URL
     let renderMarkdown: Bool
+    /// A link inside the rendered document, clicked. NSTextView's own fallback
+    /// is a silent `NSWorkspace.open` — exactly the dead click A13 is about.
+    var onOpenLink: (String) -> Void = { _ in }
 
     /// Deliverables are files an agent just produced, but an unbounded read is
     /// still an unbounded read. 2MB of text is far past what a review is for.
     private static let maxBytes = 2 * 1024 * 1024
 
-    final class Coordinator {
+    final class Coordinator: NSObject, NSTextViewDelegate {
         var loadedURL: URL?
+        var onOpenLink: (String) -> Void = { _ in }
+
+        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            onOpenLink(LinkTarget.text(of: link))
+            return true
+        }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -674,6 +699,7 @@ private struct DeliverableDocumentView: NSViewRepresentable {
         textView.drawsBackground = false
         textView.isEditable = false
         textView.isSelectable = true
+        textView.delegate = context.coordinator
         textView.textContainerInset = NSSize(width: 24, height: 20)
         textView.isVerticallyResizable = true
         textView.autoresizingMask = [.width]
@@ -683,6 +709,7 @@ private struct DeliverableDocumentView: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        context.coordinator.onOpenLink = onOpenLink
         guard context.coordinator.loadedURL != url,
               let textView = scrollView.documentView as? NSTextView else { return }
         context.coordinator.loadedURL = url
@@ -809,5 +836,46 @@ private struct ReviewPressButtonStyle: ButtonStyle {
                 reduceMotion ? nil : .easeOut(duration: 0.12),
                 value: configuration.isPressed
             )
+    }
+}
+
+/// A link that would not open: the OS's own words and the resolved target,
+/// in the pane where the click happened (A13). Selectable, so the path can be
+/// copied into a report; dismissable, so it does not outlive its usefulness.
+struct LinkFailureLine: View {
+    @Binding var message: String?
+
+    var body: some View {
+        if let message {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(ConchPalette.statusNeeds)
+                    .accessibilityHidden(true)
+                Text(message)
+                    .font(ConchTypography.font(size: 12))
+                    .foregroundStyle(ConchPalette.textPrimary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button { self.message = nil } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(ConchPalette.textDim)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss")
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(ConchPalette.raised, in: RoundedRectangle(cornerRadius: 9))
+            .overlay(
+                RoundedRectangle(cornerRadius: 9)
+                    .strokeBorder(ConchPalette.statusNeeds.opacity(0.45), lineWidth: 1)
+            )
+            .padding(12)
+        }
     }
 }

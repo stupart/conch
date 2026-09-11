@@ -603,7 +603,7 @@ export interface SocketTurnEventCallbacks {
   stopSpacebar(): void;
   /** Told when a stop arrived with nothing running, so it leaves a trace. */
   droppedStop?(): void;
-  setSessionPaused(sessionId: string, paused: boolean): void;
+  setSessionPaused(sessionId: string, paused: boolean, origin?: TurnEvent["origin"]): void;
   isDismissedSession?(sessionId: string): boolean;
   enrichAudioCommand(event: InstantAudioCommand): InstantAudioCommand;
   enqueueInstant(event: InstantAudioCommand): void;
@@ -642,7 +642,7 @@ export function dispatchSocketTurnEvent(
   if (event.sessionId) {
     if (callbacks.isDismissedSession?.(event.sessionId)) return;
     if (event.type === "pause" || event.type === "resume") {
-      callbacks.setSessionPaused(event.sessionId, event.type === "pause");
+      callbacks.setSessionPaused(event.sessionId, event.type === "pause", event.origin);
       return;
     }
     if (event.type === "wake" || event.type === "recite") {

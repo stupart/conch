@@ -28,7 +28,7 @@ describe("provider command injection", () => {
       cfg: { ...config, autoSubmit: true },
       pid: 7,
       text: "/model gpt-5",
-      options: { allowBlindFallback: false, copyToClipboard: expect.any(Function) },
+      options: { copyToClipboard: expect.any(Function) },
     }]);
     await expect(injectProviderCommand(config, { backend: "claude" }, "/model opus", inject))
       .resolves.toEqual({ kind: "unroutable", reason: "session has no routable pid" });
@@ -64,7 +64,7 @@ describe("provider rename routing", () => {
     expect(calls[0]?.cfg.autoSubmit).toBeTrue();
     expect(calls[0]?.pid).toBe(42);
     expect(calls[0]?.text).toBe("/rename Release train");
-    expect(calls[0]?.options).toMatchObject({ allowBlindFallback: false });
+    expect(calls[0]?.options).toMatchObject({ copyToClipboard: expect.any(Function) });
   });
 
   test("Codex is skipped and an unroutable Claude session is explicit", async () => {

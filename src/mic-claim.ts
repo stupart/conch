@@ -15,11 +15,17 @@ function fourCC(value: string): number {
 }
 
 // Apple CoreAudio AudioHardware.h:
-// - default input device: 'dIn ', global scope, main element
+// - every device: 'dev#', global scope, main element (on the system object)
+// - a device's input streams: 'stm#', input scope — present means it can capture
 // - device running in at least one process: 'gone', global scope, main element
-const DEFAULT_INPUT_ADDRESS = new Uint32Array([
-  fourCC("dIn "),
+const DEVICES_ADDRESS = new Uint32Array([
+  fourCC("dev#"),
   fourCC("glob"),
+  AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
+]);
+const INPUT_STREAMS_ADDRESS = new Uint32Array([
+  fourCC("stm#"),
+  fourCC("inpt"),
   AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
 ]);
 const DEVICE_RUNNING_SOMEWHERE_ADDRESS = new Uint32Array([
@@ -36,11 +42,23 @@ type GetPropertyData = (
   dataSize: Uint32Array,
   data: Uint32Array,
 ) => number;
+type GetPropertyDataSize = (
+  objectId: number,
+  address: Uint32Array,
+  qualifierDataSize: number,
+  qualifierData: null,
+  dataSize: Uint32Array,
+) => number;
 
-let propertyReader: GetPropertyData | null | undefined;
+interface CoreAudioReader {
+  data: GetPropertyData;
+  size: GetPropertyDataSize;
+}
+
+let propertyReader: CoreAudioReader | null | undefined;
 
 /** Lazy so importing the daemon with meeting-autopause off never opens CoreAudio. */
-function coreAudioPropertyReader(): GetPropertyData | null {
+function coreAudioPropertyReader(): CoreAudioReader | null {
   if (propertyReader !== undefined) return propertyReader;
   if (process.platform !== "darwin") return (propertyReader = null);
   try {
@@ -56,10 +74,25 @@ function coreAudioPropertyReader(): GetPropertyData | null {
         ],
         returns: FFIType.i32,
       },
+      AudioObjectGetPropertyDataSize: {
+        args: [
+          FFIType.u32,
+          FFIType.ptr,
+          FFIType.u32,
+          FFIType.ptr,
+          FFIType.ptr,
+        ],
+        returns: FFIType.i32,
+      },
     } as const);
-    const read = library.symbols.AudioObjectGetPropertyData;
-    propertyReader = (objectId, address, qualifierDataSize, qualifierData, dataSize, data) =>
-      read(objectId, address, qualifierDataSize, qualifierData, dataSize, data);
+    const data = library.symbols.AudioObjectGetPropertyData;
+    const size = library.symbols.AudioObjectGetPropertyDataSize;
+    propertyReader = {
+      data: (objectId, address, qualifierDataSize, qualifierData, dataSize, buffer) =>
+        data(objectId, address, qualifierDataSize, qualifierData, dataSize, buffer),
+      size: (objectId, address, qualifierDataSize, qualifierData, dataSize) =>
+        size(objectId, address, qualifierDataSize, qualifierData, dataSize),
+    };
   } catch {
     propertyReader = null;
   }
@@ -77,17 +110,71 @@ function readUInt32(
   return status === 0 && size[0] === Uint32Array.BYTES_PER_ELEMENT ? value[0]! : null;
 }
 
+/** The byte size of a property, or null when it cannot be read. */
+function readSize(reader: CoreAudioReader, objectId: number, address: Uint32Array): number | null {
+  const size = new Uint32Array(1);
+  return reader.size(objectId, address, 0, null, size) === 0 ? size[0]! : null;
+}
+
+/** The three CoreAudio questions the watcher asks, so a test can answer them. */
+export interface InputDeviceReads {
+  /** Every audio device the system knows, or null when the list is unreadable. */
+  devices(): number[] | null;
+  /** Has input streams — a microphone, a headset, a virtual capture device. */
+  hasInput(device: number): boolean;
+  /** Running in at least one process; null when unreadable. */
+  running(device: number): boolean | null;
+}
+
+function coreAudioReads(reader: CoreAudioReader): InputDeviceReads {
+  return {
+    devices: () => {
+      const bytes = readSize(reader, AUDIO_OBJECT_SYSTEM, DEVICES_ADDRESS);
+      if (bytes === null) return null;
+      const size = new Uint32Array([bytes]);
+      const ids = new Uint32Array(Math.max(1, bytes / Uint32Array.BYTES_PER_ELEMENT));
+      if (reader.data(AUDIO_OBJECT_SYSTEM, DEVICES_ADDRESS, 0, null, size, ids) !== 0) return null;
+      return [...ids.subarray(0, size[0]! / Uint32Array.BYTES_PER_ELEMENT)].filter((id) => id !== AUDIO_OBJECT_UNKNOWN);
+    },
+    hasInput: (device) => (readSize(reader, device, INPUT_STREAMS_ADDRESS) ?? 0) > 0,
+    running: (device) => {
+      const running = readUInt32(reader.data, device, DEVICE_RUNNING_SOMEWHERE_ADDRESS);
+      return running === 0 ? false : running === 1 ? true : null;
+    },
+  };
+}
+
 /**
- * Resolve the current default input on every read, then ask whether any process
- * is running it. CoreAudio failures return unknown so an owned pause is kept.
+ * Is any input device running in some process? Every device with input
+ * streams, not only the default: a call taken on a headset picked inside
+ * Zoom or Meet while the system default stays the built-in mic was invisible
+ * to the default-only read (audit 1b). Unknown when nothing can be read, so
+ * an owned pause is kept.
+ *
+ * ponytail: 'gone' is a per-DEVICE bit, and CoreAudio has no per-scope one —
+ * a headset that is both mic and speakers reports running while it only
+ * plays. The default-only read had the same ceiling; the upgrade path is
+ * kAudioDevicePropertyDeviceIsRunning per stream, if that ever matters.
  */
+export function anyInputDeviceRunning(reads: InputDeviceReads): boolean | null {
+  const devices = reads.devices();
+  if (!devices) return null;
+  let known = false;
+  for (const device of devices) {
+    if (!reads.hasInput(device)) continue;
+    const running = reads.running(device);
+    if (running === null) continue;
+    known = true;
+    if (running) return true;
+  }
+  return known ? false : null;
+}
+
+/** Enumerate on every read: devices come and go with a headset. */
 export function readMicInUse(): boolean | null {
-  const read = coreAudioPropertyReader();
-  if (!read) return null;
-  const device = readUInt32(read, AUDIO_OBJECT_SYSTEM, DEFAULT_INPUT_ADDRESS);
-  if (device === null || device === AUDIO_OBJECT_UNKNOWN) return null;
-  const running = readUInt32(read, device, DEVICE_RUNNING_SOMEWHERE_ADDRESS);
-  return running === 0 ? false : running === 1 ? true : null;
+  const reader = coreAudioPropertyReader();
+  if (!reader) return null;
+  return anyInputDeviceRunning(coreAudioReads(reader));
 }
 
 export interface MicClaimWatcherOptions {

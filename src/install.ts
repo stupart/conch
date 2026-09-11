@@ -632,7 +632,6 @@ export function renderServicePlist(
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key><string>${path}</string>
-    <key>CONCH_KEYSTROKE_FALLBACK</key><string>1</string>
     <key>CONCH_STARTED_BY</key><string>launchd</string>${carriedEnv}
   </dict>
   <key>StandardOutPath</key><string>/tmp/conch-supervisor.log</string>
