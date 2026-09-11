@@ -23,6 +23,9 @@ struct ConversationStack: View {
     /// Multi-select taps edit a retained set. Nothing crosses the bridge until
     /// the explicit Submit button sends the complete, option-ordered answer.
     @State private var multiSelections: [String: Set<String>] = [:]
+    /// A link that could not be opened from the phone, shown where it was
+    /// tapped instead of a tap that does nothing (A13).
+    @State private var linkFailure: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -35,8 +38,55 @@ struct ConversationStack: View {
             ForEach(conversation.items) { item in
                 row(item).id(item.id)
             }
+            if let linkFailure {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.needs)
+                        .accessibilityHidden(true)
+                    Text(linkFailure)
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.textPrimary)
+                        .textSelection(.enabled)
+                    Spacer(minLength: 8)
+                    Button { self.linkFailure = nil } label: {
+                        Image(systemName: "xmark").font(Type.caption)
+                    }
+                    .foregroundStyle(Palette.textDim)
+                    .accessibilityLabel("Dismiss")
+                }
+                .padding(12)
+                .background(Palette.raised, in: RoundedRectangle(cornerRadius: 10))
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // A path is a file on the Mac, which the phone cannot open: say so
+        // where the tap happened and record it, rather than a tap that does
+        // nothing (A13). A web link goes where it always went, and a refusal
+        // is said the same way — iOS gives no words for one, only a Bool.
+        .environment(\.openURL, OpenURLAction { url in
+            linkFailure = nil
+            guard url.scheme != nil, !url.isFileURL else {
+                failLink("That's a file on your Mac, not a page: \(url.path)")
+                return .handled
+            }
+            UIApplication.shared.open(url) { opened in
+                if !opened { failLink("iPhone couldn't open \(url.absoluteString)") }
+            }
+            return .handled
+        })
+        .onChange(of: conversation.sessionId) { _, _ in linkFailure = nil }
+    }
+
+    private func failLink(_ message: String) {
+        linkFailure = message
+        Task {
+            _ = await bridge.reportAppError(
+                operation: "open-link",
+                message: message,
+                sessionId: conversation.sessionId
+            )
+        }
     }
 
     @ViewBuilder

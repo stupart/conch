@@ -72,6 +72,8 @@ export interface PanelRowModel {
   navSelected: boolean;
   /** The daemon knows the session's process, so a click on the title can try to raise its terminal. */
   revealable?: boolean;
+  /** The folder the session runs in; what a relative link in its prose is relative to. */
+  cwd?: string;
 }
 
 export interface PanelReplyModel {
@@ -223,6 +225,13 @@ export interface PublishedSessionRow {
   at?: number;
   /** Resolved transcript file for on-demand history viewers. */
   transcriptPath?: string;
+  /**
+   * The folder the session runs in. An agent writes links the way it writes
+   * paths — `output/x/review-guide.md` — and a viewer that opens one has to
+   * know what that is relative to (A13: handed to LaunchServices unresolved,
+   * a Codex reply's link answered -50 in a Finder alert).
+   */
+  cwd?: string;
   /** Resolved effective voice, whether pinned or automatically assigned. */
   voice?: string;
   /** Present only for sessions explicitly promoted in the hand-off order. */
@@ -454,6 +463,7 @@ export function buildPublishedState(
         live: row.liveGlyph,
         active: row.active,
         ...(row.revealable ? { revealable: true as const } : {}),
+        ...(row.cwd ? { cwd: row.cwd } : {}),
         ...(snippets.has(row.sessionId)
           ? { snippet: snippets.get(row.sessionId)! }
           : {}),
@@ -555,6 +565,7 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         navSelected: session.sessionId === options.navSelectedId,
         // A known process is what the title's click can try to raise (C10).
         ...(session.pid ? { revealable: true } : {}),
+        ...(session.cwd ? { cwd: session.cwd } : {}),
       };
     });
   const top = rows
