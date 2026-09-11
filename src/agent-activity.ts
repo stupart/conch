@@ -57,7 +57,7 @@ function freshIds(
 }
 
 /** Visit complete JSONL lines from newest to oldest without loading the transcript. */
-function visitLinesNewestFirst(
+export function visitLinesNewestFirst(
   path: string,
   relevant: (buffer: Buffer) => boolean,
   visit: (line: Buffer) => boolean,

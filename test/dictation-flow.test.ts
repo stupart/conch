@@ -7,9 +7,9 @@ import {
   type DictationEvent,
   type RecorderHandle,
 } from "../src/dictation-controller.ts";
+import { classifyApprovalAnswer } from "../src/approval.ts";
 import {
   DictationReducer,
-  classifyPermissionDecision,
   type DictationActionReadyEffect,
   type DictationReducerEffect,
   type ExternalDictationAction,
@@ -389,7 +389,7 @@ describe("controller/reducer integration contracts", () => {
       }
     }
     await ticket.done;
-    expect(classifyPermissionDecision(texts)).toBe("approve");
+    expect(classifyApprovalAnswer(texts)).toEqual({ kind: "once" });
     expect(controller.micOpen).toBe(false);
   });
 

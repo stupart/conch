@@ -46,6 +46,12 @@ export interface TurnEvent {
   /** Set when the final reply carried a conch:review marker. */
   review?: { summary: string; link?: string };
   /**
+   * The tool a permission dialog is waiting on (B5). Attached by the daemon
+   * at handle time from the transcript, never by the hook: the dialog may
+   * have been answered by hand while the event sat in the queue.
+   */
+  approval?: { id: string; name: string; summary: string };
+  /**
    * Who asked for this wake.
    *
    * The mic opened by itself in manual mode and the log could only say
