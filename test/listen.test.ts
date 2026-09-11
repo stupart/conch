@@ -137,7 +137,8 @@ await new Promise(() => {});
     expect(session.micOpen).toBe(true);
     expect(hasActiveRecorders()).toBeTrue();
     // Deterministically wait for the fake recorder's raw output instead of a fixed sleep.
-    for (let attempt = 0; attempt < 400 && !existsSync(fakeSoxReady); attempt++) {
+    // The fake is a Bun process; under a loaded full suite its startup passed 2s once.
+    for (let attempt = 0; attempt < 2_000 && !existsSync(fakeSoxReady); attempt++) {
       await Bun.sleep(5);
     }
     expect(existsSync(fakeSoxReady)).toBe(true);
@@ -167,7 +168,7 @@ await new Promise(() => {});
     bun.spawn = originalSpawn;
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 20_000);
 
 test("raw growth cancels a 600ms idle deadline before the fallback read gap drains", async () => {
   // The recorder's first byte is on disk before Bun.spawn returns, so the only
