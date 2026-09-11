@@ -274,11 +274,16 @@ export const SETTING_DESCRIPTORS = [
     field: "keystrokeFallback",
     env: "CONCH_KEYSTROKE_FALLBACK",
     kind: "boolean",
-    default: false,
+    // On, and honestly so. It used to default to false while the app and the
+    // launchd plist exported CONCH_KEYSTROKE_FALLBACK=1 over it, so the file
+    // value was dead and `conch set keystroke-fallback false` changed nothing
+    // (audit 3b). The default now says what every install actually did; the
+    // hosts no longer force it, so turning it off is a real thing you can do.
+    default: true,
     parse: parseBoolean,
     bounds: null,
     apply: "live",
-    help: "type into the session's window when it isn't in a tmux pane",
+    help: "when a session is not in a tmux pane, activate its Terminal window and type your words into it as keystrokes (off: your words go to the clipboard instead)",
   },
   {
     key: "away-after",
@@ -369,11 +374,14 @@ export const SETTING_DESCRIPTORS = [
     field: "revealOnTurn",
     env: "CONCH_REVEAL_ON_TURN",
     kind: "boolean",
-    default: true,
+    // Off. A window popping to the top of your Space on every finished turn
+    // — during a screen share, over whatever you were reading — is a thing
+    // to opt into (audit 3e). Clicking the row in the app raises it on demand.
+    default: false,
     parse: parseBoolean,
     bounds: null,
     apply: "live",
-    help: "raise a session window when conch starts talking to it",
+    help: "raise the session's Terminal window on every finished turn (off by default — click the session in the app to raise it)",
   },
   {
     key: "reveal-typing-grace",
@@ -439,7 +447,7 @@ export const SETTING_DESCRIPTORS = [
     parse: parseBoolean,
     bounds: null,
     apply: "live",
-    help: "pause while another app is using the default microphone",
+    help: "pause while another app is using any microphone (every input device, not only the default)",
   },
   {
     key: "announce-sentences",

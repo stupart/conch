@@ -48,7 +48,9 @@ const expected = {
   "away-after": ["awayAfterSecs", "CONCH_AWAY_AFTER_SECS", "live", 300],
   "barge-threshold": ["bargeThresholdPct", "CONCH_BARGE_THRESHOLD_PCT", "live", 0],
   "voice-speed": ["ttsSpeed", "CONCH_TTS_SPEED", "live", 1.35],
-  "keystroke-fallback": ["keystrokeFallback", "CONCH_KEYSTROKE_FALLBACK", "live", false],
+  // Ships ON, and the hosts no longer export CONCH_KEYSTROKE_FALLBACK over it,
+  // so this default is the one the file can actually override (A17).
+  "keystroke-fallback": ["keystrokeFallback", "CONCH_KEYSTROKE_FALLBACK", "live", true],
   // Ships OFF. conch starts sessions on other people's machines; removing every
   // confirmation from them is a thing you turn on, never something you inherit.
   "bypass-permissions": ["bypassPermissions", "CONCH_BYPASS_PERMISSIONS", "live", false],
@@ -58,7 +60,8 @@ const expected = {
   "read-full": ["readFull", "CONCH_READ_FULL", "live", true],
   "interrupt-on-manual-reply": ["interruptOnManualReply", "CONCH_INTERRUPT_ON_MANUAL_REPLY", "live", true],
   "handoff-order": ["handoffOrder", "CONCH_HANDOFF_ORDER", "live", "oldest"],
-  "reveal-on-turn": ["revealOnTurn", "CONCH_REVEAL_ON_TURN", "live", true],
+  // Ships OFF: raising a window on every turn is opt-in; the app's row click raises on demand (A17).
+  "reveal-on-turn": ["revealOnTurn", "CONCH_REVEAL_ON_TURN", "live", false],
   "reveal-typing-grace": ["revealTypingGraceSecs", "CONCH_REVEAL_TYPING_GRACE_SECS", "live", 2],
   "working-mic": ["workingMic", "CONCH_WORKING_MIC", "live", false],
   "voice-qa": ["voiceQa", "CONCH_VOICE_QA", "live", false],

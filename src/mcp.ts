@@ -756,6 +756,8 @@ export function createMcpToolHandlers(
         label: "",
         announce: text,
         ...(voice === undefined ? {} : { voice }),
+        // An agent asked, not the person: a manual mode you set holds this.
+        origin: "agent",
       });
       speakingUntil = dependencies.now() + audioTimeoutMs(text);
       return sent;
@@ -785,6 +787,7 @@ export function createMcpToolHandlers(
           sessionId: "",
           label: "",
           announce: "",
+          origin: "agent",
         });
       }
       // One session, the same scoped event the Mac's per-row control sends:
@@ -805,6 +808,8 @@ export function createMcpToolHandlers(
         sessionId: session.sessionId,
         label: dependencies.sessionLabel(session, session.cwd),
         announce: "",
+        // The daemon refuses an agent's resume while YOUR pause holds.
+        origin: "agent",
       });
     },
 
