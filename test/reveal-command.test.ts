@@ -75,3 +75,63 @@ test("the Mac app makes the title a button only when the row says it can be rais
   expect(read("mac-app/conch-mac/Models.swift"))
     .toContain('(try? container.decodeIfPresent(Bool.self, forKey: .revealable)) ?? false');
 });
+
+/**
+ * A Codex row with `noTerminal` (closed, or hosted by an app-server) has pid 0:
+ * nothing to raise, type into, or close. The apps say why on the row and turn
+ * off what would only fail; rename and voice need no pid and stay.
+ */
+test("the Mac shows a no-terminal row's reason and offers no send, stop or close on it", () => {
+  const models = read("mac-app/conch-mac/Models.swift");
+  expect(models).toContain("let noTerminal: String?");
+  expect(models).toContain("case noTerminal");
+  // Optional and decodeIfPresent: an older daemon that omits it still decodes.
+  expect(models).toContain("noTerminal = try? container.decodeIfPresent(String.self, forKey: .noTerminal)");
+  expect(models).toContain("revealable: revealable,\n            noTerminal: noTerminal,");
+
+  const dashboard = read("mac-app/conch-mac/DashboardView.swift");
+  const detail = dashboard.indexOf("private var inlineDetail: String {");
+  expect(detail).toBeGreaterThan(-1);
+  const detailEnd = dashboard.indexOf("\n    }\n", detail);
+  expect(detailEnd).toBeGreaterThan(detail);
+  expect(dashboard.slice(detail, detailEnd)).toContain('return row.noTerminal ?? ""');
+  const close = dashboard.indexOf('Button("Close session…", role: .destructive) {');
+  expect(close).toBeGreaterThan(-1);
+  const closeEnd = dashboard.indexOf("} label: {", close);
+  expect(closeEnd).toBeGreaterThan(close);
+  expect(dashboard.slice(close, closeEnd)).toContain(".disabled(row.noTerminal != nil)");
+  expect(dashboard).toContain("noTerminal: row.noTerminal,\n            onSend:");
+
+  const composer = read("mac-app/conch-mac/ComposerView.swift");
+  expect(composer).toContain("!composed.isEmpty && !isSending && noTerminal == nil");
+  expect(composer).toContain("guard noTerminal == nil, !payload.isEmpty else { return }");
+  const stop = composer.indexOf("Button(action: onInterrupt) {");
+  expect(stop).toBeGreaterThan(-1);
+  const stopEnd = composer.indexOf("Button(action: send) {", stop);
+  expect(stopEnd).toBeGreaterThan(stop);
+  expect(composer.slice(stop, stopEnd)).toContain(".disabled(noTerminal != nil)");
+  expect(composer).toContain('Text(noTerminal ?? "Message \\(sessionLabel)")');
+});
+
+test("the iPhone shows a no-terminal row's reason and offers no send, stop or end on it", () => {
+  const models = read("mobile/conch-ios/conch-ios/Models.swift");
+  expect(models).toContain("var noTerminal: String?");
+  expect(models).toContain("case id, label, status, backend, context, detail, at, live, paused, review, noTerminal");
+  expect(models).toContain("noTerminal = try? c.decodeIfPresent(String.self, forKey: .noTerminal)");
+  expect(read("mobile/conch-ios/conch-ios/LedgerView.swift"))
+    .toContain("row.review?.summary ?? row.detail ?? row.noTerminal");
+
+  const session = read("mobile/conch-ios/conch-ios/SessionView.swift");
+  const end = session.indexOf('Button("End session…"');
+  expect(end).toBeGreaterThan(-1);
+  const endEnd = session.indexOf("} label: {", end);
+  expect(endEnd).toBeGreaterThan(end);
+  expect(session.slice(end, endEnd)).toContain("row?.noTerminal != nil");
+  expect(session).toContain("if isWorking, !canSend, !isSending, row?.noTerminal == nil {");
+  const send = session.indexOf("Button(action: sendDraft) {");
+  expect(send).toBeGreaterThan(-1);
+  const sendEnd = session.indexOf('.accessibilityLabel("Send")', send);
+  expect(sendEnd).toBeGreaterThan(send);
+  expect(session.slice(send, sendEnd)).toContain(".disabled(isSending || row?.noTerminal != nil)");
+  expect(session).toContain('TextField(row?.noTerminal ?? "Type or talk…"');
+});

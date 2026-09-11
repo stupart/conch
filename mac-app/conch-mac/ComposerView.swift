@@ -126,6 +126,10 @@ struct ComposerView: View {
     /// one control here that would open it, so it alone is dimmed and disabled;
     /// typing, attaching and sending keep working.
     var audioHeldElsewhere = false
+    /// Why this session has no terminal to type into (a closed Codex thread,
+    /// or one an app-server hosts). Send and Stop need one, so both are off
+    /// and the field says why; the mic and recite keep working.
+    var noTerminal: String? = nil
     let onSend: (String) -> Task<Bool, Never>
     let onInterrupt: () -> Void
     let onTalk: () -> Void
@@ -249,7 +253,8 @@ struct ComposerView: View {
                             .foregroundStyle(Color.black)
                     }
                     .buttonStyle(.plain)
-                    .help("Stop this turn")
+                    .disabled(noTerminal != nil)
+                    .help(noTerminal ?? "Stop this turn")
                 } else {
                 Button(action: send) {
                     Image(systemName: "arrow.up")
@@ -265,7 +270,7 @@ struct ComposerView: View {
                 .buttonStyle(.plain)
                 .disabled(!canSend)
                 .keyboardShortcut(.return, modifiers: [])
-                .help("Send to \(sessionLabel)")
+                .help(noTerminal ?? "Send to \(sessionLabel)")
                 }
             }
         }
@@ -348,7 +353,7 @@ struct ComposerView: View {
                     .background(ComposerPasteBridge { urls in attach(urls) })
 
                 if draft.isEmpty {
-                    Text("Message \(sessionLabel)")
+                    Text(noTerminal ?? "Message \(sessionLabel)")
                         .font(ConchTypography.font(size: 12.5))
                         .foregroundStyle(ConchPalette.textDim)
                         .frame(height: fieldHeight, alignment: .leading)
@@ -432,7 +437,7 @@ struct ComposerView: View {
     }
 
     private var canSend: Bool {
-        !composed.isEmpty && !isSending
+        !composed.isEmpty && !isSending && noTerminal == nil
     }
 
     /// One shared inset, applied identically to the editor and the placeholder
@@ -482,7 +487,8 @@ struct ComposerView: View {
 
     private func send() {
         let payload = composed
-        guard !payload.isEmpty else { return }
+        // Return reaches here without the button, so the button's gate is not enough.
+        guard noTerminal == nil, !payload.isEmpty else { return }
         let submittedDraft = draft
         let submittedAttachments = attachments
         isSending = true

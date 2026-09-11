@@ -461,7 +461,7 @@ struct SessionRowView: View {
                     AgentBadge(backend: row.backend)
                 }
 
-                if let summary = row.review?.summary ?? row.detail, !summary.isEmpty {
+                if let summary = row.review?.summary ?? row.detail ?? row.noTerminal, !summary.isEmpty {
                     Text(summary)
                         .font(Type.summary)
                         .foregroundStyle(Palette.textDim)
