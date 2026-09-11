@@ -16,3 +16,8 @@ if (!process.env.CONCH_LOG_FILE) {
 if (!process.env.CONCH_INJECT_DEBUG_LOG) {
   process.env.CONCH_INJECT_DEBUG_LOG = join(process.env.CONCH_LOG_FILE, "..", "inject-debug.log");
 }
+// The voice-loop tests drive delivery paths that record inject telemetry;
+// TELEMETRY_PATH is read at import time, like the log path above.
+if (!process.env.CONCH_TELEMETRY_FILE) {
+  process.env.CONCH_TELEMETRY_FILE = join(process.env.CONCH_LOG_FILE, "..", "telemetry.jsonl");
+}

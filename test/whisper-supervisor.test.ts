@@ -435,21 +435,10 @@ describe("D2 wiring inside runDaemon", () => {
     expect(daemonSource).toContain('if (key === "whisper-idle-unload") whisperSupervisor?.armIdleUnload()');
   });
 
-  test("a wake prewarms before its courtesy line, and a finished turn prewarms before the bell", () => {
-    // Both markers must EXIST before their order means anything: indexOf
-    // returns -1 for a missing line, and -1 sorts before every real index.
-    const wake = between('if (event.type === "wake") {', "await conversationLoop(target");
-    const stamp = wake.indexOf("micRequestedAt = Date.now()");
-    const wakePrewarm = wake.indexOf("whisperSupervisor?.prewarm()");
-    expect(stamp).toBeGreaterThan(-1);
-    expect(wakePrewarm).toBeGreaterThan(stamp);
-
-    const turn = between("if (audibleTurn && (await userRespondedSince(", "const announce = await speakInterruptible(");
-    const turnPrewarm = turn.indexOf("if (audibleTurn) whisperSupervisor?.prewarm()");
-    // The bell's gate became `voicedHere` with C9b Cut B (audible somewhere,
-    // voiced HERE); the prewarm still has to precede it.
-    const bell = turn.indexOf("if (voicedHere) await ringBell()");
-    expect(turnPrewarm).toBeGreaterThan(-1);
-    expect(bell).toBeGreaterThan(turnPrewarm);
+  // The order — a wake prewarms before its courtesy line, a finished turn
+  // before the bell — is executed in voice-loop.test.ts. What stays here is
+  // the daemon handing the loop this supervisor's prewarm.
+  test("the voice loop's prewarm is the whisper supervisor's", () => {
+    expect(daemonSource).toContain("prewarmEar: () => whisperSupervisor?.prewarm(),");
   });
 });
