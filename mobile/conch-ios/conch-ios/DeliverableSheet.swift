@@ -9,9 +9,15 @@ import WebKit
 struct DeliverableSheet: View {
     @ObservedObject var bridge: BridgeClient
     let review: PublishedState.Row.Review
+    /// The session the deliverable belongs to; what a failure is filed under.
+    let sessionId: String
     @Environment(\.dismiss) private var dismiss
     @State private var localURL: URL?
-    @State private var localFailed = false
+    /// Why the deliverable would not arrive or render, with its path on the
+    /// Mac — said in the sheet instead of a blank one (A13).
+    @State private var failure: String?
+    /// A link tapped inside a rendered document that could not be opened.
+    @State private var linkFailure: String?
 
     private enum LocalKind { case image, video, pdf, markdown, page, text, unsupported }
     private enum Kind {
@@ -54,6 +60,15 @@ struct DeliverableSheet: View {
     var body: some View {
         NavigationStack {
             content
+                .overlay { if let failure { unavailableView(failure).background(Palette.bg) } }
+                .overlay(alignment: .bottom) { LinkFailureLine(message: $linkFailure).padding(12) }
+                // A link in a rendered .md behaves as it does in the
+                // conversation: a web page opens, a path says it is on the Mac.
+                .environment(\.openURL, OpenURLAction { url in
+                    linkFailure = nil
+                    bridge.openLink(url, sessionId: sessionId) { linkFailure = $0 }
+                    return .handled
+                })
                 .background(Palette.bg)
                 .navigationTitle(review.summary)
                 .navigationBarTitleDisplayMode(.inline)
@@ -66,7 +81,8 @@ struct DeliverableSheet: View {
         .preferredColorScheme(.dark)
         .task(id: review.link) {
             localURL = nil
-            localFailed = false
+            failure = nil
+            linkFailure = nil
             guard case .local = kind, let link = review.link else { return }
             let downloaded = await bridge.downloadFile(path: link)
             if Task.isCancelled {
@@ -74,7 +90,11 @@ struct DeliverableSheet: View {
                 return
             }
             localURL = downloaded
-            localFailed = localURL == nil
+            // The bridge's own reason, read on the main actor straight after
+            // the call that set it; "couldn't be fetched" alone said nothing.
+            if downloaded == nil {
+                fail("Couldn't fetch this from your Mac: \(bridge.lastError ?? "it sent nothing back.")")
+            }
         }
         .onDisappear {
             if let localURL { try? FileManager.default.removeItem(at: localURL) }
@@ -86,12 +106,10 @@ struct DeliverableSheet: View {
     private var content: some View {
         switch kind {
         case let .web(url):
-            BridgedWebView(url: url)
+            BridgedWebView(url: url, onFailure: fail)
         case let .local(localKind):
             if let url = localURL {
                 localContent(localKind, url: url)
-            } else if localFailed {
-                unavailableView("This deliverable lives on your Mac and couldn't be fetched.")
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -119,24 +137,32 @@ struct DeliverableSheet: View {
             VideoPlayer(player: AVPlayer(url: url))
                 .background(Palette.bg)
         case .pdf:
-            BridgedPDFView(url: url)
+            BridgedPDFView(url: url, onFailure: fail)
         case .markdown:
-            RemoteDocumentView(url: url, renderMarkdown: true)
+            RemoteDocumentView(url: url, renderMarkdown: true, onFailure: fail)
         case .page:
             // A local .html is a PAGE. The Mac has always rendered it as one;
             // here it was raw markup, so the same deliverable looked finished
             // on one surface and broken on the other.
             // loadFileURL, not load(URLRequest:) — a file:// page needs read
             // access granted to its own directory or its assets never load.
-            LocalPageView(url: url)
+            LocalPageView(url: url, onFailure: fail)
         case .text:
-            RemoteDocumentView(url: url, renderMarkdown: false)
+            RemoteDocumentView(url: url, renderMarkdown: false, onFailure: fail)
         case .unsupported:
             unavailableView(
                 "conch can't preview a \(url.pathExtension.uppercased()) yet — "
                 + "it's on the Mac at \(url.lastPathComponent)."
             )
         }
+    }
+
+    /// Said in the sheet with the path on the Mac — the one a person can go
+    /// and look at — and filed on the Mac as `open-deliverable` (A13).
+    private func fail(_ reason: String) {
+        let message = "\(reason) — \(review.link ?? "")"
+        failure = message
+        Task { await bridge.reportAppError(operation: "open-deliverable", message: message, sessionId: sessionId) }
     }
 
     private func unavailableView(_ reason: String) -> some View {
@@ -158,8 +184,8 @@ struct DeliverableSheet: View {
 private struct RemoteDocumentView: View {
     let url: URL
     let renderMarkdown: Bool
+    let onFailure: (String) -> Void
     @State private var content: String?
-    @State private var failed = false
 
     var body: some View {
         Group {
@@ -181,11 +207,6 @@ private struct RemoteDocumentView: View {
                     .foregroundStyle(Palette.textPrimary)
                     .padding(20)
                 }
-            } else if failed {
-                Text("Couldn't load this from your Mac.")
-                    .font(Type.summary)
-                    .foregroundStyle(Palette.textDim)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -201,7 +222,8 @@ private struct RemoteDocumentView: View {
                 }
                 content = String(decoding: data, as: UTF8.self)
             } catch {
-                failed = true
+                // The OS's words, not a generic line that hid them (A13).
+                onFailure(error.localizedDescription)
             }
         }
     }
@@ -209,11 +231,16 @@ private struct RemoteDocumentView: View {
 
 private struct BridgedWebView: UIViewRepresentable {
     let url: URL
+    let onFailure: (String) -> Void
+
+    func makeCoordinator() -> PageLoadFailure { PageLoadFailure() }
 
     func makeUIView(context: Context) -> WKWebView {
         let view = WKWebView()
         view.isOpaque = false
         view.backgroundColor = UIColor(Palette.bg)
+        view.navigationDelegate = context.coordinator
+        context.coordinator.onFailure = onFailure
         view.load(URLRequest(url: url))
         return view
     }
@@ -228,11 +255,16 @@ private struct BridgedWebView: UIViewRepresentable {
 /// loaded the ordinary way renders unstyled and looks broken.
 private struct LocalPageView: UIViewRepresentable {
     let url: URL
+    let onFailure: (String) -> Void
+
+    func makeCoordinator() -> PageLoadFailure { PageLoadFailure() }
 
     func makeUIView(context: Context) -> WKWebView {
         let view = WKWebView()
         view.isOpaque = false
         view.backgroundColor = UIColor(Palette.bg)
+        view.navigationDelegate = context.coordinator
+        context.coordinator.onFailure = onFailure
         view.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
         return view
     }
@@ -242,6 +274,7 @@ private struct LocalPageView: UIViewRepresentable {
 
 private struct BridgedPDFView: UIViewRepresentable {
     let url: URL
+    let onFailure: (String) -> Void
 
     func makeUIView(context: Context) -> PDFView {
         let view = PDFView()
@@ -267,12 +300,65 @@ private struct BridgedPDFView: UIViewRepresentable {
                         view.go(to: PDFDestination(page: first, at: CGPoint(x: 0, y: first.bounds(for: .mediaBox).height)))
                     }
                 }
+            } else {
+                // PDFKit answers nil, never why. Foundation's wording for
+                // bytes a reader refused, instead of a blank sheet (A13).
+                await MainActor.run { onFailure(CocoaError(.fileReadCorruptFile).localizedDescription) }
             }
         }
         return view
     }
 
     func updateUIView(_ view: PDFView, context: Context) {}
+}
+
+/// A page that will not load says why instead of staying blank (A13).
+private final class PageLoadFailure: NSObject, WKNavigationDelegate {
+    var onFailure: (String) -> Void = { _ in }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        report(error)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        report(error)
+    }
+
+    private func report(_ error: Error) {
+        // A newer load cancelling the last one is not a failure.
+        guard (error as NSError).code != NSURLErrorCancelled else { return }
+        onFailure(error.localizedDescription)
+    }
+}
+
+/// A link that would not open, said where it was tapped (A13) — in the
+/// conversation and in a rendered deliverable alike. Selectable, so the
+/// path can be copied; dismissable, so it does not outstay its use.
+struct LinkFailureLine: View {
+    @Binding var message: String?
+
+    var body: some View {
+        if let message {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.needs)
+                    .accessibilityHidden(true)
+                Text(message)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textPrimary)
+                    .textSelection(.enabled)
+                Spacer(minLength: 8)
+                Button { self.message = nil } label: {
+                    Image(systemName: "xmark").font(Type.caption)
+                }
+                .foregroundStyle(Palette.textDim)
+                .accessibilityLabel("Dismiss")
+            }
+            .padding(12)
+            .background(Palette.raised, in: RoundedRectangle(cornerRadius: 10))
+        }
+    }
 }
 
 private struct LocalImageView: View {

@@ -1062,12 +1062,27 @@ final class StateStore: ObservableObject {
         pluginHintVisible = false
     }
 
+    /// Why the last Relaunch did not happen — macOS's words and the app's
+    /// path — shown in the stale-build line where Relaunch was clicked (A13).
+    @Published private(set) var relaunchFailure: String?
+
     func relaunchForNewBuild() {
-        guard let bundle = Bundle.main.bundleURL as URL? else { return }
+        let bundle = Bundle.main.bundleURL
+        relaunchFailure = nil
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.createsNewApplicationInstance = true
-        NSWorkspace.shared.openApplication(at: bundle, configuration: configuration) { _, _ in
-            DispatchQueue.main.async { NSApp.terminate(nil) }
+        NSWorkspace.shared.openApplication(at: bundle, configuration: configuration) { _, error in
+            Task { @MainActor in
+                // Quit only once the new instance is up. Quitting on a failed
+                // reopen left no conch running and nothing saying why.
+                guard let error else { NSApp.terminate(nil); return }
+                self.relaunchFailure = "Couldn't relaunch: \(error.localizedDescription) — \(bundle.path)"
+                self.reportAppError(
+                    operation: "relaunch",
+                    message: error.localizedDescription,
+                    state: ["target": bundle.path]
+                )
+            }
         }
     }
 

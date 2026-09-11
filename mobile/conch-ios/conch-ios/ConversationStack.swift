@@ -44,55 +44,18 @@ struct ConversationStack: View {
             ForEach(conversation.items) { item in
                 row(item).id(item.id)
             }
-            if let linkFailure {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(Type.caption)
-                        .foregroundStyle(Palette.needs)
-                        .accessibilityHidden(true)
-                    Text(linkFailure)
-                        .font(Type.caption)
-                        .foregroundStyle(Palette.textPrimary)
-                        .textSelection(.enabled)
-                    Spacer(minLength: 8)
-                    Button { self.linkFailure = nil } label: {
-                        Image(systemName: "xmark").font(Type.caption)
-                    }
-                    .foregroundStyle(Palette.textDim)
-                    .accessibilityLabel("Dismiss")
-                }
-                .padding(12)
-                .background(Palette.raised, in: RoundedRectangle(cornerRadius: 10))
-            }
+            LinkFailureLine(message: $linkFailure)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         // A path is a file on the Mac, which the phone cannot open: say so
         // where the tap happened and record it, rather than a tap that does
-        // nothing (A13). A web link goes where it always went, and a refusal
-        // is said the same way — iOS gives no words for one, only a Bool.
+        // nothing (A13). The phone's one door decides, opens and reports.
         .environment(\.openURL, OpenURLAction { url in
             linkFailure = nil
-            guard url.scheme != nil, !url.isFileURL else {
-                failLink("That's a file on your Mac, not a page: \(url.path)")
-                return .handled
-            }
-            UIApplication.shared.open(url) { opened in
-                if !opened { failLink("iPhone couldn't open \(url.absoluteString)") }
-            }
+            bridge.openLink(url, sessionId: conversation.sessionId) { linkFailure = $0 }
             return .handled
         })
         .onChange(of: conversation.sessionId) { _, _ in linkFailure = nil }
-    }
-
-    private func failLink(_ message: String) {
-        linkFailure = message
-        Task {
-            _ = await bridge.reportAppError(
-                operation: "open-link",
-                message: message,
-                sessionId: conversation.sessionId
-            )
-        }
     }
 
     @ViewBuilder

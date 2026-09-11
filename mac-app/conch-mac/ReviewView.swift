@@ -205,30 +205,44 @@ private struct ReviewContent: View {
         store.openLink(link, cwd: cwd, rowId: rowID, reveal: reveal) { linkFailure = $0 }
     }
 
+    /// A deliverable this pane could not show: macOS's reason and the path,
+    /// on the pane's failure line, filed as `open-deliverable` (A13). Text
+    /// said "Couldn't read X." with no reason, an image showed only an
+    /// icon, a PDF stayed empty and a video failed silently.
+    private func loadFailed(_ url: URL, _ error: Error) {
+        linkFailure = "\(error.localizedDescription) — \(url.path)"
+        store.reportAppError(
+            operation: "open-deliverable",
+            message: error.localizedDescription,
+            sessionId: rowID,
+            state: ["target": url.path]
+        )
+    }
+
     @ViewBuilder
     private var content: some View {
         switch DeliverableSource(link: link) {
         case let .image(url):
-            DeliverableImageView(url: url)
+            DeliverableImageView(url: url, onFailure: { loadFailed(url, $0) })
                 .padding(18)
                 .background(ConchPalette.bg)
                 .onAppear {
                     isWebLoading = false
                 }
         case let .video(url):
-            DeliverableVideoView(url: url)
+            DeliverableVideoView(url: url, onFailure: { loadFailed(url, $0) })
                 .background(ConchPalette.bg)
                 .onAppear {
                     isWebLoading = false
                 }
         case let .pdf(url):
-            DeliverablePDFView(url: url)
+            DeliverablePDFView(url: url, onFailure: { loadFailed(url, $0) })
                 .background(ConchPalette.bg)
                 .onAppear {
                     isWebLoading = false
                 }
         case let .markdown(url):
-            DeliverableDocumentView(url: url, renderMarkdown: true) { link in
+            DeliverableDocumentView(url: url, renderMarkdown: true, onFailure: { loadFailed(url, $0) }) { link in
                 open(link, cwd: url.deletingLastPathComponent().path)
             }
                 .background(ConchPalette.bg)
@@ -236,7 +250,7 @@ private struct ReviewContent: View {
                     isWebLoading = false
                 }
         case let .text(url):
-            DeliverableDocumentView(url: url, renderMarkdown: false)
+            DeliverableDocumentView(url: url, renderMarkdown: false, onFailure: { loadFailed(url, $0) })
                 .background(ConchPalette.bg)
                 .onAppear {
                     isWebLoading = false
@@ -615,6 +629,20 @@ enum DeliverableSource: Equatable {
     }
 }
 
+/// Why macOS could not show a deliverable that exists (A13). The renderers
+/// answer nil, never why: this is the OS's own reason the file cannot be
+/// read — permission, a vanished file — or, when the bytes read fine,
+/// Foundation's "isn't in the correct format" for bytes the renderer refused.
+///
+/// Foundation only, on purpose: `test/open-link.test.ts` extracts this enum
+/// and runs it under `swift`.
+enum DeliverableLoadError {
+    static func reason(_ url: URL) -> Error {
+        do { _ = try Data(contentsOf: url, options: .alwaysMapped) } catch { return error }
+        return CocoaError(.fileReadCorruptFile, userInfo: [NSURLErrorKey: url])
+    }
+}
+
 /// A video deliverable with real transport controls.
 ///
 /// These used to fall through to the web view, which plays some codecs and
@@ -622,13 +650,31 @@ enum DeliverableSource: Equatable {
 /// volume and fullscreen, and fails loudly when it cannot decode.
 private struct DeliverableVideoView: NSViewRepresentable {
     let url: URL
+    let onFailure: (Error) -> Void
+
+    final class Coordinator {
+        /// Held for the item's life: AVPlayer reports a file it cannot play
+        /// only through the item's status, and nothing read it (A13).
+        var status: NSKeyValueObservation?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    private func player(_ coordinator: Coordinator) -> AVPlayer {
+        let item = AVPlayerItem(url: url)
+        let onFailure = onFailure
+        coordinator.status = item.observe(\.status) { item, _ in
+            guard item.status == .failed, let error = item.error else { return }
+            DispatchQueue.main.async { onFailure(error) }
+        }
+        return AVPlayer(playerItem: item)
+    }
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
         view.controlsStyle = .inline
         view.videoGravity = .resizeAspect
-        let player = AVPlayer(url: url)
-        view.player = player
+        view.player = player(context.coordinator)
         return view
     }
 
@@ -636,8 +682,7 @@ private struct DeliverableVideoView: NSViewRepresentable {
         // Only replace the player for a NEW video. Rebuilding it on every daemon
         // publication would reset the person's playback position and volume.
         if (view.player?.currentItem?.asset as? AVURLAsset)?.url != url {
-            let player = AVPlayer(url: url)
-            view.player = player
+            view.player = player(context.coordinator)
         }
     }
 }
@@ -646,6 +691,13 @@ private struct DeliverableVideoView: NSViewRepresentable {
 /// PDFs, but PDFKit gives continuous scroll, fit-to-width, and Select/Copy.
 private struct DeliverablePDFView: NSViewRepresentable {
     let url: URL
+    let onFailure: (Error) -> Void
+
+    final class Coordinator {
+        var loadedURL: URL?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> PDFView {
         let view = PDFView()
@@ -653,13 +705,19 @@ private struct DeliverablePDFView: NSViewRepresentable {
         view.displayMode = .singlePageContinuous
         view.displaysPageBreaks = true
         view.backgroundColor = NSColor(ConchPalette.bg)
-        view.document = PDFDocument(url: url)
         return view
     }
 
     func updateNSView(_ view: PDFView, context: Context) {
-        if view.document?.documentURL != url {
-            view.document = PDFDocument(url: url)
+        // Once per file: comparing documentURL — nil after a failure — would
+        // retry and re-file the failure on every publication.
+        guard context.coordinator.loadedURL != url else { return }
+        context.coordinator.loadedURL = url
+        view.document = PDFDocument(url: url)
+        // PDFKit answers nil, never why; an empty pane was the whole report.
+        if view.document == nil {
+            let error = DeliverableLoadError.reason(url)
+            DispatchQueue.main.async { onFailure(error) }
         }
     }
 }
@@ -670,6 +728,8 @@ private struct DeliverablePDFView: NSViewRepresentable {
 private struct DeliverableDocumentView: NSViewRepresentable {
     let url: URL
     let renderMarkdown: Bool
+    /// Why the file could not be read, in macOS's words (A13).
+    let onFailure: (Error) -> Void
     /// A link inside the rendered document, clicked. NSTextView's own fallback
     /// is a silent `NSWorkspace.open` — exactly the dead click A13 is about.
     var onOpenLink: (String) -> Void = { _ in }
@@ -714,7 +774,13 @@ private struct DeliverableDocumentView: NSViewRepresentable {
               let textView = scrollView.documentView as? NSTextView else { return }
         context.coordinator.loadedURL = url
 
-        let content = Self.read(url)
+        let content: String
+        do {
+            content = try Self.read(url)
+        } catch {
+            content = ""
+            DispatchQueue.main.async { onFailure(error) }
+        }
         if renderMarkdown {
             let attributes = ConversationDocument.attributes(
                 color: NSColor(ConchPalette.textPrimary)
@@ -735,14 +801,13 @@ private struct DeliverableDocumentView: NSViewRepresentable {
         }
     }
 
-    private static func read(_ url: URL) -> String {
-        guard let handle = try? FileHandle(forReadingFrom: url) else {
-            return "Couldn't read \(url.lastPathComponent)."
-        }
-        defer { try? handle.close() }
-        let data = (try? handle.read(upToCount: maxBytes)) ?? Data()
-        var text = String(decoding: data, as: UTF8.self)
-        if data.count == maxBytes {
+    /// Mapped, so only the pages the 2MB prefix touches are read — and its
+    /// error is Foundation's "you don't have permission to view it", where
+    /// FileHandle's says "to save" (A13).
+    private static func read(_ url: URL) throws -> String {
+        let data = try Data(contentsOf: url, options: .alwaysMapped)
+        var text = String(decoding: data.prefix(maxBytes), as: UTF8.self)
+        if data.count > maxBytes {
             text += "\n\n… truncated at 2MB — open the file for the rest."
         }
         return text
@@ -751,6 +816,7 @@ private struct DeliverableDocumentView: NSViewRepresentable {
 
 private struct DeliverableImageView: NSViewRepresentable {
     let url: URL
+    let onFailure: (Error) -> Void
 
     final class Coordinator {
         var loadedURL: URL?
@@ -808,7 +874,13 @@ private struct DeliverableImageView: NSViewRepresentable {
     func updateNSView(_ view: FitWidthImageScrollView, context: Context) {
         guard context.coordinator.loadedURL != url else { return }
         context.coordinator.loadedURL = url
-        view.imageView.image = NSImage(contentsOf: url)
+        let image = NSImage(contentsOf: url)
+        // The icon alone said nothing; macOS's reason and the path do (A13).
+        if image == nil {
+            let error = DeliverableLoadError.reason(url)
+            DispatchQueue.main.async { onFailure(error) }
+        }
+        view.imageView.image = image
             ?? NSImage(
                 systemSymbolName: "photo.badge.exclamationmark",
                 accessibilityDescription: nil

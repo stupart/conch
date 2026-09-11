@@ -194,8 +194,9 @@ struct DashboardView: View {
                     HStack(spacing: 10) {
                         Image(systemName: "arrow.trianglehead.2.clockwise")
                             .font(.system(size: 10.5, weight: .medium))
-                        Text("A newer conch is installed — this window is still running the old one.")
+                        Text(store.relaunchFailure ?? "A newer conch is installed — this window is still running the old one.")
                             .font(ConchTypography.font(size: 11.5))
+                            .textSelection(.enabled)
                         Spacer(minLength: 8)
                         Button("Relaunch", action: store.relaunchForNewBuild)
                             .buttonStyle(.plain)
