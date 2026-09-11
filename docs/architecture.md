@@ -154,6 +154,19 @@ the event loop is rarely the bottleneck. Codex's own audit of the relay
 confirmed the loop is not being starved: injection measures 0.7–1.2s and the
 30-second heartbeat window was never close.
 
+## What it does to the rest of the Mac
+
+Every child process above reaches outside conch: `sox` opens the default
+microphone, `say`/`afplay` play over whatever else is playing, `osascript`
+raises Terminal windows and types into them, and the hooks and the MCP server
+load into every Claude Code session on the machine. `docs/daemon-side-effects.md`
+(audited 2026-09-11) lists each one with its trigger, its scope, the live
+evidence and the mitigation, and answers whether moving it into the Mac app
+would help — mostly it would not, because macOS attributes the daemon's
+permissions to the app already and shares audio devices between processes; the
+two things that should change are the forced keystroke fallback and the blind
+typing route.
+
 ## What is wrong with it
 
 **`daemon.ts` was 5,811 lines (4,954 after three cuts) — but the line count was never the problem.**
