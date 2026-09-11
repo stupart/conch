@@ -1741,11 +1741,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
         // projects directory by id, which can never locate a Codex rollout —
         // so every Codex row resolved to nothing and showed no conversation at
         // all, even while its rows updated live.
+        const session = live.find((candidate) => candidate.sessionId === sessionId);
         const path = (contentEvent?.sessionId === sessionId && contentEvent.transcriptPath)
-          || live.find((session) => session.sessionId === sessionId)?.transcriptPath
+          || session?.transcriptPath
           || findTranscript(cfg.claudeDir, sessionId);
         if (!path) return Promise.resolve(null);
-        return readConversationTail(path, sessionId, transcriptFormatFor(path)).catch(() => null);
+        // The row's registry entry rides along: a window of a shared session
+        // reads its own branch of the transcript, not the other's (A8).
+        return readConversationTail(path, sessionId, transcriptFormatFor(path), { window: session }).catch(() => null);
       })(),
     ]);
     // One per visible row. The reads are tail-only and bounded, and doing them
@@ -1757,7 +1760,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           const path = session.transcriptPath
             ?? findTranscript(cfg.claudeDir, session.sessionId);
           if (!path) return null;
-          const read = await readConversationTail(path, session.sessionId, transcriptFormatFor(path))
+          const read = await readConversationTail(path, session.sessionId, transcriptFormatFor(path), { window: session })
             .catch(() => null);
           if (!read || read.order.length === 0) return null;
           return [
@@ -2589,6 +2592,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           event.transcriptPath,
           event.sessionId,
           transcriptFormatFor(event.transcriptPath),
+          { window: panelSessions.get(event.sessionId) },
         );
         const reply = choiceReplyForConversation(text, conversation);
         if (reply !== text) log(`matched spoken choice -> ${JSON.stringify(reply)}`);

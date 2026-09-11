@@ -1655,7 +1655,13 @@ private struct ConversationPane: View {
     }
 
     private var watchesTranscriptForRow: SessionRow? {
-        selectedReview == nil && !isFocusedSessionLive ? focusedRow : nil
+        // A row keyed per window (`<id>#<pid>`) shares its transcript with
+        // another window, and only the daemon can tell whose branch is whose
+        // (A8). Reading the file here would show whichever wrote last, so
+        // such a row shows its own snippet until the daemon's stack arrives.
+        selectedReview == nil && !isFocusedSessionLive && focusedRow?.id.contains("#") != true
+            ? focusedRow
+            : nil
     }
 
     private var isFocusedSessionLive: Bool {

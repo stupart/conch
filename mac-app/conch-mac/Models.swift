@@ -600,14 +600,18 @@ struct Conversation: Decodable, Equatable, Sendable {
     var items: [ConversationItem] = []
     /// Older messages exist above the window, so a viewer can say so.
     var truncated = false
+    /// Two windows share this session and the daemon could not tell which
+    /// branch is this one's, so this is both — said, rather than guessed (A8).
+    var shared = false
 
-    private enum CodingKeys: String, CodingKey { case sessionId, items, truncated }
+    private enum CodingKeys: String, CodingKey { case sessionId, items, truncated, shared }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         sessionId = (try? c.decodeIfPresent(String.self, forKey: .sessionId)) ?? ""
         items = (try? c.decodeIfPresent([ConversationItem].self, forKey: .items)) ?? []
         truncated = (try? c.decodeIfPresent(Bool.self, forKey: .truncated)) ?? false
+        shared = (try? c.decodeIfPresent(Bool.self, forKey: .shared)) ?? false
     }
 }
 

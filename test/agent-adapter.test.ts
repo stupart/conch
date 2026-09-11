@@ -151,7 +151,7 @@ describe("the branch inventory", () => {
     const daemon = read("src/daemon.ts");
     expect(daemon).toContain('import { adapterFor, transcriptFormatFor } from "./agent-adapter.ts";');
     expect(daemon).toContain("adapterFor(session.backend).rowsMayLackPid && !session.pid");
-    expect(daemon).toContain("readConversationTail(path, sessionId, transcriptFormatFor(path))");
+    expect(daemon).toContain("readConversationTail(path, sessionId, transcriptFormatFor(path), { window: session })");
     expect(daemon).toContain("readSessionContextUsage(path, transcriptFormatFor(path))");
     expect(daemon).toContain('folderTrusted: adapterFor("claude").folderTrusted');
     expect(read("src/session-lifecycle.ts")).toContain("const adapter = adapterFor(request.backend);");
