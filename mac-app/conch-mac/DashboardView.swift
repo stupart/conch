@@ -1519,6 +1519,9 @@ private struct ConversationPane: View {
     /// The session whose capabilities are being inspected, if any.
     @State private var inspectingSession: SessionRow?
     @State private var debugExpandInspector = false
+    /// A link in the fallback (AppKit) conversation renderer that would not
+    /// open, shown under it in the OS's own words (A13).
+    @State private var fallbackLinkFailure: String?
 
     /// False = the deliverable in front, which is the pane's long-standing
     /// default: a session that produced an artifact is showing it to you.
@@ -1780,6 +1783,7 @@ private struct ConversationPane: View {
                                 )
                             },
                             artifact: row.review,
+                            cwd: row.cwd,
                             onOpenArtifact: { showsConversation = false },
                             onFreeform: { composerFocusRequest += 1 },
                             onOpenSubagent: { agent in
@@ -1798,10 +1802,19 @@ private struct ConversationPane: View {
                         ConversationTextView(
                             attributedText: document.text,
                             scrollTarget: document.scrollTarget,
-                            contentID: document.contentID
+                            contentID: document.contentID,
+                            onOpenLink: { link in
+                                fallbackLinkFailure = nil
+                                store.openLink(link, cwd: focusedRow?.cwd, rowId: focusedRow?.id) {
+                                    fallbackLinkFailure = $0
+                                }
+                            }
                         )
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .overlay(alignment: .bottom) {
+                            LinkFailureLine(message: $fallbackLinkFailure)
+                        }
                     }
 
                     // Typing belongs where you are reading. Putting the composer
@@ -2560,11 +2573,21 @@ private struct ConversationTextView: NSViewRepresentable {
     let attributedText: NSAttributedString
     let scrollTarget: ConversationScrollTarget
     let contentID: String
+    /// A markdown link in the rendered reply, clicked. Without a delegate
+    /// NSTextView hands it to `NSWorkspace.open` and drops the answer — the
+    /// silent half of A13.
+    var onOpenLink: (String) -> Void = { _ in }
 
-    final class Coordinator {
+    final class Coordinator: NSObject, NSTextViewDelegate {
         var previousText = NSAttributedString(string: "")
         var previousScrollTarget = ConversationScrollTarget.none
         var previousContentID = ""
+        var onOpenLink: (String) -> Void = { _ in }
+
+        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            onOpenLink(LinkTarget.text(of: link))
+            return true
+        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -2606,6 +2629,7 @@ private struct ConversationTextView: NSViewRepresentable {
             width: ConversationTextView.maxMeasure,
             height: CGFloat.greatestFiniteMagnitude
         )
+        textView.delegate = context.coordinator
         scrollView.documentView = textView
         return scrollView
     }
@@ -2615,6 +2639,7 @@ private struct ConversationTextView: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
+        context.coordinator.onOpenLink = onOpenLink
         // Centre the capped measure. Left-aligning it left ~800pt of dead black
         // to the right of the text on a wide pane, which reads as broken rather
         // than as a deliberate column.
