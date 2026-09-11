@@ -356,7 +356,8 @@ final class BridgeClient: ObservableObject {
         resumeSessionId: String?,
         teleportSessionId: String? = nil,
         cwd: String? = nil,
-        trustFolder: Bool = false
+        trustFolder: Bool = false,
+        options: [String: Any] = [:]
     ) async -> SessionStart {
         let resumeID = resumeSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let teleportID = teleportSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -368,6 +369,11 @@ final class BridgeClient: ObservableObject {
         // Only ever true because the person answered Codex's question here.
         if trustFolder {
             message["trustFolder"] = true
+        }
+        // Per-session choices by the daemon's option names (`agent-adapter.ts`);
+        // String or Bool values, and the daemon validates every one.
+        if !options.isEmpty {
+            message["options"] = options
         }
         if !resumeID.isEmpty {
             message["resumeSessionId"] = resumeID

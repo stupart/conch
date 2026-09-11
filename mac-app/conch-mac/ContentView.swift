@@ -345,6 +345,57 @@ private struct TaskKey: Equatable {
     let query: String
 }
 
+/// The daemon's per-agent start options — `startOptions` in `agent-adapter.ts`,
+/// each from the agent's own `--help` — mirrored so the sheet can draw them.
+/// A test pins every entry here to that table; the daemon validates what is
+/// sent, so this list decides only what is shown.
+struct StartOption: Identifiable {
+    enum Kind {
+        case toggle
+        case choice([String])
+        case text
+    }
+
+    let name: String
+    let kind: Kind
+    let help: String
+    var resumeOnly = false
+    var id: String { name }
+
+    static let claude: [StartOption] = [
+        StartOption(name: "model", kind: .text, help: "Model for the current session. Provide an alias for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a model's full name (e.g. 'claude-fable-5')."),
+        StartOption(name: "permission-mode", kind: .choice(["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"]), help: "Permission mode to use for the session"),
+        StartOption(name: "bypass-permissions", kind: .toggle, help: "Bypass all permission checks. Recommended only for sandboxes with no internet access."),
+        StartOption(name: "effort", kind: .choice(["low", "medium", "high", "xhigh", "max"]), help: "Effort level for the current session (low, medium, high, xhigh, max)"),
+        StartOption(name: "fork-session", kind: .toggle, help: "When resuming, create a new session ID instead of reusing the original (use with --resume or --continue)", resumeOnly: true),
+    ]
+
+    static let codex: [StartOption] = [
+        StartOption(name: "model", kind: .text, help: "Model the agent should use"),
+        StartOption(name: "sandbox", kind: .choice(["read-only", "workspace-write", "danger-full-access"]), help: "Select the sandbox policy to use when executing model-generated shell commands"),
+        StartOption(name: "ask-for-approval", kind: .choice(["on-request", "never"]), help: "Configure when the model requires human approval before executing a command"),
+        StartOption(name: "bypass-permissions", kind: .toggle, help: "Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY DANGEROUS. Intended solely for running in environments that are externally sandboxed"),
+        StartOption(name: "profile", kind: .text, help: "Layer $CODEX_HOME/<name>.config.toml on top of the base user config"),
+    ]
+
+    static func table(for backend: ConchAgentBackend) -> [StartOption] {
+        backend == .codex ? codex : claude
+    }
+}
+
+/// A segmented control for a short list of choices, a menu for a long one.
+private struct ChoiceStyle: ViewModifier {
+    let segmented: Bool
+
+    func body(content: Content) -> some View {
+        if segmented {
+            content.pickerStyle(.segmented)
+        } else {
+            content.pickerStyle(.menu)
+        }
+    }
+}
+
 private struct StartSessionSheet: View {
     fileprivate enum StartMode: String, CaseIterable, Identifiable {
         case new = "New"
@@ -375,6 +426,10 @@ private struct StartSessionSheet: View {
     /// the person answered about one launch, and conch does not quietly decide
     /// on their behalf next time.
     @State private var trustedFolders: Set<String> = []
+    /// What the person chose this time, by option name. Unset means the
+    /// agent's own default, and is not sent; `bypass-permissions` is seeded
+    /// from the persisted setting once the daemon says what it is.
+    @State private var optionValues: [String: ConchStartOptionValue] = [:]
 
     // Resume
     @State private var resumable: [ResumableSession] = []
@@ -470,6 +525,12 @@ private struct StartSessionSheet: View {
                 )
             }
 
+            // The agent's own start-time choices, from its --help, for the
+            // agent this launch will actually run. Help is a fixed recipe.
+            if mode != .help {
+                startOptionsView
+            }
+
             if mode == .teleport {
                 Text("Teleport — create a local copy.")
                     .font(ConchTypography.font(size: 11.5, weight: .semibold))
@@ -547,6 +608,15 @@ private struct StartSessionSheet: View {
             guard mode == .resume else { return }
             loadResumable()
         }
+        // The toggle starts from the persisted `bypass-permissions` setting —
+        // the same default the daemon applies when nothing is sent — and only
+        // seeds an untouched toggle, never one the person already flipped.
+        .task {
+            if let value = await store.bypassPermissionsDefault(),
+               optionValues["bypass-permissions"] == nil {
+                optionValues["bypass-permissions"] = .bool(value)
+            }
+        }
     }
 
     /// Say where it will actually land, since that is the thing a resume can
@@ -561,6 +631,78 @@ private struct StartSessionSheet: View {
         }
         let agent = picked.backend.lowercased() == "codex" ? "Codex" : "Claude"
         return "Restarts \(agent) in \(picked.shortCwd), in Terminal."
+    }
+
+    /// The table for the agent this launch will run; a resume-only entry only
+    /// while resuming, so the sheet never shows a switch that does nothing.
+    private var shownOptions: [StartOption] {
+        StartOption.table(for: effectiveBackend).filter { !$0.resumeOnly || mode == .resume }
+    }
+
+    /// Exactly the shown options the person set. The daemon validates them.
+    private var sentOptions: [String: ConchStartOptionValue] {
+        guard mode != .help else { return [:] }
+        var sent: [String: ConchStartOptionValue] = [:]
+        for option in shownOptions {
+            if let value = optionValues[option.name] { sent[option.name] = value }
+        }
+        return sent
+    }
+
+    private var startOptionsView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(shownOptions) { option in
+                VStack(alignment: .leading, spacing: 3) {
+                    switch option.kind {
+                    case .toggle:
+                        Toggle(option.name, isOn: toggleBinding(option.name))
+                            .font(ConchTypography.font(size: 11.5))
+                    case let .choice(choices):
+                        Text(option.name)
+                            .font(ConchTypography.font(size: 11.5))
+                        // Segmented while the words fit the sheet; a menu for
+                        // the longer lists (Claude's permission modes).
+                        Picker(option.name, selection: textBinding(option.name)) {
+                            Text("Default").tag("")
+                            ForEach(choices, id: \.self) { choice in
+                                Text(choice).tag(choice)
+                            }
+                        }
+                        .modifier(ChoiceStyle(segmented: choices.count <= 3))
+                        .labelsHidden()
+                    case .text:
+                        TextField(option.name, text: textBinding(option.name), prompt: Text("default"))
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    Text(option.help)
+                        .font(ConchTypography.font(size: 10.5))
+                        .foregroundStyle(ConchPalette.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .disabled(isStarting)
+    }
+
+    private func toggleBinding(_ name: String) -> Binding<Bool> {
+        Binding(
+            get: {
+                if case let .bool(on)? = optionValues[name] { return on }
+                return false
+            },
+            set: { optionValues[name] = .bool($0) }
+        )
+    }
+
+    /// Empty is the agent's default, and is not sent.
+    private func textBinding(_ name: String) -> Binding<String> {
+        Binding(
+            get: {
+                if case let .string(text)? = optionValues[name] { return text }
+                return ""
+            },
+            set: { optionValues[name] = $0.isEmpty ? nil : .string($0) }
+        )
     }
 
     private func loadResumable() {
@@ -591,7 +733,8 @@ private struct StartSessionSheet: View {
                 resumeSessionId: mode == .resume ? resumeSelection?.sessionId : nil,
                 teleportSessionId: mode == .teleport ? teleportSessionId : nil,
                 cwd: effectiveCwd,
-                trustFolder: trustedFolders.contains(effectiveCwd)
+                trustFolder: trustedFolders.contains(effectiveCwd),
+                options: sentOptions
             )
             switch outcome {
             case let .failed(message):

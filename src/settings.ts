@@ -17,7 +17,7 @@ import {
   type AgentCapabilitiesRead,
 } from "./agent-capabilities.ts";
 import type { ResumableSession } from "./resumable.ts";
-import { teleportRequestError } from "./session-lifecycle.ts";
+import { startOptionsError, teleportRequestError } from "./session-lifecycle.ts";
 import { normalizeSessionLabel } from "./sessions.ts";
 import { isValidVoiceName } from "./speak.ts";
 
@@ -763,6 +763,8 @@ export type RuntimeControlMessage =
     teleportSessionId?: string;
     /** Optional because a phone has no meaningful Mac filesystem picker. */
     cwd?: string;
+    /** Per-session choices from the agent's own `--help`, validated against its adapter row (C1). */
+    options?: Record<string, string | boolean>;
   }
   | { kind: "session-close"; sessionId: string }
   | {
@@ -772,7 +774,24 @@ export type RuntimeControlMessage =
     message: string;
     sessionId?: string;
     state: Record<string, unknown>;
-  };
+  }
+  | {
+    /** Flip a plugin or MCP server for the NEXT session, in the agent's own file (B3). */
+    kind: "config-toggle";
+    agent: "claude" | "codex";
+    scope: "user" | "project";
+    /** The session's working directory; required for project scope. */
+    projectDir?: string;
+    capability: "plugin" | "mcp-server";
+    id: string;
+    enabled: boolean;
+    /** Answer with the plan and its diff; write nothing. */
+    preview?: boolean;
+    /** Refuse unless the file still hashes to what the preview saw. */
+    expectBeforeHash?: string;
+  }
+  /** Put the newest `<file>.conch-backup-*` back. */
+  | { kind: "config-rollback"; file: string };
 
 export type ControlMessage = ConfigControlMessage | SessionControlMessage;
 export type AnyControlMessage = ControlMessage | RuntimeControlMessage;
@@ -871,7 +890,18 @@ export type RuntimeControlResponse =
     cwd: string;
   }
   | { kind: "session-closed"; sessionId: string }
-  | { kind: "app-error-ack" };
+  | { kind: "app-error-ack" }
+  | {
+    kind: "config-toggle";
+    file: string;
+    /** Unified diff; empty when the file already said so. */
+    diff: string;
+    beforeHash: string;
+    applied: boolean;
+    backup?: string;
+    appliesNextSession: true;
+  }
+  | { kind: "config-rollback"; file: string; restoredFrom: string };
 
 export type SessionControlResponse = SessionAck | SessionError | PairingOpen | RuntimeControlResponse;
 export type ControlResponse = ConfigControlResponse | SessionControlResponse;
@@ -920,7 +950,9 @@ export function isControlMessageCandidate(value: unknown): boolean {
     || value.kind === "agent-capabilities"
     || value.kind === "session-start"
     || value.kind === "session-close"
-    || value.kind === "app-error";
+    || value.kind === "app-error"
+    || value.kind === "config-toggle"
+    || value.kind === "config-rollback";
 }
 
 const MAX_SESSION_ID_LENGTH = 256;
@@ -1122,6 +1154,13 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     }
     const teleportError = teleportRequestError({ backend: value.backend, resumeSessionId, teleportSessionId, cwd });
     if (teleportError) return { ok: false, err: teleportError };
+    // Every key against the agent's own table, every value against its kind;
+    // the copy below holds exactly the entries that passed and nothing else.
+    const optionsError = startOptionsError({ backend: value.backend, resumeSessionId, options: value.options });
+    if (optionsError) return { ok: false, err: optionsError };
+    const options = value.options === undefined
+      ? undefined
+      : { ...(value.options as Record<string, string | boolean>) };
     return {
       ok: true,
       value: {
@@ -1133,6 +1172,7 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
         ...(resumeSessionId ? { resumeSessionId } : {}),
         ...(teleportSessionId ? { teleportSessionId } : {}),
         ...(cwd ? { cwd } : {}),
+        ...(options ? { options } : {}),
       },
     };
   }
@@ -1172,6 +1212,57 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
       },
     };
   }
+  if (value.kind === "config-toggle") {
+    if (value.agent !== "claude" && value.agent !== "codex") {
+      return { ok: false, err: "config-toggle: agent must be claude or codex" };
+    }
+    if (value.scope !== "user" && value.scope !== "project") {
+      return { ok: false, err: "config-toggle: scope must be user or project" };
+    }
+    if (value.capability !== "plugin" && value.capability !== "mcp-server") {
+      return { ok: false, err: "config-toggle: capability must be plugin or mcp-server" };
+    }
+    const id = boundedPrintable(value.id, "config-toggle: id", 512);
+    if (!id.ok) return id;
+    // The id becomes a JSON key and a quoted TOML table name; a quote or a
+    // backslash would need escaping the exact-line editor does not do.
+    if (/["\\\s]/.test(id.value)) return { ok: false, err: "config-toggle: id cannot contain quotes, backslashes or whitespace" };
+    if (typeof value.enabled !== "boolean") return { ok: false, err: "config-toggle: enabled must be a boolean" };
+    let projectDir: string | undefined;
+    if (value.projectDir !== undefined) {
+      const validated = boundedPrintable(value.projectDir, "config-toggle: projectDir", 4_096);
+      if (!validated.ok) return validated;
+      if (!validated.value.startsWith("/")) return { ok: false, err: "config-toggle: projectDir must be an absolute path" };
+      projectDir = validated.value;
+    }
+    if (value.scope === "project" && !projectDir) return { ok: false, err: "config-toggle: project scope needs projectDir" };
+    if (value.preview !== undefined && typeof value.preview !== "boolean") {
+      return { ok: false, err: "config-toggle: preview must be a boolean" };
+    }
+    if (value.expectBeforeHash !== undefined && !/^[0-9a-f]{64}$/.test(String(value.expectBeforeHash))) {
+      return { ok: false, err: "config-toggle: expectBeforeHash must be a sha256 hex digest" };
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "config-toggle",
+        agent: value.agent,
+        scope: value.scope,
+        ...(projectDir ? { projectDir } : {}),
+        capability: value.capability,
+        id: id.value,
+        enabled: value.enabled,
+        ...(value.preview === true ? { preview: true } : {}),
+        ...(value.expectBeforeHash === undefined ? {} : { expectBeforeHash: value.expectBeforeHash as string }),
+      },
+    };
+  }
+  if (value.kind === "config-rollback") {
+    const file = boundedPrintable(value.file, "config-rollback: file", 4_096);
+    if (!file.ok) return file;
+    if (!file.value.startsWith("/")) return { ok: false, err: "config-rollback: file must be an absolute path" };
+    return { ok: true, value: { kind: "config-rollback", file: file.value } };
+  }
   return { ok: false, err: `unknown runtime control message kind "${value.kind}"` };
 }
 
@@ -1187,6 +1278,8 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
     || value.kind === "session-start"
     || value.kind === "session-close"
     || value.kind === "app-error"
+    || value.kind === "config-toggle"
+    || value.kind === "config-rollback"
   ) {
     return validateRuntimeControlMessage(value);
   }
@@ -1241,6 +1334,30 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
     return { ok: true, value: { kind: "resumable", sessions, complete: value.complete } };
   }
   if (value.kind === "app-error-ack") return { ok: true, value: { kind: "app-error-ack" } };
+  if (value.kind === "config-toggle") {
+    if (
+      typeof value.file !== "string" || typeof value.diff !== "string" || typeof value.beforeHash !== "string"
+      || typeof value.applied !== "boolean" || value.appliesNextSession !== true
+      || (value.backup !== undefined && typeof value.backup !== "string")
+    ) return { ok: false, err: "invalid config-toggle response" };
+    return {
+      ok: true,
+      value: {
+        kind: "config-toggle",
+        file: value.file,
+        diff: value.diff,
+        beforeHash: value.beforeHash,
+        applied: value.applied,
+        ...(value.backup === undefined ? {} : { backup: value.backup }),
+        appliesNextSession: true,
+      },
+    };
+  }
+  if (value.kind === "config-rollback") {
+    return typeof value.file === "string" && typeof value.restoredFrom === "string"
+      ? { ok: true, value: { kind: "config-rollback", file: value.file, restoredFrom: value.restoredFrom } }
+      : { ok: false, err: "invalid config-rollback response" };
+  }
   if (value.kind === "session-needs-trust") {
     if (value.backend !== "codex" || typeof value.cwd !== "string" || !value.cwd) {
       return { ok: false, err: "invalid needs-trust response" };

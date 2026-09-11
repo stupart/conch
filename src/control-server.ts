@@ -11,6 +11,7 @@ import {
 } from "./session-actions-overlay.ts";
 import type { ResumableSessionsRead } from "./resumable.ts";
 import type { AgentCapabilitiesRead } from "./agent-capabilities.ts";
+import { applyPlan, planToggle, rollbackFile, type ConfigWriteHomes, type ConfigWriteIo } from "./config-write.ts";
 import {
   isControlMessageCandidate,
   validateControlMessage,
@@ -227,6 +228,8 @@ export function dispatchControlMessage(
     || validated.value.kind === "session-start"
     || validated.value.kind === "session-close"
     || validated.value.kind === "app-error"
+    || validated.value.kind === "config-toggle"
+    || validated.value.kind === "config-rollback"
   ) return { handled: false };
 
   return { handled: true, response: applyConfigControlMessage(validated.value, controller, configPersistence) };
@@ -276,6 +279,8 @@ export interface RuntimeControlDispatchOptions {
   codexFolderTrusted?(cwd: string): boolean | null;
   close(sessionId: string): void | Promise<void>;
   report(message: Extract<RuntimeControlMessage, { kind: "app-error" }>): void | Promise<void>;
+  /** Where the agents' config files live and how they are written; absent means the real homes (B3). */
+  configWrite?: { homes?: ConfigWriteHomes; io?: ConfigWriteIo };
 }
 
 /** Process/UI controls stay outside the synchronous settings controller so AppleScript cannot block config reads. */
@@ -355,6 +360,28 @@ export async function applyRuntimeControlMessage(
     if (message.kind === "session-close") {
       await options.close(message.sessionId);
       return { kind: "session-closed", sessionId: message.sessionId };
+    }
+    if (message.kind === "config-toggle") {
+      // Planned fresh on every request, so the diff is against the file as it
+      // is now. An apply that carries the preview's hash refuses when the file
+      // moved in between — the preview is then a stale promise, not a plan.
+      const plan = planToggle(message, options.configWrite?.homes);
+      if (!message.preview && message.expectBeforeHash !== undefined && message.expectBeforeHash !== plan.beforeHash) {
+        throw new Error(`${plan.file} changed since the preview; ask for a new preview.`);
+      }
+      const applied = message.preview ? null : applyPlan(plan, options.configWrite?.io);
+      return {
+        kind: "config-toggle",
+        file: plan.file,
+        diff: plan.diff,
+        beforeHash: plan.beforeHash,
+        applied: applied !== null,
+        ...(applied?.backup ? { backup: applied.backup } : {}),
+        appliesNextSession: true,
+      };
+    }
+    if (message.kind === "config-rollback") {
+      return { kind: "config-rollback", ...rollbackFile(message.file, options.configWrite?.io) };
     }
     await options.report(message);
     return { kind: "app-error-ack" };
@@ -861,6 +888,7 @@ function isRuntimeControlCandidate(value: unknown): boolean {
     value.kind === "session-start" || value.kind === "session-close"
     || value.kind === "app-error" || value.kind === "resumable"
     || value.kind === "agent-capabilities"
+    || value.kind === "config-toggle" || value.kind === "config-rollback"
   );
 }
 
