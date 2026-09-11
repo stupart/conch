@@ -31,6 +31,7 @@ import {
   subagentRowId,
   taskNotificationText,
 } from "./agent-activity.ts";
+import { isWindowKey } from "./window-key.ts";
 
 export type ConversationItemKind =
   | "user"
@@ -103,6 +104,12 @@ export interface Conversation {
   /** The key stack, oldest first. */
   order: string[];
   items: Record<string, ConversationItem>;
+  /**
+   * True when this is one window of a session that has two, and nothing exact
+   * said which branch of the shared transcript is this window's — so it is
+   * the whole file, and a viewer should say so (A8).
+   */
+  shared?: boolean;
 }
 
 export function emptyConversation(sessionId = ""): Conversation {
@@ -1043,8 +1050,9 @@ export async function readConversationTail(
   transcriptPath: string,
   sessionId: string,
   format: ConversationFormat,
-  tailBytes = 512 * 1024,
+  options: { window?: WindowIdentity | undefined; tailBytes?: number } = {},
 ): Promise<Conversation> {
+  const tailBytes = options.tailBytes ?? 512 * 1024;
   const file = Bun.file(transcriptPath);
   let size = 0;
   try {
@@ -1060,11 +1068,151 @@ export async function readConversationTail(
   } catch {
     return emptyConversation(sessionId);
   }
-  const lines = text.split("\n");
-  if (start > 0) lines.shift();
+  let lines: readonly string[] = text.split("\n");
+  if (start > 0) lines = lines.slice(1);
+  // A key that names a window (`<id>#<pid>`) asks for that window's branch of
+  // the file both windows write. A plain id is one window and reads as before.
+  let shared = false;
+  if (format === "claude" && options.window && isWindowKey(sessionId)) {
+    ({ lines, shared } = selectWindowBranch(lines, options.window));
+  }
   const conversation = buildConversation(sessionId, lines, format);
+  if (shared) conversation.shared = true;
   if (format === "claude") attachSidechainPaths(conversation, transcriptPath);
   return conversation;
+}
+
+/** What the registry says about one window of a shared session (`~/.claude/sessions/<pid>.json`). */
+export interface WindowIdentity {
+  /** `session_<s>`; the transcript's `bridge-session` records carry `cse_<s>`. */
+  bridgeSessionId?: string;
+  /** When this window's process started, epoch ms. */
+  startedAt?: number;
+}
+
+/** `session_01AV…` and `cse_01AV…` name the same bridge session: the suffix is the id. */
+function bridgeSuffix(id: unknown): string {
+  return typeof id === "string" ? id.replace(/^[a-z]+_/i, "") : "";
+}
+
+/**
+ * Which branch of a shared transcript is this window's (A8).
+ *
+ * `claude --resume <id>` in a second terminal keeps the id, so two windows
+ * write one file. Claude Code chains records by `parentUuid`, so the branches
+ * separate exactly; what the file never says outright is which branch is
+ * whose. Two exact signals do, and only these are used — never cwd (it moves
+ * as a session `cd`s: one window wrote three) and never recency (the branch
+ * written last is the one you are NOT looking at, as often as not). A
+ * confidently wrong conversation is worse than a shared one, so with neither
+ * signal the whole file is returned and marked shared.
+ *
+ * 1. Before every model call, Claude Code 2.1.266 writes a preamble —
+ *    `last-prompt {leafUuid}` … `bridge-session {bridgeSessionId: "cse_<s>"}`
+ *    — and the window's registry entry carries `bridgeSessionId:
+ *    "session_<s>"`, the same suffix. The preamble names the leaf this window
+ *    is about to extend, so its ANCHOR is the record that continues that leaf,
+ *    and the branch is the chain through it. Walking down from the window's
+ *    last anchor stops where another window's anchor takes over: a window idle
+ *    since the other resumed from its leaf keeps its own history, not the
+ *    other's work — which is exactly the `arch site` / arch-swap bug.
+ * 2. Failing that, when exactly one branch's leaf is newer than the window's
+ *    registry `startedAt`, it is that branch: the other's work predates this
+ *    window entirely.
+ */
+export function selectWindowBranch(
+  lines: readonly string[],
+  window: WindowIdentity,
+): { lines: readonly string[]; shared: boolean } {
+  const entries: any[] = lines.map((line) => {
+    try {
+      return JSON.parse(line);
+    } catch {
+      return null;
+    }
+  });
+  const byUuid = new Map<string, any>();
+  const children = new Map<string, any[]>();
+  for (const entry of entries) {
+    if (typeof entry?.uuid !== "string") continue;
+    byUuid.set(entry.uuid, entry);
+    if (typeof entry.parentUuid !== "string") continue;
+    const siblings = children.get(entry.parentUuid) ?? [];
+    siblings.push(entry);
+    children.set(entry.parentUuid, siblings);
+  }
+  if (byUuid.size === 0) return { lines, shared: false };
+
+  // The chain through `leaf`, in file order; records with no uuid are not on
+  // any chain and pass through (the reducer ignores nearly all of them).
+  const branch = (leaf: any) => {
+    const keep = new Set<string>();
+    for (let cur = leaf; cur; cur = byUuid.get(cur.parentUuid)) keep.add(cur.uuid);
+    return lines.filter((_, index) => {
+      const entry = entries[index];
+      return typeof entry?.uuid !== "string" || keep.has(entry.uuid);
+    });
+  };
+
+  const suffix = bridgeSuffix(window.bridgeSessionId);
+  if (suffix) {
+    // Each preamble waits for its anchor: the first record that IS the leaf it
+    // named or continues from it. Resolved in one pass, in file order.
+    const pending: Array<{ leaf: string; own: boolean }> = [];
+    const anchors: Array<{ own: boolean; entry: any }> = [];
+    let leafUuid: string | undefined;
+    for (const entry of entries) {
+      if (entry?.type === "last-prompt" && typeof entry.leafUuid === "string") {
+        leafUuid = entry.leafUuid;
+      } else if (entry?.type === "bridge-session" && leafUuid) {
+        pending.push({ leaf: leafUuid, own: bridgeSuffix(entry.bridgeSessionId) === suffix });
+      } else if (typeof entry?.uuid === "string") {
+        for (let index = pending.length - 1; index >= 0; index -= 1) {
+          const waiting = pending[index]!;
+          if (entry.uuid !== waiting.leaf && entry.parentUuid !== waiting.leaf) continue;
+          anchors.push({ own: waiting.own, entry });
+          pending.splice(index, 1);
+        }
+      }
+    }
+    const mine = anchors.filter((anchor) => anchor.own).at(-1);
+    if (mine) {
+      const foreign = new Set(anchors.filter((anchor) => !anchor.own).map((anchor) => anchor.entry));
+      let leaf = mine.entry;
+      for (;;) {
+        const own = (children.get(leaf.uuid) ?? []).filter((child) => !foreign.has(child));
+        // ponytail: a fork below the last anchor that no preamble explains is
+        // stopped at, not guessed — the branch ends here rather than wrongly.
+        if (own.length !== 1) break;
+        leaf = own[0];
+      }
+      return { lines: branch(leaf), shared: false };
+    }
+  }
+
+  if (window.startedAt) {
+    const leaves = [...byUuid.values()].filter((entry) => !children.has(entry.uuid));
+    const newer = leaves.filter((leaf) => (Date.parse(leaf.timestamp ?? "") || 0) > window.startedAt!);
+    if (newer.length === 1) return { lines: branch(newer[0]), shared: false };
+  }
+  return { lines, shared: true };
+}
+
+/**
+ * The reply a session just gave: the trailing run of assistant text, thinking
+ * skipped, ending at the first tool call or user turn — what `lastAssistantText`
+ * reads from the file, taken from a conversation instead so that a window of a
+ * shared session answers from its own branch.
+ */
+export function lastAssistantReply(conversation: Conversation): string {
+  const texts: string[] = [];
+  for (let index = conversation.order.length - 1; index >= 0; index -= 1) {
+    const item = conversation.items[conversation.order[index]!];
+    if (!item || item.kind === "thinking") continue;
+    if (item.kind !== "assistant") break;
+    texts.unshift(item.text);
+  }
+  return texts.join("\n").trim();
 }
 
 /** A conversation trimmed to what is worth putting on a wire. */
@@ -1073,6 +1221,8 @@ export interface PublishedConversation {
   items: ConversationItem[];
   /** True when older items exist above the window, so a viewer can say so. */
   truncated: boolean;
+  /** True when this window's branch could not be told from the other's (A8). */
+  shared?: boolean;
 }
 
 const DEFAULT_WINDOW = 40;
@@ -1162,6 +1312,7 @@ export function publishedConversation(
     sessionId: conversation.sessionId,
     items,
     truncated: conversation.order.length > items.length,
+    ...(conversation.shared ? { shared: true } : {}),
   };
 }
 

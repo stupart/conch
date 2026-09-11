@@ -113,11 +113,13 @@ import { lastAssistantText, splitSentences, stripMarkdown, firstSentences, count
 import { PhoneUploads } from "./phone-uploads.ts";
 import { CONCH_DATA } from "./config.ts";
 import {
+  lastAssistantReply,
   latestAnswerableQuestion,
   publishedConversation,
   readConversationTail,
   type Conversation,
 } from "./conversation.ts";
+import { isWindowKey } from "./window-key.ts";
 import { readSessionContextUsage, type SessionContextUsage } from "./context-meter.ts";
 import { appendConchError, clipboardFallbackError } from "./app-errors.ts";
 import { closeTerminalSession, startTerminalSession } from "./session-lifecycle.ts";
@@ -908,6 +910,19 @@ export async function runDaemon(cfg: Config): Promise<void> {
   let recitingEvent: TurnEvent | null = null;
   let handlingEvent: TurnEvent | null = null;
   let handlingPauseGeneration: number | null = null;
+  /**
+   * A session's last reply, for showing or saying. A window of a shared
+   * session reads its own branch through the conversation loader, with its
+   * registry entry (A8) — the file-level reader returns whichever window wrote
+   * last. Anything else keeps the cached reader it always used.
+   */
+  async function lastReplyFor(path: string, sessionId: string): Promise<string> {
+    if (!isWindowKey(sessionId)) return lastAssistantText(path);
+    const conversation = await readConversationTail(path, sessionId, transcriptFormatFor(path), {
+      window: panelSessions.get(sessionId),
+    });
+    return lastAssistantReply(conversation);
+  }
   function labelForSessionId(id: string): string {
     const session = panelSessions.get(id);
     const known = latestTurnBySession.get(id)
@@ -1565,10 +1580,12 @@ export async function runDaemon(cfg: Config): Promise<void> {
             // (never announce half a turn) makes it show the wrong thing: it
             // fell through to an earlier turn's short spoken announce, which is
             // where "one random sentence idk where from" came from.
-            const turn = path ? await currentTurnText(path) : "";
+            // A window of a shared session reads its own branch (A8); the
+            // whole-turn reader sees only the file, so it is skipped there.
+            const turn = path && !isWindowKey(sessionId) ? await currentTurnText(path) : "";
             if (turn) return turn;
             // RAW, not stripMarkdown: the phone renders it, it doesn't speak it.
-            const finalMessage = path ? await lastAssistantText(path) : "";
+            const finalMessage = path ? await lastReplyFor(path, sessionId) : "";
             if (finalMessage) return finalMessage;
             // Empty means the session is MID-TURN — lastAssistantText returns
             // the final message of a turn, and deliberately nothing while a
@@ -1759,9 +1776,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // disagrees with the line being spoken.
     const [transcriptReplyRaw, previewRaw, conversation] = await Promise.all([
       contentEvent?.transcriptPath
-        ? lastAssistantText(contentEvent.transcriptPath)
+        ? lastReplyFor(contentEvent.transcriptPath, contentEvent.sessionId)
         : Promise.resolve(""),
-      previewPath ? lastAssistantText(previewPath) : Promise.resolve(""),
+      previewPath && previewId ? lastReplyFor(previewPath, previewId) : Promise.resolve(""),
       // Not tied to `contentEvent` like the reply beside it. That is the last
       // turn conch SPOKE, which is null for a whole daemon lifetime until
       // something finishes — so on a fresh start the app would show an empty
@@ -1774,11 +1791,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
         // projects directory by id, which can never locate a Codex rollout —
         // so every Codex row resolved to nothing and showed no conversation at
         // all, even while its rows updated live.
+        const session = live.find((candidate) => candidate.sessionId === sessionId);
         const path = (contentEvent?.sessionId === sessionId && contentEvent.transcriptPath)
-          || live.find((session) => session.sessionId === sessionId)?.transcriptPath
+          || session?.transcriptPath
           || findTranscript(cfg.claudeDir, sessionId);
         if (!path) return Promise.resolve(null);
-        return readConversationTail(path, sessionId, transcriptFormatFor(path)).catch(() => null);
+        // The row's registry entry rides along: a window of a shared session
+        // reads its own branch of the transcript, not the other's (A8).
+        return readConversationTail(path, sessionId, transcriptFormatFor(path), { window: session }).catch(() => null);
       })(),
     ]);
     // One per visible row. The reads are tail-only and bounded, and doing them
@@ -1790,7 +1810,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           const path = session.transcriptPath
             ?? findTranscript(cfg.claudeDir, session.sessionId);
           if (!path) return null;
-          const read = await readConversationTail(path, session.sessionId, transcriptFormatFor(path))
+          const read = await readConversationTail(path, session.sessionId, transcriptFormatFor(path), { window: session })
             .catch(() => null);
           if (!read || read.order.length === 0) return null;
           return [
@@ -2285,7 +2305,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           return;
         }
         const [latestReply, currentMark] = await Promise.all([
-          lastAssistantText(target.transcriptPath),
+          lastReplyFor(target.transcriptPath, target.sessionId),
           transcriptMark(target.transcriptPath),
         ]);
         const latest = stripMarkdown(latestReply);
@@ -2624,6 +2644,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           event.transcriptPath,
           event.sessionId,
           transcriptFormatFor(event.transcriptPath),
+          { window: panelSessions.get(event.sessionId) },
         );
         const reply = choiceReplyForConversation(text, conversation);
         if (reply !== text) log(`matched spoken choice -> ${JSON.stringify(reply)}`);
@@ -2931,7 +2952,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // actually covered. Shared by the read-full phase and "continue".
     const ensureSentences = async (): Promise<string[]> => {
       if (!sentences) {
-        sentences = splitSentences(stripMarkdown(await lastAssistantText(event.transcriptPath!)));
+        sentences = splitSentences(stripMarkdown(await lastReplyFor(event.transcriptPath!, event.sessionId)));
         cursor = autoTurn
           ? event.review ? sentences.length : countCoveredSentences(event.announce, sentences)
           : countCoveredSentences(event.announce, sentences);
