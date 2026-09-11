@@ -7,7 +7,9 @@ import {
   codexHomeDir,
   codexThreadDbPaths,
   codexThreadLabel,
+  codexThreadName,
   openReadOnly,
+  readCodexSessionIndex,
 } from "./codex-threads.ts";
 
 export interface ResumableSession {
@@ -94,13 +96,19 @@ export function readCodexCandidates(
   let db: ReturnType<typeof openReadOnly> | undefined;
   try {
     db = openReadOnly(state);
+    // `SELECT *`, as `readCodexThreads` does: `history_mode` decides whether the
+    // session index applies, and naming it would empty the list on a Codex
+    // whose schema predates the column.
     const rows = db.query(
-      `SELECT id, cwd, name, agent_nickname, title, updated_at_ms
+      `SELECT *
          FROM threads
         WHERE archived = 0
           AND source IN ('cli', 'vscode')
         ORDER BY updated_at_ms DESC`,
     ).all() as Array<Record<string, unknown>>;
+    // Once per listing. The same name the live rows show (`codexThreadName`), so
+    // a thread renamed in Codex is not listed under its first prompt here.
+    const index = readCodexSessionIndex(codexHome);
     return {
       complete: true,
       candidates: rows.map((row) => {
@@ -110,7 +118,7 @@ export function readCodexCandidates(
           sessionId,
           backend: "codex",
           label: codexThreadLabel({
-            name: typeof row.name === "string" ? row.name : null,
+            name: codexThreadName(row, index),
             agent_nickname: typeof row.agent_nickname === "string" ? row.agent_nickname : null,
             title: typeof row.title === "string" ? row.title : null,
           }) ?? fallbackLabel(cwd, sessionId),

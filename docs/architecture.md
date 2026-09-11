@@ -166,8 +166,9 @@ subagents (`parentSessionId`, no pid, never active or announced), and listed onl
 writer lock is held: the edge's `status` still says `open` long after a helper is done. A
 thread's name is Codex's own, resolved as Codex resolves it — `threads.name` for a paginated
 thread, the newest `session_index.jsonl` line for a legacy one — with conch's rename override
-still above it. The lock also decides where keystrokes may go. `thread-writer-locks/<id>.lock`
-holds no pid, and one `lsof -F pn` names whichever process hosts the thread: no holder means
+still above it. The resume picker (`resumable.ts`) names past Codex threads by the same rule,
+reading the index once per listing. The lock also decides where keystrokes may go.
+`thread-writer-locks/<id>.lock` holds no pid, and one `lsof -F pn` names whichever process hosts the thread: no holder means
 the thread is closed; a holder whose command line runs `app-server` (the ChatGPT app's, or the
 shared daemon's) has no terminal; any other holder is the terminal session. The first two
 carry pid 0 plus a `noTerminal` reason on the row, so nothing types into, raises or closes
