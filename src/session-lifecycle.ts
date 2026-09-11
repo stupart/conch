@@ -1,6 +1,12 @@
 import { homedir } from "node:os";
 import { statSync } from "node:fs";
-import { adapterFor, shellQuote, type SessionBackend } from "./agent-adapter.ts";
+import {
+  adapterFor,
+  BYPASS_OPTION,
+  shellQuote,
+  type AgentAdapter,
+  type SessionBackend,
+} from "./agent-adapter.ts";
 import { ensureHelpSession, helpSessionDir } from "./help-session.ts";
 
 export type { SessionBackend };
@@ -30,6 +36,13 @@ export interface StartSessionRequest {
    * not quietly edit their configuration to make a launch succeed.
    */
   trustFolder?: boolean;
+  /**
+   * Per-session choices from the agent's own `--help` (C1), keyed by the
+   * adapter row's `startOptions[].name`. Refused unless every key is in the
+   * table and every value fits its kind; `bypass-permissions` here overrides
+   * the persisted default the sheets seed their toggle from.
+   */
+  options?: Record<string, string | boolean>;
 }
 
 export interface SessionLifecycleProcess {
@@ -65,9 +78,106 @@ export function teleportRequestError(request: StartSessionRequest): string | und
   if (!request.cwd.trim().startsWith("/")) return "cwd must be an absolute path";
 }
 
+/** A free-form start value: a model alias or name, a profile name. Never a shell word. */
+const START_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,127}$/;
+
+/**
+ * Refuses an `options` key the agent's table does not list, or a value not
+ * shaped as its entry says, quoting the CLI's own help. Nothing reaches the
+ * command line unvalidated: the daemon's validator and the direct launchers
+ * (CLI, help session) all ask here.
+ */
+export function startOptionsError(
+  request: Pick<StartSessionRequest, "backend" | "resumeSessionId"> & { options?: unknown },
+): string | undefined {
+  const { options } = request;
+  if (options === undefined) return;
+  const adapter = adapterFor(request.backend);
+  if (typeof options !== "object" || options === null || Array.isArray(options)) return "options must be an object";
+  for (const [name, value] of Object.entries(options as Record<string, unknown>)) {
+    const entry = adapter.startOptions.find((option) => option.name === name);
+    if (!entry) {
+      const offered = adapter.startOptions.map((option) => option.name).join(", ");
+      return `${adapter.displayName} has no start option "${name}" (it offers ${offered})`;
+    }
+    if (entry.kind === "bool") {
+      if (typeof value !== "boolean") return `${entry.flag} is on or off — ${entry.help}`;
+    } else if (typeof value !== "string") {
+      return `${entry.flag} takes a value — ${entry.help}`;
+    } else if (entry.kind === "enum" && !entry.choices?.includes(value)) {
+      return `${entry.flag}: ${JSON.stringify(value)} is not one of ${entry.choices?.join(", ")} — ${entry.help}`;
+    } else if (entry.kind === "string" && !START_VALUE.test(value)) {
+      return `${entry.flag} must be letters, digits, dots, underscores, colons, brackets or hyphens, starting with a letter or number — ${entry.help}`;
+    }
+    if (entry.resumeOnly && !request.resumeSessionId?.trim()) return `${entry.flag} applies only to a resume — ${entry.help}`;
+  }
+}
+
+/** Table order, after the agent's own arguments. The bypass entry is rendered where its flag was verified, not here. */
+function renderStartOptions(adapter: AgentAdapter, options: StartSessionRequest["options"]): string {
+  if (!options) return "";
+  let rendered = "";
+  for (const entry of adapter.startOptions) {
+    const value = options[entry.name];
+    if (entry.name === BYPASS_OPTION || value === undefined || value === false) continue;
+    rendered += entry.kind === "bool" ? ` ${entry.flag}` : ` ${entry.flag} ${shellQuote(String(value))}`;
+  }
+  return rendered;
+}
+
+/** `conch start --help`: the chosen agent's table, one option per entry, in the CLI's own words. */
+export function startUsage(adapter: AgentAdapter): string {
+  const lines = adapter.startOptions.map((entry) => {
+    const spelling = entry.kind === "bool"
+      ? `--${entry.name} | --no-${entry.name}`
+      : entry.kind === "enum"
+      ? `--${entry.name} <${entry.choices?.join("|")}>`
+      : `--${entry.name} <value>`;
+    return `  ${spelling}${entry.resumeOnly ? "  (with --resume)" : ""}\n      ${entry.help}`;
+  });
+  return `usage: conch start [claude|codex] [--cwd <dir>] [--resume <id> | --teleport <id>] [options]\n`
+    + `${adapter.displayName} options:\n${lines.join("\n")}`;
+}
+
+/** `conch start`'s arguments, parsed against the chosen agent's table. Throws with that agent's usage. */
+export function startRequestFromArgv(args: string[]): StartSessionRequest {
+  const named = args[0] === "claude" || args[0] === "codex";
+  const backend: SessionBackend = args[0] === "codex" ? "codex" : "claude";
+  const rest = named ? args.slice(1) : args;
+  const adapter = adapterFor(backend);
+  const request: StartSessionRequest = { backend };
+  const options: Record<string, string | boolean> = {};
+  for (let i = 0; i < rest.length; i += 1) {
+    const arg = rest[i] ?? "";
+    const fixed = arg === "--cwd" ? "cwd" : arg === "--resume" ? "resumeSessionId" : arg === "--teleport" ? "teleportSessionId" : null;
+    if (fixed) {
+      const value = rest[++i];
+      if (value === undefined) throw new Error(`${arg} needs a value\n${startUsage(adapter)}`);
+      request[fixed] = value;
+      continue;
+    }
+    const negated = arg.startsWith("--no-");
+    const entry = arg.startsWith("--")
+      ? adapter.startOptions.find((option) => option.name === arg.slice(negated ? 5 : 2))
+      : undefined;
+    if (!entry || (negated && entry.kind !== "bool")) throw new Error(`unknown argument ${arg}\n${startUsage(adapter)}`);
+    if (entry.kind === "bool") {
+      options[entry.name] = !negated;
+    } else {
+      const value = rest[++i];
+      if (value === undefined) throw new Error(`${entry.flag} needs a value — ${entry.help}`);
+      options[entry.name] = value;
+    }
+  }
+  if (Object.keys(options).length > 0) request.options = options;
+  const error = teleportRequestError(request) ?? startOptionsError(request);
+  if (error) throw new Error(error);
+  return request;
+}
+
 /** A Terminal-started agent replaces its shell, so leaving the agent also completes the tab cleanly. */
 export function terminalSessionCommand(request: StartSessionRequest): string {
-  const error = teleportRequestError(request);
+  const error = teleportRequestError(request) ?? startOptionsError(request);
   if (error) throw new Error(error);
   const cwd = request.cwd?.trim() || homedir();
   const adapter = adapterFor(request.backend);
@@ -80,9 +190,13 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
     : "";
   // Before the subcommand's own arguments, not after: `codex resume <id>` takes
   // the id as a positional, and a global flag trailing it reads as a second one.
-  const bypass = request.bypassPermissions ? ` ${adapter.bypassPermissionsFlag}` : "";
+  // The request's own toggle, when it carries one, beats the persisted default.
+  const bypass = (request.options?.[BYPASS_OPTION] ?? request.bypassPermissions)
+    ? ` ${adapter.bypassPermissionsFlag}`
+    : "";
   const trust = request.trustFolder ? adapter.trustFolderArgs(cwd) : "";
-  return `cd -- ${shellQuote(cwd)} && exec ${adapter.executable}${bypass}${trust}${args}`;
+  return `cd -- ${shellQuote(cwd)} && exec ${adapter.executable}${bypass}${trust}${args}`
+    + renderStartOptions(adapter, request.options);
 }
 
 function defaultSpawn(argv: string[]): SessionLifecycleProcess {

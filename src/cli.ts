@@ -45,7 +45,7 @@ Getting started:
 
 Everyday:
   conch wake [name] | recite [name] | pause | resume  talk again | reread | manual (hold) | auto
-  conch sessions | resumable [query]       list live sessions | past ones to resume
+  conch sessions | resumable [query] | start [claude|codex] [options]  live | past | open one in Terminal (start --help)
   conch rename <session> <name> | model <session> <model>  save a name | type /model into it
 
 Voice and settings:
@@ -56,7 +56,7 @@ Voice and settings:
 
 Optional / manual setup:
   conch service [install|off] | uninstall [--models]  manage or remove the install
-  conch install-plugin | uninstall-plugin  manage the Claude Code / Codex plugin
+  conch install-plugin | uninstall-plugin | config-toggle <agent> <plugin|mcp-server> <id> <on|off> [--scope user|project] [--project <dir>] [--preview] | config-rollback <file>  the conch plugin · a next-session switch in the agent's own file · undo it
   conch install [--codex] | pair   wire hooks · connect the iPhone app
   conch doctor | help-session | version   live checks | a Claude session that knows conch | version
 
@@ -473,6 +473,78 @@ switch (command) {
     console.log(`[conch] /model ${model} -> ${label}`);
     break;
   }
+  case "config-toggle": {
+    // B3: the daemon edits the agent's own config file for the next session.
+    // Mirrors the control message exactly; `--preview` shows the diff and
+    // writes nothing.
+    const flags = new Set<string>();
+    const values: Record<string, string> = {};
+    const positional: string[] = [];
+    for (let i = 0; i < rest.length; i += 1) {
+      const arg = rest[i]!;
+      if (arg === "--preview") flags.add(arg);
+      else if (arg === "--scope" || arg === "--project") values[arg] = rest[++i] ?? "";
+      else positional.push(arg);
+    }
+    const [agent, capability, id, state] = positional;
+    const scope = values["--scope"] ?? "user";
+    if (
+      positional.length !== 4
+      || (agent !== "claude" && agent !== "codex")
+      || (capability !== "plugin" && capability !== "mcp-server")
+      || (state !== "on" && state !== "off")
+      || (scope !== "user" && scope !== "project")
+    ) {
+      console.error(
+        "usage: conch config-toggle <claude|codex> <plugin|mcp-server> <id> <on|off> [--scope user|project] [--project <dir>] [--preview]",
+      );
+      process.exit(1);
+    }
+    const result = await sendControlMessage(cfg.socketPath, {
+      kind: "config-toggle",
+      agent,
+      scope,
+      ...(scope === "project" ? { projectDir: values["--project"] || process.cwd() } : {}),
+      capability,
+      id: id!,
+      enabled: state === "on",
+      ...(flags.has("--preview") ? { preview: true } : {}),
+    }, 5_000);
+    if (!result.ok) {
+      const diagnostic = result.diagnostic ? `: ${result.diagnostic}` : "";
+      console.error(`[conch] ${result.reason}${diagnostic}`);
+      process.exit(1);
+    }
+    if (result.response.kind !== "config-toggle") {
+      console.error(`[conch] ${result.response.kind === "session-error" ? result.response.error : "ack-unknown"}`);
+      process.exit(1);
+    }
+    const { file, diff, applied, backup } = result.response;
+    console.log(diff || `${file} already says so; nothing to change.`);
+    console.log(applied
+      ? `[conch] written to ${file}${backup ? ` (backup ${backup})` : ""} — applies to the next session`
+      : `[conch] preview only; nothing written`);
+    break;
+  }
+  case "config-rollback": {
+    const [file, ...extra] = rest;
+    if (!file || extra.length > 0) {
+      console.error("usage: conch config-rollback <file>");
+      process.exit(1);
+    }
+    const result = await sendControlMessage(cfg.socketPath, { kind: "config-rollback", file }, 5_000);
+    if (!result.ok) {
+      const diagnostic = result.diagnostic ? `: ${result.diagnostic}` : "";
+      console.error(`[conch] ${result.reason}${diagnostic}`);
+      process.exit(1);
+    }
+    if (result.response.kind !== "config-rollback") {
+      console.error(`[conch] ${result.response.kind === "session-error" ? result.response.error : "ack-unknown"}`);
+      process.exit(1);
+    }
+    console.log(`[conch] ${result.response.file} restored from ${result.response.restoredFrom} — applies to the next session`);
+    break;
+  }
   case "pause":
   case "resume": {
     const ok = await sendToDaemon(cfg.socketPath, { type: command, sessionId: "", label: "", announce: "" });
@@ -567,6 +639,27 @@ switch (command) {
       break;
     }
     console.log(target);
+    break;
+  }
+  case "start": {
+    // Launched directly, like help-session: the person is at this Terminal,
+    // so an agent's own trust prompt is theirs to answer.
+    const { startRequestFromArgv, startTerminalSession, startUsage } = await import("./session-lifecycle.ts");
+    const { adapterFor, agentAdapters } = await import("./agent-adapter.ts");
+    if (rest.includes("--help") || rest.includes("-h")) {
+      console.log(agentAdapters().map(startUsage).join("\n\n"));
+      break;
+    }
+    let request;
+    try {
+      request = startRequestFromArgv(rest);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
+    // The persisted default; the request's own toggle, when given, wins.
+    await startTerminalSession({ bypassPermissions: cfg.bypassPermissions, ...request });
+    console.log(`[conch] opened ${adapterFor(request.backend).displayName} in Terminal, in ${request.cwd ?? "~"}`);
     break;
   }
   case "help-session": {

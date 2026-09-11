@@ -115,6 +115,20 @@ enum ConchAgentBackend: String, CaseIterable, Identifiable, Encodable, Sendable 
     var label: String { rawValue.capitalized }
 }
 
+/// A start option's value on the wire: the daemon's `string | boolean`.
+enum ConchStartOptionValue: Encodable, Sendable, Equatable {
+    case string(String)
+    case bool(Bool)
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case let .string(value): try container.encode(value)
+        case let .bool(value): try container.encode(value)
+        }
+    }
+}
+
 struct ConchSessionStartRequest: Encodable, Sendable {
     let kind = "session-start"
     let backend: ConchAgentBackend
@@ -124,19 +138,24 @@ struct ConchSessionStartRequest: Encodable, Sendable {
     /// Answering Codex's trust question in advance, for this launch only. Only
     /// ever set because a person said yes in conch.
     let trustFolder: Bool?
+    /// Per-session choices from the agent's own `--help`, keyed by the
+    /// daemon's option names (`agent-adapter.ts`). The daemon validates.
+    let options: [String: ConchStartOptionValue]?
 
     init(
         backend: ConchAgentBackend,
         resumeSessionId: String?,
         teleportSessionId: String? = nil,
         cwd: String?,
-        trustFolder: Bool? = nil
+        trustFolder: Bool? = nil,
+        options: [String: ConchStartOptionValue]? = nil
     ) {
         self.backend = backend
         self.resumeSessionId = resumeSessionId
         self.teleportSessionId = teleportSessionId
         self.cwd = cwd
         self.trustFolder = trustFolder
+        self.options = options
     }
 }
 
@@ -172,6 +191,30 @@ struct ConchCapabilitiesRequest: Encodable, Sendable {
 
 struct ConchCapabilitiesReply: Decodable, Sendable {
     let inventory: AgentCapabilities?
+}
+
+/// Flip a plugin or MCP server for the NEXT session, in the agent's own
+/// file (B3). `preview` answers with the diff and writes nothing; an apply
+/// carries the preview's hash so the daemon refuses if the file moved since.
+struct ConchConfigToggleRequest: Encodable, Sendable {
+    let kind = "config-toggle"
+    let agent: String
+    let scope: String
+    let projectDir: String?
+    let capability: String
+    let id: String
+    let enabled: Bool
+    let preview: Bool
+    let expectBeforeHash: String?
+}
+
+struct ConchConfigToggleReply: Decodable, Equatable, Sendable {
+    let file: String
+    /// Unified diff; empty when the file already says so.
+    let diff: String
+    let beforeHash: String
+    let applied: Bool
+    let backup: String?
 }
 
 struct ConchSessionCloseRequest: Encodable, Sendable {

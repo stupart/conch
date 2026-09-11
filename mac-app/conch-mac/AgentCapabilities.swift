@@ -86,6 +86,27 @@ struct AgentCapabilities: Decodable, Equatable, Sendable {
         let skill: Skill?
         let mcpServer: McpServer?
         let mcpTool: McpTool?
+
+        /// A switch conch can honestly write (B3): a standalone plugin or MCP
+        /// server at a scope conch edits. A plugin's own servers ride with the
+        /// plugin, and a managed or unknown scope has no file conch writes.
+        var isToggleable: Bool {
+            (kind == "plugin" || kind == "mcp-server") && parentId == nil
+                && ["user", "project", "local"].contains(scope)
+        }
+
+        /// What the file says for the NEXT session — the toggle's position,
+        /// never a claim about the running process. Unset reads as on: an
+        /// installed plugin and a defined server run unless switched off, and
+        /// a `.mcp.json` server Claude has not decided on is still pending.
+        var enabledForNextSession: Bool {
+            if let plugin { return plugin.enabledForNextSession ?? true }
+            if let mcpServer { return mcpServer.enabledForNextSession ?? (mcpServer.projectDecision != "rejected") }
+            return false
+        }
+
+        /// The key the writer edits: `name@marketplace` for a plugin, the server name otherwise.
+        var configId: String { plugin?.pluginId ?? name }
     }
 
     struct Plugin: Decodable, Equatable, Sendable {

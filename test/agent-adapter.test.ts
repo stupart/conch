@@ -56,6 +56,7 @@ describe("a third backend is one row", () => {
     resumeArgs: (id) => ` --continue ${id}`,
     teleportArgs: null,
     bypassPermissionsFlag: "--trust-me",
+    startOptions: [],
     trustFolderArgs: (cwd) => ` --trust ${cwd}`,
     folderTrusted: () => null,
     renameCommand: (label) => `/title ${label}`,
