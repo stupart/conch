@@ -120,6 +120,10 @@ struct RemoteSessionView: View {
     @State private var sending = false
     @State private var previewURL: URL?
     @State private var downloading = false
+    /// Only for its link door (A13); remote rows never reach the local store.
+    @EnvironmentObject private var store: StateStore
+    /// A web link from this session that would not open, in macOS's words.
+    @State private var linkFailure: String?
 
     private var draft: Binding<String> {
         Binding(get: { remotes.drafts[target] ?? "" }, set: { remotes.drafts[target] = $0 })
@@ -166,7 +170,8 @@ struct RemoteSessionView: View {
                     }
                     if let review = row?.review, let link = review.link {
                         if let url = URL(string: link), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
-                            Link(review.summary.isEmpty ? "Open review" : review.summary, destination: url)
+                            Button(review.summary.isEmpty ? "Open review" : review.summary) { openWeb(url) }
+                                .buttonStyle(.link)
                         } else {
                             fileButton(review.summary.isEmpty ? "Preview remote file" : review.summary, path: link)
                         }
@@ -176,6 +181,7 @@ struct RemoteSessionView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             if let readError { Text(readError).font(.callout).foregroundStyle(ConchPalette.statusWaiting) }
+            LinkFailureLine(message: $linkFailure)
             Divider()
             TextField("Type a reply to \(host)…", text: draft, axis: .vertical)
                 .lineLimit(2...6).textFieldStyle(.roundedBorder)
@@ -221,8 +227,19 @@ struct RemoteSessionView: View {
                     openFile(url.isFileURL ? url.path : url.relativeString)
                     return .handled
                 }
-                return ["http", "https"].contains(url.scheme?.lowercased() ?? "") ? .systemAction : .discarded
+                guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return .discarded }
+                openWeb(url)
+                return .handled
             })
+    }
+
+    /// A remote session's web link is a page this Mac opens itself, so it
+    /// goes through the one door that reports (A13) — SwiftUI's `Link` and
+    /// its system action dropped the answer. No row id: the session is the
+    /// other Mac's, and this Mac's errors.jsonl has no row by that name.
+    private func openWeb(_ url: URL) {
+        linkFailure = nil
+        store.openLink(url.absoluteString, cwd: nil, rowId: nil) { linkFailure = $0 }
     }
 
     private func fileButton(_ title: String, path: String) -> some View {

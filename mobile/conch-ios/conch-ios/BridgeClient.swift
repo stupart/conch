@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 /// The phone's protocol client. Pairing selects exactly one transport; state,
 /// commands, replies, settings, and scoped files above this point are identical.
@@ -497,6 +498,25 @@ final class BridgeClient: ObservableObject {
         if let sessionId { control["sessionId"] = sessionId }
         guard let reply = await postControlRaw(control) else { return false }
         return reply["kind"] as? String == "app-error-ack"
+    }
+
+    /// One door for every link the phone opens (A13): the conversation, a
+    /// rendered deliverable, the Settings button. A path is a file on the
+    /// Mac, which the phone cannot open; anything else goes to iOS, whose
+    /// refusal is only a Bool. Either failure goes back to where the tap
+    /// happened and to the Mac's errors.jsonl as `open-link`.
+    func openLink(_ url: URL, sessionId: String?, onFailure: @escaping @MainActor (String) -> Void) {
+        func fail(_ message: String) {
+            onFailure(message)
+            Task { await reportAppError(operation: "open-link", message: message, sessionId: sessionId) }
+        }
+        guard url.scheme != nil, !url.isFileURL else {
+            fail("That's a file on your Mac, not a page: \(url.path)")
+            return
+        }
+        UIApplication.shared.open(url) { opened in
+            if !opened { fail("iPhone couldn't open \(url.absoluteString)") }
+        }
     }
 
     /// Hide or restore one ledger row through the daemon's shared session

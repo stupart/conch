@@ -50,6 +50,8 @@ struct SessionView: View {
     }
     @State private var attaching = false
     @State private var attachError: String?
+    /// iOS refusing to open Settings, said under the button (A13).
+    @State private var settingsFailure: String?
     /// An image-only send in flight. TalkController's `.sending` phase covers
     /// only sends that carry words; this is the same signal for the send that
     /// carries none.
@@ -353,7 +355,7 @@ struct SessionView: View {
         }
         .sheet(isPresented: $showReview) {
             if let review = row?.review {
-                DeliverableSheet(bridge: bridge, review: review)
+                DeliverableSheet(bridge: bridge, review: review, sessionId: sessionId)
             }
         }
         .confirmationDialog(
@@ -457,13 +459,21 @@ struct SessionView: View {
                         .foregroundStyle(Palette.needs)
                         .multilineTextAlignment(.center)
                     // Mid-workout, nobody navigates Settings by hand.
+                    // Through the phone's door, so a refusal is said here and
+                    // filed rather than a button that does nothing (A13).
                     Button("Open Settings") {
                         if let url = URL(string: UIApplication.openSettingsURLString) {
-                            UIApplication.shared.open(url)
+                            settingsFailure = nil
+                            bridge.openLink(url, sessionId: sessionId) { settingsFailure = $0 }
                         }
                     }
                     .font(Type.caption.weight(.medium))
                     .foregroundStyle(Palette.micOpen)
+                    if let settingsFailure {
+                        Text(settingsFailure)
+                            .font(Type.caption)
+                            .foregroundStyle(Palette.needs)
+                    }
                 }
                 .padding(.horizontal, 20)
             }

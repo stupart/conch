@@ -47,7 +47,12 @@ test("A1 Swift remote groups tag owners and isolate text-only UI from local path
   expect(session).toContain("remotes.download(path, for: target)");
   expect(session).toContain("remotes.send(text, to: target)");
   expect(session).toContain("TextField(");
-  expect(session).not.toMatch(/\bComposerView\b|\bTranscriptContentModel\b|\bArtifactPreview\b|\bStateStore\b|NSOpenPanel|fileImporter|revealSession|\bmic\b|\battachments\b|\bConchSocketClient\b|URL\(fileURLWithPath:/);
+  // The one StateStore use allowed here is its link door (A13): a remote
+  // review's web link is a page this Mac opens itself. Remote rows still
+  // never reach the local store's ledger or transcript machinery.
+  expect(session).toContain("@EnvironmentObject private var store: StateStore");
+  expect(session.match(/\bstore\.\w+/g)).toEqual(["store.openLink"]);
+  expect(session.replace("@EnvironmentObject private var store: StateStore", "")).not.toMatch(/\bComposerView\b|\bTranscriptContentModel\b|\bArtifactPreview\b|\bStateStore\b|NSOpenPanel|fileImporter|revealSession|\bmic\b|\battachments\b|\bConchSocketClient\b|URL\(fileURLWithPath:/);
   expect(session).toContain("if url.isFileURL || url.scheme == nil");
   const content = swift("ContentView.swift");
   expect(content).toContain("onSelectRemote: { remoteSelection = $0 }");
