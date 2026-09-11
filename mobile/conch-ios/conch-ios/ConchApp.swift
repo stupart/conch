@@ -2,10 +2,22 @@ import SwiftUI
 
 @main
 struct ConchApp: App {
+    #if DEBUG
+    /// `-conchFixture <abs path to published-state JSON>`: render that instead
+    /// of pairing, for `scripts/ui-snapshot.sh ios`. Launch arguments land in
+    /// UserDefaults' volatile argument domain, so nothing persists.
+    static let fixtureURL = UserDefaults.standard.string(forKey: "conchFixture")
+        .map { URL(fileURLWithPath: $0) }
+    #endif
+
     // The env override exists for the screenshot/audit harness: a simulator
     // cannot type into the pairing form, and a UX loop that cannot drive the
     // app cannot judge it. Never persisted; a real phone never sets these.
     @State private var pairing: BridgeClient.Pairing? = {
+        #if DEBUG
+        // A placeholder pairing, never saved: the fixture stands in for the Mac.
+        if ConchApp.fixtureURL != nil { return .lan(host: "fixture", token: "") }
+        #endif
         let env = ProcessInfo.processInfo.environment
         if let host = env["CONCH_PAIR_HOST"], let token = env["CONCH_PAIR_TOKEN"] {
             return .lan(host: host, token: token)
@@ -148,7 +160,14 @@ struct ConchApp: App {
 
     private func bridgeClient(for pairing: BridgeClient.Pairing) -> BridgeClient {
         if let bridge { return bridge }
+        #if DEBUG
+        let created = BridgeClient(
+            pairing: pairing,
+            transport: Self.fixtureURL.map { FixtureTransport(url: $0) }
+        )
+        #else
         let created = BridgeClient(pairing: pairing)
+        #endif
         // Claim the voice as soon as we are connected, and re-claim on every
         // reconnect — the daemon hands audio back to the Mac whenever the last
         // phone drops, which includes its own restarts.

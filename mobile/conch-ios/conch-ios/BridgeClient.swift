@@ -78,13 +78,23 @@ final class BridgeClient: ObservableObject {
         }
     }
 
-    init(pairing: Pairing) {
+    convenience init(pairing: Pairing) {
+        self.init(pairing: pairing, transport: nil)
+    }
+
+    /// `injected` exists for the DEBUG fixture mode; every real pairing picks
+    /// its transport from the pairing itself.
+    init(pairing: Pairing, transport injected: BridgeTransport?) {
         self.pairing = pairing
-        switch pairing {
-        case let .lan(host, token):
-            transport = DirectHTTPTransport(host: host, token: token)
-        case let .relay(payload):
-            transport = RelayTransport(pairing: payload)
+        if let injected {
+            transport = injected
+        } else {
+            switch pairing {
+            case let .lan(host, token):
+                transport = DirectHTTPTransport(host: host, token: token)
+            case let .relay(payload):
+                transport = RelayTransport(pairing: payload)
+            }
         }
         transport.onStateData = { [weak self] data in
             Task { @MainActor [weak self] in
@@ -828,3 +838,49 @@ enum PairingStore {
         SecItemDelete(query as CFDictionary)
     }
 }
+
+#if DEBUG
+/// A Mac that is only a file: the published-state JSON the daemon would send,
+/// read from `-conchFixture <abs path>` so a headless simulator can render the
+/// real UI without pairing (`scripts/ui-snapshot.sh ios`). It feeds the same
+/// `onStateData` path the relay and LAN transports do, so the fixture goes
+/// through the app's own decoder. DEBUG only: Release has no way in.
+final class FixtureTransport: BridgeTransport, @unchecked Sendable {
+    var onStateData: ((Data) -> Void)?
+    var onConnectionChange: ((Bool, String?) -> Void)?
+    private let url: URL
+
+    init(url: URL) { self.url = url }
+
+    func start() {
+        guard let data = try? Data(contentsOf: url) else {
+            onConnectionChange?(false, "Fixture unreadable: \(url.path)")
+            return
+        }
+        onConnectionChange?(true, nil)
+        onStateData?(data)
+    }
+
+    func stop() {}
+    func reconnectNow() { start() }
+
+    // ponytail: every command answers 404. A fixture is read-only, and a
+    // missing /reply leaves the fixture's own conversation as the truth.
+    func request(_ request: BridgeRequest) async throws -> BridgeResponse {
+        BridgeResponse(status: 404, headers: [], body: Data())
+    }
+
+    /// A COPY: the deliverable sheet deletes whatever file it is handed.
+    func download(_ request: BridgeRequest) async throws -> URL {
+        guard let path = URLComponents(string: "https://fixture.invalid\(request.path)")?
+            .queryItems?.first(where: { $0.name == "path" })?.value else {
+            throw BridgeTransportError.invalidRequest
+        }
+        let copy = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension((path as NSString).pathExtension)
+        try FileManager.default.copyItem(at: URL(fileURLWithPath: path), to: copy)
+        return copy
+    }
+}
+#endif
