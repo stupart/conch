@@ -31,7 +31,7 @@ import {
   type ReadAgentCapabilitiesOptions,
 } from "./agent-capabilities.ts";
 import { findCodexTranscript, type CodexSessionRegistryOptions } from "./codex-sessions.ts";
-import { codexFolderTrusted } from "./codex-threads.ts";
+import { codexFolderTrusted, readCodexHelperThreads } from "./codex-threads.ts";
 import type { ConversationFormat } from "./conversation.ts";
 import {
   readClaudeCandidates,
@@ -281,7 +281,20 @@ export const codexAdapter: AgentAdapter = {
   transcriptFormat: "codex",
   ownsTranscriptPath: (path) => isCodexTranscriptPath(path),
   findTranscript: (sessionId, options) => findCodexTranscript(sessionId, options),
-  subagentSessions: () => [],
+  // Helpers from Codex's own edge table, live by writer lock (codex-threads.ts).
+  // A helper runs inside its parent's process, so it gets no pid of its own:
+  // nested, never active, never announced — C4's shape.
+  subagentSessions: (parent, transcriptPath) =>
+    readCodexHelperThreads(parent.sessionId, transcriptPath).map((helper) => ({
+      sessionId: helper.threadId,
+      parentSessionId: parent.sessionId,
+      backend: "codex" as const,
+      ...(helper.name ? { name: helper.name } : {}),
+      cwd: helper.cwd || parent.cwd,
+      status: helper.status,
+      statusUpdatedAt: helper.updatedAt,
+      transcriptPath: helper.transcriptPath,
+    })),
   rowsMayLackPid: true,
   resumableCandidates: (options) => readCodexCandidates(options),
   // A Codex row is complete as read: the database already carries its label and cwd.

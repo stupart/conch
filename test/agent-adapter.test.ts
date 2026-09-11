@@ -41,9 +41,28 @@ describe("the agent table", () => {
     expect(codexAdapter.renameCommand("Beta")).toBeNull(); // provider-rename.ts: `unsupported`
     expect(codexAdapter.teleportArgs).toBeNull(); // session-lifecycle.ts: "Codex has no teleport"
     expect(claudeAdapter.trustFolderArgs("/work")).toBe(""); // only Codex takes trust on its command line
-    expect(codexAdapter.subagentSessions({ sessionId: "t1" }, "/r/rollout-x.jsonl")).toEqual([]);
     expect([claudeAdapter.rowsMayLackPid, codexAdapter.rowsMayLackPid]).toEqual([false, true]);
     expect([claudeAdapter.mcpEnabledDefault, codexAdapter.mcpEnabledDefault]).toEqual([null, true]);
+  });
+
+  test("a pid-less Codex row is reported only when it cannot say why it has none", () => {
+    const reported = new Set<string>();
+    // Closed (no lock holder) and app-server-hosted rows carry their reason.
+    expect(shouldReportMissingCodexPid(
+      { sessionId: "closed", backend: "codex", pid: 0, noTerminal: "closed: no Codex process has this thread open" },
+      reported,
+    )).toBe(false);
+    expect(shouldReportMissingCodexPid(
+      {
+        sessionId: "desktop",
+        backend: "codex",
+        pid: 0,
+        noTerminal: "hosted by codex app-server (pid 74676), which has no terminal to type into",
+      },
+      reported,
+    )).toBe(false);
+    // A held lock whose holder could not be named is the genuine miss.
+    expect(shouldReportMissingCodexPid({ sessionId: "unknown", backend: "codex", pid: 0 }, reported)).toBe(true);
   });
 });
 

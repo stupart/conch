@@ -8,13 +8,16 @@
  * apps... without turning them off or messing with them". You cannot wire a
  * hook into a session that is already running.
  *
- * Codex 0.147 keeps everything needed in two SQLite databases under ~/.codex,
- * so conch can simply LOOK. Opened read-only, this cannot take a write lock on
- * a database Codex is actively using, and a running session never learns conch
- * is there.
+ * Codex keeps everything needed under ~/.codex, so conch can simply LOOK.
+ * Opened read-only, this cannot take a write lock on a database Codex is
+ * actively using, and a running session never learns conch is there. As of
+ * 0.153.4/0.154.0 (docs/codex-harness-notes.md section 2):
  *
- *   state_5.sqlite        threads      — id, cwd, name/agent_nickname/title
- *   thread_history_1.sqlite thread_turns — status: inProgress | completed
+ *   state_5.sqlite          threads            — id, cwd, name, history_mode, agent_nickname, title
+ *                           thread_spawn_edges — parent_thread_id → child_thread_id (helpers)
+ *   thread_history_1.sqlite thread_turns       — status: inProgress | completed
+ *   session_index.jsonl     {id, thread_name}  — every rename, append-only, newest wins
+ *   thread-writer-locks/<id>.lock              — held by whichever process hosts the thread
  *
  * `thread_turns.status` maps exactly onto the existing "busy" | "idle", so this
  * feeds the ledger conch already has rather than inventing a parallel one.
@@ -52,8 +55,14 @@ export interface CodexThreadsOptions {
   now?: number;
   /** Epoch-ms of the last boot; nothing older can still be running. */
   bootedAt?: number | null;
-  /** Which lock paths are actually held. Injectable so tests can hold one. */
+  /**
+   * Which lock paths are actually held, as `lsof -F pn` prints it: `p<pid>`,
+   * then `n<path>` for each file that process has open. Injectable so tests
+   * can hold one.
+   */
   lockProbe?: (paths: string[]) => string | null;
+  /** Each pid's command line, to name a lock's holder. Injectable: a test's fake process table. */
+  processArgs?: (pids: number[]) => ReadonlyMap<number, string> | null;
 }
 
 /**
@@ -218,7 +227,8 @@ export function codexThreadLabel(row: {
 const ACTIVE_WITHIN_MS = 20_000;
 
 /**
- * The threads Codex currently has OPEN, from the writer locks it holds.
+ * The threads Codex currently has OPEN, from the writer locks it holds, each
+ * with the pid holding it (0 when the probe could not say which).
  *
  * This is the signal that was missing. Claude lists a session for as long as its
  * PROCESS lives, however idle — but a Codex thread had only recency to go on, so
@@ -237,16 +247,16 @@ const ACTIVE_WITHIN_MS = 20_000;
 export function readCodexOpenThreadIds(
   codexHome: string,
   probe: ((paths: string[]) => string | null) | undefined = probeHeldLocks,
-): Set<string> {
+): Map<string, number> {
   const dir = join(codexHome, "thread-writer-locks");
   let names: string[];
   try {
     names = readdirSync(dir)
       .filter((name) => name.endsWith(".lock") && !name.startsWith("."));
   } catch {
-    return new Set();
+    return new Map();
   }
-  if (!names.length) return new Set();
+  if (!names.length) return new Map();
   const idOf = (name: string) => name.slice(0, -".lock".length);
 
   // A lock FILE is not a lock. Codex holds an exclusive lock for as long as the
@@ -263,15 +273,27 @@ export function readCodexOpenThreadIds(
     // back to the old assumption rather than silently emptying the ledger:
     // showing a session that has gone is a smaller failure than hiding one
     // that has not.
-    return new Set(names.map(idOf));
+    return new Map(names.map((name) => [idOf(name), 0]));
   }
-  return new Set(names.filter((name) => held.includes(join(dir, name))).map(idOf));
+  // `lsof -F pn` names a process once (`p<pid>`), then each file it has open
+  // (`n<path>`), so the holder comes from the same call as the list.
+  const holders = new Map<string, number>();
+  let pid = 0;
+  for (const line of held.split("\n")) {
+    if (line.startsWith("p")) pid = Number(line.slice(1)) || 0;
+    else if (line.startsWith("n")) holders.set(line.slice(1), pid);
+  }
+  return new Map(
+    names
+      .filter((name) => held.includes(join(dir, name)))
+      .map((name) => [idOf(name), holders.get(join(dir, name)) ?? 0]),
+  );
 }
 
-/** Names of the lock paths some process currently holds open, or null if unknown. */
+/** `lsof -F pn` over the lock paths some process currently holds open, or null if unknown. */
 function probeHeldLocks(paths: string[]): string | null {
   try {
-    const child = Bun.spawnSync(["lsof", "-F", "n", "--", ...paths], {
+    const child = Bun.spawnSync(["lsof", "-F", "pn", "--", ...paths], {
       stdout: "pipe",
       stderr: "ignore",
     });
@@ -284,55 +306,84 @@ function probeHeldLocks(paths: string[]): string | null {
 }
 
 /**
- * Which process is running a Codex thread.
+ * Where keystrokes for a Codex thread may go: its writer lock's holder, if
+ * that holder is a terminal session.
  *
  * Codex publishes no pid anywhere conch can read, so a Codex row arrived with
  * `pid=0` and injection had no pane to aim at: every message typed at a Codex
  * session fell through to the clipboard as "session-not-routable", while
- * Claude sessions worked. Same composer, same button, silently different
- * outcome depending on which agent you happened to be talking to.
+ * Claude sessions worked. The lock answers it — read, never taken, so conch
+ * cannot interfere with a session it is only observing. But the lock file
+ * holds no pid, and its holder is whichever process hosts the thread's
+ * app-server (`writer_lock.rs:40-160`; docs/codex-harness-notes.md section 2),
+ * which is not always a terminal. So three answers, not two:
  *
- * The lock the live process holds on its own thread file answers it. Codex
- * takes an exclusive lock in `thread-writer-locks/<id>.lock` for as long as the
- * session is alive, so whoever holds it IS the session — read, never taken, so
- * conch cannot interfere with a session it is only observing.
+ * - no holder: the thread is CLOSED — a TUI that exited, a finished helper, a
+ *   Desktop thread unloaded after thirty idle minutes. pid 0 is the truth
+ *   there, not a lookup that failed, and the row says so.
+ * - an app-server holder: the ChatGPT app's (`codex -c … app-server
+ *   --analytics-default-enabled`, tty `??`) or the shared daemon's (`codex
+ *   app-server --listen unix://`, started under `setsid`). It speaks JSON-RPC
+ *   on stdio and has no terminal, so its pid is withheld: nothing types at it,
+ *   raises a window for it, or closes it. The row says why.
+ * - any other holder is the terminal session itself.
  *
- * Cached: a thread's owner cannot change without the lock being released, and
- * `lsof` is far too expensive to run per row per render.
+ * A held lock whose holder lsof did not name stays pid 0 with no reason: that
+ * one is a genuine miss, and the daemon still reports it.
+ *
+ * Nothing is cached. The per-thread `lsof -t` this replaced kept even a MISS
+ * for 30 s, so a thread opened just after a poll stayed pid-less until the
+ * entry expired (notes, "Why conch misses the pid", 2). The holder now comes
+ * from the one `lsof` the listing already runs.
  */
-const threadPidCache = new Map<string, { pid: number; at: number }>();
-const PID_CACHE_MS = 30_000;
-
-export function readCodexThreadPid(
-  codexHome: string,
-  threadId: string,
-  now = Date.now(),
-): number | undefined {
-  const cached = threadPidCache.get(threadId);
-  if (cached && now - cached.at < PID_CACHE_MS) {
-    return cached.pid || undefined;
+export function codexThreadRoute(
+  holder: number | undefined,
+  args: string | undefined,
+): { pid: number; noTerminal?: string } {
+  if (holder === undefined) {
+    return { pid: 0, noTerminal: "closed: no Codex process has this thread open" };
   }
+  if (holder > 0 && args !== undefined && APP_SERVER_ARGS.test(args)) {
+    return {
+      pid: 0,
+      noTerminal: `hosted by codex app-server (pid ${holder}), which has no terminal to type into`,
+    };
+  }
+  return { pid: holder };
+}
+
+/**
+ * `app-server` as the subcommand: followed by an option, `daemon`, or nothing.
+ * A TUI prompt that merely mentions it ("fix the app-server bug") is followed
+ * by a word, and stays typeable.
+ */
+const APP_SERVER_ARGS = /\sapp-server(?=\s+-|\s+daemon\b|\s*$)/;
+
+/** Each pid's command line from one `ps`, or null when `ps` cannot run. */
+function readProcessArgs(pids: number[]): Map<number, string> | null {
   try {
-    const lock = join(codexHome, "thread-writer-locks", `${threadId}.lock`);
-    if (!existsSync(lock)) {
-      threadPidCache.set(threadId, { pid: 0, at: now });
-      return undefined;
+    const out = Bun.spawnSync(["ps", "-o", "pid=,args=", "-p", pids.join(",")], {
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    const table = new Map<number, string>();
+    for (const line of new TextDecoder().decode(out.stdout).split("\n")) {
+      const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+      if (match) table.set(Number(match[1]), match[2]!);
     }
-    const out = Bun.spawnSync(["lsof", "-t", lock], { stdout: "pipe", stderr: "ignore" });
-    const pid = Number(out.stdout.toString().trim().split("\n")[0]);
-    const valid = Number.isFinite(pid) && pid > 0 ? pid : 0;
-    threadPidCache.set(threadId, { pid: valid, at: now });
-    return valid || undefined;
+    return table;
   } catch {
-    return undefined;
+    return null;
   }
 }
 
 /**
  * Busy or idle, preferring the authoritative signal and falling back to recency.
  *
- * `thread_turns` states it outright, but only covers some threads. For the rest
- * the only stateless evidence is that Codex just wrote to the row.
+ * `thread_turns` states it outright, and now covers most threads: 34 of the 36
+ * on this machine have turn rows (measured 2026-09-11; it was 7 when this was
+ * written). For the rest the only stateless evidence is that Codex just wrote
+ * to the row.
  */
 export function codexThreadStatus(
   projectedStatus: string | undefined,
@@ -552,6 +603,157 @@ export function codexHomeDir(options: CodexThreadsOptions = {}): string | null {
     ?? (redirected ? null : join(homedir(), ".codex"));
 }
 
+/**
+ * Each thread's latest turn status from `thread_turns`; empty when that
+ * database cannot be read, because a thread with no known turn is still a
+ * real session worth showing — losing this must never cost the thread list.
+ */
+function readCodexTurnStatuses(history: string): Map<string, string> {
+  const status = new Map<string, string>();
+  if (!existsSync(history)) return status;
+  try {
+    const hist = openReadOnly(history);
+    try {
+      for (
+        const row of hist
+          .query(
+            `SELECT thread_id, status
+               FROM thread_turns t
+              WHERE rollout_ordinal = (
+                      SELECT MAX(rollout_ordinal) FROM thread_turns
+                       WHERE thread_id = t.thread_id)`,
+          )
+          .all() as Array<Record<string, any>>
+      ) {
+        status.set(String(row.thread_id), String(row.status));
+      }
+    } finally {
+      hist.close();
+    }
+  } catch {}
+  return status;
+}
+
+/**
+ * Codex's own record of thread names: `session_index.jsonl`, one
+ * `{id, thread_name, updated_at}` line per rename, append-only, the newest
+ * line for an id winning (`codex-rs/rollout/src/session_index.rs`). Blank
+ * names are skipped, as Codex's own batch reader skips them.
+ */
+export function readCodexSessionIndex(codexHome: string): Map<string, string> {
+  const names = new Map<string, string>();
+  let text: string;
+  try {
+    text = readFileSync(join(codexHome, "session_index.jsonl"), "utf8");
+  } catch {
+    return names;
+  }
+  // ponytail: the whole file on every read; it is one line per rename (9 on
+  // this machine). Scan from the end, as Codex does, if it ever grows large.
+  for (const line of text.split("\n")) {
+    try {
+      const entry = JSON.parse(line);
+      if (typeof entry?.id === "string" && typeof entry.thread_name === "string" && entry.thread_name.trim()) {
+        names.set(entry.id, entry.thread_name);
+      }
+    } catch {}
+  }
+  return names;
+}
+
+/**
+ * A thread's name as Codex resolves it (`resolve_thread_names`,
+ * `codex-rs/thread-store/src/local/helpers.rs`): a paginated thread's is
+ * `threads.name`, which `thread/name/set` writes; a legacy thread's is in the
+ * session index. The index is not consulted for a paginated thread, where it
+ * would bring back a name since cleared: the clear empties the column but
+ * leaves the older index lines behind.
+ *
+ * ponytail: for a legacy thread Codex ranks a title that differs from the
+ * first prompt above the index; here the index wins. Every thread on this
+ * machine is paginated (36 of 36), so the difference has nothing to act on.
+ */
+function codexThreadName(row: Record<string, any>, index: ReadonlyMap<string, string>): string | null {
+  if (typeof row.name === "string" && row.name.trim()) return row.name;
+  return row.history_mode === "paginated" ? null : index.get(String(row.id)) ?? null;
+}
+
+/** A live helper (`thread_spawn`) thread, as Codex records it. */
+export interface CodexHelperThread {
+  threadId: string;
+  name?: string;
+  cwd: string;
+  status: "busy" | "idle";
+  updatedAt: number;
+  transcriptPath: string;
+}
+
+/**
+ * The live helpers a Codex thread has spawned, from Codex's own edge table.
+ *
+ * `thread_spawn_edges(parent_thread_id, child_thread_id, status)` (state
+ * migration 0021) records every helper, but its `status` cannot say which
+ * run: all 19 edges on this machine read `open` while three helpers ran. The
+ * writer lock can. Helpers run inside the parent's process, which holds their
+ * locks (live: pid 2383 held its own thread's and three helpers'), so a helper
+ * is listed exactly while its lock has a holder. A finished one gets no row,
+ * as a finished Claude subagent gets none.
+ *
+ * The Codex home is the one that wrote the parent: Codex keeps rollouts under
+ * `$CODEX_HOME/sessions/` (36 of 36 threads here), so a fixture parent reads a
+ * fixture home and a path from anywhere else reads nothing.
+ *
+ * ponytail: direct children only. No helper on this machine has spawned its
+ * own (0 of 19 edges start at a helper); walk the edges if one ever does.
+ */
+export function readCodexHelperThreads(
+  parentThreadId: string,
+  parentRolloutPath: string,
+  options: Pick<CodexThreadsOptions, "lockProbe" | "now"> = {},
+): CodexHelperThread[] {
+  const at = parentRolloutPath.lastIndexOf("/sessions/");
+  if (at <= 0) return [];
+  const codexHome = parentRolloutPath.slice(0, at);
+  const { state, history } = codexThreadDbPaths(codexHome);
+  if (!existsSync(state)) return [];
+  let children: Array<Record<string, any>> = [];
+  let db: Database | undefined;
+  try {
+    db = openReadOnly(state);
+    children = db
+      .query(
+        `SELECT threads.*
+           FROM thread_spawn_edges
+           JOIN threads ON threads.id = thread_spawn_edges.child_thread_id
+          WHERE thread_spawn_edges.parent_thread_id = ?`,
+      )
+      .all(parentThreadId) as Array<Record<string, any>>;
+  } catch {
+    // A Codex without the table, or a torn read: no helpers, as for Claude.
+    return [];
+  } finally {
+    db?.close();
+  }
+  if (!children.length) return [];
+  const holders = readCodexOpenThreadIds(codexHome, options.lockProbe);
+  const live = children.filter((row) => holders.has(String(row.id)));
+  if (!live.length) return [];
+  const status = readCodexTurnStatuses(history);
+  const index = readCodexSessionIndex(codexHome);
+  const now = options.now ?? Date.now();
+  return live.map((row) => {
+    const name = codexThreadLabel({ ...row, name: codexThreadName(row, index) });
+    return {
+      threadId: String(row.id),
+      ...(name ? { name } : {}),
+      cwd: String(row.cwd ?? ""),
+      status: codexThreadStatus(status.get(String(row.id)), Number(row.updated_at_ms ?? 0), now),
+      updatedAt: Number(row.updated_at_ms ?? 0),
+      transcriptPath: String(row.rollout_path ?? ""),
+    };
+  });
+}
+
 export function readCodexThreads(
   options: CodexThreadsOptions = {},
 ): CodexSessionRegistryRead {
@@ -582,7 +784,7 @@ export function readCodexThreads(
     db = openReadOnly(state);
     // An open thread is live no matter how long ago it was last touched; the
     // window only has to catch threads Codex has since closed.
-    const openIds = readCodexOpenThreadIds(codexHome, options.lockProbe);
+    const holders = readCodexOpenThreadIds(codexHome, options.lockProbe);
     const threads = db
       .query(
         // `source` separates a session from a script. On this machine: 354
@@ -611,33 +813,9 @@ export function readCodexThreads(
     // Turn status lives in the OTHER database. Its absence is survivable: a
     // thread with no known turn is still a real session worth showing, just
     // without a confident busy/idle, so default to idle rather than drop it.
-    const status = new Map<string, string>();
-    if (existsSync(history)) {
-      // Its own try: a thread with no known turn is still a real session worth
-      // showing, so losing this must never cost the thread list.
-      try {
-      const hist = openReadOnly(history);
-      try {
-        for (
-          const row of hist
-            .query(
-              `SELECT thread_id, status
-                 FROM thread_turns t
-                WHERE rollout_ordinal = (
-                        SELECT MAX(rollout_ordinal) FROM thread_turns
-                         WHERE thread_id = t.thread_id)`,
-            )
-            .all() as Array<Record<string, any>>
-        ) {
-          status.set(String(row.thread_id), String(row.status));
-        }
-      } finally {
-        hist.close();
-      }
-      } catch {}
-    }
+    const status = readCodexTurnStatuses(history);
 
-    const entries: CodexSessionEntry[] = threads
+    const listed = threads
       .filter((row) => {
         // A thread nobody spoke in is not a session.
         //
@@ -649,7 +827,7 @@ export function readCodexThreads(
         // Only applied to threads that are NOT open. A session that genuinely
         // just started also has no user event yet, and it holds a lock, so the
         // live check above keeps it.
-        const live = openIds.has(String(row.id));
+        const live = holders.has(String(row.id));
         // Absent columns mean "cannot tell", NOT "zero". Treating them as zero
         // would hide every session the moment Codex renamed or dropped either
         // one — a silent empty ledger, which is the worst way for a reader to
@@ -660,32 +838,42 @@ export function readCodexThreads(
         if (!live && !spoke) return false;
         return live || Number(row.updated_at_ms ?? 0) >= cutoff;
       })
-      .slice(0, CODEX_ROW_LIMIT)
-      .map((row) => ({
-      sessionId: String(row.id),
-      cwd: String(row.cwd ?? ""),
-      // The live process, resolved from the lock it holds on its own thread
-      // file. Codex publishes no pid anywhere, so these rows used to arrive
-      // with pid 0 — observable but not addressable. Every message typed at a
-      // Codex session fell through to the clipboard as "session-not-routable"
-      // while Claude sessions worked: same composer, same button, silently
-      // different outcome depending on which agent you were talking to.
-      pid: readCodexThreadPid(codexHome, String(row.id), now) ?? 0,
-      // `thread_turns` is authoritative but SPARSE — a projection that only
-      // covers some threads (7 of them on this machine; "humain" has no rows at
-      // all). Without a fallback those threads sit on "waiting" forever, even
-      // mid-turn. Recency is the stateless stand-in: Codex touches
-      // `updated_at_ms` as it works, so a thread written to within the last few
-      // seconds is working, whatever the projection does or does not know.
-      status: codexThreadStatus(
-        status.get(String(row.id)),
-        Number(row.updated_at_ms ?? 0),
-        now,
-      ),
-      updatedAt: Number(row.updated_at_ms ?? 0),
-      transcriptPath: String(row.rollout_path ?? ""),
-      ...(codexThreadLabel(row) ? { name: codexThreadLabel(row) } : {}),
-      })) as CodexSessionEntry[];
+      .slice(0, CODEX_ROW_LIMIT);
+    // One `ps` for every holder at once, and only when a listed thread has one.
+    const holderPids = [...new Set(listed.map((row) => holders.get(String(row.id)) ?? 0))]
+      .filter((pid) => pid > 0);
+    const args = holderPids.length ? (options.processArgs ?? readProcessArgs)(holderPids) : null;
+    const index = readCodexSessionIndex(codexHome);
+    const entries = listed.map((row) => {
+      const holder = holders.get(String(row.id));
+      // The terminal session holding the thread's lock (`codexThreadRoute`).
+      // Codex publishes no pid anywhere, so these rows used to arrive with
+      // pid 0 — observable but not addressable: every message typed at a Codex
+      // session fell through to the clipboard as "session-not-routable" while
+      // Claude sessions worked. A closed thread, or one an app-server hosts,
+      // still has none, and now says why.
+      const route = codexThreadRoute(holder, holder ? args?.get(holder) : undefined);
+      const name = codexThreadLabel({ ...row, name: codexThreadName(row, index) });
+      return {
+        sessionId: String(row.id),
+        cwd: String(row.cwd ?? ""),
+        pid: route.pid,
+        ...(route.noTerminal ? { noTerminal: route.noTerminal } : {}),
+        // `thread_turns` covers most threads now (34 of 36 here on 2026-09-11,
+        // against 7 when this was written). The rest would sit on "waiting"
+        // even mid-turn without a fallback. Recency is the stateless stand-in:
+        // Codex touches `updated_at_ms` as it works, so a thread written to
+        // within the last few seconds is working.
+        status: codexThreadStatus(
+          status.get(String(row.id)),
+          Number(row.updated_at_ms ?? 0),
+          now,
+        ),
+        updatedAt: Number(row.updated_at_ms ?? 0),
+        transcriptPath: String(row.rollout_path ?? ""),
+        ...(name ? { name } : {}),
+      };
+    }) as CodexSessionEntry[];
 
     return { entries, complete: true, available: true };
   } catch (error) {

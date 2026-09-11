@@ -78,6 +78,8 @@ export interface PanelRowModel {
   navSelected: boolean;
   /** The daemon knows the session's process, so a click on the title can try to raise its terminal. */
   revealable?: boolean;
+  /** Why this row has no terminal to type into or raise: a closed Codex thread, or one an app-server hosts. */
+  noTerminal?: string;
   /** The folder the session runs in; what a relative link in its prose is relative to. */
   cwd?: string;
 }
@@ -255,6 +257,8 @@ export interface PublishedSessionRow {
   active: boolean;
   /** Present when the daemon knows the session's process and can try to raise its terminal (C10). */
   revealable?: boolean;
+  /** Why the row has no terminal to type into or raise: a closed Codex thread, or one an app-server hosts. */
+  noTerminal?: string;
   snippet?: string;
   /** A finished deliverable attached to this waiting row. Carries the link so
    * external consumers can render it, not just the summary. */
@@ -472,6 +476,7 @@ export function buildPublishedState(
         live: row.liveGlyph,
         active: row.active,
         ...(row.revealable ? { revealable: true as const } : {}),
+        ...(row.noTerminal ? { noTerminal: row.noTerminal } : {}),
         ...(row.cwd ? { cwd: row.cwd } : {}),
         ...(snippets.has(row.sessionId)
           ? { snippet: snippets.get(row.sessionId)! }
@@ -574,6 +579,7 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         navSelected: session.sessionId === options.navSelectedId,
         // A known process is what the title's click can try to raise (C10).
         ...(session.pid ? { revealable: true } : {}),
+        ...(session.noTerminal ? { noTerminal: session.noTerminal } : {}),
         ...(session.cwd ? { cwd: session.cwd } : {}),
       };
     });

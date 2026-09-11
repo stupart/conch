@@ -1,16 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CodexSessionEntry } from "../src/codex-sessions.ts";
+import { buildPanelModel, buildPanelRows, buildPublishedState } from "../src/panel.ts";
+import { registrySnapshot, sessionLabel, subagentSessions, type SessionInfo } from "../src/sessions.ts";
 import {
   codexThreadLabel,
   codexThreadStatus,
   detectCodexTurnEnds,
   isInterAgentEnvelope,
+  readCodexHelperThreads,
   readCodexOpenThreadIds,
   readCodexRolloutTail,
-  readCodexThreadPid,
   readCodexThreads,
   readCodexTurnSnapshots,
   type CodexTurnMemory,
@@ -538,31 +541,389 @@ describe("an open Codex thread stays listed however idle", () => {
     const home = homeWith([{ id: "x", name: "x", updated_at_ms: NOW }], []);
     try {
       writeFileSync(join(home, "thread-writer-locks", ".coordination.lock"), "");
-      expect(readCodexOpenThreadIds(home)).toEqual(new Set());
+      expect(readCodexOpenThreadIds(home)).toEqual(new Map());
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 });
 
-describe("a Codex session is addressable, not just visible", () => {
-  // Codex publishes no pid, so its rows arrived pid=0 and every message typed
-  // at one fell through to the clipboard as "session-not-routable" — while
-  // Claude sessions worked. Same composer, same button, silently different
-  // outcome depending on which agent you happened to be talking to.
-  test("no lock file means no owner, not a wrong one", () => {
-    const home = mkdtempSync(join(tmpdir(), "conch-codex-pid-"));
-    expect(readCodexThreadPid(home, "nothing-here")).toBeUndefined();
+/**
+ * Codex 0.153.4/0.154.0's own tables, copied from `sqlite3 -readonly
+ * ~/.codex/{state_5,thread_history_1}.sqlite .schema` on 2026-09-11: the
+ * CREATE TABLE statements verbatim (indexes and triggers left out), and no
+ * rows from them.
+ */
+const REAL_THREADS_DDL = `CREATE TABLE threads (
+    id TEXT PRIMARY KEY,
+    rollout_path TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    model_provider TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    title TEXT NOT NULL,
+    sandbox_policy TEXT NOT NULL,
+    approval_mode TEXT NOT NULL,
+    tokens_used INTEGER NOT NULL DEFAULT 0,
+    has_user_event INTEGER NOT NULL DEFAULT 0,
+    archived INTEGER NOT NULL DEFAULT 0,
+    archived_at INTEGER,
+    git_sha TEXT,
+    git_branch TEXT,
+    git_origin_url TEXT
+, cli_version TEXT NOT NULL DEFAULT '', first_user_message TEXT NOT NULL DEFAULT '', agent_nickname TEXT, agent_role TEXT, memory_mode TEXT NOT NULL DEFAULT 'enabled', model TEXT, reasoning_effort TEXT, agent_path TEXT, created_at_ms INTEGER, updated_at_ms INTEGER, thread_source TEXT, preview TEXT NOT NULL DEFAULT '', recency_at INTEGER NOT NULL DEFAULT 0, recency_at_ms INTEGER NOT NULL DEFAULT 0, history_mode TEXT NOT NULL DEFAULT 'legacy', name TEXT, is_pinned INTEGER NOT NULL DEFAULT 0, thread_section_id TEXT
+    REFERENCES thread_sections(id) ON DELETE SET NULL, section_position INTEGER, section_entered_at_ms INTEGER, project_id TEXT
+    REFERENCES projects(id) ON DELETE SET NULL, originator TEXT, daybreak_enabled BOOLEAN)`;
+const REAL_EDGES_DDL = `CREATE TABLE thread_spawn_edges (
+    parent_thread_id TEXT NOT NULL,
+    child_thread_id TEXT NOT NULL PRIMARY KEY,
+    status TEXT NOT NULL
+)`;
+const REAL_TURNS_DDL = `CREATE TABLE thread_turns (
+    thread_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    rollout_ordinal INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    error_json TEXT,
+    started_at INTEGER,
+    completed_at INTEGER,
+    duration_ms INTEGER,
+    first_user_item_id TEXT,
+    final_agent_item_id TEXT, rollout_byte_offset INTEGER, rollout_end_ordinal INTEGER, rollout_end_byte_offset INTEGER,
+    PRIMARY KEY (thread_id, turn_id)
+)`;
+
+/** Where Codex writes a thread's rollout: under `$CODEX_HOME/sessions/`, as every real row does. */
+const rollout = (home: string, id: string) => join(home, "sessions", "2026", "09", "11", `rollout-${id}.jsonl`);
+/** `threads.source` for a helper, as Codex writes it. */
+const spawnedBy = (parent: string) =>
+  JSON.stringify({ subagent: { thread_spawn: { parent_thread_id: parent, depth: 1 } } });
+
+/** A Codex home under a temp dir, from the real schemas; every thread paginated and spoken in unless it says otherwise. */
+function realCodexHome(fixture: {
+  threads: Array<Record<string, unknown>>;
+  edges?: Array<[parent: string, child: string, status: string]>;
+  turns?: Array<[thread: string, ordinal: number, status: string]>;
+  index?: Array<Record<string, unknown>>;
+  /** Lock files on disk. Whether anything holds them is the process table's business. */
+  locks?: string[];
+}): string {
+  const home = mkdtempSync(join(tmpdir(), "conch-codex-real-"));
+  const state = new Database(join(home, "state_5.sqlite"));
+  state.run(REAL_THREADS_DDL);
+  state.run(REAL_EDGES_DDL);
+  for (const thread of fixture.threads) {
+    const row: Record<string, unknown> = {
+      rollout_path: rollout(home, String(thread.id)),
+      created_at: 0, updated_at: 0, source: "cli", model_provider: "openai", cwd: "/work", title: "",
+      sandbox_policy: "{}", approval_mode: "never", has_user_event: 1, tokens_used: 100,
+      history_mode: "paginated", updated_at_ms: NOW,
+      ...thread,
+    };
+    const keys = Object.keys(row);
+    state.run(
+      `INSERT INTO threads (${keys.join(", ")}) VALUES (${keys.map(() => "?").join(", ")})`,
+      Object.values(row) as any,
+    );
+  }
+  for (const edge of fixture.edges ?? []) state.run("INSERT INTO thread_spawn_edges VALUES (?, ?, ?)", edge);
+  state.close();
+  const history = new Database(join(home, "thread_history_1.sqlite"));
+  history.run(REAL_TURNS_DDL);
+  for (const [thread, ordinal, status] of fixture.turns ?? []) {
+    history.run(
+      "INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, status) VALUES (?, ?, ?, ?)",
+      [thread, `${thread}-${ordinal}`, ordinal, status],
+    );
+  }
+  history.close();
+  if (fixture.index) {
+    writeFileSync(join(home, "session_index.jsonl"), fixture.index.map((line) => JSON.stringify(line)).join("\n") + "\n");
+  }
+  mkdirSync(join(home, "thread-writer-locks"), { recursive: true });
+  for (const id of fixture.locks ?? []) writeFileSync(join(home, "thread-writer-locks", `${id}.lock`), "");
+  return home;
+}
+
+/**
+ * A fake process table: each process's command line and the thread locks it
+ * holds, answered the way `lsof -F pn` and `ps -o pid=,args=` answer.
+ */
+function processTable(home: string, processes: Array<{ pid: number; args: string; holds: string[] }>) {
+  return {
+    lockProbe: () => processes
+      .map((p) => [`p${p.pid}`, ...p.holds.map((id) => `n${join(home, "thread-writer-locks", `${id}.lock`)}`)].join("\n"))
+      .join("\n"),
+    processArgs: (pids: number[]) =>
+      new Map(processes.filter((p) => pids.includes(p.pid)).map((p) => [p.pid, p.args])),
+  };
+}
+
+type CodexRow = CodexSessionEntry & { name?: string; noTerminal?: string };
+
+describe("where keystrokes for a Codex thread may go: its lock's holder", () => {
+  // The lock file holds no pid; the holder is whichever process hosts the
+  // thread (docs/codex-harness-notes.md section 2). Live on 2026-09-11: pid
+  // 2383, a `codex resume` TUI on ttys001, held its own thread's lock; pid
+  // 74676, the ChatGPT app's `codex … app-server`, tty `??`, held a Desktop
+  // thread's.
+  const rows = (home: string, table: ReturnType<typeof processTable>, now = NOW) =>
+    readCodexThreads({ codexHome: home, now, ...table }).entries as CodexRow[];
+
+  test("a thread no process holds is closed: pid 0, and the row says so", () => {
+    // A lock FILE with no holder is what a reboot leaves behind; still closed.
+    const home = realCodexHome({ threads: [{ id: "t1", name: "yesterday" }], locks: ["t1"] });
+    try {
+      const [row] = rows(home, processTable(home, []));
+      expect(row).toMatchObject({ sessionId: "t1", pid: 0, noTerminal: "closed: no Codex process has this thread open" });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
-  // The answer is cached because a thread's owner cannot change without the
-  // lock being released, and lsof is far too expensive to run per row per
-  // render.
-  test("the answer is cached rather than re-derived every render", () => {
-    const home = mkdtempSync(join(tmpdir(), "conch-codex-pid-"));
-    const first = readCodexThreadPid(home, "cached", 1_000);
-    const second = readCodexThreadPid(home, "cached", 1_100);
-    expect(first).toBe(second);
+  test("a thread its terminal session holds is typed into through that session's pid", () => {
+    const home = realCodexHome({ threads: [{ id: "t1", name: "Clone Blueprint Studio" }], locks: ["t1"] });
+    try {
+      const table = processTable(home, [{ pid: 2383, args: "codex resume t1 -c model=gpt-6-astra", holds: ["t1"] }]);
+      const [row] = rows(home, table);
+      expect(row).toMatchObject({ sessionId: "t1", pid: 2383 });
+      expect(row!.noTerminal).toBeUndefined();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a thread an app-server hosts has no pid to type at or raise, and the row says why", () => {
+    const home = realCodexHome({
+      threads: [
+        { id: "desktop", name: "Desktop thread" },
+        { id: "daemon", name: "joined the daemon" },
+        { id: "tui", name: "mentions it" },
+      ],
+      locks: ["desktop", "daemon", "tui"],
+    });
+    try {
+      const table = processTable(home, [
+        {
+          pid: 74676,
+          args: "/Applications/ChatGPT.app/Contents/Resources/codex -c features.x=true app-server --analytics-default-enabled",
+          holds: ["desktop"],
+        },
+        // What `codex app-server daemon start` / `codex remote-control start` run (pid.rs `command_args`).
+        { pid: 5150, args: "/opt/homebrew/bin/codex app-server --remote-control --listen unix://", holds: ["daemon"] },
+        // A prompt that merely names it is still a terminal session.
+        { pid: 2383, args: "codex fix the app-server bug", holds: ["tui"] },
+      ]);
+      const byId = new Map(rows(home, table).map((row) => [row.sessionId, row]));
+      expect(byId.get("desktop")).toMatchObject({
+        pid: 0,
+        noTerminal: "hosted by codex app-server (pid 74676), which has no terminal to type into",
+      });
+      expect(byId.get("daemon")).toMatchObject({ pid: 0, noTerminal: expect.stringContaining("(pid 5150)") });
+      expect(byId.get("tui")).toMatchObject({ pid: 2383 });
+      expect(byId.get("tui")!.noTerminal).toBeUndefined();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a holder that appears after one read is there on the very next", () => {
+    // The per-thread lookup this replaced cached a miss for 30 s, so a thread
+    // opened just after a poll stayed pid-less until the entry expired.
+    const home = realCodexHome({ threads: [{ id: "t1", name: "just opened" }], locks: ["t1"] });
+    try {
+      expect(rows(home, processTable(home, []))[0]).toMatchObject({ pid: 0 });
+      const opened = processTable(home, [{ pid: 2383, args: "codex resume t1", holds: ["t1"] }]);
+      expect(rows(home, opened, NOW + 1_000)[0]).toMatchObject({ pid: 2383 });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a held lock whose holder lsof could not name is a miss, not a closed thread", () => {
+    // lsof failing outright falls back to "every lock file is held", with no pid known.
+    const home = realCodexHome({ threads: [{ id: "t1", name: "unknown holder" }], locks: ["t1"] });
+    try {
+      const [row] = readCodexThreads({ codexHome: home, now: NOW, lockProbe: () => null }).entries as CodexRow[];
+      expect(row).toMatchObject({ sessionId: "t1", pid: 0 });
+      expect(row!.noTerminal).toBeUndefined();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("through the registry and the panel: the reason reaches the published row, which is not revealable", async () => {
+    const home = realCodexHome({ threads: [{ id: "desktop", name: "Desktop thread" }], locks: ["desktop"] });
+    const claudeDir = mkdtempSync(join(tmpdir(), "conch-claude-"));
+    const configDir = mkdtempSync(join(tmpdir(), "conch-config-"));
+    mkdirSync(join(claudeDir, "sessions"));
+    try {
+      const table = processTable(home, [
+        { pid: 74676, args: "/Applications/ChatGPT.app/Contents/Resources/codex app-server --analytics-default-enabled", holds: ["desktop"] },
+      ]);
+      const snap = await registrySnapshot(claudeDir, { codexHome: home, configDir, now: NOW, ...table });
+      const info = snap!.infos.find((candidate) => candidate.sessionId === "desktop")!;
+      const reason = "hosted by codex app-server (pid 74676), which has no terminal to type into";
+      expect(info).toMatchObject({ backend: "codex", pid: 0, noTerminal: reason });
+      const model = buildPanelModel({
+        sessions: [info],
+        sessionStates: new Map(),
+        pausedSessionIds: new Set(),
+        live: { state: "speaking", label: "", partial: "" },
+        mode: { muted: false, paused: false, holding: 0 },
+        activeSessionId: null,
+        navSelectedId: null,
+      });
+      const published = buildPublishedState("device", model, new Map(), new Set(), NOW).rows[0]!;
+      expect(published).toMatchObject({ id: "desktop", noTerminal: reason });
+      expect(published.revealable).toBeUndefined();
+    } finally {
+      for (const dir of [home, claudeDir, configDir]) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("a Codex thread is named as Codex names it", () => {
+  const names = (home: string) =>
+    Object.fromEntries((readCodexThreads({ codexHome: home, now: NOW }).entries as CodexRow[])
+      .map((row) => [row.sessionId, row.name]));
+
+  test("a legacy thread's name is its newest session_index.jsonl line", () => {
+    const home = realCodexHome({
+      threads: [{ id: "legacy", history_mode: "legacy", name: null, title: "the first prompt" }],
+      index: [
+        { id: "legacy", thread_name: "old name", updated_at: "2026-09-10T10:00:00Z" },
+        { id: "legacy", thread_name: "Blueprint", updated_at: "2026-09-11T10:00:00Z" },
+        // Blank: skipped, as Codex's own reader skips it.
+        { id: "legacy", thread_name: "  ", updated_at: "2026-09-11T11:00:00Z" },
+        { id: "other", thread_name: "not this thread", updated_at: "2026-09-11T12:00:00Z" },
+      ],
+    });
+    try {
+      expect(names(home)).toEqual({ legacy: "Blueprint" });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a paginated thread's is threads.name, and a cleared one gets no old name back from the index", () => {
+    // All 36 threads on this machine are paginated; for the 8 named ones,
+    // threads.name and the index agree.
+    const home = realCodexHome({
+      threads: [
+        { id: "named", name: "Clone Blueprint Studio monorepo" },
+        { id: "cleared", name: null, title: "the first prompt" },
+      ],
+      index: [
+        { id: "named", thread_name: "Clone Blueprint Studio monorepo", updated_at: "2026-09-11T10:00:00Z" },
+        { id: "cleared", thread_name: "since cleared", updated_at: "2026-09-11T10:00:00Z" },
+      ],
+    });
+    try {
+      expect(names(home)).toEqual({ named: "Clone Blueprint Studio monorepo", cleared: "the first prompt" });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("conch's own rename still outranks Codex's name", async () => {
+    const home = realCodexHome({ threads: [{ id: "named", name: "Codex's name" }] });
+    const claudeDir = mkdtempSync(join(tmpdir(), "conch-claude-"));
+    const configDir = mkdtempSync(join(tmpdir(), "conch-config-"));
+    mkdirSync(join(claudeDir, "sessions"));
+    const labelsPath = join(configDir, "labels.json");
+    try {
+      const snap = await registrySnapshot(claudeDir, { codexHome: home, configDir, now: NOW });
+      const info = snap!.infos.find((candidate) => candidate.sessionId === "named")!;
+      expect(sessionLabel(info, info.cwd, { labelsPath })).toBe("Codex's name");
+      writeFileSync(labelsPath, JSON.stringify({ named: "Mine" }));
+      expect(sessionLabel(info, info.cwd, { labelsPath })).toBe("Mine");
+    } finally {
+      for (const dir of [home, claudeDir, configDir]) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Codex helpers nest under their parent", () => {
+  // Live on 2026-09-11: 19 `thread_spawn_edges`, every one `open`, while the
+  // parent's process (pid 2383) held its own lock and three helpers'. The
+  // edge's status cannot say which helpers run; the lock can.
+  const BOHR_AT = NOW - 3_600_000;
+  const family = () => realCodexHome({
+    threads: [
+      { id: "parent", name: "Clone Blueprint Studio" },
+      // Last written an hour ago, mid-turn: recency alone would call it idle,
+      // so busy can only come from its `thread_turns` row.
+      {
+        id: "bohr", source: spawnedBy("parent"), agent_nickname: "Bohr", agent_role: "explorer", cwd: "/work/api",
+        updated_at_ms: BOHR_AT,
+      },
+      { id: "zeno", source: spawnedBy("parent"), agent_nickname: "Zeno" },
+      { id: "goodall", source: spawnedBy("elsewhere"), agent_nickname: "Goodall" },
+    ],
+    edges: [["parent", "bohr", "open"], ["parent", "zeno", "open"], ["elsewhere", "goodall", "open"]],
+    turns: [["bohr", 1, "completed"], ["bohr", 2, "inProgress"]],
+    locks: ["parent", "bohr", "zeno", "goodall"],
+  });
+
+  test("a helper whose lock is held is listed; a finished one, and another parent's, are not", () => {
+    const home = family();
+    try {
+      const table = processTable(home, [{ pid: 2383, args: "codex resume parent", holds: ["parent", "bohr", "goodall"] }]);
+      expect(readCodexHelperThreads("parent", rollout(home, "parent"), { ...table, now: NOW })).toEqual([{
+        threadId: "bohr",
+        name: "Bohr",
+        cwd: "/work/api",
+        status: "busy",
+        updatedAt: BOHR_AT,
+        transcriptPath: rollout(home, "bohr"),
+      }]);
+      // Helpers are never top-level sessions, so never announced.
+      expect(readCodexThreads({ codexHome: home, now: NOW, ...table }).entries.map((e) => e.sessionId))
+        .toEqual(["parent"]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("a parent whose rollout is not under a Codex home has no helpers to read", () => {
+    expect(readCodexHelperThreads("parent", "/r/rollout-x.jsonl")).toEqual([]);
+  });
+
+  test("through the Codex adapter row, with a lock this process really holds: nested, no pid, never active", () => {
+    const home = family();
+    // Holding bohr's lock open here makes the real `lsof` find a holder.
+    const fd = openSync(join(home, "thread-writer-locks", "bohr.lock"), "r");
+    try {
+      const parent: SessionInfo = { sessionId: "parent", backend: "codex", name: "Clone Blueprint Studio", cwd: "/work", pid: 2383 };
+      const helpers = subagentSessions(parent, rollout(home, "parent"));
+      expect(helpers).toEqual([{
+        sessionId: "bohr",
+        parentSessionId: "parent",
+        backend: "codex",
+        name: "Bohr",
+        cwd: "/work/api",
+        status: "busy",
+        statusUpdatedAt: BOHR_AT,
+        transcriptPath: rollout(home, "bohr"),
+      }]);
+      const panel = buildPanelRows({
+        sessions: [parent, ...helpers],
+        sessionStates: new Map(),
+        pausedSessionIds: new Set(),
+        live: { state: "speaking", label: "Bohr", partial: "" },
+        mode: { muted: false, paused: false, holding: 0 },
+        activeSessionId: "bohr",
+        navSelectedId: null,
+      });
+      const row = panel.find((candidate) => candidate.sessionId === "bohr")!;
+      expect(row).toMatchObject({ parentSessionId: "parent", active: false });
+      expect(row.revealable).toBeUndefined();
+    } finally {
+      closeSync(fd);
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
@@ -578,7 +939,7 @@ test("a lock file nobody holds is not an open thread", () => {
 
   // Probe reports only the first path as open.
   const ids = readCodexOpenThreadIds(home, () => `n${held}\n`);
-  expect([...ids]).toEqual(["alive"]);
+  expect([...ids.keys()]).toEqual(["alive"]);
 
   rmSync(home, { recursive: true, force: true });
 });
@@ -591,7 +952,7 @@ test("an unusable probe falls back to presence rather than emptying the ledger",
   writeFileSync(join(home, "thread-writer-locks", "b.lock"), "");
 
   const ids = readCodexOpenThreadIds(home, () => null);
-  expect([...ids].sort()).toEqual(["a", "b"]);
+  expect([...ids.keys()].sort()).toEqual(["a", "b"]);
 
   rmSync(home, { recursive: true, force: true });
 });

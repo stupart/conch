@@ -160,6 +160,19 @@ two hook entrypoints (Claude pushes, Codex is polled — the asymmetry above), a
 the two-question trust flow in `control-server.ts`, whose `session-needs-trust`
 reply is typed to Codex on the wire.
 
+**Codex rows read Codex's own indexes (C16 item 4).** A thread's helpers are its
+`thread_spawn_edges` children in `state_5.sqlite`, nested under it the way C4 nests Claude's
+subagents (`parentSessionId`, no pid, never active or announced), and listed only while their
+writer lock is held: the edge's `status` still says `open` long after a helper is done. A
+thread's name is Codex's own, resolved as Codex resolves it — `threads.name` for a paginated
+thread, the newest `session_index.jsonl` line for a legacy one — with conch's rename override
+still above it. The lock also decides where keystrokes may go. `thread-writer-locks/<id>.lock`
+holds no pid, and one `lsof -F pn` names whichever process hosts the thread: no holder means
+the thread is closed; a holder whose command line runs `app-server` (the ChatGPT app's, or the
+shared daemon's) has no terminal; any other holder is the terminal session. The first two
+carry pid 0 plus a `noTerminal` reason on the row, so nothing types into, raises or closes
+them, and "Codex row has no pid" is reported only when conch could not name a holder at all.
+
 **What Codex itself exposes** — the app-server JSON-RPC protocol, the one-writer thread lock
 behind the missing pids, spawn edges, per-response token records — and what conch should use
 in place of polling and keystrokes is in `docs/codex-harness-notes.md` (roadmap C16).
