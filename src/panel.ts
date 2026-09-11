@@ -53,6 +53,8 @@ export interface PanelRowModel {
   backend?: "claude" | "codex";
   /** A subagent row: nested under this session, never the active one (C4). */
   parentSessionId?: string;
+  /** A full session another session's process started (C15): nested under its starter, otherwise ordinary. */
+  startedBySessionId?: string;
   /** Known context usage for the TUI row; absent is unknown, never zero. */
   context?: SessionContextUsage;
   status: SessionStatus | null;
@@ -209,6 +211,12 @@ export interface PublishedSessionRow {
    * no process to type into or raise, and it is never the one being announced.
    */
   parentSessionId?: string;
+  /**
+   * Present when another listed session's process started this one (C15). A
+   * viewer indents it under that row and says so; everything else about it —
+   * composer, announcement, close — is that of any session.
+   */
+  startedBySessionId?: string;
   context?: SessionContextUsage;
   status: SessionStatus | null;
   /** Epoch-ms for the status currently visible on this row. */
@@ -429,6 +437,7 @@ export function buildPublishedState(
         label: row.label,
         ...(row.backend ? { backend: row.backend } : {}),
         ...(row.parentSessionId ? { parentSessionId: row.parentSessionId } : {}),
+        ...(row.startedBySessionId ? { startedBySessionId: row.startedBySessionId } : {}),
         status: row.status,
         ...(row.at !== undefined ? { at: row.at } : {}),
         ...(transcriptPath ? { transcriptPath } : {}),
@@ -525,6 +534,7 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         label: sessionLabel(session, session.cwd),
         ...(session.backend ? { backend: session.backend } : {}),
         ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
+        ...(session.startedBySessionId ? { startedBySessionId: session.startedBySessionId } : {}),
         ...(options.contextBySessionId?.get(session.sessionId)
           ? { context: { ...options.contextBySessionId.get(session.sessionId)! } }
           : {}),
@@ -556,12 +566,33 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
   // Folder-style: a subagent sits directly under its parent, oldest first,
   // rather than competing with sessions on status. One whose parent is not in
   // the list has nowhere to sit and is dropped, not promoted to a session.
-  return top.flatMap((parent) => [
-    parent,
-    ...rows
-      .filter((row) => row.parentSessionId === parent.sessionId)
-      .sort((a, b) => (a.at ?? 0) - (b.at ?? 0) || a.label.localeCompare(b.label)),
-  ]);
+  // A session another session started (C15) sits under its starter too, after
+  // the starter's subagents and in status order among its siblings — but it IS
+  // a session, so one whose starter is not listed simply stays at the top.
+  const listed = new Set(top.map((row) => row.sessionId));
+  const placed = new Set<string>();
+  const place = (parent: PanelRowModel): PanelRowModel[] => {
+    if (placed.has(parent.sessionId)) return [];
+    placed.add(parent.sessionId);
+    return [
+      parent,
+      ...rows
+        .filter((row) => row.parentSessionId === parent.sessionId)
+        .sort((a, b) => (a.at ?? 0) - (b.at ?? 0) || a.label.localeCompare(b.label)),
+      ...top.filter((row) => row.startedBySessionId === parent.sessionId).flatMap(place),
+    ];
+  };
+  const roots = top.filter((row) => !row.startedBySessionId || !listed.has(row.startedBySessionId));
+  // `placed` also makes this total: a cycle in a bogus tree has no root, and
+  // its rows still land at the end rather than vanishing.
+  return [...roots, ...top].flatMap(place);
+}
+
+/** The row this one is drawn under, if any: its parent session (C4) or its starter (C15). */
+export function nestedUnder(
+  row: Pick<PanelRowModel, "parentSessionId" | "startedBySessionId">,
+): string | undefined {
+  return row.parentSessionId ?? row.startedBySessionId;
 }
 
 export interface NumberedPanelSessionRow {
@@ -670,8 +701,8 @@ const LIVE_GLYPH: Partial<Record<PanelConchState, string>> = {
 export function dashboardRowsForModel(model: PanelModel): string[] {
   return model.rows.map((row) => {
     const cursor = row.navSelected ? "\x1b[36m▸\x1b[0m " : "  ";
-    // A subagent is indented under its parent (C4); every other row is unchanged.
-    const label = row.parentSessionId ? `  ↳ ${row.label}` : row.label;
+    // A subagent (C4) or a started session (C15) is indented under its row; every other row is unchanged.
+    const label = nestedUnder(row) ? `  ↳ ${row.label}` : row.label;
     if (row.paused) {
       return `${cursor}\x1b[2m${label.slice(0, 26).padEnd(27)}⏸ manual\x1b[0m`;
     }

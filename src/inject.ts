@@ -252,11 +252,11 @@ async function osa(...lines: string[]): Promise<number> {
   return result;
 }
 
-/** Press a single key in the session — Enter accepts a permission dialog's highlighted option, Escape dismisses it. */
+/** Press a single key in the session — Enter accepts a permission dialog's highlighted option, Down moves to the next one, Escape dismisses it. */
 export async function injectKey(
   cfg: Config,
   sessionPid: number | undefined,
-  key: "Enter" | "Escape",
+  key: "Enter" | "Escape" | "Down",
   beforeInject?: () => boolean | Promise<boolean>,
 ): Promise<InjectTextResult> {
   const mayInject = async (): Promise<boolean> => beforeInject ? await beforeInject() : true;
@@ -277,7 +277,7 @@ export async function injectKey(
     }
     if (focused) await Bun.sleep(300);
     if (!(await mayInject())) return interrupted();
-    const keyCode = key === "Enter" ? 36 : 53;
+    const keyCode = key === "Enter" ? 36 : key === "Down" ? 125 : 53;
     await osa(`tell application "System Events" to key code ${keyCode}`);
     return { via: focused ? "osascript-focused" : "osascript-blind" };
   }
