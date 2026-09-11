@@ -17,7 +17,7 @@ import {
   type AgentCapabilitiesRead,
 } from "./agent-capabilities.ts";
 import type { ResumableSession } from "./resumable.ts";
-import { teleportRequestError } from "./session-lifecycle.ts";
+import { startOptionsError, teleportRequestError } from "./session-lifecycle.ts";
 import { normalizeSessionLabel } from "./sessions.ts";
 import { isValidVoiceName } from "./speak.ts";
 
@@ -763,6 +763,8 @@ export type RuntimeControlMessage =
     teleportSessionId?: string;
     /** Optional because a phone has no meaningful Mac filesystem picker. */
     cwd?: string;
+    /** Per-session choices from the agent's own `--help`, validated against its adapter row (C1). */
+    options?: Record<string, string | boolean>;
   }
   | { kind: "session-close"; sessionId: string }
   | {
@@ -1122,6 +1124,13 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
     }
     const teleportError = teleportRequestError({ backend: value.backend, resumeSessionId, teleportSessionId, cwd });
     if (teleportError) return { ok: false, err: teleportError };
+    // Every key against the agent's own table, every value against its kind;
+    // the copy below holds exactly the entries that passed and nothing else.
+    const optionsError = startOptionsError({ backend: value.backend, resumeSessionId, options: value.options });
+    if (optionsError) return { ok: false, err: optionsError };
+    const options = value.options === undefined
+      ? undefined
+      : { ...(value.options as Record<string, string | boolean>) };
     return {
       ok: true,
       value: {
@@ -1133,6 +1142,7 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
         ...(resumeSessionId ? { resumeSessionId } : {}),
         ...(teleportSessionId ? { teleportSessionId } : {}),
         ...(cwd ? { cwd } : {}),
+        ...(options ? { options } : {}),
       },
     };
   }
