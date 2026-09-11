@@ -466,11 +466,17 @@ export function pruneSessionCommandSets(
  * One record per unresolved interval preserves the signal without adding the same row every 20 seconds.
  * A row that says why it has no pid (`noTerminal`: closed, or an app-server holds it) is not a miss.
  */
+export function isMissingCodexPid(
+  session: Pick<SessionInfo, "backend" | "pid" | "noTerminal">,
+): boolean {
+  return adapterFor(session.backend).rowsMayLackPid && !session.pid && !session.noTerminal;
+}
+
 export function shouldReportMissingCodexPid(
   session: Pick<SessionInfo, "sessionId" | "backend" | "pid" | "noTerminal">,
   reported: Set<string>,
 ): boolean {
-  if (adapterFor(session.backend).rowsMayLackPid && !session.pid && !session.noTerminal) {
+  if (isMissingCodexPid(session)) {
     if (reported.has(session.sessionId)) return false;
     reported.add(session.sessionId);
     return true;
@@ -1700,17 +1706,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
     if (!session) throw new Error("session is not live");
     if (!session.pid) {
-      const agent = adapterFor(session.backend);
-      if (agent.rowsMayLackPid) {
+      if (isMissingCodexPid(session)) {
         reportedMissingCodexPid.add(session.sessionId);
         recordDaemonError(
           "session-close",
-          `${agent.displayName} row has no pid`,
+          `${adapterFor(session.backend).displayName} row has no pid`,
           session.sessionId,
           { cwd: session.cwd ?? "", status: session.status ?? "unknown" },
         );
       }
-      throw new Error("session has no routable pid");
+      throw new Error(session.noTerminal ?? "session has no routable pid");
     }
     await closeTerminalSession(session.pid);
     void renderSessionPanel();
