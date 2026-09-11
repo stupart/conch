@@ -343,7 +343,10 @@ describe("5. reveal-on-turn is opt-in and every raise is logged", () => {
     const at = daemon.indexOf("const raiseWindow = async (pid: number, why: string)");
     expect(at).toBeGreaterThan(-1);
     expect(daemon.slice(at, at + 300)).toContain("log(`raised Terminal window of pid ${pid} (${why})`)");
-    expect(daemon.split("raiseWindow(").length - 1).toBe(5); // turn-end, wake, recite, permission, app
+    // turn-end, wake, recite, permission (the voice loop, through its dep) and app (the daemon).
+    const voice = src("src/voice-loop.ts");
+    expect(voice).not.toContain("revealSessionWindow(");
+    expect(daemon.split("raiseWindow(").length - 1 + voice.split("raiseWindow(").length - 1).toBe(5);
   });
 });
 

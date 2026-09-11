@@ -10,6 +10,9 @@ import { buildPublishedState, refreshPublishedConversationState, type PanelModel
  */
 const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 const daemon = source("src/daemon.ts");
+// Cut four: the voice loop's half of every site is executed in voice-loop.test.ts;
+// what stays here is text the loop cannot run (the ioreg probe, the counts).
+const loop = source("src/voice-loop.ts");
 // Ignore line comments so a description of a site cannot satisfy a guard.
 const swift = (file: string) => source(`mac-app/conch-mac/${file}`).replace(/^\s*\/\/.*$/gm, "");
 
@@ -46,99 +49,37 @@ describe("Cut B daemon wiring, by site", () => {
     expect(gate).not.toContain('audioLease.sink === "phone"');
   });
 
-  test("the mic reservation consults the holder as well as the sink", () => {
-    const reserve = section(run, "const reserveNormalMic = async", "const speakBlocker =");
-    expect(reserve).toContain("sink: () => audioLease.sink,");
-    expect(reserve).toContain("voicedHere: () => audioHolder.isLocal(),");
-  });
-
-  test("the eligibility predicate is unchanged and `voicedHere` sits beside it (F1)", () => {
-    const turn = section(run, "const controlledTurn = shouldHandleTurnAudibly(event, cfg.workingMic);", "// Nobody's there:");
-    ordered(
-      turn,
-      'const audibleTurn = controlledTurn && audioLease.sink === "mac";',
-      "const voicedHere = audibleTurn && audioHolder.isLocal();",
-      "sessionGoneFromSnapshot(",
-    );
-    // The checks below still run on `audibleTurn`, not on `voicedHere`.
-    expect(turn).toContain("if (!audibleTurn) return;");
-    expect(turn).toContain("gateTurnForControls(event, controlledTurn");
-  });
+  // Executed in voice-loop.test.ts: the reservation re-checking the holder
+  // after waiting for quiet, and a yielded turn keeping its checks (F1).
 
   test("the idle probe is this Mac's presence, skipped while yielded (F7)", () => {
-    expect(run).toContain('if (event.type !== "wake" && event.type !== "recite" && cfg.awayAfterSecs && audioHolder.isLocal()) {');
+    // Text, not executed: the probe is `ioreg`, which the loop does not take as a dependency.
+    expect(loop).toContain('if (event.type !== "wake" && event.type !== "recite" && cfg.awayAfterSecs && audioHolder.isLocal()) {');
   });
 
-  test("a wake is refused before the courtesy line on a yielded daemon", () => {
-    const wake = section(run, 'if (event.type === "wake") {\n      // C9b', 'await conversationLoop(target, "", undefined, undefined, undefined, undefined, undefined, undefined, false, pauseGeneration);');
-    ordered(
-      wake,
-      "const heldBy = presentedTo(audioHolder.holder, audioLease.sink);",
-      "if (heldBy) return log(`wake refused",
-      "resolveWakeTarget(",
-      "Nothing to wake",
-      "That session is closed.",
-      "Mic open for",
-    );
-  });
+  // Executed in voice-loop.test.ts: a wake refused before its courtesy line,
+  // and `voicedHere` gating the bell while outbox site 1 hands the announce over.
 
-  test("`voicedHere` gates the bell and outbox site 1 hands the announce over before any reading (F6)", () => {
-    const announce = section(run, "// The hook hands the bell to the daemon", "await conversationLoop(\n        event,\n        announce.heard,");
-    ordered(
-      announce,
-      "if (voicedHere) await ringBell();",
-      "if (audibleTurn && !voicedHere) {",
-      "presentElsewhere(audioHolder.holder, event.announce, voiceFor(cfg, event.label), event.label, event.sessionId);",
-      "lastTurn = event;",
-      "return;",
-      "const announce = await speakInterruptible(",
-      // The re-speak on a noise blip is the second speak site; it stays
-      // behind the same return, so a yielded daemon never reaches it.
-      "await speakInterruptible(event, event.announce, true, undefined, undefined, interruptedByPause);",
-    );
-    expect(announce).not.toContain("if (audibleTurn) await ringBell();");
-    expect(announce).not.toContain("speech.speak(");
-  });
-
-  test("outbox site 2 is `speak` for volunteered lines only, between the manual check and the state change (F3, F6)", () => {
-    const speak = section(run, "const speak = async (", "await speech.speak(");
-    ordered(
-      speak,
-      "normalMicOpen()",
-      "pause.paused && !volunteered",
-      "const holder = presentedTo(audioHolder.holder, audioLease.sink);",
-      "if (holder) {",
-      "if (volunteered) presentElsewhere(holder, text, voiceFor(speechCfg, label), label, sessionId);",
-      "return;",
-      'setState("speaking", label);',
-      'if (audioLease.sink === "phone") {',
-      "armPhoneSpeechLatch(text);",
-    );
-    // Exactly two outbox sites (the helper is an arrow, so only calls carry the paren).
-    expect(count(run, "presentElsewhere(")).toBe(2);
+  // Outbox site 2 — `speak` hands over only volunteered lines, before any
+  // state change (F3, F6) — is executed in voice-loop.test.ts.
+  test("exactly two outbox sites across both files, and the volunteered callers name their session", () => {
+    // The helper is an arrow in the daemon and a property signature in the loop's
+    // deps, so only the two calls carry the paren.
+    expect(count(daemon, "presentElsewhere(") + count(loop, "presentElsewhere(")).toBe(2);
     expect(count(run, "audioOutbox.push(")).toBe(1);
-    // The volunteered callers name their session so the holder can too.
-    expect(run).toContain("await speak(cfg, `${target.label}:`, target.label, true, target.sessionId);");
+    expect(loop).toContain("await speak(cfg, `${target.label}:`, target.label, true, target.sessionId);");
     // An explicit speak is volunteered unless an agent asked under a pause it did not make (A17).
-    expect(run).toContain('return speak(speechCfg, event.announce, event.voice ? "" : event.label, volunteered, event.sessionId);');
+    expect(run).toContain('return voice.speak(speechCfg, event.announce, event.voice ? "" : event.label, volunteered, event.sessionId);');
   });
 
   test("`speakInterruptible` returns before speaking or arming a recorder unless the holder is local", () => {
-    const interruptible = section(run, "async function speakInterruptible(", "/** Inject a prompt utterance and report how it went. */");
+    const interruptible = section(loop, "async function speakInterruptible(", "/** Inject a prompt utterance and report how it went. */");
     const guard = 'if (audioLease.isPhone() || !audioHolder.isLocal()) return { heard: "", cut: false };';
     expect(count(interruptible, guard)).toBe(3);
     ordered(interruptible, guard, 'setState("speaking", event.label);', "await speech.quiescent();", guard, "armBargeRecorder(");
   });
 
-  test("the conversation-loop mic refusal covers the other Mac holding the ear", () => {
-    const loop = section(run, "async function conversationLoop(", 'log(`listening → ');
-    ordered(
-      loop,
-      "if (audioLease.isPhone() || !audioHolder.isLocal()) {",
-      "mic held —",
-      'micCue(cfg, "open")',
-    );
-  });
+  // The listen path's refusal while the other Mac holds the ear is executed in voice-loop.test.ts.
 
   test("the phone-only sites are untouched: the phone still wins on its daemon (F2)", () => {
     const fallback = section(run, "onClientsChanged: (count) => {", "acceptUpload:");
@@ -155,6 +96,8 @@ describe("Cut B daemon wiring, by site", () => {
   test("the device entry stays synchronous and the transfer mirrors the phone claim: cancels, then the record, then the ack (F5)", () => {
     const device = section(run, "function deviceCommand(message: DeviceCommand): DeviceControlResponse {", "const controlServer = createControlServer({");
     expect(device).not.toContain("await ");
+    // The loop's half of a transfer is one synchronous call, too.
+    expect(loop).toContain('closeMic: (reason) => activeDictation?.requestExternal("spacebar", reason),');
     const take = section(device, 'if (message.kind === "audio-take" || message.kind === "audio-release") {', 'if (message.kind === "audio-yield") {');
     ordered(take, 'message.kind === "audio-take" ? audioHolder.take() : audioHolder.release();', "armHolderExpiry(null);", 'return { kind: "audio-ack", revision: record.revision };');
     const yielded = section(device, 'if (message.kind === "audio-yield") {', 'if (message.kind === "audio-present") {');
@@ -166,7 +109,7 @@ describe("Cut B daemon wiring, by site", () => {
       'if (verdict === "grant") {',
       "speech.cancelCurrent();",
       "speech.cancelPendingAudio();",
-      'activeDictation?.requestExternal("spacebar", "audio-yield");',
+      'voice.closeMic("audio-yield");',
       "void Promise.resolve(killActiveRecorders()).catch(() => {});",
       "const outcome = audioHolder.yield(holder, revision, leaseMs);",
       "armHolderExpiry(outcome.record.expiresAt);",
@@ -174,7 +117,7 @@ describe("Cut B daemon wiring, by site", () => {
     );
     // The same four steps the phone claim runs, in the same order.
     const claim = section(device, "if (claimingPhone) {", "const wanted = audioLease.request(");
-    ordered(claim, "speech.cancelCurrent();", "speech.cancelPendingAudio();", 'activeDictation?.requestExternal("spacebar"', "killActiveRecorders()");
+    ordered(claim, "speech.cancelCurrent();", "speech.cancelPendingAudio();", 'voice.closeMic("phone-audio-claim");', "killActiveRecorders()");
   });
 
   test("a presented item goes through `speak` and is recorded only when it will be enqueued (F4)", () => {
@@ -184,17 +127,17 @@ describe("Cut B daemon wiring, by site", () => {
       present,
       "const admission = presented.check(source, seq, at);",
       'if (admission !== "admit") return { kind: "audio-error", code: "dropped" };',
-      "if (speakBlocker(false) || !speechAllowedHere(audioHolder.holder, audioLease.sink)) {",
+      "if (voice.speakBlocker(false) || !speechAllowedHere(audioHolder.holder, audioLease.sink)) {",
       'return { kind: "audio-error", code: "held" };',
       "presented.record(source, seq);",
       "const heading = `${host || source.slice(0, 8)} · ${label}`;",
-      "void speak(voice ? { ...cfg, ttsVoices: [voice] } : cfg, text, heading)",
+      "void voice.speak(itemVoice ? { ...cfg, ttsVoices: [itemVoice] } : cfg, text, heading)",
       'return { kind: "audio-ack", revision: audioHolder.record.revision, seq };',
     );
     expect(present).not.toContain("speech.speak(");
     expect(count(run, "presented.record(")).toBe(1);
     // The blocker mirrors the two checks at the top of `speak`.
-    const blocker = section(run, "const speakBlocker = (volunteered: boolean)", "const presentElsewhere =");
+    const blocker = section(loop, "const speakBlocker = (volunteered: boolean)", "const speak = async (");
     expect(blocker).toContain('normalMicOpen() ? "mic-open" : pause.paused && !volunteered ? "manual" : null');
   });
 
@@ -210,7 +153,7 @@ describe("Cut B daemon wiring, by site", () => {
   });
 
   test("a lapsed lease republishes so the window sees audio return", () => {
-    const expiry = section(run, "const armHolderExpiry =", "const speak = async (");
+    const expiry = section(run, "const armHolderExpiry =", "Bound how long conch will claim the phone is reading.");
     ordered(expiry, "if (!audioHolder.isLocal()) return;", "audio lease expired", "void renderSessionPanel();");
   });
 });

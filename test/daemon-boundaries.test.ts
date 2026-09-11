@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import {
   AudioSinkLease,
   type AudioSink,
@@ -221,36 +220,9 @@ describe("phone inject scope", () => {
 
 describe("every Mac speech path is gated on the audio lease", () => {
   // Mutation-found gap: breaking the gate inside `speak` passed all 747 tests
-  // while the user could HEAR both machines reading the same reply. The lease's
-  // own state machine is well covered; its WIRING into the speech paths was not
-  // covered at all, and the wiring is the part I got wrong twice.
-  const daemonSource = readFileSync(
-    new URL("../src/daemon.ts", import.meta.url),
-    "utf8",
-  );
-
-  function bodyOf(startMarker: string, endMarker: string): string {
-    const start = daemonSource.indexOf(startMarker);
-    expect(start).toBeGreaterThan(-1);
-    const end = daemonSource.indexOf(endMarker, start);
-    expect(end).toBeGreaterThan(start);
-    return daemonSource.slice(start, end);
-  }
-
-  test("`speak` returns before synthesising when the phone owns the voice", () => {
-    const speak = bodyOf("const speak = async (", "await speech.speak(");
-    expect(speak).toMatch(/audioLease\.(isPhone\(\)|sink === "phone")/);
-  });
-
-  test("`speakInterruptible` returns before it can arm the Mac recorder", () => {
-    // This path is worse than plain speech: it opens the microphone directly,
-    // so the gate must precede setState/recorder arming, not merely playback.
-    const interruptible = bodyOf(
-      "async function speakInterruptible(",
-      "setState(\"speaking\", event.label)",
-    );
-    expect(interruptible).toMatch(/audioLease\.(isPhone\(\)|sink === "phone")/);
-  });
+  // while the user could HEAR both machines reading the same reply. `speak`
+  // and `speakInterruptible` returning before any Mac audio or recorder while
+  // the phone owns the voice are executed in voice-loop.test.ts since cut four.
 
   test("the mic reservation re-checks the lease after awaiting quiescence", async () => {
     // TOCTOU: a claim landing during the await would otherwise open the Mac's
@@ -270,33 +242,6 @@ describe("every Mac speech path is gated on the audio lease", () => {
   });
 });
 
-describe("the phone owns the ear, not just the voice", () => {
-  const daemonSource = readFileSync(
-    new URL("../src/daemon.ts", import.meta.url),
-    "utf8",
-  );
-
-  test("the main listen path checks the lease before opening the mic", () => {
-    // The log caught this in production: the claim landed and the Mac opened
-    // its mic in the SAME SECOND, then both machines transcribed Tyler and both
-    // injected. Only the reading-gap branch of conversationLoop had ever called
-    // reserveNormalMic; the main path went straight to micCue.
-    const loop = daemonSource.slice(
-      daemonSource.indexOf("async function conversationLoop"),
-      daemonSource.indexOf('log(`listening → '),
-    );
-    // Matched without `await`: the cue is now FIRED rather than awaited, because
-    // waiting for it was the entire press-to-listening delay. The ordering this
-    // test protects is unchanged and still the point — the lease decides whether
-    // this Mac may open its mic at all, so it has to be settled before the cue
-    // that announces the mic, awaited or not.
-    const openIndex = loop.indexOf('micCue(cfg, "open")');
-    const gateIndex = loop.indexOf("audioLease.isPhone()");
-    // Both must EXIST before their order means anything: `indexOf` returns -1
-    // for a missing string, and -1 sorts before every real index, so an
-    // ordering assertion alone silently passes when a line is deleted.
-    expect(gateIndex).toBeGreaterThan(-1);
-    expect(openIndex).toBeGreaterThan(-1);
-    expect(gateIndex).toBeLessThan(openIndex);
-  });
-});
+// The phone owns the ear, not just the voice: the listen path's lease check
+// before the mic (the claim landed and the Mac opened its mic in the same
+// second) is executed in voice-loop.test.ts.

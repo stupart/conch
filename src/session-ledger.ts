@@ -72,6 +72,11 @@ export class SessionLedger {
   // A12: the "Codex row has no pid" warning latch — one record per unresolved
   // interval. Lived in the daemon closure before, where nothing pruned it.
   readonly reportedMissingCodexPid = new Set<string>();
+  // The last turn conch announced or held: what a bare wake or recite resolves
+  // to. Written by the voice loop and the daemon both, so it lives here. Not
+  // cleared by forget(): a wake on a closed session must still say "That
+  // session is closed." rather than "Nothing to wake."
+  lastTurn: TurnEvent | null = null;
 
   isKnown(sessionId: string): boolean {
     return this.sessionStates.has(sessionId)

@@ -13,7 +13,8 @@ import { appendFileSync, chmodSync, existsSync, renameSync, statSync } from "nod
  * here is swallowed. Telemetry that can take down the daemon is worse than none.
  */
 
-export const TELEMETRY_PATH = "/tmp/conch-telemetry.jsonl";
+// Overridable so the test suite never appends to the live daemon's file (see test/preload.ts).
+export const TELEMETRY_PATH = process.env.CONCH_TELEMETRY_FILE || "/tmp/conch-telemetry.jsonl";
 const MAX_TELEMETRY_BYTES = 8 * 1024 * 1024;
 
 export type TelemetryEvent =

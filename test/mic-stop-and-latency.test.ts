@@ -5,6 +5,7 @@ import { dispatchSocketTurnEvent } from "../src/control-server.ts";
 import type { TurnEvent } from "../src/hook.ts";
 
 const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
+const voice = readFileSync(join(import.meta.dir, "..", "src", "voice-loop.ts"), "utf8");
 
 const stop = { type: "spacebar", sessionId: "", label: "", announce: "" } as TurnEvent;
 
@@ -54,8 +55,11 @@ test("a stop with nothing running at all is reported, not swallowed", () => {
 test("the physical key asks the same question as the socket", () => {
   // Both paths decide whether space stops or opens. They must not disagree:
   // when they did, space fell through and opened a SECOND wake on a live mic.
-  expect(daemon).toContain('if (eventQueue.busy() || normalMicOpen()) stopReciting("spacebar");');
-  expect(daemon).toContain("capturing: () => normalMicOpen(),");
+  expect(daemon).toContain('if (eventQueue.busy() || voice.capturing()) stopReciting("spacebar");');
+  expect(daemon).toContain("capturing: () => voice.capturing(),");
+  // ...and the loop answers with the whole four-term gate, never just `micOpen`.
+  expect(voice).toContain("capturing: normalMicOpen,");
+  expect(voice).toContain("activeDictation?.session.micOpen || micOpen || normalMicReserved || bargeHandoffOpen");
 });
 
 /**
@@ -70,8 +74,12 @@ test("the physical key asks the same question as the socket", () => {
  * happens after listening starts, so that is where it is awaited.
  */
 test("the transcript baseline is not awaited before the mic opens", () => {
-  const loop = daemon.slice(daemon.indexOf("async function conversationLoop"));
-  const beforeListening = loop.slice(0, loop.indexOf('log(`listening → '));
+  const loopAt = voice.indexOf("async function conversationLoop");
+  expect(loopAt).toBeGreaterThan(-1);
+  const loop = voice.slice(loopAt);
+  const listeningAt = loop.indexOf('log(`listening → ');
+  expect(listeningAt).toBeGreaterThan(-1);
+  const beforeListening = loop.slice(0, listeningAt);
 
   // Started before the mic, so the scan overlaps the open instead of blocking it...
   expect(beforeListening).toContain("const manualReplyBaseline:");
@@ -80,7 +88,7 @@ test("the transcript baseline is not awaited before the mic opens", () => {
   expect(beforeListening).not.toContain("await manualReplyBaseline");
 
   // ...and it IS awaited where the guard that needs it is built.
-  const afterListening = loop.slice(loop.indexOf('log(`listening → '));
+  const afterListening = loop.slice(listeningAt);
   const guard = afterListening.indexOf("createManualReplyListenGuard(");
   expect(guard).toBeGreaterThan(-1);
   expect(afterListening.slice(0, guard)).toContain("manualReplyEvent = await manualReplyBaseline;");
