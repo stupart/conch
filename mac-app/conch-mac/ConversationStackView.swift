@@ -29,6 +29,9 @@ struct ConversationStackView: View {
     /// kind has existed in the conversation model all along and nothing ever
     /// emitted one, so this is the position that kind was reserving.
     var artifact: ReviewInfo?
+    /// The session's working directory: what a relative link in the agent's
+    /// prose is relative to (A13). Nil on an older daemon.
+    var cwd: String? = nil
     /// Enlarge it, and switch the tab so the move is explained.
     var onOpenArtifact: () -> Void = {}
 
@@ -45,6 +48,11 @@ struct ConversationStackView: View {
     /// Open the subagent a Task/Agent block started, in this same pane (C4).
     /// The daemon says which agent that was; the pane decides how to show it.
     var onOpenSubagent: (ConversationItem.Tool.Subagent) -> Void = { _ in }
+    @EnvironmentObject private var store: StateStore
+    /// The last link that would not open — the OS's own words and the
+    /// resolved target — shown here, where the click happened, never as a
+    /// Finder alert (A13).
+    @State private var linkFailure: String?
     /// Sticks to the bottom only when already there, so reading history is not
     /// yanked away by an arriving message.
     @State private var pinnedToBottom = true
@@ -102,6 +110,23 @@ struct ConversationStackView: View {
                 )
             }
             .background(ConchPalette.bg)
+            .overlay(alignment: .bottom) {
+                LinkFailureLine(message: $linkFailure)
+            }
+            // Every link in the stack — a reply's markdown, a question, a
+            // nested agent's prose, the artifact card's document head — opens
+            // through the one door that reports (A13). SwiftUI's default
+            // action handed a schemeless link straight to LaunchServices,
+            // which answered -50 in a Finder alert: only web links are URLs;
+            // a path is the agent's prose and means "from where the session
+            // runs", which only the row knows.
+            .environment(\.openURL, OpenURLAction { url in
+                linkFailure = nil
+                store.openLink(LinkTarget.text(of: url), cwd: cwd, rowId: conversation.sessionId) {
+                    linkFailure = $0
+                }
+                return .handled
+            })
             .onChange(of: revisionVector) { _, _ in
                 // Capture the position from before SwiftUI lays out the added
                 // height. Geometry measured after growth briefly says "not at
@@ -116,6 +141,7 @@ struct ConversationStackView: View {
                 pinnedToBottom = true
                 expandedToolIDs = []
                 multiSelections = [:]
+                linkFailure = nil
                 requestBottomScroll(using: proxy)
             }
             .onAppear { requestBottomScroll(using: proxy) }
