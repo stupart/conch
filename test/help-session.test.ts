@@ -12,7 +12,7 @@ import {
 import { startHelpSession, startTerminalSession } from "../src/session-lifecycle.ts";
 import { sessionLabel } from "../src/sessions.ts";
 import { SETTINGS_FILE, SETTING_KEYS } from "../src/settings.ts";
-import { SESSIONS_FILE, STATE_FILE } from "../src/status.ts";
+import { SESSIONS_FILE } from "../src/status.ts";
 
 const repoRoot = join(import.meta.dir, "..");
 const read = (path: string) => readFileSync(join(repoRoot, path), "utf8");
@@ -83,7 +83,7 @@ describe("help session CLAUDE.md", () => {
     for (const path of [
       "/tmp/conch-daemon.log",
       SESSIONS_FILE,
-      STATE_FILE,
+      "/tmp/conch-state.json", // not STATE_FILE: the suite redirects it
       "/tmp/conch.sock",
       `{{CONFIG_DIR}}/${SETTINGS_FILE}`,
       `{{CONFIG_DIR}}/${basename(APP_ERRORS_PATH)}`,
