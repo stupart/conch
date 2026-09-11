@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 import {
   chmod,
@@ -11,6 +11,8 @@ import { CONCH_VERSION } from "../src/version.ts";
 import { tmpdir } from "node:os";
 import { join, relative, isAbsolute } from "node:path";
 import {
+  AGENT_TUNABLE_SETTINGS,
+  MAX_SPEAK_CHARS,
   MCP_PROTOCOL_VERSION,
   MCP_TOOLS,
   createMcpToolHandlers,
@@ -24,8 +26,10 @@ import {
   type McpToolName,
   type PublishedState as McpPublishedState,
 } from "../src/mcp.ts";
+import { audioTimeoutMs } from "../src/audio-watchdog.ts";
 import {
   SETTING_DESCRIPTORS,
+  SETTING_KEYS,
   configSnapshotEntry,
   getSettingDescriptor,
   parseSetting,
@@ -380,7 +384,7 @@ describe("MCP tool discovery", () => {
       conch_wake: ["session"],
       conch_recite: ["session"],
       conch_speak: ["text", "voice"],
-      conch_mode: ["action"],
+      conch_mode: ["action", "session", "scope"],
       conch_rename: ["session", "label"],
       conch_config: ["key", "value", "unset"],
       conch_transcript_tail: ["session", "sentences"],
@@ -590,7 +594,8 @@ describe("real MCP tool handlers with injected dependencies", () => {
     await callTool(handlers, "conch_wake", { session: "session-123" });
     await callTool(handlers, "conch_recite", { session: "Build" });
     await callTool(handlers, "conch_speak", { text: "Testing.", voice: "af_heart" });
-    await callTool(handlers, "conch_mode", { action: "pause" });
+    // The bare pause is the whole daemon, and needs `scope: "all"` now (C5).
+    await callTool(handlers, "conch_mode", { action: "pause", scope: "all" });
 
     expect(h.calls.sessionLookups).toEqual([
       { claudeDir: "/virtual/claude", query: "session-123" },
@@ -1143,5 +1148,211 @@ describe("real MCP tool handlers with injected dependencies", () => {
     // Nothing was announced or opened on the refused path.
     expect(h.calls.daemon).toEqual([]);
     expect(h.calls.opened).toEqual([]);
+  });
+});
+
+describe("C5: what conch refuses an agent, and what it still allows", () => {
+  const runtime = { claudeDir: "/virtual/claude", socketPath: "/virtual/conch.sock" };
+
+  async function refusal(run: () => Promise<unknown>): Promise<string> {
+    let thrown: unknown;
+    try {
+      await run();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).name).toBe("ToolInputError");
+    return (thrown as Error).message;
+  }
+
+  test("config: every allowlisted key is real, and the description names them instead of 'curated'", () => {
+    for (const key of AGENT_TUNABLE_SETTINGS) expect(SETTING_KEYS).toContain(key);
+    const description = MCP_TOOLS.find((tool) => tool.name === "conch_config")!.description;
+    for (const key of AGENT_TUNABLE_SETTINGS) expect(description).toContain(key);
+    expect(description).not.toContain("curated");
+    // The security and topology keys the review named are out, by name.
+    for (const key of ["bypass-permissions", "phone", "phone-relay-url", "meeting-autopause", "keystroke-fallback"]) {
+      expect(AGENT_TUNABLE_SETTINGS as readonly string[]).not.toContain(key);
+    }
+  });
+
+  test("config: setting or unsetting a key outside the allowlist is refused before the daemon hears of it", async () => {
+    const h = fakeHarness();
+    const handlers = createMcpToolHandlers(runtime, h.dependencies);
+
+    const set = await refusal(() => handlers.conch_config({ key: "bypass-permissions", value: true }));
+    expect(set).toContain('"bypass-permissions" is not a setting an agent may change');
+    expect(set).toContain("conch set bypass-permissions <value>");
+    for (const key of AGENT_TUNABLE_SETTINGS) expect(set).toContain(key);
+
+    const unset = await refusal(() => handlers.conch_config({ key: "phone", unset: true }));
+    expect(unset).toContain("conch unset phone");
+
+    // A key the registry does not know at all gets the same refusal, not a lookup error.
+    expect(await refusal(() => handlers.conch_config({ key: "bogus", value: 1 })))
+      .toContain('"bogus" is not a setting an agent may change');
+    expect(h.calls.control).toEqual([]);
+  });
+
+  test("config: an allowlisted key is set, and any key can still be read", async () => {
+    const h = fakeHarness();
+    const handlers = createMcpToolHandlers(runtime, h.dependencies);
+
+    expect(JSON.parse(toolText(await callTool(handlers, "conch_config", { key: "end-silence", value: 2 }))))
+      .toMatchObject({ kind: "config-ack", key: "end-silence", action: "set" });
+    expect(JSON.parse(toolText(await callTool(handlers, "conch_config", { key: "bypass-permissions" }))))
+      .toMatchObject({ kind: "config-value", key: "bypass-permissions" });
+    expect(h.calls.control.map((call) => call.message.kind)).toEqual(["set-config", "get-config"]);
+  });
+
+  test(`speak: more than ${MAX_SPEAK_CHARS} characters is refused with the count, never cut`, async () => {
+    const h = fakeHarness();
+    const handlers = createMcpToolHandlers(runtime, h.dependencies);
+    const tooLong = "x".repeat(MAX_SPEAK_CHARS + 1);
+    const message = await refusal(() => handlers.conch_speak({ text: tooLong }));
+    expect(message).toContain(`text is ${MAX_SPEAK_CHARS + 1} characters`);
+    expect(message).toContain(`at most ${MAX_SPEAK_CHARS}`);
+    expect(h.calls.daemon).toEqual([]);
+
+    const exact = "y".repeat(MAX_SPEAK_CHARS);
+    await callTool(handlers, "conch_speak", { text: exact });
+    expect(h.calls.daemon.map((call) => call.event.announce)).toEqual([exact]);
+  });
+
+  test("speak: one pending speak per session — a second is refused until the first has had time to finish", async () => {
+    const h = fakeHarness();
+    let clock = 1_000_000;
+    h.dependencies.now = () => clock;
+    const handlers = createMcpToolHandlers(runtime, h.dependencies);
+
+    await callTool(handlers, "conch_speak", { text: "Tests passed." });
+    expect(await refusal(() => handlers.conch_speak({ text: "And again." })))
+      .toContain("already speaking for this session");
+    expect(h.calls.daemon).toHaveLength(1);
+
+    clock += audioTimeoutMs("Tests passed.") - 1;
+    expect(await refusal(() => handlers.conch_speak({ text: "Still too soon." })))
+      .toContain("already speaking for this session");
+    clock += 1;
+    await callTool(handlers, "conch_speak", { text: "Now fine." });
+    expect(h.calls.daemon.map((call) => call.event.announce)).toEqual(["Tests passed.", "Now fine."]);
+
+    // A separate server is a separate session: nothing pending there.
+    const sibling = createMcpToolHandlers(runtime, h.dependencies);
+    await callTool(sibling, "conch_speak", { text: "Sibling speaks." });
+    expect(h.calls.daemon).toHaveLength(3);
+  });
+
+  test("speak: a refused daemon send leaves nothing pending, so the retry is not refused", async () => {
+    const h = fakeHarness({ daemonAccepts: false });
+    const handlers = createMcpToolHandlers(runtime, h.dependencies);
+    await expect(handlers.conch_speak({ text: "Hello" })).rejects.toThrow("conch daemon is not running");
+    await expect(handlers.conch_speak({ text: "Hello" })).rejects.toThrow("conch daemon is not running");
+    expect(h.calls.daemon).toHaveLength(2);
+  });
+
+  function twoSessionHarness() {
+    const alpha: SessionInfo = { sessionId: "session-a", name: "Alpha", cwd: "/work/alpha", status: "busy", pid: process.ppid };
+    const beta: SessionInfo = { sessionId: "session-b", name: "Beta", cwd: "/work/beta", status: "busy", pid: process.ppid + 1 };
+    const h = fakeHarness({
+      registry: { infos: [alpha, beta], liveIds: new Set(["session-a", "session-b"]), complete: true },
+    });
+    h.dependencies.sessionLabel = (session) => session?.name ?? "unnamed";
+    h.dependencies.findSessionByName = async (_dir, query) => query === "Beta" ? beta : alpha;
+    return h;
+  }
+
+  test("mode: without session or scope it pauses only the calling session, through the scoped event", async () => {
+    const h = twoSessionHarness();
+    const handlers = createMcpToolHandlers(runtime, h.dependencies);
+
+    await callTool(handlers, "conch_mode", { action: "pause" });
+    await callTool(handlers, "conch_mode", { action: "resume", session: "Beta" });
+
+    // The same message the Mac's per-row control sends: a pause that names a
+    // session reaches setSessionPaused in the daemon, never the global flip.
+    expect(h.calls.daemon.map((call) => call.event)).toEqual([
+      { type: "pause", sessionId: "session-a", label: "Alpha", announce: "" },
+      { type: "resume", sessionId: "session-b", label: "Beta", announce: "" },
+    ]);
+  });
+
+  test("mode: the whole daemon needs scope \"all\", and nothing else is a scope", async () => {
+    const h = twoSessionHarness();
+    const handlers = createMcpToolHandlers(runtime, h.dependencies);
+
+    await callTool(handlers, "conch_mode", { action: "pause", scope: "all" });
+    expect(h.calls.daemon.map((call) => call.event)).toEqual([
+      { type: "pause", sessionId: "", label: "", announce: "" },
+    ]);
+
+    expect(await refusal(() => handlers.conch_mode({ action: "pause", scope: "all", session: "Beta" })))
+      .toContain('session and scope: "all" cannot be used together');
+    expect(await refusal(() => handlers.conch_mode({ action: "pause", scope: "everything" })))
+      .toContain('scope must be "all"');
+    expect(h.calls.daemon).toHaveLength(1);
+  });
+
+  test("mode: with no calling session and no session named, the refusal says how to ask", async () => {
+    // fakeHarness's session has pid 4321, not this process's parent: a bare
+    // `conch mcp` with no owner.
+    const h = fakeHarness();
+    const handlers = createMcpToolHandlers(runtime, h.dependencies);
+    const message = await refusal(() => handlers.conch_mode({ action: "pause" }));
+    expect(message).toContain("no calling session");
+    expect(message).toContain('scope: "all"');
+    expect(message).toContain("conch pause");
+    expect(h.calls.daemon).toEqual([]);
+  });
+
+  test("wake and recite say where the audio went, from the published audioControl", async () => {
+    const published = (control: unknown) => JSON.stringify({ v: 1, ts: 1, audioControl: control });
+    const at = async (sessionsFile: string | null) => {
+      const h = fakeHarness({ sessionsFile });
+      const handlers = createMcpToolHandlers(runtime, h.dependencies);
+      const wake = JSON.parse(toolText(await callTool(handlers, "conch_wake", {})));
+      const recite = JSON.parse(toolText(await callTool(handlers, "conch_recite", { session: "Build" })));
+      expect(wake.sent).toBe(true);
+      expect(recite.sent).toBe(true);
+      expect(recite.audio).toBe(wake.audio);
+      expect(h.calls.daemon).toHaveLength(2);
+      return wake.audio as string;
+    };
+
+    const local = await at(published({ holder: "local", revision: 3, expiresAt: null }));
+    expect(local).toContain("this Mac");
+    expect(local).toContain("phone");
+    expect(local).not.toContain("refused");
+    // An older daemon publishes no audioControl; no file at all is the same.
+    expect(await at(published(undefined))).toBe(local);
+    expect(await at(null)).toBe(local);
+
+    const yielded = await at(published({ holder: "mac-b-device", revision: 4, expiresAt: null }));
+    expect(yielded).toContain("refused");
+    expect(yielded).toContain("yielded its audio to mac-b-device");
+    expect(await at(published({ holder: "mac-b-device", revision: 4, expiresAt: 1_234_567 + 1 }))).toBe(yielded);
+    // A lease that has already expired is local again, whatever the stale file says.
+    expect(await at(published({ holder: "mac-b-device", revision: 4, expiresAt: 1_234_567 }))).toBe(local);
+  });
+
+  test("the contract doc names the allowlist, every refusal, the help session, and no 'curated'", () => {
+    const doc = readFileSync(join(import.meta.dir, "..", "docs", "conch-control-skill.md"), "utf8");
+    for (const key of AGENT_TUNABLE_SETTINGS) expect(doc).toContain(`\`${key}\``);
+    expect(doc).not.toContain("curated");
+    expect(doc).toContain("## What conch will refuse");
+    for (const refusal of [
+      "another session's",
+      "non-executable",
+      `${MAX_SPEAK_CHARS} characters`,
+      "already speaking",
+      'scope: "all"',
+      "yielded",
+      "not on the list",
+    ]) {
+      expect(doc).toContain(refusal);
+    }
+    expect(doc).toContain("conch help-session");
+    expect(doc).toContain("absolute path");
   });
 });
