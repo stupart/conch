@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   DictationReducer,
-  classifyPermissionDecision,
   type DictationActionReadyEffect,
   type DictationReducerEffect,
   type RequestBarrierEffect,
@@ -171,16 +170,6 @@ describe("ordered dictation reducer", () => {
     reducer.consume(transcript(2, "later"));
     expect(() => reducer.consume(transcript(1, "earlier"))).toThrow("out of order");
     expect(() => reducer.consume(transcript(2, "duplicate"))).toThrow("out of order");
-  });
-});
-
-describe("permission decision", () => {
-  test("accepts repeated agreement but rejects conflict or any free text", () => {
-    expect(classifyPermissionDecision(["Yes.", "go ahead"])).toBe("approve");
-    expect(classifyPermissionDecision(["No.", "deny"])).toBe("deny");
-    expect(classifyPermissionDecision(["Yes.", "No."])).toBeNull();
-    expect(classifyPermissionDecision(["Yes.", "but use the other branch"])).toBeNull();
-    expect(classifyPermissionDecision(["", "  "])).toBeNull();
   });
 });
 

@@ -81,6 +81,18 @@ import {
 } from "./listen.ts";
 import type { RecorderHandle } from "./dictation-controller.ts";
 import { injectText, injectKey, revealSessionWindow, toClipboard } from "./inject.ts";
+import {
+  APPROVAL_KEYBOARD,
+  APPROVAL_KEYS,
+  APPROVAL_REASK,
+  approvalAnnounce,
+  approvalDetail,
+  classifyApprovalAnswer,
+  confirmAlwaysPrompt,
+  confirmsAlways,
+  pendingApproval,
+  type PendingApproval,
+} from "./approval.ts";
 import { adapterFor, transcriptFormatFor } from "./agent-adapter.ts";
 import { injectProviderCommand, isProviderCommandLine, renameProviderSession } from "./provider-rename.ts";
 import { classify, classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
@@ -233,7 +245,6 @@ import {
 } from "./diagnostics.ts";
 import {
   DictationReducer,
-  classifyPermissionDecision,
   classifySpokenChoice,
   classifySpokenChoices,
   type DictationActionReadyEffect,
@@ -477,11 +488,13 @@ export async function reserveNormalMicForSink(options: {
 
 /** Only a genuine turn end, or an explicitly opted-in reclassified Stop, owns audio. */
 export function shouldHandleTurnAudibly(
-  event: Pick<TurnEvent, "type" | "backgroundWork">,
+  event: Pick<TurnEvent, "type" | "backgroundWork" | "approval">,
   workingMic: boolean,
 ): boolean {
   return event.type === "turn-end"
-    || (event.type === "working" && event.backgroundWork === true && workingMic);
+    || (event.type === "working" && event.backgroundWork === true && workingMic)
+    // A permission dialog with a voice is an announced turn: same gates, same holds (B5).
+    || (event.type === "needs-you" && event.approval !== undefined);
 }
 
 /**
@@ -2107,6 +2120,20 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // Quiet state belongs to the conversation, not the device currently
     // speaking it. The phone owns playback only; it must not bypass a scoped
     // manual/dismiss gate and make that session audible from another surface.
+    // B5: a permission dialog is the one needs-you that gets a voice — unless
+    // the setting already skips every prompt, and only when the transcript
+    // names a tool still waiting on its result (an AskUserQuestion fires the
+    // same notification and is not a permission).
+    const approval = event.type === "needs-you"
+      && event.ntype === "permission_prompt"
+      && !cfg.bypassPermissions
+      && event.transcriptPath
+      ? pendingApproval(event.transcriptPath)
+      : null;
+    // On the event, so the audibility predicate and every gate below see it;
+    // cleared on a replay whose dialog was answered meanwhile.
+    if (approval) event.approval = approval;
+    else delete event.approval;
     const controlledTurn = shouldHandleTurnAudibly(event, cfg.workingMic);
     const audibleTurn = controlledTurn && audioLease.sink === "mac";
     // C9b Cut B (F1): a yielded turn is audible SOMEWHERE, so the checks
@@ -2136,9 +2163,9 @@ export async function runDaemon(cfg: Config): Promise<void> {
       if (!audibleTurn) return;
     }
     if (event.type === "needs-you") {
-      const kind = describeNeed(event.ntype);
+      const kind = approval ? approvalDetail(approval) : describeNeed(event.ntype);
       setSessionState(event.sessionId, event.label, "needs", kind, event.eventAt);
-      return; // stripped: no bell, no announcement, no permission mic
+      if (!approval) return; // stripped: no bell, no announcement, no permission mic
     }
     if (event.type === "turn-end" && !setSessionState(
       event.sessionId,
@@ -2188,6 +2215,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
         if (audibleTurn || event.ntype === "idle_prompt") lastTurn = event; // wake still finds it
         return;
       }
+    }
+
+    if (approval) {
+      await permissionLoop(event, approval, pauseGeneration);
+      return;
     }
 
     if (event.type === "recite") {
@@ -3901,14 +3933,86 @@ export async function runDaemon(cfg: Config): Promise<void> {
     }
   }
 
-  /** Permission/elicitation dialogs: "yes" -> Enter (highlighted option), "no" -> Escape. Free text is refused on purpose. */
-  async function permissionLoop(event: TurnEvent): Promise<void> {
+  /**
+   * The four-way decision, by voice (B5).
+   *
+   * Announce the tool and what it wants, listen, and press what a person
+   * would press: "yes" is Enter on the highlighted row, "no" is Escape, "no,
+   * use main instead" is Escape and then the alternative typed as the next
+   * prompt, and "always" walks Down to the don't-ask-again row — after a
+   * second spoken yes, because that one outlives the prompt and is the only
+   * blind two-key walk through a menu conch cannot see. Unclear is re-asked
+   * once, then left for the keyboard with the row still saying what it needs.
+   */
+  async function permissionLoop(event: TurnEvent, ask: PendingApproval, pauseGeneration: number): Promise<void> {
+    const interruptedByPause = (): boolean => pause.interrupted(pauseGeneration);
+    const say = (text: string): Promise<void> => speak(cfg, text, event.label, false, event.sessionId);
+    log(`permission from "${event.label}": ${ask.name} — ${ask.summary}`);
+    if (cfg.revealOnTurn && event.pid) void revealSessionWindow(event.pid);
+    await ringBell();
+    await say(approvalAnnounce(event.label, ask));
+    if (shuttingDown || interruptedByPause() || consumeStopKey()) return;
+    // The same holds as an announced turn: the ear is elsewhere, or you are typing.
+    if (audioLease.isPhone() || !audioHolder.isLocal()) {
+      return log(`mic held — ${audioLease.isPhone() ? "the phone" : "the other Mac"} has the ear ("${event.label}")`);
+    }
+    const idle = cfg.typingGraceSecs > 0 ? await idleSeconds() : null;
+    if (idle !== null && idle < cfg.typingGraceSecs) {
+      return log(`mic held — you're typing (answer "${event.label}" by keyboard)`);
+    }
+    let heard = await listenForApproval(event);
+    if (!heard) return;
+    let answer = classifyApprovalAnswer(heard);
+    if (!answer) {
+      log(`heard: "${heard.join(" ")}" -> unclear, asking once more`);
+      await say(APPROVAL_REASK);
+      if (shuttingDown || interruptedByPause()) return;
+      heard = await listenForApproval(event);
+      if (!heard) return;
+      answer = classifyApprovalAnswer(heard);
+    }
+    if (!answer) {
+      log(`heard: "${heard.join(" ")}" -> unclear, leaving "${event.label}" for the keyboard`);
+      return void (await say(APPROVAL_KEYBOARD));
+    }
+    log(`heard: "${heard.join(" ")}" -> ${answer.kind}`);
+    if (answer.kind === "always") {
+      await say(confirmAlwaysPrompt(ask));
+      if (shuttingDown || interruptedByPause()) return;
+      const confirmation = await listenForApproval(event);
+      if (!confirmation) return;
+      if (!confirmsAlways(confirmation)) {
+        log(`heard: "${confirmation.join(" ")}" -> not confirmed`);
+        return void (await say(`Not confirmed. ${APPROVAL_KEYBOARD}`));
+      }
+    }
+    if (interruptedByPause()) return;
+    for (const key of APPROVAL_KEYS[answer.kind]) {
+      const { via, interrupted } = await injectKey(cfg, event.pid, key, () => !interruptedByPause());
+      if (interrupted || interruptedByPause()) return;
+      if (via === "none") return void (await say("Could not reach the session's window to answer — do it by hand."));
+      log(`sent ${key} via ${via}`);
+      await Bun.sleep(150); // let the dialog move before the next key
+    }
+    if (answer.kind === "instead") {
+      // Escape left the cursor in the prompt; the alternative is the next message.
+      await Bun.sleep(400);
+      const { via } = await injectText(cfg, event.pid, answer.text, () => !interruptedByPause());
+      if (via === "none") return void (await say("Could not type the alternative — do it by hand."));
+      if (via === "clipboard") return void (await say("The alternative is on the clipboard — paste it into the session."));
+      markInjected(event.sessionId);
+      log(`told "${event.label}" instead: "${answer.text}" via ${via}`);
+    }
+  }
+
+  /** One mic window for a permission answer: what was heard, or null when the window closed with nothing to decide (interrupted, spacebar, error, silence). */
+  async function listenForApproval(event: TurnEvent): Promise<string[] | null> {
     const pauseGeneration = pause.capture();
     const interruptedByPause = (): boolean => pause.interrupted(pauseGeneration);
-    if (shuttingDown) return;
+    if (shuttingDown) return null;
     await micCue(cfg, "open");
-    if (shuttingDown || interruptedByPause()) return;
-    log("listening for yes or no...");
+    if (shuttingDown || interruptedByPause()) return null;
+    log("listening for yes, always, or no...");
     const session = createDictationSession(
       cfg,
       listenHooks(event.label, () => ""),
@@ -3931,17 +4035,18 @@ export async function runDaemon(cfg: Config): Promise<void> {
       session.requestBarrier(barrierReason ?? `permission-${action}`);
     };
 
-    if (shuttingDown) return;
-    if (!(await reserveNormalMic())) return;
+    if (shuttingDown) return null;
+    if (!(await reserveNormalMic())) return null;
     if (interruptedByPause()) {
       normalMicReserved = false;
-      return;
+      return null;
     }
     if (stopKey) {
       normalMicReserved = false;
       consumeStopKey();
       await micCue(cfg, "close");
-      return log("⏹ spacebar — closed the permission mic");
+      log("⏹ spacebar — closed the permission mic");
+      return null;
     }
     micOpen = true;
     try {
@@ -4032,39 +4137,29 @@ export async function runDaemon(cfg: Config): Promise<void> {
 
     if (interruptedByPause()) {
       emitRecorderTraces(diagnosticIds, { intent: "pause", bufferCountAfterReduction: 0 });
-      return;
+      return null;
     }
     if (externalReason) {
       emitRecorderTraces(diagnosticIds, { intent: `permission-${externalReason}`, bufferCountAfterReduction: 0 });
       if (externalReason === "spacebar") consumeStopKey();
-      if (shuttingDown) return;
+      if (shuttingDown) return null;
       await micCue(cfg, "close");
-      return log("⏹ closed the permission mic");
+      log("⏹ closed the permission mic");
+      return null;
     }
     if (listenError) {
       emitRecorderTraces(diagnosticIds, { intent: "permission-error", bufferCountAfterReduction: 0 });
-      return log(`listen error: ${listenError}`);
+      log(`listen error: ${listenError}`);
+      return null;
     }
     if (!texts.length) {
       emitRecorderTraces(diagnosticIds, { intent: "permission-timeout", bufferCountAfterReduction: 0 });
       await micCue(cfg, "close");
-      return log("no speech — back to idle");
+      log("no speech — back to idle");
+      return null;
     }
-    const verdict = classifyPermissionDecision(texts);
-    const heard = texts.join(" ");
-    log(`heard: "${heard}" -> ${verdict ?? "unclear"}`);
-    emitRecorderTraces(diagnosticIds, { intent: verdict ?? "permission-unclear", bufferCountAfterReduction: 0 });
-    if (interruptedByPause()) return;
-    if (!verdict) return void (await speak(cfg, "For permission prompts, say yes or no. Ignoring.", event.label));
-    const { via, interrupted } = await injectKey(
-      cfg,
-      event.pid,
-      verdict === "approve" ? "Enter" : "Escape",
-      () => !interruptedByPause(),
-    );
-    if (interrupted || interruptedByPause()) return;
-    if (via === "none") await speak(cfg, "Could not reach the session's window to answer — do it by hand.", event.label);
-    else log(`sent ${verdict === "approve" ? "Enter" : "Escape"} via ${via}`);
+    emitRecorderTraces(diagnosticIds, { intent: "permission-answer", bufferCountAfterReduction: 0 });
+    return texts;
   }
 
   /**

@@ -1,4 +1,4 @@
-import { classify, classifyApproval, isSendCommand, splitTrailingDiscard, splitTrailingSend } from "./commands.ts";
+import { classify, isSendCommand, splitTrailingDiscard, splitTrailingSend } from "./commands.ts";
 
 /**
  * The ordered, side-effect-free half of a dictation session. The capture
@@ -390,22 +390,6 @@ function copySegment(segment: BufferedDictationSegment): BufferedDictationSegmen
  * is recognized and all recognized segments agree. Conflicting yes/no or any
  * free text is deliberately ambiguous and must not inject a key.
  */
-export function classifyPermissionDecision(
-  segments: Iterable<string>,
-): "approve" | "deny" | null {
-  let decision: "approve" | "deny" | null = null;
-  let heard = false;
-  for (const raw of segments) {
-    const text = raw.trim();
-    if (!text) continue;
-    heard = true;
-    const next = classifyApproval(text);
-    if (!next || (decision && decision !== next)) return null;
-    decision = next;
-  }
-  return heard ? decision : null;
-}
-
 /** Spoken ordinals, so "the third one" can pick option three. */
 const ORDINALS = [
   "first", "second", "third", "fourth", "fifth",
