@@ -45,7 +45,7 @@ Getting started:
 
 Everyday:
   conch wake [name] | recite [name] | pause | resume  talk again | reread | manual (hold) | auto
-  conch sessions | resumable [query]       list live sessions | past ones to resume
+  conch sessions | resumable [query] | start [claude|codex] [options]  live | past | open one in Terminal (start --help)
   conch rename <session> <name> | model <session> <model>  save a name | type /model into it
 
 Voice and settings:
@@ -639,6 +639,27 @@ switch (command) {
       break;
     }
     console.log(target);
+    break;
+  }
+  case "start": {
+    // Launched directly, like help-session: the person is at this Terminal,
+    // so an agent's own trust prompt is theirs to answer.
+    const { startRequestFromArgv, startTerminalSession, startUsage } = await import("./session-lifecycle.ts");
+    const { adapterFor, agentAdapters } = await import("./agent-adapter.ts");
+    if (rest.includes("--help") || rest.includes("-h")) {
+      console.log(agentAdapters().map(startUsage).join("\n\n"));
+      break;
+    }
+    let request;
+    try {
+      request = startRequestFromArgv(rest);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
+    // The persisted default; the request's own toggle, when given, wins.
+    await startTerminalSession({ bypassPermissions: cfg.bypassPermissions, ...request });
+    console.log(`[conch] opened ${adapterFor(request.backend).displayName} in Terminal, in ${request.cwd ?? "~"}`);
     break;
   }
   case "help-session": {

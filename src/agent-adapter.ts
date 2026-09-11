@@ -52,6 +52,26 @@ export interface TranscriptLookupOptions extends CodexSessionRegistryOptions {
   claudeDir: string;
 }
 
+/**
+ * One per-session choice the agent's own CLI takes at start (C1). `name` is
+ * the key a request's `options` uses; `flag` is the CLI's spelling; `help` is
+ * the CLI's own help line, verbatim, so a refusal can quote it. Read from
+ * `--help` on the installed binaries, like `bypassPermissionsFlag`.
+ */
+export interface StartOption {
+  readonly name: string;
+  readonly flag: string;
+  readonly kind: "enum" | "bool" | "string";
+  /** `kind: "enum"` only: the CLI's own list, in its order. */
+  readonly choices?: readonly string[];
+  readonly help: string;
+  /** Meaningful only with a resume; refused on a fresh start. */
+  readonly resumeOnly?: boolean;
+}
+
+/** The `options` key both agents spell their bypass toggle under; its flag is the row's `bypassPermissionsFlag`. */
+export const BYPASS_OPTION = "bypass-permissions";
+
 export interface AgentAdapter {
   readonly backend: SessionBackend;
   /** How a person hears the agent named in a message: "Claude Code", "Codex". */
@@ -71,6 +91,13 @@ export interface AgentAdapter {
    * `--yolo` alias in the current build despite the name people use for it.
    */
   readonly bypassPermissionsFlag: string;
+  /**
+   * What a person chooses per session, from the agent's own `--help`, in the
+   * order the sheets show them. Free-form lists (`--allowedTools`, `--add-dir`,
+   * `-c key=value`) are deliberately absent: nothing conch cannot validate is
+   * passed through.
+   */
+  readonly startOptions: readonly StartOption[];
   /** A per-launch "trust this folder" override, or "" where the agent takes none on its command line. */
   trustFolderArgs(cwd: string): string;
   /** Has the agent already been told it trusts this folder? Null when unreadable — say nothing. */
@@ -128,6 +155,42 @@ export const claudeAdapter: AgentAdapter = {
   resumeArgs: (id) => ` --resume ${id}`,
   teleportArgs: (id) => ` --teleport ${id}`,
   bypassPermissionsFlag: "--dangerously-skip-permissions",
+  // `claude --help`, 2.1.266.
+  startOptions: [
+    {
+      name: "model",
+      flag: "--model",
+      kind: "string",
+      help: "Model for the current session. Provide an alias for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a model's full name (e.g. 'claude-fable-5').",
+    },
+    {
+      name: "permission-mode",
+      flag: "--permission-mode",
+      kind: "enum",
+      choices: ["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"],
+      help: "Permission mode to use for the session",
+    },
+    {
+      name: BYPASS_OPTION,
+      flag: "--dangerously-skip-permissions",
+      kind: "bool",
+      help: "Bypass all permission checks. Recommended only for sandboxes with no internet access.",
+    },
+    {
+      name: "effort",
+      flag: "--effort",
+      kind: "enum",
+      choices: ["low", "medium", "high", "xhigh", "max"],
+      help: "Effort level for the current session (low, medium, high, xhigh, max)",
+    },
+    {
+      name: "fork-session",
+      flag: "--fork-session",
+      kind: "bool",
+      resumeOnly: true,
+      help: "When resuming, create a new session ID instead of reusing the original (use with --resume or --continue)",
+    },
+  ],
   // Claude Code's trust decision cannot be supplied on the command line, which
   // is why conch checks it beforehand (`folderTrusted`) and explains instead.
   trustFolderArgs: () => "",
@@ -179,6 +242,38 @@ export const codexAdapter: AgentAdapter = {
   resumeArgs: (id) => ` resume ${id}`,
   teleportArgs: null,
   bypassPermissionsFlag: "--dangerously-bypass-approvals-and-sandbox",
+  // `codex --help` and `codex resume --help`, codex-cli 0.153.4: the same
+  // options on both, so they parse after `resume <id>` too (verified: an
+  // invalid `--sandbox` there is rejected by name).
+  startOptions: [
+    { name: "model", flag: "--model", kind: "string", help: "Model the agent should use" },
+    {
+      name: "sandbox",
+      flag: "--sandbox",
+      kind: "enum",
+      choices: ["read-only", "workspace-write", "danger-full-access"],
+      help: "Select the sandbox policy to use when executing model-generated shell commands",
+    },
+    {
+      name: "ask-for-approval",
+      flag: "--ask-for-approval",
+      kind: "enum",
+      choices: ["on-request", "never"],
+      help: "Configure when the model requires human approval before executing a command",
+    },
+    {
+      name: BYPASS_OPTION,
+      flag: "--dangerously-bypass-approvals-and-sandbox",
+      kind: "bool",
+      help: "Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY DANGEROUS. Intended solely for running in environments that are externally sandboxed",
+    },
+    {
+      name: "profile",
+      flag: "--profile",
+      kind: "string",
+      help: "Layer $CODEX_HOME/<name>.config.toml on top of the base user config",
+    },
+  ],
   trustFolderArgs: (cwd) => ` -c ${shellQuote(`projects."${cwd}".trust_level="trusted"`)}`,
   folderTrusted: (cwd) => codexFolderTrusted(cwd),
   // Codex has no equivalent command (provider-rename.ts returned `unsupported`).

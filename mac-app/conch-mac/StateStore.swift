@@ -361,6 +361,18 @@ final class StateStore: ObservableObject {
         return reply.sessions
     }
 
+    /// The persisted `bypass-permissions` setting: what the sheet's toggle
+    /// starts from. Nil when the daemon cannot say, and the toggle starts off.
+    func bypassPermissionsDefault() async -> Bool? {
+        struct Snapshot: Decodable { let snapshot: [String: ConchConfigEntry] }
+        let outcome = await socketClient.request(ConchGetConfigRequest())
+        guard case let .reply(data) = outcome,
+              let reply = try? JSONDecoder().decode(Snapshot.self, from: data),
+              case let .boolean(value)? = reply.snapshot["bypass-permissions"]?.value
+        else { return nil }
+        return value
+    }
+
     /// Shown when a start succeeded but the agent is waiting on a person.
     static let awaitingTrustNotice =
         "Terminal is asking you to trust this folder. Answer it there and the "
@@ -406,7 +418,8 @@ final class StateStore: ObservableObject {
         resumeSessionId: String?,
         teleportSessionId: String? = nil,
         cwd: String?,
-        trustFolder: Bool = false
+        trustFolder: Bool = false,
+        options: [String: ConchStartOptionValue] = [:]
     ) async -> StartOutcome {
         let resumed = Self.nonempty(resumeSessionId)
         let teleport = Self.nonempty(teleportSessionId)
@@ -416,7 +429,8 @@ final class StateStore: ObservableObject {
             resumeSessionId: resumed,
             teleportSessionId: teleport,
             cwd: workingDirectory,
-            trustFolder: trustFolder ? true : nil
+            trustFolder: trustFolder ? true : nil,
+            options: options.isEmpty ? nil : options
         )
         let outcome = await socketClient.request(
             request,

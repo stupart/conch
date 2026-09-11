@@ -719,10 +719,16 @@ private struct SessionLedger: View {
                                         onBeginRename: { actions.onBeginRename(row) },
                                         onCommitRename: { actions.onCommitRename(row) },
                                         onCancelRename: actions.onCancelRename,
-                                        onDismiss: { actions.onDismiss(row) }
+                                        onDismiss: { actions.onDismiss(row) },
+                                        // The starter's current label, so a rename
+                                        // there reads through here (C15).
+                                        startedByLabel: row.startedBySessionId.flatMap { id in
+                                            state.rows.first(where: { $0.id == id })?.label
+                                        }
                                     )
-                                    // Folder-style: a subagent sits under its parent (C4).
-                                    .padding(.leading, row.parentSessionId == nil ? 0 : 18)
+                                    // Folder-style: a subagent sits under its parent (C4),
+                                    // a started session under its starter (C15).
+                                    .padding(.leading, row.parentSessionId == nil && row.startedBySessionId == nil ? 0 : 18)
                                     .id(row.id)
                                 }
 
@@ -845,6 +851,9 @@ private struct DashboardRow: View {
     let onCommitRename: () -> Void
     let onCancelRename: () -> Void
     let onDismiss: () -> Void
+    /// The label of the session whose process started this one (C15); nil for
+    /// a session nobody listed started.
+    var startedByLabel: String? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovered = false
@@ -1009,6 +1018,19 @@ private struct DashboardRow: View {
                     // own fixedSize + priority, not by capping this.
                     .frame(minWidth: 54, alignment: .leading)
                     .layoutPriority(1)
+                    .opacity(isDimmed ? 0.58 : 1)
+            }
+
+            // A session another session started (C15): say by whom, in the
+            // small type the summary uses. The agent badge that follows is
+            // what tells a Claude-started Codex from its starter at a glance.
+            if let startedByLabel, !isRenaming {
+                Text("started by \(startedByLabel)")
+                    .font(ConchTypography.font(size: 10.5))
+                    .foregroundStyle(ConchPalette.textFaint)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .accessibilityLabel("Started by \(startedByLabel)")
                     .opacity(isDimmed ? 0.58 : 1)
             }
 
