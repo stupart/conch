@@ -821,6 +821,16 @@ describe("previewForPanelSelection — async cursor stale guard", () => {
     expect(previewForPanelSelection(null, "b", "output")).toBeNull();
   });
 
+  test("a shared window's preview carries the flag, and only when it is true", () => {
+    expect(previewForPanelSelection("b", "b", "reply", undefined, true)).toEqual({
+      sessionId: "b",
+      text: "reply",
+      spokenChars: 0,
+      shared: true,
+    });
+    expect(previewForPanelSelection("b", "b", "reply", undefined, false)).not.toHaveProperty("shared");
+  });
+
   test("daemon captures the requested id before await and commits through the guard", async () => {
     const source = await Bun.file(new URL("../src/daemon.ts", import.meta.url)).text();
     const render = source.slice(
@@ -846,6 +856,7 @@ describe("previewForPanelSelection — async cursor stale guard", () => {
         previewId,
         previewText,
         previewRaw,
+        previewReply?.shared,
       )`,
     );
     expect(render).toContain(

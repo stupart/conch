@@ -100,7 +100,7 @@ struct ConversationStack: View {
                 toolRow(item)
             }
         case "material":
-            MaterialRow(bridge: bridge, material: item.material, fallback: item.text)
+            MaterialRow(bridge: bridge, material: item.material, fallback: item.text, sessionId: conversation.sessionId)
         default:
             MarkdownView(text: item.text)
                 .foregroundStyle(Palette.textPrimary)
@@ -445,8 +445,12 @@ private struct MaterialRow: View {
     @ObservedObject var bridge: BridgeClient
     let material: ConversationItem.Material?
     let fallback: String
+    /// The session it belongs to; what a failed load is filed under.
+    let sessionId: String
     @State private var image: UIImage?
     @State private var temporaryURL: URL?
+    /// Why the image would not load, said on the row instead of nothing (A13).
+    @State private var failure: String?
 
     var body: some View {
         Group {
@@ -470,7 +474,12 @@ private struct MaterialRow: View {
                         Text(material?.title ?? "Material")
                             .font(Type.caption.weight(.medium))
                             .foregroundStyle(Palette.textDim)
-                        if !detail.isEmpty {
+                        if let failure {
+                            Text(failure)
+                                .font(Type.caption)
+                                .foregroundStyle(Palette.needs)
+                                .textSelection(.enabled)
+                        } else if !detail.isEmpty {
                             Text(detail)
                                 .font(Type.caption)
                                 .foregroundStyle(Palette.textFaint)
@@ -511,10 +520,21 @@ private struct MaterialRow: View {
     private func loadImage() async {
         removeTemporaryFile()
         image = nil
+        failure = nil
         guard material?.kind == "image" else { return }
 
         if let path = material?.path {
-            guard let url = await bridge.downloadFile(path: path), !Task.isCancelled else { return }
+            let downloaded = await bridge.downloadFile(path: path)
+            guard !Task.isCancelled else {
+                if let downloaded { try? FileManager.default.removeItem(at: downloaded) }
+                return
+            }
+            // The bridge's own reason, read on the main actor straight after
+            // the call that set it, as the deliverable sheet does.
+            guard let url = downloaded else {
+                fail("Couldn't load the image from your Mac: \(bridge.lastError ?? "it sent nothing back.")", path: path)
+                return
+            }
             temporaryURL = url
             let preview = await ImageDownsampler.filePreview(
                 at: url,
@@ -539,6 +559,15 @@ private struct MaterialRow: View {
         }.value
         guard !Task.isCancelled else { return }
         if case let .image(decoded) = preview { image = UIImage(cgImage: decoded) }
+    }
+
+    /// Said on the row with the path on the Mac, and filed there as
+    /// `load-image` (A13): a failed download used to leave only the title.
+    @MainActor
+    private func fail(_ reason: String, path: String) {
+        let message = "\(reason) — \(path)"
+        failure = message
+        Task { await bridge.reportAppError(operation: "load-image", message: message, sessionId: sessionId) }
     }
 
     @MainActor

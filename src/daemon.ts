@@ -117,6 +117,7 @@ import {
   latestAnswerableQuestion,
   publishedConversation,
   readConversationTail,
+  withSharedNote,
   type Conversation,
 } from "./conversation.ts";
 import { isWindowKey } from "./window-key.ts";
@@ -914,14 +915,16 @@ export async function runDaemon(cfg: Config): Promise<void> {
    * A session's last reply, for showing or saying. A window of a shared
    * session reads its own branch through the conversation loader, with its
    * registry entry (A8) — the file-level reader returns whichever window wrote
-   * last. Anything else keeps the cached reader it always used.
+   * last. Anything else keeps the cached reader it always used. `shared` is
+   * the loader's word that the branch could not be told apart, so the whole
+   * file came back: the TUI preview and the voice say so, as the apps do.
    */
-  async function lastReplyFor(path: string, sessionId: string): Promise<string> {
-    if (!isWindowKey(sessionId)) return lastAssistantText(path);
+  async function lastReplyFor(path: string, sessionId: string): Promise<{ text: string; shared: boolean }> {
+    if (!isWindowKey(sessionId)) return { text: await lastAssistantText(path), shared: false };
     const conversation = await readConversationTail(path, sessionId, transcriptFormatFor(path), {
       window: panelSessions.get(sessionId),
     });
-    return lastAssistantReply(conversation);
+    return { text: lastAssistantReply(conversation), shared: conversation.shared === true };
   }
   function labelForSessionId(id: string): string {
     const session = panelSessions.get(id);
@@ -1585,7 +1588,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
             const turn = path && !isWindowKey(sessionId) ? await currentTurnText(path) : "";
             if (turn) return turn;
             // RAW, not stripMarkdown: the phone renders it, it doesn't speak it.
-            const finalMessage = path ? await lastReplyFor(path, sessionId) : "";
+            const finalMessage = path ? (await lastReplyFor(path, sessionId)).text : "";
             if (finalMessage) return finalMessage;
             // Empty means the session is MID-TURN — lastAssistantText returns
             // the final message of a turn, and deliberately nothing while a
@@ -1774,11 +1777,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // The conversation is read from the same transcript, at the same moment, as
     // the flattened reply beside it — so a viewer can never show a stack that
     // disagrees with the line being spoken.
-    const [transcriptReplyRaw, previewRaw, conversation] = await Promise.all([
+    const [transcriptReply, previewReply, conversation] = await Promise.all([
       contentEvent?.transcriptPath
         ? lastReplyFor(contentEvent.transcriptPath, contentEvent.sessionId)
-        : Promise.resolve(""),
-      previewPath && previewId ? lastReplyFor(previewPath, previewId) : Promise.resolve(""),
+        : null,
+      previewPath && previewId ? lastReplyFor(previewPath, previewId) : null,
       // Not tied to `contentEvent` like the reply beside it. That is the last
       // turn conch SPOKE, which is null for a whole daemon lifetime until
       // something finishes — so on a fresh start the app would show an empty
@@ -1829,6 +1832,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
         return context ? [session.sessionId, context] as const : null;
       }))).filter((entry): entry is NonNullable<typeof entry> => entry !== null),
     );
+    const transcriptReplyRaw = transcriptReply?.text ?? "";
+    const previewRaw = previewReply?.text ?? "";
     const transcriptReplyText = stripMarkdown(transcriptReplyRaw);
     const previewText = stripMarkdown(previewRaw);
     if (shuttingDown) return;
@@ -1880,6 +1885,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         previewId,
         previewText,
         previewRaw,
+        previewReply?.shared,
       );
       model.conversation = conversation ? publishedConversation(conversation) : null;
       model.conversations = conversationsBySession;
@@ -1905,7 +1911,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
       numberedSessionRows = numberPanelSessionRows(model.rows, live);
       // Read mode state after the async registry snapshot so a slow older redraw
       // cannot repaint a stale manual banner over a newer toggle.
-      model.mode = { muted: false, paused: pause.paused, holding: pending.size };
+      model.mode = {
+        muted: false,
+        paused: pause.paused,
+        holding: pending.size,
+        // Published so `conch_speak` can say an agent's speech was held (A17).
+        ...(pause.paused && pauseOrigin.agentOwns("") ? { pausedByAgent: true } : {}),
+      };
       lastPanelModel = model;
       renderPanel(model);
       lastPublishedPanelState = buildDaemonPublishedState(
@@ -2308,7 +2320,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           lastReplyFor(target.transcriptPath, target.sessionId),
           transcriptMark(target.transcriptPath),
         ]);
-        const latest = stripMarkdown(latestReply);
+        const latest = stripMarkdown(latestReply.text);
         target.mark = currentMark;
         if (shuttingDown || interruptedByPause() || consumeStopKey()) return;
         if (!latest.trim()) {
@@ -2952,10 +2964,13 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // actually covered. Shared by the read-full phase and "continue".
     const ensureSentences = async (): Promise<string[]> => {
       if (!sentences) {
-        sentences = splitSentences(stripMarkdown(await lastReplyFor(event.transcriptPath!, event.sessionId)));
+        const reply = await lastReplyFor(event.transcriptPath!, event.sessionId);
+        sentences = splitSentences(stripMarkdown(reply.text));
         cursor = autoTurn
           ? event.review ? sentences.length : countCoveredSentences(event.announce, sentences)
           : countCoveredSentences(event.announce, sentences);
+        // Said once, before what is left, when the branch was not told apart (A8).
+        if (reply.shared) sentences = withSharedNote(sentences, cursor);
         const text = sentences.join(" ");
         updateReadingProgress(text, sentences.slice(0, cursor).join(" ").length);
       }

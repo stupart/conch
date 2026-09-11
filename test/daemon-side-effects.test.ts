@@ -288,9 +288,18 @@ describe("3. an agent cannot undo a person's manual mode", () => {
     expect(handler).toContain("event.label, volunteered, event.sessionId)");
   });
 
+  test("the published mode carries the same test, so conch_speak can say it was held", () => {
+    const at = daemon.indexOf("model.mode = {");
+    expect(at).toBeGreaterThan(-1);
+    const mode = daemon.slice(at, daemon.indexOf("lastPanelModel = model;", at));
+    expect(mode).toContain("paused: pause.paused,");
+    expect(mode).toContain('...(pause.paused && pauseOrigin.agentOwns("") ? { pausedByAgent: true } : {}),');
+  });
+
   test("the contract says so", () => {
     const doc = src("docs/conch-control-skill.md");
     expect(doc).toContain("A `resume` from an agent is refused while the user put conch in manual themselves");
+    expect(doc).toContain("its result carries `held` saying so");
   });
 });
 

@@ -1254,6 +1254,37 @@ describe("C5: what conch refuses an agent, and what it still allows", () => {
     expect(h.calls.daemon).toHaveLength(2);
   });
 
+  test("speak: held under a pause no agent made says so; what is sent is unchanged", async () => {
+    const published = (mode: unknown) => JSON.stringify({ v: 1, ts: 1, mode });
+    const speak = async (sessionsFile: string | null) => {
+      const h = fakeHarness({ sessionsFile });
+      const handlers = createMcpToolHandlers(runtime, h.dependencies);
+      const result = JSON.parse(toolText(await callTool(handlers, "conch_speak", { text: "Tests passed." })));
+      // The same event either way: the daemon decides, the tool only reports it.
+      expect(h.calls.daemon.map((call) => call.event)).toEqual([
+        { type: "speak", sessionId: "", label: "", announce: "Tests passed.", origin: "agent" },
+      ]);
+      expect(result.sent).toBe(true);
+      return { result, handlers, h };
+    };
+
+    // Paused, and not by an agent: the daemon holds it (A17's test).
+    const held = await speak(published({ muted: false, paused: true, holding: 0 }));
+    expect(held.result.held).toContain("not spoken");
+    expect(held.result.held).toContain("manual mode");
+    expect(held.result.held).toContain("dropped, not queued");
+    // Nothing is being spoken, so the next call is not refused as "already speaking".
+    await callTool(held.handlers, "conch_speak", { text: "Again." });
+    expect(held.h.calls.daemon).toHaveLength(2);
+
+    for (const heard of [
+      // An agent's own pause does not hold an agent's speech.
+      published({ muted: false, paused: true, holding: 0, pausedByAgent: true }),
+      published({ muted: false, paused: false, holding: 0 }),
+      null,
+    ]) expect((await speak(heard)).result).not.toHaveProperty("held");
+  });
+
   function twoSessionHarness() {
     const alpha: SessionInfo = { sessionId: "session-a", name: "Alpha", cwd: "/work/alpha", status: "busy", pid: process.ppid };
     const beta: SessionInfo = { sessionId: "session-b", name: "Beta", cwd: "/work/beta", status: "busy", pid: process.ppid + 1 };
