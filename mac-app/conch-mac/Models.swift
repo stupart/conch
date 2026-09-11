@@ -740,6 +740,11 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     /// is indented under that session, has no composer, and is never the one
     /// conch is speaking for. Older daemons never send it.
     let parentSessionId: String?
+    /// Present when another listed session's process started this one (C15):
+    /// a `codex` run from Claude's Bash tool, or a `claude` run from Codex's
+    /// shell. Indented under its starter with a "started by" line; otherwise
+    /// an ordinary session. Older daemons never send it.
+    let startedBySessionId: String?
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -761,6 +766,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case navSelected
         case revealable
         case parentSessionId
+        case startedBySessionId
     }
 
     init(
@@ -782,7 +788,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         prioritized: Bool,
         navSelected: Bool,
         revealable: Bool = false,
-        parentSessionId: String? = nil
+        parentSessionId: String? = nil,
+        startedBySessionId: String? = nil
     ) {
         self.id = id
         self.label = label
@@ -803,6 +810,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.navSelected = navSelected
         self.revealable = revealable
         self.parentSessionId = parentSessionId
+        self.startedBySessionId = startedBySessionId
     }
 
     init(from decoder: Decoder) throws {
@@ -832,6 +840,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             (try? container.decodeIfPresent(Bool.self, forKey: .revealable)) ?? false
         parentSessionId =
             try? container.decodeIfPresent(String.self, forKey: .parentSessionId)
+        startedBySessionId =
+            try? container.decodeIfPresent(String.self, forKey: .startedBySessionId)
     }
 
     func replacingLabel(with label: String) -> SessionRow {
@@ -854,7 +864,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             prioritized: prioritized,
             navSelected: navSelected,
             revealable: revealable,
-            parentSessionId: parentSessionId
+            parentSessionId: parentSessionId,
+            startedBySessionId: startedBySessionId
         )
     }
 }
