@@ -745,6 +745,9 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     /// shell. Indented under its starter with a "started by" line; otherwise
     /// an ordinary session. Older daemons never send it.
     let startedBySessionId: String?
+    /// The folder the session runs in: what a relative link in the agent's
+    /// prose is relative to (A13). Older daemons never send it.
+    let cwd: String?
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -767,6 +770,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case revealable
         case parentSessionId
         case startedBySessionId
+        case cwd
     }
 
     init(
@@ -789,7 +793,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         navSelected: Bool,
         revealable: Bool = false,
         parentSessionId: String? = nil,
-        startedBySessionId: String? = nil
+        startedBySessionId: String? = nil,
+        cwd: String? = nil
     ) {
         self.id = id
         self.label = label
@@ -811,6 +816,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.revealable = revealable
         self.parentSessionId = parentSessionId
         self.startedBySessionId = startedBySessionId
+        self.cwd = cwd
     }
 
     init(from decoder: Decoder) throws {
@@ -842,6 +848,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             try? container.decodeIfPresent(String.self, forKey: .parentSessionId)
         startedBySessionId =
             try? container.decodeIfPresent(String.self, forKey: .startedBySessionId)
+        cwd = try? container.decodeIfPresent(String.self, forKey: .cwd)
     }
 
     func replacingLabel(with label: String) -> SessionRow {
@@ -865,7 +872,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             navSelected: navSelected,
             revealable: revealable,
             parentSessionId: parentSessionId,
-            startedBySessionId: startedBySessionId
+            startedBySessionId: startedBySessionId,
+            cwd: cwd
         )
     }
 }

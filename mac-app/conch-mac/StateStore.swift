@@ -550,9 +550,10 @@ final class StateStore: ObservableObject {
     func reportAppError(
         operation: String,
         message: String,
-        sessionId: String? = nil
+        sessionId: String? = nil,
+        state extra: [String: String] = [:]
     ) {
-        let snapshot = errorStateSnapshot
+        let snapshot = errorStateSnapshot.merging(extra) { _, given in given }
         let socketClient = socketClient
         Task {
             await socketClient.reportAppError(
@@ -561,6 +562,53 @@ final class StateStore: ObservableObject {
                 sessionId: sessionId,
                 state: snapshot
             )
+        }
+    }
+
+    /// One door for every link, file or artifact the app opens.
+    ///
+    /// A13: a doc link in the conversation "errored" and nobody could say how,
+    /// because every open site handed a URL to LaunchServices and threw the
+    /// answer away — SwiftUI's default link action, a discarded `Bool`, a
+    /// `Void` reveal. The next failure diagnoses itself: the OS's own words
+    /// and the resolved target go back to the pane that was clicked
+    /// (`onFailure`), and to `errors.jsonl` as `open-link` with the row id —
+    /// the link and where it resolved to, never what the file contains.
+    ///
+    /// `cwd` is what a relative link is relative to: the session's folder for
+    /// the agent's prose, the document's folder for a link inside a rendered
+    /// deliverable. `reveal` selects a file in Finder instead of opening it.
+    @MainActor
+    func openLink(
+        _ link: String,
+        cwd: String?,
+        rowId: String?,
+        reveal: Bool = false,
+        onFailure: @escaping @MainActor (String) -> Void
+    ) {
+        let url = LinkTarget.url(for: link, cwd: cwd)
+        let target = url.isFileURL ? url.path : url.absoluteString
+        func fail(_ error: Error) {
+            onFailure("\(error.localizedDescription) — \(target)")
+            reportAppError(
+                operation: "open-link",
+                message: error.localizedDescription,
+                sessionId: rowId,
+                state: ["link": link, "target": target]
+            )
+        }
+        if url.isFileURL {
+            // Foundation's own wording for a missing file, before
+            // LaunchServices can put up a dialog of its own.
+            do { _ = try url.checkResourceIsReachable() } catch { fail(error); return }
+            if reveal { NSWorkspace.shared.activateFileViewerSelecting([url]); return }
+        }
+        let configuration = NSWorkspace.OpenConfiguration()
+        // The alert is ours to show, in the pane — not Finder's "-50".
+        configuration.promptsUserIfNeeded = false
+        NSWorkspace.shared.open(url, configuration: configuration) { _, error in
+            guard let error else { return }
+            Task { @MainActor in fail(error) }
         }
     }
 
@@ -1430,5 +1478,43 @@ private enum StateSnapshotFile {
             return nil
         }
         return try? JSONDecoder().decode(PublishedState.self, from: data)
+    }
+}
+
+/// Where a link in an agent's prose points.
+///
+/// Agents write links the way they write paths — `output/x/review-guide.md`,
+/// `~/notes.md`, `/abs/file.md`, occasionally `file:///abs/with%20space.md` —
+/// and only web links are URLs. SwiftUI's default link action handed every
+/// schemeless one straight to LaunchServices, which answered -50 (paramErr)
+/// in a Finder alert: reproduced 2026-09-11 on a relative link in a Codex
+/// reply (A13). A path is relative to the session's working directory, `~`
+/// is the home folder, and `URL(fileURLWithPath:)` does the percent-encoding
+/// a monorepo path with spaces needs.
+///
+/// Foundation only, on purpose: `test/open-link.test.ts` extracts this enum
+/// and runs it under `swift` with the case from that report.
+enum LinkTarget {
+    static func url(for link: String, cwd: String?) -> URL {
+        let trimmed = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        var path = trimmed
+        if let url = URL(string: trimmed), url.scheme != nil {
+            guard url.isFileURL else { return url }
+            path = url.path
+        }
+        path = NSString(string: path).expandingTildeInPath
+        if !path.hasPrefix("/"), let cwd, !cwd.isEmpty {
+            path = cwd + "/" + path
+        }
+        return URL(fileURLWithPath: path).standardizedFileURL
+    }
+
+    /// The string behind a clicked link attribute — a `URL` or a `String` —
+    /// decoded, so `my%20doc.md` names the file it means.
+    static func text(of link: Any) -> String {
+        if let url = link as? URL {
+            return url.scheme == nil || url.isFileURL ? url.path : url.absoluteString
+        }
+        return link as? String ?? String(describing: link)
     }
 }
