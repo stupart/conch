@@ -119,7 +119,8 @@ describe("Cut B daemon wiring, by site", () => {
     expect(count(run, "audioOutbox.push(")).toBe(1);
     // The volunteered callers name their session so the holder can too.
     expect(run).toContain("await speak(cfg, `${target.label}:`, target.label, true, target.sessionId);");
-    expect(run).toContain('return speak(speechCfg, event.announce, event.voice ? "" : event.label, true, event.sessionId);');
+    // An explicit speak is volunteered unless an agent asked under a pause it did not make (A17).
+    expect(run).toContain('return speak(speechCfg, event.announce, event.voice ? "" : event.label, volunteered, event.sessionId);');
   });
 
   test("`speakInterruptible` returns before speaking or arming a recorder unless the holder is local", () => {

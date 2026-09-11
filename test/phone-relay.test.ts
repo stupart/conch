@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +6,7 @@ import { createPhoneBridgeApplication } from "../src/phone-bridge.ts";
 import {
   MacRelayPeer,
   RelayResponseCache,
+  createPhoneRelay,
   ensureRelayPairing,
   readRelayPairing,
   relayPairingCode,
@@ -596,5 +597,105 @@ describe("a Mac that has lost its session says so", () => {
       ciphertext: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     });
     await expect(harness.peer.receive(notAHello)).rejects.toThrow();
+  });
+});
+
+/// A5. The relay dropped with a 1006 at exactly 6010 s after open, three
+/// times in one night, and never lived longer: Cloudflare closes a socket idle
+/// in both directions (documented, figure unpublished; measured as 10 s to
+/// hibernate the room + 100 min), and with no phone paired nothing follows
+/// the Mac's hello. Two things were conch's: the Mac sent no keepalive, and a
+/// drop after a long healthy life waited out a backoff that only a phone
+/// handshake reset — up to 30 s — while the relay accepted every re-dial at
+/// once. Bun's client fires only `close(1006)` for that drop (probed), and
+/// `error -> close(1006)` for a dial that never opens.
+describe("a settled relay socket that drops", () => {
+  class FakeSocket {
+    static OPEN = 1;
+    static instances: FakeSocket[] = [];
+    readyState = 0;
+    bufferedAmount = 0;
+    sent: string[] = [];
+    pings = 0;
+    #listeners = new Map<string, Array<(event: unknown) => void>>();
+    constructor(public url: string) { FakeSocket.instances.push(this); }
+    addEventListener(type: string, listener: (event: unknown) => void) {
+      this.#listeners.set(type, [...(this.#listeners.get(type) ?? []), listener]);
+    }
+    send(wire: string) { this.sent.push(wire); }
+    ping() { this.pings += 1; }
+    close() { this.readyState = 3; }
+    emit(type: string, event: object = {}) {
+      for (const listener of this.#listeners.get(type) ?? []) listener(event);
+    }
+    open() { this.readyState = 1; this.emit("open"); }
+  }
+  const T0 = new Date("2026-09-11T04:07:06Z");
+
+  async function dialled(tickMs?: number) {
+    const real = globalThis.WebSocket;
+    globalThis.WebSocket = FakeSocket as unknown as typeof WebSocket;
+    FakeSocket.instances.splice(0);
+    setSystemTime(T0);
+    const logs: string[] = [];
+    const application = createPhoneBridgeApplication({
+      getState: () => ({ v: 1, rows: [] }),
+      forwardControl: async () => "",
+      replyFor: async () => "reply",
+      acceptUpload: async () => ({ received: 1, total: 1 }),
+      onClientsChanged() {},
+      log() {},
+    }, { token: "legacy-lan-token" });
+    const handle = createPhoneRelay(application, pairing(), { log: (m) => logs.push(m), tickMs });
+    const first = FakeSocket.instances[0]!;
+    first.open();
+    await settle(() => first.sent.length === 1, "the Mac hello");
+    return {
+      first,
+      logs,
+      dials: () => FakeSocket.instances.length,
+      done() { handle.stop(); globalThis.WebSocket = real; setSystemTime(); },
+    };
+  }
+
+  test("is re-dialled at once, and the close line carries its age", async () => {
+    const link = await dialled();
+    try {
+      setSystemTime(new Date(T0.getTime() + 6_010_000));
+      link.first.emit("close", { code: 1006 });
+      expect(link.dials()).toBe(2);
+      expect(link.logs.at(-1)).toBe(
+        "phone relay disconnected (1006) — open 6010s, last frame 6010s ago, last ping 6010s ago",
+      );
+    } finally { link.done(); }
+  });
+
+  test("a socket that died young keeps the backoff", async () => {
+    const link = await dialled();
+    try {
+      setSystemTime(new Date(T0.getTime() + 5_000));
+      link.first.emit("close", { code: 1006 });
+      expect(link.dials()).toBe(1);
+      expect(link.logs.at(-1)).toStartWith("phone relay disconnected (1006) — open 5s");
+    } finally { link.done(); }
+    // A newer daemon took the room: no re-dial at all, however old the socket.
+    const evicted = await dialled();
+    try {
+      setSystemTime(new Date(T0.getTime() + 6_010_000));
+      evicted.first.emit("close", { code: 4001 });
+      expect(evicted.dials()).toBe(1);
+    } finally { evicted.done(); }
+  });
+
+  test("is pinged once idle, before Cloudflare's idle timer can fire", async () => {
+    const link = await dialled(5);
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(link.first.pings).toBe(0);
+      setSystemTime(new Date(T0.getTime() + 45_000));
+      await settle(() => link.first.pings === 1, "a keepalive ping", 1_000);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(link.first.pings).toBe(1);
+    } finally { link.done(); }
   });
 });

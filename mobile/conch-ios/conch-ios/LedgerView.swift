@@ -575,6 +575,57 @@ struct ContextMeter: View {
     }
 }
 
+/// A start option's value on the wire: the daemon's `string | boolean`.
+enum StartOptionValue: Equatable {
+    case bool(Bool)
+    case string(String)
+
+    var wire: Any {
+        switch self {
+        case let .bool(value): return value
+        case let .string(value): return value
+        }
+    }
+}
+
+/// The daemon's per-agent start options — `startOptions` in `agent-adapter.ts`,
+/// each from the agent's own `--help` — mirrored so the sheet can draw them.
+/// A test pins every entry here to that table; the daemon validates what is
+/// sent, so this list decides only what is shown.
+struct StartOption: Identifiable {
+    enum Kind {
+        case toggle
+        case choice([String])
+        case text
+    }
+
+    let name: String
+    let kind: Kind
+    let help: String
+    var resumeOnly = false
+    var id: String { name }
+
+    static let claude: [StartOption] = [
+        StartOption(name: "model", kind: .text, help: "Model for the current session. Provide an alias for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a model's full name (e.g. 'claude-fable-5')."),
+        StartOption(name: "permission-mode", kind: .choice(["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"]), help: "Permission mode to use for the session"),
+        StartOption(name: "bypass-permissions", kind: .toggle, help: "Bypass all permission checks. Recommended only for sandboxes with no internet access."),
+        StartOption(name: "effort", kind: .choice(["low", "medium", "high", "xhigh", "max"]), help: "Effort level for the current session (low, medium, high, xhigh, max)"),
+        StartOption(name: "fork-session", kind: .toggle, help: "When resuming, create a new session ID instead of reusing the original (use with --resume or --continue)", resumeOnly: true),
+    ]
+
+    static let codex: [StartOption] = [
+        StartOption(name: "model", kind: .text, help: "Model the agent should use"),
+        StartOption(name: "sandbox", kind: .choice(["read-only", "workspace-write", "danger-full-access"]), help: "Select the sandbox policy to use when executing model-generated shell commands"),
+        StartOption(name: "ask-for-approval", kind: .choice(["on-request", "never"]), help: "Configure when the model requires human approval before executing a command"),
+        StartOption(name: "bypass-permissions", kind: .toggle, help: "Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY DANGEROUS. Intended solely for running in environments that are externally sandboxed"),
+        StartOption(name: "profile", kind: .text, help: "Layer $CODEX_HOME/<name>.config.toml on top of the base user config"),
+    ]
+
+    static func table(for backend: BridgeClient.AgentBackend) -> [StartOption] {
+        backend == .codex ? codex : claude
+    }
+}
+
 private struct StartSessionSheet: View {
     private enum StartMode: String, CaseIterable, Identifiable {
         case new = "New"
@@ -598,6 +649,10 @@ private struct StartSessionSheet: View {
     // the answer is kept for this sheet only and sent back as `trustFolder`.
     @State private var pendingTrust: String?
     @State private var trustedFolders: Set<String> = []
+    /// What the person chose this time, by option name. Unset means the
+    /// agent's own default, and is not sent; `bypass-permissions` is seeded
+    /// from the persisted setting once the Mac says what it is.
+    @State private var optionValues: [String: StartOptionValue] = [:]
 
     // Resume
     @State private var resumeQuery = ""
@@ -691,6 +746,10 @@ private struct StartSessionSheet: View {
                     }
                 }
 
+                // The agent's own start-time choices, from its --help, for the
+                // agent this launch will actually run.
+                startOptionsSection
+
                 if mode == .teleport {
                     Section {
                         Text("Teleport — create a local copy.")
@@ -767,6 +826,16 @@ private struct StartSessionSheet: View {
         // resume mode with nothing loaded. Keyed on the query too: the daemon
         // filters server-side and answers in milliseconds, so a keystroke can
         // simply ask again rather than filtering a stale local copy.
+        // The toggle starts from the persisted `bypass-permissions` setting —
+        // the same default the daemon applies when nothing is sent — and only
+        // seeds an untouched toggle, never one the person already flipped.
+        .task {
+            guard case let .loaded(settings) = await bridge.fetchSettings(),
+                  case let .bool(value)? = settings.first(where: { $0.key == "bypass-permissions" })?.value,
+                  optionValues["bypass-permissions"] == nil
+            else { return }
+            optionValues["bypass-permissions"] = .bool(value)
+        }
         .task(id: "\(resuming):\(resumeQuery)") {
             guard resuming else { return }
             isLoadingResumable = true
@@ -854,7 +923,8 @@ private struct StartSessionSheet: View {
                 resumeSessionId: resuming ? resumeSelection?.sessionId : nil,
                 teleportSessionId: mode == .teleport ? teleportSessionId : nil,
                 cwd: cwd,
-                trustFolder: cwd.map(trustedFolders.contains) ?? false
+                trustFolder: cwd.map(trustedFolders.contains) ?? false,
+                options: sentOptions
             )
             starting = false
             switch outcome {
@@ -879,6 +949,85 @@ private struct StartSessionSheet: View {
     private var freshWorkingFolder: String? {
         let trimmed = workingFolder.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// The table for the agent this launch will run; a resume-only entry only
+    /// while resuming, so the sheet never shows a switch that does nothing.
+    private var shownOptions: [StartOption] {
+        StartOption.table(for: effectiveBackend).filter { !$0.resumeOnly || resuming }
+    }
+
+    /// Exactly the shown options the person set. The daemon validates them.
+    private var sentOptions: [String: Any] {
+        var sent: [String: Any] = [:]
+        for option in shownOptions {
+            if let value = optionValues[option.name] { sent[option.name] = value.wire }
+        }
+        return sent
+    }
+
+    private var startOptionsSection: some View {
+        Section("Options") {
+            ForEach(shownOptions) { option in
+                VStack(alignment: .leading, spacing: 4) {
+                    switch option.kind {
+                    case .toggle:
+                        Toggle(option.name, isOn: toggleBinding(option.name))
+                    case let .choice(choices):
+                        // Segmented while the words fit a phone; a menu for
+                        // the longer lists (Claude's permission modes).
+                        if choices.count <= 3 {
+                            Text(option.name)
+                            Picker(option.name, selection: textBinding(option.name)) {
+                                Text("Default").tag("")
+                                ForEach(choices, id: \.self) { choice in
+                                    Text(choice).tag(choice)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                        } else {
+                            Picker(option.name, selection: textBinding(option.name)) {
+                                Text("Default").tag("")
+                                ForEach(choices, id: \.self) { choice in
+                                    Text(choice).tag(choice)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                        }
+                    case .text:
+                        TextField(option.name, text: textBinding(option.name), prompt: Text("default"))
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    Text(option.help)
+                        .font(.caption)
+                        .foregroundStyle(Palette.textDim)
+                }
+            }
+        }
+        .disabled(starting)
+    }
+
+    private func toggleBinding(_ name: String) -> Binding<Bool> {
+        Binding(
+            get: {
+                if case let .bool(on)? = optionValues[name] { return on }
+                return false
+            },
+            set: { optionValues[name] = .bool($0) }
+        )
+    }
+
+    /// Empty is the agent's default, and is not sent.
+    private func textBinding(_ name: String) -> Binding<String> {
+        Binding(
+            get: {
+                if case let .string(text)? = optionValues[name] { return text }
+                return ""
+            },
+            set: { optionValues[name] = $0.isEmpty ? nil : .string($0) }
+        )
     }
 }
 

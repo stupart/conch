@@ -269,13 +269,14 @@ describe("3. an agent cannot undo a person's manual mode", () => {
     expect(refuseAt).toBeGreaterThan(-1);
     expect(recordAt).toBeGreaterThan(-1);
     expect(flipAt).toBeGreaterThan(refuseAt);
-    expect(enqueue).toContain("manual — refused resume (");
+    expect(enqueue).toContain("if (refusal) return log(`manual — refused resume (");
 
     // Both scoped doors — the socket's and the TUI's — go through the ledger.
     expect(daemon.split("setSessionPaused: setSessionPausedFrom,").length - 1).toBe(2);
     expect(daemon).not.toContain("setSessionPaused: (sessionId, paused) => instantControls.setSessionPaused(sessionId, paused)");
     const helper = daemon.slice(daemon.indexOf("const setSessionPausedFrom = "), daemon.indexOf("instantControls.setSessionPaused(sessionId, paused);"));
     expect(helper).toContain("pauseOrigin.refusal(sessionId, origin, {");
+    expect(helper).toContain("if (refusal) return log(`manual — refused resume for");
     expect(helper).toContain("pauseOrigin.paused(sessionId, origin, pausedSessionIds.has(sessionId))");
   });
 

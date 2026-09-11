@@ -320,6 +320,32 @@ final class StateStore: ObservableObject {
         }
     }
 
+    /// What the daemon said to a config toggle: the plan (previewed or
+    /// written), or its refusal in its own words.
+    enum ConfigToggleOutcome: Equatable {
+        case plan(ConchConfigToggleReply)
+        case refused(String)
+    }
+
+    /// Ask the daemon to preview or write a plugin / MCP server switch (B3).
+    /// The daemon owns the file; this only relays and never paraphrases.
+    func toggleCapability(_ request: ConchConfigToggleRequest) async -> ConfigToggleOutcome {
+        switch await socketClient.request(request, timeout: Self.sessionLifecycleTimeout) {
+        case let .reply(data):
+            if let error = try? JSONDecoder().decode(ConchSessionErrorReply.self, from: data) {
+                return .refused(error.error)
+            }
+            if let reply = try? JSONDecoder().decode(ConchConfigToggleReply.self, from: data) {
+                return .plan(reply)
+            }
+            return .refused("invalid reply from daemon")
+        case .connectFailed:
+            return .refused("daemon not running")
+        case .timeout:
+            return .refused("daemon did not reply")
+        }
+    }
+
     func resumableSessions(query: String) async -> [ResumableSession] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let outcome = await socketClient.request(
@@ -333,6 +359,18 @@ final class StateStore: ObservableObject {
             return []
         }
         return reply.sessions
+    }
+
+    /// The persisted `bypass-permissions` setting: what the sheet's toggle
+    /// starts from. Nil when the daemon cannot say, and the toggle starts off.
+    func bypassPermissionsDefault() async -> Bool? {
+        struct Snapshot: Decodable { let snapshot: [String: ConchConfigEntry] }
+        let outcome = await socketClient.request(ConchGetConfigRequest())
+        guard case let .reply(data) = outcome,
+              let reply = try? JSONDecoder().decode(Snapshot.self, from: data),
+              case let .boolean(value)? = reply.snapshot["bypass-permissions"]?.value
+        else { return nil }
+        return value
     }
 
     /// Shown when a start succeeded but the agent is waiting on a person.
@@ -380,7 +418,8 @@ final class StateStore: ObservableObject {
         resumeSessionId: String?,
         teleportSessionId: String? = nil,
         cwd: String?,
-        trustFolder: Bool = false
+        trustFolder: Bool = false,
+        options: [String: ConchStartOptionValue] = [:]
     ) async -> StartOutcome {
         let resumed = Self.nonempty(resumeSessionId)
         let teleport = Self.nonempty(teleportSessionId)
@@ -390,7 +429,8 @@ final class StateStore: ObservableObject {
             resumeSessionId: resumed,
             teleportSessionId: teleport,
             cwd: workingDirectory,
-            trustFolder: trustFolder ? true : nil
+            trustFolder: trustFolder ? true : nil,
+            options: options.isEmpty ? nil : options
         )
         let outcome = await socketClient.request(
             request,
