@@ -204,10 +204,11 @@ async function writeGeneratedPluginFiles(
   compiled: boolean,
 ): Promise<void> {
   const pluginRoot = join(root, "plugins", "conch");
-  await writeFileWithParents(
-    join(pluginRoot, ".mcp.json"),
-    `${JSON.stringify(buildMcpJson(absBun, absCli, compiled), null, 2)}\n`,
-  );
+  const mcpJson = `${JSON.stringify(buildMcpJson(absBun, absCli, compiled), null, 2)}\n`;
+  // Claude Code reads .mcp.json; Codex reads the file its own manifest names.
+  // An install gives both the same absolute invocation.
+  await writeFileWithParents(join(pluginRoot, ".mcp.json"), mcpJson);
+  await writeFileWithParents(join(pluginRoot, ".codex-mcp.json"), mcpJson);
   await writeFileWithParents(join(pluginRoot, "AGENTS.md"), AGENTS_ALWAYS_ON);
   await writeFileWithParents(
     join(pluginRoot, "skills", "conch-control", "SKILL.md"),

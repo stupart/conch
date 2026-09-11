@@ -415,6 +415,8 @@ rollout conch parses today. Touches the Atlas index, C2.
 conch reaches Codex through the plugin: `[plugins."conch@conch-local"]` is enabled, and conch's MCP
 server runs as a child of the TUI (pid 2383, twice) and of the ChatGPT app-server (pid 74676).
 
+**Fixed in #178:** Codex reads the legacy `.codex-plugin/plugin.json`, which now points at its own `./.codex-mcp.json` (`sh ./bin/conch-mcp` with `"cwd": "."`, resolved against the plugin root, no variable needed); Claude Code keeps `.mcp.json`. The paragraph below is the original finding.
+
 One finding. The installed copy's `.mcp.json` uses absolute paths
 (`~/.codex/plugins/cache/conch-local/conch/0.2.1/.mcp.json`). The shipped one
 (`plugin/plugins/conch/.mcp.json`) runs `sh ${CLAUDE_PLUGIN_ROOT}/bin/conch-mcp`, and codex-rs never
@@ -530,5 +532,5 @@ Ranked by value.
    opaque). Continue elsewhere as `thread/start` plus `thread/inject_items`. Evidence:
    `client.rs:995`; `README.md:443, 1150-1160`; `spawn.rs:424-435`. Rows: Atlas, C2.
 
-Also found, smaller: the shipped plugin's `${CLAUDE_PLUGIN_ROOT}` is never expanded by Codex
+Also found, smaller (fixed in #178): the shipped plugin's `${CLAUDE_PLUGIN_ROOT}` is never expanded by Codex
 (section 8), and `codex mcp-server` no longer exists in 0.154.0.
