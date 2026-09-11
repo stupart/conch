@@ -127,6 +127,9 @@ struct PublishedState: Decodable, Equatable {
         var live: String?
         var paused = false
         var review: Review?
+        /// Why this row has no terminal to type into or close: a closed Codex
+        /// thread, or one an app-server hosts. Older daemons never send it.
+        var noTerminal: String?
 
         struct Review: Decodable, Equatable {
             var summary = ""
@@ -144,7 +147,7 @@ struct PublishedState: Decodable, Equatable {
         }
 
         private enum CodingKeys: String, CodingKey {
-            case id, label, status, backend, context, detail, at, live, paused, review
+            case id, label, status, backend, context, detail, at, live, paused, review, noTerminal
         }
 
         init() {}
@@ -161,6 +164,7 @@ struct PublishedState: Decodable, Equatable {
             live = try? c.decodeIfPresent(String.self, forKey: .live)
             paused = (try? c.decodeIfPresent(Bool.self, forKey: .paused)) ?? false
             review = try? c.decodeIfPresent(Review.self, forKey: .review)
+            noTerminal = try? c.decodeIfPresent(String.self, forKey: .noTerminal)
         }
     }
 

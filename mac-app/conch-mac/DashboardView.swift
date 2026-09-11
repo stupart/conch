@@ -884,7 +884,8 @@ private struct DashboardRow: View {
         if row.status == .needs {
             return row.detail ?? ""
         }
-        return ""
+        // Why a Codex row has no terminal: closed, or an app-server holds it.
+        return row.noTerminal ?? ""
     }
 
 
@@ -1961,6 +1962,8 @@ private struct ConversationPane: View {
                     Button("Close session…", role: .destructive) {
                         sessionPendingClose = row
                     }
+                    // Close is a clean exit typed into the terminal; none here.
+                    .disabled(row.noTerminal != nil)
                 } label: {
                     Image(systemName: "ellipsis")
                         .font(.system(size: 12, weight: .medium))
@@ -2029,6 +2032,7 @@ private struct ConversationPane: View {
             voiceState: voiceState(for: row),
             voiceLevel: voiceLevel(for: row),
             audioHeldElsewhere: state?.audioControl.isLocal == false,
+            noTerminal: row.noTerminal,
             onSend: { text in
                 store.send(.inject(sessionId: row.id, label: row.label, text: text))
             },

@@ -346,7 +346,9 @@ struct SessionView: View {
                     Button("End session…", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
                         confirmingClose = true
                     }
-                    .disabled(closingSession || !bridge.isConnected)
+                    // A clean exit is typed into the terminal; a closed or
+                    // app-server Codex thread has none.
+                    .disabled(closingSession || !bridge.isConnected || row?.noTerminal != nil)
                 } label: {
                     Image(systemName: "ellipsis")
                 }
@@ -561,7 +563,8 @@ struct SessionView: View {
             // rounded container, the row is part of the composer rather than
             // chrome stacked beneath it.
             VStack(spacing: 10) {
-                TextField("Type or talk…", text: draftBinding, axis: .vertical)
+                // The field says why Send is off on a row with no terminal.
+                TextField(row?.noTerminal ?? "Type or talk…", text: draftBinding, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(Type.body)
                     .foregroundStyle(Palette.textPrimary)
@@ -625,7 +628,7 @@ struct SessionView: View {
                     // is mid-turn and you have nothing written. Noticing an
                     // agent has gone the wrong way while away from the desk
                     // used to mean watching it keep going.
-                    if isWorking, !canSend, !isSending {
+                    if isWorking, !canSend, !isSending, row?.noTerminal == nil {
                         Button(action: stopTurn) {
                             Image(systemName: "stop.fill")
                                 .font(.system(size: 15, weight: .bold))
@@ -653,7 +656,7 @@ struct SessionView: View {
                             .foregroundStyle(Palette.bg)
                         }
                         .buttonStyle(.plain)
-                        .disabled(isSending)
+                        .disabled(isSending || row?.noTerminal != nil)
                         .accessibilityLabel("Send")
                         .transition(.scale.combined(with: .opacity))
                     }
