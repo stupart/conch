@@ -288,13 +288,13 @@ const permission = (path: string, over: Partial<TurnEvent> = {}): TurnEvent => (
 const busy = () => ({ sessionId: "s1", status: "busy" }) as SessionInfo;
 
 /**
- * A14, pinned to what the loop does TODAY. Immediate `handle` calls (the
- * inject/interrupt path that skips the drain) reset the shared `stopKey` and
- * `micOpen`. The roadmap says not to fix that inside an extraction; A11 set
- * pin-then-flip, so the A14 follow-up flips these assertions.
+ * A14. Immediate `handle` calls (the inject/interrupt path that skips the
+ * drain) used to reset the shared `stopKey` and `micOpen` under a queued
+ * exchange mid-await. Cut four pinned that as it behaved; these are the
+ * flipped pins. Only events that start an exchange reset them now.
  */
-describe("A14, pinned to today's behaviour", () => {
-  test("A: a stop can be erased by an immediate interrupt — the announcement still plays (pin)", async () => {
+describe("A14: an immediate interrupt leaves the running exchange's stop and mic alone", () => {
+  test("A: a stop followed by an immediate interrupt still stops — the announcement does not play", async () => {
     const registry = deferred<boolean>();
     let checks = 0;
     const h = harness({
@@ -309,23 +309,41 @@ describe("A14, pinned to today's behaviour", () => {
     await waitFor("the Escape", () => h.keys.length === 1);
     registry.resolve(false);
     await turn;
-    // PIN: the interrupt's per-event reset cleared the stop, so the turn was read.
-    expect(h.said).toContain(event.announce);
+    expect(h.keys).toEqual(["Escape"]); // the interrupt itself still ran
+    expect(h.said).toEqual([]);
   });
 
-  test("B: an interrupt can open the gate under a live dictation — capturing() goes false and it speaks over the mic (pin)", async () => {
+  test("B: an interrupt under a live dictation keeps the gate shut — its failure line is held and logged, not spoken over the mic", async () => {
     const h = harness({ key: () => ({ via: "none" }) });
     void h.voice.handle(wake({ compose: true }));
     await waitFor("the dictation to start", () => h.sessions[0]?.started === 1);
     expect(h.voice.capturing()).toBe(true);
-    void h.voice.handle(interrupt());
-    await waitFor("the failure line", () => h.said.length === 1);
-    // PIN: the reset cleared micOpen under a running session (the session itself
-    // reports micOpen false), so the gate read closed and the line played.
-    expect(h.voice.capturing()).toBe(false);
-    expect(h.said).toEqual(["Couldn't reach alpha to stop it."]);
+    await h.voice.handle(interrupt());
+    // The session itself reports micOpen false; the loop's own flag is what holds.
+    expect(h.voice.capturing()).toBe(true);
+    expect(h.said).toEqual([]);
+    expect(h.logs).toContain('⚠ could not reach "alpha" to stop it');
+    expect(h.logs).toContain('held "alpha" — the mic is open');
     await h.voice.close();
+
+    // A14's first finding stands: with no mic open, an interrupt failure speaks.
+    const idle = harness({ key: () => ({ via: "none" }) });
+    await idle.voice.handle(interrupt());
+    expect(idle.said).toEqual(["Couldn't reach alpha to stop it."]);
   });
+});
+
+// SessionLedger.forget() deliberately keeps lastTurn. Clearing it passed the
+// whole suite and would turn this line into "Nothing to wake."
+test("a bare wake after the last session to speak closed and was forgotten says the session is closed", async () => {
+  let checks = 0;
+  const h = harness({ sessionGone: () => ++checks > 1 }); // live for its turn, gone from then on
+  await h.voice.handle(accepted(h, turnEnd({ sessionId: "x1", label: "xray", announce: "xray: done." })));
+  expect(h.ledger.lastTurn?.sessionId).toBe("x1");
+  h.ledger.forgetGone(new Set()); // the registry no longer lists it
+  expect(h.ledger.isKnown("x1")).toBe(false);
+  await h.voice.handle(wake({ sessionId: "", label: "" }));
+  expect(h.said).toEqual(["xray: done.", "That session is closed."]);
 });
 
 describe("inject and interrupt", () => {

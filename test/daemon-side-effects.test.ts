@@ -178,6 +178,39 @@ describe("2. keystroke-fallback is a real setting", () => {
     expect(held.returns()).toBe(1);
   });
 
+  // deliverToSession had a `via === "none"` branch ("Heard you, but I could
+  // not find the session's pane.") that A17 left unreachable: the only "none"
+  // injectText returns is its interrupted() helper, which the caller handles
+  // first. Every route and every stop point, so a bare "none" fails here.
+  test("injectText never answers via none without interrupted", async () => {
+    const results: Array<Awaited<ReturnType<typeof injectText>>> = [];
+    const run = async (config: Config, pid: number | undefined, front: string, o: { tty?: string; modal?: boolean; allow?: number } = {}) => {
+      const f = fakeOsa(() => front);
+      const osa: OsaRunner = o.modal
+        ? async (lines, argv) => lines.some((l) => l.includes("keystroke")) ? { text: "", timedOut: true } : f.osa(lines, argv)
+        : f.osa;
+      let asked = 0;
+      results.push(await injectText(config, pid, "hi", o.allow === undefined ? undefined : () => ++asked <= o.allow!, {
+        copyToClipboard: async () => {},
+        osa,
+        ttyForPid: async () => o.tty ?? "ttys001",
+      }));
+    };
+    await run(cfg(true), undefined, "/dev/ttys001"); // no pid
+    await run(cfg(false), DEAD_PID, "/dev/ttys001"); // fallback off
+    await run(cfg(true), DEAD_PID, "/dev/ttys001", { tty: "" }); // not focusable
+    await run(cfg(true), DEAD_PID, "front:Safari"); // another app in front
+    await run(cfg(true), DEAD_PID, "/dev/ttys001", { modal: true }); // a dialog ate the keystroke
+    await run(cfg(true), DEAD_PID, "/dev/ttys001"); // typed and submitted
+    await run(cfg(true, false), DEAD_PID, "/dev/ttys001"); // typed, no Return
+    await run(cfg(true), undefined, "/dev/ttys001", { allow: 0 }); // stopped before the clipboard
+    for (const allow of [0, 1, 2]) await run(cfg(true), DEAD_PID, "/dev/ttys001", { allow }); // stopped at each look
+    expect(results.filter((r) => r.via === "none" && !r.interrupted)).toEqual([]);
+    // Not vacuous: every route was reached, the stop included.
+    expect(new Set(results.map((r) => r.via))).toEqual(new Set(["clipboard", "osascript-focused", "none"]));
+    expect(results.filter((r) => r.interrupted)).toHaveLength(4);
+  }, 15_000);
+
   test("a session with no tty cannot be focused, so it is the clipboard", async () => {
     const f = fakeOsa(() => "/dev/ttys001");
     const result = await injectText(cfg(true), DEAD_PID, "hi", undefined, {

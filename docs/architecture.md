@@ -282,7 +282,7 @@ record and acks in one tick. The loop never imports the daemon, and it takes
 the terminal and the ear as optional overrides — which is what finally lets it
 run under test: `test/voice-loop.test.ts` drives it with a real speech manager
 over a recording backend, about thirty exact-text guards became executable
-there, and A14 is pinned there as it behaves today.
+there, and A14 was pinned there as it behaved, then flipped by its fix.
 
 The remaining seam is already visible:
 

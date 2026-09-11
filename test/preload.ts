@@ -21,3 +21,8 @@ if (!process.env.CONCH_INJECT_DEBUG_LOG) {
 if (!process.env.CONCH_TELEMETRY_FILE) {
   process.env.CONCH_TELEMETRY_FILE = join(process.env.CONCH_LOG_FILE, "..", "telemetry.jsonl");
 }
+// setState writes the state file on every call and the suite calls it, so
+// every run overwrote the live daemon's /tmp/conch-state.json (A7's class).
+if (!process.env.CONCH_STATE_FILE) {
+  process.env.CONCH_STATE_FILE = join(process.env.CONCH_LOG_FILE, "..", "state.json");
+}

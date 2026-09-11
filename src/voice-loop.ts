@@ -659,12 +659,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   }
 
   async function handle(event: TurnEvent): Promise<void> {
-    stopKey = false; // a stale press from a past exchange must not skip this one
-    micOpen = false; // no listen in flight yet for this event
+    // Inject and interrupt arrive immediately, not through the drain, so a
+    // queued exchange may be mid-await right now: they must not touch its stop
+    // or its mic (A14). The per-event reset sits below them.
     if (event.type === "interrupt") return void (await interruptSession(event));
-    // Pause, resume and an explicit speak stay in the daemon: they need its
-    // resume transitions, the modal check and the pause origins.
-    if (event.type === "pause" || event.type === "resume" || event.type === "speak") return control(event);
     if (event.type === "inject") {
       // Answering STOPS the reading.
       //
@@ -717,6 +715,11 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       log(`phone inject into "${event.label}" ${delivered ? "delivered" : "failed"}`);
       return;
     }
+    stopKey = false; // a stale press from a past exchange must not skip this one
+    micOpen = false; // no listen in flight yet for this event
+    // Pause, resume and an explicit speak stay in the daemon: they need its
+    // resume transitions, the modal check and the pause origins.
+    if (event.type === "pause" || event.type === "resume" || event.type === "speak") return control(event);
     handlingEvent = event;
     handlingPauseGeneration = pause.capture();
     try {
@@ -1329,12 +1332,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // caller must not be told this reached the agent.
       return false;
     }
-    if (via === "none") {
-      log(`injected via ${via}`);
-      if (beforeInject && !(await beforeInject())) return false;
-      await speak(cfg, "Heard you, but I could not find the session's pane.", event.label);
-      return false;
-    }
+    // No `via === "none"` branch: injectText's only "none" is interrupted(),
+    // handled above (pinned in daemon-side-effects.test.ts).
     if (beforeCount === null) {
       log(`injected into "${event.label}" via ${via}`); // no transcript to confirm against — trust it
       return true;

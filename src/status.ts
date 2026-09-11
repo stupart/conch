@@ -39,7 +39,9 @@ export type ConchState = PanelConchState;
 export type LiveState = PanelLiveState;
 
 // Exported as a stable path for external consumers (menu-bar apps, status bars).
-export const STATE_FILE = "/tmp/conch-state.json";
+// Overridable only so the TEST SUITE does not overwrite the live daemon's
+// state on every `setState`: `test/preload.ts` points it at a temp file.
+export const STATE_FILE = process.env.CONCH_STATE_FILE || "/tmp/conch-state.json";
 export const SESSIONS_FILE = "/tmp/conch-sessions.json";
 // Every log line is always appended here (for debugging) but only shown in the
 // pane when logs are toggled on — the dashboard stays clean by default.
