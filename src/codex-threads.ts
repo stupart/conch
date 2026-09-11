@@ -673,7 +673,7 @@ export function readCodexSessionIndex(codexHome: string): Map<string, string> {
  * first prompt above the index; here the index wins. Every thread on this
  * machine is paginated (36 of 36), so the difference has nothing to act on.
  */
-function codexThreadName(row: Record<string, any>, index: ReadonlyMap<string, string>): string | null {
+export function codexThreadName(row: Record<string, any>, index: ReadonlyMap<string, string>): string | null {
   if (typeof row.name === "string" && row.name.trim()) return row.name;
   return row.history_mode === "paginated" ? null : index.get(String(row.id)) ?? null;
 }

@@ -388,3 +388,36 @@ describe("Claude session names match what /resume shows", () => {
     rmSync(home, { recursive: true, force: true });
   });
 });
+
+describe("Codex session names match what Codex shows", () => {
+  test("a thread renamed in Codex lists under its newest session_index.jsonl name", () => {
+    const { codexHome, claudeHome } = fixture();
+    const state = writeCodex(codexHome, [
+      { id: "legacy", title: "first prompt of legacy", updated_at_ms: 3 },
+      { id: "untouched", title: "first prompt of untouched", updated_at_ms: 2 },
+      { id: "cleared", title: "first prompt of cleared", updated_at_ms: 1 },
+    ]);
+    // Only this test's schema has `history_mode`; the others model a Codex that predates it.
+    const db = new Database(state);
+    db.run("ALTER TABLE threads ADD COLUMN history_mode TEXT");
+    db.run("UPDATE threads SET history_mode = 'paginated' WHERE id = 'cleared'");
+    db.close();
+    writeFileSync(join(codexHome, "session_index.jsonl"), [
+      JSON.stringify({ id: "legacy", thread_name: "old name", updated_at: "2026-09-01T00:00:00Z" }),
+      "",
+      "{not json",
+      JSON.stringify({ id: "legacy", thread_name: "new name", updated_at: "2026-09-02T00:00:00Z" }),
+      // A paginated thread's name is `threads.name`; clearing it leaves this line behind.
+      JSON.stringify({ id: "cleared", thread_name: "cleared name", updated_at: "2026-09-02T00:00:00Z" }),
+    ].join("\n"));
+
+    const labels = Object.fromEntries(
+      readResumableSessions({ codexHome, claudeHome }).map((row) => [row.sessionId, row.label]),
+    );
+    expect(labels).toEqual({
+      legacy: "new name",
+      untouched: "first prompt of untouched",
+      cleared: "first prompt of cleared",
+    });
+  });
+});
