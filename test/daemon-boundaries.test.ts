@@ -210,7 +210,6 @@ describe("phone inject scope", () => {
       "irreplaceable words",
       undefined,
       {
-        allowBlindFallback: false,
         copyToClipboard: async (text) => { copied.push(text); },
       },
     );

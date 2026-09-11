@@ -639,6 +639,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
           label: "",
           announce: "Testing.",
           voice: "af_heart",
+          origin: "agent",
         },
       },
       {
@@ -648,6 +649,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
           sessionId: "",
           label: "",
           announce: "",
+          origin: "agent",
         },
       },
     ]);
@@ -1273,8 +1275,8 @@ describe("C5: what conch refuses an agent, and what it still allows", () => {
     // The same message the Mac's per-row control sends: a pause that names a
     // session reaches setSessionPaused in the daemon, never the global flip.
     expect(h.calls.daemon.map((call) => call.event)).toEqual([
-      { type: "pause", sessionId: "session-a", label: "Alpha", announce: "" },
-      { type: "resume", sessionId: "session-b", label: "Beta", announce: "" },
+      { type: "pause", sessionId: "session-a", label: "Alpha", announce: "", origin: "agent" },
+      { type: "resume", sessionId: "session-b", label: "Beta", announce: "", origin: "agent" },
     ]);
   });
 
@@ -1284,7 +1286,7 @@ describe("C5: what conch refuses an agent, and what it still allows", () => {
 
     await callTool(handlers, "conch_mode", { action: "pause", scope: "all" });
     expect(h.calls.daemon.map((call) => call.event)).toEqual([
-      { type: "pause", sessionId: "", label: "", announce: "" },
+      { type: "pause", sessionId: "", label: "", announce: "", origin: "agent" },
     ]);
 
     expect(await refusal(() => handlers.conch_mode({ action: "pause", scope: "all", session: "Beta" })))

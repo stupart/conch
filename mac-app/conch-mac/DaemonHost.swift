@@ -87,9 +87,9 @@ final class DaemonHost: ObservableObject {
         if let directory = launch.workingDirectory { task.currentDirectoryURL = directory }
 
         var environment = ProcessInfo.processInfo.environment
-        // The daemon types into other terminals when it cannot reach a pane
-        // directly; without this it silently does nothing on those sessions.
-        environment["CONCH_KEYSTROKE_FALLBACK"] = "1"
+        // Deliberately NOT exporting CONCH_KEYSTROKE_FALLBACK: env beats the
+        // settings file, so forcing it here made `keystroke-fallback` a dead
+        // setting (audit 3b). The daemon's own default is on; the file decides.
         // Names us as the owner in the daemon's identity file, so another copy
         // of this app adopting it can say so rather than "outside this app".
         environment["CONCH_STARTED_BY"] = "app"

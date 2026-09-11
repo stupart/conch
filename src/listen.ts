@@ -1,4 +1,5 @@
 import { chmodSync, closeSync, fstatSync, openSync, readFileSync, readSync, statSync, unlinkSync } from "node:fs";
+import { forgetSox, recordSpawnedSox } from "./sox-orphan.ts";
 import type { Config } from "./config.ts";
 import { transcribePcm, serverUp } from "./transcribe.ts";
 import {
@@ -228,9 +229,12 @@ function spawnCapture(
   const capture: Capture = { raw, proc, trace, minimumBytes, killCause: null, sizeAtKill: null };
   activeRecorders.add(proc);
   if (trace) tracedRecorders.set(proc, capture);
+  // So the next daemon can reap this recorder if we die without shutting down.
+  recordSpawnedSox(proc.pid);
   void proc.exited.then(() => {
     activeRecorders.delete(proc);
     tracedRecorders.delete(proc);
+    forgetSox(proc.pid);
   });
   return capture;
 }
