@@ -547,7 +547,7 @@ describe("D1 wiring inside runDaemon", () => {
     expect(helper).toContain('if (paused) engine?.unloadAfter(graceMs, "unloaded — manual mode; reloads in auto mode")');
     expect(helper).toContain('else engine?.prewarm("auto mode")');
     // Both markers must EXIST before their order means anything.
-    const mode = between("setModeState: (paused) => {", "speak: (text) => speak(cfg, text)");
+    const mode = between("setModeState: (paused) => {", "speak: (text) => voice.speak(cfg, text)");
     const state = mode.indexOf('setState(paused ? "paused" : "idle")');
     const kokoro = mode.indexOf("kokoroByMode(paused)");
     expect(state).toBeGreaterThan(-1);

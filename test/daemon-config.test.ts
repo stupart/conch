@@ -24,6 +24,17 @@ import { unsetSetting, writeSetting } from "../src/settings.ts";
 
 const roots: string[] = [];
 const daemonSource = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
+// Cut four moved the voice loop out of runDaemon; its guards read this file.
+const voiceSource = readFileSync(new URL("../src/voice-loop.ts", import.meta.url), "utf8");
+
+/** Both markers must exist: a missing one slices from -1 and a guard passes vacuously. */
+function sliceOf(source: string, start: string, end: string): string {
+  const at = source.indexOf(start);
+  if (at < 0) throw new Error(`missing marker: ${start}`);
+  const until = source.indexOf(end, at);
+  if (until < 0) throw new Error(`missing marker: ${end}`);
+  return source.slice(at, until);
+}
 
 function fixture(settings: Record<string, unknown> = {}): { path: string } {
   const root = mkdtempSync(join(tmpdir(), "conch-daemon-config-test-"));
@@ -134,27 +145,18 @@ describe("daemon listen status hooks", () => {
   });
 
   test("daemon supplies committed-prefix providers independently of terminal renderer", () => {
-    const conversationWiring = daemonSource.slice(
-      daemonSource.indexOf("const reducer = new DictationReducer"),
-      daemonSource.indexOf("const barrierRequests", daemonSource.indexOf("const reducer = new DictationReducer")),
-    );
+    const conversationWiring = sliceOf(voiceSource, "const reducer = new DictationReducer", "const barrierRequests");
 
     expect(conversationWiring).toContain(
       "() => reducer.snapshot.buffer.map((segment) => segment.text).join(\" \")",
     );
     expect(conversationWiring).not.toContain("theaterMode");
-    expect(daemonSource).toContain('listenHooks(event.label, () => "")');
+    expect(voiceSource).toContain('listenHooks(event.label, () => "")');
   });
 
   test("published conversation production and controllers are not theater-gated", () => {
-    const liveProduction = daemonSource.slice(
-      daemonSource.indexOf("const resetConversationTranscriptPrefix"),
-      daemonSource.indexOf("const diagnosticsEnabled"),
-    );
-    const render = daemonSource.slice(
-      daemonSource.indexOf("async function renderSessionPanel"),
-      daemonSource.indexOf("function setSessionState"),
-    );
+    const liveProduction = sliceOf(voiceSource, "const resetConversationTranscriptPrefix", "let stopKey");
+    const render = sliceOf(daemonSource, "async function renderSessionPanel", "async function rehydrateFromTranscripts");
     const publishedConversation = render.slice(
       render.indexOf("const previewId"),
       render.indexOf("publishedStateWriter.request()") + "publishedStateWriter.request()".length,
@@ -190,10 +192,7 @@ describe("daemon listen status hooks", () => {
   });
 
   test("shutdown prevents an in-flight panel rebuild from committing after the final flush", () => {
-    const render = daemonSource.slice(
-      daemonSource.indexOf("async function renderSessionPanel"),
-      daemonSource.indexOf("function setSessionState"),
-    );
+    const render = sliceOf(daemonSource, "async function renderSessionPanel", "async function rehydrateFromTranscripts");
     const shutdown = daemonSource.slice(
       daemonSource.indexOf("const shutdown = async"),
       daemonSource.indexOf("process.on(\"SIGINT\""),
@@ -497,18 +496,12 @@ describe("daemon config controller", () => {
     expect(prioritized).toEqual(new Set(["visible"]));
     expect(dismissed).toEqual(new Set(["hidden"]));
 
-    const render = daemonSource.slice(
-      daemonSource.indexOf("async function renderSessionPanel"),
-      daemonSource.indexOf("function setSessionState"),
-    );
+    const render = sliceOf(daemonSource, "async function renderSessionPanel", "async function rehydrateFromTranscripts");
     const completePrune = render.slice(
       render.indexOf("if (snap?.complete)"),
       render.indexOf("const live ="),
     );
-    const closedCleanup = daemonSource.slice(
-      daemonSource.indexOf("&& sessionGoneFromSnapshot("),
-      daemonSource.indexOf("if (shuttingDown || interruptedByPause()"),
-    );
+    const closedCleanup = sliceOf(voiceSource, "&& await sessionGone(", "if (shuttingDown || interruptedByPause()");
     const dismiss = daemonSource.slice(
       daemonSource.indexOf("dismiss: (target)"),
       daemonSource.indexOf("onOpen:", daemonSource.indexOf("dismiss: (target)")),
@@ -518,67 +511,48 @@ describe("daemon config controller", () => {
     );
     expect(completePrune).toContain("ledger.forgetGone(liveIds)");
     expect(closedCleanup).toContain("ledger.forget(event.sessionId)");
-    expect(closedCleanup).toContain("if (lastTurn?.sessionId === event.sessionId) lastTurn = null");
+    expect(closedCleanup).toContain("if (ledger.lastTurn?.sessionId === event.sessionId) ledger.lastTurn = null");
     expect(dismiss).toContain("dismissedSessionIds.add(target.sessionId)");
-    expect(dismiss).toContain("if (lastTurn?.sessionId === target.sessionId) lastTurn = null");
+    expect(dismiss).toContain("if (ledger.lastTurn?.sessionId === target.sessionId) ledger.lastTurn = null");
     expect(dismiss).toContain("hold: dismissedHeldTurns");
     expect(dismiss).not.toContain("setSessionMutedWithDigest");
 
-    const quietGate = daemonSource.slice(
-      daemonSource.indexOf("const controlDisposition = gateTurnForControls"),
-      daemonSource.indexOf("// Nobody's there:"),
-    );
-    expect(quietGate.indexOf('controlDisposition === "session-dismissed"'))
-      .toBeLessThan(quietGate.indexOf("lastTurn = event"));
-    expect(daemonSource).toContain("resolveWakeTarget(event, latestVisibleTurn())");
-    expect(daemonSource).toContain("const rememberedTurn = latestVisibleTurn()");
+    const quietGate = sliceOf(voiceSource, "const controlDisposition = gateTurnForControls", "// Nobody's there:");
+    const dismissedAt = quietGate.indexOf('controlDisposition === "session-dismissed"');
+    expect(dismissedAt).toBeGreaterThan(-1);
+    expect(dismissedAt).toBeLessThan(quietGate.indexOf("ledger.lastTurn = event"));
+    expect(voiceSource).toContain("resolveWakeTarget(event, latestVisibleTurn())");
+    expect(voiceSource).toContain("const rememberedTurn = latestVisibleTurn()");
   });
 
   test("recite routes through the existing reader without a bell or responded guard", () => {
-    const branch = daemonSource.slice(
-      daemonSource.indexOf('if (event.type === "recite")'),
-      daemonSource.indexOf('if (event.type === "wake")', daemonSource.indexOf('if (event.type === "recite")')),
-    );
+    const branch = sliceOf(voiceSource, 'if (event.type === "recite")', 'if (event.type === "wake")');
 
     // `lastReplyFor` is the existing reader for a lone session; a window of a
     // shared session reads its own branch instead (A8).
-    expect(branch).toContain("lastReplyFor(target.transcriptPath, target.sessionId)");
+    expect(branch).toContain("lastReplyFor(target.transcriptPath, target.sessionId, deps.window(target.sessionId))");
     expect(branch).toContain("await speak(cfg, `${target.label}:`, target.label, true, target.sessionId)");
     expect(branch).toContain("await conversationLoop(");
     expect(branch).toContain("false,\n          pauseGeneration");
     expect(branch).not.toContain("ringBell");
     expect(branch).not.toContain("userRespondedSince");
 
-    const conversation = daemonSource.slice(
-      daemonSource.indexOf("async function conversationLoop"),
-      daemonSource.indexOf("async function permissionLoop"),
-    );
+    const conversation = sliceOf(voiceSource, "async function conversationLoop", "async function permissionLoop");
     expect(conversation).toContain('const reciteOnly = event.type === "recite"');
     expect(conversation).toContain("&& (cfg.readFull || reciteOnly)");
     expect(conversation).toContain("const noVoiceInterrupt = bargeOff || !cfg.bargeThresholdPct");
     expect(conversation).toContain("const gapSecs = reciteOnly");
+    expect(conversation).toContain("if (reciteOnly) return");
     expect(conversation.indexOf("if (reciteOnly) return")).toBeLessThan(
       conversation.indexOf("const reducer = new DictationReducer"),
     );
   });
 
   test("voice QA wraps the one injector choke point shared by both utterance paths", () => {
-    const route = daemonSource.slice(
-      daemonSource.indexOf("async function deliver("),
-      daemonSource.indexOf("async function deliverToSession("),
-    );
-    const injector = daemonSource.slice(
-      daemonSource.indexOf("async function deliverToSession("),
-      daemonSource.indexOf("/** Shared handling for anything heard while reading aloud"),
-    );
-    const reading = daemonSource.slice(
-      daemonSource.indexOf("async function onReadingUtterance("),
-      daemonSource.indexOf("async function conversationLoop("),
-    );
-    const action = daemonSource.slice(
-      daemonSource.indexOf("const executeAction = async"),
-      daemonSource.indexOf("// Mic gate (auto turns only)"),
-    );
+    const route = sliceOf(voiceSource, "async function deliver(", "async function deliverToSession(");
+    const injector = sliceOf(voiceSource, "async function deliverToSession(", "/** Shared handling for anything heard while reading aloud");
+    const reading = sliceOf(voiceSource, "async function onReadingUtterance(", "async function conversationLoop(");
+    const action = sliceOf(voiceSource, "const executeAction = async", "// Mic gate (auto turns only)");
 
     expect(route).toContain("routeVoicePrompt(cfg.voiceQa");
     expect(route).toContain("inject: (prompt) => deliverToSession(");
@@ -600,10 +574,7 @@ describe("daemon config controller", () => {
   });
 
   test("conversation quiet gates do not depend on which device owns playback", () => {
-    const turnHandler = daemonSource.slice(
-      daemonSource.indexOf("const controlledTurn = shouldHandleTurnAudibly"),
-      daemonSource.indexOf("// Nobody's there:"),
-    );
+    const turnHandler = sliceOf(voiceSource, "const controlledTurn = shouldHandleTurnAudibly", "// Nobody's there:");
     expect(turnHandler).toContain(
       'const audibleTurn = controlledTurn && audioLease.sink === "mac"',
     );
@@ -636,10 +607,7 @@ describe("daemon config controller", () => {
       backgroundWork: true,
     });
 
-    const handleTurn = daemonSource.slice(
-      daemonSource.indexOf("async function handleTurn"),
-      daemonSource.indexOf("/**\n   * Speak with the barge-in recorder"),
-    );
+    const handleTurn = sliceOf(voiceSource, "async function handleTurn", "/**\n   * Speak with the barge-in recorder");
     const refreshAt = handleTurn.indexOf("sessionHasLiveBackgroundWork(event.transcriptPath)");
     const audibleAt = handleTurn.indexOf("const controlledTurn = shouldHandleTurnAudibly");
     expect(refreshAt).toBeGreaterThan(-1);
@@ -675,10 +643,7 @@ describe("daemon config controller", () => {
   });
 
   test("review attribute and automatic cursor skip stay wired without changing recite", () => {
-    const conversation = daemonSource.slice(
-      daemonSource.indexOf("async function conversationLoop"),
-      daemonSource.indexOf("async function permissionLoop"),
-    );
+    const conversation = sliceOf(voiceSource, "async function conversationLoop", "async function permissionLoop");
     const cursorBranch = conversation.slice(
       conversation.indexOf("cursor = autoTurn"),
       conversation.indexOf("const text = sentences.join"),
@@ -691,21 +656,18 @@ describe("daemon config controller", () => {
       cursorBranch.indexOf("event.review ? sentences.length"),
     );
 
-    const turnEndStatusAt = daemonSource.indexOf('if (event.type === "turn-end" && !setSessionState(');
+    const turnEndStatusAt = voiceSource.indexOf('if (event.type === "turn-end" && !setSessionState(');
     expect(turnEndStatusAt).toBeGreaterThan(-1);
-    const cancellationAt = daemonSource.indexOf("if (eventQueue.consumeCancellation(event))", turnEndStatusAt);
+    const cancellationAt = voiceSource.indexOf("if (eventQueue.consumeCancellation(event))", turnEndStatusAt);
     expect(cancellationAt).toBeGreaterThan(turnEndStatusAt);
-    const turnEndStatus = daemonSource.slice(turnEndStatusAt, cancellationAt);
+    const turnEndStatus = voiceSource.slice(turnEndStatusAt, cancellationAt);
     expect(turnEndStatus).toContain('"waiting"');
     expect(turnEndStatus).not.toContain('"review" : "waiting"');
     expect(turnEndStatus).toContain("event.review?.summary");
     expect(turnEndStatus).toContain("event.eventAt");
     expect(turnEndStatus).toContain("event.review");
 
-    const recite = daemonSource.slice(
-      daemonSource.indexOf('if (event.type === "recite")'),
-      daemonSource.indexOf('if (event.type === "wake")', daemonSource.indexOf('if (event.type === "recite")')),
-    );
+    const recite = sliceOf(voiceSource, 'if (event.type === "recite")', 'if (event.type === "wake")');
     expect(recite).toContain("false,\n          pauseGeneration");
   });
 
@@ -741,36 +703,27 @@ describe("daemon config controller", () => {
       expect(event).toEqual(before);
     }
 
-    const wakeBranch = daemonSource.slice(
-      daemonSource.indexOf('if (event.type === "wake")'),
-      daemonSource.indexOf("recitingEvent = event;"),
-    );
-    expect(wakeBranch).toContain("const targetGone = sessionGoneFromSnapshot(");
+    const wakeBranch = sliceOf(voiceSource, 'if (event.type === "wake")', "recitingEvent = event;");
+    expect(wakeBranch).toContain("const targetGone = await sessionGone(target.sessionId);");
     expect(wakeBranch).toContain("target.sessionId");
     expect(wakeBranch).toContain("if (consumeStopKey()) return");
     expect(wakeBranch).toContain("if (targetGone)");
 
-    const handleEntry = daemonSource.slice(
-      daemonSource.indexOf("async function handleTurn"),
-      daemonSource.indexOf('if (event.type === "wake")'),
-    );
+    const handleEntry = sliceOf(voiceSource, "async function handleTurn", 'if (event.type === "wake")');
     // `controlledTurn`, not the old `audibleTurn`: production renamed it and this
     // search kept returning -1, which sorts before every real index — so the
     // ordering below passed with its marker missing. Presence is asserted first.
     const audibleAt = handleEntry.indexOf("const controlledTurn = shouldHandleTurnAudibly");
     expect(audibleAt).toBeGreaterThan(-1);
-    const closedAt = handleEntry.indexOf("&& sessionGoneFromSnapshot(");
+    const closedAt = handleEntry.indexOf("&& await sessionGone(");
     const statusAt = handleEntry.indexOf("// Dashboard status");
     expect(closedAt).toBeGreaterThan(audibleAt);
     expect(statusAt).toBeGreaterThan(closedAt);
     expect(handleEntry).toContain("event.sessionId");
     expect(handleEntry).toContain("if (shuttingDown || interruptedByPause() || consumeStopKey()) return");
 
-    const micGate = daemonSource.slice(
-      daemonSource.indexOf("// Mic gate (auto turns only)"),
-      daemonSource.indexOf("if (!initialDictationCapture && !deferredInitialExternal)"),
-    );
-    expect(micGate).toContain("const gone = sessionGoneFromSnapshot(");
+    const micGate = sliceOf(voiceSource, "// Mic gate (auto turns only)", "if (!initialDictationCapture && !deferredInitialExternal)");
+    expect(micGate).toContain("const gone = await sessionGone(event.sessionId);");
     expect(micGate).toContain("event.sessionId");
     expect(micGate).toContain("activelyTyping || responded || gone");
   });

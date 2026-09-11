@@ -134,14 +134,16 @@ describe("spoken name routing", () => {
   });
 
   test("deliver guard applies the route before every target-dependent side effect", () => {
-    const source = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
-    const deliver = source.slice(
-      source.indexOf("async function deliver("),
-      source.indexOf("/** Shared handling for anything heard while reading aloud"),
-    );
+    const source = readFileSync(new URL("../src/voice-loop.ts", import.meta.url), "utf8");
+    const start = source.indexOf("async function deliver(");
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf("/** Shared handling for anything heard while reading aloud", start);
+    expect(end).toBeGreaterThan(start);
+    const deliver = source.slice(start, end);
 
-    expect(deliver.indexOf("resolveNameAddressRoute(cfg.claudeDir, event, text)"))
-      .toBeLessThan(deliver.indexOf("let committed = false"));
+    const routed = deliver.indexOf("resolveNameAddressRoute(cfg.claudeDir, event, text)");
+    expect(routed).toBeGreaterThan(-1);
+    expect(routed).toBeLessThan(deliver.indexOf("let committed = false"));
     expect(deliver).toContain("if (beforeInject && !(await beforeInject())) return false");
     expect(deliver).toContain("event = addressed.event");
     expect(deliver).toContain("text = addressed.text");

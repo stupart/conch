@@ -200,7 +200,7 @@ typing route.
 
 ## What is wrong with it
 
-**`daemon.ts` was 5,811 lines (4,954 after three cuts) — but the line count was never the problem.**
+**`daemon.ts` was 5,811 lines (2,756 after four cuts) — but the line count was never the problem.**
 Lines 1–1466 are ~35 exported, individually tested functions and they are fine.
 The problem is that `runDaemon` is a single ~4,200-line function with 37 nested
 functions closing over 152 locals. That is where every feature lands and where
@@ -272,16 +272,40 @@ winning on its own daemon. All of it is pinned by exact-site source guards and
 executable tests over the module and the socket; the two-Mac path itself has
 only been run on one machine.
 
-The remaining seams are already visible:
+`voice-loop.ts` is the fourth cut: wake → speak → listen → deliver, which is
+everything that makes sound, opens the mic or types into a session for a turn.
+`createVoiceLoop(deps)` owns the loop's own state — the stop key, the mic flags
+and their reservation, the barge hand-off, the open dictation, the turn being
+recited or handled — and the bodies moved verbatim, so `conversationLoop` is
+still one ~1,080-line function: this cut fixed the closure, not its size. The
+daemon keeps intake (`enqueue`, including the immediate inject/interrupt
+dispatch), the lease and the holder, the phone speech latch, the one
+window-raise door, device commands, shutdown and the TUI, and hands the loop
+the rest as typed dependencies: the ledger (which now carries `lastTurn`,
+written by both sides and deliberately not cleared by `forget`, so a wake on a
+closed session still says so), pause, the queue's cancellation marks, speech,
+a read-only view of the lease and holder, the registry check, the window
+lookup, render, the outbox, the latch, the raise door, error reporting and the
+ear prewarm. Two edges stay the daemon's: its `handle` still waits for the TTS
+startup gate only for events that speak, and pause, resume and an explicit
+speak come back to it through `control` after the loop's per-event reset.
+`capturing()` is exactly the four-term mic gate the stop contract needs, and
+`closeMic()` is synchronous, so a device transfer still cancels, flips the
+record and acks in one tick. The loop never imports the daemon, and it takes
+the terminal and the ear as optional overrides — which is what finally lets it
+run under test: `test/voice-loop.test.ts` drives it with a real speech manager
+over a recording backend, about thirty exact-text guards became executable
+there, and A14 was pinned there as it behaved, then flipped by its fix.
+
+The remaining seam is already visible:
 
 | would become | what it owns |
 |---|---|
-| `voice-loop.ts` | wake → speak → listen → deliver |
 | `session-registry.ts` | reconciling Claude's registry with Codex's databases |
 
-`daemon.ts` would keep wiring them together. This is worth doing BEFORE the
+`daemon.ts` would keep wiring it in. This is worth doing BEFORE the
 write pass and the marketplace, because both add control messages and both will
-otherwise land in the same 4,954-line file.
+otherwise land in the same 2,756-line file.
 
 **Second: two ways to run the daemon, and the daemon's parent owns the
 microphone.** `conch install` puts it in launchd; the Mac app hosts its own and

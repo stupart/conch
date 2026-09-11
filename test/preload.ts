@@ -16,3 +16,13 @@ if (!process.env.CONCH_LOG_FILE) {
 if (!process.env.CONCH_INJECT_DEBUG_LOG) {
   process.env.CONCH_INJECT_DEBUG_LOG = join(process.env.CONCH_LOG_FILE, "..", "inject-debug.log");
 }
+// The voice-loop tests drive delivery paths that record inject telemetry;
+// TELEMETRY_PATH is read at import time, like the log path above.
+if (!process.env.CONCH_TELEMETRY_FILE) {
+  process.env.CONCH_TELEMETRY_FILE = join(process.env.CONCH_LOG_FILE, "..", "telemetry.jsonl");
+}
+// setState writes the state file on every call and the suite calls it, so
+// every run overwrote the live daemon's /tmp/conch-state.json (A7's class).
+if (!process.env.CONCH_STATE_FILE) {
+  process.env.CONCH_STATE_FILE = join(process.env.CONCH_LOG_FILE, "..", "state.json");
+}

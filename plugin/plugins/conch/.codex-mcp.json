@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "conch": {
+      "command": "sh",
+      "args": ["./bin/conch-mcp"],
+      "cwd": "."
+    }
+  }
+}
