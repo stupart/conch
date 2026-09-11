@@ -148,7 +148,8 @@ export interface TerminalComposerModel {
 export type SessionStartKey = "backend" | "cwd" | "start";
 
 export interface SessionStartOverlayRowModel {
-  key: SessionStartKey;
+  /** A fixed row, or a start option's name from the agent's table. */
+  key: SessionStartKey | (string & {});
   value: string;
   help: string;
   selected: boolean;

@@ -4375,6 +4375,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       },
     },
     defaultCwd: homedir(),
+    // Read at open, so the toggle starts from the setting as it is now.
+    bypassDefault: () => cfg.bypassPermissions,
     onOpen: () => settingsPause.open(),
     onClose: () => settingsPause.close(),
     onChange: () => void renderSessionPanel(),

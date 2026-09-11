@@ -972,7 +972,21 @@ private struct StartSessionSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     switch option.kind {
                     case .toggle:
-                        Toggle(option.name, isOn: toggleBinding(option.name))
+                        // Unset until the Mac says what the persisted default
+                        // is, and if it never does the daemon applies that
+                        // default: say so, rather than show a switch that is off.
+                        if option.name == "bypass-permissions", optionValues[option.name] == nil {
+                            HStack {
+                                Text(option.name)
+                                Spacer()
+                                Menu("uses your Mac's default") {
+                                    Button("On") { optionValues[option.name] = .bool(true) }
+                                    Button("Off") { optionValues[option.name] = .bool(false) }
+                                }
+                            }
+                        } else {
+                            Toggle(option.name, isOn: toggleBinding(option.name))
+                        }
                     case let .choice(choices):
                         // Segmented while the words fit a phone; a menu for
                         // the longer lists (Claude's permission modes).
