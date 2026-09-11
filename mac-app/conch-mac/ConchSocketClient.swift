@@ -193,6 +193,30 @@ struct ConchCapabilitiesReply: Decodable, Sendable {
     let inventory: AgentCapabilities?
 }
 
+/// Flip a plugin or MCP server for the NEXT session, in the agent's own
+/// file (B3). `preview` answers with the diff and writes nothing; an apply
+/// carries the preview's hash so the daemon refuses if the file moved since.
+struct ConchConfigToggleRequest: Encodable, Sendable {
+    let kind = "config-toggle"
+    let agent: String
+    let scope: String
+    let projectDir: String?
+    let capability: String
+    let id: String
+    let enabled: Bool
+    let preview: Bool
+    let expectBeforeHash: String?
+}
+
+struct ConchConfigToggleReply: Decodable, Equatable, Sendable {
+    let file: String
+    /// Unified diff; empty when the file already says so.
+    let diff: String
+    let beforeHash: String
+    let applied: Bool
+    let backup: String?
+}
+
 struct ConchSessionCloseRequest: Encodable, Sendable {
     let kind = "session-close"
     let sessionId: String

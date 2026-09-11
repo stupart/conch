@@ -6,14 +6,14 @@ import SwiftUI
 /// sessions it did not start, so almost nothing here can be honestly switched:
 /// it can read what a session is CONFIGURED with while having no way to know
 /// what the running process actually LOADED. A control that pretended
-/// otherwise would be the one lie this whole feature exists to avoid, so this
-/// pass shows no controls at all.
+/// otherwise would be the one lie this whole feature exists to avoid.
 ///
-/// The two agents stay apart for the same reason. Codex records an explicit
-/// `enabled` flag per MCP server in `config.toml`; Claude records per-project
-/// enable and disable lists in `~/.claude.json`. Those are different
-/// mechanisms, and merging them into one row would invent a switch that works
-/// for one and misleads for the other.
+/// The one switch that IS honest (B3) says so on its face: a plugin or MCP
+/// server row carries a "next session" toggle that edits the agent's own
+/// file the way its own command would — Claude's `enabledPlugins` in
+/// `settings.json`, its per-project MCP lists in `~/.claude.json`, Codex's
+/// `enabled = …` in `config.toml`. Flipping it shows the diff first, with the
+/// scope, and only Apply writes. The running session is never touched.
 struct CapabilityInspectorView: View {
     let capabilities: AgentCapabilities?
     let isLoading: Bool
@@ -24,9 +24,21 @@ struct CapabilityInspectorView: View {
     /// Types `/model <model>` into the session and returns the daemon's answer
     /// in its own words (B2). nil hides the field, for captures with no daemon.
     var onSetModel: (@Sendable (String) async -> String)? = nil
+    /// Previews or writes a plugin / MCP server switch through the daemon (B3).
+    /// nil hides the toggles, for captures with no daemon.
+    var onToggle: (@Sendable (ConchConfigToggleRequest) async -> StateStore.ConfigToggleOutcome)? = nil
+    /// A switch was written; the owner re-reads the inventory.
+    var onToggled: (() -> Void)? = nil
     @State private var expanded: Set<String> = []
     @State private var modelDraft = ""
     @State private var modelResult: String?
+    @State private var pendingToggle: PendingToggle?
+
+    struct PendingToggle: Identifiable {
+        let entity: AgentCapabilities.Entity
+        let enabled: Bool
+        var id: String { entity.id }
+    }
 
     private static let order = ["mcp-server", "plugin", "skill"]
 
@@ -53,6 +65,19 @@ struct CapabilityInspectorView: View {
             }
         }
         .background(ConchPalette.bg)
+        .sheet(item: $pendingToggle) { pending in
+            if let onToggle, let context = capabilities?.context {
+                ConfigTogglePreview(
+                    entity: pending.entity,
+                    enabled: pending.enabled,
+                    agent: context.backend,
+                    projectDir: context.cwd,
+                    send: onToggle,
+                    onApplied: { onToggled?() },
+                    onDone: { pendingToggle = nil }
+                )
+            }
+        }
     }
 
     private var header: some View {
@@ -198,6 +223,9 @@ struct CapabilityInspectorView: View {
                                 toggle: {
                                     if expanded.contains(entity.id) { expanded.remove(entity.id) }
                                     else { expanded.insert(entity.id) }
+                                },
+                                onToggle: onToggle == nil ? nil : { entity, enabled in
+                                    pendingToggle = PendingToggle(entity: entity, enabled: enabled)
                                 }
                             )
                         }
@@ -305,61 +333,85 @@ private struct CapabilityRow: View {
     let badge: String?
     let isExpanded: Bool
     let toggle: () -> Void
+    /// Asked to switch this row for the next session; nil means no switch is offered.
+    let onToggle: ((AgentCapabilities.Entity, Bool) -> Void)?
     @State private var isHovering = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button(action: toggle) {
-                HStack(alignment: .firstTextBaseline, spacing: 9) {
-                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(ConchPalette.textFaint)
-                        .frame(width: 10)
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(entity.displayName)
-                                .font(ConchTypography.font(size: 12.5))
-                                .foregroundStyle(ConchPalette.textPrimary)
-                                .lineLimit(1)
-                            if let badge {
-                                Text(badge)
-                                    .font(ConchTypography.font(size: 9.5))
+            // The switch sits BESIDE the expand button, not inside it: a
+            // control nested in a button's label is the button's, and a click
+            // meant for the switch would expand the row instead.
+            HStack(alignment: .firstTextBaseline, spacing: 9) {
+                Button(action: toggle) {
+                    HStack(alignment: .firstTextBaseline, spacing: 9) {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(ConchPalette.textFaint)
+                            .frame(width: 10)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(entity.displayName)
+                                    .font(ConchTypography.font(size: 12.5))
+                                    .foregroundStyle(ConchPalette.textPrimary)
+                                    .lineLimit(1)
+                                if let badge {
+                                    Text(badge)
+                                        .font(ConchTypography.font(size: 9.5))
+                                        .foregroundStyle(ConchPalette.textFaint)
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(ConchPalette.raised, in: Capsule())
+                                }
+                            }
+                            if let description = entity.description, !description.isEmpty {
+                                Text(description)
+                                    .font(ConchTypography.font(size: 10.5))
                                     .foregroundStyle(ConchPalette.textFaint)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1)
-                                    .background(ConchPalette.raised, in: Capsule())
+                                    .lineLimit(1)
+                            }
+                            if let summary = entity.kindSummary {
+                                Text(summary)
+                                    .font(ConchTypography.font(size: 10))
+                                    .foregroundStyle(ConchPalette.textFaint.opacity(0.85))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
                             }
                         }
-                        if let description = entity.description, !description.isEmpty {
-                            Text(description)
-                                .font(ConchTypography.font(size: 10.5))
-                                .foregroundStyle(ConchPalette.textFaint)
-                                .lineLimit(1)
-                        }
-                        if let summary = entity.kindSummary {
-                            Text(summary)
+                        Spacer(minLength: 8)
+                        if !children.isEmpty {
+                            Text("\(children.count)")
                                 .font(ConchTypography.font(size: 10))
-                                .foregroundStyle(ConchPalette.textFaint.opacity(0.85))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                                .foregroundStyle(ConchPalette.textFaint)
+                                .monospacedDigit()
                         }
                     }
-                    Spacer(minLength: 8)
-                    if !children.isEmpty {
-                        Text("\(children.count)")
-                            .font(ConchTypography.font(size: 10))
-                            .foregroundStyle(ConchPalette.textFaint)
-                            .monospacedDigit()
-                    }
-                    EvidenceChip(evidence: entity.headline, observedOnly: entity.isObservedOnly)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 7)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(isHovering ? ConchPalette.hover : .clear)
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                if entity.isToggleable, onToggle != nil {
+                    // Its position is what the FILE says for the next session.
+                    // Flipping it previews the edit; nothing moves until Apply,
+                    // and then the inventory is re-read rather than assumed.
+                    Text("next session")
+                        .font(ConchTypography.font(size: 9.5))
+                        .foregroundStyle(ConchPalette.textFaint)
+                    Toggle("", isOn: Binding(
+                        get: { entity.enabledForNextSession },
+                        set: { onToggle?(entity, $0) }
+                    ))
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .labelsHidden()
+                    .help("Switch \(entity.displayName) \(entity.enabledForNextSession ? "off" : "on") for the next session; the diff is shown before anything is written.")
+                }
+                EvidenceChip(evidence: entity.headline, observedOnly: entity.isObservedOnly)
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(isHovering ? ConchPalette.hover : .clear)
             .onHover { isHovering = $0 }
 
             if isExpanded { detail }
@@ -498,6 +550,156 @@ private struct EvidenceChip: View {
     }
 }
 
+/// The diff before the write (B3). The daemon plans the edit against the
+/// file as it is now and this shows exactly that: the file, the scope, the
+/// unified diff, and the label that keeps it honest — it applies to the NEXT
+/// session. Apply sends the preview's hash back, so a file that moved in
+/// between is refused rather than overwritten. Every refusal is the daemon's
+/// own text.
+struct ConfigTogglePreview: View {
+    let entity: AgentCapabilities.Entity
+    let enabled: Bool
+    let agent: String
+    let projectDir: String
+    let send: @Sendable (ConchConfigToggleRequest) async -> StateStore.ConfigToggleOutcome
+    let onApplied: () -> Void
+    let onDone: () -> Void
+    @State private var scope: String
+    @State private var reply: ConchConfigToggleReply?
+    @State private var message: String?
+    @State private var busy = false
+    @State private var applied = false
+
+    init(
+        entity: AgentCapabilities.Entity,
+        enabled: Bool,
+        agent: String,
+        projectDir: String,
+        send: @escaping @Sendable (ConchConfigToggleRequest) async -> StateStore.ConfigToggleOutcome,
+        onApplied: @escaping () -> Void,
+        onDone: @escaping () -> Void
+    ) {
+        self.entity = entity
+        self.enabled = enabled
+        self.agent = agent
+        self.projectDir = projectDir
+        self.send = send
+        self.onApplied = onApplied
+        self.onDone = onDone
+        let perProject = agent == "claude" && entity.kind == "mcp-server"
+        _scope = State(initialValue: !perProject && entity.scope == "user" ? "user" : "project")
+    }
+
+    /// Claude Code's `/mcp` switch is a per-project list in `~/.claude.json`;
+    /// there is no user-wide off, so the picker does not offer one.
+    private var perProjectOnly: Bool { agent == "claude" && entity.kind == "mcp-server" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("\(enabled ? "Enable" : "Disable") \(entity.displayName)")
+                .font(ConchTypography.font(size: 15, weight: .medium))
+                .foregroundStyle(ConchPalette.textPrimary)
+            HStack(spacing: 10) {
+                Picker("Scope", selection: $scope) {
+                    Text("user").tag("user")
+                    Text("project").tag("project")
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 220)
+                .disabled(perProjectOnly || busy)
+                if perProjectOnly {
+                    Text("Claude Code keeps MCP enablement per project.")
+                        .font(ConchTypography.font(size: 10.5))
+                        .foregroundStyle(ConchPalette.textFaint)
+                }
+            }
+            if let reply {
+                Text(reply.file)
+                    .font(ConchTypography.font(size: 10.5))
+                    .foregroundStyle(ConchPalette.textDim)
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                ScrollView([.vertical, .horizontal]) {
+                    Text(reply.diff.isEmpty ? "No change: the file already says so." : reply.diff)
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(ConchPalette.textPrimary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                }
+                .frame(minHeight: 140, maxHeight: 260)
+                .background(ConchPalette.raised, in: RoundedRectangle(cornerRadius: 6))
+            } else if message == nil {
+                Text("Reading the file…")
+                    .font(ConchTypography.font(size: 11))
+                    .foregroundStyle(ConchPalette.textFaint)
+            }
+            Text("Applies to the next session; a running session is untouched.")
+                .font(ConchTypography.font(size: 10.5))
+                .foregroundStyle(ConchPalette.statusWaiting)
+            if let message {
+                Text(message)
+                    .font(ConchTypography.font(size: 10.5))
+                    .foregroundStyle(applied ? ConchPalette.textDim : ConchPalette.statusNeeds)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Spacer()
+                Button(applied ? "Done" : "Cancel", role: .cancel, action: onDone)
+                    .keyboardShortcut(.cancelAction)
+                Button("Apply") { apply() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(reply == nil || reply?.diff.isEmpty == true || busy || applied)
+            }
+        }
+        .padding(16)
+        .frame(width: 600)
+        .background(ConchPalette.bg)
+        .task(id: scope) { await preview() }
+    }
+
+    private func request(preview: Bool) -> ConchConfigToggleRequest {
+        ConchConfigToggleRequest(
+            agent: agent,
+            scope: scope,
+            projectDir: scope == "project" ? projectDir : nil,
+            capability: entity.kind,
+            id: entity.configId,
+            enabled: enabled,
+            preview: preview,
+            expectBeforeHash: preview ? nil : reply?.beforeHash
+        )
+    }
+
+    private func preview() async {
+        guard !applied else { return }
+        reply = nil
+        message = nil
+        switch await send(request(preview: true)) {
+        case let .plan(plan): reply = plan
+        case let .refused(error): message = error
+        }
+    }
+
+    private func apply() {
+        busy = true
+        Task { @MainActor in
+            switch await send(request(preview: false)) {
+            case let .plan(plan):
+                applied = true
+                message = "Written to \(plan.file)"
+                    + (plan.backup.map { " (backup \($0))" } ?? "")
+                    + " — applies to the next session."
+                onApplied()
+            case let .refused(error): message = error
+            }
+            busy = false
+        }
+    }
+}
+
 /// The inspector as a sheet, owning its own fetch.
 ///
 /// Split out of `DashboardView` because inlining it there defeated Swift's
@@ -513,6 +715,8 @@ struct CapabilityInspectorSheet: View {
     @EnvironmentObject private var store: StateStore
     @State private var capabilities: AgentCapabilities?
     @State private var isLoading = true
+    /// Bumped after a switch is written, so the inventory is re-read rather than assumed.
+    @State private var reloads = 0
 
     var body: some View {
         CapabilityInspectorView(
@@ -520,7 +724,9 @@ struct CapabilityInspectorSheet: View {
             isLoading: isLoading,
             sessionLabel: row.label,
             expandAll: expandAll,
-            onSetModel: { model in await store.setModel(id: row.id, model: model) }
+            onSetModel: { model in await store.setModel(id: row.id, model: model) },
+            onToggle: { request in await store.toggleCapability(request) },
+            onToggled: { reloads += 1 }
         )
         .frame(width: 620, height: 560)
         .overlay(alignment: .topTrailing) {
@@ -528,7 +734,7 @@ struct CapabilityInspectorSheet: View {
                 .keyboardShortcut(.cancelAction)
                 .padding(12)
         }
-        .task(id: row.id) {
+        .task(id: "\(row.id)#\(reloads)") {
             // Read on open rather than continuously: this is a deliberate look,
             // and 35-48ms against real configuration is cheap enough that
             // asking again beats deciding when a cache went stale.
