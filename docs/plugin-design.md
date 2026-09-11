@@ -50,3 +50,18 @@ DEFERRED tools (need a socket-protocol extension AND answers to open questions â
 5. Review lifecycle: what clears a `review` latch â€” any prompt to that session, explicit dismiss, or both?
 6. `get-state` socket reply vs reading `/tmp/conch-sessions.json` (default: file-read first).
 7. Dismiss/restore uses dedicated visibility state and preserves the latest turn for replay.
+
+## MCP launch: one declaration per harness
+
+The marketplace serves `plugin/plugins/conch` from git, so the declaration has to start the server
+with no absolute path, and the two harnesses expand different things. Claude Code 2.1.266 reads
+`.claude-plugin/plugin.json`, then `.mcp.json`, and replaces only `${CLAUDE_PLUGIN_ROOT}`,
+`${CLAUDE_PROJECT_DIR}` and `${CLAUDE_PLUGIN_DATA}`. It has no `${PLUGIN_ROOT}`. Codex (rust-v0.153.4) reads
+`.codex-plugin/plugin.json`. That manifest has no Agent Plugins `$schema`, so Codex treats it as the
+legacy format and passes `command` and `args` through unexpanded. It clears the environment and joins a relative
+`cwd` onto the plugin root (`codex-rs/codex-mcp/src/plugin_config.rs`). `${PLUGIN_ROOT}` is expanded
+only for Agent Plugins files, which also refuse absolute commands. So no single variable works for
+both. Claude keeps `.mcp.json` (`sh ${CLAUDE_PLUGIN_ROOT}/bin/conch-mcp`). The Codex manifest names
+`./.codex-mcp.json` (`sh ./bin/conch-mcp`, `"cwd": "."`). `conch install-plugin` writes the same
+absolute invocation into both files, so an installed copy reads exactly as before.
+`test/install-plugin.test.ts` follows each harness's rules on the checked-in files.

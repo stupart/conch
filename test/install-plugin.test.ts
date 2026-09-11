@@ -5,7 +5,7 @@ import {
   readFileSync,
   rmSync,
 } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import {
   AGENTS_ALWAYS_ON,
   buildInstallCommands,
@@ -285,5 +285,136 @@ describe("the two install paths ship the same prose", () => {
     // wrong: `session` defaults to the caller, and naming a sibling is refused.
     expect(prose).toContain("`session` is optional and defaults to you");
     expect(prose).toContain("naming a different session is refused");
+  });
+});
+
+describe("each harness can start the MCP server the marketplace serves from git", () => {
+  // The marketplace serves plugin/plugins/conch from git, so neither harness
+  // gets the absolute paths install-plugin writes. Each has its own rules for
+  // turning a declaration into a process; these helpers follow them as the
+  // sources show, then check that sh can open the launcher from there.
+  interface Launch {
+    command: string;
+    args: string[];
+    cwd: string;
+  }
+  interface Server {
+    command: string;
+    args?: string[];
+    cwd?: string;
+  }
+
+  const readJson = (path: string) => JSON.parse(readFileSync(path, "utf8"));
+  // Both harnesses accept {mcpServers: {...}} or a bare server map.
+  const conchServer = (path: string): Server => {
+    const parsed = readJson(path);
+    return (parsed.mcpServers ?? parsed).conch;
+  };
+
+  // Codex rust-v0.153.4. The manifest is the first of these directories
+  // (utils/plugins/src/plugin_namespace.rs, exec-server-protocol/src/protocol.rs).
+  // `mcpServers` is inline, a "./" path, or else .mcp.json
+  // (core-plugins/src/manifest.rs, core-plugins/src/loader.rs). In this legacy
+  // format, command and args pass through unexpanded, a relative cwd joins the
+  // plugin root, and no cwd means the session's cwd
+  // (codex-mcp/src/plugin_config.rs, codex-mcp/src/server.rs).
+  function codexLaunch(pluginRoot: string, sessionCwd: string): Launch {
+    const dir = [".codex-plugin", ".claude-plugin", ".cursor-plugin"]
+      .find((candidate) => existsSync(join(pluginRoot, candidate, "plugin.json")));
+    const declared = readJson(join(pluginRoot, dir!, "plugin.json")).mcpServers;
+    const server: Server = typeof declared === "object"
+      ? declared.conch
+      : conchServer(join(
+        pluginRoot,
+        typeof declared === "string" && declared.startsWith("./") ? declared : ".mcp.json",
+      ));
+    const cwd = server.cwd === undefined
+      ? sessionCwd
+      : isAbsolute(server.cwd) ? server.cwd : join(pluginRoot, server.cwd);
+    return { command: server.command, args: server.args ?? [], cwd };
+  }
+
+  // Claude Code 2.1.266 (its binary, the plugin MCP loader and C5). The
+  // manifest is .claude-plugin/plugin.json and the default file is .mcp.json.
+  // Only ${CLAUDE_PLUGIN_ROOT}, ${CLAUDE_PROJECT_DIR} and ${CLAUDE_PLUGIN_DATA}
+  // are replaced. There is no ${PLUGIN_ROOT}, and no documented cwd, so the
+  // server starts in the session's directory.
+  function claudeLaunch(pluginRoot: string, sessionCwd: string): Launch {
+    const declared = readJson(join(pluginRoot, ".claude-plugin", "plugin.json")).mcpServers;
+    const server: Server = typeof declared === "object"
+      ? declared.conch
+      : conchServer(join(pluginRoot, typeof declared === "string" ? declared : ".mcp.json"));
+    const expand = (value: string) => value
+      .replaceAll("${CLAUDE_PLUGIN_ROOT}", pluginRoot)
+      .replaceAll("${CLAUDE_PROJECT_DIR}", sessionCwd)
+      .replaceAll("${CLAUDE_PLUGIN_DATA}", join(sessionCwd, ".plugin-data"));
+    return {
+      command: expand(server.command),
+      args: (server.args ?? []).map(expand),
+      cwd: sessionCwd,
+    };
+  }
+
+  function expectLaunchable({ command, args, cwd }: Launch) {
+    expect(`${command} ${args.join(" ")}`).not.toContain("${");
+    expect(command).toBe("sh");
+    // `sh -n` opens and parses the launcher without running it, so it fails
+    // exactly when that path does not resolve from that cwd.
+    const check = Bun.spawnSync([command, "-n", ...args], {
+      cwd,
+      env: { PATH: "/usr/bin:/bin" },
+      stderr: "pipe",
+    });
+    expect(check.stderr.toString()).toBe("");
+    expect(check.exitCode).toBe(0);
+  }
+
+  const pluginRoot = join(import.meta.dir, "..", "plugin", "plugins", "conch");
+  const sessionCwd = () => {
+    const dir = mkdtempSync("/tmp/conch-session-cwd-");
+    roots.push(dir);
+    return dir;
+  };
+
+  test("Codex launches the checked-in declaration without expanding anything", () => {
+    // Premise of the simulation: a root plugin.json would switch Codex to the
+    // Agent Plugins format, which has different rules.
+    expect(existsSync(join(pluginRoot, "plugin.json"))).toBe(false);
+    expectLaunchable(codexLaunch(pluginRoot, sessionCwd()));
+  });
+
+  test("Claude Code expands the checked-in declaration to the plugin's launcher", () => {
+    expectLaunchable(claudeLaunch(pluginRoot, sessionCwd()));
+  });
+
+  test("an install-plugin copy still hands both harnesses the absolute invocation", async () => {
+    const root = sessionCwd();
+    const repoRoot = join(import.meta.dir, "..");
+    const absBun = "/absolute/runtime/bun";
+    const absCli = "/absolute/repo/src/cli.ts";
+    const binary = "/opt/homebrew/bin/conch";
+
+    await materializePlugin({
+      templateDir: join(repoRoot, "plugin"),
+      prosePath: join(repoRoot, "docs", "conch-control-skill.md"),
+      distDir: join(root, "source"),
+      absBun,
+      absCli,
+    });
+    await materializeEmbeddedPlugin({
+      distDir: join(root, "compiled"),
+      absBun: binary,
+      absCli: "/$bunfs/root/src/cli.ts",
+    });
+
+    for (const [dist, expected] of [
+      ["source", buildMcpInvocation(absBun, absCli)],
+      ["compiled", buildMcpInvocation(binary, "/$bunfs/root/src/cli.ts", true)],
+    ] as const) {
+      const distRoot = join(root, dist, "plugins", "conch");
+      for (const launch of [codexLaunch(distRoot, root), claudeLaunch(distRoot, root)]) {
+        expect({ command: launch.command, args: launch.args }).toEqual(expected);
+      }
+    }
   });
 });
