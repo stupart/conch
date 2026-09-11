@@ -171,92 +171,17 @@ describe("the confirm gate for always", () => {
 
 describe("the daemon's wiring", () => {
   const read = (file: string) => readFileSync(join(import.meta.dir, "..", "src", file), "utf8");
-  const daemon = read("daemon.ts");
-  const handleTurn = daemon.slice(
-    daemon.indexOf("async function handleTurn("),
-    daemon.indexOf('if (event.type === "recite") {'),
-  );
-  const loop = daemon.slice(
-    daemon.indexOf("async function permissionLoop("),
-    daemon.indexOf("async function listenForApproval("),
-  );
-  const listen = daemon.slice(
-    daemon.indexOf("async function listenForApproval("),
-    daemon.indexOf("Stop a session mid-turn."),
-  );
-
-  test("only a permission prompt, only with bypass off, and only for a tool still waiting", () => {
-    const read = handleTurn.slice(handleTurn.indexOf("const approval ="), handleTurn.indexOf("const controlledTurn ="));
-    expect(read).toContain('event.ntype === "permission_prompt"');
-    expect(read).toContain("!cfg.bypassPermissions");
-    expect(read).toContain("pendingApproval(event.transcriptPath)");
-    // Everything else a needs-you was stays visual-only.
-    expect(handleTurn).toContain("if (!approval) return; // stripped");
-    // Attached before the predicate, so the gates treat it as the announced turn it is.
-    const attach = handleTurn.indexOf("if (approval) event.approval = approval;");
-    expect(attach).toBeGreaterThan(handleTurn.indexOf("const approval ="));
-    expect(attach).toBeLessThan(handleTurn.indexOf("const controlledTurn = shouldHandleTurnAudibly(event, cfg.workingMic);"));
-    expect(handleTurn).toContain("else delete event.approval;");
-  });
+  // The wiring itself — which prompts get a voice, the row's words, the quiet
+  // gates, announce-then-listen and the ear held elsewhere, the re-ask, the
+  // always confirm, instead as Escape-then-text, and the mic reserved behind
+  // the speech lane — is executed against the voice loop in
+  // voice-loop.test.ts ("permission by voice").
 
   test("a permission with a voice is audible; every other needs-you is not", () => {
     const ask = { id: "tu_1", name: "Bash", summary: "git push" };
     expect(shouldHandleTurnAudibly({ type: "needs-you", approval: ask }, false)).toBe(true);
     expect(shouldHandleTurnAudibly({ type: "needs-you" }, false)).toBe(false);
     expect(shouldHandleTurnAudibly({ type: "working", approval: ask }, false)).toBe(false);
-  });
-
-  test("the row says what is being asked", () => {
-    expect(handleTurn).toContain('const kind = approval ? approvalDetail(approval) : describeNeed(event.ntype);');
-  });
-
-  test("the voice runs after the quiet gates, before recite and wake", () => {
-    const dispatch = handleTurn.indexOf("await permissionLoop(event, approval, pauseGeneration)");
-    expect(dispatch).toBeGreaterThan(handleTurn.indexOf("gateTurnForControls(event, controlledTurn"));
-    expect(dispatch).toBeGreaterThan(handleTurn.indexOf("cfg.awayAfterSecs"));
-    expect(handleTurn.indexOf('if (event.type === "wake")')).toBe(-1); // sliced before both branches
-  });
-
-  test("announce, then listen; the mic is held for the same reasons as a turn", () => {
-    const announce = loop.indexOf("await say(approvalAnnounce(event.label, ask))");
-    const earElsewhere = loop.indexOf("audioLease.isPhone() || !audioHolder.isLocal()");
-    const typing = loop.indexOf("idle < cfg.typingGraceSecs");
-    const firstListen = loop.indexOf("await listenForApproval(event)");
-    expect(announce).toBeGreaterThan(loop.indexOf("await ringBell()"));
-    expect(earElsewhere).toBeGreaterThan(announce);
-    expect(typing).toBeGreaterThan(earElsewhere);
-    expect(firstListen).toBeGreaterThan(typing);
-  });
-
-  test("unclear is re-asked once, then left for the keyboard", () => {
-    const reask = loop.indexOf("await say(APPROVAL_REASK)");
-    const keyboard = loop.indexOf("await say(APPROVAL_KEYBOARD)");
-    expect(reask).toBeGreaterThan(0);
-    expect(keyboard).toBeGreaterThan(reask);
-    expect(loop.match(/await listenForApproval\(event\)/g)?.length).toBe(3); // ask, re-ask, confirm
-  });
-
-  test("always is confirmed by a second spoken yes before any key is pressed", () => {
-    const confirm = loop.indexOf("if (!confirmsAlways(confirmation))");
-    expect(confirm).toBeGreaterThan(loop.indexOf("await say(confirmAlwaysPrompt(ask))"));
-    expect(confirm).toBeLessThan(loop.indexOf("APPROVAL_KEYS[answer.kind]"));
-    expect(loop.indexOf("injectKey(")).toBeGreaterThan(confirm);
-  });
-
-  test("instead is Escape and then the alternative typed as the next prompt", () => {
-    const keys = loop.indexOf("for (const key of APPROVAL_KEYS[answer.kind])");
-    const typed = loop.indexOf("injectText(cfg, event.pid, answer.text");
-    expect(typed).toBeGreaterThan(keys);
-    expect(loop.slice(keys, typed)).toContain('if (answer.kind === "instead")');
-    expect(loop.slice(typed)).toContain("markInjected(event.sessionId)");
-  });
-
-  test("the permission mic honours the audio gate", () => {
-    // reserveNormalMic is the invariant: no mic while TTS speaks.
-    const reserve = listen.indexOf("await reserveNormalMic()");
-    expect(reserve).toBeGreaterThan(listen.indexOf('await micCue(cfg, "open")'));
-    expect(reserve).toBeLessThan(listen.indexOf("session.start()"));
-    expect(listen).toContain("return texts;");
   });
 
   test("Down is a key the injector can press", () => {

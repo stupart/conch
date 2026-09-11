@@ -14,11 +14,8 @@ import { readFileSync } from "node:fs";
 describe("the speaking state is always bounded", () => {
   const source = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
 
-  test("taking the phone audio path arms a bound", () => {
-    expect(source).toContain("if (audioLease.sink === \"phone\")");
-    const branch = source.slice(source.indexOf('if (audioLease.sink === "phone")'));
-    expect(branch.slice(0, 200)).toContain("armPhoneSpeechLatch(text)");
-  });
+  // Taking the phone audio path arms the bound: executed in voice-loop.test.ts
+  // ("the phone owning the voice"), since `speak` moved into the voice loop.
 
   test("the phone reporting it finished cancels the bound", () => {
     const control = readFileSync(new URL("../src/control-server.ts", import.meta.url), "utf8");
@@ -62,10 +59,13 @@ describe("every route into speaking has a way back out", () => {
   });
 
   test("no speaking transition is left unbounded", () => {
-    // Three exist: the daemon speaking, the Mac's own playback (bounded by the
-    // playback itself), and the phone's report. Any NEW one is a latch waiting
-    // to happen, so this fails loudly when a fourth appears.
-    const transitions = source.split('setState("speaking"').length - 1;
+    // Three exist: `speak` and the Mac's own playback (both in the voice loop;
+    // playback is bounded by itself), and the phone's report (the daemon). Any
+    // NEW one is a latch waiting to happen, so this fails loudly when a fourth
+    // appears — in either file.
+    const voice = readFileSync(new URL("../src/voice-loop.ts", import.meta.url), "utf8");
+    const transitions = source.split('setState("speaking"').length - 1
+      + voice.split('setState("speaking"').length - 1;
     expect(transitions).toBe(3);
   });
 });

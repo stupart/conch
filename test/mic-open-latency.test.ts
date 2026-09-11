@@ -19,17 +19,22 @@ const read = (p: string) => readFileSync(join(root, p), "utf8");
  * a text field and you are watching it. A voice wake still announces, because
  * there the speech IS the interface. So the discriminator is `compose`.
  */
-test("a dictation into the composer opens the mic without announcing first", () => {
-  const daemon = read("src/daemon.ts");
-  const wake = daemon.slice(daemon.indexOf('log(`wake -> "${target.label}"'));
-  const announce = wake.slice(0, wake.indexOf("conversationLoop("));
-
-  expect(announce).toContain("if (!target.compose) {");
-  // The announcement must sit INSIDE that guard, not merely near it.
-  const guard = announce.slice(announce.indexOf("if (!target.compose) {"));
-  expect(guard.slice(0, guard.indexOf("\n        }"))).toContain("Mic open for ${target.label}");
-  // ...and the bounded race stays, so a sick TTS still cannot hold a VOICE wake shut.
-  expect(announce).toContain("Bun.sleep(3_000)");
+test("a voice wake's courtesy line stays bounded, so a sick TTS cannot hold the mic shut", () => {
+  // The composer half — no announcement, no cue — is executed in voice-loop.test.ts.
+  // Waiting three seconds on a TTS that never returns is not worth a test run,
+  // so the bound stays pinned as text, inside the guard it belongs to.
+  const voice = read("src/voice-loop.ts");
+  const at = voice.indexOf('log(`wake -> "${target.label}"');
+  expect(at).toBeGreaterThan(-1);
+  const wake = voice.slice(at);
+  const end = wake.indexOf("conversationLoop(");
+  expect(end).toBeGreaterThan(-1);
+  const announce = wake.slice(0, end);
+  const guardAt = announce.indexOf("if (!target.compose) {");
+  expect(guardAt).toBeGreaterThan(-1);
+  const guard = announce.slice(guardAt, announce.indexOf("\n        }", guardAt));
+  expect(guard).toContain("Mic open for ${target.label}");
+  expect(guard).toContain("Bun.sleep(3_000)");
 });
 
 /**

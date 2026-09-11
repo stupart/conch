@@ -111,27 +111,6 @@ describe("slash lines through inject", () => {
     }
   });
 
-  test("the daemon's inject handler takes the provider door before the message route", () => {
-    const daemon = readFileSync(join(import.meta.dir, "..", "src", "daemon.ts"), "utf8");
-    const start = daemon.indexOf('if (event.type === "inject") {');
-    expect(start).toBeGreaterThan(-1);
-    const handler = daemon.slice(start, daemon.indexOf('if (event.type === "speak") {', start));
-    const markers = [
-      "speech.cancelCurrent()",
-      "if (isProviderCommandLine(event.announce)) {",
-      "await injectProviderCommand(cfg, { pid: event.pid }, line)",
-      'recordDaemonError(\n            "session-command",',
-      "const delivered = await deliver(target, event.announce",
-    ];
-    let position = 0;
-    for (const marker of markers) {
-      const at = handler.indexOf(marker, position);
-      expect(at, `missing or out of order: ${marker}`).toBeGreaterThan(-1);
-      position = at + marker.length;
-    }
-    // The command branch returns, so nothing below it can also deliver the line.
-    const branch = handler.slice(handler.indexOf("if (isProviderCommandLine("), handler.indexOf("const target: TurnEvent"));
-    expect(branch).toContain("return;");
-    expect(branch).not.toContain("deliver(");
-  });
+  // The inject handler takes the provider door before the message route:
+  // executed in voice-loop.test.ts ("a slash line takes the provider door").
 });

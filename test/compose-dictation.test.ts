@@ -34,20 +34,8 @@ test("an ordinary wake stays ordinary", () => {
   expect(resolved?.compose).toBeUndefined();
 });
 
-test("a composer dictation is published, never delivered", () => {
-  const source = readFileSync(join(import.meta.dir, "../src/daemon.ts"), "utf8");
-  const prompt = source.slice(source.indexOf('case "prompt":'));
-  const branch = prompt.indexOf("if (event.compose)");
-  const publish = prompt.indexOf("publishDictation(text, event.sessionId)");
-  const deliver = prompt.indexOf("await deliver(event, text");
-
-  // The compose branch has to RETURN before deliver(), or the words land in
-  // both places: the composer and the session.
-  expect(branch).toBeGreaterThan(-1);
-  expect(publish).toBeGreaterThan(branch);
-  expect(publish).toBeLessThan(deliver);
-  expect(prompt.slice(branch, deliver)).toContain('return "handled"');
-});
+// "A composer dictation is published, never delivered" is executed in
+// voice-loop.test.ts ("heard mid-read goes back to the composer").
 
 test("dictation goes to the session that asked, not the one now focused", () => {
   // An audit caught this one, and caught the ORIGINAL version of this test
