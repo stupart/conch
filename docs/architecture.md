@@ -160,6 +160,10 @@ two hook entrypoints (Claude pushes, Codex is polled — the asymmetry above), a
 the two-question trust flow in `control-server.ts`, whose `session-needs-trust`
 reply is typed to Codex on the wire.
 
+**What Codex itself exposes** — the app-server JSON-RPC protocol, the one-writer thread lock
+behind the missing pids, spawn edges, per-response token records — and what conch should use
+in place of polling and keystrokes is in `docs/codex-harness-notes.md` (roadmap C16).
+
 ## Async, and where it is honest
 
 Bun, single-threaded, `async`/`await` throughout. Everything expensive is a
