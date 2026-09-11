@@ -232,6 +232,19 @@ describe("the Mac deliverable viewers say why a file would not show", () => {
     ]) expect(review).toContain(viewer);
   });
 
+  test("a missing deliverable is filed as open-deliverable with its path, not only shown", () => {
+    ordered(
+      slice(review, "case let .missing(url):", "case .web:"),
+      'Text("Couldn\'t find \\(url.lastPathComponent)")',
+      ".onAppear {",
+      "store.reportAppError(",
+      'operation: "open-deliverable"',
+      'message: "Couldn\'t find \\(url.lastPathComponent)"',
+      "sessionId: rowID",
+      'state: ["target": url.path]',
+    );
+  });
+
   test("text: the read throws macOS's words instead of printing \"Couldn't read X.\"", () => {
     const document = slice(review, "private struct DeliverableDocumentView", "private struct DeliverableImageView");
     expect(document).not.toContain("Couldn't read");
@@ -447,6 +460,56 @@ describe("the phone: the same dead tap, said and recorded", () => {
       "return .handled",
     );
     expect(sheet).toContain("LinkFailureLine(message: $linkFailure)");
+  });
+
+  test("the sheet's image and video say why and are filed as open-deliverable", () => {
+    const sheet = phone("DeliverableSheet.swift");
+    expect(sheet).toContain("LocalImageView(url: url, onFailure: fail)");
+    expect(sheet).toContain("LocalVideoView(url: url, onFailure: fail)");
+    // Image: ImageIO's nil gets Foundation's reason, through the sheet's `fail`.
+    const image = slice(sheet, "private struct LocalImageView", "private struct LocalVideoView");
+    expect(image).not.toContain('failure = "Couldn\'t load the image from your Mac."');
+    ordered(
+      image,
+      "let onFailure: (String) -> Void",
+      "case .unreadable:",
+      'onFailure("Couldn\'t load the image from your Mac: \\(CocoaError(.fileReadCorruptFile).localizedDescription)")',
+    );
+    // Video: the player item's failed status is read, and the observation kept alive.
+    expect(sheet).not.toContain("AVPlayer(url: url)");
+    ordered(
+      slice(sheet, "private struct LocalVideoView", "\n}\n"),
+      "let onFailure: (String) -> Void",
+      "@State private var status: NSKeyValueObservation?",
+      "let item = AVPlayerItem(url: url)",
+      "status = item.observe(\\.status)",
+      "guard item.status == .failed, let error = item.error else { return }",
+      "onFailure(error.localizedDescription)",
+      "player = AVPlayer(playerItem: item)",
+    );
+  });
+
+  test("a conversation image that won't download says why on its row and files load-image", () => {
+    const stack = phone("ConversationStack.swift");
+    expect(stack).toContain(
+      "MaterialRow(bridge: bridge, material: item.material, fallback: item.text, sessionId: conversation.sessionId)",
+    );
+    const row = slice(stack, "private struct MaterialRow", "private func removeTemporaryFile()");
+    ordered(
+      row,
+      "let downloaded = await bridge.downloadFile(path: path)",
+      "guard let url = downloaded else {",
+      'fail("Couldn\'t load the image from your Mac: \\(bridge.lastError ?? "it sent nothing back.")", path: path)',
+      "temporaryURL = url",
+    );
+    ordered(
+      row,
+      "private func fail(_ reason: String, path: String) {",
+      'let message = "\\(reason) — \\(path)"',
+      "failure = message",
+      'reportAppError(operation: "load-image", message: message, sessionId: sessionId)',
+    );
+    ordered(row, "if let failure {", "Text(failure)", "} else if !detail.isEmpty {");
   });
 
   test("the Settings button's result is no longer ignored", () => {

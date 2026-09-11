@@ -1215,6 +1215,19 @@ export function lastAssistantReply(conversation: Conversation): string {
   return texts.join("\n").trim();
 }
 
+/** What the voice says for a shared window's reply (A8), as the apps' note does. */
+export const SHARED_WINDOW_NOTE = "Shared with another window.";
+
+/**
+ * The sentences to read, with the shared note said once just before what is
+ * left — at the cursor, so what the announcement already covered is still
+ * matched against the reply's own sentences and never read twice.
+ */
+export function withSharedNote(sentences: readonly string[], cursor: number): string[] {
+  if (cursor >= sentences.length) return [...sentences];
+  return [...sentences.slice(0, cursor), SHARED_WINDOW_NOTE, ...sentences.slice(cursor)];
+}
+
 /** A conversation trimmed to what is worth putting on a wire. */
 export interface PublishedConversation {
   sessionId: string;

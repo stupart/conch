@@ -292,9 +292,12 @@ describe("the option values reach the daemon", () => {
   });
 });
 
-describe("iOS: a bypass default the Mac never answered", () => {
+for (const [platform, path] of [
+  ["iOS", "mobile/conch-ios/conch-ios/LedgerView.swift"],
+  ["Mac", "mac-app/conch-mac/ContentView.swift"],
+] as const) describe(`${platform}: a bypass default the daemon never answered`, () => {
   test("says the Mac's default applies, and sends nothing until the person picks", () => {
-    const source = read("mobile/conch-ios/conch-ios/LedgerView.swift");
+    const source = read(path);
     const unknown = 'if option.name == "bypass-permissions", optionValues[option.name] == nil {';
     const menu = `Menu("uses your Mac's default")`;
     const on = 'Button("On") { optionValues[option.name] = .bool(true) }';

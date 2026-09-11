@@ -655,8 +655,25 @@ private struct StartSessionSheet: View {
                 VStack(alignment: .leading, spacing: 3) {
                     switch option.kind {
                     case .toggle:
-                        Toggle(option.name, isOn: toggleBinding(option.name))
-                            .font(ConchTypography.font(size: 11.5))
+                        // Unset until the daemon says what the persisted
+                        // default is, and if it never does the daemon applies
+                        // that default: say so, rather than show a switch that
+                        // is off — as the phone's sheet does.
+                        if option.name == "bypass-permissions", optionValues[option.name] == nil {
+                            HStack {
+                                Text(option.name)
+                                    .font(ConchTypography.font(size: 11.5))
+                                Spacer()
+                                Menu("uses your Mac's default") {
+                                    Button("On") { optionValues[option.name] = .bool(true) }
+                                    Button("Off") { optionValues[option.name] = .bool(false) }
+                                }
+                                .fixedSize()
+                            }
+                        } else {
+                            Toggle(option.name, isOn: toggleBinding(option.name))
+                                .font(ConchTypography.font(size: 11.5))
+                        }
                     case let .choice(choices):
                         Text(option.name)
                             .font(ConchTypography.font(size: 11.5))

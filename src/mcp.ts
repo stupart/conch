@@ -494,6 +494,32 @@ async function audioWhere(
   return "this Mac, or the phone when it holds the audio";
 }
 
+/**
+ * Why an agent's `conch_speak` will not be heard, or null when it will.
+ *
+ * The daemon holds it while conch is paused by anyone but an agent — the same
+ * test as A17's (`pause.paused && !pauseOrigin.agentOwns("")`) — and drops
+ * it, but `sendToDaemon` cannot say so. The published `mode` carries both
+ * halves of that test.
+ */
+async function speechHeld(
+  sessionsPath: string,
+  dependencies: McpDependencies,
+): Promise<string | null> {
+  let mode: unknown;
+  try {
+    const raw = await dependencies.readSessionsFile(sessionsPath);
+    const parsed: unknown = raw === null ? null : JSON.parse(raw);
+    if (isRecord(parsed)) mode = parsed.mode;
+  } catch {
+    // No readable published state: nothing says conch is paused.
+  }
+  if (!isRecord(mode) || mode.paused !== true || mode.pausedByAgent === true) return null;
+  return "not spoken: conch is in manual mode and no agent put it there (the user, a meeting,"
+    + " or a manual mode restored at start), so an agent's speech is held — dropped, not"
+    + " queued. Put it in your reply instead.";
+}
+
 async function resolveSession(
   query: string,
   config: McpRuntimeConfig,
@@ -761,6 +787,8 @@ export function createMcpToolHandlers(
             + "the words in your reply instead.",
         );
       }
+      // Read before sending: the daemon decides on the pause as it stands now.
+      const held = await speechHeld(sessionsPath, dependencies);
       const sent = await sendTurn(config, dependencies, {
         type: "speak",
         sessionId: "",
@@ -770,6 +798,8 @@ export function createMcpToolHandlers(
         // An agent asked, not the person: a manual mode you set holds this.
         origin: "agent",
       });
+      // Dropped, so nothing is being spoken for a second call to wait on.
+      if (held) return { ...sent, held };
       speakingUntil = dependencies.now() + audioTimeoutMs(text);
       return sent;
     },

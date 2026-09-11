@@ -9,9 +9,12 @@ import {
   publishedConversation,
   readConversationTail,
   selectWindowBranch,
+  SHARED_WINDOW_NOTE,
+  withSharedNote,
   type Conversation,
 } from "../src/conversation.ts";
 import { defaultMcpDependencies } from "../src/mcp.ts";
+import { countCoveredSentences } from "../src/snippet.ts";
 import { registrySnapshot } from "../src/sessions.ts";
 
 /**
@@ -249,20 +252,53 @@ describe("conch_transcript_tail reads through the same loader", () => {
     // branch and to Codex, which never has two windows on one id.
     expect(daemon).toContain("async function lastReplyFor(path: string, sessionId: string)");
     const helper = daemon.slice(daemon.indexOf("async function lastReplyFor(path: string, sessionId: string)"));
-    expect(helper).toContain("if (!isWindowKey(sessionId)) return lastAssistantText(path);");
+    expect(helper).toContain("if (!isWindowKey(sessionId)) return { text: await lastAssistantText(path), shared: false };");
     expect(helper).toContain("window: panelSessions.get(sessionId),");
-    expect(helper).toContain("return lastAssistantReply(conversation);");
-    expect(helper.indexOf("if (!isWindowKey(sessionId))")).toBeLessThan(helper.indexOf("return lastAssistantReply(conversation);"));
+    const branchReply = "return { text: lastAssistantReply(conversation), shared: conversation.shared === true };";
+    expect(helper).toContain(branchReply);
+    expect(helper.indexOf("if (!isWindowKey(sessionId))")).toBeLessThan(helper.indexOf(branchReply));
     expect(daemon).toContain("? lastReplyFor(contentEvent.transcriptPath, contentEvent.sessionId)");
     expect(daemon).toContain("previewPath && previewId ? lastReplyFor(previewPath, previewId)");
     expect(daemon).toContain("path && !isWindowKey(sessionId) ? await currentTurnText(path)");
-    expect(daemon).toContain("const finalMessage = path ? await lastReplyFor(path, sessionId)");
+    expect(daemon).toContain("const finalMessage = path ? (await lastReplyFor(path, sessionId)).text");
     expect(daemon).toContain("lastReplyFor(target.transcriptPath, target.sessionId),");
     expect(daemon).toContain("await lastReplyFor(event.transcriptPath!, event.sessionId)");
     expect(daemon.match(/lastAssistantText\(/g)).toHaveLength(2);
 
     const sessions = read("src/sessions.ts");
     expect(sessions).toContain("? { bridgeSessionId: entry.bridgeSessionId }");
+  });
+});
+
+describe("the TUI preview and the voice say so too", () => {
+  test("the note is said once, just before what is left to read", () => {
+    expect(SHARED_WINDOW_NOTE).toBe("Shared with another window.");
+    const sentences = ["One.", "Two.", "Three."];
+    // Recite: nothing announced, so the note comes first.
+    expect(withSharedNote(sentences, countCoveredSentences("", sentences)))
+      .toEqual([SHARED_WINDOW_NOTE, "One.", "Two.", "Three."]);
+    // Read-full after an announcement that covered the first sentence: that
+    // sentence is still matched, not read again, and the note leads the rest.
+    expect(withSharedNote(sentences, countCoveredSentences("One.", sentences)))
+      .toEqual(["One.", SHARED_WINDOW_NOTE, "Two.", "Three."]);
+    // Nothing left to read, nothing to say it before.
+    expect(withSharedNote(sentences, 3)).toEqual(sentences);
+  });
+
+  test("recite and read-full add it from the same read; the TUI preview gets the flag", () => {
+    const daemon = readFileSync(join(import.meta.dir, "..", "src/daemon.ts"), "utf8");
+    const loader = daemon.slice(daemon.indexOf("const ensureSentences = async (): Promise<string[]> => {"));
+    const read = "const reply = await lastReplyFor(event.transcriptPath!, event.sessionId);";
+    const note = "if (reply.shared) sentences = withSharedNote(sentences, cursor);";
+    expect(loader).toContain(read);
+    expect(loader).toContain(note);
+    // After the cursor is counted against the reply's own sentences, before progress is published.
+    expect(loader.indexOf(read)).toBeLessThan(loader.indexOf("sentences = splitSentences(stripMarkdown(reply.text));"));
+    expect(loader.indexOf("countCoveredSentences(event.announce, sentences);")).toBeLessThan(loader.indexOf(note));
+    expect(loader.indexOf(note)).toBeLessThan(loader.indexOf('const text = sentences.join(" ");'));
+    // Recite goes through the same loader: conversationLoop reads with ensureSentences.
+    expect(daemon).toContain("const previewRaw = previewReply?.text ?? \"\";");
+    expect(daemon).toContain("previewReply?.shared,");
   });
 });
 

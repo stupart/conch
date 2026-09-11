@@ -304,6 +304,13 @@ private struct ReviewContent: View {
             .background(ConchPalette.bg)
             .onAppear {
                 isWebLoading = false
+                // Said above, and filed too (A13), with the path it looked for.
+                store.reportAppError(
+                    operation: "open-deliverable",
+                    message: "Couldn't find \(url.lastPathComponent)",
+                    sessionId: rowID,
+                    state: ["target": url.path]
+                )
             }
         case .web:
             VStack(spacing: 0) {

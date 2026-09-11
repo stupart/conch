@@ -44,6 +44,12 @@ export interface DashboardMode {
   muted: boolean;
   paused: boolean;
   holding: number;
+  /**
+   * The global pause is an agent's own (`PauseOriginLedger`, A17). Absent is
+   * anyone else's — yours, a meeting's, one restored at boot — and that pause
+   * holds an agent's `conch_speak`, which the MCP server reads here to say so.
+   */
+  pausedByAgent?: boolean;
 }
 
 export interface PanelRowModel {
@@ -87,6 +93,8 @@ export interface PanelReplyModel {
    * every list marker shows up as a literal "- " and no block survives.
    */
   markdown?: string;
+  /** A window whose branch could not be told from the other's (A8); the TUI preview says so. */
+  shared?: boolean;
 }
 
 export interface SettingsOverlayRowModel {
@@ -670,12 +678,19 @@ export function previewForPanelSelection(
   requestedSessionId: string | null,
   text: string,
   markdown?: string,
+  shared = false,
 ): PanelReplyModel | null {
   if (
     !navSelectedId
     || navSelectedId !== requestedSessionId
   ) return null;
-  return { sessionId: navSelectedId, text, spokenChars: 0, ...(markdown ? { markdown } : {}) };
+  return {
+    sessionId: navSelectedId,
+    text,
+    spokenChars: 0,
+    ...(markdown ? { markdown } : {}),
+    ...(shared ? { shared } : {}),
+  };
 }
 
 /** Build the semantic dashboard once; renderers decide how it looks. */

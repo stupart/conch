@@ -126,7 +126,7 @@ struct DeliverableSheet: View {
             // panning at native pixel scale made a tall screenshot — the single
             // most likely deliverable — unreadable.
             ScrollView(.vertical) {
-                LocalImageView(url: url)
+                LocalImageView(url: url, onFailure: fail)
             }
         case .video:
             // A real player. Routed to `.text` before, which meant a video
@@ -134,7 +134,7 @@ struct DeliverableSheet: View {
             //
             // Playback is deliberate, so Manual does not alter it. Manual owns
             // only what conch does by itself: automatic reading and mic opening.
-            VideoPlayer(player: AVPlayer(url: url))
+            LocalVideoView(url: url, onFailure: fail)
                 .background(Palette.bg)
         case .pdf:
             BridgedPDFView(url: url, onFailure: fail)
@@ -363,6 +363,7 @@ struct LinkFailureLine: View {
 
 private struct LocalImageView: View {
     let url: URL
+    let onFailure: (String) -> Void
     @State private var image: UIImage?
     @State private var failure: String?
 
@@ -406,8 +407,32 @@ private struct LocalImageView: View {
             case .tooLarge:
                 failure = "This image is too large to preview on iPhone."
             case .unreadable:
-                failure = "Couldn't load the image from your Mac."
+                // ImageIO answers nil, never why: Foundation's wording for
+                // bytes a reader refused, said and filed by the sheet (A13).
+                onFailure("Couldn't load the image from your Mac: \(CocoaError(.fileReadCorruptFile).localizedDescription)")
             }
         }
+    }
+}
+
+/// A video that will not play says why (A13). AVPlayer reports that only
+/// through the item's status, as on the Mac, so the observation is kept.
+private struct LocalVideoView: View {
+    let url: URL
+    let onFailure: (String) -> Void
+    @State private var player: AVPlayer?
+    @State private var status: NSKeyValueObservation?
+
+    var body: some View {
+        VideoPlayer(player: player)
+            .task(id: url) {
+                let item = AVPlayerItem(url: url)
+                let onFailure = onFailure
+                status = item.observe(\.status) { item, _ in
+                    guard item.status == .failed, let error = item.error else { return }
+                    DispatchQueue.main.async { onFailure(error.localizedDescription) }
+                }
+                player = AVPlayer(playerItem: item)
+            }
     }
 }

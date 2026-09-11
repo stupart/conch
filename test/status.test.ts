@@ -210,6 +210,59 @@ describe("terminal Phase 2 surfaces", () => {
     expect(writes.at(-1)).toContain("new fresh session");
     expect(writes.at(-1)).toContain("/Users/tyler");
   });
+
+  test("the fresh-session overlay lines every value up after its longest name", () => {
+    const overlay = (keys: string[]) => {
+      const { io, writes } = recordingIO({ columns: 100, rows: 10 });
+      const renderer = createTheaterRenderer(io);
+      renderer.enter();
+      renderer.panel(sampleModel({
+        sessionStartOverlay: {
+          selectedIndex: 0,
+          starting: false,
+          rows: keys.map((key, index) => ({ key, value: `v-${key}`, help: "h", selected: index === 0, editing: false })),
+        },
+      }));
+      return writes.at(-1)!;
+    };
+    // A fixed 8 pushed `ask-for-approval` (16) out of the column the rest share.
+    const codex = overlay(["backend", "ask-for-approval", "start"]);
+    for (const key of ["backend", "ask-for-approval", "start"]) {
+      expect(codex).toContain(`${key.padEnd(16)} · v-${key}`);
+    }
+    // The longest name in the set shown, not a width fixed for every set.
+    const short = overlay(["backend", "cwd"]);
+    expect(short).toContain("backend · v-backend");
+    expect(short).toContain("cwd     · v-cwd");
+  });
+
+  test("a shared window's preview says so in one dim line, and only then", () => {
+    const frame = (shared: boolean) => {
+      const { io, writes } = recordingIO({ columns: 100, rows: 10 });
+      const renderer = createTheaterRenderer(io);
+      renderer.enter();
+      renderer.panel(sampleModel({
+        live: { state: "idle", label: "", partial: "" },
+        preview: { sessionId: "parked", text: "parked-only-output", spokenChars: 0, ...(shared ? { shared } : {}) },
+        rows: [{
+          sessionId: "parked",
+          label: "parked-project",
+          status: "waiting",
+          paused: false,
+          muted: false,
+          liveGlyph: null,
+          active: false,
+          navSelected: true,
+        }],
+      }));
+      return writes.at(-1)!;
+    };
+    const shared = frame(true);
+    expect(shared).toContain("parked-only-output");
+    expect(shared).toContain("\x1b[2mShared with another window.\x1b[0m");
+    expect(shared).toContain("‹parked-project› · esc back · space talk");
+    expect(frame(false)).not.toContain("Shared with another window");
+  });
 });
 
 describe("theater status formatting", () => {

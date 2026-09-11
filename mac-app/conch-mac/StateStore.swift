@@ -362,7 +362,8 @@ final class StateStore: ObservableObject {
     }
 
     /// The persisted `bypass-permissions` setting: what the sheet's toggle
-    /// starts from. Nil when the daemon cannot say, and the toggle starts off.
+    /// starts from. Nil when the daemon cannot say: the sheet then says the
+    /// Mac's default applies and sends nothing until the person picks.
     func bypassPermissionsDefault() async -> Bool? {
         struct Snapshot: Decodable { let snapshot: [String: ConchConfigEntry] }
         let outcome = await socketClient.request(ConchGetConfigRequest())

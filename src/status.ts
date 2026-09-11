@@ -33,6 +33,7 @@ import {
   type SelectionDocumentLine,
 } from "./theater-selection.ts";
 import { answerableTerminalQuestion } from "./terminal-question.ts";
+import { SHARED_WINDOW_NOTE } from "./conversation.ts";
 
 export type ConchState = PanelConchState;
 export type LiveState = PanelLiveState;
@@ -623,10 +624,13 @@ function scrollableTheaterContent(
   height: number,
   paneOffset: number,
   selection: TheaterSelection,
-  options: { note?: string; bottomAnchored?: boolean } = {},
+  options: { note?: string; aside?: string; bottomAnchored?: boolean } = {},
 ): TheaterContentView {
   const note = options.note ?? "";
-  const viewportHeight = Math.max(0, height - (note ? 1 : 0));
+  // A short dim line above the note, below the document so no row of it moves;
+  // only while a row of the document still fits beside both.
+  const aside = options.aside && height >= 3 ? options.aside : "";
+  const viewportHeight = Math.max(0, height - (note ? 1 : 0) - (aside ? 1 : 0));
   const maxOffset = Math.max(0, doc.length - viewportHeight);
   const offset = clampPaneOffset(paneOffset, maxOffset);
   const bottomAnchored = options.bottomAnchored ?? false;
@@ -638,6 +642,7 @@ function scrollableTheaterContent(
       selectedContentLine(line.text, viewStart + index, fingerprint, selection)
     );
   while (lines.length < viewportHeight) lines.push("");
+  if (aside) lines.push(`\x1b[2m${aside}\x1b[0m`);
   if (note) lines.push(`\x1b[2m${note}\x1b[0m`);
   return {
     lines,
@@ -776,7 +781,11 @@ function theaterContentLines(
       height,
       paneOffset,
       selection,
-      { note: `‹${selectedRow.label}›${review?.link ? " · o open" : ""} · esc back · space talk` },
+      {
+        note: `‹${selectedRow.label}›${review?.link ? " · o open" : ""} · esc back · space talk`,
+        // This window's branch could not be told from the other's (A8).
+        ...(selectedPreview?.shared ? { aside: SHARED_WINDOW_NOTE } : {}),
+      },
     );
   }
 
@@ -1043,10 +1052,12 @@ function theaterSessionStartOverlay(
     `\x1b[2m╭${"─".repeat(innerWidth)}╮\x1b[0m`,
     `\x1b[2m│\x1b[0m${padVisible(" new fresh session · ↑↓ choose · enter edit/start · esc close", innerWidth)}\x1b[2m│\x1b[0m`,
   ];
+  // One column for every name shown; a fixed 8 pushed `ask-for-approval`'s value right of the rest.
+  const keyWidth = Math.max(...overlay.rows.map((row) => row.key.length));
   for (const row of overlay.rows) {
     const cursor = row.selected ? "›" : " ";
     const value = `${row.value}${row.editing ? "▌" : ""}`;
-    const fitted = padVisible(`${cursor} ${row.key.padEnd(8)} · ${value} · \x1b[2m${row.help}\x1b[22m`, innerWidth);
+    const fitted = padVisible(`${cursor} ${row.key.padEnd(keyWidth)} · ${value} · \x1b[2m${row.help}\x1b[22m`, innerWidth);
     const styled = row.selected
       ? `\x1b[38;2;88;201;212m\x1b[48;2;28;32;36m${fitted}\x1b[0m`
       : fitted;
