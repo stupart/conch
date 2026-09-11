@@ -13,8 +13,8 @@ import { expect, test } from "bun:test";
  * It caught exactly that within a day of being needed. Extracting the session
  * ledger moved `eventTimestamp` into `session-ledger.ts` without exporting it,
  * and left `setSessionState` in `daemon.ts` still calling it — a `ReferenceError`
- * on the first state event, which is to say on essentially every turn. All 1138
- * tests passed, because none of them run that function.
+ * on the first state event, which is to say on essentially every turn. Every
+ * test passed, because none of them run that function.
  *
  * Two seconds against a seven-second suite, for the one check that reads the
  * daemon the way the runtime does.

@@ -96,7 +96,7 @@ export interface Config {
   holdSubmitSecs: number;
   /** suppress a "needs you" for a session conch drove within this window (ms) */
   recentInjectSuppressMs: number;
-  /** allow blind osascript keystroke injection when no tmux pane is found */
+  /** type into the session's own Terminal window (focused, verified in front) when no tmux pane is found */
   keystrokeFallback: boolean;
   /** Start sessions with every permission prompt skipped. Off unless asked for. */
   bypassPermissions: boolean;

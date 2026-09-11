@@ -98,6 +98,9 @@ describe("LinkTarget — the resolver every Mac open goes through", () => {
         'print(LinkTarget.url(for: "~/notes.md", cwd: "/Users/t/Projects/Blueprint").path)',
         'print(LinkTarget.url(for: "/Users/t/Blueprint Studio/guide.md", cwd: "/elsewhere").absoluteString)',
         'print(LinkTarget.url(for: "file:///Users/t/Blueprint%20Studio/guide.md", cwd: nil).path)',
+        // Tyler's actual link, 2026-09-11: absolute, with the space encoded.
+        'print(LinkTarget.url(for: "/Users/t/Blueprint/Asset%20Generator/review-guide.md", cwd: "/Users/t").path)',
+        'print(LinkTarget.url(for: "/Users/t/100%.md", cwd: nil).path)',
         'print(LinkTarget.url(for: "https://example.com/x", cwd: "/Users/t").absoluteString)',
         'print(LinkTarget.text(of: URL(string: "docs/my%20doc.md")!))',
         'print(LinkTarget.text(of: URL(string: "https://example.com/x")!))',
@@ -113,6 +116,8 @@ describe("LinkTarget — the resolver every Mac open goes through", () => {
           // Percent-encoded by URL(fileURLWithPath:), which a monorepo path with spaces needs.
           "file:///Users/t/Blueprint%20Studio/guide.md",
           "/Users/t/Blueprint Studio/guide.md",
+          "/Users/t/Blueprint/Asset Generator/review-guide.md",
+          "/Users/t/100%.md",
           "https://example.com/x",
           "docs/my doc.md",
           "https://example.com/x",

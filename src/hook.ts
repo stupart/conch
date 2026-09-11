@@ -1,3 +1,4 @@
+import { appendFileSync, chmodSync, existsSync, renameSync, statSync } from "node:fs";
 import { connect } from "node:net";
 import { readState } from "./daemon-state.ts";
 import type { Config } from "./config.ts";
@@ -102,18 +103,25 @@ const ACTIONABLE = new Set(["permission_prompt", "idle_prompt", "elicitation_dia
  * Best-effort and never throws: a diagnostic must not be able to break the
  * hook it is diagnosing.
  */
-async function appendHookTrace(
-  cfg: Config,
+export const HOOK_TRACE_PATH = "/tmp/conch-hook.log";
+const MAX_HOOK_TRACE_BYTES = 1024 * 1024;
+
+export function appendHookTrace(
+  cfg: Pick<Config, never> & { hookTracePath?: string },
   fields: Record<string, unknown>,
-): Promise<void> {
+): void {
   try {
     const line = JSON.stringify({ at: new Date().toISOString(), ...fields });
-    const path = (cfg as { hookTracePath?: string }).hookTracePath ?? "/tmp/conch-hook.log";
-    const file = Bun.file(path);
-    const existing = await file.exists() ? await file.text() : "";
-    // Bounded: this is a diagnostic, not an archive.
-    const kept = (existing + line + "\n").split("\n").slice(-500).join("\n");
-    await Bun.write(path, kept);
+    const path = cfg.hookTracePath ?? HOOK_TRACE_PATH;
+    // 0600 and rolled over like the daemon log (status.ts prepareLogFile): it
+    // carries the head and tail of every turn's text, and was the one
+    // world-readable file in /tmp that did (audit 4a). Bounded: a diagnostic,
+    // not an archive.
+    try {
+      if (existsSync(path) && statSync(path).size > MAX_HOOK_TRACE_BYTES) renameSync(path, `${path}.1`);
+    } catch {}
+    appendFileSync(path, line + "\n", { mode: 0o600 });
+    chmodSync(path, 0o600);
   } catch {
     // Deliberately silent.
   }

@@ -291,3 +291,18 @@ describe("the option values reach the daemon", () => {
     expectBefore(read("mobile/conch-ios/conch-ios/BridgeClient.swift"), '"kind": "session-start"', 'message["options"] = options');
   });
 });
+
+describe("iOS: a bypass default the Mac never answered", () => {
+  test("says the Mac's default applies, and sends nothing until the person picks", () => {
+    const source = read("mobile/conch-ios/conch-ios/LedgerView.swift");
+    const unknown = 'if option.name == "bypass-permissions", optionValues[option.name] == nil {';
+    const menu = `Menu("uses your Mac's default")`;
+    const on = 'Button("On") { optionValues[option.name] = .bool(true) }';
+    const off = 'Button("Off") { optionValues[option.name] = .bool(false) }';
+    expectBefore(source, "case .toggle:", unknown);
+    expectBefore(source, unknown, menu);
+    expectBefore(source, menu, on);
+    expectBefore(source, on, off);
+    expectBefore(source, off, "Toggle(option.name, isOn: toggleBinding(option.name))");
+  });
+});

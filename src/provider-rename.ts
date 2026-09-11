@@ -22,7 +22,6 @@ export type ProviderRenameInjector = (
   text: string,
   beforeInject: undefined,
   options: {
-    allowBlindFallback: false;
     copyToClipboard(text: string): Promise<void>;
   },
 ) => Promise<InjectTextResult>;
@@ -69,7 +68,7 @@ export async function injectProviderCommand(
     target.pid,
     line,
     undefined,
-    { allowBlindFallback: false, copyToClipboard: async () => {} },
+    { copyToClipboard: async () => {} },
   );
   if (result.via === "tmux" || result.via === "osascript-focused") {
     return { kind: "delivered", via: result.via };

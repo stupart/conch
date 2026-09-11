@@ -1516,6 +1516,12 @@ enum LinkTarget {
         if let url = URL(string: trimmed), url.scheme != nil {
             guard url.isFileURL else { return url }
             path = url.path
+        } else {
+            // A markdown link destination encodes its spaces (CommonMark), so an
+            // agent writes `Asset%20Generator/guide.md`. Decode a bare path here
+            // too, not only in `text(of:)`, so no caller can reach the disk with
+            // `%20` still in it. A literal `%` that is not an escape stays as is.
+            path = trimmed.removingPercentEncoding ?? trimmed
         }
         path = NSString(string: path).expandingTildeInPath
         if !path.hasPrefix("/"), let cwd, !cwd.isEmpty {
