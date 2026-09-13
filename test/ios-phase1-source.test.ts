@@ -49,7 +49,7 @@ describe("iPhone Phase 1 interaction model", () => {
   });
 
   test("dismiss and restore use typed commands and both remain reachable", () => {
-    expect(bridge).toMatch(/enum SessionCommand: String \{\s*case dismiss\s*case restore\s*\}/);
+    expect(bridge).toMatch(/enum SessionCommand: String \{\s*case dismiss\s*case restore\s*case attach\s*\}/);
     expect(bridge).toContain('"kind": "session-command"');
     expect(bridge).toContain('reply["kind"] as? String == "session-ack"');
 

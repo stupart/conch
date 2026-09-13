@@ -9,6 +9,8 @@ export interface SessionActionsTarget {
   label: string;
   backend?: "claude" | "codex";
   pid?: number;
+  /** A Claude Code background job's id, which `attach` opens in Terminal. */
+  jobId?: string;
 }
 
 /**
@@ -37,6 +39,8 @@ export interface SessionActionsController {
   reveal?(target: Readonly<SessionActionsTarget>): Promise<boolean>;
   /** Type `/model <model>` into the session's prompt. Resolves false when nothing was delivered. */
   setModel?(target: Readonly<SessionActionsTarget>, model: string): Promise<boolean>;
+  /** Open a background job in a new Terminal window. Resolves false when nothing was opened. */
+  attach?(target: Readonly<SessionActionsTarget>): Promise<boolean>;
 }
 
 export type SessionActionMutation =
@@ -48,7 +52,8 @@ export type SessionActionMutation =
   | { command: "close" }
   | { command: "reveal" }
   | { command: "restore" }
-  | { command: "set-model"; model: string };
+  | { command: "set-model"; model: string }
+  | { command: "attach" };
 
 /** One closed command-to-controller adapter shared by terminal UI and socket IPC. */
 export function invokeSessionAction(
@@ -75,6 +80,8 @@ export function invokeSessionAction(
       return controller.reveal?.({ ...target }) ?? false;
     case "set-model":
       return controller.setModel?.({ ...target }, mutation.model) ?? false;
+    case "attach":
+      return controller.attach?.({ ...target }) ?? false;
   }
 }
 

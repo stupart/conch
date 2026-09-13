@@ -130,6 +130,9 @@ struct ComposerView: View {
     /// or one an app-server hosts). Send and Stop need one, so both are off
     /// and the field says why; the mic and recite keep working.
     var noTerminal: String? = nil
+    /// Present when the session is a background job no window is attached to:
+    /// the way to a terminal that can type to it, beside the reason there is none.
+    var onOpenInTerminal: (() -> Void)? = nil
     let onSend: (String) -> Task<Bool, Never>
     let onInterrupt: () -> Void
     let onTalk: () -> Void
@@ -237,6 +240,18 @@ struct ComposerView: View {
                 .foregroundStyle(ConchPalette.textDim)
                 .help("Read the last reply again")
                 .accessibilityLabel("Read the last reply again")
+
+                if noTerminal != nil, let onOpenInTerminal {
+                    Button(action: onOpenInTerminal) {
+                        Label("Open in Terminal", systemImage: "terminal")
+                            .font(ConchTypography.font(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(ConchPalette.brandCyan)
+                    .help("Open this session in a new Terminal window")
+                    .accessibilityLabel("Open \(sessionLabel) in Terminal")
+                    .fixedSize()
+                }
 
                 Spacer(minLength: 8)
 

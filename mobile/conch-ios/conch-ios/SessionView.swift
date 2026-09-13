@@ -357,8 +357,9 @@ struct SessionView: View {
                         confirmingClose = true
                     }
                     // A clean exit is typed into the terminal; a closed or
-                    // app-server Codex thread has none.
-                    .disabled(closingSession || !bridge.isConnected || row?.noTerminal != nil)
+                    // app-server Codex thread has none. A background job is
+                    // stopped by id, so it needs none.
+                    .disabled(closingSession || !bridge.isConnected || (row?.noTerminal != nil && row?.attachable != true))
                 } label: {
                     Image(systemName: "ellipsis")
                 }
@@ -600,6 +601,18 @@ struct SessionView: View {
                     .disabled(attaching)
                     .accessibilityLabel("Attach a picture")
 
+                    // A background job no window is attached to: open one on
+                    // the Mac, beside the field that says why Send is off.
+                    if row?.attachable == true {
+                        Button(action: openInTerminal) {
+                            Label("Open in Terminal", systemImage: "terminal")
+                                .font(Type.caption)
+                                .foregroundStyle(Palette.textPrimary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Opens this session in a Terminal window on your Mac")
+                    }
+
                     if canSend, !isSending {
                         // Deliberate deletion, kept. Everything else in the draft
                         // machinery refuses to lose your words, and that only
@@ -697,6 +710,10 @@ struct SessionView: View {
     /// Mid-turn, which is the only time stopping means anything.
     private var isWorking: Bool {
         row?.status == "working"
+    }
+
+    private func openInTerminal() {
+        Task { _ = await bridge.send(sessionCommand: .attach, sessionId: sessionId) }
     }
 
     private func stopTurn() {

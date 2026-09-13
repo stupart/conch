@@ -293,6 +293,16 @@ final class StateStore: ObservableObject {
         Task { _ = await socketClient.request(request) }
     }
 
+    /// Open a background job no window is attached to in a new Terminal
+    /// window (`claude attach`). Fire and forget, like reveal: the daemon
+    /// answers before Terminal opens and records a failure itself. Once the
+    /// window attaches, the row routes to it and this button goes away.
+    func openInTerminal(_ row: SessionRow) {
+        guard row.attachable else { return }
+        let request = ConchSessionCommandRequest(sessionId: row.id, command: .attach)
+        Task { _ = await socketClient.request(request) }
+    }
+
     /// Ask the daemon to type `/model <model>` into the session (B2). Returns
     /// the daemon's answer in its own words, because the inspector shows it
     /// verbatim rather than pretending to know what the agent did with it.
@@ -775,7 +785,7 @@ final class StateStore: ObservableObject {
         transportErrorSessionIDs.remove(context.id)
 
         switch context.command {
-        case .reveal, .setModel:
+        case .reveal, .setModel, .attach:
             // A raise or a typed /model changes no row; there is nothing to reconcile.
             break
         case .rename:
@@ -841,7 +851,7 @@ final class StateStore: ObservableObject {
         )
 
         switch context.command {
-        case .rename, .reveal, .setModel:
+        case .rename, .reveal, .setModel, .attach:
             break
         case .dismiss:
             if optimisticDismissals[context.id]?.generation == context.generation {

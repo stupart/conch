@@ -8,6 +8,7 @@ import {
   type SessionBackend,
 } from "./agent-adapter.ts";
 import { ensureHelpSession, helpSessionDir } from "./help-session.ts";
+import type { SessionInfo } from "./sessions.ts";
 
 export type { SessionBackend };
 
@@ -199,6 +200,27 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
     + renderStartOptions(adapter, request.options);
 }
 
+/** A background job id as Claude Code prints it (`f31f0d15`): never a shell word, never an option. */
+const JOB_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+function checkedJobId(jobId: string): string {
+  if (!JOB_ID.test(jobId)) {
+    throw new Error("background job id must be letters, digits, underscores or hyphens, starting with a letter or digit");
+  }
+  return jobId;
+}
+
+/**
+ * Opens a running background job in a terminal: `claude attach <jobId>` in the
+ * job's folder. Its help: "Open the background session in this terminal. ←
+ * returns to agent view, Ctrl+Z drops back to your shell. The session keeps
+ * running either way." No `exec`, unlike a start: exec would leave no shell
+ * for Ctrl+Z to drop back to.
+ */
+export function attachTerminalCommand(jobId: string, cwd?: string): string {
+  return `cd -- ${shellQuote(cwd?.trim() || homedir())} && ${adapterFor("claude").executable} attach ${shellQuote(checkedJobId(jobId))}`;
+}
+
 function defaultSpawn(argv: string[]): SessionLifecycleProcess {
   const controller = new AbortController();
   const process = Bun.spawn(argv, {
@@ -218,7 +240,11 @@ async function processText(stream: ReadableStream<Uint8Array> | null | undefined
   return stream ? new Response(stream).text().catch(() => "") : "";
 }
 
-async function boundedExit(child: SessionLifecycleProcess, timeoutMs = 4_000): Promise<number> {
+async function boundedExit(
+  child: SessionLifecycleProcess,
+  timeoutMs = 4_000,
+  what = "Terminal automation",
+): Promise<number> {
   const timeout = "timeout" as const;
   const result = await Promise.race([
     child.exited,
@@ -226,7 +252,7 @@ async function boundedExit(child: SessionLifecycleProcess, timeoutMs = 4_000): P
   ]);
   if (result === timeout) {
     child.cancel();
-    throw new Error("Terminal automation timed out");
+    throw new Error(`${what} timed out`);
   }
   return result;
 }
@@ -237,11 +263,33 @@ export async function startTerminalSession(
   dependencies: SessionLifecycleDependencies = {},
 ): Promise<void> {
   const command = terminalSessionCommand(request);
+  await runInTerminal(command, adapterFor(request.backend).executable, request.cwd, dependencies);
+}
+
+/**
+ * "Open in Terminal" for a background job no window is attached to: a new
+ * Terminal window running `attachTerminalCommand`, through the same door a
+ * start or resume uses.
+ */
+export async function attachTerminalSession(
+  jobId: string,
+  cwd: string | undefined,
+  dependencies: SessionLifecycleDependencies = {},
+): Promise<void> {
+  const command = attachTerminalCommand(jobId, cwd);
+  await runInTerminal(command, adapterFor("claude").executable, cwd, dependencies);
+}
+
+async function runInTerminal(
+  command: string,
+  executable: string,
+  requestedCwd: string | undefined,
+  dependencies: SessionLifecycleDependencies,
+): Promise<void> {
   const spawn = dependencies.spawn ?? defaultSpawn;
-  const { executable } = adapterFor(request.backend);
   const which = dependencies.which ?? ((name: string) => Bun.which(name));
   if (!which(executable)) throw new Error(`${executable} is not installed or is not on PATH`);
-  const cwd = request.cwd?.trim() || homedir();
+  const cwd = requestedCwd?.trim() || homedir();
   // The help session's folder is conch's to create, and this is the one door
   // every launch goes through (CLI, the app's sheet via the daemon, the TUI).
   if (cwd === helpSessionDir()) ensureHelpSession();
@@ -340,7 +388,14 @@ export async function closeTerminalSession(
   ]);
   if (code !== 0) throw new Error(stderr.trim() || `Terminal returned ${code}`);
   if (stdout.trim() !== "ok") throw new Error("session Terminal tab was not found");
+  await waitForExit(pid, dependencies, "session did not exit cleanly after Ctrl-D");
+}
 
+async function waitForExit(
+  pid: number,
+  dependencies: SessionLifecycleDependencies,
+  failure: string,
+): Promise<void> {
   const pidIsAlive = dependencies.pidIsAlive ?? defaultPidIsAlive;
   const sleep = dependencies.sleep ?? Bun.sleep;
   const attempts = dependencies.exitPollAttempts ?? 40;
@@ -349,5 +404,48 @@ export async function closeTerminalSession(
     if (!(await pidIsAlive(pid))) return;
     await sleep(intervalMs);
   }
-  throw new Error("session did not exit cleanly after Ctrl-D");
+  throw new Error(failure);
+}
+
+/**
+ * Stops a background job: `claude stop <jobId>`, whose help says "Stop a
+ * background session. Its conversation is kept; resume it later with `claude
+ * attach <id>`" — the promise a clean Ctrl-D exit makes for a terminal
+ * session. Ctrl-D is not used: the attached window is only a viewer, and what
+ * Ctrl-D does there (leave the viewer, or reach the job) is undocumented. The
+ * job's own process is then waited out, as a Ctrl-D close waits for its pid.
+ */
+export async function stopBackgroundSession(
+  jobId: string,
+  agentPid: number | undefined,
+  dependencies: SessionLifecycleDependencies = {},
+): Promise<void> {
+  const id = checkedJobId(jobId);
+  const { executable } = adapterFor("claude");
+  const which = dependencies.which ?? ((name: string) => Bun.which(name));
+  const resolved = which(executable);
+  if (!resolved) throw new Error(`${executable} is not installed or is not on PATH`);
+  const child = (dependencies.spawn ?? defaultSpawn)([resolved, "stop", id]);
+  const [code, stderr] = await Promise.all([
+    boundedExit(child, dependencies.automationTimeoutMs, `${executable} stop`),
+    processText(child.stderr),
+  ]);
+  if (code !== 0) throw new Error(stderr.trim() || `${executable} stop returned ${code}`);
+  if (agentPid && agentPid > 0) {
+    await waitForExit(agentPid, dependencies, "background session did not stop");
+  }
+}
+
+/**
+ * What closing a row does. A background job is stopped by id, whether or not a
+ * window is attached — never by typing into, or ending, the window. Anything
+ * else leaves its terminal through Ctrl-D.
+ */
+export async function closeSession(
+  session: Pick<SessionInfo, "pid" | "jobId" | "agentPid" | "noTerminal">,
+  dependencies: SessionLifecycleDependencies = {},
+): Promise<void> {
+  if (session.jobId) return stopBackgroundSession(session.jobId, session.agentPid, dependencies);
+  if (!session.pid) throw new Error(session.noTerminal ?? "session has no routable pid");
+  return closeTerminalSession(session.pid, dependencies);
 }
