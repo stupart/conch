@@ -178,6 +178,7 @@ import {
   type ConchState,
 } from "./status.ts";
 import {
+  addressParkedWindow,
   registrySnapshot,
   sessionGoneFromSnapshot,
   sessionLabel,
@@ -686,8 +687,14 @@ export async function runDaemon(cfg: Config): Promise<void> {
    * from outside — an agent that knows its own `session_id`, a hand-typed
    * `conch wake <id>` — legitimately asks by the session. Nothing else in here
    * has to know: by the time a message is dispatched it names a window.
+   *
+   * A window parked on a background job is hidden, but processes older than
+   * that fix still name its stale id (or its pid): those become the job's row
+   * first, before the known-id check, since the ledger may still know the
+   * stale id from before the conversation moved.
    */
-  function addressWindow(value: unknown): unknown {
+  async function addressWindow(incoming: unknown): Promise<unknown> {
+    const value = await addressParkedWindow(cfg.claudeDir, incoming, (id) => panelSessions.has(id));
     if (typeof value !== "object" || value === null) return value;
     const id = (value as { sessionId?: unknown }).sessionId;
     if (typeof id !== "string" || !id || isKnownSessionId(id)) return value;

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/config.ts";
@@ -14,7 +14,8 @@ import type { DictationEvent } from "../src/dictation-controller.ts";
 import type { InjectTextResult } from "../src/inject.ts";
 import type { ProviderCommandResult } from "../src/provider-rename.ts";
 import type { ListenHooks, ListenResult, RuntimeDictationSession } from "../src/listen.ts";
-import type { SessionInfo } from "../src/sessions.ts";
+import { addressParkedWindow, registrySnapshot, type SessionInfo } from "../src/sessions.ts";
+import { buildPanelModel, buildPublishedState } from "../src/panel.ts";
 import { voiceFor } from "../src/speak.ts";
 import { getLiveState, setState } from "../src/status.ts";
 import {
@@ -783,5 +784,51 @@ describe("the daemon's wiring of the loop", () => {
     const wait = handle.indexOf('if (event.type !== "inject" && event.type !== "interrupt") await ttsStartup;');
     expect(wait).toBeGreaterThan(-1);
     expect(handle.indexOf("return voice.handle(event);")).toBeGreaterThan(wait);
+  });
+});
+
+describe("an event naming a background job's hidden window", () => {
+  // The wire shape a conch MCP server that started before #187 sends for
+  // `review_to_front(session: "conch")`: the window's stale id and pid. The
+  // daemon's socket door (`addressWindow`) runs it through
+  // `addressParkedWindow`; the loop latches it; the published row carries it.
+  test("a review sent to the window's stale id lands on the job's row in published state", async () => {
+    const claudeDir = mkdtempSync(join(tmpdir(), "conch-stale-window-"));
+    mkdirSync(join(claudeDir, "sessions"), { recursive: true });
+    const register = (pid: number, entry: object) => writeFileSync(
+      join(claudeDir, "sessions", `${pid}.json`),
+      JSON.stringify({ pid, cwd: "/Users/t", entrypoint: "cli", status: "idle", ...entry }),
+    );
+    // The window must be a live pid to route; this process is.
+    register(process.pid, { sessionId: "pred", kind: "interactive", name: "conch", parkedJobId: "succjob" });
+    register(72858, { sessionId: "succ", kind: "bg", name: "conch", jobId: "succjob" });
+    const options = { configDir: join(claudeDir, "conch-config"), codexHome: join(claudeDir, "codex"), processParents: async () => null };
+    try {
+      const rows = (await registrySnapshot(claudeDir, options))!.infos;
+      expect(rows.map((row) => row.sessionId)).toEqual(["succ"]);
+      const wire: TurnEvent = {
+        type: "turn-end", sessionId: "pred", pid: process.pid, label: "conch",
+        announce: "conch has work ready for your review: the stale-id fix", eventAt: 1,
+        review: { summary: "the stale-id fix", link: "https://example.com/pr" },
+      };
+      const event = await addressParkedWindow(claudeDir, wire, (id) => rows.some((row) => row.sessionId === id)) as TurnEvent;
+      // Manual mode: the latch happens, nothing is spoken or opened.
+      const h = harness({ paused: true });
+      await h.voice.handle(accepted(h, event));
+      const published = buildPublishedState("device", buildPanelModel({
+        sessions: rows,
+        sessionStates: h.ledger.sessionStates,
+        pausedSessionIds: new Set(),
+        live: { state: "idle", label: "", partial: "" },
+        mode: { muted: false, paused: false, holding: 0 },
+        activeSessionId: null,
+        navSelectedId: null,
+      }), new Map(), new Set(), Date.now());
+      expect(published.rows.map((row) => row.id)).toEqual(["succ"]);
+      expect(published.rows[0]!.review).toMatchObject({ summary: "the stale-id fix", link: "https://example.com/pr" });
+      expect(h.ledger.sessionStates.has("pred")).toBe(false);
+    } finally {
+      rmSync(claudeDir, { recursive: true, force: true });
+    }
   });
 });

@@ -3,10 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  addressParkedWindow,
   BG_NO_TERMINAL,
   findHookWindow,
   findSession,
+  findSessionByName,
   findTranscript,
+  parkedWindowJob,
   isEngageable,
   registrySnapshot,
   withStartedBy,
@@ -273,5 +276,35 @@ describe("a conversation moved to a background session", () => {
     expect(rows.find((r) => r.sessionId === "cx")?.startedBySessionId).toBe("other");
     expect(rows.find((r) => r.sessionId === "other")?.startedBySessionId).toBeUndefined();
     expect(rows.find((r) => r.sessionId === "succ")?.startedBySessionId).toBeUndefined();
+  });
+});
+
+describe("an address naming the hidden window", () => {
+  // Processes older than #187 (a hook, the conch MCP server, the window's own
+  // children) still name the window's stale id, or only its pid.
+  test("its stale id, or its pid when the id is unknown, is the job's row", async () => {
+    const f = backgrounded();
+    expect((await parkedWindowJob(f.claudeDir, "pred"))?.sessionId).toBe("succ");
+    expect((await parkedWindowJob(f.claudeDir, "an-id-no-one-registered", WINDOW))?.sessionId).toBe("succ");
+    // By name too, which is how MCP tools, the CLI and a spoken address resolve.
+    expect((await findSessionByName(f.claudeDir, "pred", f.options))?.sessionId).toBe("succ");
+  });
+
+  test("nothing else is re-addressed: the job itself, a dead pid, a live session of its own", async () => {
+    const f = backgrounded();
+    expect(await parkedWindowJob(f.claudeDir, "succ")).toBeNull();
+    expect(await parkedWindowJob(f.claudeDir, "an-id-no-one-registered", DEAD)).toBeNull();
+    // An id the registry knows decides alone; a pid never re-addresses it.
+    f.registry(4242, { sessionId: "other", kind: "interactive", name: "other" });
+    expect(await parkedWindowJob(f.claudeDir, "other", WINDOW)).toBeNull();
+  });
+
+  test("a socket message is re-addressed only in its session id, and a row is never looked up", async () => {
+    const f = backgrounded();
+    const wire = { type: "turn-end", sessionId: "pred", pid: WINDOW, label: "conch", review: { summary: "x" } };
+    expect(await addressParkedWindow(f.claudeDir, wire, () => false)).toEqual({ ...wire, sessionId: "succ" });
+    expect(await addressParkedWindow(f.claudeDir, wire, (id) => id === "pred")).toBe(wire);
+    const unscoped = { type: "wake", sessionId: "", pid: WINDOW };
+    expect(await addressParkedWindow(f.claudeDir, unscoped, () => false)).toBe(unscoped);
   });
 });

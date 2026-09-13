@@ -1198,6 +1198,38 @@ describe("real MCP tool handlers with injected dependencies", () => {
     }
   });
 
+  test("review_to_front naming the hidden window's stale id files under the job's row", async () => {
+    // A caller conch cannot identify (neither registry pid is this server's
+    // parent) that names the window's old id: the id is no row, so it used to
+    // be refused as "no live session matching". The job holds that conversation.
+    const claudeDir = mkdtempSync(join(tmpdir(), "conch-mcp-stale-"));
+    await mkdir(join(claudeDir, "sessions"), { recursive: true });
+    const register = (pid: number, entry: object) => writeFileSync(
+      join(claudeDir, "sessions", `${pid}.json`),
+      JSON.stringify({ pid, cwd: "/Users/t", entrypoint: "cli", status: "busy", ...entry }),
+    );
+    register(process.pid, { sessionId: "pred", kind: "interactive", name: "conch", parkedJobId: "succjob" });
+    register(72858, { sessionId: "succ", kind: "bg", name: "conch", jobId: "succjob" });
+    const options = {
+      configDir: join(claudeDir, "conch-config"),
+      codexHome: join(claudeDir, "codex"),
+      labelsPath: join(claudeDir, "labels.json"),
+      processParents: async () => null,
+    };
+    const h = fakeHarness();
+    h.dependencies.registrySnapshot = (dir) => registrySnapshot(dir, options);
+    h.dependencies.findSessionByName = (dir, query) => findSessionByName(dir, query, options);
+    const handlers = createMcpToolHandlers({ claudeDir, socketPath: "/virtual/conch.sock" }, h.dependencies);
+    try {
+      await handlers.review_to_front({ summary: "stale id", session: "pred" });
+      expect(h.calls.daemon.map((call) => call.event.sessionId)).toEqual(["succ"]);
+      expect(h.calls.daemon[0]!.event.review).toEqual({ summary: "stale id" });
+      expect(h.calls.daemon[0]!.event.pid).toBe(process.pid);
+    } finally {
+      rmSync(claudeDir, { recursive: true, force: true });
+    }
+  });
+
   test("review_to_front from the attached window's own MCP server files under the job, not the window's stale id", async () => {
     // The window's MCP servers are children of the window, whose registry file
     // still names its old id. Its pid is the job row's route, so it is the job.
