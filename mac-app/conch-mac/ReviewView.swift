@@ -10,6 +10,9 @@ struct ReviewItem: Identifiable, Equatable {
     let summary: String
     let link: String?
     let reviewedAt: TimeInterval?
+    /// Waiting to be looked at: the deliverable stays on a working row, but a
+    /// session that went back to work is not waiting on you.
+    let isReady: Bool
 
     init?(row: SessionRow) {
         guard let review = row.review else {
@@ -22,6 +25,11 @@ struct ReviewItem: Identifiable, Equatable {
         let link = review.link?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         self.link = link.isEmpty ? nil : link
         reviewedAt = review.at
+        isReady = row.status != .working
+        // `at` is the FILING time: the daemon carries it unchanged through
+        // every later event, so this id only moves when a newer deliverable
+        // replaces this one. Everything keyed on it (the pane snapping back to
+        // the conversation, the row pulse, the notification) relies on that.
         let timestampIdentity = review.at.map { String($0.bitPattern) } ?? "undated"
         id = [row.id, timestampIdentity].joined(separator: "\u{1F}")
     }

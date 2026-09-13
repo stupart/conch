@@ -15,6 +15,7 @@ import {
   panelReplyText,
   numberPanelSessionRows,
   previewForPanelSelection,
+  reviewReady,
   reconcileStatus,
   registryToPanel,
 } from "../src/panel.ts";
@@ -595,7 +596,7 @@ describe("review attribute reconciliation", () => {
           label: "Review",
           status: "waiting" as const,
           at: 2_000,
-          review: { summary: "Ready to inspect" },
+          review: { summary: "Ready to inspect", at: 2_000 },
         }],
       ]),
       pausedSessionIds: new Set(),
@@ -616,10 +617,11 @@ describe("review attribute reconciliation", () => {
     });
   });
 
-  test("a newer busy registry suppresses the stale review attribute", () => {
+  test("a newer busy registry keeps the deliverable on the row but not ready to look at", () => {
     const row = reviewRow("busy", 3_000);
     expect(row.status).toBe("working");
-    expect(row.review).toBeUndefined();
+    expect(row.review).toEqual({ summary: "Ready to inspect", at: 2_000 });
+    expect(reviewReady(row)).toBe(false);
   });
 
   test("an equal-timestamp review latch wins the boundary tie", () => {
@@ -644,7 +646,7 @@ test("a review keeps its natural waiting position — the marker doesn't reorder
         label: "Zulu review",
         status: "waiting",
         at: 20,
-        review: { summary: "Ready to inspect" },
+        review: { summary: "Ready to inspect", at: 20 },
       }],
     ]),
     pausedSessionIds: new Set(),
@@ -733,7 +735,7 @@ test("buildPanelRows carries review detail and timestamped metadata", () => {
         status: "waiting",
         detail: "PR ready to inspect",
         at: 20,
-        review: { summary: "PR ready to inspect", link: "https://example.com/pr/1" },
+        review: { summary: "PR ready to inspect", link: "https://example.com/pr/1", at: 20 },
       }],
     ]),
     pausedSessionIds: new Set(),
@@ -765,7 +767,7 @@ test("dashboardRowsForModel renders the review star and dimmed summary detail", 
         status: "waiting",
         detail: "PR ready to inspect",
         at: 20,
-        review: { summary: "PR ready to inspect" },
+        review: { summary: "PR ready to inspect", at: 20 },
       }],
     ]),
     pausedSessionIds: new Set(),
@@ -943,7 +945,7 @@ describe("a review outlives the turn that produced it", () => {
   // latch replaced the whole record — so every self-issued review was erased
   // within a second of being filed. The plugin documented the marker as the
   // workaround; this makes the tool actually work.
-  const review = { summary: "the landing page is ready", link: "https://x.test" };
+  const review = { summary: "the landing page is ready", link: "https://x.test", at: 1 };
   const latched = { label: "conch", status: "waiting" as const, at: 1, review };
 
   test("a review-less turn-end does not erase a just-filed review", () => {
@@ -962,7 +964,7 @@ describe("a review outlives the turn that produced it", () => {
   });
 
   test("a newer review replaces the old one rather than being ignored", () => {
-    const next = { summary: "second deliverable" };
+    const next = { summary: "second deliverable", at: 2 };
     expect(carriedReview(latched, "waiting", next)).toEqual(next);
     expect(carriedReview(latched, "working", next)).toEqual(next);
   });
@@ -1015,10 +1017,11 @@ describe("a filed review is not hidden by the registry catching up", () => {
     expect(rowFor("idle", 200).review).toMatchObject(review);
   });
 
-  test("is suppressed only once the session goes back to work", () => {
+  test("stays on the row once the session goes back to work, but is not ready to look at", () => {
     const row = rowFor("busy", 200);
     expect(row.status).toBe("working");
-    expect(row.review).toBeUndefined();
+    expect(row.review).toMatchObject(review);
+    expect(reviewReady(row)).toBe(false);
   });
 });
 

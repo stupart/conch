@@ -79,7 +79,10 @@ struct DeliverableSheet: View {
                 }
         }
         .preferredColorScheme(.dark)
-        .task(id: review.link) {
+        // Keyed on the deliverable's identity: its link plus its FILING time,
+        // which the daemon never re-stamps. Routine republishes leave it alone;
+        // re-sending the same path (a re-rendered file) is new and reloads.
+        .task(id: "\(review.link ?? "")\u{1F}\(review.at ?? 0)") {
             localURL = nil
             failure = nil
             linkFailure = nil

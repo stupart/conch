@@ -15,7 +15,7 @@ import type { InjectTextResult } from "../src/inject.ts";
 import type { ProviderCommandResult } from "../src/provider-rename.ts";
 import type { ListenHooks, ListenResult, RuntimeDictationSession } from "../src/listen.ts";
 import { addressParkedWindow, registrySnapshot, type SessionInfo } from "../src/sessions.ts";
-import { buildPanelModel, buildPublishedState } from "../src/panel.ts";
+import { buildPanelModel, buildPublishedState, reviewReady } from "../src/panel.ts";
 import { voiceFor } from "../src/speak.ts";
 import { getLiveState, setState } from "../src/status.ts";
 import {
@@ -830,5 +830,59 @@ describe("an event naming a background job's hidden window", () => {
     } finally {
       rmSync(claudeDir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * A deliverable has ONE identity from filing until a newer one replaces it.
+ * Its published `at` used to be the session's LATEST latch time, so every
+ * turn-end or notification re-stamped it: the Mac keyed the pane on it and
+ * snapped back to the conversation while it was being read. And it was not
+ * published at all while the session worked, so replying to the agent pulled
+ * it out of both apps.
+ */
+describe("a deliverable keeps one identity from filing until a newer one", () => {
+  const modelFor = (h: Harness) => buildPanelModel({
+    sessions: [{ sessionId: "s1", name: "alpha" } as SessionInfo],
+    sessionStates: h.ledger.sessionStates,
+    pausedSessionIds: new Set(),
+    live: { state: "idle", label: "", partial: "" },
+    mode: { muted: false, paused: false, holding: 0 },
+    activeSessionId: null,
+    navSelectedId: null,
+  });
+  const rowFor = (h: Harness) => modelFor(h).rows[0]!;
+  const publishedReview = (h: Harness) =>
+    buildPublishedState("device", modelFor(h), new Map(), new Set(), Date.now()).rows[0]!.review;
+
+  test("routine events neither re-stamp it nor hide it while the session works", async () => {
+    const h = harness({ paused: true });
+    const review = { summary: "hero v3", link: "/tmp/hero-v3.png" };
+    await h.voice.handle(accepted(h, turnEnd({ eventAt: 1_000, review })));
+    const filed = { ...review, at: 1_000 };
+    expect(h.ledger.sessionStates.get("s1")?.review).toEqual(filed);
+    expect(rowFor(h).review).toEqual(filed);
+    expect(reviewReady(rowFor(h))).toBe(true);
+
+    // Replying to the agent starts a turn.
+    await h.voice.handle(accepted(h, { type: "working", sessionId: "s1", label: "alpha", announce: "", eventAt: 2_000 }));
+    expect(rowFor(h).status).toBe("working");
+    expect(rowFor(h).review).toEqual(filed);
+    expect(publishedReview(h)).toEqual(filed);
+    expect(reviewReady(rowFor(h))).toBe(false);
+
+    await h.voice.handle(accepted(h, { type: "needs-you", ntype: "idle_prompt", sessionId: "s1", label: "alpha", announce: "", eventAt: 3_000 }));
+    expect(rowFor(h).status).toBe("needs");
+    expect(publishedReview(h)).toEqual(filed);
+    expect(reviewReady(rowFor(h))).toBe(true);
+
+    await h.voice.handle(accepted(h, turnEnd({ eventAt: 4_000 })));
+    expect(rowFor(h)).toMatchObject({ status: "waiting", at: 4_000 });
+    expect(publishedReview(h)).toEqual(filed);
+    expect(reviewReady(rowFor(h))).toBe(true);
+
+    // Sending it again, even unchanged, is a newer deliverable.
+    await h.voice.handle(accepted(h, turnEnd({ eventAt: 5_000, review })));
+    expect(publishedReview(h)).toEqual({ ...review, at: 5_000 });
   });
 });

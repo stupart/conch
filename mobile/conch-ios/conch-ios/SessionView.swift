@@ -338,7 +338,7 @@ struct SessionView: View {
                         // The word earns its place only when nothing else on
                         // screen explains the glyph — a review card directly
                         // beneath saying the same thing is clutter.
-                        if !isTalkingHere, row?.review == nil {
+                        if !isTalkingHere, mark != .review {
                             Text(mark.meaning)
                                 .font(Type.caption)
                                 .foregroundStyle(mark.color)
