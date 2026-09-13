@@ -130,6 +130,9 @@ struct PublishedState: Decodable, Equatable {
         /// Why this row has no terminal to type into or close: a closed Codex
         /// thread, or one an app-server hosts. Older daemons never send it.
         var noTerminal: String?
+        /// A Claude Code background job no window is attached to: it can be
+        /// opened in Terminal on the Mac. Older daemons never send it.
+        var attachable = false
 
         struct Review: Decodable, Equatable {
             var summary = ""
@@ -147,7 +150,7 @@ struct PublishedState: Decodable, Equatable {
         }
 
         private enum CodingKeys: String, CodingKey {
-            case id, label, status, backend, context, detail, at, live, paused, review, noTerminal
+            case id, label, status, backend, context, detail, at, live, paused, review, noTerminal, attachable
         }
 
         init() {}
@@ -165,6 +168,7 @@ struct PublishedState: Decodable, Equatable {
             paused = (try? c.decodeIfPresent(Bool.self, forKey: .paused)) ?? false
             review = try? c.decodeIfPresent(Review.self, forKey: .review)
             noTerminal = try? c.decodeIfPresent(String.self, forKey: .noTerminal)
+            attachable = (try? c.decodeIfPresent(Bool.self, forKey: .attachable)) ?? false
         }
     }
 

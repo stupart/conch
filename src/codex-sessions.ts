@@ -59,7 +59,7 @@ export function codexSessionsDir(options: CodexSessionRegistryOptions = {}): str
   return join(codexConfigDir(options), "codex-sessions");
 }
 
-function defaultIsPidAlive(pid: number): boolean {
+export function defaultIsPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;

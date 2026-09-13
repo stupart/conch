@@ -152,6 +152,12 @@ function applySessionControlMessage(
       void invokeSessionAction(controller, target, { command: "set-model", model: message.model });
       return sessionCommandAck(message, target.pid !== undefined, target.label);
     }
+    case "attach": {
+      // Fire and forget, like reveal: opening Terminal is AppleScript. `changed`
+      // means "there is a background job to attach"; failures are logged.
+      void invokeSessionAction(controller, target, { command: "attach" });
+      return sessionCommandAck(message, target.jobId !== undefined, target.label);
+    }
     case "dismiss": {
       if (options.isDismissed?.(message.sessionId)) {
         return sessionCommandAck(message, false, target.label);

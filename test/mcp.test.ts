@@ -43,6 +43,7 @@ import {
 } from "../src/daemon.ts";
 import type { TurnEvent } from "../src/hook.ts";
 import type { RegistrySnapshot, SessionInfo } from "../src/sessions.ts";
+import { findSessionByName, registrySnapshot } from "../src/sessions.ts";
 
 const TOOL_NAMES = [
   "conch_sessions",
@@ -1152,34 +1153,60 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(h.calls.opened).toEqual([]);
   });
 
-  test("review_to_front from a background session files under that session, unnamed", async () => {
-    // A `bg` session's row carries pid 0 — it has no terminal, and its process
-    // descends from the window it left — so the parent-pid match misses it.
-    // The call used to fail with "session is required", and naming "conch"
-    // filed the work under the window instead. Claude Code names each registry
-    // file after its process, so the parent's own file names the caller.
+  /**
+   * The registry a backgrounded conversation leaves: window `pred` parked on
+   * job `succ`. `caller` is whose MCP server this test process plays — its
+   * parent pid is that process. The window pid must be live for the route to
+   * count, so it is always this process or its parent.
+   */
+  async function backgroundRegistry(caller: "job" | "window") {
     const claudeDir = mkdtempSync(join(tmpdir(), "conch-mcp-bg-"));
+    await mkdir(join(claudeDir, "sessions"), { recursive: true });
+    const register = (pid: number, entry: object) => writeFileSync(
+      join(claudeDir, "sessions", `${pid}.json`),
+      JSON.stringify({ pid, cwd: "/Users/t", entrypoint: "cli", status: "busy", ...entry }),
+    );
+    const jobPid = caller === "job" ? process.ppid : process.pid;
+    const windowPid = caller === "job" ? process.pid : process.ppid;
+    register(windowPid, { sessionId: "pred", kind: "interactive", name: "conch", parkedJobId: "succjob" });
+    register(jobPid, { sessionId: "succ", kind: "bg", name: "conch", jobId: "succjob" });
+    const options = {
+      configDir: join(claudeDir, "conch-config"),
+      codexHome: join(claudeDir, "codex"),
+      labelsPath: join(claudeDir, "labels.json"),
+      processParents: async () => null,
+    };
+    const h = fakeHarness();
+    h.dependencies.registrySnapshot = (dir) => registrySnapshot(dir, options);
+    h.dependencies.findSessionByName = (dir, query) => findSessionByName(dir, query, options);
+    const handlers = createMcpToolHandlers({ claudeDir, socketPath: "/virtual/conch.sock" }, h.dependencies);
+    return { claudeDir, h, handlers, windowPid };
+  }
+
+  test("review_to_front from a background job files under the job's row, routed to its window", async () => {
+    // The job's MCP servers are children of the job's own process, and the
+    // row's pid is the window attached to the job, so the parent-pid match
+    // misses. Claude Code names each registry file after its process, so the
+    // parent's own file still names the caller.
+    const { claudeDir, h, handlers, windowPid } = await backgroundRegistry("job");
     try {
-      await mkdir(join(claudeDir, "sessions"), { recursive: true });
-      writeFileSync(
-        join(claudeDir, "sessions", `${process.ppid}.json`),
-        JSON.stringify({ pid: process.ppid, sessionId: "succ", kind: "bg", entrypoint: "cli" }),
-      );
-      const window: SessionInfo = { sessionId: "pred", name: "conch", cwd: "/Users/t", status: "busy", pid: process.ppid + 1 };
-      const background: SessionInfo = {
-        sessionId: "succ", name: "conch", cwd: "/Users/t", status: "busy", pid: 0,
-        noTerminal: "runs in the background, so conch can't type into it",
-      };
-      const h = fakeHarness({
-        registry: { infos: [window, background], liveIds: new Set(["pred", "succ"]), complete: true },
-      });
-      h.dependencies.findSessionByName = async (_dir, query) => (query === "succ" ? background : window);
-      const handlers = createMcpToolHandlers({ claudeDir, socketPath: "/virtual/conch.sock" }, h.dependencies);
-
       await handlers.review_to_front({ summary: "the continued-sessions fix" });
-
       expect(h.calls.daemon.map((call) => call.event.sessionId)).toEqual(["succ"]);
-      expect(h.calls.daemon[0]!.event.pid).toBe(0);
+      expect(h.calls.daemon[0]!.event.pid).toBe(windowPid);
+    } finally {
+      rmSync(claudeDir, { recursive: true, force: true });
+    }
+  });
+
+  test("review_to_front from the attached window's own MCP server files under the job, not the window's stale id", async () => {
+    // The window's MCP servers are children of the window, whose registry file
+    // still names its old id. Its pid is the job row's route, so it is the job.
+    const { claudeDir, h, handlers, windowPid } = await backgroundRegistry("window");
+    try {
+      await handlers.review_to_front({ summary: "unnamed" });
+      await handlers.review_to_front({ summary: "named", session: "conch" });
+      expect(h.calls.daemon.map((call) => call.event.sessionId)).toEqual(["succ", "succ"]);
+      expect(h.calls.daemon.map((call) => call.event.pid)).toEqual([windowPid, windowPid]);
     } finally {
       rmSync(claudeDir, { recursive: true, force: true });
     }

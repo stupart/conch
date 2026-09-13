@@ -99,8 +99,8 @@ test("the Mac shows a no-terminal row's reason and offers no send, stop or close
   expect(close).toBeGreaterThan(-1);
   const closeEnd = dashboard.indexOf("} label: {", close);
   expect(closeEnd).toBeGreaterThan(close);
-  expect(dashboard.slice(close, closeEnd)).toContain(".disabled(row.noTerminal != nil)");
-  expect(dashboard).toContain("noTerminal: row.noTerminal,\n            onSend:");
+  expect(dashboard.slice(close, closeEnd)).toContain(".disabled(row.noTerminal != nil && !row.attachable)");
+  expect(dashboard).toContain("noTerminal: row.noTerminal,\n            onOpenInTerminal:");
 
   const composer = read("mac-app/conch-mac/ComposerView.swift");
   expect(composer).toContain("!composed.isEmpty && !isSending && noTerminal == nil");
@@ -116,7 +116,7 @@ test("the Mac shows a no-terminal row's reason and offers no send, stop or close
 test("the iPhone shows a no-terminal row's reason and offers no send, stop or end on it", () => {
   const models = read("mobile/conch-ios/conch-ios/Models.swift");
   expect(models).toContain("var noTerminal: String?");
-  expect(models).toContain("case id, label, status, backend, context, detail, at, live, paused, review, noTerminal");
+  expect(models).toContain("case id, label, status, backend, context, detail, at, live, paused, review, noTerminal, attachable");
   expect(models).toContain("noTerminal = try? c.decodeIfPresent(String.self, forKey: .noTerminal)");
   expect(read("mobile/conch-ios/conch-ios/LedgerView.swift"))
     .toContain("row.review?.summary ?? row.detail ?? row.noTerminal");

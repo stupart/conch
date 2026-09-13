@@ -119,7 +119,7 @@ import {
 import { isWindowKey } from "./window-key.ts";
 import { readSessionContextUsage, type SessionContextUsage } from "./context-meter.ts";
 import { appendConchError } from "./app-errors.ts";
-import { closeTerminalSession, startTerminalSession } from "./session-lifecycle.ts";
+import { attachTerminalSession, closeSession, startTerminalSession } from "./session-lifecycle.ts";
 import { SessionStartOverlay } from "./session-start-overlay.ts";
 import { TerminalComposer } from "./terminal-composer.ts";
 import {
@@ -717,6 +717,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       label: labelForSessionId(sessionId),
       backend: session?.backend ?? "claude",
       ...(pid ? { pid } : {}),
+      ...(session?.jobId ? { jobId: session.jobId } : {}),
     };
   }
   const sessionModalOpen = (): boolean =>
@@ -1705,7 +1706,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       );
     }
     if (!session) throw new Error("session is not live");
-    if (!session.pid) {
+    if (!session.pid && !session.jobId) {
       if (isMissingCodexPid(session)) {
         reportedMissingCodexPid.add(session.sessionId);
         recordDaemonError(
@@ -1717,7 +1718,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }
       throw new Error(session.noTerminal ?? "session has no routable pid");
     }
-    await closeTerminalSession(session.pid);
+    // A background job is stopped by id (claude stop), window or not.
+    await closeSession(session);
     void renderSessionPanel();
   };
   const sessionActions: SessionActionsController = {
@@ -1809,6 +1811,24 @@ export async function runDaemon(cfg: Config): Promise<void> {
     restore: restoreDismissedSession,
     // Same raise `revealOnTurn` uses: Terminal.app by tty, no focus steal.
     reveal: (target) => target.pid ? raiseWindow(target.pid, "app") : Promise.resolve(false),
+    // A background job no window is attached to: a new Terminal window running
+    // `claude attach <jobId>`. Once it attaches, the row routes to it.
+    attach: (target) => {
+      const session = panelSessions.get(target.sessionId);
+      if (!session?.jobId) return Promise.resolve(false);
+      return attachTerminalSession(session.jobId, session.cwd).then(() => {
+        log(`opened "${target.label}" in Terminal (claude attach ${session.jobId})`);
+        return true;
+      }, (error) => {
+        recordDaemonError(
+          "session-attach",
+          `Could not open the session in Terminal: ${error instanceof Error ? error.message : String(error)}`,
+          target.sessionId,
+          { jobId: session.jobId ?? "", cwd: session.cwd ?? "" },
+        );
+        return false;
+      });
+    },
     // B2: `/model <model>` typed into the session's own prompt, the way the
     // `/rename` sync is — Claude Code or Codex handles it natively.
     setModel: (target, model) => injectProviderCommand(cfg, target, `/model ${model}`).then((delivery) => {

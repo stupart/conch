@@ -316,6 +316,7 @@ final class BridgeClient: ObservableObject {
     enum SessionCommand: String {
         case dismiss
         case restore
+        case attach
     }
 
     enum AgentBackend: String, CaseIterable, Identifiable {

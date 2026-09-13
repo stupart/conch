@@ -282,6 +282,7 @@ enum ConchSessionCommand: String, Encodable, Sendable {
     case restore
     case reveal
     case setModel = "set-model"
+    case attach
 }
 
 struct ConchSessionCommandRequest: Encodable, Sendable {

@@ -738,6 +738,7 @@ export const SESSION_COMMANDS = [
   "restore",
   "reveal",
   "set-model",
+  "attach",
 ] as const;
 
 export type SessionCommand = typeof SESSION_COMMANDS[number];
@@ -752,7 +753,9 @@ export type SessionControlMessage =
   /** Raise the session's terminal window; a click on its title in the app. */
   | { kind: "session-command"; sessionId: string; command: "reveal" }
   /** Type `/model <model>` into the session's own prompt; the agent handles it natively (B2). */
-  | { kind: "session-command"; sessionId: string; command: "set-model"; model: string };
+  | { kind: "session-command"; sessionId: string; command: "set-model"; model: string }
+  /** Open a Claude Code background job in a new Terminal window (`claude attach <jobId>`). */
+  | { kind: "session-command"; sessionId: string; command: "attach" };
 
 export type RuntimeControlMessage =
   | { kind: "resumable"; query?: string; limit?: number }
@@ -1050,6 +1053,7 @@ export function validateSessionControlMessage(value: unknown): ParseResult<Sessi
     case "dismiss":
     case "restore":
     case "reveal":
+    case "attach":
       return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: value.command } };
   }
 }

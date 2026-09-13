@@ -16,6 +16,7 @@ import {
 } from "./speak.ts";
 import { adapterFor, agentAdapters } from "./agent-adapter.ts";
 import {
+  defaultIsPidAlive,
   readCodexSessions,
   type CodexSessionRegistryOptions,
 } from "./codex-sessions.ts";
@@ -110,6 +111,17 @@ export interface SessionInfo {
    * neither is reported as a pid conch failed to find.
    */
   noTerminal?: string;
+  /**
+   * A Claude Code background job's short id (`claude attach <jobId>`). Present
+   * on a `bg` row: it is what `claude stop` and "Open in Terminal" name.
+   */
+  jobId?: string;
+  /**
+   * The agent's own process when `pid` routes somewhere else: a background
+   * job's `pid` is the window attached to it, and this is the job itself.
+   * Only the process tree needs it (C15).
+   */
+  agentPid?: number;
 }
 
 /**
@@ -122,7 +134,8 @@ export interface SessionInfo {
  * `bg` passes: it is a conversation Claude Code moved out of its window to keep
  * running in the background — the same two kinds Claude Code itself counts as
  * live sessions. Dropping it froze the row on the moment it moved and left its
- * MCP calls with no caller. It has no terminal; see `BG_NO_TERMINAL`.
+ * MCP calls with no caller. Its terminal is the window attached to it; see
+ * `attachedWindow`.
  */
 export function isEngageable(info: Pick<SessionInfo, "kind" | "entrypoint">): boolean {
   if (info.kind && info.kind !== "interactive" && info.kind !== "bg") return false;
@@ -131,16 +144,53 @@ export function isEngageable(info: Pick<SessionInfo, "kind" | "entrypoint">): bo
 }
 
 /**
- * Why a background Claude Code session's row has no terminal.
- *
- * Its process holds a pty of its own and descends from the window it left
- * (claude → claude daemon → claude --session-id <new>), so anything routed by
- * its pid — a tty match, a tmux ancestor walk — could land in that window,
- * which no longer holds the conversation. The row carries pid 0, the way a
- * Codex row with no terminal does, so every existing "no routable pid"
- * refusal applies unchanged.
+ * Why a background Claude Code session's row has no terminal: no live window
+ * is attached to it. The row carries pid 0, the way a Codex row with no
+ * terminal does, so every existing "no routable pid" refusal applies; its
+ * `jobId` is what "Open in Terminal" attaches.
  */
-export const BG_NO_TERMINAL = "runs in the background, so conch can't type into it";
+export const BG_NO_TERMINAL = "running in the background, not open in a terminal";
+
+/**
+ * The terminal window attached to a background job, if one is live.
+ *
+ * Claude Code 2.1.266 runs a background job under its own daemon (`claude
+ * daemon run` → `claude --bg-pty-host` → the job), in a hidden pty. A window
+ * attached to the job is a viewer: what is typed there is forwarded to the
+ * job. conch's inject log proves it — text typed into window 61637 arrived in
+ * job f31f0d15's transcript, same length, seconds later. So the window is the
+ * route for everything conch types, stops, reveals or renames. The job's own
+ * pid is not: its pty is hidden, and its ancestry runs through the daemon.
+ *
+ * Nothing documents which terminal is attached. The window's registry entry
+ * carries `parkedJobId` naming the job, which is how Claude Code's own session
+ * list pairs them (and it clears the field when the window takes its own
+ * conversation back), so that is the signal — undocumented, read defensively.
+ * Several windows on one job (a second `claude attach`): the most recently
+ * started live one, the terminal a person most likely has in front of them.
+ */
+function attachedWindow(job: any, entries: readonly any[]): any {
+  if (job?.kind !== "bg" || typeof job.jobId !== "string" || !job.jobId) return undefined;
+  let window: any;
+  for (const entry of entries) {
+    if (entry?.kind !== "interactive" || entry.parkedJobId !== job.jobId) continue;
+    if (!Number.isSafeInteger(entry.pid) || entry.pid <= 0 || !defaultIsPidAlive(entry.pid)) continue;
+    window = newer(window, entry);
+  }
+  return window;
+}
+
+/**
+ * The background job a window is parked on, if its registry entry is there. A
+ * hook or MCP call from that window names the window's own stale id; the job
+ * holds the conversation now.
+ */
+function parkedJob(window: any, entries: readonly any[]): any {
+  if (window?.kind !== "interactive" || typeof window.parkedJobId !== "string" || !window.parkedJobId) {
+    return undefined;
+  }
+  return entries.find((entry) => entry?.kind === "bg" && entry.jobId === window.parkedJobId);
+}
 
 /**
  * Look up a live session in Claude Code's registry (~/.claude/sessions/<pid>.json).
@@ -148,24 +198,21 @@ export const BG_NO_TERMINAL = "runs in the background, so conch can't type into 
  */
 export async function findSession(claudeDir: string, sessionId: string): Promise<SessionInfo | null> {
   const wanted = parseWindowKey(sessionId);
-  const dir = join(claudeDir, "sessions");
-  let files: string[];
-  try {
-    files = readdirSync(dir).filter((f) => f.endsWith(".json"));
-  } catch {
-    return null;
-  }
+  const all = await registryEntries(join(claudeDir, "sessions"));
   let match: any;
-  for (const entry of await matchingEntries(dir, wanted.sessionId)) {
+  for (const entry of all) {
+    if (entry.sessionId !== wanted.sessionId) continue;
     // A key naming a window asks for that window, and only that one.
     if (wanted.pid !== undefined && entry.pid !== wanted.pid) continue;
     match = newer(match, entry);
   }
-  return match ? currentName(toInfo(match), claudeDir) : null;
+  // A window parked on a job answers for the job.
+  match = parkedJob(match, all) ?? match;
+  return match ? currentName(toInfo(match, undefined, all), claudeDir) : null;
 }
 
-/** Every live registry entry claiming one session id — usually one, sometimes two. */
-async function matchingEntries(dir: string, sessionId: string): Promise<any[]> {
+/** Every readable registry entry. */
+async function registryEntries(dir: string): Promise<any[]> {
   let files: string[];
   try {
     files = readdirSync(dir).filter((f) => f.endsWith(".json"));
@@ -176,7 +223,7 @@ async function matchingEntries(dir: string, sessionId: string): Promise<any[]> {
   for (const f of files) {
     try {
       const entry = await Bun.file(join(dir, f)).json();
-      if (entry.sessionId === sessionId) entries.push(entry);
+      if (entry && typeof entry === "object") entries.push(entry);
     } catch {
       // stale or mid-write registry file; skip
     }
@@ -198,10 +245,14 @@ export async function findHookWindow(
   agentSessionId: string,
 ): Promise<SessionInfo | null> {
   if (!agentSessionId) return null;
-  const dir = join(claudeDir, "sessions");
-  const entries = await matchingEntries(dir, agentSessionId);
+  const all = await registryEntries(join(claudeDir, "sessions"));
+  const entries = all.filter((entry) => entry.sessionId === agentSessionId);
   if (entries.length === 0) return null;
-  if (entries.length === 1) return currentName(toInfo(entries[0]), claudeDir);
+  if (entries.length === 1) {
+    // A window parked on a job speaks for the job's row, not its stale id.
+    const entry = parkedJob(entries[0], all) ?? entries[0];
+    return currentName(toInfo(entry, undefined, all), claudeDir);
+  }
 
   const pids = new Set<number>(
     entries.map((e) => e.pid).filter((pid): pid is number => Number.isInteger(pid)),
@@ -211,7 +262,7 @@ export async function findHookWindow(
   // newest window is then the same guess as before, and no worse.
   const chosen = entries.find((e) => e.pid === pid) ?? entries.reduce(newer, undefined);
   return {
-    ...toInfo(chosen),
+    ...toInfo(chosen, undefined, all),
     sessionId: windowKey(agentSessionId, chosen.pid, true),
     agentSessionId,
   };
@@ -274,9 +325,16 @@ function currentName(info: SessionInfo, claudeDir: string): SessionInfo {
   return name === info.name ? info : { ...info, name };
 }
 
-/** Project a raw registry JSON entry onto SessionInfo (keeps the fields conch actually uses). */
-function toInfo(entry: any, backend?: SessionInfo["backend"]): SessionInfo {
+/**
+ * Project a raw registry JSON entry onto SessionInfo (keeps the fields conch
+ * actually uses). `entries` is the rest of the registry, where a background
+ * job finds the window attached to it.
+ */
+function toInfo(entry: any, backend?: SessionInfo["backend"], entries: readonly any[] = []): SessionInfo {
   const background = !backend && entry.kind === "bg";
+  // Only the route comes from the window. Id, status, name and startedAt stay
+  // the job's: the window's entry froze the moment it parked.
+  const window = background ? attachedWindow(entry, entries) : undefined;
   return {
     sessionId: entry.sessionId,
     ...(backend ? { backend } : {}),
@@ -290,7 +348,9 @@ function toInfo(entry: any, backend?: SessionInfo["backend"]): SessionInfo {
     ...(typeof entry.bridgeSessionId === "string" && entry.bridgeSessionId
       ? { bridgeSessionId: entry.bridgeSessionId }
       : {}),
-    pid: background ? 0 : entry.pid,
+    pid: background ? window?.pid ?? 0 : entry.pid,
+    ...(background && typeof entry.jobId === "string" && entry.jobId ? { jobId: entry.jobId } : {}),
+    ...(background && Number.isSafeInteger(entry.pid) ? { agentPid: entry.pid } : {}),
     status: entry.status,
     statusUpdatedAt: typeof entry.statusUpdatedAt === "number"
       ? entry.statusUpdatedAt
@@ -304,7 +364,7 @@ function toInfo(entry: any, backend?: SessionInfo["backend"]): SessionInfo {
       : {}),
     ...(typeof entry.noTerminal === "string" && entry.noTerminal
       ? { noTerminal: entry.noTerminal }
-      : background
+      : background && !window
         ? { noTerminal: BG_NO_TERMINAL }
         : {}),
   };
@@ -512,6 +572,7 @@ export async function registrySnapshot(
   }
   let infos: SessionInfo[] = [];
   const claudeEntries: any[] = [];
+  const allEntries: any[] = [];
   const liveIds = new Set<string>();
   let complete = claudeAvailable || claudeMissing;
   for (const f of files) {
@@ -534,13 +595,18 @@ export async function registrySnapshot(
     }
     if (!entry.sessionId) continue;
     liveIds.add(entry.sessionId);
+    allEntries.push(entry);
     if (isEngageable(entry)) claudeEntries.push(entry);
   }
   // One conversation is one row. The window a conversation moved out of stays
-  // live under the old id; the live session it moved to is the row.
+  // live under the old id; the live session it moved to is the row. A window
+  // parked on a job that is listed is that job's terminal, part of its row,
+  // whether or not its own transcript says so (a `claude attach` window).
   const engaged = new Set(claudeEntries.map((entry) => entry.sessionId));
   const moved = new Set(
-    claudeEntries.filter((entry) => movedToLiveSession(claudeDir, entry, engaged)),
+    claudeEntries.filter((entry) =>
+      parkedJob(entry, claudeEntries) !== undefined
+      || movedToLiveSession(claudeDir, entry, engaged)),
   );
   // A session id is not a window. `claude --resume <id>` in a second terminal
   // keeps the id, so two windows can share one — see `newer` below.
@@ -551,7 +617,7 @@ export async function registrySnapshot(
   }
   for (const entry of claudeEntries) {
     if (moved.has(entry)) continue;
-    const info = toInfo(entry);
+    const info = toInfo(entry, undefined, allEntries);
     if (windows.get(entry.sessionId) === 1) {
       infos.push(currentName(info, claudeDir));
       continue;
@@ -655,6 +721,11 @@ export function withStartedBy(
 ): SessionInfo[] {
   const byPid = new Map<number, SessionInfo>();
   for (const info of infos) if (info.pid && info.pid > 0) byPid.set(info.pid, info);
+  // A background job's own process is where its Bash tool starts things, and
+  // its ancestry runs through Claude Code's shared daemon up to whichever
+  // window started that daemon — so it must be met before the walk reaches
+  // that window, or a session one job started is filed under another's row.
+  for (const info of infos) if (info.agentPid && info.agentPid > 0) byPid.set(info.agentPid, info);
   return infos.map((info) => {
     if (!info.pid || !byPid.has(info.pid)) return info;
     let pid = parents.get(info.pid);
