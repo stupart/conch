@@ -967,7 +967,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       );
   }
 
-  function enqueue(incoming: TurnEvent): void {
+  function enqueue(incoming: TurnEvent): void | Promise<void> {
     if (shuttingDown) return;
     const event = incoming;
     warmTranscript(event.transcriptPath);
@@ -990,10 +990,11 @@ export async function runDaemon(cfg: Config): Promise<void> {
     // speech it is meant to cut off.
     if (event.type === "inject" || event.type === "interrupt") {
       traceQueue(`immediate ${event.type}:${event.label}`);
-      void handle(event).catch((error) => {
+      // Returned, not voided: the Mac app's `awaitDelivery` inject is answered
+      // only once this settles (control-server.ts).
+      return handle(event).catch((error) => {
         log(`error handling ${event.type} "${event.label}": ${error}`);
       });
-      return;
     }
 
     if (shouldHandleTurnAudibly(event, cfg.workingMic)) {

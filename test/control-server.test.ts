@@ -13,6 +13,7 @@ import {
 } from "../src/control-server.ts";
 import type { SessionControlResponse } from "../src/settings.ts";
 import { loadDeviceId } from "../src/device-identity.ts";
+import { forwardToDaemonSocket } from "../src/phone-bridge.ts";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -421,6 +422,54 @@ describe("control server over a real Unix socket", () => {
     await second.close();
     expect(await f.server.start()).toBe(true);
     expect(await f.request({ type: "pause" })).toBe("");
+  });
+
+  /**
+   * The Mac app takes the front back from the Terminal window conch raised to
+   * type, so it must hear when the keystrokes are DONE, not when the line was
+   * accepted. Only its inject carries `awaitDelivery`.
+   */
+  test("an awaitDelivery inject is answered inject-done only once its delivery settles", async () => {
+    const delivery = deferred<void>();
+    const f = await fixture();
+    f.application.turn = (event) => {
+      f.calls.turn.push(event);
+      return delivery.promise;
+    };
+    const p = await f.peer();
+    let answered = false;
+    void p.done.then(() => { answered = true; });
+    p.socket.write(JSON.stringify({ ...inject, awaitDelivery: true }) + "\n");
+    await Bun.sleep(50);
+    expect(f.calls.turn).toHaveLength(1);
+    expect(f.calls.turn[0]).toMatchObject({ type: "inject", awaitDelivery: true });
+    expect(answered).toBe(false);
+    delivery.resolve();
+    expect(await within(p.done)).toBe('{"kind":"inject-done"}\n');
+  });
+
+  test("the phone's forwarded inject still returns at acceptance, never waiting on delivery", async () => {
+    const delivery = deferred<void>();
+    const f = await fixture();
+    f.application.turn = (event) => {
+      f.calls.turn.push(event);
+      return delivery.promise;
+    };
+    try {
+      expect(await within(forwardToDaemonSocket(f.socketPath, JSON.stringify(inject)))).toBe("");
+      expect(f.calls.turn).toHaveLength(1);
+      expect(f.calls.turn[0]!.awaitDelivery).toBeUndefined();
+    } finally {
+      delivery.resolve();
+    }
+  });
+
+  test("awaitDelivery must be true when present", async () => {
+    const f = await fixture();
+    expect(JSON.parse(await f.request({ ...inject, awaitDelivery: false }))).toEqual({
+      kind: "session-error", error: "awaitDelivery must be true when present",
+    });
+    expect(f.calls.turn).toEqual([]);
   });
 
   test("start replaces a stale path, makes it private, and respects a live owner", async () => {

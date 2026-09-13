@@ -537,6 +537,9 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
   if (value.compose !== undefined && value.compose !== true) {
     return { ok: false, err: "compose must be true when present" };
   }
+  if (value.awaitDelivery !== undefined && value.awaitDelivery !== true) {
+    return { ok: false, err: "awaitDelivery must be true when present" };
+  }
 
   return {
     ok: true,
@@ -613,7 +616,8 @@ export interface SocketTurnEventCallbacks {
   isDismissedSession?(sessionId: string): boolean;
   enrichAudioCommand(event: InstantAudioCommand): InstantAudioCommand;
   enqueueInstant(event: InstantAudioCommand): void;
-  enqueue(event: TurnEvent): void;
+  /** Resolves when an immediate event (inject, interrupt) has been handled. */
+  enqueue(event: TurnEvent): void | Promise<void>;
 }
 
 /** Sparse dashboard commands carry only identity; CLI/MCP commands pre-resolve routing. */
@@ -628,7 +632,7 @@ export function isLightweightTargetedAudioCommand(event: InstantAudioCommand): b
 export function dispatchSocketTurnEvent(
   incoming: TurnEvent,
   callbacks: SocketTurnEventCallbacks,
-): void {
+): void | Promise<void> {
   const event = incoming;
   if (event.type === "spacebar") {
     // `busy` is the DRAIN LOOP's flag, and a microphone can be open while it is
@@ -662,7 +666,7 @@ export function dispatchSocketTurnEvent(
     }
   }
 
-  callbacks.enqueue(event);
+  return callbacks.enqueue(event);
 }
 
 /**
@@ -872,8 +876,11 @@ export interface ControlApplication {
   configuration(message: ConfigControlMessage): ConfigControlResponse;
   session(message: SessionControlMessage): SessionControlResponse;
   runtime(message: RuntimeControlMessage): SessionControlResponse | Promise<SessionControlResponse>;
-  /** Accept synchronously; completion of injection/interrupt is owned by the daemon. */
-  turn(event: TurnEvent): void;
+  /**
+   * Accept synchronously; completion of injection/interrupt is owned by the
+   * daemon. The returned work is awaited only for an `awaitDelivery` inject.
+   */
+  turn(event: TurnEvent): void | Promise<unknown>;
   device(message: DeviceCommand): DeviceControlResponse;
 }
 
@@ -910,7 +917,7 @@ export function createControlServer(options: ControlServerOptions): ControlServe
     const handleLine = async (line: string): Promise<void> => {
       if (handled) return;
       handled = true;
-      let response: ControlResponse | DeviceControlResponse | RoutingRefusal | undefined;
+      let response: ControlResponse | DeviceControlResponse | RoutingRefusal | { kind: "inject-done" } | undefined;
       try {
         let body: unknown = JSON.parse(line);
         // C9b seam: refuse foreign owners BEFORE consulting any local state.
@@ -984,7 +991,14 @@ export function createControlServer(options: ControlServerOptions): ControlServe
                 response = { kind: "session-error", error: turn.err };
               }
             } else {
-              application.turn(turn.value);
+              const work = application.turn(turn.value);
+              // The Mac app asks to hear when the keystrokes are DONE, so it can
+              // take the front back from the Terminal window conch raised. Every
+              // other sender (the phone above all) keeps the immediate empty ack.
+              if (turn.value.type === "inject" && turn.value.awaitDelivery) {
+                await work;
+                response = { kind: "inject-done" };
+              }
             }
           }
         }

@@ -47,7 +47,7 @@ function harness(options: { busy?: boolean } = {}) {
     isDismissedSession: () => false,
     enrichAudioCommand: (event) => ({ ...event, cwd: "/enriched" }),
     enqueueInstant: (event) => instant.push(event),
-    enqueue: (event) => queued.push(event),
+    enqueue: (event) => { queued.push(event); },
   };
   return {
     callbacks,
@@ -512,4 +512,10 @@ test("inject events carry a session, a label, and the text to deliver", () => {
     };
     expect(validateSocketTurnEvent(event).ok).toBe(false);
   }
+});
+
+test("an inject's handling is handed back to the socket so an awaitDelivery reply can wait on it", () => {
+  const handling = Promise.resolve();
+  const callbacks: SocketTurnEventCallbacks = { ...harness().callbacks, enqueue: () => handling };
+  expect(dispatchSocketTurnEvent(turn({ type: "inject", announce: "hi" }), callbacks)).toBe(handling);
 });
