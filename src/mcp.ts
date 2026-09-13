@@ -1,5 +1,5 @@
-import { stat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { AudioControl } from "./audio-holder.ts";
 import { audioTimeoutMs } from "./audio-watchdog.ts";
 import { loadConfig, type Config } from "./config.ts";
@@ -36,6 +36,7 @@ import {
   transcriptMark,
 } from "./snippet.ts";
 import { lastAssistantReply, readConversationTail } from "./conversation.ts";
+import { windowKey } from "./window-key.ts";
 import { transcriptFormatFor } from "./agent-adapter.ts";
 
 export const MCP_PROTOCOL_VERSION = "2024-11-05";
@@ -537,6 +538,10 @@ async function resolveSession(
  * process, so the parent pid identifies the caller. That is what lets a review
  * default to "mine" and lets us refuse to file one under somebody else's name.
  * Returns null when the parent isn't a known session (a bare `conch mcp` run).
+ *
+ * A background session's row carries no pid (`BG_NO_TERMINAL`), so the pid
+ * match misses it. Claude Code names each registry file after its process,
+ * though, so the parent's own file still says which session is asking.
  */
 async function callerSession(
   config: McpRuntimeConfig,
@@ -545,7 +550,16 @@ async function callerSession(
   const parentPid = typeof process.ppid === "number" ? process.ppid : 0;
   if (!parentPid) return null;
   const infos = (await dependencies.registrySnapshot(config.claudeDir))?.infos ?? [];
-  return infos.find((session) => session.pid === parentPid) ?? null;
+  const byPid = infos.find((session) => session.pid === parentPid);
+  if (byPid) return byPid;
+  const own = await readFile(join(config.claudeDir, "sessions", `${parentPid}.json`), "utf8")
+    .then((raw) => JSON.parse(raw)?.sessionId)
+    .catch(() => undefined);
+  if (typeof own !== "string" || !own) return null;
+  const window = windowKey(own, parentPid, true);
+  return infos.find((session) => session.sessionId === window)
+    ?? infos.find((session) => session.sessionId === own)
+    ?? null;
 }
 
 /**

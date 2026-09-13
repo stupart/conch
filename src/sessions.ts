@@ -20,7 +20,7 @@ import {
   type CodexSessionRegistryOptions,
 } from "./codex-sessions.ts";
 import { readCodexThreads } from "./codex-threads.ts";
-import { liveTranscriptPath, readClaudeTitles } from "./claude-title.ts";
+import { liveTranscriptPath, readClaudeTitles, readContinuedIn } from "./claude-title.ts";
 import { parseWindowKey, processParentTable, windowKey, windowPidFromAncestry } from "./window-key.ts";
 import { HELP_SESSION_LABEL, helpSessionDir } from "./help-session.ts";
 
@@ -113,17 +113,34 @@ export interface SessionInfo {
 }
 
 /**
- * A session a voice loop can actually engage — a top-level interactive CLI session.
+ * A session a voice loop can actually engage — a top-level CLI conversation.
  * Excludes headless/sdk-cli routines (e.g. boatker's cron runs) that would otherwise
  * get announced + open the mic. Conservative: a session is only dropped when we can
  * positively identify it as non-interactive, so older registries (missing the fields)
  * still pass.
+ *
+ * `bg` passes: it is a conversation Claude Code moved out of its window to keep
+ * running in the background — the same two kinds Claude Code itself counts as
+ * live sessions. Dropping it froze the row on the moment it moved and left its
+ * MCP calls with no caller. It has no terminal; see `BG_NO_TERMINAL`.
  */
 export function isEngageable(info: Pick<SessionInfo, "kind" | "entrypoint">): boolean {
-  if (info.kind && info.kind !== "interactive") return false;
+  if (info.kind && info.kind !== "interactive" && info.kind !== "bg") return false;
   if (info.entrypoint && info.entrypoint !== "cli") return false;
   return true;
 }
+
+/**
+ * Why a background Claude Code session's row has no terminal.
+ *
+ * Its process holds a pty of its own and descends from the window it left
+ * (claude → claude daemon → claude --session-id <new>), so anything routed by
+ * its pid — a tty match, a tmux ancestor walk — could land in that window,
+ * which no longer holds the conversation. The row carries pid 0, the way a
+ * Codex row with no terminal does, so every existing "no routable pid"
+ * refusal applies unchanged.
+ */
+export const BG_NO_TERMINAL = "runs in the background, so conch can't type into it";
 
 /**
  * Look up a live session in Claude Code's registry (~/.claude/sessions/<pid>.json).
@@ -259,6 +276,7 @@ function currentName(info: SessionInfo, claudeDir: string): SessionInfo {
 
 /** Project a raw registry JSON entry onto SessionInfo (keeps the fields conch actually uses). */
 function toInfo(entry: any, backend?: SessionInfo["backend"]): SessionInfo {
+  const background = !backend && entry.kind === "bg";
   return {
     sessionId: entry.sessionId,
     ...(backend ? { backend } : {}),
@@ -272,7 +290,7 @@ function toInfo(entry: any, backend?: SessionInfo["backend"]): SessionInfo {
     ...(typeof entry.bridgeSessionId === "string" && entry.bridgeSessionId
       ? { bridgeSessionId: entry.bridgeSessionId }
       : {}),
-    pid: entry.pid,
+    pid: background ? 0 : entry.pid,
     status: entry.status,
     statusUpdatedAt: typeof entry.statusUpdatedAt === "number"
       ? entry.statusUpdatedAt
@@ -286,7 +304,9 @@ function toInfo(entry: any, backend?: SessionInfo["backend"]): SessionInfo {
       : {}),
     ...(typeof entry.noTerminal === "string" && entry.noTerminal
       ? { noTerminal: entry.noTerminal }
-      : {}),
+      : background
+        ? { noTerminal: BG_NO_TERMINAL }
+        : {}),
   };
 }
 
@@ -516,13 +536,21 @@ export async function registrySnapshot(
     liveIds.add(entry.sessionId);
     if (isEngageable(entry)) claudeEntries.push(entry);
   }
+  // One conversation is one row. The window a conversation moved out of stays
+  // live under the old id; the live session it moved to is the row.
+  const engaged = new Set(claudeEntries.map((entry) => entry.sessionId));
+  const moved = new Set(
+    claudeEntries.filter((entry) => movedToLiveSession(claudeDir, entry, engaged)),
+  );
   // A session id is not a window. `claude --resume <id>` in a second terminal
   // keeps the id, so two windows can share one — see `newer` below.
   const windows = new Map<string, number>();
   for (const entry of claudeEntries) {
+    if (moved.has(entry)) continue;
     windows.set(entry.sessionId, (windows.get(entry.sessionId) ?? 0) + 1);
   }
   for (const entry of claudeEntries) {
+    if (moved.has(entry)) continue;
     const info = toInfo(entry);
     if (windows.get(entry.sessionId) === 1) {
       infos.push(currentName(info, claudeDir));
@@ -532,7 +560,8 @@ export async function registrySnapshot(
     // live so "has this session closed?" still answers for either form.
     const keyed = {
       ...info,
-      sessionId: windowKey(info.sessionId, info.pid, true),
+      // The registry's pid, not the row's: a background row's is 0.
+      sessionId: windowKey(info.sessionId, entry.pid, true),
       agentSessionId: info.sessionId,
     };
     liveIds.add(keyed.sessionId);
@@ -577,6 +606,34 @@ export async function registrySnapshot(
   // make the combined liveness view incomplete.
   if (!claudeAvailable && !codex.available) return null;
   return { infos, liveIds, complete };
+}
+
+/**
+ * Did this window's conversation move to a session that is live now?
+ *
+ * Follows `continued-in` from transcript tail to transcript tail. A successor
+ * that is not live leaves the window as its own row, reading its own
+ * transcript: that is what its terminal holds, and it is the only terminal
+ * left to type into.
+ */
+function movedToLiveSession(
+  claudeDir: string,
+  entry: any,
+  live: ReadonlySet<string>,
+): boolean {
+  const seen = new Set<string>([entry.sessionId]);
+  let path = liveTranscriptPath(claudeDir, entry.cwd, entry.sessionId);
+  // ponytail: a second 64KB tail read per session per snapshot (currentName
+  // reads one too); fold them into one read if a profile ever shows it. The
+  // hop bound is a guard for a bogus chain — each real hop is a backgrounding.
+  for (let hop = 0; hop < 8 && path; hop += 1) {
+    const next = readContinuedIn(path);
+    if (!next || seen.has(next)) return false;
+    if (live.has(next)) return true;
+    seen.add(next);
+    path = adapterFor("claude").findTranscript(next, { claudeDir });
+  }
+  return false;
 }
 
 /**
