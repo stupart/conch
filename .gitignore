@@ -29,3 +29,4 @@ docs/codebase-analysis/
 
 # Agent worktrees are checkouts, never content
 .claude/worktrees/
+.worktrees/
