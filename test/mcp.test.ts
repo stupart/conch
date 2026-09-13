@@ -1151,6 +1151,39 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(h.calls.daemon).toEqual([]);
     expect(h.calls.opened).toEqual([]);
   });
+
+  test("review_to_front from a background session files under that session, unnamed", async () => {
+    // A `bg` session's row carries pid 0 — it has no terminal, and its process
+    // descends from the window it left — so the parent-pid match misses it.
+    // The call used to fail with "session is required", and naming "conch"
+    // filed the work under the window instead. Claude Code names each registry
+    // file after its process, so the parent's own file names the caller.
+    const claudeDir = mkdtempSync(join(tmpdir(), "conch-mcp-bg-"));
+    try {
+      await mkdir(join(claudeDir, "sessions"), { recursive: true });
+      writeFileSync(
+        join(claudeDir, "sessions", `${process.ppid}.json`),
+        JSON.stringify({ pid: process.ppid, sessionId: "succ", kind: "bg", entrypoint: "cli" }),
+      );
+      const window: SessionInfo = { sessionId: "pred", name: "conch", cwd: "/Users/t", status: "busy", pid: process.ppid + 1 };
+      const background: SessionInfo = {
+        sessionId: "succ", name: "conch", cwd: "/Users/t", status: "busy", pid: 0,
+        noTerminal: "runs in the background, so conch can't type into it",
+      };
+      const h = fakeHarness({
+        registry: { infos: [window, background], liveIds: new Set(["pred", "succ"]), complete: true },
+      });
+      h.dependencies.findSessionByName = async (_dir, query) => (query === "succ" ? background : window);
+      const handlers = createMcpToolHandlers({ claudeDir, socketPath: "/virtual/conch.sock" }, h.dependencies);
+
+      await handlers.review_to_front({ summary: "the continued-sessions fix" });
+
+      expect(h.calls.daemon.map((call) => call.event.sessionId)).toEqual(["succ"]);
+      expect(h.calls.daemon[0]!.event.pid).toBe(0);
+    } finally {
+      rmSync(claudeDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("C5: what conch refuses an agent, and what it still allows", () => {
