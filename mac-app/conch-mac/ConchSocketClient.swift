@@ -24,6 +24,9 @@ struct ConchDaemonEvent: Encodable, Sendable {
     /// Ask for the transcript BACK, into the composer, rather than delivered
     /// into the session. Absent means the voice loop's own behaviour.
     let compose: Bool?
+    /// Answer only once the keystrokes are done (`inject-done`), so the app
+    /// can take the front back from the Terminal window conch raised to type.
+    let awaitDelivery: Bool?
 
     init(
         type: Kind,
@@ -31,7 +34,8 @@ struct ConchDaemonEvent: Encodable, Sendable {
         label: String? = nil,
         announce: String? = nil,
         origin: String? = nil,
-        compose: Bool? = nil
+        compose: Bool? = nil,
+        awaitDelivery: Bool? = nil
     ) {
         self.type = type
         self.sessionId = sessionId
@@ -39,13 +43,14 @@ struct ConchDaemonEvent: Encodable, Sendable {
         self.announce = announce
         self.origin = origin
         self.compose = compose
+        self.awaitDelivery = awaitDelivery
     }
 
     /// Type into a session. The daemon puts `announce` into the session's
     /// input, so this is the same path the phone and the voice loop use — one
     /// delivery route with one set of failure modes, not a third.
     static func inject(sessionId: String, label: String, text: String) -> Self {
-        Self(type: .inject, sessionId: sessionId, label: label, announce: text)
+        Self(type: .inject, sessionId: sessionId, label: label, announce: text, awaitDelivery: true)
     }
 
     /// Stop a session mid-turn. The daemon presses Escape in its pane, which
@@ -350,6 +355,8 @@ enum ConchSessionCommandReply: Decodable, Equatable, Sendable {
 
 struct ConchSocketClient: Sendable {
     private static let sendTimeoutNanoseconds: UInt64 = 500_000_000
+    /// Typing, confirm-by-transcript and its re-sends; the phone allows 25s.
+    private static let deliveryTimeoutNanoseconds: UInt64 = 30_000_000_000
     private static let maximumReplyLineBytes = 1_048_576
 
     private let socketPath: String
@@ -364,10 +371,16 @@ struct ConchSocketClient: Sendable {
         }
     }
 
-    func send(_ event: ConchDaemonEvent) async -> Bool {
+    /// Returns once the line is written — acceptance, as before. For an
+    /// `awaitDelivery` inject, `whenDelivered` runs later, when the daemon
+    /// says the keystrokes are done.
+    func send(
+        _ event: ConchDaemonEvent,
+        whenDelivered: (@Sendable () async -> Void)? = nil
+    ) async -> Bool {
         let socketPath = socketPath
         return await Task.detached(priority: .userInitiated) {
-            Self.write(event, to: socketPath)
+            Self.write(event, to: socketPath, whenDelivered: whenDelivered)
         }.value
     }
 
@@ -425,7 +438,11 @@ struct ConchSocketClient: Sendable {
         )
     }
 
-    private static func write(_ event: ConchDaemonEvent, to path: String) -> Bool {
+    private static func write(
+        _ event: ConchDaemonEvent,
+        to path: String,
+        whenDelivered: (@Sendable () async -> Void)?
+    ) -> Bool {
         guard var payload = try? JSONEncoder().encode(event) else { return false }
         payload.append(0x0A)
 
@@ -433,9 +450,29 @@ struct ConchSocketClient: Sendable {
         guard let descriptor = connectedSocket(to: path, deadline: deadline) else {
             return false
         }
-        defer { Darwin.close(descriptor) }
-
-        return write(payload, to: descriptor, deadline: deadline) == .complete
+        guard write(payload, to: descriptor, deadline: deadline) == .complete else {
+            Darwin.close(descriptor)
+            return false
+        }
+        guard let whenDelivered else {
+            Darwin.close(descriptor)
+            return true
+        }
+        // The daemon holds this socket until delivery has finished — typed,
+        // confirmed, re-sent or fallen back to the clipboard — then answers
+        // inject-done. No answer in time, or any other answer, means no call.
+        Task.detached(priority: .utility) {
+            defer { Darwin.close(descriptor) }
+            let outcome = readReplyLine(
+                from: descriptor,
+                deadline: makeDeadline(after: deliveryTimeoutNanoseconds)
+            )
+            guard case let .reply(data) = outcome,
+                  let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  reply["kind"] as? String == "inject-done" else { return }
+            await whenDelivered()
+        }
+        return true
     }
 
     private static func transact(

@@ -132,6 +132,17 @@ final class StateStore: ObservableObject {
         let sequence = controlSequence
         let socketClient = socketClient
         let previousDelivery = deliveryTask
+        // Read at the press, before the daemon raises anything: a send that
+        // did not start with conch in front has no front to hand back.
+        let refocus = event.awaitDelivery == true && NSApp.isActive
+        // if/else, not a ternary: `cond ? { closure } : nil` crashes the type
+        // checker here ("failed to produce diagnostic").
+        let whenDelivered: (@Sendable () async -> Void)?
+        if refocus {
+            whenDelivered = { await StateStore.refocusAfterDelivery() }
+        } else {
+            whenDelivered = nil
+        }
 
         let task = Task { @MainActor [weak self] in
             // Bounded, because this chain used to be unlimited.
@@ -151,7 +162,7 @@ final class StateStore: ObservableObject {
             // previous delivery is NOT cancelled; it finishes on its own.
             await Self.awaitDelivery(previousDelivery, within: .milliseconds(250))
             guard !Task.isCancelled else { return false }
-            let delivered = await socketClient.send(event)
+            let delivered = await socketClient.send(event, whenDelivered: whenDelivered)
             if let self, !delivered {
                 if controlSequence == sequence {
                     forceLivenessProbe()
@@ -184,6 +195,21 @@ final class StateStore: ObservableObject {
             await group.next()
             group.cancelAll()
         }
+    }
+
+    /// Take the front back after conch typed into a session's Terminal window.
+    ///
+    /// The daemon activates Terminal to type (`focusSessionWindow`). "conch
+    /// raised it" means: conch was active at the press (the caller checks) and
+    /// Terminal is the frontmost app now the keystrokes are done. Move to any
+    /// other app meanwhile and that app is in front, so it stays there.
+    /// Activating restores conch's key window as it was — a sheet keeps its
+    /// field, the selected session is untouched.
+    // ponytail: a Cmd-Tab to Terminal by hand mid-send looks identical and is handed back too; watch NSWorkspace activations if that ever bites.
+    private static func refocusAfterDelivery() {
+        guard !NSApp.isActive,
+              NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Terminal" else { return }
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     /// Tell the daemon the machine woke.

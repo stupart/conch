@@ -81,6 +81,14 @@ export interface TurnEvent {
    * session.
    */
   compose?: true;
+  /**
+   * Answer this inject only once delivery has finished — keystrokes typed,
+   * confirmed or fallen back to the clipboard — with `{"kind":"inject-done"}`.
+   * Only the Mac app asks: it hands the front back from the Terminal window
+   * conch raised to type. Absent (the phone, hooks, CLI) keeps the immediate
+   * empty ack.
+   */
+  awaitDelivery?: true;
 }
 
 // Notification types that actually need a human; everything else stays silent.
