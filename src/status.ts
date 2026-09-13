@@ -25,6 +25,7 @@ import {
   type PanelModel,
   type PanelRowModel,
   type PublishedState,
+  reviewReady,
 } from "./panel.ts";
 import { toClipboard } from "./inject.ts";
 import { buildClipboardEscape, type MouseEvent } from "./theater-mouse.ts";
@@ -379,7 +380,7 @@ export function theaterStatusHeader(model: PanelModel): string {
   let reviewCount = 0;
   for (const row of model.rows) {
     if (row.status) counts[row.status]++;
-    if (row.review && !row.review.opened) reviewCount++;
+    if (reviewReady(row) && !row.review?.opened) reviewCount++;
   }
 
   const parts = ["conch"];
@@ -422,14 +423,14 @@ export function relativeAge(at: number, now: number): string {
   return `${Math.floor(elapsed / day)}d`;
 }
 
-/** The Mac app keys its seen set on row id + review time; the terminal matches it. */
+/** The Mac app keys its seen set on row id + review FILING time (stable across republishes); the terminal matches it. */
 function reviewIdentity(row: PanelRowModel): string {
   return `${row.sessionId}\u001f${row.review?.at ?? ""}`;
 }
 
 function rowState(row: PanelRowModel): string {
   if (row.muted || row.paused) return "paused";
-  if (row.review && !row.review.opened) return "review";
+  if (reviewReady(row) && !row.review?.opened) return "review";
   // The top line owns conch's live activity; the ledger keeps each session's
   // underlying status so speaking/recording is never announced twice.
   return row.status ?? "idle";
@@ -437,7 +438,7 @@ function rowState(row: PanelRowModel): string {
 
 function fullStatus(row: PanelRowModel): string {
   if (row.muted || row.paused) return "\x1b[2m⏸ manual\x1b[22m";
-  if (row.review && !row.review.opened) return "\x1b[33m⭐ needs review\x1b[39m";
+  if (reviewReady(row) && !row.review?.opened) return "\x1b[33m⭐ needs review\x1b[39m";
   switch (row.status) {
     case "needs": return "\x1b[33m❗ needs a response\x1b[39m";
     case "waiting": return "\x1b[32m○ waiting for you\x1b[39m";
@@ -542,7 +543,8 @@ function theaterLedgerRow(
   // Reserve a 1-col gutter on EVERY row (accent bar when active, blank space
   // otherwise) so a row's text never shifts as it gains or loses the highlight.
   const bodyWidth = Math.max(1, width - 1);
-  const rowAt = row.review?.at ?? row.at;
+  // A working row ages from its status; only a ready deliverable ages from its filing.
+  const rowAt = (reviewReady(row) ? row.review?.at : undefined) ?? row.at;
   const age = row.status && rowAt !== undefined && rowAt > 0
     ? relativeAge(rowAt, now)
     : "";

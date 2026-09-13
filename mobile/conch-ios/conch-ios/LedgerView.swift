@@ -488,7 +488,8 @@ struct SessionRowView: View {
             Spacer(minLength: 8)
 
             VStack(alignment: .trailing, spacing: 2) {
-                if let age = relativeAge(epochMilliseconds: row.review?.at ?? row.at) {
+                // A working row ages from its status; only a ready deliverable ages from its filing.
+                if let age = relativeAge(epochMilliseconds: (row.status != "working" ? row.review?.at : nil) ?? row.at) {
                     Text(age)
                         .font(Type.caption.monospacedDigit())
                         .foregroundStyle(Palette.textFaint)

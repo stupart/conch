@@ -891,7 +891,8 @@ private struct DashboardRow: View {
 
 
     private var age: String? {
-        let timestamp = row.review?.at ?? row.at
+        // A working row ages from its status; only a ready deliverable ages from its filing.
+        let timestamp = (row.status != .working ? row.review?.at : nil) ?? row.at
         return timestamp.flatMap { relativeAge(epochMilliseconds: $0, now: now) }
     }
 
@@ -1373,7 +1374,9 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
     }
 
     init(row: SessionRow) {
-        if row.review != nil || row.status == .review {
+        // The deliverable stays on a working row, but the star means "waiting
+        // for you to look", which a working session is not.
+        if (row.review != nil && row.status != .working) || row.status == .review {
             self = .review
             return
         }

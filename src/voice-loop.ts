@@ -644,7 +644,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // possible truth and can never clobber a timestamped hook or registry state.
     const at = eventTimestamp(eventAt);
     const prior = sessionStates.get(sessionId);
-    const carried = carriedReview(prior, status, review);
+    // A review is stamped with the time it was FILED, here, once. Later latches
+    // carry that exact record forward, so its identity never moves until a
+    // newer review replaces it.
+    const carried = carriedReview(prior, status, review ? { ...review, at } : undefined);
     const incoming = {
       label,
       status,

@@ -53,6 +53,12 @@ struct ContentView: View {
         Set(reviewItems.map(\.id))
     }
 
+    /// Only a deliverable waiting to be looked at announces itself. One filed
+    /// mid-turn is announced when the turn ends, once: postOnce keeps a seen set.
+    private var readyReviewIDs: Set<ReviewItem.ID> {
+        Set(reviewItems.filter(\.isReady).map(\.id))
+    }
+
     private var rowIDs: [SessionRow.ID] {
         store.state?.rows.map(\.id) ?? []
     }
@@ -164,13 +170,13 @@ struct ContentView: View {
                 cancelRename()
             }
         }
-        .onChange(of: reviewIDs) { previousIDs, currentIDs in
+        .onChange(of: readyReviewIDs) { previousIDs, currentIDs in
             let addedIDs = currentIDs.subtracting(previousIDs)
-            let addedReviews = reviewItems.filter { addedIDs.contains($0.id) }
-            for review in addedReviews {
+            for review in reviewItems where addedIDs.contains(review.id) {
                 ReviewNotifications.shared.postOnce(for: review)
             }
-
+        }
+        .onChange(of: reviewIDs) { _, currentIDs in
             if let expandedReviewID, !currentIDs.contains(expandedReviewID) {
                 self.expandedReviewID = nil
             }

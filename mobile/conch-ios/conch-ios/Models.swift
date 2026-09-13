@@ -260,7 +260,8 @@ enum StatusMark {
 
     init(row: PublishedState.Row) {
         let wantsUser = row.status == "waiting" || row.status == "needs"
-        if row.review != nil { self = .review; return }
+        // The deliverable stays on a working row; the star means it is waiting for you.
+        if row.review != nil, row.status != "working" { self = .review; return }
         if row.paused, !wantsUser { self = .paused; return }
         switch row.live {
         case "listening", "recording": self = .micOpen

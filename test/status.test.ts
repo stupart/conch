@@ -549,6 +549,32 @@ describe("theater deliverables", () => {
     expect(openTheaterReview("hero")).toBe("nothing to open — the theater dashboard owns o");
     expect(opens).toEqual(["/tmp/hero-v3.png"]);
   });
+
+  test("a routine republish keeps the opened mark, and a working row keeps its deliverable without the star", () => {
+    const { io, writes } = recordingIO({ columns: 120, rows: 8 });
+    const { renderer } = configureRenderer({}, io);
+    renderer.enter();
+    const frame = (rows: PanelRowModel[]) =>
+      sampleModel({ panelOpen: false, live: idle, reply: null, rows });
+
+    renderPanel(frame([deliverableRow()]));
+    expect(openTheaterReview("hero")).toBe("opened /tmp/hero-v3.png");
+    // A later turn-end re-latches the row; the deliverable's filing time does not move.
+    renderPanel(frame([deliverableRow({ at: HERO_AT + 60_000 })]));
+    expect(ledgerLine(writes.at(-1)!)).not.toContain("needs review");
+
+    const v4 = { summary: "Hero v4 render", link: "/tmp/hero-v4.png", at: HERO_AT + 120_000 };
+    renderPanel(frame([deliverableRow({ status: "working", at: HERO_AT + 180_000, review: v4 })]));
+    const working = ledgerLine(writes.at(-1)!);
+    expect(working).toContain("Hero v4 render · /tmp/hero-v4.png");
+    expect(working).not.toContain("needs review");
+    expect(plainFrame(writes.at(-1)!)[0]).not.toContain("to look at");
+
+    renderPanel(frame([deliverableRow({ at: HERO_AT + 240_000, review: v4 })]));
+    expect(ledgerLine(writes.at(-1)!)).toContain("⭐ needs review (Hero v4 render · /tmp/hero-v4.png)");
+    expect(plainFrame(writes.at(-1)!)[0]).toContain("⭐1 to look at");
+    renderer.shutdown();
+  });
 });
 
 describe("theater renderer lifecycle", () => {

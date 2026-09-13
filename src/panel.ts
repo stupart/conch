@@ -510,7 +510,7 @@ export function buildPublishedState(
 export interface PanelSessionState extends LatchedState {
   label: string;
   detail?: string;
-  review?: { summary: string; link?: string };
+  review?: SessionReview;
 }
 
 export interface BuildPanelModelOptions {
@@ -537,24 +537,22 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
       const latched = options.sessionStates.get(session.sessionId);
       const visibleState = reconcilePanelState(session, latched);
       const status = visibleState?.status ?? null;
-      // A finished deliverable is an attribute of a row, not a fourth status —
-      // and it is suppressed by exactly one thing: the session going back to
-      // work. `carriedReview` uses the same rule on the latch.
+      // A deliverable is an attribute of a row, not a fourth status, and it is
+      // published for as long as the latch holds one — whatever the status.
+      // Hiding it while the session worked meant replying to the agent (which
+      // starts a turn) pulled the thing you were reading out of both apps.
+      // Whether it is READY to look at is `reviewReady`, derived from status.
       //
-      // This used to require `status === "waiting"`, which made the star
-      // vanish almost every time it was filed. `reconcilePanelState` lets the
-      // REGISTRY outvote the latch whenever it is newer, and a session that has
-      // just filed a review is by definition sitting waiting for the user —
-      // which Claude Code registers as blocked/waiting, i.e. `needs`. So the
-      // review landed, rendered for as long as it took the registry to catch
-      // up, and then disappeared. Measured on a live session: latched at
-      // 19:27:36 and visible, gone at 19:29:26 the moment status flipped to
-      // `needs`, with the review still sitting in the latch untouched. Needing
-      // input does not make a finished deliverable stale; starting a new turn
-      // does.
-      const review = status !== "working" && latched?.review
-        ? { ...latched.review, at: latched.at }
-        : undefined;
+      // Its `at` is the FILING time, carried unchanged through every later
+      // latch. It used to be `latched.at`, the time of the session's latest
+      // event, so every turn-end or notification gave the same deliverable a
+      // new identity: the Mac snapped back to the conversation mid-read and the
+      // terminal's "opened" mark reset.
+      //
+      // It was once hidden unless `waiting` (so it vanished whenever the
+      // registry said `needs`), then hidden while `working`. Neither status
+      // makes a deliverable stale; only a newer one does (`carriedReview`).
+      const review = latched?.review ? { ...latched.review } : undefined;
       // A subagent is never the active session: it is part of its parent's
       // turn, and the announcement that follows belongs to the parent.
       const active = !session.parentSessionId && session.sessionId === options.activeSessionId;
@@ -749,7 +747,7 @@ export function dashboardRowsForModel(model: PanelModel): string[] {
     // behavior here; theater uses the unambiguous active/liveGlyph model fields.
     const legacyLiveGlyph = row.label === model.live.label ? LIVE_GLYPH[model.live.state] : undefined;
     const glyph = legacyLiveGlyph
-      ?? (row.review
+      ?? (reviewReady(row)
         ? REVIEW_GLYPH
         : row.status
           ? STATUS_GLYPH[row.status]
@@ -793,6 +791,20 @@ export function latestLatchedState(
 export interface SessionReview {
   summary: string;
   link?: string;
+  /** Epoch-ms the deliverable was filed; its identity until a newer one replaces it. */
+  at: number;
+}
+
+/**
+ * Whether a row's deliverable is work waiting to be LOOKED at: the star, the
+ * "to look at" count. A deliverable stays on a working row (it is still the
+ * session's artifact) but a session that went back to work is not waiting on
+ * you. Derived from `status` rather than published as a field, so every app
+ * applies the same rule to old and new daemons alike — an old daemon never
+ * publishes a review on a working row, so the rule holds there unchanged.
+ */
+export function reviewReady(row: { status: SessionStatus | null; review?: unknown }): boolean {
+  return row.review !== undefined && row.status !== "working";
 }
 
 /**
