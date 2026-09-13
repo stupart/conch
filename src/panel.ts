@@ -846,23 +846,24 @@ export function carriedReview(
 
 /**
  * Map Claude Code's registry `status` onto a panel state. The registry is the
- * authoritative source of "is this session working or waiting on me":
+ * authoritative source of "is this session working or waiting on me". Claude
+ * Code writes exactly four values:
  *  - `idle` → the turn is done, ready for your next prompt (waiting)
- *  - `busy` / `running` / `shell` → actively doing something (working)
- *  - `waiting` / `blocked` → blocked needing input: a permission prompt, dialog,
- *    or sandbox/worker request (needs a response)
+ *  - `shell` → the turn is done too; a `run_in_background` Bash (a dev server,
+ *    a watcher) is still running beside it. That command never finishes on its
+ *    own, so reading it as working left rows "working" for hours (waiting)
+ *  - `busy` → a turn is running, including while background subagents do (working)
+ *  - `waiting` → a permission prompt, dialog or elicitation is open (needs)
  *  - anything else (unknown/future status) → null, i.e. defer to the latched value
  */
 export function registryToPanel(status: string | undefined): SessionStatus | null {
   switch (status) {
     case "idle":
+    case "shell":
       return "waiting";
     case "busy":
-    case "running":
-    case "shell":
       return "working";
     case "waiting":
-    case "blocked":
       return "needs";
     default:
       return null;

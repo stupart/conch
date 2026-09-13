@@ -86,7 +86,7 @@ export interface SessionInfo {
   nameSource?: "user" | "derived";
   cwd?: string;
   pid?: number;
-  /** Claude Code's own live state: "busy" | "idle" | "shell" (authoritative for working-vs-waiting). */
+  /** Claude Code's own live state: "busy" | "idle" | "shell" | "waiting" (authoritative for working-vs-waiting; see `registryToPanel`). */
   status?: string;
   /** epoch-ms the status was last set — compared against a latched panel state to pick the newer truth. */
   statusUpdatedAt?: number;
@@ -398,7 +398,14 @@ function toInfo(entry: any, backend?: SessionInfo["backend"], entries: readonly 
     pid: background ? window?.pid ?? 0 : entry.pid,
     ...(background && typeof entry.jobId === "string" && entry.jobId ? { jobId: entry.jobId } : {}),
     ...(background && Number.isSafeInteger(entry.pid) ? { agentPid: entry.pid } : {}),
-    status: entry.status,
+    // A window parked on a job stopped writing its status the moment it parked,
+    // usually mid-turn, so a frozen `busy` read as working forever once the job
+    // was gone and the window became its own row again. Its conversation is not
+    // running there: idle at the freeze time, so any newer latch still wins and
+    // a pre-park "working" latch does not.
+    status: !backend && entry.kind === "interactive" && typeof entry.parkedJobId === "string" && entry.parkedJobId
+      ? "idle"
+      : entry.status,
     statusUpdatedAt: typeof entry.statusUpdatedAt === "number"
       ? entry.statusUpdatedAt
       : backend === "codex" && typeof entry.updatedAt === "number"

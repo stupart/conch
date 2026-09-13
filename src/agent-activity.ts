@@ -166,8 +166,9 @@ export interface LiveAgent {
 /**
  * The background *sub-agents* this session has in flight, from what Claude
  * Code writes to disk: a fresh sidechain under the session's directory, and a
- * parent transcript whose newest word on that agent is its launch — no
- * completion notification yet. AGENTS ONLY — a background Bash
+ * parent transcript whose newest word on that agent is its launch, or a
+ * SendMessage result naming it in `resumedAgentId` — no completion
+ * notification since. AGENTS ONLY — a background Bash
  * (`run_in_background`) is deliberately ignored: it is often a persistent
  * process (dev server, watcher, tail) that never writes a completion, so
  * counting it would keep the session silent forever. A background agent
@@ -221,7 +222,13 @@ export function liveBackgroundAgents(transcriptPath: string): LiveAgent[] {
         }
       } else if (entry?.type === "user" && entry?.toolUseResult && typeof entry.toolUseResult === "object") {
         const result = entry.toolUseResult;
-        if (typeof result.agentId === "string" && agents.has(result.agentId)) {
+        if (typeof result.resumedAgentId === "string" && agents.has(result.resumedAgentId)) {
+          // SendMessage to a finished agent resumes it in the background; its
+          // next completion notification closes it again. Newest first, so a
+          // resume met here reopens the agent past every older completion.
+          live.push(result.resumedAgentId);
+          agents.delete(result.resumedAgentId);
+        } else if (typeof result.agentId === "string" && agents.has(result.agentId)) {
           // Newest first, so a launch met here is the last word on the agent:
           // it is still out there.
           if (result.isAsync === true) live.push(result.agentId);

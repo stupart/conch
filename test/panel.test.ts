@@ -521,17 +521,16 @@ describe("dashboard global mode banner", () => {
 
 describe("registryToPanel — maps Claude Code's status vocabulary", () => {
   test("idle → waiting (turn done)", () => expect(registryToPanel("idle")).toBe("waiting"));
-  test("busy/running/shell → working", () => {
-    expect(registryToPanel("busy")).toBe("working");
-    expect(registryToPanel("running")).toBe("working");
-    expect(registryToPanel("shell")).toBe("working");
+  test("shell → waiting: the turn is done, only a background command still runs", () => {
+    expect(registryToPanel("shell")).toBe("waiting");
   });
-  test("waiting/blocked → needs (blocked on input)", () => {
-    expect(registryToPanel("waiting")).toBe("needs");
-    expect(registryToPanel("blocked")).toBe("needs");
-  });
+  test("busy → working", () => expect(registryToPanel("busy")).toBe("working"));
+  test("waiting → needs (a dialog is open)", () => expect(registryToPanel("waiting")).toBe("needs"));
   test("unknown/undefined → null (defer to the latch)", () => {
     expect(registryToPanel("something-new")).toBeNull();
+    // Never written by Claude Code or Codex.
+    expect(registryToPanel("running")).toBeNull();
+    expect(registryToPanel("blocked")).toBeNull();
     expect(registryToPanel(undefined)).toBeNull();
   });
 });
@@ -552,9 +551,12 @@ describe("reconcileStatus — BUG A: newer signal wins, so the panel never stick
     expect(reconcileStatus({ status: "busy", statusUpdatedAt: 1000 }, undefined)).toBe("working");
   });
 
-  test("registry 'waiting'/'blocked' surfaces as needs even with no latch", () => {
+  test("registry 'waiting' surfaces as needs even with no latch", () => {
     expect(reconcileStatus({ status: "waiting", statusUpdatedAt: 1000 }, undefined)).toBe("needs");
-    expect(reconcileStatus({ status: "blocked", statusUpdatedAt: 1000 }, undefined)).toBe("needs");
+  });
+
+  test("a newer shell status ends an older working latch", () => {
+    expect(reconcileStatus({ status: "shell", statusUpdatedAt: 2000 }, { status: "working", at: 1999 })).toBe("waiting");
   });
 
   test("idle registry (newer than latch) shows waiting", () => {
@@ -1007,8 +1009,8 @@ describe("a filed review is not hidden by the registry catching up", () => {
     return model.rows.find((r) => r.sessionId === "s")!;
   }
 
-  test("survives a newer registry status of blocked/waiting-on-input", () => {
-    const row = rowFor("blocked", 200);
+  test("survives a newer registry status of waiting-on-input", () => {
+    const row = rowFor("waiting", 200);
     expect(row.status).toBe("needs"); // the registry did outvote the latch
     expect(row.review).toMatchObject(review); // and the deliverable is still shown
   });
