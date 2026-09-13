@@ -38,6 +38,8 @@ export type SessionStatus = "working" | "waiting" | "needs";
 export interface LatchedState {
   status: SessionStatus;
   at: number;
+  /** A Stop that saw live background agents latched `working`; Claude's registry does not correct it. */
+  backgroundWork?: true;
 }
 
 export interface DashboardMode {
@@ -526,16 +528,19 @@ export interface BuildPanelModelOptions {
   reply?: PanelReplyModel | null;
   panelOpen?: boolean;
   contextBySessionId?: ReadonlyMap<string, SessionContextUsage>;
+  /** Epoch-ms the rows are built for; decides whether a latch is past `LATCH_GRACE_MS`. */
+  now?: number;
 }
 
 const ROW_LIVE_STATES = new Set<PanelConchState>(["listening", "recording", "speaking", "transcribing"]);
 
 /** Build rows in the canonical panel order used by rendering and interaction. */
 export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[] {
+  const now = options.now ?? Date.now();
   const rows = options.sessions
     .map((session): PanelRowModel => {
       const latched = options.sessionStates.get(session.sessionId);
-      const visibleState = reconcilePanelState(session, latched);
+      const visibleState = reconcilePanelState(session, latched, now);
       const status = visibleState?.status ?? null;
       // A deliverable is an attribute of a row, not a fourth status, and it is
       // published for as long as the latch holds one — whatever the status.
@@ -889,21 +894,51 @@ export function registryToPanel(status: string | undefined): SessionStatus | nul
  *
  * Hook-originated latches carry their event time, so LIFO queue handling cannot
  * make an older state appear newer than either a later hook or registry update.
+ *
+ * One exception to newest-wins: Claude Code rewrites its registry only when the
+ * status CHANGES, so a correct, stable `busy` keeps an old timestamp and a
+ * mistaken newer latch (a Stop while the session is still busy) would beat it
+ * forever. Once a latch is `LATCH_GRACE_MS` old, a disagreeing registry status
+ * wins outright, whatever the latch says.
  */
 export function reconcileStatus(
-  session: Pick<SessionInfo, "status" | "statusUpdatedAt">,
+  session: Pick<SessionInfo, "status" | "statusUpdatedAt" | "backend" | "parentSessionId">,
   latched: LatchedState | undefined,
+  now: number,
 ): SessionStatus | null {
-  return reconcilePanelState(session, latched)?.status ?? null;
+  return reconcilePanelState(session, latched, now)?.status ?? null;
 }
 
+/**
+ * How long a latch that disagrees with Claude Code's registry stands before the
+ * registry corrects it. A hook and Claude's own registry write for the same
+ * transition land milliseconds apart (Claude writes after a blocking hook
+ * returns), so this only has to let a just-latched event show before that write
+ * lands. 5 s covers the gap with room to spare and still clears a wrong latch
+ * before anyone acts on it.
+ */
+export const LATCH_GRACE_MS = 5_000;
+
 function reconcilePanelState(
-  session: Pick<SessionInfo, "status" | "statusUpdatedAt">,
+  session: Pick<SessionInfo, "status" | "statusUpdatedAt" | "backend" | "parentSessionId">,
   latched: LatchedState | undefined,
+  now: number,
 ): { status: SessionStatus; at?: number } | null {
   const reg = registryToPanel(session.status);
   const regAt = session.statusUpdatedAt ?? 0;
-  if (latched && latched.at >= regAt) return latched;
+  // Past the grace, Claude Code's registry corrects any disagreeing latch, a
+  // needs included (an idle_prompt question reads `idle` there, and needs vs
+  // waiting asks the same of you). Never a Stop that saw live background
+  // agents. Only Claude Code's own registry is authoritative: a Codex row's
+  // status is written by conch's hook with the latch's own timestamp or guessed
+  // from thread activity, and a subagent row's `busy` is conch's, not Claude's.
+  const registryCorrects = latched !== undefined
+    && latched.status !== reg
+    && !latched.backgroundWork
+    && session.backend !== "codex"
+    && !session.parentSessionId
+    && now - latched.at > LATCH_GRACE_MS;
+  if (latched && latched.at >= regAt && !registryCorrects) return latched;
   if (reg) {
     return {
       status: reg,

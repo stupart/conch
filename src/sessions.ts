@@ -401,8 +401,9 @@ function toInfo(entry: any, backend?: SessionInfo["backend"], entries: readonly 
     // A window parked on a job stopped writing its status the moment it parked,
     // usually mid-turn, so a frozen `busy` read as working forever once the job
     // was gone and the window became its own row again. Its conversation is not
-    // running there: idle at the freeze time, so any newer latch still wins and
-    // a pre-park "working" latch does not.
+    // running there: idle at the freeze time, so a pre-park "working" latch
+    // loses, and a newer latch shows until `LATCH_GRACE_MS` and then yields to
+    // it, like any latch Claude's registry disagrees with.
     status: !backend && entry.kind === "interactive" && typeof entry.parkedJobId === "string" && entry.parkedJobId
       ? "idle"
       : entry.status,

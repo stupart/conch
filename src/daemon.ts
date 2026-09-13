@@ -1349,6 +1349,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       mode: { muted: false, paused: pause.paused, holding: pending.size },
       activeSessionId: null,
       navSelectedId: null,
+      now: Date.now(),
     });
     const nextActiveSessionId = activeSessionIdForRows(orderedRows, liveState, {
       preferredSessionId: voice.current().reciting?.sessionId,
@@ -1487,6 +1488,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
           : null,
         panelOpen,
         contextBySessionId: sessionContexts,
+        now: Date.now(),
       });
       model.preview = previewForPanelSelection(
         navSelectedId,

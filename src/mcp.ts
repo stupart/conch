@@ -5,7 +5,7 @@ import { audioTimeoutMs } from "./audio-watchdog.ts";
 import { loadConfig, type Config } from "./config.ts";
 import { CONCH_VERSION } from "./version.ts";
 import { sendToDaemon, type TurnEvent } from "./hook.ts";
-import { registryToPanel } from "./panel.ts";
+import { reconcileStatus } from "./panel.ts";
 import {
   renameProviderSession as deliverProviderRename,
   type ProviderRenameResult,
@@ -432,7 +432,8 @@ function publishedStateFromRegistry(
     mode: { muted: false, paused: false, holding: 0 },
     live: { state: "idle", label: "" },
     rows: (snapshot?.infos ?? []).map((session) => {
-      const status = registryToPanel(session.status);
+      // No daemon, so no latch: the same reconcile the daemon publishes through.
+      const status = reconcileStatus(session, undefined, dependencies.now());
       return {
         id: session.sessionId,
         label: dependencies.sessionLabel(session, session.cwd),

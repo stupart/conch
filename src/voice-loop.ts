@@ -638,6 +638,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     detail?: string,
     eventAt?: number,
     review?: { summary: string; link?: string },
+    backgroundWork?: boolean,
   ): boolean {
     if (!sessionId) return true; // nothing to latch; preserve the event's non-panel behavior
     // Legacy clients without eventAt may still work, but their latch is oldest
@@ -654,6 +655,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       detail: detail ?? carried?.summary,
       at,
       ...(carried ? { review: carried } : {}),
+      ...(backgroundWork ? { backgroundWork: true as const } : {}),
     };
     if (latestLatchedState(prior, incoming) !== incoming) return false;
     sessionStates.set(sessionId, incoming);
@@ -787,7 +789,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // `working` and all `needs-you` events are visual-only. A Stop reclassified
     // as background-working may opt back into the normal bell/voice/mic path.
     if (event.type === "working") {
-      if (!setSessionState(event.sessionId, event.label, "working", undefined, event.eventAt)) return;
+      if (!setSessionState(event.sessionId, event.label, "working", undefined, event.eventAt, undefined, event.backgroundWork)) return;
       if (!audibleTurn) return;
     }
     if (event.type === "needs-you") {
