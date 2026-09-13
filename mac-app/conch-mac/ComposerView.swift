@@ -352,6 +352,7 @@ struct ComposerView: View {
                     .scrollContentBackground(.hidden)
                     .focused($fieldFocused)
                     .conchTextViewInsets()
+                    .conchSpelling()
                     .frame(height: fieldHeight)
                     // Return SENDS. Tyler kept "trying to send and making a new
                     // line accidentally instead", which is the wrong default for
@@ -648,6 +649,21 @@ private extension View {
             let kept = view.registeredDraggedTypes.filter { !files.contains($0) }
             view.unregisterDraggedTypes()
             view.registerForDraggedTypes(kept)
+        }
+    }
+
+    /// Spelling the way the rest of the Mac does it. Nothing turned it on, so
+    /// typos went straight into the session. Underlines always; correction and
+    /// text replacement only if the person has them on in System Settings.
+    /// Smart quotes and dashes stay off: this text lands in terminals and
+    /// code, where a curly quote breaks the command.
+    func conchSpelling() -> some View {
+        introspectTextView { view in
+            view.isContinuousSpellCheckingEnabled = true
+            view.isAutomaticSpellingCorrectionEnabled = NSSpellChecker.isAutomaticSpellingCorrectionEnabled
+            view.isAutomaticTextReplacementEnabled = NSSpellChecker.isAutomaticTextReplacementEnabled
+            view.isAutomaticQuoteSubstitutionEnabled = false
+            view.isAutomaticDashSubstitutionEnabled = false
         }
     }
 }

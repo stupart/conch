@@ -30,3 +30,19 @@ test("the daemon wires all five control-server entries to their owners", () => {
   expect(wiring).toContain("resolve: addressWindow,");
   expect(wiring).toContain("if (!row) return { published: false };");
 });
+
+/**
+ * A window parked on a background job still names its stale id in processes
+ * that predate the fix. The daemon's one door re-addresses it before the
+ * known-id shortcut, because the ledger can still know the stale id.
+ */
+test("the daemon re-addresses a parked window's stale id before trusting a known id", () => {
+  const at = daemon.indexOf("async function addressWindow(incoming: unknown): Promise<unknown> {");
+  expect(at).toBeGreaterThan(-1);
+  const end = daemon.indexOf("\n  }\n", at);
+  expect(end).toBeGreaterThan(at);
+  const body = daemon.slice(at, end);
+  const parked = body.indexOf("await addressParkedWindow(cfg.claudeDir, incoming, (id) => panelSessions.has(id));");
+  expect(parked).toBeGreaterThan(-1);
+  expect(body.indexOf("isKnownSessionId(id)")).toBeGreaterThan(parked);
+});

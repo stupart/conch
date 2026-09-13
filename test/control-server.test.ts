@@ -154,6 +154,18 @@ describe("control server over a real Unix socket", () => {
     }
   });
 
+  test("an address the daemon resolves asynchronously is what the turn entry receives", async () => {
+    // The daemon's resolve reads the registry to re-address a window parked on
+    // a background job, so it returns a promise; dispatching the promise
+    // itself would drop every event.
+    const f = await fixture({
+      sessions: { resolve: async (value) => ({ ...(value as object), sessionId: "job-row" }) },
+    });
+    expect(await f.request({ type: "turn-end", sessionId: "stale-window", label: "conch", announce: "", eventAt: 1 })).toBe("");
+    expect(f.calls.turn).toHaveLength(1);
+    expect(f.calls.turn[0]).toMatchObject({ type: "turn-end", sessionId: "job-row" });
+  });
+
   test("A1 persisted-owner inject equals an unwrapped turn and foreign inject has zero local reads", async () => {
     const f = await fixture({ persistentIdentity: true });
     expect(await f.request(inject)).toBe("");

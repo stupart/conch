@@ -853,8 +853,11 @@ function decodeDeviceCommand(value: unknown): DeviceCommand | null {
 }
 
 export interface LocalControlSessions {
-  /** Resolve an incoming local address (including an agent id that names a window). */
-  resolve(value: unknown): unknown;
+  /**
+   * Resolve an incoming local address (including an agent id that names a
+   * window, or a stale id that names a window parked on a background job).
+   */
+  resolve(value: unknown): unknown | Promise<unknown>;
   /** Current publication eligibility and canonical metadata for this local address. */
   current(sessionId: string): {
     published: boolean;
@@ -941,7 +944,7 @@ export function createControlServer(options: ControlServerOptions): ControlServe
           sock.end(JSON.stringify(response) + "\n");
           return;
         }
-        const value = sessions.resolve(body);
+        const value = await sessions.resolve(body);
         // Retain the legacy runtime-first async boundary even for other kinds.
         const runtime = await dispatchRuntimeRequest(value, (message) => application.runtime(message));
         if (runtime.handled) {

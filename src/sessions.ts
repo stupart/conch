@@ -211,6 +211,53 @@ export async function findSession(claudeDir: string, sessionId: string): Promise
   return match ? currentName(toInfo(match, undefined, all), claudeDir) : null;
 }
 
+/**
+ * The background job's row, when an address names a window parked on it.
+ *
+ * A process that started before conch knew about background jobs — a hook, a
+ * conch MCP server, the window's own children — still names the window's
+ * stale session id, or only its pid. conch hides that window, so the id is no
+ * row, and a review sent to it landed nowhere (`da29d3fa`, pid 61637, while
+ * the conch row was job `f31f0d15`). An id the registry knows decides alone;
+ * the pid is asked only when no entry has that id. Anything else: null.
+ */
+export async function parkedWindowJob(
+  claudeDir: string,
+  sessionId: string,
+  pid?: number,
+): Promise<SessionInfo | null> {
+  const wanted = parseWindowKey(sessionId);
+  if (!wanted.sessionId) return null;
+  const all = await registryEntries(join(claudeDir, "sessions"));
+  const named = all.filter((entry) => entry.sessionId === wanted.sessionId
+    && (wanted.pid === undefined || entry.pid === wanted.pid));
+  const windows = named.length > 0
+    ? named
+    : pid && pid > 0 ? all.filter((entry) => entry.pid === pid) : [];
+  for (const window of windows) {
+    const job = parkedJob(window, all);
+    if (job) return currentName(toInfo(job, undefined, all), claudeDir);
+  }
+  return null;
+}
+
+/**
+ * Re-address a socket message whose `sessionId` names a parked window (or
+ * whose pid does) to the job's row. `isRow` short-circuits the registry read
+ * for an address that is already a row, which is nearly every message.
+ */
+export async function addressParkedWindow(
+  claudeDir: string,
+  value: unknown,
+  isRow: (sessionId: string) => boolean,
+): Promise<unknown> {
+  if (typeof value !== "object" || value === null) return value;
+  const { sessionId, pid } = value as { sessionId?: unknown; pid?: unknown };
+  if (typeof sessionId !== "string" || !sessionId || isRow(sessionId)) return value;
+  const job = await parkedWindowJob(claudeDir, sessionId, typeof pid === "number" ? pid : undefined);
+  return job ? { ...value, sessionId: job.sessionId } : value;
+}
+
 /** Every readable registry entry. */
 async function registryEntries(dir: string): Promise<any[]> {
   let files: string[];
@@ -790,8 +837,21 @@ export async function findSessionByName(
     sessions.find((s) => s.name?.toLowerCase() === q) ??
     sessions.find((s) => s.name?.toLowerCase().includes(q)) ??
     sessions.find((s) => (s.cwd ?? "").split("/").pop()?.toLowerCase() === q) ??
+    (await parkedJobRow(claudeDir, query.trim(), sessions)) ??
     null
   );
+}
+
+/** A hidden window's stale id, answered by its job's row. Last: it reads the registry again. */
+async function parkedJobRow(
+  claudeDir: string,
+  query: string,
+  sessions: readonly SessionInfo[],
+): Promise<SessionInfo | undefined> {
+  const job = await parkedWindowJob(claudeDir, query);
+  return job
+    ? sessions.find((s) => s.sessionId === job.sessionId || s.agentSessionId === job.sessionId)
+    : undefined;
 }
 
 /** Find by the spoken form, retrying without spaces ("day loop" -> "dayloop"). */
