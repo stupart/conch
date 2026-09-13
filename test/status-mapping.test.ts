@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { liveBackgroundAgents, sessionHasLiveBackgroundWork, sidechainTranscriptPath } from "../src/agent-activity.ts";
 import type { TurnEvent } from "../src/hook.ts";
-import { buildPanelRows, type PanelSessionState } from "../src/panel.ts";
+import { buildPanelRows, LATCH_GRACE_MS, type PanelSessionState } from "../src/panel.ts";
 import { findTranscript, registrySnapshot, subagentSessions } from "../src/sessions.ts";
 import { downgradeTurnWithLiveBackgroundWork } from "../src/voice-loop.ts";
 
@@ -52,7 +52,7 @@ function fixture() {
     append(path: string, ...records: object[]) {
       appendFileSync(path, records.map((r) => JSON.stringify(r)).join("\n") + "\n");
     },
-    async rows(states: Map<string, PanelSessionState> = new Map()) {
+    async rows(states: Map<string, PanelSessionState> = new Map(), now?: number) {
       const snap = (await registrySnapshot(claudeDir, options))!;
       const live = snap.infos.filter((s) => s.backend !== "codex");
       const nested = live.flatMap((s) => subagentSessions(s, s.transcriptPath ?? findTranscript(claudeDir, s.sessionId, options)));
@@ -64,6 +64,7 @@ function fixture() {
         mode: { muted: false, paused: false, holding: 0 },
         activeSessionId: null,
         navSelectedId: null,
+        now,
       });
     },
   };
@@ -102,7 +103,12 @@ const statusOf = (rows: Awaited<ReturnType<ReturnType<typeof fixture>["rows"]>>,
 function stopLatch(transcriptPath: string, at: number): PanelSessionState {
   const event: TurnEvent = { type: "turn-end", sessionId: PARENT, label: "parent", announce: "", transcriptPath, eventAt: at };
   downgradeTurnWithLiveBackgroundWork(event, sessionHasLiveBackgroundWork(transcriptPath));
-  return { label: "parent", status: event.type === "working" ? "working" : "waiting", at };
+  return {
+    label: "parent",
+    status: event.type === "working" ? "working" : "waiting",
+    at,
+    ...(event.backgroundWork ? { backgroundWork: true as const } : {}),
+  };
 }
 
 describe("registry status on a row", () => {
@@ -153,14 +159,37 @@ describe("a subagent resumed with SendMessage", () => {
 
     // It finishes, wakes the parent, and the parent's next Stop is a real turn end.
     f.append(path, ...completed(AGENT, 2));
+    f.registry(301, { sessionId: PARENT, name: "parent", status: "idle", statusUpdatedAt: 3000 });
     const after = await f.rows(new Map([[PARENT, stopLatch(path, 3000)]]));
     expect(statusOf(after, PARENT)).toBe("waiting");
     expect(after.map((row) => row.sessionId)).toEqual([PARENT]);
   });
+
+  test("Claude reads idle while it runs: the background Stop latch still reads working after the grace", async () => {
+    const f = fixture();
+    f.registry(302, { sessionId: PARENT, name: "parent", status: "idle", statusUpdatedAt: 1000 });
+    const path = f.parent(launched(AGENT), ...completed(AGENT, 1), resumed(AGENT, 1));
+    const latch = stopLatch(path, 2000);
+    expect(latch.backgroundWork).toBe(true);
+    expect(statusOf(await f.rows(new Map([[PARENT, latch]]), 2000 + LATCH_GRACE_MS + 1), PARENT)).toBe("working");
+  });
+});
+
+describe("a Stop latched while Claude's registry stays busy", () => {
+  test("reads waiting inside the grace and working after it", async () => {
+    const f = fixture();
+    // Claude never rewrote the file: the session is still mid-turn at 1000.
+    f.registry(501, { sessionId: PARENT, name: "parent", status: "busy", statusUpdatedAt: 1000 });
+    const path = f.parent();
+    const states = new Map([[PARENT, stopLatch(path, 2000)]]);
+    expect(states.get(PARENT)!.status).toBe("waiting");
+    expect(statusOf(await f.rows(states, 3000), PARENT)).toBe("waiting");
+    expect(statusOf(await f.rows(states, 2000 + LATCH_GRACE_MS + 1), PARENT)).toBe("working");
+  });
 });
 
 describe("a window parked on a background job that is no longer listed", () => {
-  test("its frozen busy is not work: waiting, a pre-park latch loses, a newer one wins", async () => {
+  test("its frozen busy is not work: waiting, a pre-park latch loses, a newer one wins until the grace", async () => {
     const f = fixture();
     f.registry(401, { sessionId: "pred", name: "window", parkedJobId: "gonejob", status: "busy", statusUpdatedAt: 100 });
     f.registry(402, { sessionId: "plain", name: "plain", status: "busy", statusUpdatedAt: 100 });
@@ -173,6 +202,7 @@ describe("a window parked on a background job that is no longer listed", () => {
     expect(statusOf(await f.rows(prePark), "pred")).toBe("waiting");
 
     const newer = new Map([["pred", { label: "window", status: "needs" as const, at: 200 }]]);
-    expect(statusOf(await f.rows(newer), "pred")).toBe("needs");
+    expect(statusOf(await f.rows(newer, 300), "pred")).toBe("needs");
+    expect(statusOf(await f.rows(newer, 200 + LATCH_GRACE_MS + 1), "pred")).toBe("waiting");
   });
 });

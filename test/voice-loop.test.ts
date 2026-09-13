@@ -482,6 +482,19 @@ describe("the speech funnel", () => {
   });
 });
 
+describe("the dashboard latch", () => {
+  test("only a Stop reclassified as background work latches the flag the registry cannot correct", async () => {
+    const h = harness({ cfg: { workingMic: false } });
+    const working = (sessionId: string, over: Partial<TurnEvent> = {}): TurnEvent =>
+      ({ type: "working", sessionId, label: sessionId, announce: "", eventAt: 1_000, ...over });
+    await h.voice.handle(accepted(h, working("background", { backgroundWork: true })));
+    await h.voice.handle(accepted(h, working("prompt")));
+    expect(h.ledger.sessionStates.get("background")).toMatchObject({ status: "working", backgroundWork: true });
+    expect(h.ledger.sessionStates.get("prompt")?.status).toBe("working");
+    expect(h.ledger.sessionStates.get("prompt")?.backgroundWork).toBeUndefined();
+  });
+});
+
 describe("turns and the audio holder", () => {
   // C9b Cut B, F1 and outbox site 1 (F6): audible somewhere, voiced elsewhere.
   test("a yielded turn keeps its checks and hands the announcement over: no bell, no reading, no mic", async () => {

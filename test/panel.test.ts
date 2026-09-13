@@ -18,6 +18,7 @@ import {
   reviewReady,
   reconcileStatus,
   registryToPanel,
+  LATCH_GRACE_MS,
 } from "../src/panel.ts";
 import { TheaterNavigation } from "../src/theater-navigation.ts";
 import { loadConfig } from "../src/config.ts";
@@ -71,6 +72,7 @@ describe("buildPanelModel — renderer seam", () => {
       activeSessionId: "working",
       navSelectedId: "waiting",
       reply: { sessionId: "working", text: "A finished response.", spokenChars: 2 },
+      now: 40,
     });
 
     expect(model.rows.map((row) => row.sessionId)).toEqual(["needs", "waiting", "working"]);
@@ -176,6 +178,7 @@ describe("buildPublishedState — external session snapshot", () => {
       activeSessionId: "needs",
       navSelectedId: "waiting",
       reply: { sessionId: "needs", text: "Reply being read aloud", spokenChars: 8 },
+      now: 40,
     });
     model.preview = {
       sessionId: "waiting",
@@ -536,51 +539,114 @@ describe("registryToPanel — maps Claude Code's status vocabulary", () => {
 });
 
 describe("reconcileStatus — BUG A: newer signal wins, so the panel never sticks", () => {
+  // Within the grace of every latch below, so only newest-wins decides.
+  const NOW = 2_500;
   test("stale 'waiting' latch is overridden by a NEWER busy registry (the core bug)", () => {
     // Prior Stop latched "waiting" at 1000; session resumed (registry busy at 2000)
     // without firing UserPromptSubmit. Registry is newer → working.
-    expect(reconcileStatus({ status: "busy", statusUpdatedAt: 2000 }, { status: "waiting", at: 1000 })).toBe("working");
+    expect(reconcileStatus({ status: "busy", statusUpdatedAt: 2000 }, { status: "waiting", at: 1000 }, NOW)).toBe("working");
   });
 
   test("a just-received 'working' latch wins over an older idle registry (no flicker)", () => {
     // You just submitted (working latched at 2000); registry hasn't flipped yet (idle at 1000).
-    expect(reconcileStatus({ status: "idle", statusUpdatedAt: 1000 }, { status: "working", at: 2000 })).toBe("working");
+    expect(reconcileStatus({ status: "idle", statusUpdatedAt: 1000 }, { status: "working", at: 2000 }, NOW)).toBe("working");
   });
 
   test("a plain busy session with no latch shows working — never nags", () => {
-    expect(reconcileStatus({ status: "busy", statusUpdatedAt: 1000 }, undefined)).toBe("working");
+    expect(reconcileStatus({ status: "busy", statusUpdatedAt: 1000 }, undefined, NOW)).toBe("working");
   });
 
   test("registry 'waiting' surfaces as needs even with no latch", () => {
-    expect(reconcileStatus({ status: "waiting", statusUpdatedAt: 1000 }, undefined)).toBe("needs");
+    expect(reconcileStatus({ status: "waiting", statusUpdatedAt: 1000 }, undefined, NOW)).toBe("needs");
   });
 
   test("a newer shell status ends an older working latch", () => {
-    expect(reconcileStatus({ status: "shell", statusUpdatedAt: 2000 }, { status: "working", at: 1999 })).toBe("waiting");
+    expect(reconcileStatus({ status: "shell", statusUpdatedAt: 2000 }, { status: "working", at: 1999 }, NOW)).toBe("waiting");
   });
 
   test("idle registry (newer than latch) shows waiting", () => {
-    expect(reconcileStatus({ status: "idle", statusUpdatedAt: 2000 }, { status: "working", at: 1000 })).toBe("waiting");
+    expect(reconcileStatus({ status: "idle", statusUpdatedAt: 2000 }, { status: "working", at: 1000 }, NOW)).toBe("waiting");
   });
 
   test("a fresh 'needs' latch wins over an older registry status", () => {
-    expect(reconcileStatus({ status: "busy", statusUpdatedAt: 1500 }, { status: "needs", at: 2000 })).toBe("needs");
+    expect(reconcileStatus({ status: "busy", statusUpdatedAt: 1500 }, { status: "needs", at: 2000 }, NOW)).toBe("needs");
   });
 
   test("needs auto-clears once the session moves on (registry status is newer)", () => {
-    expect(reconcileStatus({ status: "busy", statusUpdatedAt: 3000 }, { status: "needs", at: 2000 })).toBe("working");
+    expect(reconcileStatus({ status: "busy", statusUpdatedAt: 3000 }, { status: "needs", at: 2000 }, NOW)).toBe("working");
   });
 
   test("tie (equal timestamps) goes to the latch", () => {
-    expect(reconcileStatus({ status: "busy", statusUpdatedAt: 2000 }, { status: "needs", at: 2000 })).toBe("needs");
+    expect(reconcileStatus({ status: "busy", statusUpdatedAt: 2000 }, { status: "needs", at: 2000 }, NOW)).toBe("needs");
   });
 
   test("no registry status falls back to the latched value", () => {
-    expect(reconcileStatus({}, { status: "working", at: 1000 })).toBe("working");
+    expect(reconcileStatus({}, { status: "working", at: 1000 }, NOW)).toBe("working");
   });
 
   test("no registry status and no latch → null (dim idle)", () => {
-    expect(reconcileStatus({}, undefined)).toBeNull();
+    expect(reconcileStatus({}, undefined, NOW)).toBeNull();
+  });
+});
+
+describe("reconcileStatus — Claude's stable registry corrects a stale latch after the grace", () => {
+  // Every latch below is at 2_000. Claude Code rewrites its registry only when
+  // the status changes, so a registry at 1_000 can be the current truth.
+  const AT_GRACE = 2_000 + LATCH_GRACE_MS; // not yet past it: still the latch's
+  const LATE = AT_GRACE + 1;
+
+  test("a Stop-latched waiting while the registry stays busy shows working after the grace", () => {
+    const busy = { status: "busy", statusUpdatedAt: 1_000 };
+    const stop = { status: "waiting" as const, at: 2_000 };
+    expect(reconcileStatus(busy, stop, 2_100)).toBe("waiting");
+    expect(reconcileStatus(busy, stop, AT_GRACE)).toBe("waiting");
+    expect(reconcileStatus(busy, stop, LATE)).toBe("working");
+  });
+
+  test("a working latch the registry never followed shows waiting after the grace", () => {
+    const idle = { status: "idle", statusUpdatedAt: 1_000 };
+    const prompt = { status: "working" as const, at: 2_000 };
+    expect(reconcileStatus(idle, prompt, 2_100)).toBe("working");
+    expect(reconcileStatus(idle, prompt, LATE)).toBe("waiting");
+  });
+
+  test("a latched needs from an idle_prompt question with registry idle shows waiting after the grace", () => {
+    const idle = { status: "idle", statusUpdatedAt: 1_000 };
+    const question = { status: "needs" as const, at: 2_000 };
+    expect(reconcileStatus(idle, question, 2_100)).toBe("needs");
+    expect(reconcileStatus(idle, question, LATE)).toBe("waiting");
+  });
+
+  test("a latched needs clears when a turn starts: a newer busy at once, a stale busy after the grace", () => {
+    const question = { status: "needs" as const, at: 2_000 };
+    expect(reconcileStatus({ status: "busy", statusUpdatedAt: 3_000 }, question, 3_000)).toBe("working");
+    expect(reconcileStatus({ status: "busy", statusUpdatedAt: 1_000 }, question, 2_100)).toBe("needs");
+    expect(reconcileStatus({ status: "busy", statusUpdatedAt: 1_000 }, question, LATE)).toBe("working");
+  });
+
+  test("registry waiting is a permission prompt: needs, correcting a stale latch too", () => {
+    const dialog = { status: "waiting", statusUpdatedAt: 1_000 };
+    expect(reconcileStatus(dialog, undefined, LATE)).toBe("needs");
+    expect(reconcileStatus(dialog, { status: "working", at: 2_000 }, 2_100)).toBe("working");
+    expect(reconcileStatus(dialog, { status: "working", at: 2_000 }, LATE)).toBe("needs");
+  });
+
+  test("a Stop that saw live background agents keeps working over an idle or shell registry", () => {
+    const background = { status: "working" as const, at: 2_000, backgroundWork: true as const };
+    expect(reconcileStatus({ status: "idle", statusUpdatedAt: 1_000 }, background, LATE)).toBe("working");
+    expect(reconcileStatus({ status: "shell", statusUpdatedAt: 1_000 }, background, LATE)).toBe("working");
+    // A newer registry status still ends it, as for any latch.
+    expect(reconcileStatus({ status: "idle", statusUpdatedAt: 3_000 }, background, LATE)).toBe("waiting");
+  });
+
+  test("a Codex row is not corrected: conch's own hook writes that registry", () => {
+    const codex = { backend: "codex" as const, status: "idle", statusUpdatedAt: 1_000 };
+    expect(reconcileStatus(codex, { status: "working", at: 2_000 }, LATE)).toBe("working");
+  });
+
+  test("a subagent row is not corrected: its busy is conch's, not Claude's", () => {
+    const agent = { backend: "claude" as const, parentSessionId: "p", status: "busy", statusUpdatedAt: 1_000 };
+    expect(reconcileStatus(agent, { status: "waiting", at: 2_000 }, LATE)).toBe("waiting");
   });
 });
 
@@ -607,6 +673,7 @@ describe("review attribute reconciliation", () => {
       mode: { muted: false, paused: false, holding: 0 },
       activeSessionId: null,
       navSelectedId: null,
+      now: 3_000,
     })[0]!;
   }
 
