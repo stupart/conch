@@ -540,7 +540,7 @@ public struct ConversationFog: View {
     }
 
     /// Inside the fog, before the screen's own insets.
-    static let padding: CGFloat = ConchSpace.x6
+    public static let padding: CGFloat = ConchSpace.x6
     static let buttonSize: CGFloat = 36
 
     /// Where the words and the reply line sit: all of the fog but its padding, the screen's insets and a row for the
@@ -584,8 +584,8 @@ public struct ConversationFog: View {
                     }
                     .accessibilityHidden(true)
                 }
-                // The words keep a short soft edge of their own at the bottom, so the gap to the reply is that plus this.
-                VStack(alignment: .leading, spacing: isFullScreen ? ConchSpace.x2 : ConchSpace.x1) {
+                // The words keep a short soft edge of their own at the bottom; this is the rest of the gap to the reply.
+                VStack(alignment: .leading, spacing: isFullScreen ? ConchSpace.x6 : ConchSpace.x4) {
                     words
                     InlineReplyLine(
                         text: $draft,

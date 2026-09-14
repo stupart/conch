@@ -207,7 +207,16 @@ test("M3: the fog stays docked in a corner, is thrown into a corner by its middl
   expect(ended).toContain("let recent = dragSamples.filter { now - $0.time <= 0.1 }");
   // Resizing keeps its corner, from strips wider than a window's own edge.
   expect(member(panels, "func resizeMoved(_ edges: Edge.Set) {")).toContain("let next = FogDock.resize(");
-  expect(panels).toContain("static let resizeGrab: CGFloat = 16");
+  expect(panels).toContain("static let resizeGrab: CGFloat = 48");
+  // The words and buttons keep clear of those strips.
+  expect(member(panels, "private func updateInsets(_ frame: NSRect, on screen: NSScreen) {")).toContain(
+    "let grab = isFullScreen ? 0 : max(0, Self.resizeGrab - ConversationFog.padding)",
+  );
+  // A throw fades, softens and shrinks a little mid-flight, and lands whole (Tyler: "so it feels more liquid").
+  expect(member(panels, "private func stepSpring() {")).toContain("fog.alphaValue = 1 - 0.45 * motion");
+  expect(member(panels, "private func stopSpring() {")).toContain("fog.alphaValue = 1");
+  expect(panels).toContain(".scaleEffect(1 - 0.1 * panels.throwMotion)");
+  expect(panels).toContain(".blur(radius: 10 * panels.throwMotion)");
   expect(panels).toContain(".onChanged { _ in panels.resizeMoved(edges) }");
   expect(panels).toContain(".onChanged { _ in panels.dragMoved() }");
   // It reaches the screen's edges, and the words are padded clear of the Dock and the menu bar.
