@@ -167,6 +167,7 @@ import {
   onLiveDataChange,
   openTheaterReview,
   publishSessionsFile,
+  REVIEWS_FILE,
   renderPanel,
   resizeRenderer,
   scrollTheaterPane,
@@ -615,7 +616,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const presented = new PresentedItems(Date.now());
   let holderExpiry: ReturnType<typeof setTimeout> | null = null;
   let shuttingDown = false;
-  const ledger = new SessionLedger();
+  const ledger = new SessionLedger(REVIEWS_FILE);
+  ledger.restoreReviews(); // each session's deliverable, as it was before the restart
   // The ledger owns the per-session/window runtime facts, but exposes the raw
   // collections so render and controller paths keep their existing shape.
   const {
@@ -1764,7 +1766,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       }"`);
       void renderSessionPanel();
     },
-    rename: (target, label) => {
+    rename: (target, label, delivered) => {
       const renamed = renameSessionLabel(
         target.sessionId,
         target.label,
@@ -1775,7 +1777,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         renamed.voiceMigrated ? " (voice pin migrated)" : ""
       }`);
       const agent = adapterFor(target.backend).displayName;
-      void renameProviderSession(cfg, target, renamed.label).then((provider) => {
+      const synced = renameProviderSession(cfg, target, renamed.label).then((provider) => {
         if (provider.kind === "delivered") {
           log(`synced ${agent} label via ${provider.via}`);
         } else if (provider.kind === "unroutable") {
@@ -1796,6 +1798,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
           { label: renamed.label, backend: target.backend ?? "claude" },
         );
       });
+      // Only an `awaitDelivery` rename (the Mac app) passes this: it takes the front back once typed.
+      delivered?.(synced);
       void renderSessionPanel();
       return renamed.label;
     },
@@ -2187,7 +2191,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
         set: writeSetting,
         unset: unsetSetting,
       }),
-      session: (message) => applySessionCommand(message, sessionCommandDispatchOptions),
+      session: (message, delivered) => applySessionCommand(message, sessionCommandDispatchOptions, delivered),
       runtime: (message) => applyRuntimeControlMessage(message, runtimeControlDispatchOptions),
       turn: (event) => dispatchSocketTurnEvent(event, socketTurnCallbacks),
       device: deviceCommand,

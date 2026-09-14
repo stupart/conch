@@ -112,6 +112,8 @@ interface Options {
   /** One script per mic window, in order. */
   heard?: string[][];
   gap?: () => ListenResult;
+  /** The ledger to run over: a restarted daemon's, restored from its reviews file. */
+  ledger?: SessionLedger;
 }
 
 function harness(options: Options = {}) {
@@ -161,7 +163,7 @@ function harness(options: Options = {}) {
     if (voice.capturing()) violations.push(operation);
     return task();
   }, { spawnAudio, warn: () => {} });
-  const ledger = new SessionLedger();
+  const ledger = options.ledger ?? new SessionLedger();
   const lease = new AudioSinkLease();
   const holder = new AudioHolder();
   const pause = new PauseController({
@@ -910,5 +912,48 @@ describe("a deliverable keeps one identity from filing until a newer one", () =>
     // Sending it again, even unchanged, is a newer deliverable.
     await h.voice.handle(accepted(h, turnEnd({ eventAt: 5_000, review })));
     expect(publishedReview(h)).toEqual({ ...review, at: 5_000 });
+  });
+
+  /**
+   * Since PR #191 the deliverable lived only in the in-memory latch, so every
+   * daemon restart erased each session's current one from both apps. It is
+   * written out when filed and restored on start with the same `at`; status is
+   * not, and still comes from the registry and hooks.
+   */
+  test("it survives a daemon restart with the same identity; status does not", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "conch-reviews-"));
+    const reviewsPath = join(dir, "reviews.json");
+    try {
+      const before = harness({ paused: true, ledger: new SessionLedger(reviewsPath) });
+      const review = { summary: "hero v3", link: "/tmp/hero-v3.png" };
+      await before.voice.handle(accepted(before, turnEnd({ eventAt: 1_000, review })));
+      const filed = { ...review, at: 1_000 };
+
+      // The restart: a new ledger over the same file, and nothing else carried.
+      const restarted = new SessionLedger(reviewsPath);
+      restarted.restoreReviews();
+      const after = harness({ paused: true, ledger: restarted });
+      expect(publishedReview(after)).toEqual(filed);
+
+      // The registry says busy, newer than nothing: the row works, the review stays.
+      const registry = buildPanelModel({
+        sessions: [{ sessionId: "s1", name: "alpha", status: "busy", statusUpdatedAt: 500 } as SessionInfo],
+        sessionStates: restarted.sessionStates,
+        pausedSessionIds: new Set(),
+        live: { state: "idle", label: "", partial: "" },
+        mode: { muted: false, paused: false, holding: 0 },
+        activeSessionId: null,
+        navSelectedId: null,
+      }).rows[0]!;
+      expect(registry.status).toBe("working");
+      expect(registry.review).toEqual(filed);
+
+      // A hook after the restart sets status and carries the same record.
+      await after.voice.handle(accepted(after, { type: "working", sessionId: "s1", label: "alpha", announce: "", eventAt: 2_000 }));
+      expect(rowFor(after)).toMatchObject({ status: "working", at: 2_000 });
+      expect(publishedReview(after)).toEqual(filed);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

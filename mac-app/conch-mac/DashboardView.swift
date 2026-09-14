@@ -1807,7 +1807,9 @@ private struct ConversationPane: View {
                                     ?? subagentRow(id: agent.id) {
                                     onSelectSession(target)
                                 }
-                            }
+                            },
+                            noTerminal: row.noTerminal,
+                            onOpenInTerminal: row.attachable ? { store.openInTerminal(row) } : nil
                         )
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {

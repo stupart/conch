@@ -21,7 +21,7 @@ test("the daemon wires all five control-server entries to their owners", () => {
   expect(at).toBeGreaterThan(-1);
   const wiring = daemon.slice(at, daemon.indexOf("\n  });", at));
   expect(wiring).toContain("configuration: (message) => applyConfigControlMessage(message, configController, {");
-  expect(wiring).toContain("session: (message) => applySessionCommand(message, sessionCommandDispatchOptions),");
+  expect(wiring).toContain("session: (message, delivered) => applySessionCommand(message, sessionCommandDispatchOptions, delivered),");
   expect(wiring).toContain("runtime: (message) => applyRuntimeControlMessage(message, runtimeControlDispatchOptions),");
   expect(wiring).toContain("turn: (event) => dispatchSocketTurnEvent(event, socketTurnCallbacks),");
   expect(wiring).toContain("device: deviceCommand,");

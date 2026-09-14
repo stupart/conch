@@ -660,6 +660,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     };
     if (latestLatchedState(prior, incoming) !== incoming) return false;
     sessionStates.set(sessionId, incoming);
+    // A newly filed deliverable is written out, so a daemon restart keeps it.
+    if (carried !== prior?.review) ledger.saveReviews();
     void renderSessionPanel();
     return true;
   }

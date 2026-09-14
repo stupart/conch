@@ -29,7 +29,7 @@ export interface SessionActionsController {
    * Return the canonical stored label when persistence normalizes the input.
    * A void return means the submitted (trimmed) label was stored unchanged.
    */
-  rename(target: Readonly<SessionActionsTarget>, label: string): string | void;
+  rename(target: Readonly<SessionActionsTarget>, label: string, delivered?: SessionDelivery): string | void;
   dismiss(target: Readonly<SessionActionsTarget>): boolean | void;
   /** Ask the agent to exit cleanly; never kill its process. */
   close(target: Readonly<SessionActionsTarget>): Promise<boolean | void>;
@@ -43,8 +43,14 @@ export interface SessionActionsController {
   attach?(target: Readonly<SessionActionsTarget>): Promise<boolean>;
 }
 
+/**
+ * Hands back the typing a command set off (the `/rename` sync, `/model`), for
+ * a sender that asked to hear when it is done (`awaitDelivery`).
+ */
+export type SessionDelivery = (work: Promise<unknown>) => void;
+
 export type SessionActionMutation =
-  | { command: "rename"; label: string }
+  | { command: "rename"; label: string; delivered?: SessionDelivery }
   | { command: "set-voice"; voice: string }
   | { command: "reset-voice" }
   | { command: "prioritize"; value: boolean }
@@ -63,7 +69,7 @@ export function invokeSessionAction(
 ): string | boolean | void | Promise<boolean | void> {
   switch (mutation.command) {
     case "rename":
-      return controller.rename({ ...target }, mutation.label);
+      return controller.rename({ ...target }, mutation.label, mutation.delivered);
     case "set-voice":
       return controller.setVoice({ ...target }, mutation.voice);
     case "reset-voice":

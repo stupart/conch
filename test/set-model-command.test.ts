@@ -133,7 +133,7 @@ test("the Mac inspector shows the recorded model, or says it is not reported, an
   const at = store.indexOf("func setModel(id: SessionRow.ID, model: String) async -> String {");
   expect(at).toBeGreaterThan(-1);
   const body = store.slice(at, at + 1400);
-  expect(body).toContain("ConchSessionCommandRequest(sessionId: id, command: .setModel, model: model)");
+  expect(body).toContain("ConchSessionCommandRequest(\n            sessionId: id,\n            command: .setModel,\n            model: model,");
   expect(body).toContain("return error.error"); // the daemon's refusal, verbatim
   expect(body).toContain('"not sent: the session has no terminal window to type into"');
 

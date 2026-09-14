@@ -152,7 +152,9 @@ struct SessionView: View {
                             conversation: conversation,
                             optionReplyInFlight: optionReplyInFlight || isSending,
                             onSelectOption: answerQuestion,
-                            onFreeform: { typing = true }
+                            onFreeform: { typing = true },
+                            noTerminal: row?.noTerminal,
+                            onOpenInTerminal: row?.attachable == true ? openInTerminal : nil
                         )
                     } else if let replyText {
                         MarkdownView(text: replyText)
@@ -758,7 +760,7 @@ struct SessionView: View {
     }
 
     private func answerQuestion(_ label: String) {
-        guard !label.isEmpty, !optionReplyInFlight else { return }
+        guard !label.isEmpty, !optionReplyInFlight, row?.noTerminal == nil else { return }
         optionReplyInFlight = true
         sendFailed = false
         let sessionLabel = row?.label ?? ""
