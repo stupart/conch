@@ -83,6 +83,12 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(floating.minX, fade + ConchSpace.x4 - 0.01)
         XCTAssertEqual(floating.maxY, 470 - fade - ConchSpace.x4, accuracy: 0.01)
         XCTAssertGreaterThanOrEqual(floating.minY, fade + ConchSpace.x4 + ConversationFog.buttonRoom - 0.01)
+        // The default corner keeps its column; a bigger panel gives the words more room both ways.
+        let corner = ConversationFog.textFrame(in: CGSize(width: 760, height: 560), flush: [.leading, .bottom], fullScreen: false)
+        XCTAssertEqual(corner.width, 560, accuracy: 0.01)
+        let big = ConversationFog.textFrame(in: CGSize(width: 1400, height: 1000), flush: [.leading, .bottom], fullScreen: false)
+        XCTAssertGreaterThan(big.width, 800)
+        XCTAssertGreaterThan(big.height, 700)
         // The fade scales with the panel, within limits.
         XCTAssertEqual(ConversationFog.edgeFade(CGSize(width: 480, height: 360)), 57.6, accuracy: 0.01)
         XCTAssertEqual(ConversationFog.edgeFade(CGSize(width: 3000, height: 2000)), 96)

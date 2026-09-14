@@ -240,3 +240,21 @@ test("M3: the blur sits behind the words as a sibling, so its mask never touches
   expect(collapse).toContain("blur.isHidden = false");
   expect(panels).not.toContain("noBlur");
 });
+
+/**
+ * Tyler: "the text 'Quiet' is cutoff in the pill", "need to be able to scroll my reply text as it grows", and "make
+ * the transcript area taller and wider if i want to".
+ */
+test("M3: the control bar fits what it shows, the reply scrolls past five lines, and a bigger fog gives the words room", () => {
+  const fit = member(panels, "private func fitControlBar(to size: CGSize) {");
+  expect(fit).toContain(
+    "controlBar.setFrame(NSRect(x: frame.midX - size.width / 2, y: frame.maxY - size.height, width: size.width, height: size.height), display: true)",
+  );
+  expect(panels).toContain("ControlBarHost(store: store, onSize: { [weak self] size in self?.fitControlBar(to: size) })");
+  expect(panels).toContain(".onPreferenceChange(ControlBarSize.self, perform: onSize)");
+  expect(components).toContain("Text(option.title)\n                        .font(ConchType.uiEmphasis)\n                        .fixedSize()");
+  expect(components).toContain(".lineLimit(1...5)");
+  expect(member(components, "static func textFrame(in size: CGSize, flush: Edge.Set, fullScreen: Bool) -> CGRect {")).toContain(
+    "min(max(560, size.width * 0.66), 960, size.width - leading - trailing)",
+  );
+});
