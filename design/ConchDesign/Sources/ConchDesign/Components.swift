@@ -494,6 +494,8 @@ public struct ConversationFog: View {
     let tint: Double
     /// Draws the collapse and full-screen buttons; a host that layers its own controls over the fog draws them itself.
     let showsButtons: Bool
+    /// Off its corner: the fog fades on every side instead of gathering in the corner.
+    let floating: Bool
     let onMic: () -> Void
     let onSend: () -> Void
     let onCollapse: () -> Void
@@ -510,6 +512,7 @@ public struct ConversationFog: View {
         showsFog: Bool = true,
         tint: Double = ConversationFog.tintOpacity,
         showsButtons: Bool = true,
+        floating: Bool = false,
         onMic: @escaping () -> Void,
         onSend: @escaping () -> Void,
         onCollapse: @escaping () -> Void,
@@ -524,6 +527,7 @@ public struct ConversationFog: View {
         self.showsFog = showsFog
         self.tint = tint
         self.showsButtons = showsButtons
+        self.floating = floating
         self.onMic = onMic
         self.onSend = onSend
         self.onCollapse = onCollapse
@@ -532,7 +536,7 @@ public struct ConversationFog: View {
 
     /// Where the fog is, as a mask (only its alpha matters). Full screen, everywhere; otherwise the corner fog,
     /// strongest in the panel's `corner` and gone three quarters of the way out, so there is no edge to look at.
-    public static func density(fullScreen: Bool, corner: FogCorner = .bottomLeading) -> EllipticalGradient {
+    public static func density(fullScreen: Bool, corner: FogCorner = .bottomLeading, floating: Bool = false) -> EllipticalGradient {
         EllipticalGradient(
             stops: fullScreen
                 ? [.init(color: .black, location: 0), .init(color: .black, location: 1)]
@@ -542,8 +546,10 @@ public struct ConversationFog: View {
                     .init(color: .black.opacity(0.3), location: 0.64),
                     .init(color: .clear, location: 0.78),
                 ],
-            center: corner.unitPoint,
-            endRadiusFraction: 1.1
+            // Off its corner (dragged, or in flight) it gathers in the middle and fades out before any of its own edges,
+            // so pulled off a screen edge it never ends in a line (Tyler: "when u pull it off an edge thers a line").
+            center: floating ? .center : corner.unitPoint,
+            endRadiusFraction: floating ? 0.64 : 1.1
         )
     }
 
@@ -614,7 +620,7 @@ public struct ConversationFog: View {
                             Rectangle()
                                 .fill(ConchColor.fog)
                                 .opacity(tint)
-                                .mask(Self.density(fullScreen: false, corner: corner))
+                                .mask(Self.density(fullScreen: false, corner: corner, floating: floating))
                         }
                     }
                     .accessibilityHidden(true)

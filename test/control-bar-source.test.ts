@@ -142,7 +142,7 @@ test("M3: the fog replies through inject and dictates through the composer's dic
   // A fog, not a pane: the fog tint, and a behind-window blur masked to the corner.
   expect(components).toContain(".fill(ConchColor.fog)");
   expect(panels).toContain("blur.blendingMode = .behindWindow");
-  expect(panels).toContain("blur.maskImage = Self.blurMask(corner, strength: blurStrength)");
+  expect(panels).toContain("blur.maskImage = Self.blurMask(corner, strength: blurStrength, floating: floating)");
   expect(components).toContain(".font(Self.font(latest: age == 0, fullScreen: isFullScreen))");
   expect(member(components, "static func font(latest: Bool, fullScreen: Bool) -> Font {")).toContain(
     "case (true, true): ConchType.conversationNowFull",
@@ -238,7 +238,7 @@ test("M3: the fog stays docked in a corner, is thrown into a corner by its middl
   // The overlay's look is on (Tyler: "i don't see any overlay"), and the testing outline is gone.
   expect(panels).toContain("static let showsFog = true");
   expect(panels).not.toContain("strokeBorder(Color.black");
-  expect(components).toContain("center: corner.unitPoint,");
+  expect(components).toContain("center: floating ? .center : corner.unitPoint,");
   // The transcript still ends in a short fade above the reply, not a cut.
   expect(components).toContain(
     "LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)\n                        .frame(height: ConchSpace.x4)",
@@ -300,4 +300,17 @@ test("M3: the overlay's tint, blur and material are live defaults the running ap
   expect(look).toContain("Self.masks = [:]");
   expect(panels).toContain("tint: panels.tintOpacity,");
   expect(components).toContain(".opacity(tint)");
+});
+
+/** Tyler: "when u pull it off an edge thers a line". Off its corner the overlay fades on every side until it lands. */
+test("M3: dragged or in flight, the overlay fades on every side, and gathers in its corner again when it lands", () => {
+  expect(components).toContain("center: floating ? .center : corner.unitPoint,");
+  expect(components).toContain("endRadiusFraction: floating ? 0.64 : 1.1");
+  expect(components).toContain(".mask(Self.density(fullScreen: false, corner: corner, floating: floating))");
+  expect(member(panels, "func dragMoved() {")).toContain("setFloating(true)");
+  expect(member(panels, "private func stepSpring() {")).toContain("setFloating(false)");
+  expect(member(panels, "private func setFloating(_ value: Bool) {")).toContain(
+    "blur.maskImage = Self.blurMask(corner, strength: blurStrength, floating: value)",
+  );
+  expect(panels).toContain("floating: panels.floating,");
 });
