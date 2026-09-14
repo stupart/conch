@@ -65,34 +65,33 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertTrue(check.contains { $0.allSatisfy { $0 > 0.95 } }, "no white checkmark in the ready orb")
     }
 
-    /// The fog gathers on the screen edges it touches and centres itself when it touches none.
+    /// Pushed against an edge the fog gets smaller rather than leaving the screen, and it faces its nearest corner.
     @MainActor
-    func testTheFogGathersOnTheScreenEdgesItTouches() {
-        XCTAssertEqual(ConversationFog.anchor([.leading, .bottom]), .bottomLeading)
-        XCTAssertEqual(ConversationFog.anchor([]), .center)
-        XCTAssertEqual(ConversationFog.anchor([.trailing]), UnitPoint(x: 1, y: 0.5))
-        XCTAssertEqual(ConversationFog.anchor([.leading, .trailing, .bottom]), UnitPoint(x: 0.5, y: 1))
-        XCTAssertEqual(ConversationFog.reach([.leading, .bottom]), 1.1)
-        XCTAssertEqual(ConversationFog.reach([.trailing]), 0.85)
-        XCTAssertEqual(ConversationFog.reach([]), 0.62)
-        // The words sit toward the edge the fog gathers on, clear of every free edge's fade.
-        let right = ConversationFog.textFrame(in: CGSize(width: 560, height: 520), flush: [.trailing], fullScreen: false)
-        XCTAssertEqual(right.maxX, 560 - ConchSpace.x12, accuracy: 0.01)
-        let floating = ConversationFog.textFrame(in: CGSize(width: 640, height: 470), flush: [], fullScreen: false)
-        let fade = ConversationFog.edgeFade(CGSize(width: 640, height: 470))
-        XCTAssertGreaterThanOrEqual(floating.minX, fade + ConchSpace.x4 - 0.01)
-        XCTAssertEqual(floating.maxY, 470 - fade - ConchSpace.x4, accuracy: 0.01)
-        XCTAssertGreaterThanOrEqual(floating.minY, fade + ConchSpace.x4 + ConversationFog.buttonRoom - 0.01)
-        // The default corner keeps its column; a bigger panel gives the words more room both ways.
-        let corner = ConversationFog.textFrame(in: CGSize(width: 760, height: 560), flush: [.leading, .bottom], fullScreen: false)
-        XCTAssertEqual(corner.width, 560, accuracy: 0.01)
-        let big = ConversationFog.textFrame(in: CGSize(width: 1400, height: 1000), flush: [.leading, .bottom], fullScreen: false)
+    func testTheFogFitsItsScreenAndFacesItsNearestCorner() {
+        let screen = CGRect(x: 0, y: 0, width: 1728, height: 1000)
+        let least = CGSize(width: 480, height: 360)
+        let inside = CGRect(x: 100, y: 100, width: 760, height: 560)
+        XCTAssertEqual(FogPlacement.fit(inside, in: screen, minSize: least), inside)
+        // 200 pt past the left edge: pinned to it, 200 pt narrower.
+        XCTAssertEqual(FogPlacement.fit(CGRect(x: -200, y: 100, width: 760, height: 560), in: screen, minSize: least), CGRect(x: 0, y: 100, width: 560, height: 560))
+        // Past the top-right corner: cut back on both.
+        XCTAssertEqual(FogPlacement.fit(CGRect(x: 1100, y: 600, width: 760, height: 560), in: screen, minSize: least), CGRect(x: 1100, y: 600, width: 628, height: 400))
+        // Never below its minimum: it stops at the edge instead.
+        XCTAssertEqual(FogPlacement.fit(CGRect(x: -500, y: 100, width: 760, height: 560), in: screen, minSize: least), CGRect(x: 0, y: 100, width: 480, height: 560))
+        XCTAssertEqual(FogPlacement.fit(CGRect(x: 1600, y: 100, width: 760, height: 560), in: screen, minSize: least), CGRect(x: 1248, y: 100, width: 480, height: 560))
+        // Nearest corner, y up; near a middle line it keeps the one it has.
+        XCTAssertEqual(FogCorner.nearest(to: CGRect(x: 1200, y: 700, width: 400, height: 200), in: screen, current: .bottomLeading), .topTrailing)
+        XCTAssertEqual(FogCorner.nearest(to: CGRect(x: 0, y: 0, width: 400, height: 300), in: screen, current: .topTrailing), .bottomLeading)
+        XCTAssertEqual(FogCorner.nearest(to: CGRect(x: 704, y: 0, width: 400, height: 300), in: screen, current: .bottomLeading), .bottomLeading)
+        XCTAssertEqual(FogCorner.nearest(to: CGRect(x: 704, y: 0, width: 400, height: 300), in: screen, current: .bottomTrailing), .bottomTrailing)
+        // The words sit in the fog's corner; the default keeps its 560 pt column, and a bigger panel gives them room.
+        let topRight = ConversationFog.textFrame(in: CGSize(width: 760, height: 560), corner: .topTrailing, fullScreen: false)
+        XCTAssertEqual(topRight.maxX, 760 - ConchSpace.x12, accuracy: 0.01)
+        XCTAssertEqual(topRight.minY, ConchSpace.x12 + ConversationFog.buttonRoom, accuracy: 0.01)
+        XCTAssertEqual(ConversationFog.textFrame(in: CGSize(width: 760, height: 560), corner: .bottomLeading, fullScreen: false).width, 560, accuracy: 0.01)
+        let big = ConversationFog.textFrame(in: CGSize(width: 1400, height: 1000), corner: .bottomLeading, fullScreen: false)
         XCTAssertGreaterThan(big.width, 800)
         XCTAssertGreaterThan(big.height, 700)
-        // The fade scales with the panel, within limits.
-        XCTAssertEqual(ConversationFog.edgeFade(CGSize(width: 480, height: 360)), 57.6, accuracy: 0.01)
-        XCTAssertEqual(ConversationFog.edgeFade(CGSize(width: 3000, height: 2000)), 96)
-        XCTAssertEqual(ConversationFog.edgeFade(CGSize(width: 100, height: 100)), 32)
     }
 
     func testHairlinesStayAtTenPercentOrLess() {
