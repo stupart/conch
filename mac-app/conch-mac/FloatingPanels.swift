@@ -41,8 +41,6 @@ final class FloatingPanels: ObservableObject {
     /// The open fog's size, to go back to from the handle.
     private var expandedSize = NSSize(width: 760, height: 560)
     private static let fogMinSize = NSSize(width: 480, height: 360)
-    /// A blur mask with nothing in it: collapsed, the fog is only its handle.
-    private static let noBlur = NSImage(size: NSSize(width: 1, height: 1), flipped: false) { _ in true }
     private var frameBeforeFullScreen: NSRect?
     private let controlBar = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private let fog = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered, defer: true)
@@ -89,11 +87,16 @@ final class FloatingPanels: ObservableObject {
         blur.material = .underWindowBackground
         blur.blendingMode = .behindWindow
         blur.state = .active
+        // The blur and the words are siblings: a visual effect view's mask shapes everything inside it, which faded
+        // the words with the fog and hid the collapsed handle along with the blur.
+        let container = NSView()
+        fog.contentView = container
         let words = FirstClickHostingView(rootView: ConversationFogHost(store: store, panels: self))
-        words.autoresizingMask = [.width, .height]
-        blur.addSubview(words)
-        fog.contentView = blur
-        words.frame = blur.bounds
+        for view in [blur, words] as [NSView] {
+            view.frame = container.bounds
+            view.autoresizingMask = [.width, .height]
+            container.addSubview(view)
+        }
         place(fog, name: Self.conversationFrameName, size: NSSize(width: 760, height: 560)) { screen, _ in
             // The bottom-left corner.
             screen.origin
@@ -166,12 +169,14 @@ final class FloatingPanels: ObservableObject {
             fog.styleMask.remove(.resizable)
             fog.minSize = .zero
             fog.setFrame(NSRect(origin: origin, size: NSSize(width: FogHandle.side, height: FogHandle.side)), display: true)
-            blur.maskImage = Self.noBlur
+            // Collapsed, the fog is only its handle.
+            blur.isHidden = true
         } else {
             fog.styleMask.insert(.resizable)
             fog.minSize = Self.fogMinSize
             fog.setFrame(NSRect(origin: origin, size: expandedSize), display: true)
             fog.setFrameAutosaveName(Self.conversationFrameName)
+            blur.isHidden = false
             fogMoved()
         }
     }

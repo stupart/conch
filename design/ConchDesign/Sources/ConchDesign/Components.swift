@@ -704,7 +704,7 @@ public struct FogHandle: View {
         }
         .buttonStyle(.plain)
         // Faint at rest, clear under the pointer; hover may never arrive, so never invisible.
-        .opacity(hovering ? 1 : 0.55)
+        .opacity(hovering ? 1 : 0.8)
         .onHover { hovering = $0 }
         .animation(ConchMotion.animation(ConchMotion.quick, reduceMotion: reduceMotion), value: hovering)
         .accessibilityLabel("Show conversation")

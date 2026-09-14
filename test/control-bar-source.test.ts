@@ -225,3 +225,18 @@ test("M3: the fog follows the screen edges it sits on and fades on every other e
     "LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)\n                        .frame(height: ConchSpace.x4)",
   );
 });
+
+/**
+ * A visual effect view's mask shapes everything inside it. With the words inside the blur, the fog's mask faded the
+ * words themselves, and collapsing (an empty mask) hid the handle: Tyler, "when i press the (v) it just disappears".
+ */
+test("M3: the blur sits behind the words as a sibling, so its mask never touches the words or the handle", () => {
+  expect(panels).toContain("fog.contentView = container");
+  expect(panels).toContain("for view in [blur, words] as [NSView] {");
+  expect(panels).not.toContain("blur.addSubview");
+  expect(panels).not.toContain("fog.contentView = blur");
+  const collapse = member(panels, "private func setCollapsed(_ collapsed: Bool) {");
+  expect(collapse).toContain("blur.isHidden = true");
+  expect(collapse).toContain("blur.isHidden = false");
+  expect(panels).not.toContain("noBlur");
+});
