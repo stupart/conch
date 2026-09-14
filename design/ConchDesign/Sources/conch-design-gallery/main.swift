@@ -180,6 +180,47 @@ try render("tokens-scale") {
     }
 }
 
+// Motion: each spring seen rather than read
+try render("tokens-motion") {
+    Heading(title: "Motion", note: "Each spring from 0 to 1 over 1.2 s, stepped the way the apps step it. Tuned in the overlay lab; Reduce Motion drops the bounce.")
+    ForEach(ConchMotion.springs, id: \.name) { item in
+        HStack(spacing: 20) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: item.name).font(ConchType.uiEmphasis).foregroundStyle(ConchColor.textPrimary)
+                Text(verbatim: "bounce \(item.spring.bounce) · \(item.spring.response) s").font(ConchType.code).foregroundStyle(ConchColor.textSecondary)
+            }
+            .frame(width: 200, alignment: .leading)
+            SpringCurve(spring: item.spring).frame(width: 640, height: 64)
+        }
+    }
+}
+
+/// A spring's step response over `seconds`, against a hairline at its target.
+struct SpringCurve: View {
+    let spring: ConchSpring
+    var seconds = 1.2
+
+    var body: some View {
+        Canvas { context, size in
+            let scheme = context.environment.colorScheme
+            // 0 at the bottom, 1 at 70% up, leaving room above for the overshoot.
+            func y(_ value: CGFloat) -> CGFloat { size.height * (0.95 - 0.7 * value) }
+            var target = Path()
+            target.move(to: CGPoint(x: 0, y: y(1)))
+            target.addLine(to: CGPoint(x: size.width, y: y(1)))
+            context.stroke(target, with: .color(ConchColor.hairlineStrong.color(scheme)), lineWidth: 1)
+            var value: CGFloat = 0, velocity: CGFloat = 0
+            var curve = Path()
+            curve.move(to: CGPoint(x: 0, y: y(0)))
+            for frame in 1...240 {
+                spring.step(&value, velocity: &velocity, to: 1, dt: seconds / 240)
+                curve.addLine(to: CGPoint(x: size.width * CGFloat(frame) / 240, y: y(value)))
+            }
+            context.stroke(curve, with: .color(ConchColor.accent.color(scheme)), lineWidth: 2)
+        }
+    }
+}
+
 // The mark
 try render("mark") {
     Heading(title: "The conch mark", note: "Menu bar only. 16 pt, cropped tight, 1.15 pt stroke; Talk is a template image.")
