@@ -69,7 +69,8 @@ describe("the Mac composer belongs to one session", () => {
     expect(composer).toMatch(/@Binding var draft: String/);
     expect(composer).toMatch(/@Binding var attachments: \[URL\]/);
     expect(composer).not.toMatch(/@State private var (draft|attachments)/);
-    expect(dashboard).toMatch(/@StateObject private var composerDrafts = ComposerDraftStore\(\)/);
+    expect(composer).toContain("static let shared = ComposerDraftStore()");
+    expect(dashboard).toMatch(/@ObservedObject private var composerDrafts = ComposerDraftStore\.shared/);
     expect(dashboard).toContain("draft: composerDrafts.textBinding(for: row.id)");
     expect(dashboard).toContain("attachments: composerDrafts.attachmentsBinding(for: row.id)");
   });

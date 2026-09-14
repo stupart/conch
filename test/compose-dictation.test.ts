@@ -54,9 +54,7 @@ test("dictation goes to the session that asked, not the one now focused", () => 
   );
   // Keyed on the id, not the text: state republishes several times a second.
   expect(dashboard).toContain(".onChange(of: state?.live.dictated?.id)");
-  expect(dashboard).toContain("current != appliedDictationID");
-  // The target comes from the dictation, never from current focus.
-  expect(dashboard).toContain("composerDrafts.appendDictation(dictated.text, to: dictated.sessionId)");
+  expect(dashboard).toContain("composerDrafts.apply(state?.live.dictated)");
   expect(dashboard).not.toContain("appendDictation(spoken, to: row.id)");
   // The composer's own mic must ask for the composer.
   expect(dashboard).toContain(".dictate(sessionId: row.id, label: row.label)");
@@ -65,6 +63,10 @@ test("dictation goes to the session that asked, not the one now focused", () => 
     join(import.meta.dir, "../mac-app/conch-mac/ComposerView.swift"),
     "utf8",
   );
+  // Applied once by id in the shared draft store, which the dashboard and the fog both call.
+  expect(composer).toContain("guard let dictated, dictated.id != appliedDictationID else { return }");
+  // The target comes from the dictation, never from current focus.
+  expect(composer).toContain("appendDictation(dictated.text, to: dictated.sessionId)");
   // Appended to what was typed, not substituted for it.
   expect(composer).toContain("existing.isEmpty ? spoken : existing + \" \" + spoken");
 });

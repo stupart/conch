@@ -27,6 +27,8 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     static func install(store: StateStore) {
         guard installed == nil else { return }
         installed = ConchStatusItem(store: store)
+        // After the status item, which registers the defaults that show and hide the panels.
+        FloatingPanels.install(store: store)
     }
 
     private let store: StateStore
@@ -94,7 +96,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         let defaults = UserDefaults.standard
         menu.removeAllItems()
 
-        menu.addItem(header(voice, detail: headerDetail(state, voice)))
+        menu.addItem(header(voice, detail: Self.detail(state, voice, message: store.daemonMessage)))
         menu.addItem(.separator())
         menu.addItem(entry("Talk", #selector(talk), checked: !quiet))
         menu.addItem(entry("Quiet", #selector(quietMode), checked: quiet))
@@ -104,7 +106,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         stop.isEnabled = state?.live.isExchangeActive == true
         menu.addItem(stop)
         menu.addItem(.separator())
-        // M3: the control bar and the conversation layer are not built yet; these only keep the preference.
+        // FloatingPanels watches these two defaults and shows or hides its panels as they change.
         menu.addItem(entry("Show control bar", #selector(toggleControlBar), checked: defaults.bool(forKey: Self.showControlBarKey)))
         menu.addItem(entry("Show conversation", #selector(toggleConversation), checked: defaults.bool(forKey: Self.showConversationKey)))
 
@@ -131,8 +133,9 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         return header
     }
 
-    private func headerDetail(_ state: PublishedState?, _ voice: VoiceState) -> String {
-        if let message = store.daemonMessage { return message }
+    /// What the voice is about, under its state: in the menu header and on the control bar.
+    nonisolated static func detail(_ state: PublishedState?, _ voice: VoiceState, message: String?) -> String {
+        if let message { return message }
         if voice == .ready {
             let ready = Self.readyRows(state)
             return ready.count == 1 ? ready[0].label : "\(ready.count) sessions"
@@ -205,19 +208,33 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     /// The item's own window knows, so watch it: log each change, and keep conch a regular app with its
     /// Dock icon and window, so it stays one click away. A full-screen space hiding the whole menu bar
     /// reads the same, and the log line says so.
+    ///
+    /// On macOS 26 the item is drawn by Control Center, but AppKit still gives the button a stand-in window
+    /// whose occlusion state loses `.visible` when there is no room (checked in a scratch app, Sep 2026). That
+    /// window may not exist yet when conch installs the item, which used to end the watch silently, so it is
+    /// attached again after the delay, and a watch that still cannot attach says so once.
     private func watchOcclusion() {
-        guard let window = item.button?.window else { return }
+        attachOcclusionObserver()
+        // A bar already full at launch may never post a change, so look once it has had time to lay out.
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self else { return }
+            attachOcclusionObserver()
+            guard occlusionObserver != nil else {
+                return NSLog("conch: cannot watch the menu bar item (its button has no window), so a notch hiding it goes unnoticed")
+            }
+            occlusionChanged()
+        }
+    }
+
+    private func attachOcclusionObserver() {
+        guard occlusionObserver == nil, let window = item.button?.window else { return }
         occlusionObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didChangeOcclusionStateNotification,
             object: window,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.occlusionChanged() }
-        }
-        // A bar already full at launch may never post a change, so look once it has had time to lay out.
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
-            self?.occlusionChanged()
         }
     }
 

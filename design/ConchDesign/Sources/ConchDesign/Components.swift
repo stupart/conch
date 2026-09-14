@@ -94,11 +94,16 @@ public struct VoiceOrb: View {
             case .quiet:
                 Circle().fill(ConchColor.fill)
                 VoiceGlyph(.quiet, size: size / 2).foregroundStyle(ConchColor.textSecondary)
-            case .talk, .ready:
+            case .talk:
                 Circle().fill(ConchColor.fill)
                 Image(systemName: "mic")
                     .font(.system(size: size * 15 / 36, weight: .semibold))
                     .foregroundStyle(ConchColor.textSecondary)
+            case .ready:
+                Circle().fill(ConchColor.ready)
+                Image(systemName: "checkmark")
+                    .font(.system(size: size * 15 / 36, weight: .bold))
+                    .foregroundStyle(ConchColor.onVoice)
             }
         }
         .frame(width: size, height: size)
@@ -310,6 +315,7 @@ public struct InlineReplyLine: View {
                     .textFieldStyle(.plain)
                     .font(ConchType.conversationNow)
                     .foregroundStyle(ConchColor.textPrimary)
+                    .onSubmit(onSend)
                     .accessibilityLabel("Reply")
             }
 
@@ -323,6 +329,204 @@ public struct InlineReplyLine: View {
 
     private var caret: some View {
         RoundedRectangle(cornerRadius: 1.5).fill(ConchColor.textPrimary).frame(width: 2.5, height: 26)
+    }
+}
+
+// MARK: - ControlBar
+
+/// The floating control bar (M3): the voice and what it is about, Talk or Quiet, and the conversation.
+public struct ControlBar: View {
+    let state: VoiceState
+    let detail: String
+    @Binding var mode: VoiceMode
+    let conversationShown: Bool
+    let onConversation: () -> Void
+
+    public init(
+        state: VoiceState,
+        detail: String,
+        mode: Binding<VoiceMode>,
+        conversationShown: Bool,
+        onConversation: @escaping () -> Void
+    ) {
+        self.state = state
+        self.detail = detail
+        _mode = mode
+        self.conversationShown = conversationShown
+        self.onConversation = onConversation
+    }
+
+    public var body: some View {
+        GlassPill("Voice controls") {
+            // A fixed width, so the bar keeps its size and place as the state and the session change.
+            VoiceStateLabel(state: state, detail: detail)
+                .frame(width: 196, alignment: .leading)
+            TalkQuietSwitch(mode: $mode)
+            IconButton(
+                conversationShown ? "bubble.left.fill" : "bubble.left",
+                label: conversationShown ? "Hide conversation" : "Show conversation",
+                style: conversationShown ? .primary : .plain,
+                action: onConversation
+            )
+        }
+    }
+}
+
+// MARK: - ConversationFog
+
+/// One turn in the conversation fog.
+public struct ConversationTurn: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let fromYou: Bool
+    public let text: String
+
+    public init(id: String, fromYou: Bool, text: String) {
+        self.id = id
+        self.fromYou = fromYou
+        self.text = text
+    }
+}
+
+/// The conversation as a soft fog rather than a pane (M3): no edge, just a quieter patch of screen with the
+/// words in it. The latest turn is large, earlier ones smaller and fading as they rise, and the reply line
+/// sits at the bottom. The blur is the host's (a behind-window visual effect view on the Mac, masked with
+/// `density`); this draws the tint, the words, and a full-screen button that shows on hover.
+public struct ConversationFog: View {
+    let turns: [ConversationTurn]
+    @Binding var draft: String
+    let isListening: Bool
+    let isFullScreen: Bool
+    let onMic: () -> Void
+    let onSend: () -> Void
+    let onFullScreen: () -> Void
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.conchRendersStatically) private var rendersStatically
+
+    public init(
+        turns: [ConversationTurn],
+        draft: Binding<String>,
+        isListening: Bool,
+        isFullScreen: Bool,
+        onMic: @escaping () -> Void,
+        onSend: @escaping () -> Void,
+        onFullScreen: @escaping () -> Void
+    ) {
+        self.turns = turns
+        _draft = draft
+        self.isListening = isListening
+        self.isFullScreen = isFullScreen
+        self.onMic = onMic
+        self.onSend = onSend
+        self.onFullScreen = onFullScreen
+    }
+
+    /// Where the fog is: everywhere when full screen; otherwise strongest in the bottom-left corner and gone
+    /// three quarters of the way out, so there is no edge to look at. A mask, so only its alpha matters.
+    public static func density(fullScreen: Bool) -> EllipticalGradient {
+        EllipticalGradient(
+            stops: fullScreen
+                ? [.init(color: .black, location: 0), .init(color: .black, location: 1)]
+                : [
+                    .init(color: .black, location: 0.36),
+                    .init(color: .black.opacity(0.75), location: 0.5),
+                    .init(color: .black.opacity(0.3), location: 0.64),
+                    .init(color: .clear, location: 0.78),
+                ],
+            center: .bottomLeading,
+            endRadiusFraction: 1.1
+        )
+    }
+
+    /// How much of the fog colour lies over the blur where the fog is densest.
+    static let tintOpacity = 0.86
+
+    public var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: isFullScreen ? .bottom : .bottomLeading) {
+                Rectangle()
+                    .fill(ConchColor.fog)
+                    .opacity(Self.tintOpacity)
+                    .mask(Self.density(fullScreen: isFullScreen))
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: ConchSpace.x5) {
+                    words
+                    InlineReplyLine(text: $draft, isListening: isListening, onMic: onMic, onSend: onSend)
+                }
+                // In the corner the words stay where the fog is dense; full screen they take a reading column.
+                .frame(
+                    width: max(0, isFullScreen ? min(760, proxy.size.width - 2 * ConchSpace.x12) : min(560, proxy.size.width * 0.66)),
+                    height: max(0, proxy.size.height * (isFullScreen ? 0.8 : 0.62)),
+                    alignment: .bottomLeading
+                )
+                // Just above the words at the leading edge, where the fog is still dense, rather than out over
+                // the other app or on top of the oldest turn.
+                .overlay(alignment: .topLeading) { fullScreenButton.offset(y: -(28 + ConchSpace.x2)) }
+                .padding(.leading, isFullScreen ? 0 : ConchSpace.x12)
+                .padding(.bottom, ConchSpace.x10)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+        .onHover { hovering = $0 }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Conversation")
+    }
+
+    private var words: some View {
+        let recent = Array(turns.suffix(8))
+        let column = VStack(alignment: .leading, spacing: ConchSpace.x4) {
+            ForEach(Array(recent.enumerated()), id: \.element.id) { index, turn in
+                let age = recent.count - 1 - index
+                VStack(alignment: .leading, spacing: ConchSpace.x1) {
+                    if turn.fromYou {
+                        Text("You")
+                            .font(ConchType.meta)
+                            .textCase(.uppercase)
+                            .foregroundStyle(ConchColor.textTertiary)
+                    }
+                    Text(Self.inlineMarkdown(turn.text))
+                        .font(age == 0 ? ConchType.conversationNow : ConchType.conversationPast)
+                        .foregroundStyle(age == 0 ? ConchColor.textPrimary : ConchColor.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                // The turn before the latest reads plainly; older ones fade as they rise.
+                .opacity(max(0.45, 1 - 0.18 * Double(max(0, age - 1))))
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+
+        return Group {
+            if rendersStatically {
+                // ImageRenderer cannot draw a scroll view: the same column, pinned to the bottom.
+                column.frame(maxHeight: .infinity, alignment: .bottom).clipped()
+            } else {
+                ScrollView { column }
+                    .scrollIndicators(.never)
+                    .defaultScrollAnchor(.bottom)
+            }
+        }
+        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.16)], startPoint: .top, endPoint: .bottom))
+    }
+
+    private var fullScreenButton: some View {
+        IconButton(
+            isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
+            label: isFullScreen ? "Exit full screen" : "Full screen",
+            size: 28,
+            action: onFullScreen
+        )
+        .keyboardShortcut(.return, modifiers: .command)
+        // Quiet until the pointer is over the fog, but never gone: hover may not reach a panel of an app that is
+        // not active. Always there for VoiceOver and for Command-Return.
+        .opacity(hovering || rendersStatically ? 1 : 0.4)
+        .animation(ConchMotion.animation(ConchMotion.quick, reduceMotion: reduceMotion), value: hovering)
+    }
+
+    /// Agent replies are markdown; the fog shows the inline parts (emphasis, code, links) and keeps line breaks.
+    static func inlineMarkdown(_ text: String) -> AttributedString {
+        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(text)
     }
 }
 

@@ -63,7 +63,8 @@ enum DebugSnapshot {
             )
         }
 
-        let candidates = NSApp.windows.filter { $0.isVisible && !$0.isMiniaturized }
+        // Not the floating panels (M3): this photographs the conch window.
+        let candidates = NSApp.windows.filter { $0.isVisible && !$0.isMiniaturized && !($0 is FloatingPanel) }
         // Whatever is in FRONT is what someone wants a picture of.
         //
         // This used to take the largest visible window on the reasoning that

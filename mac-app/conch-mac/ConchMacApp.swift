@@ -157,7 +157,9 @@ private final class ConchAppDelegate: NSObject,
         _ sender: NSApplication,
         hasVisibleWindows: Bool
     ) -> Bool {
-        if hasVisibleWindows { return true }
+        // The floating panels (M3) are visible windows too, but not the conch
+        // window: only a window that can be main counts as one to show.
+        if hasVisibleWindows, sender.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) { return true }
         // Prefer restoring the real window; only ask AppKit to rebuild the
         // scene if there is genuinely nothing to raise.
         if let existing = sender.windows.first(where: { $0.canBecomeMain }) {

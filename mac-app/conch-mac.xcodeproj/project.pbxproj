@@ -36,6 +36,7 @@
 		A100000000000000000000952 /* RemoteMacViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000952 /* RemoteMacViews.swift */; };
 		A100000000000000000000953 /* AudioHolderStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000953 /* AudioHolderStore.swift */; };
 		A10000000000000000000960 /* StatusItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000960 /* StatusItem.swift */; };
+		A10000000000000000000962 /* FloatingPanels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000962 /* FloatingPanels.swift */; };
 		A10000000000000000000961 /* ConchDesign in Frameworks */ = {isa = PBXBuildFile; productRef = AB0000000000000000000002 /* ConchDesign */; };
 /* End PBXBuildFile section */
 
@@ -71,6 +72,7 @@
 		A200000000000000000000952 /* RemoteMacViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMacViews.swift; sourceTree = "<group>"; };
 		A200000000000000000000953 /* AudioHolderStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioHolderStore.swift; sourceTree = "<group>"; };
 		A20000000000000000000960 /* StatusItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusItem.swift; sourceTree = "<group>"; };
+		A20000000000000000000962 /* FloatingPanels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingPanels.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -109,6 +111,7 @@
 				A200000000000000000000950 /* DirectHTTPTransport.swift */,
 				A200000000000000000000953 /* AudioHolderStore.swift */,
 				A20000000000000000000960 /* StatusItem.swift */,
+				A20000000000000000000962 /* FloatingPanels.swift */,
 				A20000000000000000000006 /* ReviewView.swift */,
 				A20000000000000000000007 /* WebView.swift */,
 				A2000000000000000000000C /* ConchSocketClient.swift */,
@@ -241,6 +244,7 @@
 				A100000000000000000000950 /* DirectHTTPTransport.swift in Sources */,
 				A100000000000000000000953 /* AudioHolderStore.swift in Sources */,
 				A10000000000000000000960 /* StatusItem.swift in Sources */,
+				A10000000000000000000962 /* FloatingPanels.swift in Sources */,
 				A10000000000000000000006 /* ReviewView.swift in Sources */,
 				A10000000000000000000007 /* WebView.swift in Sources */,
 				A1000000000000000000000A /* ConchSocketClient.swift in Sources */,
