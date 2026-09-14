@@ -46,9 +46,8 @@ final class FloatingPanels: ObservableObject {
     /// How wide the strips along the fog's free edges are that resize it: wide enough to find without looking
     /// (Tyler: "make the area where you can grab an edge to resize much much larger").
     static let resizeGrab: CGFloat = 96
-    // ponytail: the fog's look is off while dragging and resizing are tuned (Tyler, 2026-09-14): a 1 pt outline
-    // stands in for it. The next pass brings back a blur that gathers at the docked edges.
-    static let showsFog = false
+    /// The overlay's look: the system blur and a tint, gathered in the corner it is docked to.
+    static let showsFog = true
 
     private static var installed: FloatingPanels?
 
@@ -484,9 +483,6 @@ private struct ConversationFogHost: View {
                 .blur(radius: 10 * panels.throwMotion)
                 .overlay {
                     if !panels.isFullScreen {
-                        // ponytail: a temporary 1 pt outline standing in for the fog's look while dragging and
-                        // resizing are tuned (Tyler, 2026-09-14); the blur comes back in the next pass.
-                        Rectangle().strokeBorder(Color.black, lineWidth: 1).allowsHitTesting(false)
                         resizeHandles
                     }
                     // Above the resize strips, so the top strip never takes a click meant for a button.

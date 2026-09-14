@@ -230,9 +230,9 @@ test("M3: the fog stays docked in a corner, is thrown into a corner by its middl
     "bottom: max(0, visible.minY - max(frame.minY, full.minY))",
   );
   expect(components).toContain("let top = insets.top + padding + buttonSize + ConchSpace.x3");
-  // For now an outline stands in for the fog's look.
-  expect(panels).toContain("static let showsFog = false");
-  expect(panels).toContain("Rectangle().strokeBorder(Color.black, lineWidth: 1).allowsHitTesting(false)");
+  // The overlay's look is on (Tyler: "i don't see any overlay"), and the testing outline is gone.
+  expect(panels).toContain("static let showsFog = true");
+  expect(panels).not.toContain("strokeBorder(Color.black");
   expect(components).toContain("center: corner.unitPoint,");
   // The transcript still ends in a short fade above the reply, not a cut.
   expect(components).toContain(
