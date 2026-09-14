@@ -30,7 +30,19 @@ export interface InjectTextOptions {
   osa?: OsaRunner;
   /** Test seam: the controlling tty of a pid, as `ps -o tty=` prints it. */
   ttyForPid?(pid: number): Promise<string>;
+  /** Test seam: what is on the clipboard, to give it back after a paste. */
+  readClipboard?(): Promise<string>;
 }
+
+/**
+ * Longer than this, or across lines, words are pasted rather than typed.
+ *
+ * System Events types one keystroke at a time. A long message outlives the AppleScript bound, and a timed-out
+ * `keystroke` carries on typing after conch has given up, into whatever is in front, beeping at every character
+ * nothing takes: Tyler sent a long reply to a Codex session and had to force-quit out of the noise (2026-09-14). A
+ * typed newline is also a Return, which sent multi-line messages in pieces. A paste arrives whole, in one event.
+ */
+export const PASTE_OVER_CHARS = 280;
 
 /**
  * Where the step log goes. Beside the daemon log, so a suite that redirects
@@ -88,6 +100,7 @@ export async function injectText(
   };
   step(`begin pid=${sessionPid ?? "none"} chars=${text.length}`);
   const copyToClipboard = options.copyToClipboard ?? toClipboard;
+  const readClipboard = options.readClipboard ?? fromClipboard;
   const osa = options.osa ?? runOsa;
   const ttyForPid = options.ttyForPid ?? ttyOf;
   const mayInject = async (): Promise<boolean> => beforeInject ? await beforeInject() : true;
@@ -149,15 +162,27 @@ export async function injectText(
     step("front window is not the session's — not typing");
     return clipboard("front-window-changed");
   }
-  const typed = await osa(
-    ["on run argv", 'tell application "System Events" to keystroke (item 1 of argv)', "end run"],
-    [text],
-  );
+  let typed: { text: string; timedOut: boolean };
+  if (text.length > PASTE_OVER_CHARS || text.includes("\n")) {
+    // ponytail: gives back plain text only; a picture on the clipboard is replaced by the message.
+    const previous = await readClipboard().catch(() => "");
+    await copyToClipboard(text);
+    typed = await osa(['tell application "System Events" to keystroke "v" using command down']);
+    step(`osascript paste returned (${text.length} chars)`);
+    // Let the terminal take the paste before the clipboard is given back.
+    await Bun.sleep(150);
+    if (previous && previous !== text) await copyToClipboard(previous);
+  } else {
+    typed = await osa(
+      ["on run argv", 'tell application "System Events" to keystroke (item 1 of argv)', "end run"],
+      [text],
+    );
+    step("osascript keystroke returned");
+  }
   if (typed.timedOut) {
     step("osascript keystroke TIMED OUT — something modal is in front");
     return clipboard("system-dialog-blocking");
   }
-  step("osascript keystroke returned");
   if (submit) {
     // Separate, delayed Return: bundling it with the text arrived before the
     // terminal finished ingesting the keystrokes. Scale the settle to the
@@ -385,6 +410,11 @@ async function targetInFront(tty: string, osa: OsaRunner): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** The clipboard's plain text, or "" when it holds none. */
+async function fromClipboard(): Promise<string> {
+  return (await $`pbpaste`.quiet().nothrow()).text();
 }
 
 export async function toClipboard(text: string): Promise<void> {
