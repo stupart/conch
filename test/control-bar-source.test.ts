@@ -81,13 +81,15 @@ test("M3: the fog collapses to a small handle and opens again at the size it had
   );
   const collapse = member(panels, "private func setCollapsed(_ collapsed: Bool) {");
   expect(collapse).toContain("if collapsed, isFullScreen { toggleFullScreen() }");
-  expect(collapse).toContain("expandedSize = fog.frame.size");
-  expect(collapse).toContain("fog.setFrame(NSRect(origin: origin, size: NSSize(width: FogHandle.side, height: FogHandle.side)), display: true)");
-  expect(collapse).toContain("fog.setFrame(NSRect(origin: origin, size: expandedSize), display: true)");
+  expect(collapse).toContain("expandedFrame = fog.frame");
+  expect(collapse).toContain("fog.setFrame(NSRect(x: x, y: y, width: side, height: side), display: true)");
+  expect(collapse).toContain("fog.setFrame(expandedFrame, display: true)");
+  // The handle sits in the fog's own corner.
+  expect(collapse).toContain("let x = corner.leading ? expandedFrame.minX : expandedFrame.maxX - side");
   // The collapsed frame is never the one saved: autosave stops before it shrinks and resumes once it is open.
   expect(collapse.indexOf('fog.setFrameAutosaveName("")')).toBeGreaterThan(-1);
-  expect(collapse.indexOf('fog.setFrameAutosaveName("")')).toBeLessThan(collapse.indexOf("size: NSSize(width: FogHandle.side"));
-  expect(collapse.indexOf("fog.setFrameAutosaveName(Self.conversationFrameName)")).toBeGreaterThan(collapse.indexOf("size: expandedSize"));
+  expect(collapse.indexOf('fog.setFrameAutosaveName("")')).toBeLessThan(collapse.indexOf("width: side, height: side"));
+  expect(collapse.indexOf("fog.setFrameAutosaveName(Self.conversationFrameName)")).toBeGreaterThan(collapse.indexOf("fog.setFrame(expandedFrame"));
   expect(collapse).toContain("fog.minSize = .zero");
   expect(collapse).toContain("fog.minSize = Self.fogMinSize");
   // The fog's button collapses it, and the handle opens it.
@@ -141,7 +143,7 @@ test("M3: the fog replies through inject and dictates through the composer's dic
   // A fog, not a pane: the fog tint, and a behind-window blur masked to the corner.
   expect(components).toContain(".fill(ConchColor.fog)");
   expect(panels).toContain("blur.blendingMode = .behindWindow");
-  expect(panels).toContain("blur.maskImage = Self.blurMask(size: frame.size, flush: edges)");
+  expect(panels).toContain("blur.maskImage = Self.blurMask(corner)");
   expect(components).toContain(".font(Self.font(latest: age == 0, fullScreen: isFullScreen))");
   expect(member(components, "static func font(latest: Bool, fullScreen: Bool) -> Font {")).toContain(
     "case (true, true): ConchType.conversationNowFull",
@@ -186,44 +188,30 @@ test("M3: a Dock click still reopens the dashboard while the floating panels are
 });
 
 /**
- * Tyler: "there should never be a hard line at the bottom and it should kinda adjust to the context of where it
- * is on the screen so it looks natural ... as well as if you make it larger or smaller".
+ * Tyler: "revert and try a smart algo that reorients the version we had before as you drag around", and "we shouldn't
+ * allow it to go outside the viewport it should just get smaller or something when pushed against edges".
  */
-test("M3: the fog follows the screen edges it sits on and fades on every other edge, at any size", () => {
-  const moved = member(panels, "private func fogMoved() {");
-  for (const line of [
-    "if frame.minX - screen.minX <= near { edges.insert(.leading) }",
-    "if screen.maxX - frame.maxX <= near { edges.insert(.trailing) }",
-    "if frame.minY - screen.minY <= near { edges.insert(.bottom) }",
-    "if screen.maxY - frame.maxY <= near { edges.insert(.top) }",
-    "blur.maskImage = Self.blurMask(size: frame.size, flush: edges)",
-  ]) expect(moved).toContain(line);
-  // The whole screen, not the visible frame: a fog resting on the Dock is not on an edge, so it fades there.
-  expect(moved).toContain("let screen = (fog.screen ?? NSScreen.screens.first)?.frame");
+test("M3: the corner fog faces its nearest screen corner, and shrinks rather than leaving the screen", () => {
+  const changed = member(panels, "private func fogChanged() {");
+  expect(changed).toContain("let fitted = FogPlacement.fit(NSRect(origin: virtualOrigin, size: preferredSize), in: screen, minSize: Self.fogMinSize)");
+  expect(changed).toContain("let next = FogCorner.nearest(to: fitted, in: screen, current: corner)");
+  expect(changed).toContain("blur.maskImage = Self.blurMask(corner)");
+  // The visible frame, so it stays clear of the menu bar and the Dock.
+  expect(changed).toContain("?.visibleFrame");
+  // A drag moves where the fog would be, so pulling it back from an edge grows it again.
+  expect(changed).toContain("virtualOrigin.x += frame.minX - lastFrame.minX");
   expect(panels).toContain("for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {");
-  expect(panels).toContain("forName: NSApplication.didChangeScreenParametersNotification");
-  expect(panels).toContain("flush: panels.flush,");
-  expect(panels).not.toContain("cornerMask");
-  // The tint and the blur share one density, which stops short of every free edge.
-  const densityAt = components.indexOf("public static func density(fullScreen: Bool, flush: Edge.Set");
-  expect(densityAt).toBeGreaterThan(-1);
-  const density = components.slice(densityAt, components.indexOf("public static func edgeFade("));
-  for (const edge of ["leading", "trailing", "top", "bottom"]) {
-    expect(density).toContain(`.padding(.${edge}, flush.contains(.${edge}) ? -fade : fade / 2)`);
-  }
-  expect(density).toContain(".blur(radius: fade / 4)");
-  // Tyler: "need some background blur behind the text so its more readable": thick behind the words wherever they are.
-  expect(density).toContain("textBacking(textFrame(in: proxy.size, flush: flush, fullScreen: false), fade: fade)");
-  expect(components).toContain("let text = Self.textFrame(in: proxy.size, flush: flush, fullScreen: isFullScreen)");
-  expect(components).toContain(".offset(x: text.minX, y: text.minY)");
-  expect(components).toContain(".mask(Self.density(fullScreen: false, flush: flush))");
-  expect(member(components, "public static func edgeFade(_ size: CGSize) -> CGFloat {")).toContain(
-    "min(size.width, size.height) * 0.16",
-  );
-  // And the transcript's bottom is a short fade, not a cut.
+  expect(panels).toContain("corner: panels.corner,");
+  // The corner fog again, pointed at a corner: no per-edge fading and no patch behind the words.
+  expect(components).toContain("center: corner.unitPoint,");
+  for (const gone of ["flush", "textBacking", "edgeFade"]) expect(components).not.toContain(gone);
+  expect(panels).not.toContain("flush");
+  // The transcript still ends in a short fade above the reply, not a cut.
   expect(components).toContain(
     "LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)\n                        .frame(height: ConchSpace.x4)",
   );
+  // A temporary outline of the panel's real bounds while its behaviour is tuned.
+  expect(panels).toContain("Rectangle().strokeBorder(Color.black, lineWidth: 1)");
 });
 
 /**
@@ -254,7 +242,7 @@ test("M3: the control bar fits what it shows, the reply scrolls past five lines,
   expect(panels).toContain(".onPreferenceChange(ControlBarSize.self, perform: onSize)");
   expect(components).toContain("Text(option.title)\n                        .font(ConchType.uiEmphasis)\n                        .fixedSize()");
   expect(components).toContain(".lineLimit(1...5)");
-  expect(member(components, "static func textFrame(in size: CGSize, flush: Edge.Set, fullScreen: Bool) -> CGRect {")).toContain(
-    "min(max(560, size.width * 0.66), 960, size.width - leading - trailing)",
+  expect(member(components, "static func textFrame(in size: CGSize, corner: FogCorner, fullScreen: Bool) -> CGRect {")).toContain(
+    "min(max(560, size.width * 0.66), 960, size.width - 2 * inset)",
   );
 });
