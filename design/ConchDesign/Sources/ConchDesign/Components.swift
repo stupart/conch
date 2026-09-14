@@ -433,7 +433,7 @@ public enum FogCorner: Hashable, Sendable {
 }
 
 /// Where the conversation fog sits: always docked in a corner of its screen, touching one side and the top or the
-/// bottom. Its two other edges are free: they are what it is resized by, and where it fades. Screen coordinates, y up.
+/// bottom. Its two other edges are free: where it fades. Screen coordinates, y up.
 public enum FogDock {
     /// A fog of `size` docked in `corner` of `screen`, never bigger than the screen.
     public static func frame(size: CGSize, corner: FogCorner, in screen: CGRect) -> CGRect {
@@ -456,20 +456,269 @@ public enum FogDock {
         )
     }
 
-    /// `start` resized by dragging `edges` (its free edges) by `delta`: its corner stays where it is, and it keeps
-    /// between `minSize` and the screen.
-    public static func resize(_ start: CGRect, corner: FogCorner, edges: Edge.Set, by delta: CGVector, in screen: CGRect, minSize: CGSize) -> CGRect {
-        var size = start.size
-        if !edges.isDisjoint(with: [.leading, .trailing]) { size.width += corner.leading ? delta.dx : -delta.dx }
-        if !edges.isDisjoint(with: [.top, .bottom]) { size.height += corner.bottom ? delta.dy : -delta.dy }
-        size.width = min(max(size.width, minSize.width), screen.width)
-        size.height = min(max(size.height, minSize.height), screen.height)
-        return frame(size: size, corner: corner, in: screen)
+    /// Biggest: 1280 by 900, never more than the screen.
+    public static func maxSize(in screen: CGRect) -> CGSize {
+        CGSize(width: min(1280, screen.width), height: min(900, screen.height))
     }
 
-    /// The two edges away from `corner`.
-    public static func freeEdges(_ corner: FogCorner) -> Edge.Set {
-        [corner.leading ? .trailing : .leading, corner.bottom ? .top : .bottom]
+    /// Smallest: 480 by 360, never more than the biggest.
+    public static func minSize(in screen: CGRect) -> CGSize {
+        let most = maxSize(in: screen)
+        return CGSize(width: min(480, most.width), height: min(360, most.height))
+    }
+
+    /// A press at `point` (from the fog's corner) resizes it: a deep band along every edge, words and all
+    /// (Tyler: "grabbing onto text area should still allow resize"). Only the middle moves it.
+    public static func resizes(at point: CGPoint, in size: CGSize) -> Bool {
+        let band = max(120, min(size.width, size.height) / 5)
+        return point.x < band || point.x > size.width - band || point.y < band || point.y > size.height - band
+    }
+
+    /// UIScrollView's rubber band: past `lo` or `hi`, `value` gives less the further it goes, never more than 200 pt.
+    public static func rubberBand(_ value: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat {
+        let give = { (x: CGFloat) in (1 - 1 / (x * 0.55 / 200 + 1)) * 200 }
+        return value < lo ? lo - give(lo - value) : value > hi ? hi + give(value - hi) : value
+    }
+
+    /// `start` resized by a drag of `delta` from `corner`, both ways at once: away from the corner grows, toward it
+    /// shrinks (Tyler: "i shouldn't get locked into resizing vertically or horizontally"). Past its limits it rubber-bands.
+    public static func resized(_ start: CGSize, corner: FogCorner, by delta: CGVector, in screen: CGRect) -> CGSize {
+        let least = minSize(in: screen), most = maxSize(in: screen)
+        return CGSize(
+            width: rubberBand(start.width + (corner.leading ? delta.dx : -delta.dx), least.width, most.width),
+            height: rubberBand(start.height + (corner.bottom ? delta.dy : -delta.dy), least.height, most.height)
+        )
+    }
+}
+
+/// The fog's motion, the overlay lab's (~/Projects/conch-design/overlay-lab.html), stepped by hand at display rate.
+/// Pressed near an edge it resizes from its docked corner, which never moves; pressed in the middle it follows the
+/// pointer, and let go it flies into the corner its momentum picks. Screen coordinates, y up.
+public struct FogMotion {
+    public private(set) var corner: FogCorner
+    public private(set) var size: CGSize
+    public private(set) var origin: CGPoint
+    /// The screen it docks in.
+    public private(set) var screen: CGRect
+    /// 0 docked to 1 dragged or mid-air: how far into the flight's scale, blur and fade it is.
+    public private(set) var flying: CGFloat = 0
+    /// Springs without overshoot.
+    public var reduceMotion = false
+
+    private var flyingVelocity: CGFloat = 0
+    private var flight: Flight?
+    private var sizeTarget: CGSize?
+    private var sizeVelocity = CGVector.zero
+    private var gesture: Gesture?
+
+    private struct Gesture {
+        let mouse: CGPoint
+        let origin: CGPoint
+        let size: CGSize
+        let resizes: Bool
+        var samples: [(time: TimeInterval, point: CGPoint)]
+    }
+
+    public init(size: CGSize, corner: FogCorner, in screen: CGRect) {
+        self.size = size
+        self.corner = corner
+        self.screen = screen
+        origin = .zero
+        dock(corner, in: screen)
+    }
+
+    public var frame: CGRect { CGRect(origin: origin, size: size) }
+    public var isGesturing: Bool { gesture != nil }
+    public var isResizing: Bool { gesture?.resizes == true }
+    /// Off its corner: dragged by its middle or in flight.
+    public var isMoving: Bool { gesture?.resizes == false || flight != nil }
+    public var isSettled: Bool { gesture == nil && flight == nil && sizeTarget == nil && flying == 0 }
+
+    /// Where a press at `point` would resize rather than move. Grabbed mid-flight it always moves.
+    public func resizes(at point: CGPoint) -> Bool {
+        flight == nil && FogDock.resizes(at: CGPoint(x: point.x - origin.x, y: point.y - origin.y), in: size)
+    }
+
+    /// Docked in `corner` of `screen` at once, within its size limits, ending whatever it was doing.
+    public mutating func dock(_ corner: FogCorner, in screen: CGRect) {
+        self.corner = corner
+        fit(screen)
+        gesture = nil
+        flight = nil
+        sizeTarget = nil
+        sizeVelocity = .zero
+        flying = 0
+        flyingVelocity = 0
+        origin = docked
+    }
+
+    public mutating func press(at point: CGPoint, time: TimeInterval) {
+        let resizes = resizes(at: point)
+        gesture = Gesture(mouse: point, origin: origin, size: size, resizes: resizes, samples: [(time, point)])
+        // Grabbed mid-flight, it stops where it is.
+        flight = nil
+        if resizes {
+            sizeTarget = nil
+            sizeVelocity = .zero
+        }
+    }
+
+    public mutating func drag(to point: CGPoint, time: TimeInterval) {
+        guard var gesture else { return }
+        gesture.samples.append((time, point))
+        while gesture.samples.count > 2, time - gesture.samples[0].time > 0.12 { gesture.samples.removeFirst() }
+        self.gesture = gesture
+        let delta = CGVector(dx: point.x - gesture.mouse.x, dy: point.y - gesture.mouse.y)
+        if gesture.resizes {
+            size = FogDock.resized(gesture.size, corner: corner, by: delta, in: screen)
+            origin = docked
+        } else {
+            origin = CGPoint(x: gesture.origin.x + delta.dx, y: gesture.origin.y + delta.dy)
+        }
+    }
+
+    /// Let go at `time` over `screen`. A resize springs back inside its limits; a move flies into the corner its
+    /// momentum picks on `screen`, with no momentum if `cancelled` or the pointer rested first.
+    public mutating func release(at time: TimeInterval, in screen: CGRect, cancelled: Bool = false) {
+        guard let gesture else { return }
+        self.gesture = nil
+        if gesture.resizes {
+            let least = FogDock.minSize(in: self.screen), most = FogDock.maxSize(in: self.screen)
+            sizeTarget = CGSize(width: min(max(size.width, least.width), most.width), height: min(max(size.height, least.height), most.height))
+            return
+        }
+        // Velocity over the last 80 ms; a pause of more than 50 ms before letting go throws nothing.
+        var velocity = CGVector.zero
+        if !cancelled, let last = gesture.samples.last, time - last.time <= 0.05,
+           let first = gesture.samples.first(where: { last.time - $0.time <= 0.08 }), last.time - first.time > 0.004 {
+            let seconds = last.time - first.time
+            velocity = CGVector(dx: (last.point.x - first.point.x) / seconds, dy: (last.point.y - first.point.y) / seconds)
+        }
+        let speed = hypot(velocity.dx, velocity.dy)
+        if speed > 6000 { velocity = CGVector(dx: velocity.dx * 6000 / speed, dy: velocity.dy * 6000 / speed) }
+        fit(screen)
+        corner = FogDock.corner(releasedAt: CGPoint(x: frame.midX, y: frame.midY), velocity: velocity, in: screen)
+        flight = Flight(from: origin, velocity: velocity, motion: self)
+    }
+
+    /// One display frame of `dt` seconds.
+    public mutating func step(dt: Double) {
+        let spring = ConchMotion.dock.resolved(reduceMotion: reduceMotion)
+        if gesture == nil, var flight {
+            let done = flight.step(&origin, motion: self, spring: spring, dt: dt)
+            self.flight = done ? nil : flight
+            if done { origin = docked }
+        }
+        if gesture == nil, let target = sizeTarget {
+            let width = spring.step(&size.width, velocity: &sizeVelocity.dx, to: target.width, dt: dt, epsilon: 0.25)
+            let height = spring.step(&size.height, velocity: &sizeVelocity.dy, to: target.height, dt: dt, epsilon: 0.25)
+            if width && height {
+                size = target
+                sizeVelocity = .zero
+                sizeTarget = nil
+            }
+            // Anchored in its corner; a throw in flight keeps flying.
+            if flight == nil { origin = docked }
+        }
+        let goal: CGFloat = gesture.map { $0.resizes ? 0 : 1 } ?? (flight == nil ? 0 : min(1, hypot(docked.x - origin.x, docked.y - origin.y) / 90))
+        if ConchSpring(bounce: 0, response: 0.2).step(&flying, velocity: &flyingVelocity, to: goal, dt: dt) {
+            flying = goal
+            flyingVelocity = 0
+        }
+    }
+
+    /// Its origin docked in its corner.
+    var docked: CGPoint {
+        CGPoint(x: corner.leading ? screen.minX : screen.maxX - size.width, y: corner.bottom ? screen.minY : screen.maxY - size.height)
+    }
+
+    /// The origins that keep it on the screen.
+    var bounds: (lo: CGPoint, hi: CGPoint) {
+        (CGPoint(x: screen.minX, y: screen.minY), CGPoint(x: screen.maxX - size.width, y: screen.maxY - size.height))
+    }
+
+    private mutating func fit(_ screen: CGRect) {
+        self.screen = screen
+        let least = FogDock.minSize(in: screen), most = FogDock.maxSize(in: screen)
+        size = CGSize(width: min(max(size.width, least.width), most.width), height: min(max(size.height, least.height), most.height))
+    }
+
+    /// A throw flies on ONE spring, along the straight line from where it was let go to its corner, so both axes arrive
+    /// together. (Two per-axis springs let the axis with most of the throw land first and park on a side while the other
+    /// was still travelling.) Its sideways momentum becomes a small curve on a quicker spring, capped so it can't reach a
+    /// screen side. Past a screen edge it rubber-bands.
+    private struct Flight {
+        let start: CGPoint
+        var along: CGFloat = 0
+        var alongVelocity: CGFloat
+        var across: CGFloat = 0
+        var acrossVelocity: CGFloat
+        var inside: (x: Bool, y: Bool)
+
+        init(from start: CGPoint, velocity: CGVector, motion: FogMotion) {
+            self.start = start
+            let (lo, hi) = motion.bounds
+            let (ux, uy) = Self.path(from: start, to: motion.docked)
+            // How far every point can go along (cx, cy) and stay on the screen; 0 if any is already off it.
+            func room(_ points: [CGPoint], _ cx: CGFloat, _ cy: CGFloat) -> CGFloat {
+                var r = CGFloat.greatestFiniteMagnitude
+                for q in points {
+                    if cx > 1e-6 { r = min(r, (hi.x - q.x) / cx) }
+                    if cx < -1e-6 { r = min(r, (q.x - lo.x) / -cx) }
+                    if cy > 1e-6 { r = min(r, (hi.y - q.y) / cy) }
+                    if cy < -1e-6 { r = min(r, (q.y - lo.y) / -cy) }
+                }
+                return max(0, r)
+            }
+            // A critically damped spring let go at v travels at most v / (ωe).
+            let response = ConchMotion.dock.response
+            let wA = 2 * .pi / response, wB = 2 * .pi / (response * 0.6), e = CGFloat(M_E)
+            var va = velocity.dx * ux + velocity.dy * uy
+            var vb = velocity.dy * ux - velocity.dx * uy
+            if va < 0 { va = -min(-va, 0.6 * wA * e * room([start], -ux, -uy)) }
+            // Sliding along an edge it shares with its corner: no arc off it.
+            let onX = motion.corner.leading ? start.x <= lo.x + 1 : start.x >= hi.x - 1
+            let onY = motion.corner.bottom ? start.y <= lo.y + 1 : start.y >= hi.y - 1
+            if onX || onY { vb = 0 }
+            let side: CGFloat = vb < 0 ? -1 : 1
+            vb = side * min(abs(vb), wB * e * min(48, room([start, motion.docked], -uy * side, ux * side)))
+            alongVelocity = va
+            acrossVelocity = vb
+            inside = (start.x >= lo.x && start.x <= hi.x, start.y >= lo.y && start.y <= hi.y)
+        }
+
+        static func path(from start: CGPoint, to end: CGPoint) -> (CGFloat, CGFloat) {
+            let dx = end.x - start.x, dy = end.y - start.y, length = hypot(dx, dy)
+            return length > 0.5 ? (dx / length, dy / length) : (1, 0)
+        }
+
+        /// Re-aimed every frame, since its size and screen can change mid-flight. True once it has landed.
+        mutating func step(_ origin: inout CGPoint, motion: FogMotion, spring: ConchSpring, dt: Double) -> Bool {
+            let target = motion.docked, (lo, hi) = motion.bounds
+            let (ux, uy) = Self.path(from: start, to: target)
+            let a = spring.step(&along, velocity: &alongVelocity, to: hypot(target.x - start.x, target.y - start.y), dt: dt, epsilon: 0.25)
+            let b = ConchSpring(bounce: 0, response: spring.response * 0.6).step(&across, velocity: &acrossVelocity, to: 0, dt: dt, epsilon: 0.25)
+            let x = start.x + ux * along - uy * across, y = start.y + uy * along + ux * across
+            // Rubber-banded past a screen edge once it has been inside, so a release half off the screen glides in.
+            inside = (inside.x || (x >= lo.x && x <= hi.x), inside.y || (y >= lo.y && y <= hi.y))
+            origin = CGPoint(x: inside.x ? FogDock.rubberBand(x, lo.x, hi.x) : x, y: inside.y ? FogDock.rubberBand(y, lo.y, hi.y) : y)
+            return a && b
+        }
+    }
+}
+
+/// The frames of the fog's own controls, its buttons and its reply line, in the `space` coordinate space. A host that
+/// drags the fog by hand leaves a press there to them.
+public struct FogControls: PreferenceKey {
+    public static let space = "conch.fog"
+    public static let defaultValue: [CGRect] = []
+    public static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) { value += nextValue() }
+}
+
+extension View {
+    /// This view's frame is one of the fog's controls (`FogControls`).
+    func fogControl() -> some View {
+        background(GeometryReader { Color.clear.preference(key: FogControls.self, value: [$0.frame(in: .named(FogControls.space))]) })
     }
 }
 
@@ -633,12 +882,14 @@ public struct ConversationFog: View {
                         onMic: onMic,
                         onSend: onSend
                     )
+                    .fogControl()
                 }
                 .frame(width: text.width, height: text.height, alignment: .bottomLeading)
                 .offset(x: text.minX, y: text.minY)
                 if showsButtons {
                     let buttons = Self.buttonInsets(insets)
                     FogPanelButtons(corner: corner, isFullScreen: isFullScreen, onCollapse: onCollapse, onFullScreen: onFullScreen)
+                        .fogControl()
                         .frame(
                             width: max(0, proxy.size.width - buttons.leading - buttons.trailing - 2 * Self.padding),
                             alignment: Self.buttonsAlignment(corner: corner, fullScreen: isFullScreen)
