@@ -368,11 +368,17 @@ struct FogScreen<Page: View, Blur: View>: View {
     var draft = ""
     var turns = sampleTurns
     var hovering = true
+    /// The words as they move; a fresh, settled one unless a shot sets one up.
+    var text: FogTextState?
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
+        let state = text ?? FogTextState()
         var look = FogLook(motion, insets: insets)
         look.darkness = scheme == .dark ? 1 : 0
+        // The scrim follows the reply line as it grows.
+        let words = ConversationFog.textFrame(in: motion.size, corner: motion.corner, insets: insets, fullScreen: fullScreen, magnet: motion.magnet)
+        look.replyHeight = state.replyTarget(for: draft, width: words.width - ConversationFog.micSpace, fontSize: ConversationFog.replyFontSize(fullScreen: fullScreen), in: words.height)
         // Top left, as SwiftUI lays out.
         let fog = CGRect(x: motion.frame.minX, y: screen.height - motion.frame.maxY, width: motion.size.width, height: motion.size.height)
         let panel = fullScreen ? CGRect(origin: .zero, size: screen) : fog
@@ -396,6 +402,7 @@ struct FogScreen<Page: View, Blur: View>: View {
                 ConversationFog(
                     turns: turns,
                     draft: .constant(draft),
+                    text: state,
                     isListening: voice == .listening,
                     isFullScreen: fullScreen,
                     corner: motion.corner,
@@ -522,6 +529,35 @@ func writePNG(_ image: CGImage, _ name: String) throws {
     print(file.path)
 }
 
+/// The lab's text states (`applyState` in overlay-lab.html): a reply typed to three and to five-plus lines, a long reply part
+/// way in, and scrolled up while it comes in.
+let threeLines = "Looks good. Ship it, then do the same for the Dayloop invite, and keep its heading on one line on phones."
+let manyLines = threeLines + " Use their teal and sand for the gradient, keep one soft shadow, and send me screenshots at desktop and 390 px before you open the pull request. If the email check needs changes, ask me first."
+let longReply = "Here's the plan for the Dayloop invite. I'll start from the Arch card, swap the hero gradient for Dayloop's teal and sand, and keep the single soft shadow so it stays light. The avatar row keeps its 10 px gap, the heading drops to 26 px on phones, and the button just says Join. Then I'll wire up the same email check, run the invite tests, and send you screenshots at desktop and 390 px before I open the pull request."
+let replyTurns = labTurns + [ConversationTurn(id: "reply", fromYou: false, text: longReply)]
+
+/// The long reply with its first `shown` words in, the last few still fading up.
+@MainActor
+func streaming(shown: Int) -> FogTextState {
+    let state = FogTextState()
+    state.update(turns: labTurns, now: 0)
+    state.update(turns: replyTurns, now: 10)
+    state.step(dt: 0, now: state.reveal.starts[shown - 1] + 0.12, reduceMotion: false)
+    return state
+}
+
+/// Scrolled up by the reader, then the long reply started coming in below: the pill says so.
+@MainActor
+func scrolledUp(by offset: CGFloat) -> FogTextState {
+    let state = FogTextState()
+    state.update(turns: labTurns, now: 0)
+    state.measured(content: 5000, box: 400)
+    state.scroll(by: offset, momentum: false)
+    state.update(turns: replyTurns, now: 10)
+    state.step(dt: 0, now: 12.6, reduceMotion: false)
+    return state
+}
+
 /// Dragged by its middle to the middle of the screen and held there.
 func floating(_ size: CGSize, in screen: CGSize) -> FogMotion {
     var motion = docked(.bottomLeading, size: size, in: screen)
@@ -537,15 +573,20 @@ if let busy = labImage("lab-backdrops/real-screen-busy.png"), let darkApp = labI
     let left = CGRect(x: 0, y: 380, width: 1000, height: 737), right = CGRect(x: 728, y: 0, width: 1000, height: 737)
     let middle = CGRect(x: 314, y: 190, width: 1100, height: 737)
     let bl = docked(.bottomLeading, size: size, in: labScreen)
-    let shots: [(lab: String, backdrop: CGImage, motion: FogMotion, insets: EdgeInsets, voice: VoiceState, dark: Bool, crop: CGRect)] = [
-        ("v2-docked-bl", busy, bl, bottom, .talk, false, left),
-        // The lab's auto appearance turned this one dark: its words sit over the dark app window.
-        ("v2-docked-tr", busy, docked(.topTrailing, size: size, in: labScreen), top, .talk, true, right),
-        ("v2-floating-mid", busy, floating(size, in: labScreen), bottom, .talk, false, middle),
-        ("v2-docked-bl-voice-listening", busy, bl, bottom, .listening, false, left),
-        ("v2-docked-bl-voice-speaking", busy, bl, bottom, .speaking, false, left),
-        ("v2-docked-bl-bg-dark", darkApp, bl, bottom, .talk, true, left),
-    ]
+    typealias Shot = (lab: String, backdrop: CGImage, motion: FogMotion, insets: EdgeInsets, voice: VoiceState, dark: Bool, crop: CGRect, draft: String, turns: [ConversationTurn], text: FogTextState?)
+    let shots: [Shot] = MainActor.assumeIsolated { [
+        ("v2-docked-bl", busy, bl, bottom, .talk, false, left, "", labTurns, nil),
+        // The lab's auto appearance turned this one dark: its words sit over the dark app window. Top-down: newest at the top.
+        ("v2-docked-tr", busy, docked(.topTrailing, size: size, in: labScreen), top, .talk, true, right, "", labTurns, nil),
+        ("v2-floating-mid", busy, floating(size, in: labScreen), bottom, .talk, false, middle, "", labTurns, nil),
+        ("v2-docked-bl-voice-listening", busy, bl, bottom, .listening, false, left, "", labTurns, nil),
+        ("v2-docked-bl-voice-speaking", busy, bl, bottom, .speaking, false, left, "", labTurns, nil),
+        ("v2-docked-bl-bg-dark", darkApp, bl, bottom, .talk, true, left, "", labTurns, nil),
+        ("v2-typing-3", busy, bl, bottom, .talk, false, left, threeLines, labTurns, nil),
+        ("v2-typing-5", busy, bl, bottom, .talk, false, left, manyLines, labTurns, nil),
+        ("v2-streaming", busy, bl, bottom, .speaking, false, left, "", replyTurns, streaming(shown: 32)),
+        ("v2-scrolled-up", busy, bl, bottom, .speaking, false, left, "", replyTurns, scrolledUp(by: 330)),
+    ] }
     for shot in shots {
         // The backdrop as the lab lays it out, covering the screen, and its backdrop filter: blur(22px) saturate(1.25), 1.4 on dark.
         let page = bitmap(labScreen) { context in
@@ -554,7 +595,7 @@ if let busy = labImage("lab-backdrops/real-screen-busy.png"), let darkApp = labI
             context.draw(shot.backdrop, in: CGRect(x: (labScreen.width - w) / 2, y: (labScreen.height - h) / 2, width: w, height: h))
         }!
         let soft = softened(page, sigma: 22, saturation: shot.dark ? 1.4 : 1.25)!
-        let scene = FogScreen(page: Image(decorative: page, scale: 1), blur: Image(decorative: soft, scale: 1), screen: labScreen, motion: shot.motion, insets: shot.insets, voice: shot.voice, turns: labTurns, hovering: false)
+        let scene = FogScreen(page: Image(decorative: page, scale: 1), blur: Image(decorative: soft, scale: 1), screen: labScreen, motion: shot.motion, insets: shot.insets, voice: shot.voice, draft: shot.draft, turns: shot.turns, hovering: false, text: shot.text)
             .environment(\.colorScheme, shot.dark ? .dark : .light)
             .environment(\.conchRendersStatically, true)
         let native = MainActor.assumeIsolated { () -> CGImage in
@@ -563,13 +604,13 @@ if let busy = labImage("lab-backdrops/real-screen-busy.png"), let darkApp = labI
             guard let image = renderer.cgImage else { fatalError("could not render \(shot.lab)") }
             return image
         }
-        try writePNG(native, "native-1c-\(shot.lab).png")
+        try writePNG(native, "native-1d-\(shot.lab).png")
         if let lab = labImage("lab-shots/\(shot.lab).png"), let a = lab.cropping(to: shot.crop), let b = native.cropping(to: shot.crop),
            let pair = bitmap(CGSize(width: 2 * a.width + 12, height: a.height), { context in
                context.draw(a, in: CGRect(x: 0, y: 0, width: a.width, height: a.height))
                context.draw(b, in: CGRect(x: a.width + 12, y: 0, width: b.width, height: b.height))
            }) {
-            try writePNG(pair, "native-1c-\(shot.lab)-compare.png")
+            try writePNG(pair, "native-1d-\(shot.lab)-compare.png")
         }
     }
 }
