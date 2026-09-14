@@ -35,6 +35,8 @@
 		A100000000000000000000951 /* RemoteMacStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000951 /* RemoteMacStore.swift */; };
 		A100000000000000000000952 /* RemoteMacViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000952 /* RemoteMacViews.swift */; };
 		A100000000000000000000953 /* AudioHolderStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A200000000000000000000953 /* AudioHolderStore.swift */; };
+		A10000000000000000000960 /* StatusItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000960 /* StatusItem.swift */; };
+		A10000000000000000000961 /* ConchDesign in Frameworks */ = {isa = PBXBuildFile; productRef = AB0000000000000000000002 /* ConchDesign */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -68,6 +70,7 @@
 		A200000000000000000000951 /* RemoteMacStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMacStore.swift; sourceTree = "<group>"; };
 		A200000000000000000000952 /* RemoteMacViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteMacViews.swift; sourceTree = "<group>"; };
 		A200000000000000000000953 /* AudioHolderStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioHolderStore.swift; sourceTree = "<group>"; };
+		A20000000000000000000960 /* StatusItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusItem.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -76,6 +79,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000009 /* WebKit.framework in Frameworks */,
+				A10000000000000000000961 /* ConchDesign in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -104,6 +108,7 @@
 				A200000000000000000000951 /* RemoteMacStore.swift */,
 				A200000000000000000000950 /* DirectHTTPTransport.swift */,
 				A200000000000000000000953 /* AudioHolderStore.swift */,
+				A20000000000000000000960 /* StatusItem.swift */,
 				A20000000000000000000006 /* ReviewView.swift */,
 				A20000000000000000000007 /* WebView.swift */,
 				A2000000000000000000000C /* ConchSocketClient.swift */,
@@ -158,6 +163,9 @@
 			dependencies = (
 			);
 			name = "conch-mac";
+			packageProductDependencies = (
+				AB0000000000000000000002 /* ConchDesign */,
+			);
 			productName = "conch-mac";
 			productReference = A2000000000000000000000B /* conch-mac.app */;
 			productType = "com.apple.product-type.application";
@@ -186,6 +194,9 @@
 				Base,
 			);
 			mainGroup = A40000000000000000000001;
+			packageReferences = (
+				AB0000000000000000000001 /* XCLocalSwiftPackageReference "../design/ConchDesign" */,
+			);
 			productRefGroup = A40000000000000000000004 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -229,6 +240,7 @@
 				A100000000000000000000951 /* RemoteMacStore.swift in Sources */,
 				A100000000000000000000950 /* DirectHTTPTransport.swift in Sources */,
 				A100000000000000000000953 /* AudioHolderStore.swift in Sources */,
+				A10000000000000000000960 /* StatusItem.swift in Sources */,
 				A10000000000000000000006 /* ReviewView.swift in Sources */,
 				A10000000000000000000007 /* WebView.swift in Sources */,
 				A1000000000000000000000A /* ConchSocketClient.swift in Sources */,
@@ -241,6 +253,21 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		AB0000000000000000000001 /* XCLocalSwiftPackageReference "../design/ConchDesign" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../design/ConchDesign;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AB0000000000000000000002 /* ConchDesign */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AB0000000000000000000001 /* XCLocalSwiftPackageReference "../design/ConchDesign" */;
+			productName = ConchDesign;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A80000000000000000000001 /* Debug */ = {

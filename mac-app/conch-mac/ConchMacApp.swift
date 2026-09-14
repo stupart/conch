@@ -17,6 +17,8 @@ struct ConchMacApp: App {
         _store = StateObject(wrappedValue: store)
         _remotes = StateObject(wrappedValue: remotes)
         _audio = StateObject(wrappedValue: AudioHolderStore(local: store, remotes: remotes))
+        // The menu bar mark (M2), a turn later: a status item wants the application running.
+        Task { @MainActor in ConchStatusItem.install(store: store) }
     }
 
     var body: some Scene {
@@ -210,7 +212,7 @@ final class ReviewNotifications {
     private var didStartAuthorization = false
     private var seenReviewIDs: Set<ReviewItem.ID> = []
     private var queuedRequests: [UNNotificationRequest] = []
-    private weak var reviewWindow: NSWindow?
+    private(set) weak var reviewWindow: NSWindow?
     private var hasPendingWindowAttention = false
 
     private init() {}
