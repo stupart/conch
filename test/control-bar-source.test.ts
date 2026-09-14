@@ -84,7 +84,7 @@ test("M3: the fog collapses to a small handle and opens again at the size it had
   expect(collapse).toContain("if collapsed, isFullScreen { toggleFullScreen() }");
   // Collapsed, a hover area in its corner clear of the Dock and the menu bar; opened, docked again at its size.
   expect(collapse).toContain("fog.setFrame(FogDock.frame(size: CGSize(width: side, height: side), corner: corner, in: screen.visibleFrame), display: true)");
-  expect(collapse).toContain("dock(corner, on: screen, velocity: .zero, animated: false)");
+  expect(collapse).toContain("dock(corner, on: screen)");
   // The collapsed frame is never the one saved: autosave stops before it shrinks and resumes once it is open.
   expect(collapse.indexOf('fog.setFrameAutosaveName("")')).toBeGreaterThan(-1);
   expect(collapse.indexOf('fog.setFrameAutosaveName("")')).toBeLessThan(collapse.indexOf("width: side, height: side"));
@@ -98,7 +98,7 @@ test("M3: the fog collapses to a small handle and opens again at the size it had
   expect(components).toContain("public struct FogHandle: View {");
   expect(components).toContain(".opacity(hovering ? 1 : 0)");
   expect(components).toContain('.accessibilityLabel("Show conversation")');
-  expect(panels).toContain("options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect]");
+  expect(panels).toContain("options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect]");
 });
 
 test("M3: both panels keep their frames, and the fog goes full screen on Command-Return", () => {
@@ -118,7 +118,7 @@ test("M3: both panels keep their frames, and the fog goes full screen on Command
   const toggle = member(panels, "func toggleFullScreen() {");
   expect(toggle).toContain("fog.setFrame(screen.frame, display: true, animate: animate)");
   // Leaving docks it back in its corner at the size it had.
-  expect(toggle).toContain("let frame = FogDock.frame(size: fogSize, corner: corner, in: screen.frame)");
+  expect(toggle).toContain("let frame = FogDock.frame(size: motion.size, corner: corner, in: screen.frame)");
   expect(toggle).toContain("NSWorkspace.shared.accessibilityDisplayShouldReduceMotion");
   // A full-screen frame is never the one saved.
   expect(toggle.indexOf('fog.setFrameAutosaveName("")')).toBeGreaterThan(-1);
@@ -187,58 +187,90 @@ test("M3: a Dock click still reopens the dashboard while the floating panels are
 });
 
 /**
- * Tyler: "set rules like its always touching one side and top or bottom", "when i drag up i want it to get taller not
- * move all the way up... unless i drag from middle but then maybe it snaps", and "incrase the areas around the edges
- * that you pull for resizing".
+ * Tyler: "set rules like its always touching one side and top or bottom", "when i drag up i want it to get taller not move
+ * all the way up", "i shouldn't get locked into resizing vertically or horizontally", "make the resize area larger without
+ * creating more margin - like grabbing onto text area should still allow resize", and "better for 'anchor' to stay in
+ * bottom left corner unless i toss it up to top right". The overlay lab (conch-design/overlay-lab.html) is the spec, and
+ * ConchDesign's FogMotionTests hold its invariants on the motion itself; these pin how the Mac overlay drives it.
  */
-test("M3: the fog stays docked in a corner, is thrown into a corner by its middle, and resizes from wide free edges", () => {
+test("M3: the fog moves the way the overlay lab does: thrown by its middle on one spring, resized from any edge in its corner", () => {
   // conch owns the geometry: no window-server resizing or background dragging to race.
   expect(panels).not.toContain(".resizable");
-  // Its transparent parts still take the pointer, or drags and resize strips fall through to the app behind.
+  // Its transparent parts still take the pointer, or drags fall through to the app behind.
   expect(panels).toContain("fog.ignoresMouseEvents = false");
-  const dock = member(panels, "private func dock(_ corner: FogCorner, on screen: NSScreen, velocity: CGVector, animated: Bool) {");
-  expect(dock).toContain("let target = FogDock.frame(size: fogSize, corner: corner, in: screen.frame)");
-  expect(dock).toContain("startSpring(to: target, velocity: velocity)");
-  expect(dock).toContain("!NSWorkspace.shared.accessibilityDisplayShouldReduceMotion");
-  // It follows the pointer from where the drag began; let go, its momentum picks the corner.
-  const moved = member(panels, "func dragMoved() {");
-  expect(moved).toContain("let mouse = NSEvent.mouseLocation");
-  expect(moved).toContain("start.frame.minX + mouse.x - start.mouse.x");
-  const ended = member(panels, "func dragEnded() {");
-  expect(ended).toContain("dock(FogDock.corner(releasedAt: center, velocity: velocity, in: screen.frame), on: screen, velocity: velocity, animated: true)");
-  expect(ended).toContain("let recent = dragSamples.filter { now - $0.time <= 0.1 }");
-  // Resizing keeps its corner, from strips wider than a window's own edge.
-  expect(member(panels, "func resizeMoved(_ edges: Edge.Set) {")).toContain("let next = FogDock.resize(");
-  expect(panels).toContain("static let resizeGrab: CGFloat = 96");
-  // The host draws the buttons itself, after the strips, so a strip never takes a button's click.
-  expect(panels).toContain("showsButtons: false,");
-  const overlay = panels.slice(panels.indexOf("resizeHandles\n                    }"), panels.indexOf("resizeHandles\n                    }") + 300);
-  expect(overlay).toContain("panelButtons");
-  // The words and buttons keep clear of those strips.
-  expect(member(panels, "private func updateInsets(_ frame: NSRect, on screen: NSScreen) {")).toContain(
-    "let grab = isFullScreen ? 0 : max(0, Self.resizeGrab - ConversationFog.padding)",
+  // The motion is ConchDesign's, and nothing is left of the strips, the SwiftUI drags or the Timer spring.
+  expect(panels).toContain("private var motion = FogMotion(");
+  for (const gone of ["resizeGrab", "resizeHandles", "DragGesture", "springTimer", "stepSpring", "FogDock.resize(", "freeEdges", "showsButtons: false", "Timer(timeInterval: Self.springStep"]) {
+    expect(panels).not.toContain(gone);
+  }
+  expect(components).not.toContain("public static func resize(");
+  // Presses are AppKit's, in the fog's own view: a SwiftUI gesture was cancelled by the window resizing under it (#205).
+  // A press on a button or the reply line goes to it; anywhere else, text included, it is the fog's.
+  const hit = member(panels, "override func hitTest(_ point: NSPoint) -> NSView? {");
+  expect(hit).toContain("NSApp.currentEvent?.type == .leftMouseDown");
+  expect(hit).toContain("panels?.grabs(convert(point, from: superview)) == true");
+  expect(hit).toContain("return self");
+  expect(panels).toContain("override func mouseDown(with event: NSEvent) { panels?.pressed() }");
+  expect(panels).toContain("override func mouseDragged(with event: NSEvent) { panels?.dragged() }");
+  expect(panels).toContain("override func mouseUp(with event: NSEvent) { panels?.released() }");
+  expect(member(panels, "func grabs(_ point: CGPoint) -> Bool {")).toContain("!controlFrames.contains { $0.contains(point) }");
+  expect(panels).toContain(".coordinateSpace(name: FogControls.space)");
+  expect(panels).toContain(".onPreferenceChange(FogControls.self) { panels.controlFrames = $0 }");
+  expect(components).toContain("onSend: onSend\n                    )\n                    .fogControl()");
+  expect(components).toContain(
+    "FogPanelButtons(corner: corner, isFullScreen: isFullScreen, onCollapse: onCollapse, onFullScreen: onFullScreen)\n                        .fogControl()",
   );
+  // A gesture always ends: on mouse-up; on a frame that finds the button already up (let go over another app, or an event
+  // lost); when another app comes forward; and when the screens change, it collapses or it goes full screen.
+  const step = member(panels, "func step(dt: Double) {");
+  expect(step).toContain("if motion.isGesturing, NSEvent.pressedMouseButtons & 1 == 0 { released() }");
+  expect(step.indexOf("released()")).toBeLessThan(step.indexOf("motion.step(dt: dt)"));
+  expect(panels).toContain("forName: NSWorkspace.didActivateApplicationNotification");
+  expect(panels).toContain("MainActor.assumeIsolated { self?.released(cancelled: true) }");
+  expect(member(panels, "private func dock(_ corner: FogCorner, on screen: NSScreen) {")).toContain("motion.dock(corner, in: screen.frame)");
+  expect(member(panels, "private func redock() {")).toContain("dock(corner, on: screen)");
+  expect(member(panels, "func toggleFullScreen() {")).toContain("dock(corner, on: screen)");
+  expect(components).toContain("        gesture = nil\n        flight = nil\n        sizeTarget = nil");
+  // Let go, it flies into the corner its momentum picks, on the screen it was let go over.
+  const released = member(panels, "func released(cancelled: Bool = false) {");
+  expect(released).toContain("let screen = screen(containing: NSEvent.mouseLocation)?.frame ?? motion.screen");
+  expect(released).toContain("motion.release(at: ProcessInfo.processInfo.systemUptime, in: screen, cancelled: cancelled)");
+  expect(components).toContain("corner = FogDock.corner(releasedAt: CGPoint(x: frame.midX, y: frame.midY), velocity: velocity, in: screen)");
+  // Driven by the display at the real frame time, in the spring's fixed 240 Hz substeps, and stopped once it rests.
+  expect(panels).toContain("displayLink(target: self, selector: #selector(step(_:)))");
+  expect(panels).toContain("let dt = lastFrame > 0 ? min(link.timestamp - lastFrame, 0.05) : 1.0 / 120");
+  expect(step).toContain("motion.step(dt: dt)");
+  expect(step).toContain("if motion.isSettled { container.run(false) }");
+  expect(member(panels, "func pressed() {")).toContain("container.run(true)");
+  expect(read("design/ConchDesign/Sources/ConchDesign/Tokens.swift")).toContain("let h = CGFloat(min(t, 1.0 / 240))");
+  // Calm under Reduce Motion: the dock spring without its overshoot, and only the fade of the flight.
+  expect(step).toContain("motion.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion");
+  expect(components).toContain("let spring = ConchMotion.dock.resolved(reduceMotion: reduceMotion)");
   // A throw fades, softens and shrinks a little mid-flight, and lands whole (Tyler: "so it feels more liquid").
-  expect(member(panels, "private func stepSpring() {")).toContain("fog.alphaValue = 1 - (1 - ConchMotion.flightOpacity) * motion");
-  // On the design system's dock spring, the overlay lab's, and calm under Reduce Motion.
-  expect(member(panels, "private func stepSpring() {")).toContain(
-    "ConchMotion.dock.resolved(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)",
-  );
-  expect(member(panels, "private func stopSpring() {")).toContain("fog.alphaValue = 1");
-  expect(panels).toContain(".scaleEffect(1 - (1 - ConchMotion.flightScale) * panels.throwMotion)");
-  expect(panels).toContain(".blur(radius: ConchMotion.flightBlur * panels.throwMotion)");
-  expect(panels).toContain(".onChanged { _ in panels.resizeMoved(edges) }");
-  expect(panels).toContain(".onChanged { _ in panels.dragMoved() }");
-  // It reaches the screen's edges, and the words are padded clear of the Dock and the menu bar.
-  expect(member(panels, "private func updateInsets(_ frame: NSRect, on screen: NSScreen) {")).toContain(
-    "bottom: max(0, visible.minY - max(frame.minY, full.minY))",
-  );
+  expect(member(panels, "private func apply() {")).toContain("fog.alphaValue = 1 - (1 - ConchMotion.flightOpacity) * motion.flying");
+  expect(panels).toContain(".scaleEffect(1 - (1 - ConchMotion.flightScale) * (reduceMotion ? 0 : panels.throwMotion))");
+  expect(panels).toContain(".blur(radius: reduceMotion ? 0 : ConchMotion.flightBlur * panels.throwMotion)");
+  // The lab's geometry: one spring along the straight line to the corner, the throw's sideways momentum a small capped
+  // curve on a quicker spring, rubber-banding past the screen; a band along every edge resizes; 480 by 360 to 1280 by 900.
+  const motion = components.slice(components.indexOf("public struct FogMotion {"), components.indexOf("public struct FogControls: PreferenceKey {"));
+  expect(motion.length).toBeGreaterThan(1000);
+  expect(motion).toContain("ConchSpring(bounce: 0, response: spring.response * 0.6)");
+  expect(motion).toContain("min(48, room([start, motion.docked]");
+  expect(motion).toContain("FogDock.rubberBand(x, lo.x, hi.x)");
+  expect(motion).toContain("size = FogDock.resized(gesture.size, corner: corner, by: delta, in: screen)\n            origin = docked");
+  expect(components).toContain("let band = max(120, min(size.width, size.height) / 5)");
+  expect(components).toContain("CGSize(width: min(1280, screen.width), height: min(900, screen.height))");
+  expect(components).toContain("CGSize(width: min(480, most.width), height: min(360, most.height))");
+  expect(components).toContain("(1 - 1 / (x * 0.55 / 200 + 1)) * 200");
+  // It reaches the screen's edges, and the words are padded clear of the Dock and the menu bar, with no margin for strips.
+  const insets = member(panels, "private func updateInsets(_ frame: NSRect, on screen: NSScreen) {");
+  expect(insets).toContain("bottom: max(0, visible.minY - max(frame.minY, full.minY)),");
+  expect(insets).not.toContain("grab");
   expect(components).toContain("let top = insets.top + padding + (atBottom ? 0 : row)");
-  // The buttons sit in the docked corner, away from the free corner it is resized by.
-  expect(panels).toContain("y: ConversationFog.buttonsY(in: proxy.size, corner: panels.corner, insets: insets, fullScreen: panels.isFullScreen)");
-  // Into the corner proper: the Dock's inset doesn't reach a corner, the menu bar's does.
-  expect(panels).toContain("let insets = ConversationFog.buttonInsets(panels.insets)");
-  expect(panels).toContain("alignment: ConversationFog.buttonsAlignment(corner: panels.corner, fullScreen: panels.isFullScreen)");
+  // With no strips over them, the fog draws its own buttons, in its docked corner proper.
+  expect(components).toContain("let buttons = Self.buttonInsets(insets)");
+  expect(components).toContain("alignment: Self.buttonsAlignment(corner: corner, fullScreen: isFullScreen)");
+  expect(components).toContain("y: Self.buttonsY(in: proxy.size, corner: corner, insets: buttons, fullScreen: isFullScreen)");
   // The overlay's look is on (Tyler: "i don't see any overlay"), and the testing outline is gone.
   expect(panels).toContain("static let showsFog = true");
   expect(panels).not.toContain("strokeBorder(Color.black");
@@ -311,8 +343,9 @@ test("M3: dragged or in flight, the overlay fades on every side, and gathers in 
   expect(components).toContain("center: floating ? .center : corner.unitPoint,");
   expect(components).toContain("endRadiusFraction: floating ? 0.64 : 1.1");
   expect(components).toContain(".mask(Self.density(fullScreen: false, corner: corner, floating: floating))");
-  expect(member(panels, "func dragMoved() {")).toContain("setFloating(true)");
-  expect(member(panels, "private func stepSpring() {")).toContain("setFloating(false)");
+  // Dragged by its middle or in flight; a resize never floats.
+  expect(member(panels, "private func apply() {")).toContain("setFloating(motion.isMoving)");
+  expect(components).toContain("public var isMoving: Bool { gesture?.resizes == false || flight != nil }");
   expect(member(panels, "private func setFloating(_ value: Bool) {")).toContain(
     "blur.maskImage = Self.blurMask(corner, strength: blurStrength, floating: value)",
   );

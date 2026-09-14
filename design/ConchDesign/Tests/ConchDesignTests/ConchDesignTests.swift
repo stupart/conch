@@ -66,9 +66,9 @@ final class ConchDesignTests: XCTestCase {
     }
 
     /// The fog always sits in a screen corner: let go, it docks in the corner its momentum carries it to, and dragging
-    /// a free edge resizes it from that corner.
+    /// near any edge resizes it from that corner.
     @MainActor
-    func testTheFogDocksInACornerAndResizesFromItsFreeEdges() {
+    func testTheFogDocksInACornerAndResizesFromAnyEdge() {
         let screen = CGRect(x: 0, y: 0, width: 1728, height: 1117)
         let least = CGSize(width: 480, height: 360)
         let size = CGSize(width: 760, height: 560)
@@ -79,20 +79,27 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertEqual(FogDock.corner(releasedAt: CGPoint(x: 400, y: 300), velocity: .zero, in: screen), .bottomLeading)
         XCTAssertEqual(FogDock.corner(releasedAt: CGPoint(x: 700, y: 300), velocity: CGVector(dx: 2000, dy: 0), in: screen), .bottomTrailing)
         XCTAssertEqual(FogDock.corner(releasedAt: CGPoint(x: 400, y: 500), velocity: CGVector(dx: 0, dy: 1500), in: screen), .topLeading)
-        // Dragging the top edge up makes a bottom-docked fog taller, and it stays in its corner.
-        let bottomLeft = FogDock.frame(size: size, corner: .bottomLeading, in: screen)
-        XCTAssertEqual(
-            FogDock.resize(bottomLeft, corner: .bottomLeading, edges: .top, by: CGVector(dx: 50, dy: 200), in: screen, minSize: least),
-            CGRect(x: 0, y: 0, width: 760, height: 760)
-        )
-        // A top-right fog grows left and down from its corner, and never below its minimum.
-        let topRight = FogDock.frame(size: size, corner: .topTrailing, in: screen)
-        XCTAssertEqual(
-            FogDock.resize(topRight, corner: .topTrailing, edges: [.leading, .bottom], by: CGVector(dx: -100, dy: -100), in: screen, minSize: least),
-            CGRect(x: 868, y: 457, width: 860, height: 660)
-        )
-        XCTAssertEqual(FogDock.resize(topRight, corner: .topTrailing, edges: .leading, by: CGVector(dx: 600, dy: 0), in: screen, minSize: least).width, 480)
-        XCTAssertEqual(FogDock.freeEdges(.bottomLeading), [.trailing, .top])
+        // Pulled from its corner it resizes both ways at once: a bottom-left fog dragged up and right grows taller and wider.
+        XCTAssertEqual(FogDock.resized(size, corner: .bottomLeading, by: CGVector(dx: 50, dy: 200), in: screen), CGSize(width: 810, height: 760))
+        // A top-right fog grows left and down.
+        XCTAssertEqual(FogDock.resized(size, corner: .topTrailing, by: CGVector(dx: -100, dy: -100), in: screen), CGSize(width: 860, height: 660))
+        // Past its limits it gives, less the further it goes and never 200 pt.
+        let squeezed = FogDock.resized(size, corner: .topTrailing, by: CGVector(dx: 600, dy: 0), in: screen).width
+        XCTAssertLessThan(squeezed, 480)
+        XCTAssertGreaterThan(squeezed, 480 - 200)
+        XCTAssertEqual(FogDock.rubberBand(1000, 0, 900), 943.137, accuracy: 0.001)
+        XCTAssertEqual(FogDock.rubberBand(500, 0, 900), 500)
+        XCTAssertLessThan(FogDock.rubberBand(1e9, 0, 900), 1100)
+        XCTAssertEqual(FogDock.minSize(in: screen), least)
+        XCTAssertEqual(FogDock.maxSize(in: screen), CGSize(width: 1280, height: 900))
+        XCTAssertEqual(FogDock.maxSize(in: CGRect(x: 0, y: 0, width: 1024, height: 768)), CGSize(width: 1024, height: 768))
+        // A band along every edge resizes, max(120, a fifth of the short side) deep; only the middle moves.
+        XCTAssertTrue(FogDock.resizes(at: CGPoint(x: 380, y: 119), in: size))
+        XCTAssertTrue(FogDock.resizes(at: CGPoint(x: 641, y: 280), in: size))
+        XCTAssertFalse(FogDock.resizes(at: CGPoint(x: 380, y: 280), in: size))
+        // A big fog's band is a fifth of its short side: 180 pt here.
+        XCTAssertTrue(FogDock.resizes(at: CGPoint(x: 1110, y: 300), in: CGSize(width: 1280, height: 900)))
+        XCTAssertFalse(FogDock.resizes(at: CGPoint(x: 1090, y: 300), in: CGSize(width: 1280, height: 900)))
         // The words fill the fog less its padding, the Dock and the button row.
         let text = ConversationFog.textFrame(in: size, corner: .bottomLeading, insets: EdgeInsets(top: 0, leading: 0, bottom: 70, trailing: 0), fullScreen: false)
         // On the bottom, the button row is below the reply, in the docked corner; hanging from the top, above the words.

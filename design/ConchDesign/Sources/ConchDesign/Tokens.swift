@@ -258,6 +258,21 @@ public struct ConchSpring: Equatable, Sendable {
     public var stiffness: Double { pow(2 * .pi / response, 2) }
     public var damping: Double { 4 * .pi * (1 - bounce) / response }
 
+    /// One frame of `value` pulled toward `target`, in fixed 240 Hz substeps so it moves the same at any frame rate.
+    /// True once it rests within `epsilon`.
+    @discardableResult
+    public func step(_ value: inout CGFloat, velocity: inout CGFloat, to target: CGFloat, dt: Double, epsilon: CGFloat = 0.001) -> Bool {
+        let k = CGFloat(stiffness), c = CGFloat(damping)
+        var t = dt
+        while t > 1e-9 {
+            let h = CGFloat(min(t, 1.0 / 240))
+            velocity += (-k * (value - target) - c * velocity) * h
+            value += velocity * h
+            t -= 1.0 / 240
+        }
+        return abs(value - target) < epsilon && abs(velocity) < epsilon * 10
+    }
+
     /// Reduce Motion keeps the timing and drops the overshoot, so things still resolve, calmly.
     public func resolved(reduceMotion: Bool) -> ConchSpring {
         reduceMotion ? ConchSpring(bounce: 0, response: response) : self
