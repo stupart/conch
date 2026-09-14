@@ -43,8 +43,9 @@ final class FloatingPanels: ObservableObject {
     static let conversationFrameName = "conch.conversation"
     /// The fog folded down to its handle. A default like the two show keys, so the menu can open it too.
     static let conversationCollapsedKey = "conch.conversationCollapsed"
-    /// How wide the strips along the fog's free edges are that resize it.
-    static let resizeGrab: CGFloat = 16
+    /// How wide the strips along the fog's free edges are that resize it: wide enough to find without looking
+    /// (Tyler: "make the area where you can grab an edge to resize much much larger").
+    static let resizeGrab: CGFloat = 48
     // ponytail: the fog's look is off while dragging and resizing are tuned (Tyler, 2026-09-14): a 1 pt outline
     // stands in for it. The next pass brings back a blur that gathers at the docked edges.
     static let showsFog = false
@@ -65,6 +66,8 @@ final class FloatingPanels: ObservableObject {
     @Published private(set) var insets = EdgeInsets()
     /// The pointer is over the fog (or, collapsed, its corner).
     @Published private(set) var hovering = false
+    /// How far into a throw's flight the fog is, 0 at rest to 1 mid-air: it fades, softens and shrinks with it.
+    @Published private(set) var throwMotion: CGFloat = 0
     private static let fogMinSize = NSSize(width: 480, height: 360)
     /// The size the fog was last given, kept through moves, collapsing and full screen.
     private var fogSize = NSSize(width: 760, height: 560)
@@ -75,6 +78,7 @@ final class FloatingPanels: ObservableObject {
     private var springOrigin = NSPoint.zero
     private var springVelocity = CGVector.zero
     private var springTarget = NSRect.zero
+    private var springStartDistance: CGFloat = 0
     private let controlBar = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private let fog = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private let blur = NSVisualEffectView()
@@ -281,11 +285,14 @@ final class FloatingPanels: ObservableObject {
     private func updateInsets(_ frame: NSRect, on screen: NSScreen) {
         let full = screen.frame
         let visible = screen.visibleFrame
+        // The free edges are wide resize strips; the words and buttons keep clear of them.
+        let grab = isFullScreen ? 0 : max(0, Self.resizeGrab - ConversationFog.padding)
+        let free = FogDock.freeEdges(corner)
         let next = EdgeInsets(
-            top: max(0, min(frame.maxY, full.maxY) - visible.maxY),
-            leading: max(0, visible.minX - max(frame.minX, full.minX)),
-            bottom: max(0, visible.minY - max(frame.minY, full.minY)),
-            trailing: max(0, min(frame.maxX, full.maxX) - visible.maxX)
+            top: max(0, min(frame.maxY, full.maxY) - visible.maxY) + (free.contains(.top) ? grab : 0),
+            leading: max(0, visible.minX - max(frame.minX, full.minX)) + (free.contains(.leading) ? grab : 0),
+            bottom: max(0, visible.minY - max(frame.minY, full.minY)) + (free.contains(.bottom) ? grab : 0),
+            trailing: max(0, min(frame.maxX, full.maxX) - visible.maxX) + (free.contains(.trailing) ? grab : 0)
         )
         if next != insets { insets = next }
     }
@@ -363,6 +370,7 @@ final class FloatingPanels: ObservableObject {
         springTarget = target
         springVelocity = velocity
         springOrigin = fog.frame.origin
+        springStartDistance = hypot(springOrigin.x - target.minX, springOrigin.y - target.minY)
         fog.setFrame(NSRect(origin: springOrigin, size: target.size), display: true)
         let timer = Timer(timeInterval: Self.springStep, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.stepSpring() }
@@ -372,27 +380,35 @@ final class FloatingPanels: ObservableObject {
     }
 
     private func stepSpring() {
-        // ponytail: stiffness 180 and damping 2√180, critically damped with no overshoot; tune by feel.
+        // ponytail: stiffness 180 at a damping ratio of 0.85, about half a second to settle with the faintest
+        // overshoot; tune by feel.
         let stiffness = 180.0
-        let damping = 2 * stiffness.squareRoot()
+        let damping = 2 * 0.85 * stiffness.squareRoot()
         let step = Self.springStep
         springVelocity.dx += (-stiffness * (springOrigin.x - springTarget.minX) - damping * springVelocity.dx) * step
         springVelocity.dy += (-stiffness * (springOrigin.y - springTarget.minY) - damping * springVelocity.dy) * step
         springOrigin.x += springVelocity.dx * step
         springOrigin.y += springVelocity.dy * step
-        let settled = hypot(springOrigin.x - springTarget.minX, springOrigin.y - springTarget.minY) < 0.5
-            && hypot(springVelocity.dx, springVelocity.dy) < 10
-        if settled {
+        let distance = hypot(springOrigin.x - springTarget.minX, springOrigin.y - springTarget.minY)
+        if distance < 0.5, hypot(springVelocity.dx, springVelocity.dy) < 10 {
             stopSpring()
             fog.setFrame(springTarget, display: true)
         } else {
             fog.setFrameOrigin(springOrigin)
+            // Mid-flight it fades, softens and shrinks a little and comes back whole as it lands, like it was pulled
+            // there; a short hop barely does.
+            let progress = 1 - min(1, distance / max(springStartDistance, 1))
+            let motion = sin(.pi * progress) * min(1, springStartDistance / 300)
+            fog.alphaValue = 1 - 0.45 * motion
+            if abs(motion - throwMotion) > 0.01 { throwMotion = motion }
         }
     }
 
     private func stopSpring() {
         springTimer?.invalidate()
         springTimer = nil
+        fog.alphaValue = 1
+        if throwMotion != 0 { throwMotion = 0 }
     }
 }
 
@@ -461,6 +477,9 @@ private struct ConversationFogHost: View {
                         .onChanged { _ in panels.dragMoved() }
                         .onEnded { _ in panels.dragEnded() }
                 )
+                // A throw's flight: it softens and shrinks a little mid-air, and lands whole.
+                .scaleEffect(1 - 0.1 * panels.throwMotion)
+                .blur(radius: 10 * panels.throwMotion)
                 .overlay {
                     if !panels.isFullScreen {
                         // ponytail: a temporary 1 pt outline standing in for the fog's look while dragging and
