@@ -16,6 +16,11 @@ private final class FirstClickHostingView<Content: View>: NSHostingView<Content>
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+/// The look over the fog's blur never takes the pointer: a press there is the fog's (`FogView.hitTest`).
+private final class LookHostingView<Content: View>: NSHostingView<Content> {
+    override func hitTest(_: NSPoint) -> NSView? { nil }
+}
+
 /// The fog's own view. It knows when the pointer is over it even while conch is in the background, which a SwiftUI
 /// hover inside a panel of an app that isn't active can't be relied on for. It takes every press that isn't on one of
 /// the fog's controls itself, in AppKit: a SwiftUI gesture was cancelled by the window resizing under it (#205). And it
@@ -83,18 +88,33 @@ final class FloatingPanels: ObservableObject {
     static let conversationFrameName = "conch.conversation"
     /// The fog folded down to its handle. A default like the two show keys, so the menu can open it too.
     static let conversationCollapsedKey = "conch.conversationCollapsed"
-    /// The overlay's look: the system blur and a tint, gathered in the corner it is docked to.
+    /// The overlay's look: the system blur under the lab's wash, voice colour and scrim (`FogLook`), gathered to the
+    /// screen edges it touches.
     static let showsFog = true
     /// The look, tunable live with `defaults write ai.blueprintstudio.conch <key> <value>`: the running app picks a
     /// change up within half a second, no rebuild.
     enum Look {
-        /// The fog colour over the blur, 0 to 1 (`-float`).
+        /// The wash over the blur where it is densest, 0 to 1.2 (`-float`), in light and in dark. Below the lab's 0.78
+        /// and 0.8, because the system material lays a tint of its own over the blur first.
         static let tintKey = "conch.overlay.tint"
+        static let tintDarkKey = "conch.overlay.tintDark"
+        /// The voice's colour in the blur, 0 to 1.2 (`-float`), in light and in dark.
+        static let colourKey = "conch.overlay.colour"
+        static let colourDarkKey = "conch.overlay.colourDark"
+        /// The extra wash and blur behind the newest words, 0 to 1.2 (`-float`), in light and in dark.
+        static let scrimKey = "conch.overlay.scrim"
+        static let scrimDarkKey = "conch.overlay.scrimDark"
         /// How much of the system blur shows, 0 to 1 (`-float`).
         static let blurKey = "conch.overlay.blur"
         /// The system blur's material, by name (`-string`): fullScreenUI, hudWindow, popover, menu, sidebar, sheet,
         /// headerView, titlebar, toolTip, windowBackground, underWindowBackground, contentBackground.
         static let materialKey = "conch.overlay.material"
+        /// Light or dark (`-string`): auto (the system's), light or dark.
+        static let appearanceKey = "conch.overlay.appearance"
+        static let defaults: [String: Any] = [
+            tintKey: 0.45, tintDarkKey: 0.46, colourKey: 0.75, colourDarkKey: 0.55, scrimKey: 0.3, scrimDarkKey: 0.25,
+            blurKey: 1.0, materialKey: "fullScreenUI", appearanceKey: "auto",
+        ]
     }
 
     private static var installed: FloatingPanels?
@@ -115,10 +135,14 @@ final class FloatingPanels: ObservableObject {
     @Published private(set) var hovering = false
     /// Off its corner, dragged or in flight: it fades on every side until it lands.
     @Published private(set) var floating = false
-    /// The tint over the blur (`Look.tintKey`).
-    @Published private(set) var tintOpacity = 0.2
+    /// The look over the blur: where its blob is, how dark it is, and its tunables (`Look`).
+    @Published private(set) var look = FogLook(FogMotion(size: CGSize(width: 760, height: 560), corner: .bottomLeading, in: .zero))
     /// How much of the blur shows (`Look.blurKey`).
     private var blurStrength = 1.0
+    /// The look's own crossfades, light to dark and the resize band's glow, stepped with the motion: where each is, where
+    /// it is heading, and how fast.
+    private var darkness: CGFloat = 0, darkTarget: CGFloat = 0, darkVelocity: CGFloat = 0
+    private var resizeHover: CGFloat = 0, hoverTarget: CGFloat = 0, hoverVelocity: CGFloat = 0
     private var lookTimer: Timer?
     /// How far into a throw's flight the fog is, 0 at rest to 1 mid-air: it fades, softens and shrinks with it.
     @Published private(set) var throwMotion: CGFloat = 0
@@ -130,24 +154,18 @@ final class FloatingPanels: ObservableObject {
     private let controlBar = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private let fog = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private let blur = NSVisualEffectView()
+    private var lookHost = NSView()
+    private var words = NSView()
     private var defaultsObserver: NSObjectProtocol?
     private var screenObserver: NSObjectProtocol?
     private var activationObserver: NSObjectProtocol?
 
-    /// The corner fog as an image for the blur's mask, one per corner: a behind-window blur ignores layer masks, and
-    /// NSVisualEffectView stretches this image to its own size, so one small image serves any panel size.
-    private static var masks: [String: NSImage] = [:]
-
-    private static func blurMask(_ corner: FogCorner, strength: Double, floating: Bool) -> NSImage? {
-        let key = "\(corner)-\(floating)"
-        if let mask = masks[key] { return mask }
-        let image = ImageRenderer(
-            content: ConversationFog.density(fullScreen: false, corner: corner, floating: floating)
-                .opacity(strength)
-                .frame(width: 256, height: 256)
-        ).nsImage
-        image?.resizingMode = .stretch
-        masks[key] = image
+    /// The look's mask for the blur. A behind-window blur ignores layer masks, so NSVisualEffectView takes this small image
+    /// and stretches it to its own size.
+    private func blurMask() -> NSImage? {
+        guard let mask = look.mask(strength: blurStrength) else { return nil }
+        let image = NSImage(cgImage: mask, size: NSSize(width: mask.width, height: mask.height))
+        image.resizingMode = .stretch
         return image
     }
 
@@ -180,20 +198,24 @@ final class FloatingPanels: ObservableObject {
         // window's transparent pixels, which with the fog's look off is nearly all of it: a drag or a resize strip
         // would land on the app behind, and so would a click in the collapsed corner.
         fog.ignoresMouseEvents = false
-        UserDefaults.standard.register(defaults: [Look.tintKey: 0.2, Look.blurKey: 1.0, Look.materialKey: "fullScreenUI"])
+        UserDefaults.standard.register(defaults: Look.defaults)
         blur.blendingMode = .behindWindow
         blur.state = .active
         blur.isHidden = !Self.showsFog
-        // The blur and the words are siblings: a visual effect view's mask shapes everything inside it, which faded
-        // the words with the fog and hid the collapsed handle along with the blur.
+        // The blur, its look and the words are siblings: a visual effect view's mask shapes everything inside it, which
+        // faded the words with the fog and hid the collapsed handle along with the blur.
         container.panels = self
         container.onHover = { [weak self] inside in
-            MainActor.assumeIsolated { self?.hovering = inside }
+            MainActor.assumeIsolated {
+                self?.hovering = inside
+                if !inside { self?.hoverResizeBand(false) }
+            }
         }
         fog.acceptsMouseMovedEvents = true
         fog.contentView = container
-        let words = FirstClickHostingView(rootView: ConversationFogHost(store: store, panels: self))
-        for view in [blur, words] as [NSView] {
+        lookHost = LookHostingView(rootView: FogLookHost(store: store, panels: self))
+        words = FirstClickHostingView(rootView: ConversationFogHost(store: store, panels: self))
+        for view in [blur, lookHost, words] {
             view.frame = container.bounds
             view.autoresizingMask = [.width, .height]
             container.addSubview(view)
@@ -278,16 +300,26 @@ final class FloatingPanels: ObservableObject {
     /// The overlay's look from its defaults (`Look`), applied only where it changed.
     private func applyLook() {
         let defaults = UserDefaults.standard
-        let tint = min(max(defaults.double(forKey: Look.tintKey), 0), 1)
-        if tint != tintOpacity { tintOpacity = tint }
+        func value(_ key: String) -> Double { min(max(defaults.double(forKey: key), 0), 1.2) }
+        var next = look
+        next.tint = LightDark(value(Look.tintKey), value(Look.tintDarkKey))
+        next.colour = LightDark(value(Look.colourKey), value(Look.colourDarkKey))
+        next.scrim = LightDark(value(Look.scrimKey), value(Look.scrimDarkKey))
+        setLook(next)
         let material = Self.material(named: defaults.string(forKey: Look.materialKey))
         if blur.material != material { blur.material = material }
         let strength = min(max(defaults.double(forKey: Look.blurKey), 0), 1)
         if strength != blurStrength {
             blurStrength = strength
-            Self.masks = [:]
-            if !isCollapsed, !isFullScreen { blur.maskImage = Self.blurMask(corner, strength: strength, floating: floating) }
+            if !isCollapsed, !isFullScreen { blur.maskImage = blurMask() }
         }
+        let systemDark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        let dark: CGFloat = FogLook.isDark(defaults.string(forKey: Look.appearanceKey), systemDark: systemDark) ? 1 : 0
+        guard dark != darkTarget else { return }
+        darkTarget = dark
+        // At launch (before the timer) it starts there; after, it crossfades.
+        if lookTimer == nil { darkness = dark }
+        container.run(true)
     }
 
     private static func material(named name: String?) -> NSVisualEffectView.Material {
@@ -353,7 +385,7 @@ final class FloatingPanels: ObservableObject {
             // Saved again only once it is back, so the next launch never restores a full-screen frame.
             fog.setFrameAutosaveName(Self.conversationFrameName)
             updateInsets(frame, on: screen)
-            blur.maskImage = Self.blurMask(corner, strength: blurStrength, floating: floating)
+            blur.maskImage = blurMask()
         } else {
             fog.setFrameAutosaveName("")
             fog.setFrame(screen.frame, display: true, animate: animate)
@@ -372,26 +404,53 @@ final class FloatingPanels: ObservableObject {
     }
 
     /// The fog where its motion has it. Mid-flight it fades a little (and the words soften and shrink), whole as it lands.
+    /// Its look follows: gathered to the screen edges it touches, a blob in its middle away from them, and its window
+    /// reaching past it toward an edge the blob spills to, so the blob never ends in a line.
     private func apply() {
         fog.alphaValue = 1 - (1 - ConchMotion.flightOpacity) * motion.flying
         if abs(motion.flying - throwMotion) > 0.01 || (motion.flying == 0 && throwMotion != 0) { throwMotion = motion.flying }
-        guard !isCollapsed, !isFullScreen else { return }
-        if fog.frame != motion.frame { fog.setFrame(motion.frame, display: true) }
-        if motion.corner != corner {
-            corner = motion.corner
-            blur.maskImage = Self.blurMask(corner, strength: blurStrength, floating: floating)
-        }
-        setFloating(motion.isMoving)
+        guard !isCollapsed, !isFullScreen else { return layOut(margin: EdgeInsets()) }
+        if motion.corner != corner { corner = motion.corner }
+        if motion.isMoving != floating { floating = motion.isMoving }
         if let screen = NSScreen.screens.first(where: { $0.frame == motion.screen }) {
             updateInsets(FogDock.frame(size: motion.size, corner: corner, in: screen.frame), on: screen)
         }
+        var next = FogLook(motion, insets: insets)
+        (next.resizeHover, next.darkness, next.tint, next.colour, next.scrim) = (resizeHover, darkness, look.tint, look.colour, look.scrim)
+        setLook(next)
+        let margin = next.margin, frame = motion.frame
+        let window = NSRect(x: frame.minX - margin.leading, y: frame.minY - margin.bottom, width: frame.width + margin.leading + margin.trailing, height: frame.height + margin.top + margin.bottom)
+        if fog.frame != window { fog.setFrame(window, display: true) }
+        layOut(margin: margin)
     }
 
-    /// Off its corner (dragged or in flight) the overlay fades on every side; docked, it gathers in its corner again.
-    private func setFloating(_ value: Bool) {
-        guard value != floating else { return }
-        floating = value
-        if !isCollapsed, !isFullScreen { blur.maskImage = Self.blurMask(corner, strength: blurStrength, floating: value) }
+    /// The words where the fog is in its window, and the blur and its look over the whole window. The container's origin
+    /// stays the fog's, so presses and control frames need no converting.
+    private func layOut(margin: EdgeInsets) {
+        let origin = CGPoint(x: -margin.leading, y: -margin.top)
+        if container.bounds.origin != origin { container.setBoundsOrigin(origin) }
+        let bounds = container.bounds
+        blur.frame = bounds
+        lookHost.frame = bounds
+        words.frame = CGRect(x: 0, y: 0, width: bounds.width - margin.leading - margin.trailing, height: bounds.height - margin.top - margin.bottom)
+    }
+
+    /// A new look, and the blur's mask drawn again for it.
+    private func setLook(_ next: FogLook) {
+        guard next != look else { return }
+        look = next
+        guard !isCollapsed, !isFullScreen else { return }
+        blur.maskImage = blurMask()
+        let appearance = NSAppearance(named: next.darkness > 0.5 ? .darkAqua : .aqua)
+        if blur.appearance?.name != appearance?.name { blur.appearance = appearance }
+    }
+
+    /// Over the resize band the blob swells a little and its colour deepens, as the lab's does.
+    private func hoverResizeBand(_ on: Bool) {
+        let target: CGFloat = on ? 1 : 0
+        guard target != hoverTarget else { return }
+        hoverTarget = target
+        container.run(true)
     }
 
     /// The screens changed (a display, the Dock): dock again where it was, ending any gesture.
@@ -438,10 +497,13 @@ final class FloatingPanels: ObservableObject {
         motion.release(at: ProcessInfo.processInfo.systemUptime, in: screen, cancelled: cancelled)
     }
 
-    /// Where a press would resize, the pointer says so.
+    /// Where a press would resize, the pointer says so, and the look glows.
     func pointerMoved(to point: CGPoint) {
-        guard grabs(point), !motion.isGesturing else { return }
-        guard motion.resizes(at: NSEvent.mouseLocation) else { return NSCursor.arrow.set() }
+        guard !motion.isGesturing else { return }
+        let resizes = grabs(point) && motion.resizes(at: NSEvent.mouseLocation)
+        hoverResizeBand(resizes)
+        guard grabs(point) else { return }
+        guard resizes else { return NSCursor.arrow.set() }
         guard #available(macOS 15, *) else { return NSCursor.crosshair.set() }
         let free: NSCursor.FrameResizePosition = corner.bottom ? (corner.leading ? .topRight : .topLeft) : (corner.leading ? .bottomRight : .bottomLeft)
         NSCursor.frameResize(position: free, directions: .all).set()
@@ -453,8 +515,16 @@ final class FloatingPanels: ObservableObject {
         if motion.isGesturing, NSEvent.pressedMouseButtons & 1 == 0 { released() }
         motion.reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         motion.step(dt: dt)
+        if ConchMotion.appearance.step(&darkness, velocity: &darkVelocity, to: darkTarget, dt: dt) {
+            darkness = darkTarget
+            darkVelocity = 0
+        }
+        if ConchSpring(bounce: 0, response: 0.3).step(&resizeHover, velocity: &hoverVelocity, to: hoverTarget, dt: dt) {
+            resizeHover = hoverTarget
+            hoverVelocity = 0
+        }
         apply()
-        if motion.isSettled { container.run(false) }
+        if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget { container.run(false) }
     }
 }
 
@@ -491,6 +561,18 @@ private struct ControlBarSize: PreferenceKey {
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
 }
 
+/// The look over the fog's blur, in the voice's colour: the control bar's voice state.
+private struct FogLookHost: View {
+    @ObservedObject var store: StateStore
+    @ObservedObject var panels: FloatingPanels
+
+    var body: some View {
+        if FloatingPanels.showsFog, !panels.isCollapsed, !panels.isFullScreen {
+            FogLookView(look: panels.look, voice: ConchStatusItem.voiceState(store.state))
+        }
+    }
+}
+
 /// The conversation fog on the store, for the session the voice is on. The reply is that session's
 /// composer draft, sent and dictated the way the dashboard's composer does it.
 private struct ConversationFogHost: View {
@@ -513,8 +595,9 @@ private struct ConversationFogHost: View {
                     corner: panels.corner,
                     insets: panels.insets,
                     showsFog: FloatingPanels.showsFog,
-                    tint: panels.tintOpacity,
+                    look: panels.look,
                     floating: panels.floating,
+                    hovering: panels.hovering,
                     onMic: { if let row { mic(row) } },
                     onSend: { if let row { send(row) } },
                     onCollapse: { panels.toggleCollapsed() },
@@ -525,6 +608,9 @@ private struct ConversationFogHost: View {
                 .blur(radius: reduceMotion ? 0 : ConchMotion.flightBlur * panels.throwMotion)
             }
         }
+        // The palette crossfades with the look, light to dark.
+        .environment(\.conchDarkness, panels.look.darkness)
+        .environment(\.colorScheme, panels.look.darkness > 0.5 ? .dark : .light)
         // Where the buttons and the reply line are, for the fog's view to leave presses there to them.
         .coordinateSpace(name: FogControls.space)
         .onPreferenceChange(FogControls.self) { panels.controlFrames = $0 }

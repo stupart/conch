@@ -4,6 +4,9 @@ extension EnvironmentValues {
     /// Set by the gallery. ImageRenderer cannot draw a platform text field, so a component that hosts one
     /// draws a SwiftUI stand-in in the same type and colours instead.
     @Entry public var conchRendersStatically = false
+    /// Set by the overlay: how far its palette has crossfaded from light (0) to dark (1). Colour tokens follow it rather
+    /// than the colour scheme, so the words turn with the look.
+    @Entry public var conchDarkness: Double? = nil
 }
 
 // MARK: - VoiceGlyph
@@ -238,7 +241,7 @@ public struct IconButton: View {
     public enum Style: Sendable {
         case plain
         case primary
-        /// Over another app (the fog's buttons): a translucent white circle with a hairline, as panel.html drew them.
+        /// Over another app (the fog's buttons): the overlay's translucent circle with a hairline, as the overlay lab draws them.
         case glass
     }
 
@@ -260,16 +263,15 @@ public struct IconButton: View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: size * 0.42, weight: .semibold))
-                .foregroundStyle(style == .primary ? ConchColor.onAccent : style == .glass ? ConchColor.textPrimary : ConchColor.textSecondary)
+                .foregroundStyle(style == .primary ? ConchColor.onAccent : style == .glass ? ConchColor.overlayGlassIcon : ConchColor.textSecondary)
                 .frame(width: size, height: size)
                 .background {
                     switch style {
                     case .plain: Circle().fill(ConchColor.fill)
                     case .primary: Circle().fill(ConchColor.accent)
                     case .glass:
-                        Circle().fill(ConchColor.glass)
-                            .overlay(Circle().strokeBorder(ConchColor.hairlineStrong, lineWidth: 0.5))
-                            .conchElevation(.raised)
+                        Circle().fill(ConchColor.overlayGlass)
+                            .overlay(Circle().strokeBorder(ConchColor.overlayLine, lineWidth: 0.5))
                     }
                 }
                 .contentShape(Circle())
@@ -417,7 +419,6 @@ public enum FogCorner: Hashable, Sendable {
 
     public var leading: Bool { self == .bottomLeading || self == .topLeading }
     public var bottom: Bool { self == .bottomLeading || self == .bottomTrailing }
-    var unitPoint: UnitPoint { UnitPoint(x: leading ? 0 : 1, y: bottom ? 1 : 0) }
     var alignment: Alignment { bottom ? (leading ? .bottomLeading : .bottomTrailing) : (leading ? .topLeading : .topTrailing) }
 
     /// The corner of `screen` nearest the middle of `rect`, in screen coordinates (y up). Close to a middle line it
@@ -502,10 +503,14 @@ public struct FogMotion {
     public private(set) var screen: CGRect
     /// 0 docked to 1 dragged or mid-air: how far into the flight's scale, blur and fade it is.
     public private(set) var flying: CGFloat = 0
+    /// 0 docked to 1 dragged by its middle or in flight: how far its look has let go of its corner for the edges it is
+    /// near (`magnet`).
+    public private(set) var free: CGFloat = 0
     /// Springs without overshoot.
     public var reduceMotion = false
 
     private var flyingVelocity: CGFloat = 0
+    private var freeVelocity: CGFloat = 0
     private var flight: Flight?
     private var sizeTarget: CGSize?
     private var sizeVelocity = CGVector.zero
@@ -532,7 +537,30 @@ public struct FogMotion {
     public var isResizing: Bool { gesture?.resizes == true }
     /// Off its corner: dragged by its middle or in flight.
     public var isMoving: Bool { gesture?.resizes == false || flight != nil }
-    public var isSettled: Bool { gesture == nil && flight == nil && sizeTarget == nil && flying == 0 }
+    public var isSettled: Bool { gesture == nil && flight == nil && sizeTarget == nil && flying == 0 && free == 0 }
+
+    /// How far each side is from its screen's edge, negative past it.
+    public var gaps: EdgeInsets {
+        EdgeInsets(top: screen.maxY - frame.maxY, leading: frame.minX - screen.minX, bottom: frame.minY - screen.minY, trailing: screen.maxX - frame.maxX)
+    }
+
+    /// How hard each screen edge pulls the look toward it, 0 to 1: the lab's magnet, strength 1 over 160 pt. Docked, its
+    /// corner's two edges pull fully; moving, every edge it comes within 160 pt of, eased in as it lets go of its corner.
+    public var magnet: EdgeInsets {
+        func near(_ gap: CGFloat) -> CGFloat {
+            let t = 1 - min(max(gap / 160, 0), 1)
+            return t * t * (3 - 2 * t)
+        }
+        let gaps = self.gaps, top = near(gaps.top), leading = near(gaps.leading), bottom = near(gaps.bottom), trailing = near(gaps.trailing)
+        let across = max(1, leading + trailing), up = max(1, top + bottom)
+        func pull(_ anchored: Bool, _ measured: CGFloat) -> CGFloat { (anchored ? 1 : 0) * (1 - free) + measured * free }
+        return EdgeInsets(
+            top: pull(!corner.bottom, top / up),
+            leading: pull(corner.leading, leading / across),
+            bottom: pull(corner.bottom, bottom / up),
+            trailing: pull(!corner.leading, trailing / across)
+        )
+    }
 
     /// Where a press at `point` would resize rather than move. Grabbed mid-flight it always moves.
     public func resizes(at point: CGPoint) -> Bool {
@@ -549,6 +577,8 @@ public struct FogMotion {
         sizeVelocity = .zero
         flying = 0
         flyingVelocity = 0
+        free = 0
+        freeVelocity = 0
         origin = docked
     }
 
@@ -624,6 +654,10 @@ public struct FogMotion {
         if ConchSpring(bounce: 0, response: 0.2).step(&flying, velocity: &flyingVelocity, to: goal, dt: dt) {
             flying = goal
             flyingVelocity = 0
+        }
+        if ConchSpring(bounce: 0, response: 0.22).step(&free, velocity: &freeVelocity, to: isMoving ? 1 : 0, dt: dt) {
+            free = isMoving ? 1 : 0
+            freeVelocity = 0
         }
     }
 
@@ -725,7 +759,8 @@ extension View {
 /// The conversation as a soft fog rather than a pane (M3): no edge, just a quieter patch of screen with the
 /// words in it. The latest turn is large, earlier ones smaller and fading as they rise, and the reply line
 /// sits at the bottom. The blur is the host's (a behind-window visual effect view on the Mac, masked with
-/// `density`); this draws the tint, the words, and collapse and full-screen buttons that brighten on hover.
+/// `FogLook.mask`), and so is the look over it (`FogLookView`); this draws the words, and collapse and full-screen
+/// buttons that brighten on hover.
 public struct ConversationFog: View {
     let turns: [ConversationTurn]
     @Binding var draft: String
@@ -735,19 +770,22 @@ public struct ConversationFog: View {
     let corner: FogCorner
     /// Where the Dock and the menu bar overlap the fog, so the words stay clear of them.
     let insets: EdgeInsets
-    /// Draws the fog's tint; off, the words and buttons stand alone.
+    /// Draws the full screen's wash; off, the words and buttons stand alone.
     let showsFog: Bool
-    /// How much of the fog colour lies over the blur where it is densest.
-    let tint: Double
+    /// The look under the words: they fade where its blur does.
+    let look: FogLook?
     /// Draws the collapse and full-screen buttons; a host that layers its own controls over the fog draws them itself.
     let showsButtons: Bool
-    /// Off its corner: the fog fades on every side instead of gathering in the corner.
+    /// Off its corner, dragged or in flight: the buttons hide.
     let floating: Bool
+    /// The pointer is over the fog: the buttons show fully.
+    let hovering: Bool
     let onMic: () -> Void
     let onSend: () -> Void
     let onCollapse: () -> Void
     let onFullScreen: () -> Void
     @Environment(\.conchRendersStatically) private var rendersStatically
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
         turns: [ConversationTurn],
@@ -757,9 +795,10 @@ public struct ConversationFog: View {
         corner: FogCorner = .bottomLeading,
         insets: EdgeInsets = EdgeInsets(),
         showsFog: Bool = true,
-        tint: Double = ConversationFog.tintOpacity,
+        look: FogLook? = nil,
         showsButtons: Bool = true,
         floating: Bool = false,
+        hovering: Bool = true,
         onMic: @escaping () -> Void,
         onSend: @escaping () -> Void,
         onCollapse: @escaping () -> Void,
@@ -772,32 +811,14 @@ public struct ConversationFog: View {
         self.corner = corner
         self.insets = insets
         self.showsFog = showsFog
-        self.tint = tint
+        self.look = look
         self.showsButtons = showsButtons
         self.floating = floating
+        self.hovering = hovering
         self.onMic = onMic
         self.onSend = onSend
         self.onCollapse = onCollapse
         self.onFullScreen = onFullScreen
-    }
-
-    /// Where the fog is, as a mask (only its alpha matters). Full screen, everywhere; otherwise the corner fog,
-    /// strongest in the panel's `corner` and gone three quarters of the way out, so there is no edge to look at.
-    public static func density(fullScreen: Bool, corner: FogCorner = .bottomLeading, floating: Bool = false) -> EllipticalGradient {
-        EllipticalGradient(
-            stops: fullScreen
-                ? [.init(color: .black, location: 0), .init(color: .black, location: 1)]
-                : [
-                    .init(color: .black, location: 0.36),
-                    .init(color: .black.opacity(0.75), location: 0.5),
-                    .init(color: .black.opacity(0.3), location: 0.64),
-                    .init(color: .clear, location: 0.78),
-                ],
-            // Off its corner (dragged, or in flight) it gathers in the middle and fades out before any of its own edges,
-            // so pulled off a screen edge it never ends in a line (Tyler: "when u pull it off an edge thers a line").
-            center: floating ? .center : corner.unitPoint,
-            endRadiusFraction: floating ? 0.64 : 1.1
-        )
     }
 
     /// Inside the fog, before the screen's own insets.
@@ -847,29 +868,17 @@ public struct ConversationFog: View {
         fullScreen || corner.leading ? .leading : .trailing
     }
 
-    /// The tint a host doesn't choose one: how much of the fog colour lies over the blur where it is densest.
-    public static let tintOpacity = 0.86
-
     public var body: some View {
         GeometryReader { proxy in
             let text = Self.textFrame(in: proxy.size, corner: corner, insets: insets, fullScreen: isFullScreen)
             ZStack(alignment: .topLeading) {
-                if showsFog {
-                    Group {
-                        if isFullScreen {
-                            // panel.html's wash: light at the top so the blurred work still shows, deepening toward the words.
-                            Rectangle().fill(ConchColor.fog).mask(LinearGradient(
-                                stops: [.init(color: .black.opacity(0.12), location: 0), .init(color: .black.opacity(0.42), location: 0.55), .init(color: .black.opacity(0.62), location: 1)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ))
-                        } else {
-                            Rectangle()
-                                .fill(ConchColor.fog)
-                                .opacity(tint)
-                                .mask(Self.density(fullScreen: false, corner: corner, floating: floating))
-                        }
-                    }
+                if showsFog, isFullScreen {
+                    // panel.html's wash: light at the top so the blurred work still shows, deepening toward the words.
+                    Rectangle().fill(ConchColor.fog).mask(LinearGradient(
+                        stops: [.init(color: .black.opacity(0.12), location: 0), .init(color: .black.opacity(0.42), location: 0.55), .init(color: .black.opacity(0.62), location: 1)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ))
                     .accessibilityHidden(true)
                 }
                 // The words keep a short soft edge of their own at the bottom; this is the rest of the gap to the reply.
@@ -885,6 +894,14 @@ public struct ConversationFog: View {
                     .fogControl()
                 }
                 .frame(width: text.width, height: text.height, alignment: .bottomLeading)
+                // The words fade where the blur does, so they never sit on screen it hasn't softened.
+                .mask(alignment: .topLeading) {
+                    if let look, !isFullScreen {
+                        FogLook.area(look.wordsFade.offsetBy(dx: -text.minX, dy: -text.minY), FogLook.wordsDensity, .black)
+                    } else {
+                        Color.black
+                    }
+                }
                 .offset(x: text.minX, y: text.minY)
                 if showsButtons {
                     let buttons = Self.buttonInsets(insets)
@@ -898,6 +915,11 @@ public struct ConversationFog: View {
                             x: buttons.leading + Self.padding,
                             y: Self.buttonsY(in: proxy.size, corner: corner, insets: buttons, fullScreen: isFullScreen)
                         )
+                        // Faint until the pointer is over the fog, and gone while it flies.
+                        .opacity(isFullScreen ? 1 : floating ? 0 : hovering ? 1 : 0.4)
+                        .allowsHitTesting(isFullScreen || !floating)
+                        .animation(ConchSpring(bounce: 0, response: 0.28).animation(reduceMotion: reduceMotion), value: hovering)
+                        .animation(ConchSpring(bounce: 0, response: 0.2).animation(reduceMotion: reduceMotion), value: floating)
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
@@ -980,8 +1002,7 @@ public struct ConversationFog: View {
 
 // MARK: - FogPanelButtons
 
-/// The fog's collapse and full-screen buttons: in that order, as a Mac window's minimise and zoom come. Always fully
-/// there: a hover can't be relied on in a panel of an app that isn't active.
+/// The fog's collapse and full-screen buttons: in that order, as a Mac window's minimise and zoom come.
 public struct FogPanelButtons: View {
     let corner: FogCorner
     let isFullScreen: Bool

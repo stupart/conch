@@ -3,6 +3,7 @@
 import AppKit
 import ConchDesign
 import CoreImage
+import ImageIO
 import SwiftUI
 
 let outDir = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "gallery", isDirectory: true)
@@ -322,6 +323,16 @@ struct OtherApp: View {
     }
 }
 
+/// `page` blurred by Core Image, standing in for the app's behind-window blur, which ImageRenderer cannot draw (and SwiftUI's
+/// own blur tiles in it).
+func softened(_ page: CGImage, sigma: Double, saturation: Double = 1) -> CGImage? {
+    let input = CIImage(cgImage: page)
+    let output = input.clampedToExtent().applyingGaussianBlur(sigma: sigma)
+        .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: saturation])
+        .cropped(to: input.extent)
+    return CIContext().createCGImage(output, from: input.extent)
+}
+
 struct BlurredOtherApp: View {
     let size: CGSize
     @Environment(\.colorScheme) private var scheme
@@ -333,59 +344,92 @@ struct BlurredOtherApp: View {
     private var blurred: CGImage? {
         let renderer = ImageRenderer(content: OtherApp().frame(width: size.width, height: size.height).environment(\.colorScheme, scheme))
         renderer.scale = 2
-        guard let page = renderer.cgImage else { return nil }
-        let input = CIImage(cgImage: page)
-        let output = input.clampedToExtent().applyingGaussianBlur(sigma: 60).cropped(to: input.extent)
-        return CIContext().createCGImage(output, from: input.extent)
+        return renderer.cgImage.flatMap { softened($0, sigma: 60) }
     }
 }
 
-struct FogScreen: View {
-    let fullScreen: Bool
-    let draft: String
-    let listening: Bool
-    var size = CGSize(width: 760, height: 560)
-    /// From the screen's bottom-left corner.
-    var offset = CGSize.zero
-    var corner: FogCorner = .bottomLeading
+let sampleTurns = [
+    ConversationTurn(id: "1", fromYou: true, text: "The invite page still says Accept invitation. Make the button just say Join."),
+    ConversationTurn(id: "2", fromYou: false, text: "The label is in `InviteCard.tsx`, and the email invite reads it too, so I'll give the page its own."),
+    ConversationTurn(id: "3", fromYou: true, text: "Fine. Keep the email check."),
+    ConversationTurn(id: "4", fromYou: false, text: "Changed. The button reads **Join**, and it still waits for the email check before it can be pressed. Tests pass."),
+]
 
-    static let screen = CGSize(width: 1200, height: 750)
-    static let turns = [
-        ConversationTurn(id: "1", fromYou: true, text: "The invite page still says Accept invitation. Make the button just say Join."),
-        ConversationTurn(id: "2", fromYou: false, text: "The label is in `InviteCard.tsx`, and the email invite reads it too, so I'll give the page its own."),
-        ConversationTurn(id: "3", fromYou: true, text: "Fine. Keep the email check."),
-        ConversationTurn(id: "4", fromYou: false, text: "Changed. The button reads **Join**, and it still waits for the email check before it can be pressed. Tests pass."),
-    ]
+/// The overlay over a screen, layered as the Mac overlay layers it (FloatingPanels): the page, the stand-in blur under the
+/// look's own mask, the look, and the words. Mid-air it all fades a little.
+struct FogScreen<Page: View, Blur: View>: View {
+    let page: Page
+    let blur: Blur
+    let screen: CGSize
+    let motion: FogMotion
+    var insets = EdgeInsets()
+    var voice = VoiceState.talk
+    var fullScreen = false
+    var draft = ""
+    var turns = sampleTurns
+    var hovering = true
+    @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        let panel = fullScreen ? Self.screen : size
-        ZStack(alignment: .bottomLeading) {
-            OtherApp()
-            // ImageRenderer cannot draw the app's behind-window blur (and tiles SwiftUI's own blur), so a copy of the
-            // page blurred by Core Image stands in for it, under the same mask.
-            BlurredOtherApp(size: Self.screen)
-                .mask(alignment: .bottomLeading) {
-                    ConversationFog.density(fullScreen: fullScreen, corner: corner)
-                        .frame(width: panel.width, height: panel.height)
-                        .offset(x: offset.width, y: -offset.height)
+        var look = FogLook(motion, insets: insets)
+        look.darkness = scheme == .dark ? 1 : 0
+        // Top left, as SwiftUI lays out.
+        let fog = CGRect(x: motion.frame.minX, y: screen.height - motion.frame.maxY, width: motion.size.width, height: motion.size.height)
+        let panel = fullScreen ? CGRect(origin: .zero, size: screen) : fog
+        let window = look.window.offsetBy(dx: fog.minX, dy: fog.minY)
+        return ZStack(alignment: .topLeading) {
+            page
+            ZStack(alignment: .topLeading) {
+                blur.mask(alignment: .topLeading) {
+                    if fullScreen {
+                        Color.black
+                    } else if let mask = look.mask() {
+                        Image(decorative: mask, scale: 1).resizable().interpolation(.high)
+                            .frame(width: window.width, height: window.height)
+                            .offset(x: window.minX, y: window.minY)
+                    }
                 }
-            ConversationFog(
-                turns: Self.turns,
-                draft: .constant(draft),
-                isListening: listening,
-                isFullScreen: fullScreen,
-                corner: corner,
-                onMic: {},
-                onSend: {},
-                onCollapse: {},
-                onFullScreen: {}
-            )
-            .frame(width: panel.width, height: panel.height)
-            .offset(x: offset.width, y: -offset.height)
+                if !fullScreen {
+                    FogLookView(look: look, voice: voice).offset(x: window.minX, y: window.minY)
+                }
+                // The words' flight blur is left out: SwiftUI's blur tiles in ImageRenderer.
+                ConversationFog(
+                    turns: turns,
+                    draft: .constant(draft),
+                    isListening: voice == .listening,
+                    isFullScreen: fullScreen,
+                    corner: motion.corner,
+                    insets: insets,
+                    look: fullScreen ? nil : look,
+                    floating: motion.isMoving,
+                    hovering: hovering,
+                    onMic: {},
+                    onSend: {},
+                    onCollapse: {},
+                    onFullScreen: {}
+                )
+                .frame(width: panel.width, height: panel.height)
+                .scaleEffect(1 - (1 - ConchMotion.flightScale) * motion.flying)
+                .offset(x: panel.minX, y: panel.minY)
+            }
+            .compositingGroup()
+            .opacity(1 - (1 - ConchMotion.flightOpacity) * motion.flying)
         }
-        .frame(width: Self.screen.width, height: Self.screen.height)
-        .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large))
+        .frame(width: screen.width, height: screen.height, alignment: .topLeading)
+        .clipped()
+        .environment(\.conchDarkness, look.darkness)
     }
+}
+
+let m3Screen = CGSize(width: 1200, height: 750)
+
+func docked(_ corner: FogCorner, size: CGSize = CGSize(width: 760, height: 560), in screen: CGSize = m3Screen) -> FogMotion {
+    FogMotion(size: size, corner: corner, in: CGRect(origin: .zero, size: screen))
+}
+
+func m3Fog(_ corner: FogCorner, fullScreen: Bool = false, draft: String = "", voice: VoiceState = .talk) -> some View {
+    FogScreen(page: OtherApp(), blur: BlurredOtherApp(size: m3Screen), screen: m3Screen, motion: docked(corner), voice: voice, fullScreen: fullScreen, draft: draft)
+        .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large))
 }
 
 let barDetails: [VoiceState: String] = [
@@ -411,12 +455,12 @@ try render("m3-control-bar") {
 
 try render("m3-fog-corner", width: 1280) {
     Heading(title: "Conversation fog, corner", note: "M3. The blur is simulated here; the app draws a behind-window visual effect view under the same mask.")
-    FogScreen(fullScreen: false, draft: "", listening: false)
+    m3Fog(.bottomLeading)
 }
 
 try render("m3-fog-fullscreen", width: 1280) {
     Heading(title: "Conversation fog, full screen", note: "Command-Return or the button; leaving restores the corner's frame. Listening, with a reply typed.")
-    FogScreen(fullScreen: true, draft: "Looks good. Ship it, then the Dayloop invite", listening: true)
+    m3Fog(.bottomLeading, fullScreen: true, draft: "Looks good. Ship it, then the Dayloop invite", voice: .listening)
 }
 
 try render("m3-fog-collapsed", width: 1280) {
@@ -426,16 +470,106 @@ try render("m3-fog-collapsed", width: 1280) {
         FogHandle {}
             .padding(ConchSpace.x4)
     }
-    .frame(width: FogScreen.screen.width, height: FogScreen.screen.height)
+    .frame(width: m3Screen.width, height: m3Screen.height)
     .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large))
 }
 
 try render("m3-fog-top-right", width: 1280) {
     Heading(title: "Conversation fog, dragged to the top right", note: "It faces the screen corner nearest it: the fog gathers in the top-right corner and the words move up there.")
-    FogScreen(fullScreen: false, draft: "", listening: false, offset: CGSize(width: 440, height: 190), corner: .topTrailing)
+    m3Fog(.topTrailing)
 }
 
 try render("m3-fog-bottom-right", width: 1280) {
     Heading(title: "Conversation fog, dragged to the bottom right", note: "The same corner fog, turned to face the bottom-right corner.")
-    FogScreen(fullScreen: false, draft: "", listening: false, offset: CGSize(width: 440, height: 0), corner: .bottomTrailing)
+    m3Fog(.bottomTrailing)
+}
+
+// The overlay lab's own shots (lab-shots/v2-*.png) beside the same scenes drawn by these components over the lab's
+// backdrops. Those are private screenshots, so they are read from CONCH_LAB (default ~/Projects/conch-design) at render
+// time and never kept in this repo; without them this part is skipped. The Core Image blur only stands in for the live
+// behind-window blur and has none of the system material's own tint, so these use the lab's tint, not the app's.
+let labDir = URL(fileURLWithPath: ProcessInfo.processInfo.environment["CONCH_LAB"] ?? NSHomeDirectory() + "/Projects/conch-design")
+let labScreen = CGSize(width: 1728, height: 1117)
+/// The lab's transcript, as much of it as the fog shows.
+let labTurns = [
+    (true, "The card feels heavy on the gradient. Can we lighten it?"),
+    (false, "I swapped the two stacked shadows for one soft one at 20% and eased the corner radius from 16 to 22. It sits lighter now, and the edge still reads against the peach."),
+    (true, "Better. The avatar row feels cramped though."),
+    (false, "There are 10 px between the avatar and the name now, and the name dropped to 14 px grey so the heading leads."),
+    (true, "What about on a phone?"),
+    (false, "At 390 px the card runs edge to edge with 20 px of padding and the Join button stays full width. The heading takes two lines."),
+    (true, "Keep the heading on one line on mobile if it fits."),
+    (false, "It fits at 26 px with slightly tighter tracking, so phones get that and desktop keeps 30."),
+    (true, "Make the button just say Join."),
+    (false, "Changed. The button reads Join, and it still waits for the email check before it can be pressed."),
+].enumerated().map { ConversationTurn(id: "\($0.offset)", fromYou: $0.element.0, text: $0.element.1) }
+
+func labImage(_ path: String) -> CGImage? {
+    guard let source = CGImageSourceCreateWithURL(labDir.appendingPathComponent(path) as CFURL, nil) else { return nil }
+    return CGImageSourceCreateImageAtIndex(source, 0, nil)
+}
+
+func bitmap(_ size: CGSize, _ draw: (CGContext) -> Void) -> CGImage? {
+    guard let context = CGContext(data: nil, width: Int(size.width), height: Int(size.height), bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+    context.interpolationQuality = .high
+    draw(context)
+    return context.makeImage()
+}
+
+func writePNG(_ image: CGImage, _ name: String) throws {
+    let file = outDir.appendingPathComponent(name)
+    try NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])!.write(to: file)
+    print(file.path)
+}
+
+/// Dragged by its middle to the middle of the screen and held there.
+func floating(_ size: CGSize, in screen: CGSize) -> FogMotion {
+    var motion = docked(.bottomLeading, size: size, in: screen)
+    motion.press(at: CGPoint(x: size.width / 2, y: size.height / 2), time: 0)
+    motion.drag(to: CGPoint(x: screen.width / 2, y: screen.height / 2), time: 0.05)
+    for _ in 0..<240 { motion.step(dt: 1.0 / 120) }
+    return motion
+}
+
+if let busy = labImage("lab-backdrops/real-screen-busy.png"), let darkApp = labImage("lab-backdrops/real-screen-dark-app.png") {
+    let size = CGSize(width: 900, height: 640)
+    let bottom = EdgeInsets(top: 0, leading: 0, bottom: 65, trailing: 0), top = EdgeInsets(top: 33, leading: 0, bottom: 0, trailing: 0)
+    let left = CGRect(x: 0, y: 380, width: 1000, height: 737), right = CGRect(x: 728, y: 0, width: 1000, height: 737)
+    let middle = CGRect(x: 314, y: 190, width: 1100, height: 737)
+    let bl = docked(.bottomLeading, size: size, in: labScreen)
+    let shots: [(lab: String, backdrop: CGImage, motion: FogMotion, insets: EdgeInsets, voice: VoiceState, dark: Bool, crop: CGRect)] = [
+        ("v2-docked-bl", busy, bl, bottom, .talk, false, left),
+        // The lab's auto appearance turned this one dark: its words sit over the dark app window.
+        ("v2-docked-tr", busy, docked(.topTrailing, size: size, in: labScreen), top, .talk, true, right),
+        ("v2-floating-mid", busy, floating(size, in: labScreen), bottom, .talk, false, middle),
+        ("v2-docked-bl-voice-listening", busy, bl, bottom, .listening, false, left),
+        ("v2-docked-bl-voice-speaking", busy, bl, bottom, .speaking, false, left),
+        ("v2-docked-bl-bg-dark", darkApp, bl, bottom, .talk, true, left),
+    ]
+    for shot in shots {
+        // The backdrop as the lab lays it out, covering the screen, and its backdrop filter: blur(22px) saturate(1.25), 1.4 on dark.
+        let page = bitmap(labScreen) { context in
+            let scale = max(labScreen.width / CGFloat(shot.backdrop.width), labScreen.height / CGFloat(shot.backdrop.height))
+            let w = CGFloat(shot.backdrop.width) * scale, h = CGFloat(shot.backdrop.height) * scale
+            context.draw(shot.backdrop, in: CGRect(x: (labScreen.width - w) / 2, y: (labScreen.height - h) / 2, width: w, height: h))
+        }!
+        let soft = softened(page, sigma: 22, saturation: shot.dark ? 1.4 : 1.25)!
+        let scene = FogScreen(page: Image(decorative: page, scale: 1), blur: Image(decorative: soft, scale: 1), screen: labScreen, motion: shot.motion, insets: shot.insets, voice: shot.voice, turns: labTurns, hovering: false)
+            .environment(\.colorScheme, shot.dark ? .dark : .light)
+            .environment(\.conchRendersStatically, true)
+        let native = MainActor.assumeIsolated { () -> CGImage in
+            let renderer = ImageRenderer(content: scene)
+            renderer.scale = 1
+            guard let image = renderer.cgImage else { fatalError("could not render \(shot.lab)") }
+            return image
+        }
+        try writePNG(native, "native-1c-\(shot.lab).png")
+        if let lab = labImage("lab-shots/\(shot.lab).png"), let a = lab.cropping(to: shot.crop), let b = native.cropping(to: shot.crop),
+           let pair = bitmap(CGSize(width: 2 * a.width + 12, height: a.height), { context in
+               context.draw(a, in: CGRect(x: 0, y: 0, width: a.width, height: a.height))
+               context.draw(b, in: CGRect(x: a.width + 12, y: 0, width: b.width, height: b.height))
+           }) {
+            try writePNG(pair, "native-1c-\(shot.lab)-compare.png")
+        }
+    }
 }
