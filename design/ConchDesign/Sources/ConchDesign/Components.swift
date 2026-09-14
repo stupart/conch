@@ -283,85 +283,202 @@ public struct IconButton: View {
 
 // MARK: - InlineReplyLine
 
-/// Replying without a text box: the mic comes first, your words follow the cursor in the conversation's
-/// own type, and a send arrow appears once there is something to send.
+/// Replying without a text box: the mic comes first, then your words in the conversation's own type. Return sends,
+/// Shift-Return starts a new line and Esc leaves the field. Its host gives it its height (`FogReply`): it grows to five
+/// lines, then scrolls inside itself.
 public struct InlineReplyLine: View {
     @Binding var text: String
     let isListening: Bool
     let placeholder: String
-    let font: Font
+    let fontSize: CGFloat
+    /// Hanging from the top, the mic lines up with the first line rather than the last.
+    let alignsTop: Bool
+    /// Longer than it has room for: it scrolls inside itself, under a soft top edge.
+    let overflows: Bool
     let onMic: () -> Void
     let onSend: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.conchRendersStatically) private var rendersStatically
 
     public init(
         text: Binding<String>,
         isListening: Bool,
         placeholder: String = "Reply",
-        font: Font = ConchType.conversationNow,
+        fontSize: CGFloat = 24,
+        alignsTop: Bool = false,
+        overflows: Bool = false,
         onMic: @escaping () -> Void,
         onSend: @escaping () -> Void
     ) {
         _text = text
         self.isListening = isListening
         self.placeholder = placeholder
-        self.font = font
+        self.fontSize = fontSize
+        self.alignsTop = alignsTop
+        self.overflows = overflows
         self.onMic = onMic
         self.onSend = onSend
     }
 
     public var body: some View {
-        HStack(spacing: ConchSpace.x3) {
+        let line = FogReply.lineHeight(fontSize) + 2 * FogReply.padding(fontSize)
+        let edge: Alignment = alignsTop ? .topLeading : .bottomLeading
+        HStack(alignment: alignsTop ? .top : .bottom, spacing: ConchSpace.x3) {
             Button(action: onMic) {
                 Image(systemName: "mic")
                     .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(isListening ? ConchColor.onVoice : ConchColor.textSecondary)
+                    .foregroundStyle(isListening ? ConchColor.onVoice : ConchColor.overlayTextSecondary)
                     .frame(width: 40, height: 40)
                     .background {
                         if isListening { Circle().fill(ConchColor.listeningRing).padding(-5) }
-                        Circle().fill(isListening ? ConchColor.listening : ConchColor.fill)
+                        Circle().fill(isListening ? ConchColor.listening : ConchColor.overlayFill)
                     }
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(isListening ? "Stop listening" : "Speak your reply")
+            .frame(height: line)
 
-            if rendersStatically {
-                // The field as it looks focused: the caret, then the words or the placeholder.
-                HStack(spacing: 3) {
-                    if text.isEmpty { caret }
-                    Text(text.isEmpty ? placeholder : text)
-                        .foregroundStyle(text.isEmpty ? ConchColor.textTertiary : ConchColor.textPrimary)
-                    if !text.isEmpty { caret }
+            Group {
+                if rendersStatically {
+                    // ImageRenderer can't draw the text view: its words as they would sit, scrolled to the end.
+                    Text(text)
+                        .font(.system(size: fontSize, weight: .medium))
+                        .tracking(-0.014 * fontSize)
+                        .lineSpacing(0.1 * fontSize)
+                        .foregroundStyle(ConchColor.overlayText)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.vertical, FogReply.padding(fontSize))
+                } else {
+                    #if os(macOS)
+                    ReplyField(text: $text, fontSize: fontSize, onSend: onSend)
+                    #else
+                    TextField("", text: $text, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: fontSize, weight: .medium))
+                        .foregroundStyle(ConchColor.overlayText)
+                        .onSubmit(onSend)
+                    #endif
                 }
-                .font(font)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Reply")
-            } else {
-                TextField("", text: $text, prompt: Text(placeholder).foregroundStyle(ConchColor.textTertiary), axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(font)
-                    // Grows to five lines, then scrolls like the transcript rather than pushing it away.
-                    .lineLimit(1...5)
-                    .foregroundStyle(ConchColor.textPrimary)
-                    .onSubmit(onSend)
-                    .accessibilityLabel("Reply")
             }
-
-            if !text.isEmpty {
-                IconButton("arrow.up", label: "Send", style: .primary, size: 40, action: onSend)
-                    .transition(reduceMotion ? .identity : .scale.combined(with: .opacity))
+            // minHeight 0, or a long draft's frame grows to fit it and nothing is clipped.
+            .frame(maxWidth: .infinity, minHeight: 0, maxHeight: .infinity, alignment: edge)
+            .clipped()
+            .mask {
+                VStack(spacing: 0) {
+                    LinearGradient(colors: [overflows ? .clear : .black, .black], startPoint: .top, endPoint: .bottom).frame(height: 16)
+                    Rectangle()
+                }
             }
+            .overlay(alignment: edge) {
+                if text.isEmpty {
+                    HStack(spacing: 6.5) {
+                        if rendersStatically { caret }
+                        Text(placeholder)
+                    }
+                    .font(.system(size: fontSize, weight: .medium))
+                    .tracking(-0.014 * fontSize)
+                    .foregroundStyle(ConchColor.overlayPlaceholder)
+                    .frame(height: line)
+                    .allowsHitTesting(false)
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Reply")
         }
-        .animation(ConchMotion.animation(ConchMotion.quick, reduceMotion: reduceMotion), value: text.isEmpty)
     }
 
     private var caret: some View {
-        RoundedRectangle(cornerRadius: 1.5).fill(ConchColor.textPrimary).frame(width: 2.5, height: 26)
+        RoundedRectangle(cornerRadius: 1.5).fill(ConchColor.overlayText).frame(width: 2.5, height: fontSize)
     }
 }
+
+#if os(macOS)
+/// The reply's text: AppKit's text view, so a 50 KB draft edits and scrolls as cheaply as a short one, and Return,
+/// Shift-Return and Esc do what the lab's do (`FogReply.key`).
+private struct ReplyField: NSViewRepresentable {
+    @Binding var text: String
+    let fontSize: CGFloat
+    let onSend: () -> Void
+    @Environment(\.conchDarkness) private var darkness
+    @Environment(\.colorScheme) private var scheme
+
+    /// conch never comes forward, so the first click in the field has to place the cursor.
+    final class TextView: NSTextView {
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var field: ReplyField
+
+        init(_ field: ReplyField) {
+            self.field = field
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let view = notification.object as? NSTextView else { return }
+            field.text = view.string
+        }
+
+        func textView(_ view: NSTextView, doCommandBy selector: Selector) -> Bool {
+            let flags = NSApp.currentEvent?.modifierFlags ?? []
+            let returnKey = selector == #selector(NSResponder.insertNewline(_:)) || selector == #selector(NSResponder.insertNewlineIgnoringFieldEditor(_:))
+            guard returnKey || selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+            switch FogReply.key(returnKey: returnKey, shift: flags.contains(.shift), option: flags.contains(.option)) {
+            case .send: field.onSend()
+            case .newline: view.insertNewlineIgnoringFieldEditor(nil)
+            case .leave: view.window?.makeFirstResponder(nil)
+            }
+            return true
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let view = TextView(frame: .zero)
+        view.delegate = context.coordinator
+        view.isRichText = false
+        view.allowsUndo = true
+        view.drawsBackground = false
+        view.isVerticallyResizable = true
+        view.isHorizontallyResizable = false
+        view.autoresizingMask = [.width]
+        view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        view.textContainer?.widthTracksTextView = true
+        view.textContainer?.lineFragmentPadding = 0
+        view.layoutManager?.allowsNonContiguousLayout = true
+        view.setAccessibilityLabel("Reply")
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = false
+        scroll.hasHorizontalScroller = false
+        scroll.documentView = view
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.field = self
+        guard let view = scroll.documentView as? NSTextView, let storage = view.textStorage else { return }
+        let ink = ConchColor.overlayText.rgba(darkness: darkness ?? (scheme == .dark ? 1 : 0))
+        var attributes = FogReply.attributes(fontSize: fontSize)
+        attributes[.foregroundColor] = NSColor(srgbRed: ink.red, green: ink.green, blue: ink.blue, alpha: ink.alpha)
+        let inset = NSSize(width: 0, height: FogReply.padding(fontSize))
+        if view.textContainerInset != inset { view.textContainerInset = inset }
+        let restyle = !(view.typingAttributes as NSDictionary).isEqual(to: attributes)
+        if restyle {
+            view.typingAttributes = attributes
+            view.insertionPointColor = attributes[.foregroundColor] as? NSColor
+        }
+        if view.string != text {
+            view.string = text
+            storage.setAttributes(attributes, range: NSRange(location: 0, length: storage.length))
+            view.scrollRangeToVisible(view.selectedRange())
+        } else if restyle {
+            storage.setAttributes(attributes, range: NSRange(location: 0, length: storage.length))
+        }
+    }
+}
+#endif
 
 // MARK: - ControlBar
 
@@ -756,15 +873,21 @@ extension View {
     }
 }
 
-/// The conversation as a soft fog rather than a pane (M3): no edge, just a quieter patch of screen with the
-/// words in it. The latest turn is large, earlier ones smaller and fading as they rise, and the reply line
-/// sits at the bottom. The blur is the host's (a behind-window visual effect view on the Mac, masked with
-/// `FogLook.mask`), and so is the look over it (`FogLookView`); this draws the words, and collapse and full-screen
-/// buttons that brighten on hover.
+/// The conversation as a soft fog rather than a pane (M3): no edge, just a quieter patch of screen with the words in it,
+/// as the overlay lab has them (~/Projects/conch-design/overlay-lab.html). The newest reply is large and its words come
+/// in one by one (`WordReveal`); the transcript scrolls under the reader's wheel and otherwise follows the newest line
+/// (`FogScroll`), fading out toward its far end; and the reply line grows under it (`FogReply`). Hanging from a top corner
+/// it all runs top-down, the newest nearest the top. The blur is the host's (a behind-window visual effect view on the
+/// Mac, masked with `FogLook.mask`), and so is the look over it (`FogLookView`); this draws the words, and collapse and
+/// full-screen buttons that brighten on hover.
 public struct ConversationFog: View {
     let turns: [ConversationTurn]
     @Binding var draft: String
+    /// The words as they move: the scroll, the reveal, the reply line's growth and a sent message's flight.
+    @ObservedObject var text: FogTextState
     let isListening: Bool
+    /// The session is working: after your message, "Thinking" shows until its reply comes.
+    let isWorking: Bool
     let isFullScreen: Bool
     /// The screen corner the fog is docked in: it gathers there, and the words keep to that side.
     let corner: FogCorner
@@ -772,7 +895,7 @@ public struct ConversationFog: View {
     let insets: EdgeInsets
     /// Draws the full screen's wash; off, the words and buttons stand alone.
     let showsFog: Bool
-    /// The look under the words: they fade where its blur does.
+    /// The look under the words: they fade where its blur does, and off a corner its magnet moves them.
     let look: FogLook?
     /// Draws the collapse and full-screen buttons; a host that layers its own controls over the fog draws them itself.
     let showsButtons: Bool
@@ -790,7 +913,9 @@ public struct ConversationFog: View {
     public init(
         turns: [ConversationTurn],
         draft: Binding<String>,
+        text: FogTextState,
         isListening: Bool,
+        isWorking: Bool = false,
         isFullScreen: Bool,
         corner: FogCorner = .bottomLeading,
         insets: EdgeInsets = EdgeInsets(),
@@ -806,7 +931,9 @@ public struct ConversationFog: View {
     ) {
         self.turns = turns
         _draft = draft
+        _text = ObservedObject(wrappedValue: text)
         self.isListening = isListening
+        self.isWorking = isWorking
         self.isFullScreen = isFullScreen
         self.corner = corner
         self.insets = insets
@@ -824,10 +951,20 @@ public struct ConversationFog: View {
     /// Inside the fog, before the screen's own insets.
     public static let padding: CGFloat = ConchSpace.x6
     static let buttonSize: CGFloat = 36
+    /// From a screen side the words are docked against to their column: the lab's 52.
+    static let side: CGFloat = 52
+    /// The mic and the gap after it, before the reply's words.
+    public static let micSpace: CGFloat = 40 + ConchSpace.x3
+    /// ponytail: the daemon sends 40 turns at most; a runaway list shows its newest 200 rather than laying out thousands.
+    static let turnsShown = 200
 
-    /// Where the words and the reply line sit: all of the fog but its padding, the screen's insets and a row for the
-    /// buttons, so a bigger fog is all more room for words. Past a comfortable line they keep to the fog's corner.
-    static func textFrame(in size: CGSize, corner: FogCorner, insets: EdgeInsets, fullScreen: Bool) -> CGRect {
+    /// The reply line's type size: the conversation's newest, `ConchType.conversationNow` (24) or, full screen, 36.
+    public static func replyFontSize(fullScreen: Bool) -> CGFloat { fullScreen ? 36 : 24 }
+
+    /// Where the words and the reply line sit: a column up to 540 pt wide, the lab's, clear of the fog's padding, the
+    /// screen's insets and the button row. Docked it keeps to its corner's side; off its corner `magnet` pulls it toward the
+    /// screen edges it nears and centres it between them. Full screen, a wider column in the middle.
+    public static func textFrame(in size: CGSize, corner: FogCorner, insets: EdgeInsets, fullScreen: Bool, magnet: EdgeInsets? = nil) -> CGRect {
         // The button row is on the docked side: above the words when the fog hangs from the top, below the reply
         // when it sits on the bottom.
         let row = buttonSize + ConchSpace.x3
@@ -836,15 +973,27 @@ public struct ConversationFog: View {
         // Below the words: the Dock's inset, or on the bottom the button row in the corner, whichever is taller.
         let bottom = atBottom ? max(insets.bottom, row) + padding : insets.bottom + padding
         let height = max(0, size.height - top - bottom)
-        let leading = insets.leading + padding
-        let trailing = insets.trailing + padding
-        let room = max(0, size.width - leading - trailing)
         if fullScreen {
+            let leading = insets.leading + padding, room = max(0, size.width - leading - insets.trailing - padding)
             let width = min(1040, room)
             return CGRect(x: leading + (room - width) / 2, y: top, width: width, height: height)
         }
-        let width = min(960, room)
-        return CGRect(x: corner.leading ? leading : size.width - trailing - width, y: top, width: width, height: height)
+        let leading = insets.leading + side, trailing = insets.trailing + side
+        let width = min(540, max(0, size.width - leading - trailing))
+        let pull = magnet ?? EdgeInsets(top: corner.bottom ? 0 : 1, leading: corner.leading ? 1 : 0, bottom: corner.bottom ? 1 : 0, trailing: corner.leading ? 0 : 1)
+        let midX = (size.width - width) / 2, midY = (size.height - height) / 2
+        return CGRect(
+            x: midX + (leading - midX) * pull.leading + (size.width - trailing - width - midX) * pull.trailing,
+            y: midY + (top - midY) * min(1, pull.top + pull.bottom),
+            width: width,
+            height: height
+        )
+    }
+
+    /// Hanging from a top corner the words run top-down, the newest nearest the top edge, the reply line above them.
+    /// Otherwise, and full screen, bottom-up.
+    public static func newestAtTop(corner: FogCorner, fullScreen: Bool) -> Bool {
+        !corner.bottom && !fullScreen
     }
 
     /// The collapse and full-screen buttons sit in the fog's docked corner, the nook against the screen's edges, away
@@ -870,7 +1019,13 @@ public struct ConversationFog: View {
 
     public var body: some View {
         GeometryReader { proxy in
-            let text = Self.textFrame(in: proxy.size, corner: corner, insets: insets, fullScreen: isFullScreen)
+            let frame = Self.textFrame(in: proxy.size, corner: corner, insets: insets, fullScreen: isFullScreen, magnet: look?.magnet)
+            let top = Self.newestAtTop(corner: corner, fullScreen: isFullScreen)
+            let fontSize = Self.replyFontSize(fullScreen: isFullScreen)
+            let target = text.replyTarget(for: draft, width: max(0, frame.width - Self.micSpace), fontSize: fontSize, in: frame.height)
+            let reply = rendersStatically ? target : text.replyHeight
+            let overflows = CGFloat(text.replyLines) * FogReply.lineHeight(fontSize) + 2 * FogReply.padding(fontSize) > target + 0.5
+            let box = max(0, frame.height - FogReply.gap - reply)
             ZStack(alignment: .topLeading) {
                 if showsFog, isFullScreen {
                     // panel.html's wash: light at the top so the blurred work still shows, deepening toward the words.
@@ -881,28 +1036,26 @@ public struct ConversationFog: View {
                     ))
                     .accessibilityHidden(true)
                 }
-                // The words keep a short soft edge of their own at the bottom; this is the rest of the gap to the reply.
-                VStack(alignment: .leading, spacing: isFullScreen ? ConchSpace.x6 : ConchSpace.x4) {
-                    words
-                    InlineReplyLine(
-                        text: $draft,
-                        isListening: isListening,
-                        font: isFullScreen ? ConchType.conversationNowFull : ConchType.conversationNow,
-                        onMic: onMic,
-                        onSend: onSend
-                    )
-                    .fogControl()
+                VStack(alignment: .leading, spacing: FogReply.gap) {
+                    if top {
+                        replyLine(fontSize: fontSize, height: reply, top: true, overflows: overflows)
+                        transcript(width: frame.width, height: box, top: true, fontSize: fontSize)
+                    } else {
+                        transcript(width: frame.width, height: box, top: false, fontSize: fontSize)
+                        replyLine(fontSize: fontSize, height: reply, top: false, overflows: overflows)
+                    }
                 }
-                .frame(width: text.width, height: text.height, alignment: .bottomLeading)
+                .frame(width: frame.width, height: frame.height, alignment: .topLeading)
                 // The words fade where the blur does, so they never sit on screen it hasn't softened.
                 .mask(alignment: .topLeading) {
                     if let look, !isFullScreen {
-                        FogLook.area(look.wordsFade.offsetBy(dx: -text.minX, dy: -text.minY), FogLook.wordsDensity, .black)
+                        FogLook.area(look.wordsFade.offsetBy(dx: -frame.minX, dy: -frame.minY), FogLook.wordsDensity, .black)
                     } else {
                         Color.black
                     }
                 }
-                .offset(x: text.minX, y: text.minY)
+                .offset(x: frame.minX, y: frame.minY)
+                .onChange(of: target, initial: true) { _, target in text.grow(to: target) }
                 if showsButtons {
                     let buttons = Self.buttonInsets(insets)
                     FogPanelButtons(corner: corner, isFullScreen: isFullScreen, onCollapse: onCollapse, onFullScreen: onFullScreen)
@@ -928,60 +1081,135 @@ public struct ConversationFog: View {
         .accessibilityLabel("Conversation")
     }
 
-    private var words: some View {
-        let recent = Array(turns.suffix(8))
-        let column = VStack(alignment: .leading, spacing: isFullScreen ? ConchSpace.x6 : ConchSpace.x4) {
-            ForEach(Array(recent.enumerated()), id: \.element.id) { index, turn in
-                let age = recent.count - 1 - index
-                VStack(alignment: .leading, spacing: ConchSpace.x1) {
-                    if turn.fromYou {
-                        Text("You")
-                            .font(ConchType.meta)
-                            .fontWeight(.semibold)
-                            .tracking(0.6)
-                            .textCase(.uppercase)
-                            .foregroundStyle(ConchColor.textTertiary)
-                    }
-                    Text(Self.inlineMarkdown(turn.text))
-                        .font(Self.font(latest: age == 0, fullScreen: isFullScreen))
-                        // Large type reads better set a touch tighter.
-                        .tracking(age == 0 ? (isFullScreen ? -0.8 : -0.3) : 0)
-                        .foregroundStyle(age == 0 ? ConchColor.textPrimary : ConchColor.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
+    /// The reply line, its height springing (`FogTextState.replyHeight`); and while the reader is scrolled away, the pill
+    /// back to the newest line beside it, on the transcript's side.
+    private func replyLine(fontSize: CGFloat, height: CGFloat, top: Bool, overflows: Bool) -> some View {
+        InlineReplyLine(text: $draft, isListening: isListening, fontSize: fontSize, alignsTop: top, overflows: overflows, onMic: onMic, onSend: onSend)
+            .frame(height: height, alignment: top ? .top : .bottom)
+            .fogControl()
+            .overlay(alignment: top ? .bottomLeading : .topLeading) {
+                if !text.scroll.pinned {
+                    pill(top: top)
+                        .fogControl()
+                        .offset(y: top ? 38 : -38)
+                        .transition(.scale(scale: 0.85, anchor: top ? .top : .bottom).combined(with: .opacity))
                 }
-                // The turn before the latest reads plainly; older ones fade as they rise.
-                .opacity(max(0.45, 1 - 0.18 * Double(max(0, age - 1))))
-                .accessibilityElement(children: .combine)
             }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        // At rest the latest turn sits above the soft bottom edge, not in it.
-        .padding(.bottom, ConchSpace.x4)
+            .animation(ConchSpring(bounce: 0.25, response: 0.32).animation(reduceMotion: reduceMotion), value: text.scroll.pinned)
+    }
 
-        return Group {
-            if rendersStatically {
-                // ImageRenderer cannot draw a scroll view: the same column, pinned to the bottom.
-                // minHeight 0, or the frame grows to fit the column and nothing is clipped.
-                column.frame(minHeight: 0, maxHeight: .infinity, alignment: .bottom).clipped()
-            } else {
-                ScrollView { column }
-                    .scrollIndicators(.never)
-                    .defaultScrollAnchor(.bottom)
+    private func pill(top: Bool) -> some View {
+        Button(action: text.toNewest) {
+            HStack(spacing: 5) {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+                    .rotationEffect(.degrees(top ? 180 : 0))
+                Text(text.scroll.unseen ? "New reply" : "Newest")
+                    .font(.system(size: 12, weight: .semibold))
             }
+            .foregroundStyle(ConchColor.overlayText)
+            .padding(.leading, 8)
+            .padding(.trailing, 11)
+            .frame(height: 28)
+            .background(Capsule().fill(ConchColor.overlayGlassStrong).shadow(color: .black.opacity(0.18), radius: 8, y: 6))
+            .overlay(Capsule().strokeBorder(ConchColor.overlayLine, lineWidth: 0.5))
+            .contentShape(Capsule())
         }
-        // Soft at both ends: turns thin out as they rise, and anything scrolled below slips under a short fade
-        // above the reply line instead of ending in a cut.
-        .mask {
-            GeometryReader { proxy in
-                VStack(spacing: 0) {
-                    LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
-                        .frame(height: proxy.size.height * (isFullScreen ? 0.34 : 0.26))
-                    Rectangle()
-                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
-                        .frame(height: ConchSpace.x4)
+        .buttonStyle(.plain)
+        .accessibilityLabel("Scroll to the newest message")
+    }
+
+    private enum Line: Identifiable {
+        case turn(ConversationTurn)
+        case thinking
+
+        var id: String {
+            if case let .turn(turn) = self { turn.id } else { "conch.thinking" }
+        }
+
+        var fromYou: Bool {
+            if case let .turn(turn) = self { turn.fromYou } else { false }
+        }
+    }
+
+    /// The transcript in its box: scrolled by `FogScroll.offset` from its newest end, which is the bottom (or, hanging from
+    /// the top, the top), fading out toward its far end, and toward the near end too while the reader is scrolled away.
+    private func transcript(width: CGFloat, height: CGFloat, top: Bool, fontSize: CGFloat) -> some View {
+        let shown = turns.suffix(Self.turnsShown)
+        let now = shown.last { !$0.fromYou }?.id
+        var lines = shown.map { Line.turn($0) }
+        if let sent = text.sent { lines.append(.turn(ConversationTurn(id: "conch.sent", fromYou: true, text: sent))) }
+        if isWorking, lines.last?.fromYou == true { lines.append(.thinking) }
+        let flying = text.flight == nil ? nil : lines.last(where: \.fromYou)?.id
+        let pinned = text.scroll.pinned
+        return VStack(alignment: .leading, spacing: 14) {
+            ForEach(top ? Array(lines.reversed()) : lines) { line in
+                switch line {
+                case let .turn(turn):
+                    // Only the newest reply while its words come in, and a message flying in, change frame to frame.
+                    TurnLine(
+                        turn: turn,
+                        now: turn.id == now,
+                        fullScreen: isFullScreen,
+                        top: top,
+                        fontSize: fontSize,
+                        reveal: turn.id == now && text.reveal.id == turn.id && text.reveal.isRevealing(at: text.now) ? text.reveal : nil,
+                        clock: turn.id == now ? text.now : 0,
+                        flight: turn.id == flying ? text.flight.map { TurnLine.Flight(progress: $0.progress, replyHeight: $0.replyHeight, offset: text.scroll.offset) } : nil
+                    )
+                    .equatable()
+                case .thinking: Thinking()
                 }
             }
         }
+        .padding(top ? .bottom : .top, 72)
+        .frame(width: width, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { text.measured(content: $0) }
+        .offset(y: top ? -text.scroll.offset : text.scroll.offset)
+        .frame(width: width, height: height, alignment: top ? .top : .bottom)
+        .clipped()
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { text.measured(box: $0) }
+        .mask {
+            VStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                    .frame(height: min(72, height * 0.4))
+                Rectangle()
+                LinearGradient(colors: [.black, .black.opacity(0.08)], startPoint: .top, endPoint: .bottom)
+                    .frame(height: pinned ? 0 : 56)
+                Rectangle().opacity(0.08).frame(height: pinned ? 0 : 16)
+            }
+            .scaleEffect(y: top ? -1 : 1)
+        }
+        .animation(ConchSpring(bounce: 0, response: 0.32).animation(reduceMotion: reduceMotion), value: pinned)
+    }
+
+    /// Where each word of `attributed` starts.
+    static func wordStarts(_ attributed: AttributedString) -> [AttributedString.Index] {
+        var starts: [AttributedString.Index] = [], space = true
+        for index in attributed.characters.indices {
+            let isSpace = attributed.characters[index].isWhitespace
+            if space, !isSpace { starts.append(index) }
+            space = isSpace
+        }
+        return starts
+    }
+
+    /// `attributed` as far as `reveal` has come at `now`: whole up to the first word still fading, then each fading word
+    /// marked for `WordRevealRenderer`.
+    @available(macOS 15, iOS 18, *)
+    static func revealed(_ attributed: AttributedString, _ reveal: WordReveal, at now: Double) -> Text {
+        let starts = wordStarts(attributed)
+        let shown = min(reveal.shown(at: now), starts.count)
+        var fading = shown
+        while fading > 0, reveal.progress(ofWord: fading - 1, at: now) < 1 { fading -= 1 }
+        let solid = fading < starts.count ? starts[fading] : attributed.endIndex
+        var text = Text(AttributedString(attributed[attributed.startIndex..<solid]))
+        for index in fading..<shown {
+            let end = index + 1 < starts.count ? starts[index + 1] : attributed.endIndex
+            text = text + Text(AttributedString(attributed[starts[index]..<end])).customAttribute(RevealedWord(index: index))
+        }
+        return text
     }
 
     static func font(latest: Bool, fullScreen: Bool) -> Font {
@@ -997,6 +1225,148 @@ public struct ConversationFog: View {
     static func inlineMarkdown(_ text: String) -> AttributedString {
         (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(text)
+    }
+
+    /// The words as the fog shows them, markdown taken out.
+    static func plain(_ text: String) -> String {
+        String(inlineMarkdown(text).characters)
+    }
+}
+
+/// One turn: yours small under "You", replies small but for the newest, which is large and comes in word by word. A
+/// message you just sent flies in from the reply line: from its place, size and a little blur, on one spring. Equatable, so
+/// a frame redraws only the rows that changed.
+private struct TurnLine: View, Equatable {
+    struct Flight: Equatable {
+        let progress: CGFloat
+        let replyHeight: CGFloat
+        /// The transcript's scroll under it, which it flies through.
+        let offset: CGFloat
+    }
+
+    let turn: ConversationTurn
+    let now: Bool
+    let fullScreen: Bool
+    let top: Bool
+    let fontSize: CGFloat
+    /// While its words are coming in: the reveal, and its clock.
+    let reveal: WordReveal?
+    let clock: Double
+    let flight: Flight?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    static func == (a: TurnLine, b: TurnLine) -> Bool {
+        a.turn == b.turn && a.now == b.now && a.fullScreen == b.fullScreen && a.top == b.top && a.fontSize == b.fontSize
+            && a.reveal == b.reveal && a.clock == b.clock && a.flight == b.flight
+    }
+
+    var body: some View {
+        let flight = reduceMotion ? nil : self.flight
+        let e = flight?.progress ?? 1
+        let past: CGFloat = fullScreen ? 24 : 17
+        VStack(alignment: .leading, spacing: 1) {
+            if turn.fromYou {
+                Text("You")
+                    .font(ConchType.meta)
+                    .fontWeight(.semibold)
+                    .tracking(0.66)
+                    .textCase(.uppercase)
+                    .foregroundStyle(ConchColor.overlayTextSecondary)
+                    .opacity(flight == nil ? 1 : min(max((e - 0.55) / 0.45, 0), 1))
+            }
+            words
+                .font(ConversationFog.font(latest: now, fullScreen: fullScreen))
+                // Large type reads better set a touch tighter.
+                .tracking(now ? (fullScreen ? -0.8 : -0.3) : 0)
+                .foregroundStyle(ConchColor.overlayText)
+                // Wraps at the column, long paths and links included, rather than running out of the blur.
+                .fixedSize(horizontal: false, vertical: true)
+                .opacity(now ? 1 : 1 - 0.5 * e)
+                .scaleEffect(1 + (fontSize / past - 1) * (1 - e), anchor: top ? .topLeading : .bottomLeading)
+                .offset(
+                    x: ConversationFog.micSpace * (1 - e),
+                    y: flight.map { (top ? -1 : 1) * (FogReply.gap + $0.replyHeight - FogReply.padding(fontSize) - $0.offset) * (1 - e) } ?? 0
+                )
+                .blur(radius: flight == nil ? 0 : sin(.pi * min(max(e, 0), 1)) * 2)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    /// Its words; the newest reply only as far as they have come in, the last few fading up out of a blur.
+    @ViewBuilder
+    private var words: some View {
+        let attributed = ConversationFog.inlineMarkdown(turn.text)
+        if let reveal {
+            if #available(macOS 15, iOS 18, *) {
+                ConversationFog.revealed(attributed, reveal, at: clock)
+                    .textRenderer(WordRevealRenderer(
+                        reveal: reveal,
+                        now: clock,
+                        blur: reduceMotion ? 0 : ConchMotion.wordRevealBlur,
+                        rise: reduceMotion ? 0 : 0.28 * ConchType.conversationNowSize
+                    ))
+            } else {
+                let starts = ConversationFog.wordStarts(attributed), shown = reveal.shown(at: clock)
+                Text(AttributedString(attributed[attributed.startIndex..<(shown < starts.count ? starts[shown] : attributed.endIndex)]))
+            }
+        } else {
+            Text(attributed)
+        }
+    }
+}
+
+@available(macOS 15, iOS 18, *)
+private struct RevealedWord: TextAttribute {
+    let index: Int
+}
+
+/// Each word still coming in drawn part way up out of a blur: its opacity, a little below its line, softened.
+@available(macOS 15, iOS 18, *)
+private struct WordRevealRenderer: TextRenderer {
+    let reveal: WordReveal
+    let now: Double
+    let blur: CGFloat
+    let rise: CGFloat
+
+    func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        for line in layout {
+            for run in line {
+                guard let word = run[RevealedWord.self] else {
+                    context.draw(run)
+                    continue
+                }
+                let progress = reveal.progress(ofWord: word.index, at: now)
+                var copy = context
+                copy.opacity = progress
+                copy.translateBy(x: 0, y: (1 - progress) * rise)
+                if blur > 0 { copy.addFilter(.blur(radius: (1 - progress) * blur)) }
+                copy.draw(run)
+            }
+        }
+    }
+}
+
+/// Between your message and its reply, while the session works: "Thinking", a light passing through it.
+private struct Thinking: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: reduceMotion)) { timeline in
+            let phase = reduceMotion ? 0.5 : 1.2 - 1.4 * (timeline.date.timeIntervalSinceReferenceDate / 1.6).truncatingRemainder(dividingBy: 1)
+            let label = Text("Thinking").font(.system(size: 15, weight: .medium))
+            label
+                .foregroundStyle(ConchColor.overlayTextSecondary)
+                .overlay {
+                    label
+                        .foregroundStyle(ConchColor.overlayText)
+                        .mask(LinearGradient(
+                            stops: [.init(color: .clear, location: phase - 0.12), .init(color: .black, location: phase), .init(color: .clear, location: phase + 0.12)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ))
+                }
+        }
+        .accessibilityLabel("Thinking")
     }
 }
 

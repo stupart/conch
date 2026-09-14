@@ -42,6 +42,8 @@ public struct FogLook: Equatable {
     public var colour = LightDark(0.75, 0.55)
     /// The extra wash, and blur, behind the newest words.
     public var scrim = LightDark(0.3, 0.25)
+    /// The reply line's height as it grows: the scrim stays behind the newest lines above (below) it.
+    public var replyHeight: CGFloat = 40
 
     public init(_ motion: FogMotion, insets: EdgeInsets = EdgeInsets()) {
         size = motion.size
@@ -65,21 +67,21 @@ public struct FogLook: Equatable {
     private var scale: CGFloat { (1 - (1 - ConchMotion.flightScale) * flying) * (1 + 0.08 * resizeHover) }
 
     /// Where the words fade, so they never sit on screen the blur hasn't softened: the blob's ellipse, though never so
-    /// small that the newest lines (the reply line and the 230 pt above it) begin to fade.
+    /// small that the newest lines (the reply line and the 230 pt past it) begin to fade.
     public var wordsFade: CGRect {
         let text = self.text
         let rect = ellipse(across: (0.58, 1.15), up: (0.58, 1), scale: 1)
-        let newest = CGRect(x: text.minX, y: text.maxY - 230, width: text.width, height: 230)
+        let newest = CGRect(x: text.minX, y: newestAtTop ? text.minY : text.maxY - 230, width: text.width, height: 230)
         let rx = max(rect.width / 2, max(abs(newest.minX - rect.midX), abs(newest.maxX - rect.midX)) / 0.62)
         let ry = max(rect.height / 2, max(abs(newest.minY - rect.midY), abs(newest.maxY - rect.midY)) / 0.62)
         return CGRect(x: rect.midX - rx, y: rect.midY - ry, width: 2 * rx, height: 2 * ry)
     }
 
-    /// Behind the newest lines (the reply line and the 70 pt above it) the blur and the wash thicken a little. Kept inside
-    /// the window on every side short of a screen edge.
+    /// Behind the newest lines (the reply line, however tall, and the 70 pt past it) the blur and the wash thicken a little.
+    /// Kept inside the window on every side short of a screen edge.
     public var scrimArea: CGRect {
         let text = self.text, room = self.room
-        let x = text.minX + text.width * 0.45, y = text.maxY - 110
+        let x = text.minX + text.width * 0.45, y = newestAtTop ? text.minY + replyHeight + 70 : text.maxY - replyHeight - 70
         let rx = max(0, min(text.width * 0.72 + 90, size.width * 0.75, x + room.leading, size.width - x + room.trailing))
         let ry = max(0, min(190, size.height * 0.36, y + room.top, size.height - y + room.bottom))
         return CGRect(x: x - rx, y: y - ry, width: 2 * rx, height: 2 * ry)
@@ -112,7 +114,8 @@ public struct FogLook: Equatable {
         return EdgeInsets(top: side(gaps.top, margin.top), leading: side(gaps.leading, margin.leading), bottom: side(gaps.bottom, margin.bottom), trailing: side(gaps.trailing, margin.trailing))
     }
 
-    private var text: CGRect { ConversationFog.textFrame(in: size, corner: corner, insets: insets, fullScreen: false) }
+    private var text: CGRect { ConversationFog.textFrame(in: size, corner: corner, insets: insets, fullScreen: false, magnet: magnet) }
+    private var newestAtTop: Bool { ConversationFog.newestAtTop(corner: corner, fullScreen: false) }
 
     /// An ellipse centred off the corner, pulled onto the edges by the magnet, its radii from `across.0` of the fog's width
     /// (`up.0` of its height) to `across.1` (`up.1`) against an edge.

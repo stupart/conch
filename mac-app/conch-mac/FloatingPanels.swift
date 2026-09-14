@@ -49,16 +49,21 @@ private final class FogView: NSView {
     override func mouseExited(with event: NSEvent) { onHover(false) }
     override func mouseMoved(with event: NSEvent) { panels?.pointerMoved(to: convert(event.locationInWindow, from: nil)) }
 
-    /// A press on the fog's buttons or its reply line goes to them; anywhere else, text included, it is the fog's.
+    /// A press on the fog's buttons or its reply line goes to them; anywhere else, text included, it is the fog's. So is a
+    /// scroll anywhere but the reply line (which scrolls itself): the fog moves its transcript with it, and never drags.
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
-        guard hit != nil, NSApp.currentEvent?.type == .leftMouseDown, panels?.grabs(convert(point, from: superview)) == true else { return hit }
-        return self
+        guard hit != nil, let panels, let type = NSApp.currentEvent?.type else { return hit }
+        let local = convert(point, from: superview)
+        if type == .leftMouseDown, panels.grabs(local) { return self }
+        if type == .scrollWheel, panels.scrolls(local) { return self }
+        return hit
     }
 
     override func mouseDown(with event: NSEvent) { panels?.pressed() }
     override func mouseDragged(with event: NSEvent) { panels?.dragged() }
     override func mouseUp(with event: NSEvent) { panels?.released() }
+    override func scrollWheel(with event: NSEvent) { panels?.scrolled(event) }
 
     /// Frames run while the fog moves, and stop once it rests.
     func run(_ on: Bool) {
@@ -150,6 +155,8 @@ final class FloatingPanels: ObservableObject {
     private var motion = FogMotion(size: CGSize(width: 760, height: 560), corner: .bottomLeading, in: .zero)
     /// Where the fog's buttons and reply line are (`FogControls`): a press there is theirs.
     var controlFrames: [CGRect] = []
+    /// The fog's words as they move (`FogTextState`): stepped with the motion, fed the store and the reader's scrolling.
+    let text = FogTextState()
     private let container = FogView()
     private let controlBar = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private let fog = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
@@ -205,6 +212,7 @@ final class FloatingPanels: ObservableObject {
         // The blur, its look and the words are siblings: a visual effect view's mask shapes everything inside it, which
         // faded the words with the fog and hid the collapsed handle along with the blur.
         container.panels = self
+        text.wake = { [weak self] in MainActor.assumeIsolated { self?.container.run(true) } }
         container.onHover = { [weak self] inside in
             MainActor.assumeIsolated {
                 self?.hovering = inside
@@ -417,6 +425,7 @@ final class FloatingPanels: ObservableObject {
         }
         var next = FogLook(motion, insets: insets)
         (next.resizeHover, next.darkness, next.tint, next.colour, next.scrim) = (resizeHover, darkness, look.tint, look.colour, look.scrim)
+        next.replyHeight = text.replyHeight
         setLook(next)
         let margin = next.margin, frame = motion.frame
         let window = NSRect(x: frame.minX - margin.leading, y: frame.minY - margin.bottom, width: frame.width + margin.leading + margin.trailing, height: frame.height + margin.top + margin.bottom)
@@ -479,6 +488,19 @@ final class FloatingPanels: ObservableObject {
         !isCollapsed && !isFullScreen && !controlFrames.contains { $0.contains(point) }
     }
 
+    /// A scroll at `point` moves the transcript, full screen too; on the reply line it scrolls the reply.
+    func scrolls(_ point: CGPoint) -> Bool {
+        !isCollapsed && !controlFrames.contains { $0.contains(point) }
+    }
+
+    /// The reader's wheel or trackpad, in points toward the oldest line: up the screen's content bottom-up, down it when
+    /// the newest line is at the top. A mouse wheel's deltas are lines. Only this ever unpins the transcript (`FogScroll`).
+    func scrolled(_ event: NSEvent) {
+        let points = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * 16
+        let towardOldest = ConversationFog.newestAtTop(corner: corner, fullScreen: isFullScreen) ? -points : points
+        text.scroll(by: towardOldest, momentum: event.momentumPhase != [])
+    }
+
     /// Pressed near any edge, text included, the fog resizes from its docked corner; in the middle it moves.
     func pressed() {
         motion.press(at: NSEvent.mouseLocation, time: ProcessInfo.processInfo.systemUptime)
@@ -523,8 +545,9 @@ final class FloatingPanels: ObservableObject {
             resizeHover = hoverTarget
             hoverVelocity = 0
         }
+        let words = text.step(dt: dt, now: ProcessInfo.processInfo.systemUptime, reduceMotion: motion.reduceMotion)
         apply()
-        if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget { container.run(false) }
+        if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget, !words { container.run(false) }
     }
 }
 
@@ -583,14 +606,18 @@ private struct ConversationFogHost: View {
 
     var body: some View {
         let row = Self.session(store.state)
+        let turns = row.map { Self.turns(store.state, $0) } ?? []
         Group {
             if panels.isCollapsed {
                 FogHandle(corner: panels.corner, hovering: panels.hovering) { panels.toggleCollapsed() }
             } else {
                 ConversationFog(
-                    turns: row.map { Self.turns(store.state, $0) } ?? [],
+                    turns: turns,
                     draft: row.map { drafts.textBinding(for: $0.id) } ?? .constant(""),
+                    text: panels.text,
                     isListening: row.map { ["listening", "recording"].contains(voice(for: $0)) } ?? false,
+                    // The store's own working state, not a timer: "Thinking" after your message until the reply comes.
+                    isWorking: row?.status == .working,
                     isFullScreen: panels.isFullScreen,
                     corner: panels.corner,
                     insets: panels.insets,
@@ -618,6 +645,9 @@ private struct ConversationFogHost: View {
         .onChange(of: store.state?.live.dictated?.id) { _, _ in
             drafts.apply(store.state?.live.dictated)
         }
+        // Words come in as the daemon sends them; another session starts from its newest line, its reply whole.
+        .onChange(of: row?.id) { _, _ in panels.text.session() }
+        .onChange(of: turns, initial: true) { _, turns in panels.text.update(turns: turns, now: ProcessInfo.processInfo.systemUptime) }
     }
 
     /// The session the voice is on, else the daemon's active or selected one, else the first. Never a subagent.
@@ -659,7 +689,11 @@ private struct ConversationFogHost: View {
         let draft = drafts.textBinding(for: row.id)
         let text = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        store.send(.inject(sessionId: row.id, label: row.label, text: text))
+        let delivery = store.send(.inject(sessionId: row.id, label: row.label, text: text))
+        // It shows at once, flying in from the reply line, until the daemon's copy takes its place.
+        let fog = panels.text
+        fog.send(text)
         draft.wrappedValue = ""
+        Task { if !(await delivery.value) { fog.sendFailed() } }
     }
 }

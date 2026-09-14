@@ -134,8 +134,8 @@ final class FogLookTests: XCTestCase {
         let scrim = look.scrimArea
         XCTAssertGreaterThan(scrim.width, 0)
         XCTAssertLessThanOrEqual(scrim.maxX, Self.size.width)
-        // Half way out to its right, clear of the blob's solid core.
-        let point = CGPoint(x: scrim.midX + scrim.width / 4 * 0.9, y: scrim.midY)
+        // Out to its right and up a little, inside its solid middle but clear of the blob's solid core.
+        let point = CGPoint(x: scrim.midX + scrim.width / 2 * 0.45, y: scrim.midY - scrim.height / 2 * 0.3)
         let window = look.window
         let at = CGPoint(x: (point.x - window.minX) / window.width, y: (point.y - window.minY) / window.height)
         let thick = try XCTUnwrap(alphaAndColour(try XCTUnwrap(look.mask()), at: at)).alpha

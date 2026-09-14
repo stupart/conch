@@ -156,6 +156,8 @@ public enum ConchType {
     /// The conversation full screen: the words grow with the space they have.
     public static let conversationNowFull = Font.system(size: 36, weight: .medium)
     public static let conversationPastFull = Font.system(size: 24)
+    /// `conversationNow`'s size, for type drawn outside SwiftUI (the reply line's text view) and measured by it.
+    public static let conversationNowSize: CGFloat = 24
     #else
     public static let title = Font.title2.weight(.semibold)
     public static let heading = Font.headline
@@ -169,6 +171,7 @@ public enum ConchType {
     public static let conversationPast = Font.title3
     public static let conversationNowFull = Font.largeTitle.weight(.medium)
     public static let conversationPastFull = Font.title2
+    public static let conversationNowSize: CGFloat = 28
     #endif
 
     /// Line spacing to add to reading text.

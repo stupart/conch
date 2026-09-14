@@ -146,7 +146,7 @@ test("M3: the fog replies through inject and dictates through the composer's dic
   expect(panels).toContain("blur.blendingMode = .behindWindow");
   expect(panels).toContain("blur.maskImage = blurMask()");
   expect(member(panels, "private func blurMask() -> NSImage? {")).toContain("guard let mask = look.mask(strength: blurStrength) else { return nil }");
-  expect(components).toContain(".font(Self.font(latest: age == 0, fullScreen: isFullScreen))");
+  expect(components).toContain(".font(ConversationFog.font(latest: now, fullScreen: fullScreen))");
   expect(member(components, "static func font(latest: Bool, fullScreen: Bool) -> Font {")).toContain(
     "case (true, true): ConchType.conversationNowFull",
   );
@@ -210,16 +210,15 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   // Presses are AppKit's, in the fog's own view: a SwiftUI gesture was cancelled by the window resizing under it (#205).
   // A press on a button or the reply line goes to it; anywhere else, text included, it is the fog's.
   const hit = member(panels, "override func hitTest(_ point: NSPoint) -> NSView? {");
-  expect(hit).toContain("NSApp.currentEvent?.type == .leftMouseDown");
-  expect(hit).toContain("panels?.grabs(convert(point, from: superview)) == true");
-  expect(hit).toContain("return self");
+  expect(hit).toContain("let local = convert(point, from: superview)");
+  expect(hit).toContain("if type == .leftMouseDown, panels.grabs(local) { return self }");
   expect(panels).toContain("override func mouseDown(with event: NSEvent) { panels?.pressed() }");
   expect(panels).toContain("override func mouseDragged(with event: NSEvent) { panels?.dragged() }");
   expect(panels).toContain("override func mouseUp(with event: NSEvent) { panels?.released() }");
   expect(member(panels, "func grabs(_ point: CGPoint) -> Bool {")).toContain("!controlFrames.contains { $0.contains(point) }");
   expect(panels).toContain(".coordinateSpace(name: FogControls.space)");
   expect(panels).toContain(".onPreferenceChange(FogControls.self) { panels.controlFrames = $0 }");
-  expect(components).toContain("onSend: onSend\n                    )\n                    .fogControl()");
+  expect(components).toContain("overflows: overflows, onMic: onMic, onSend: onSend)\n            .frame(height: height, alignment: top ? .top : .bottom)\n            .fogControl()");
   expect(components).toContain(
     "FogPanelButtons(corner: corner, isFullScreen: isFullScreen, onCollapse: onCollapse, onFullScreen: onFullScreen)\n                        .fogControl()",
   );
@@ -243,7 +242,7 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(panels).toContain("displayLink(target: self, selector: #selector(step(_:)))");
   expect(panels).toContain("let dt = lastFrame > 0 ? min(link.timestamp - lastFrame, 0.05) : 1.0 / 120");
   expect(step).toContain("motion.step(dt: dt)");
-  expect(step).toContain("if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget { container.run(false) }");
+  expect(step).toContain("if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget, !words { container.run(false) }");
   expect(member(panels, "func pressed() {")).toContain("container.run(true)");
   expect(read("design/ConchDesign/Sources/ConchDesign/Tokens.swift")).toContain("let h = CGFloat(min(t, 1.0 / 240))");
   // Calm under Reduce Motion: the dock spring without its overshoot, and only the fade of the flight.
@@ -278,10 +277,8 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(panels).toContain("static let showsFog = true");
   expect(panels).not.toContain("strokeBorder(Color.black");
   expect(panels).toContain("FogLookView(look: panels.look, voice: ConchStatusItem.voiceState(store.state))");
-  // The transcript still ends in a short fade above the reply, not a cut.
-  expect(components).toContain(
-    "LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)\n                        .frame(height: ConchSpace.x4)",
-  );
+  // The transcript fades out toward its far end, the fade shrinking with its box, rather than ending in a cut.
+  expect(components).toContain(".frame(height: min(72, height * 0.4))");
 });
 
 /**
@@ -313,9 +310,14 @@ test("M3: the control bar fits what it shows, the reply scrolls past five lines,
   expect(panels).toContain("ControlBarHost(store: store, onSize: { [weak self] size in self?.fitControlBar(to: size) })");
   expect(panels).toContain(".onPreferenceChange(ControlBarSize.self, perform: onSize)");
   expect(components).toContain("Text(option.title)\n                        .font(ConchType.uiEmphasis)\n                        .fixedSize()");
-  expect(components).toContain(".lineLimit(1...5)");
-  expect(member(components, "static func textFrame(in size: CGSize, corner: FogCorner, insets: EdgeInsets, fullScreen: Bool) -> CGRect {")).toContain(
-    "let width = min(960, room)",
+  // The reply grows to five lines, fewer when that would leave under 90 pt of transcript, then scrolls inside itself.
+  expect(read("design/ConchDesign/Sources/ConchDesign/FogText.swift")).toContain(
+    "let cap = min(max(Int(((height - gap - transcriptKept - 2 * pad) / line).rounded(.down)), 1), 5)",
+  );
+  expect(components).toContain("let scroll = NSScrollView()");
+  // The lab's column: up to 540 wide, 52 in from its side; a taller fog is more room for words.
+  expect(member(components, "public static func textFrame(in size: CGSize, corner: FogCorner, insets: EdgeInsets, fullScreen: Bool, magnet: EdgeInsets? = nil) -> CGRect {")).toContain(
+    "let width = min(540, max(0, size.width - leading - trailing))",
   );
 });
 
@@ -396,14 +398,14 @@ test("M3: the look glows in the voice's colour, crossfades light and dark, thick
   // Light and dark crossfade, the look and the words' palette together.
   const step = member(panels, "func step(dt: Double) {");
   expect(step).toContain("ConchMotion.appearance.step(&darkness, velocity: &darkVelocity, to: darkTarget, dt: dt)");
-  expect(step).toContain("if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget { container.run(false) }");
+  expect(step).toContain("if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget, !words { container.run(false) }");
   expect(panels).toContain(".environment(\\.conchDarkness, panels.look.darkness)");
   expect(tokens).toContain("environment.conchDarkness.map { rgba(darkness: $0).color } ?? color(environment.colorScheme)");
   expect(look).toContain("let wash = ConchColor.fog.rgba(darkness: dark).color");
   // The scrim, in the blur's mask and in the wash; and the words fade where the blur does.
   expect(look).toContain("(scrimArea, [(0, scrim), (0.5, scrim), (1, 0)])");
   expect(look).toContain("FogLook.area(shift(look.scrimArea), [(0, 0.92 * scrim), (0.45, 0.78 * scrim), (1, 0)], wash)");
-  expect(components).toContain("FogLook.area(look.wordsFade.offsetBy(dx: -text.minX, dy: -text.minY), FogLook.wordsDensity, .black)");
+  expect(components).toContain("FogLook.area(look.wordsFade.offsetBy(dx: -frame.minX, dy: -frame.minY), FogLook.wordsDensity, .black)");
   // Over the resize band it glows; the buttons are faint until the pointer is over the fog, and gone mid-air.
   expect(member(panels, "func pointerMoved(to point: CGPoint) {")).toContain("hoverResizeBand(resizes)");
   expect(panels).toContain("if !inside { self?.hoverResizeBand(false) }");
@@ -411,4 +413,79 @@ test("M3: the look glows in the voice's colour, crossfades light and dark, thick
   expect(components).toContain(".opacity(isFullScreen ? 1 : floating ? 0 : hovering ? 1 : 0.4)");
   expect(components).toContain(".allowsHitTesting(isFullScreen || !floating)");
   expect(panels).toContain("hovering: panels.hovering,");
+});
+
+/**
+ * Step 1d of the overlay port: the lab's text (conch-design/overlay-lab.html). Tyler: "need to be able to scroll my reply
+ * text as it grows like i can the transcript", "make the transcript area taller and wider if i want to", and "looks like
+ * the text got smaller? can we put it back to how it was?". ConchDesign's FogTextTests hold the rules; these pin how the
+ * Mac overlay drives them.
+ */
+test("M3: the overlay's text is the lab's: pinned by the reader alone, words at a talking pace, a reply line that grows and sends", () => {
+  const text = read("design/ConchDesign/Sources/ConchDesign/FogText.swift");
+  // Scrolling: the fog's view takes a scroll anywhere but its reply line and moves the transcript with it; never a drag.
+  const hit = member(panels, "override func hitTest(_ point: NSPoint) -> NSView? {");
+  expect(hit).toContain("if type == .scrollWheel, panels.scrolls(local) { return self }");
+  expect(panels).toContain("override func scrollWheel(with event: NSEvent) { panels?.scrolled(event) }");
+  expect(member(panels, "func scrolls(_ point: CGPoint) -> Bool {")).toContain("!isCollapsed && !controlFrames.contains { $0.contains(point) }");
+  const scrolled = member(panels, "func scrolled(_ event: NSEvent) {");
+  expect(scrolled).toContain("ConversationFog.newestAtTop(corner: corner, fullScreen: isFullScreen) ? -points : points");
+  expect(scrolled).toContain("text.scroll(by: towardOldest, momentum: event.momentumPhase != [])");
+  expect(scrolled).not.toContain("pressed");
+  // Only a reader's scroll unpins; layout keeps pinned; the pill and a send re-pin and drop the leftover glide.
+  expect(member(text, "public mutating func scroll(by delta: CGFloat, momentum: Bool) {")).toContain("pinned = offset < 6");
+  expect(text.match(/pinned = offset < 6/g)?.length).toBe(1);
+  expect(member(text, "public mutating func layout(range next: CGFloat) {")).toContain("offset = pinned ? min(offset, next) : min(max(next - (range - offset), 0), next)");
+  expect(member(text, "public mutating func toNewest() {")).toContain("ignoresGlide = true");
+  expect(components).toContain("Button(action: text.toNewest)");
+  expect(components).toContain('Text(text.scroll.unseen ? "New reply" : "Newest")');
+  // Stepped with the motion on the display's frames, and fed by the store: its working state, not a timer.
+  const step = member(panels, "func step(dt: Double) {");
+  expect(step).toContain("let words = text.step(dt: dt, now: ProcessInfo.processInfo.systemUptime, reduceMotion: motion.reduceMotion)");
+  expect(step.indexOf("text.step(")).toBeLessThan(step.indexOf("apply()"));
+  expect(panels).toContain("text.wake = { [weak self] in MainActor.assumeIsolated { self?.container.run(true) } }");
+  expect(member(panels, "private func apply() {")).toContain("next.replyHeight = text.replyHeight");
+  expect(panels).toContain("isWorking: row?.status == .working,");
+  expect(panels).toContain(".onChange(of: turns, initial: true) { _, turns in panels.text.update(turns: turns, now: ProcessInfo.processInfo.systemUptime) }");
+  expect(panels).toContain(".onChange(of: row?.id) { _, _ in panels.text.session() }");
+  for (const fake of ["asyncAfter", "Task.sleep", "Timer("]) expect(text).not.toContain(fake);
+  expect(components).toContain("if isWorking, lines.last?.fromYou == true { lines.append(.thinking) }");
+  // Sent: shown at once and flown in, the daemon's copy taking its place; dropped if it never arrives.
+  const send = member(panels, "private func send(_ row: SessionRow) {");
+  expect(send.indexOf("fog.send(text)")).toBeLessThan(send.indexOf('draft.wrappedValue = ""'));
+  expect(send).toContain("Task { if !(await delivery.value) { fog.sendFailed() } }");
+  // Reveal: 13 words a second with breaths at punctuation, each fading up out of a 4 pt blur, any backlog in within 3 s.
+  expect(text).toContain("public static let longest: Double = 3");
+  expect(text).toContain("return 1 / ConchMotion.wordsPerSecond + pause");
+  expect(components).toContain(".textRenderer(WordRevealRenderer(");
+  expect(components).toContain("blur: reduceMotion ? 0 : ConchMotion.wordRevealBlur,");
+  // The reply line: AppKit's text view; Return sends, Shift-Return a new line, Esc leaves; it keeps its clicks.
+  expect(text).toContain("return shift || option ? .newline : .send");
+  expect(components).toContain("case .send: field.onSend()");
+  expect(components).toContain("case .newline: view.insertNewlineIgnoringFieldEditor(nil)");
+  expect(components).toContain("case .leave: view.window?.makeFirstResponder(nil)");
+  expect(components).toContain("override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }");
+  expect(components).toContain("pill(top: top)\n                        .fogControl()");
+  const replyLine = components.slice(components.indexOf("public struct InlineReplyLine: View {"), components.indexOf("// MARK: - ControlBar"));
+  expect(replyLine.length).toBeGreaterThan(1000);
+  expect(replyLine).not.toContain('label: "Send"');
+  expect(components).not.toContain(".lineLimit(1...5)");
+  // Grows on the grow spring, measured cheaply however long the draft (#210's freeze stays fixed: saves still wait).
+  expect(text).toContain("ConchMotion.grow.resolved(reduceMotion: reduceMotion).step(&replyHeight");
+  expect(text).toContain("String(text.prefix(2000))");
+  const composer = read("mac-app/conch-mac/ComposerView.swift");
+  expect(composer).toContain("try? await Task.sleep(for: .milliseconds(500))");
+  expect(composer).toContain("MainActor.assumeIsolated { self?.saveNow() }");
+  // Layout: top corners top-down, words centred off a corner by the magnet, long strings wrapped at the column, and the
+  // scrim and the words' fade following the newest lines and a growing reply.
+  expect(components).toContain("!corner.bottom && !fullScreen");
+  expect(components).toContain("magnet: look?.magnet)");
+  expect(components).toContain(".fixedSize(horizontal: false, vertical: true)\n                .opacity(now ? 1 : 1 - 0.5 * e)");
+  expect(look).toContain("y = newestAtTop ? text.minY + replyHeight + 70 : text.maxY - replyHeight - 70");
+  expect(look).toContain("y: newestAtTop ? text.minY : text.maxY - 230");
+  // The type is as it was.
+  expect(tokens).toContain("public static let conversationNow = Font.system(size: 24, weight: .medium)");
+  expect(tokens).toContain("public static let conversationPast = Font.system(size: 17)");
+  expect(tokens).toContain("public static let conversationNowFull = Font.system(size: 36, weight: .medium)");
+  expect(tokens).toContain("public static let conversationPastFull = Font.system(size: 24)");
 });
