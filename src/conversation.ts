@@ -1046,27 +1046,83 @@ export function conversationWindow(
  * valid JSON, and a half-entry would parse as a different shape if it parsed at
  * all. The cost is losing at most one item at the far edge of the window.
  */
+/** Where a conversation read starts: the end of the transcript, this far back. */
+const DEFAULT_TAIL_BYTES = 512 * 1024;
+
+/**
+ * How far back a conversation read may reach when the tail holds too little.
+ *
+ * A Codex rollout runs to hundreds of megabytes, with single event lines of a megabyte (an image, a large tool
+ * result). The last 512 KB of one 243 MB rollout held three tool calls and nothing said, so the overlay showed that
+ * session hours out of date (Tyler, 2026-09-14). Measured on that file: 8 MB reads in 8 ms and holds 3 of your
+ * messages and 7 replies; 32 MB reads in 19 ms.
+ */
+const MAX_TAIL_BYTES = 32 * 1024 * 1024;
+
+/** Enough of a conversation to show: this many messages from you or the agent. */
+const MIN_TAIL_MESSAGES = 6;
+
+/**
+ * The depth each transcript last needed, so a busy session is not grown back up from 512 KB on every publish.
+ */
+// ponytail: grows per path and never shrinks or evicts; a few ints per transcript for the daemon's life.
+const tailDepth = new Map<string, number>();
+
+function saidMessages(conversation: Conversation): number {
+  let count = 0;
+  for (const key of conversation.order) {
+    const kind = conversation.items[key]?.kind;
+    if (kind === "user" || kind === "assistant") count++;
+  }
+  return count;
+}
+
+/**
+ * The end of a transcript as a conversation. Unless the caller names `tailBytes`, a tail holding fewer than
+ * `MIN_TAIL_MESSAGES` messages is read again twice as deep, up to `MAX_TAIL_BYTES` or the start of the file.
+ */
 export async function readConversationTail(
   transcriptPath: string,
   sessionId: string,
   format: ConversationFormat,
   options: { window?: WindowIdentity | undefined; tailBytes?: number } = {},
 ): Promise<Conversation> {
-  const tailBytes = options.tailBytes ?? 512 * 1024;
+  if (options.tailBytes !== undefined) {
+    return (await readConversationTailOnce(transcriptPath, sessionId, format, options.window, options.tailBytes)).conversation;
+  }
+  let tailBytes = tailDepth.get(transcriptPath) ?? DEFAULT_TAIL_BYTES;
+  for (;;) {
+    const { conversation, wholeFile } = await readConversationTailOnce(transcriptPath, sessionId, format, options.window, tailBytes);
+    if (wholeFile || tailBytes >= MAX_TAIL_BYTES || saidMessages(conversation) >= MIN_TAIL_MESSAGES) {
+      tailDepth.set(transcriptPath, tailBytes);
+      return conversation;
+    }
+    tailBytes = Math.min(tailBytes * 2, MAX_TAIL_BYTES);
+  }
+}
+
+async function readConversationTailOnce(
+  transcriptPath: string,
+  sessionId: string,
+  format: ConversationFormat,
+  window: WindowIdentity | undefined,
+  tailBytes: number,
+): Promise<{ conversation: Conversation; wholeFile: boolean }> {
+  const options = { window };
   const file = Bun.file(transcriptPath);
   let size = 0;
   try {
     size = file.size;
   } catch {
-    return emptyConversation(sessionId);
+    return { conversation: emptyConversation(sessionId), wholeFile: true };
   }
-  if (!size) return emptyConversation(sessionId);
+  if (!size) return { conversation: emptyConversation(sessionId), wholeFile: true };
   const start = Math.max(0, size - tailBytes);
   let text: string;
   try {
     text = await file.slice(start).text();
   } catch {
-    return emptyConversation(sessionId);
+    return { conversation: emptyConversation(sessionId), wholeFile: true };
   }
   let lines: readonly string[] = text.split("\n");
   if (start > 0) lines = lines.slice(1);
@@ -1079,7 +1135,7 @@ export async function readConversationTail(
   const conversation = buildConversation(sessionId, lines, format);
   if (shared) conversation.shared = true;
   if (format === "claude") attachSidechainPaths(conversation, transcriptPath);
-  return conversation;
+  return { conversation, wholeFile: start === 0 };
 }
 
 /** What the registry says about one window of a shared session (`~/.claude/sessions/<pid>.json`). */
