@@ -55,7 +55,18 @@ public struct ConchColorToken: ShapeStyle, Sendable {
 
     public func rgba(_ scheme: ColorScheme) -> ConchRGBA { scheme == .dark ? dark : light }
     public func color(_ scheme: ColorScheme) -> Color { rgba(scheme).color }
-    public func resolve(in environment: EnvironmentValues) -> Color { color(environment.colorScheme) }
+
+    /// Part way from light (0) to dark (1): the overlay crossfades its palette as it turns (the lab's PAL).
+    public func rgba(darkness: Double) -> ConchRGBA {
+        let t = min(max(darkness, 0), 1)
+        func mix(_ a: Double, _ b: Double) -> UInt32 { UInt32(((a + (b - a) * t) * 255).rounded()) }
+        return ConchRGBA(mix(light.red, dark.red) << 16 | mix(light.green, dark.green) << 8 | mix(light.blue, dark.blue), alpha: light.alpha + (dark.alpha - light.alpha) * t)
+    }
+
+    /// The view's `conchDarkness` when it has one, else its colour scheme.
+    public func resolve(in environment: EnvironmentValues) -> Color {
+        environment.conchDarkness.map { rgba(darkness: $0).color } ?? color(environment.colorScheme)
+    }
 }
 
 /// Calm and Apple-native: warm off-white grounds, off-black text, hairlines at 10% or less,

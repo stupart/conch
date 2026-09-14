@@ -17,6 +17,8 @@ function member(source: string, signature: string): string {
 const panels = read("mac-app/conch-mac/FloatingPanels.swift");
 const components = read("design/ConchDesign/Sources/ConchDesign/Components.swift");
 const item = read("mac-app/conch-mac/StatusItem.swift");
+const look = read("design/ConchDesign/Sources/ConchDesign/FogLook.swift");
+const tokens = read("design/ConchDesign/Sources/ConchDesign/Tokens.swift");
 const project = read("mac-app/conch-mac.xcodeproj/project.pbxproj");
 
 /**
@@ -139,10 +141,11 @@ test("M3: the fog replies through inject and dictates through the composer's dic
   // The spoken words come back into the same shared draft, once.
   expect(panels).toContain("drafts.apply(store.state?.live.dictated)");
   expect(panels).toContain("@ObservedObject private var drafts = ComposerDraftStore.shared");
-  // A fog, not a pane: the fog tint, and a behind-window blur masked to the corner.
+  // A fog, not a pane: the fog's wash, and a behind-window blur under the look's own mask.
   expect(components).toContain(".fill(ConchColor.fog)");
   expect(panels).toContain("blur.blendingMode = .behindWindow");
-  expect(panels).toContain("blur.maskImage = Self.blurMask(corner, strength: blurStrength, floating: floating)");
+  expect(panels).toContain("blur.maskImage = blurMask()");
+  expect(member(panels, "private func blurMask() -> NSImage? {")).toContain("guard let mask = look.mask(strength: blurStrength) else { return nil }");
   expect(components).toContain(".font(Self.font(latest: age == 0, fullScreen: isFullScreen))");
   expect(member(components, "static func font(latest: Bool, fullScreen: Bool) -> Font {")).toContain(
     "case (true, true): ConchType.conversationNowFull",
@@ -240,7 +243,7 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(panels).toContain("displayLink(target: self, selector: #selector(step(_:)))");
   expect(panels).toContain("let dt = lastFrame > 0 ? min(link.timestamp - lastFrame, 0.05) : 1.0 / 120");
   expect(step).toContain("motion.step(dt: dt)");
-  expect(step).toContain("if motion.isSettled { container.run(false) }");
+  expect(step).toContain("if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget { container.run(false) }");
   expect(member(panels, "func pressed() {")).toContain("container.run(true)");
   expect(read("design/ConchDesign/Sources/ConchDesign/Tokens.swift")).toContain("let h = CGFloat(min(t, 1.0 / 240))");
   // Calm under Reduce Motion: the dock spring without its overshoot, and only the fade of the flight.
@@ -274,7 +277,7 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   // The overlay's look is on (Tyler: "i don't see any overlay"), and the testing outline is gone.
   expect(panels).toContain("static let showsFog = true");
   expect(panels).not.toContain("strokeBorder(Color.black");
-  expect(components).toContain("center: floating ? .center : corner.unitPoint,");
+  expect(panels).toContain("FogLookView(look: panels.look, voice: ConchStatusItem.voiceState(store.state))");
   // The transcript still ends in a short fade above the reply, not a cut.
   expect(components).toContain(
     "LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)\n                        .frame(height: ConchSpace.x4)",
@@ -287,7 +290,9 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
  */
 test("M3: the blur sits behind the words as a sibling, so its mask never touches the words or the handle", () => {
   expect(panels).toContain("fog.contentView = container");
-  expect(panels).toContain("for view in [blur, words] as [NSView] {");
+  expect(panels).toContain("for view in [blur, lookHost, words] {");
+  // The look over the blur never takes a press: it is the fog's.
+  expect(panels).toContain("private final class LookHostingView<Content: View>: NSHostingView<Content> {\n    override func hitTest(_: NSPoint) -> NSView? { nil }");
   expect(panels).not.toContain("blur.addSubview");
   expect(panels).not.toContain("fog.contentView = blur");
   const collapse = member(panels, "private func setCollapsed(_ collapsed: Bool) {");
@@ -322,32 +327,88 @@ test("M3: the control bar leads with the session, with the state beneath it", ()
   expect(components).toContain("Text(detailFirst ? state.title : detail)");
 });
 
-/** Tyler: the blur "looks bad". Its look is tuned by eye, so it's live: a `defaults write` shows at once, no rebuild. */
-test("M3: the overlay's tint, blur and material are live defaults the running app picks up", () => {
-  expect(panels).toContain('static let tintKey = "conch.overlay.tint"');
-  expect(panels).toContain('static let blurKey = "conch.overlay.blur"');
-  expect(panels).toContain('static let materialKey = "conch.overlay.material"');
-  expect(panels).toContain('UserDefaults.standard.register(defaults: [Look.tintKey: 0.2, Look.blurKey: 1.0, Look.materialKey: "fullScreenUI"])');
+/**
+ * Tyler: the blur "looks bad". Its look is tuned by eye, so it's live: a `defaults write` shows at once, no rebuild. The
+ * lab's values are FogLook's; the app's tint is lower, since the system material lays its own tint over the blur first.
+ */
+test("M3: the overlay's tint, colour, scrim, blur, material and appearance are live defaults the running app picks up", () => {
+  for (const key of ["tint", "tintDark", "colour", "colourDark", "scrim", "scrimDark", "blur", "material", "appearance"]) {
+    expect(panels).toContain(`"conch.overlay.${key}"`);
+  }
+  expect(panels).toContain("UserDefaults.standard.register(defaults: Look.defaults)");
+  expect(panels).toContain("tintKey: 0.45, tintDarkKey: 0.46, colourKey: 0.75, colourDarkKey: 0.55, scrimKey: 0.3, scrimDarkKey: 0.25,");
+  expect(panels).toContain('blurKey: 1.0, materialKey: "fullScreenUI", appearanceKey: "auto",');
+  expect(look).toContain("public var tint = LightDark(0.78, 0.8)");
+  expect(look).toContain("public var colour = LightDark(0.75, 0.55)");
+  expect(look).toContain("public var scrim = LightDark(0.3, 0.25)");
   expect(panels).toContain("let lookTimer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in");
   expect(panels).toContain("MainActor.assumeIsolated { self?.applyLook() }");
-  const look = member(panels, "private func applyLook() {");
-  expect(look).toContain("if tint != tintOpacity { tintOpacity = tint }");
-  expect(look).toContain("if blur.material != material { blur.material = material }");
-  expect(look).toContain("Self.masks = [:]");
-  expect(panels).toContain("tint: panels.tintOpacity,");
-  expect(components).toContain(".opacity(tint)");
+  const apply = member(panels, "private func applyLook() {");
+  expect(apply).toContain("next.tint = LightDark(value(Look.tintKey), value(Look.tintDarkKey))");
+  expect(apply).toContain("next.colour = LightDark(value(Look.colourKey), value(Look.colourDarkKey))");
+  expect(apply).toContain("next.scrim = LightDark(value(Look.scrimKey), value(Look.scrimDarkKey))");
+  expect(apply).toContain("setLook(next)");
+  expect(apply).toContain("if blur.material != material { blur.material = material }");
+  // Light or dark: the system's unless set. Following the screen under the words needs Screen Recording, which isn't asked for.
+  expect(apply).toContain("let systemDark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua");
+  expect(apply).toContain("FogLook.isDark(defaults.string(forKey: Look.appearanceKey), systemDark: systemDark)");
+  for (const capture of ["CGWindowListCreateImage", "ScreenCaptureKit", "SCScreenshotManager", "CGRequestScreenCaptureAccess", "CGPreflightScreenCaptureAccess"]) {
+    expect(panels).not.toContain(capture);
+  }
+  expect(panels).toContain("look: panels.look,");
+  expect(components).not.toContain("tintOpacity");
 });
 
-/** Tyler: "when u pull it off an edge thers a line". Off its corner the overlay fades on every side until it lands. */
-test("M3: dragged or in flight, the overlay fades on every side, and gathers in its corner again when it lands", () => {
-  expect(components).toContain("center: floating ? .center : corner.unitPoint,");
-  expect(components).toContain("endRadiusFraction: floating ? 0.64 : 1.1");
-  expect(components).toContain(".mask(Self.density(fullScreen: false, corner: corner, floating: floating))");
-  // Dragged by its middle or in flight; a resize never floats.
-  expect(member(panels, "private func apply() {")).toContain("setFloating(motion.isMoving)");
+/**
+ * Tyler: "when u pull it off an edge thers a line", "blobs like a magnet", "there should never be a hard line at the
+ * bottom". The look gathers to the screen edges the fog touches and is a blob in its middle away from them; its window
+ * reaches past the fog toward an edge the blob spills to, so the blob ends in its own fade or off the screen.
+ */
+test("M3: the look is a magnet: gathered to the edges it touches, a blob off them, and never a line", () => {
+  expect(components).toContain("public var magnet: EdgeInsets {");
+  expect(components).toContain("func pull(_ anchored: Bool, _ measured: CGFloat) -> CGFloat { (anchored ? 1 : 0) * (1 - free) + measured * free }");
+  expect(components).toContain("let t = 1 - min(max(gap / 160, 0), 1)");
+  expect(components).toContain("if ConchSpring(bounce: 0, response: 0.22).step(&free, velocity: &freeVelocity, to: isMoving ? 1 : 0, dt: dt) {");
+  expect(components).toContain("sizeTarget == nil && flying == 0 && free == 0 }");
+  expect(look).toContain("public var blob: CGRect { ellipse(across: (0.58, 1.15), up: (0.58, 1), scale: scale) }");
+  expect(look).toContain("[(0, 1), (0.36, 1), (0.5, 0.75), (0.64, 0.3), (0.78, 0)]");
+  const apply = member(panels, "private func apply() {");
+  expect(apply).toContain("var next = FogLook(motion, insets: insets)");
+  expect(apply).toContain("setLook(next)");
+  expect(apply).toContain("if fog.frame != window { fog.setFrame(window, display: true) }");
+  expect(apply).toContain("layOut(margin: margin)");
+  expect(apply).toContain("if motion.isMoving != floating { floating = motion.isMoving }");
+  expect(member(panels, "private func layOut(margin: EdgeInsets) {")).toContain("container.setBoundsOrigin(origin)");
+  expect(member(panels, "private func setLook(_ next: FogLook) {")).toContain("blur.maskImage = blurMask()");
   expect(components).toContain("public var isMoving: Bool { gesture?.resizes == false || flight != nil }");
-  expect(member(panels, "private func setFloating(_ value: Bool) {")).toContain(
-    "blur.maskImage = Self.blurMask(corner, strength: blurStrength, floating: value)",
-  );
+  expect(components).not.toContain("endRadiusFraction: floating ? 0.64 : 1.1");
+  expect(panels).not.toContain("ImageRenderer(");
   expect(panels).toContain("floating: panels.floating,");
+});
+
+/** Tyler: "incorporate some colors into the gradient", and a darker version. The lab's glows, palette, scrim, hover and buttons. */
+test("M3: the look glows in the voice's colour, crossfades light and dark, thickens behind the words and wakes on hover", () => {
+  // The voice's glow, crossfading between states, drifting except under Reduce Motion.
+  expect(look).toContain(".opacity(FogLook.glowToken(voice).name == token.name ? 1 : 0)");
+  expect(look).toContain(".animation(ConchMotion.voiceColour.animation(reduceMotion: reduceMotion), value: voice)");
+  expect(look).toContain("look.glows(token, at: time, reduceMotion: reduceMotion)");
+  expect(look).toContain("paused: reduceMotion || rendersStatically");
+  // Light and dark crossfade, the look and the words' palette together.
+  const step = member(panels, "func step(dt: Double) {");
+  expect(step).toContain("ConchMotion.appearance.step(&darkness, velocity: &darkVelocity, to: darkTarget, dt: dt)");
+  expect(step).toContain("if motion.isSettled, darkness == darkTarget, resizeHover == hoverTarget { container.run(false) }");
+  expect(panels).toContain(".environment(\\.conchDarkness, panels.look.darkness)");
+  expect(tokens).toContain("environment.conchDarkness.map { rgba(darkness: $0).color } ?? color(environment.colorScheme)");
+  expect(look).toContain("let wash = ConchColor.fog.rgba(darkness: dark).color");
+  // The scrim, in the blur's mask and in the wash; and the words fade where the blur does.
+  expect(look).toContain("(scrimArea, [(0, scrim), (0.5, scrim), (1, 0)])");
+  expect(look).toContain("FogLook.area(shift(look.scrimArea), [(0, 0.92 * scrim), (0.45, 0.78 * scrim), (1, 0)], wash)");
+  expect(components).toContain("FogLook.area(look.wordsFade.offsetBy(dx: -text.minX, dy: -text.minY), FogLook.wordsDensity, .black)");
+  // Over the resize band it glows; the buttons are faint until the pointer is over the fog, and gone mid-air.
+  expect(member(panels, "func pointerMoved(to point: CGPoint) {")).toContain("hoverResizeBand(resizes)");
+  expect(panels).toContain("if !inside { self?.hoverResizeBand(false) }");
+  expect(look).toContain("let alpha = colour.at(darkness) * (1 + 0.9 * resizeHover)");
+  expect(components).toContain(".opacity(isFullScreen ? 1 : floating ? 0 : hovering ? 1 : 0.4)");
+  expect(components).toContain(".allowsHitTesting(isFullScreen || !floating)");
+  expect(panels).toContain("hovering: panels.hovering,");
 });
