@@ -568,9 +568,12 @@ private struct ConversationFogHost: View {
             )
             .frame(
                 width: max(0, proxy.size.width - insets.leading - insets.trailing - 2 * ConversationFog.padding),
-                alignment: panels.isFullScreen || !panels.corner.leading ? .leading : .trailing
+                alignment: ConversationFog.buttonsAlignment(corner: panels.corner, fullScreen: panels.isFullScreen)
             )
-            .offset(x: insets.leading + ConversationFog.padding, y: insets.top + ConversationFog.padding)
+            .offset(
+                x: insets.leading + ConversationFog.padding,
+                y: ConversationFog.buttonsY(in: proxy.size, corner: panels.corner, insets: insets, fullScreen: panels.isFullScreen)
+            )
         }
     }
 

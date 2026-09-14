@@ -554,8 +554,12 @@ public struct ConversationFog: View {
     /// Where the words and the reply line sit: all of the fog but its padding, the screen's insets and a row for the
     /// buttons, so a bigger fog is all more room for words. Past a comfortable line they keep to the fog's corner.
     static func textFrame(in size: CGSize, corner: FogCorner, insets: EdgeInsets, fullScreen: Bool) -> CGRect {
-        let top = insets.top + padding + buttonSize + ConchSpace.x3
-        let height = max(0, size.height - top - insets.bottom - padding)
+        // The button row is on the docked side: above the words when the fog hangs from the top, below the reply
+        // when it sits on the bottom.
+        let row = buttonSize + ConchSpace.x3
+        let atBottom = buttonsAtBottom(corner: corner, fullScreen: fullScreen)
+        let top = insets.top + padding + (atBottom ? 0 : row)
+        let height = max(0, size.height - top - insets.bottom - padding - (atBottom ? row : 0))
         let leading = insets.leading + padding
         let trailing = insets.trailing + padding
         let room = max(0, size.width - leading - trailing)
@@ -565,6 +569,21 @@ public struct ConversationFog: View {
         }
         let width = min(960, room)
         return CGRect(x: corner.leading ? leading : size.width - trailing - width, y: top, width: width, height: height)
+    }
+
+    /// The collapse and full-screen buttons sit in the fog's docked corner, the nook against the screen's edges, away
+    /// from the free corner it is resized by (Tyler: "they're distracting and right where i want to pull to resize").
+    /// Full screen, top left.
+    public static func buttonsAtBottom(corner: FogCorner, fullScreen: Bool) -> Bool {
+        corner.bottom && !fullScreen
+    }
+
+    public static func buttonsY(in size: CGSize, corner: FogCorner, insets: EdgeInsets, fullScreen: Bool) -> CGFloat {
+        buttonsAtBottom(corner: corner, fullScreen: fullScreen) ? size.height - insets.bottom - padding - buttonSize : insets.top + padding
+    }
+
+    public static func buttonsAlignment(corner: FogCorner, fullScreen: Bool) -> Alignment {
+        fullScreen || corner.leading ? .leading : .trailing
     }
 
     /// The tint a host doesn't choose one: how much of the fog colour lies over the blur where it is densest.
@@ -606,13 +625,15 @@ public struct ConversationFog: View {
                 .frame(width: text.width, height: text.height, alignment: .bottomLeading)
                 .offset(x: text.minX, y: text.minY)
                 if showsButtons {
-                    // On the free side of the top row, away from the edge the fog is docked to.
                     FogPanelButtons(corner: corner, isFullScreen: isFullScreen, onCollapse: onCollapse, onFullScreen: onFullScreen)
                         .frame(
                             width: max(0, proxy.size.width - insets.leading - insets.trailing - 2 * Self.padding),
-                            alignment: isFullScreen || !corner.leading ? .leading : .trailing
+                            alignment: Self.buttonsAlignment(corner: corner, fullScreen: isFullScreen)
                         )
-                        .offset(x: insets.leading + Self.padding, y: insets.top + Self.padding)
+                        .offset(
+                            x: insets.leading + Self.padding,
+                            y: Self.buttonsY(in: proxy.size, corner: corner, insets: insets, fullScreen: isFullScreen)
+                        )
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
