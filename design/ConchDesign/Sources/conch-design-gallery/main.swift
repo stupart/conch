@@ -2,6 +2,7 @@
 // without opening an app window:  swift run conch-design-gallery <outdir>
 import AppKit
 import ConchDesign
+import CoreImage
 import SwiftUI
 
 let outDir = URL(fileURLWithPath: CommandLine.arguments.dropFirst().first ?? "gallery", isDirectory: true)
@@ -279,4 +280,139 @@ try render("components-controls") {
     .padding(24)
     .frame(width: 880, alignment: .leading)
     .background(RoundedRectangle(cornerRadius: ConchRadius.large).fill(ConchColor.fog))
+}
+
+// M3: the floating control bar and the conversation fog, over a page standing in for another app.
+struct OtherApp: View {
+    var compact = false
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        let dark = scheme == .dark
+        let ink = dark ? Color.white.opacity(0.85) : Color.black.opacity(0.78)
+        ZStack(alignment: compact ? .center : .topLeading) {
+            LinearGradient(
+                colors: dark
+                    ? [Color(red: 0.20, green: 0.14, blue: 0.24), Color(red: 0.10, green: 0.15, blue: 0.25), Color(red: 0.24, green: 0.15, blue: 0.12)]
+                    : [Color(red: 0.96, green: 0.79, blue: 0.66), Color(red: 0.73, green: 0.80, blue: 0.95), Color(red: 0.85, green: 0.77, blue: 0.93)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            if compact {
+                Text("Join the Arch team").font(.system(size: 44, weight: .bold)).foregroundStyle(ink)
+            } else {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Blueprint Studio").font(.system(size: 16, weight: .semibold))
+                    Spacer().frame(height: 60)
+                    Text("Join the Arch team").font(.system(size: 44, weight: .bold))
+                    Text("You'll see Arch's boards and drafts as soon as you're in.").font(.system(size: 18))
+                    RoundedRectangle(cornerRadius: 12).frame(width: 360, height: 52).opacity(0.85)
+                    RoundedRectangle(cornerRadius: 12).frame(width: 360, height: 52).opacity(0.3)
+                }
+                .foregroundStyle(ink)
+                .padding(.leading, 420)
+                .padding(.top, 56)
+            }
+        }
+    }
+}
+
+struct BlurredOtherApp: View {
+    let size: CGSize
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        if let blurred { Image(decorative: blurred, scale: 2) }
+    }
+
+    private var blurred: CGImage? {
+        let renderer = ImageRenderer(content: OtherApp().frame(width: size.width, height: size.height).environment(\.colorScheme, scheme))
+        renderer.scale = 2
+        guard let page = renderer.cgImage else { return nil }
+        let input = CIImage(cgImage: page)
+        let output = input.clampedToExtent().applyingGaussianBlur(sigma: 60).cropped(to: input.extent)
+        return CIContext().createCGImage(output, from: input.extent)
+    }
+}
+
+struct FogScreen: View {
+    let fullScreen: Bool
+    let draft: String
+    let listening: Bool
+
+    static let screen = CGSize(width: 1200, height: 750)
+    static let turns = [
+        ConversationTurn(id: "1", fromYou: true, text: "The invite page still says Accept invitation. Make the button just say Join."),
+        ConversationTurn(id: "2", fromYou: false, text: "The label is in `InviteCard.tsx`, and the email invite reads it too, so I'll give the page its own."),
+        ConversationTurn(id: "3", fromYou: true, text: "Fine. Keep the email check."),
+        ConversationTurn(id: "4", fromYou: false, text: "Changed. The button reads **Join**, and it still waits for the email check before it can be pressed. Tests pass."),
+    ]
+
+    var body: some View {
+        let panel = fullScreen ? Self.screen : CGSize(width: 760, height: 560)
+        ZStack(alignment: .bottomLeading) {
+            OtherApp()
+            // ImageRenderer cannot draw the app's behind-window blur (and tiles SwiftUI's own blur), so a copy of the
+            // page blurred by Core Image stands in for it, under the same mask.
+            BlurredOtherApp(size: Self.screen)
+                .mask(alignment: .bottomLeading) {
+                    ConversationFog.density(fullScreen: fullScreen).frame(width: panel.width, height: panel.height)
+                }
+            ConversationFog(
+                turns: Self.turns,
+                draft: .constant(draft),
+                isListening: listening,
+                isFullScreen: fullScreen,
+                onMic: {},
+                onSend: {},
+                onCollapse: {},
+                onFullScreen: {}
+            )
+            .frame(width: panel.width, height: panel.height)
+        }
+        .frame(width: Self.screen.width, height: Self.screen.height)
+        .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large))
+    }
+}
+
+let barDetails: [VoiceState: String] = [
+    .talk: "Blueprint monorepo", .speaking: "Blueprint monorepo", .listening: "You turned on the mic",
+    .quiet: "Blueprint monorepo", .ready: "Arch brand page",
+]
+
+try render("m3-control-bar") {
+    Heading(title: "Control bar", note: "M3. A non-activating panel under the menu bar, one row per voice state. The conversation is shown and hidden from the menu bar menu.")
+    ForEach(VoiceState.allCases, id: \.self) { state in
+        ZStack {
+            OtherApp(compact: true)
+            ControlBar(
+                state: state,
+                detail: barDetails[state] ?? "",
+                mode: .constant(state == .quiet ? .quiet : .talk)
+            )
+        }
+        .frame(width: 880, height: 104)
+        .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large))
+    }
+}
+
+try render("m3-fog-corner", width: 1280) {
+    Heading(title: "Conversation fog, corner", note: "M3. The blur is simulated here; the app draws a behind-window visual effect view under the same mask.")
+    FogScreen(fullScreen: false, draft: "", listening: false)
+}
+
+try render("m3-fog-fullscreen", width: 1280) {
+    Heading(title: "Conversation fog, full screen", note: "Command-Return or the button; leaving restores the corner's frame. Listening, with a reply typed.")
+    FogScreen(fullScreen: true, draft: "Looks good. Ship it, then the Dayloop invite", listening: true)
+}
+
+try render("m3-fog-collapsed", width: 1280) {
+    Heading(title: "Conversation fog, collapsed", note: "The fog's collapse button folds it to this handle in its corner; a click opens it again at the size it had.")
+    ZStack(alignment: .bottomLeading) {
+        OtherApp()
+        FogHandle {}
+            .padding(ConchSpace.x4)
+    }
+    .frame(width: FogScreen.screen.width, height: FogScreen.screen.height)
+    .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large))
 }

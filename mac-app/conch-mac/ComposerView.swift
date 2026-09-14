@@ -16,7 +16,14 @@ final class ComposerDraftStore: ObservableObject {
 
     private static let defaultsKey = "conch.mac.composerDrafts.v1"
 
+    /// One store for the dashboard's composer and the conversation fog (M3), so a session has one draft
+    /// wherever it is typed, and a dictation lands in it once however many views are watching.
+    static let shared = ComposerDraftStore()
+
     @Published private var drafts: [String: Entry]
+    /// The last dictation applied. State republishes several times a second, so without this the same
+    /// spoken sentence would be appended over and over.
+    private var appliedDictationID = 0
     private let defaults: UserDefaults
     private var previewSeed: String?
 
@@ -74,6 +81,13 @@ final class ComposerDraftStore: ObservableObject {
             let existing = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
             entry.text = existing.isEmpty ? spoken : existing + " " + spoken
         }
+    }
+
+    /// A finished dictation, applied once by its id, to the session that asked for it.
+    func apply(_ dictated: Dictation?) {
+        guard let dictated, dictated.id != appliedDictationID else { return }
+        appliedDictationID = dictated.id
+        appendDictation(dictated.text, to: dictated.sessionId)
     }
 
     private func update(_ sessionID: String, mutate: (inout Entry) -> Void) {

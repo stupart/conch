@@ -41,7 +41,18 @@ test("a Mac-app send takes the front back only after the daemon says delivery fi
   expect(captured).toBeGreaterThan(-1);
   // Captured at the press, not inside the task that runs after the raise.
   expect(captured).toBeLessThan(send.indexOf("let task = Task {"));
-  expect(send).toContain("if refocus {\n            whenDelivered = { await StateStore.refocusAfterDelivery() }\n        } else {\n            whenDelivered = nil\n        }");
+  expect(send).toContain("if refocus {\n            whenDelivered = { await StateStore.refocusAfterDelivery() }\n        } else if let underFog {\n            whenDelivered = { await StateStore.handBack(to: underFog) }\n        } else {\n            whenDelivered = nil\n        }");
+  // M3: a reply typed in the conversation fog, over another app, hands that app back.
+  const fog = send.indexOf("let underFog = event.awaitDelivery == true && !refocus && NSApp.keyWindow is FloatingPanel");
+  expect(fog).toBeGreaterThan(captured);
+  expect(fog).toBeLessThan(send.indexOf("let task = Task {"));
+  const handBack = member(store, "private static func handBack(to pid: pid_t) {");
+  // Presence first: a missing line is indexOf -1, which would pass the ordering check below.
+  expect(handBack).toContain('front.bundleIdentifier == "com.apple.Terminal",');
+  expect(handBack).toContain("NSRunningApplication(processIdentifier: pid)?.activate()");
+  expect(handBack.indexOf('front.bundleIdentifier == "com.apple.Terminal",')).toBeLessThan(
+    handBack.indexOf("NSRunningApplication(processIdentifier: pid)?.activate()"),
+  );
   expect(send).toContain("let delivered = await socketClient.send(event, whenDelivered: whenDelivered)");
 
   // Composer, question options (incl. multi-select and "Something else…",

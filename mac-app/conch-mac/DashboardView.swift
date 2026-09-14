@@ -1513,12 +1513,9 @@ private struct ConversationPane: View {
 
     @EnvironmentObject private var store: StateStore
     @StateObject private var transcriptContent = TranscriptContentModel()
-    @StateObject private var composerDrafts = ComposerDraftStore()
+    /// Shared with the conversation fog (M3): one draft per session wherever it is typed.
+    @ObservedObject private var composerDrafts = ComposerDraftStore.shared
     @State private var sessionPendingClose: SessionRow?
-    /// The last dictation applied to a draft. State republishes several times a
-    /// second, so without this the same spoken sentence would be appended over
-    /// and over.
-    @State private var appliedDictationID = 0
     /// Bumped when a question's "Something else…" row is pressed, so the
     /// composer takes the cursor.
     @State private var composerFocusRequest = 0
@@ -1853,7 +1850,7 @@ private struct ConversationPane: View {
             // makes that true even when you were already looking at an old one.
             if current != nil { showsConversation = true }
         }
-        .onChange(of: state?.live.dictated?.id) { _, current in
+        .onChange(of: state?.live.dictated?.id) { _, _ in
             // Spoken words land in the composer, added to whatever was typed.
             // Keyed on the dictation's id for the same reason the review above
             // is keyed on identity: the daemon republishes constantly, and
@@ -1864,11 +1861,7 @@ private struct ConversationPane: View {
             // to one session and clicks another while it runs was addressing
             // the first one, and putting the words in the second is worse than
             // losing them.
-            guard let current, current != appliedDictationID,
-                  let dictated = state?.live.dictated
-            else { return }
-            appliedDictationID = current
-            composerDrafts.appendDictation(dictated.text, to: dictated.sessionId)
+            composerDrafts.apply(state?.live.dictated)
         }
         .alert(
             "Close \(sessionPendingClose?.label ?? "session")?",

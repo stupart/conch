@@ -135,11 +135,18 @@ final class StateStore: ObservableObject {
         // Read at the press, before the daemon raises anything: a send that
         // did not start with conch in front has no front to hand back.
         let refocus = event.awaitDelivery == true && NSApp.isActive
+        // The conversation fog (FloatingPanels) types over another app without
+        // activating conch, so that app is the front to hand back.
+        let underFog = event.awaitDelivery == true && !refocus && NSApp.keyWindow is FloatingPanel
+            ? NSWorkspace.shared.frontmostApplication?.processIdentifier
+            : nil
         // if/else, not a ternary: `cond ? { closure } : nil` crashes the type
         // checker here ("failed to produce diagnostic").
         let whenDelivered: (@Sendable () async -> Void)?
         if refocus {
             whenDelivered = { await StateStore.refocusAfterDelivery() }
+        } else if let underFog {
+            whenDelivered = { await StateStore.handBack(to: underFog) }
         } else {
             whenDelivered = nil
         }
@@ -210,6 +217,16 @@ final class StateStore: ObservableObject {
         guard !NSApp.isActive,
               NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.Terminal" else { return }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// The fog's hand-back: conch was never in front, so give the front back
+    /// to the app the fog was over, and again only from the Terminal conch
+    /// raised to type.
+    private static func handBack(to pid: pid_t) {
+        guard let front = NSWorkspace.shared.frontmostApplication,
+              front.bundleIdentifier == "com.apple.Terminal",
+              front.processIdentifier != pid else { return }
+        NSRunningApplication(processIdentifier: pid)?.activate()
     }
 
     /// The same hand-back for a session command the daemon TYPES (`/model`,

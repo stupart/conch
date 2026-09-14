@@ -31,6 +31,40 @@ final class ConchDesignTests: XCTestCase {
         }
     }
 
+    /// Ready used to be drawn as Talk's grey mic. It is the ready colour now, with a white checkmark.
+    @MainActor
+    func testTheReadyOrbIsTheReadyColourNotTalksGrey() throws {
+        /// The orb's colour at (x, y) from its top left, over white, at 1x.
+        func pixel(_ state: VoiceState, x: Int, y: Int) throws -> [Double] {
+            let renderer = ImageRenderer(content: VoiceOrb(state: state, size: 36).environment(\.colorScheme, .light))
+            renderer.scale = 1
+            let image = try XCTUnwrap(renderer.cgImage)
+            var rgba: [UInt8] = [0, 0, 0, 0]
+            rgba.withUnsafeMutableBytes { buffer in
+                let context = CGContext(
+                    data: buffer.baseAddress, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                    space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                )!
+                context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+                context.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+                context.draw(image, in: CGRect(x: -x, y: y - image.height + 1, width: image.width, height: image.height))
+            }
+            return rgba.prefix(3).map { Double($0) / 255 }
+        }
+        // Inside the circle, clear of the glyph.
+        let ready = try pixel(.ready, x: 4, y: 18)
+        let green = ConchColor.ready.light
+        XCTAssertEqual(ready[0], green.red, accuracy: 0.04)
+        XCTAssertEqual(ready[1], green.green, accuracy: 0.04)
+        XCTAssertEqual(ready[2], green.blue, accuracy: 0.04)
+        // Talk keeps its quiet grey fill.
+        let talk = try pixel(.talk, x: 4, y: 18)
+        XCTAssertGreaterThan(talk[0], 0.85)
+        // And the ready mark in the middle is white, not a grey mic.
+        let check = try (8...28).flatMap { y in try (8...28).map { x in try pixel(.ready, x: x, y: y) } }
+        XCTAssertTrue(check.contains { $0.allSatisfy { $0 > 0.95 } }, "no white checkmark in the ready orb")
+    }
+
     func testHairlinesStayAtTenPercentOrLess() {
         for line in [ConchColor.hairline, ConchColor.hairlineStrong] {
             XCTAssertLessThanOrEqual(line.light.alpha, 0.1)
