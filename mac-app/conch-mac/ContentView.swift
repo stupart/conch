@@ -162,6 +162,14 @@ struct ContentView: View {
         ) { _ in
             showKeyboardShortcuts()
         }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .selectSessionFromStatusItem)
+        ) { note in
+            // A session chosen in the menu bar menu: the same as clicking its row.
+            guard let id = note.object as? String,
+                  let row = store.state?.rows.first(where: { $0.id == id }) else { return }
+            selectSession(row)
+        }
         .onChange(of: rowIDs) { _, currentIDs in
             if let selectedSessionID, !currentIDs.contains(selectedSessionID) {
                 self.selectedSessionID = nil

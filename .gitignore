@@ -30,3 +30,7 @@ docs/codebase-analysis/
 # Agent worktrees are checkouts, never content
 .claude/worktrees/
 .worktrees/
+
+# SwiftPM build output and Xcode's package state (design/ConchDesign)
+.build/
+.swiftpm/

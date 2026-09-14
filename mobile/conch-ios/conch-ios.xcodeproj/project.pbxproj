@@ -27,6 +27,7 @@
 		C1000000000000000000C1 /* RelayProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000C1 /* RelayProtocol.swift */; };
 		C1000000000000000000C2 /* RelayTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000C2 /* RelayTransport.swift */; };
 		C1000000000000000000C3 /* DirectHTTPTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000C3 /* DirectHTTPTransport.swift */; };
+		C10000000000000000000961 /* ConchDesign in Frameworks */ = {isa = PBXBuildFile; productRef = CB0000000000000000000002 /* ConchDesign */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -59,6 +60,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C10000000000000000000961 /* ConchDesign in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -125,6 +127,9 @@
 			dependencies = (
 			);
 			name = "conch-ios";
+			packageProductDependencies = (
+				CB0000000000000000000002 /* ConchDesign */,
+			);
 			productName = "conch-ios";
 			productReference = C20000000000000000000101 /* conch-ios.app */;
 			productType = "com.apple.product-type.application";
@@ -153,6 +158,9 @@
 				Base,
 			);
 			mainGroup = C40000000000000000000001;
+			packageReferences = (
+				CB0000000000000000000001 /* XCLocalSwiftPackageReference "../../design/ConchDesign" */,
+			);
 			productRefGroup = C40000000000000000000004 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -201,6 +209,21 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		CB0000000000000000000001 /* XCLocalSwiftPackageReference "../../design/ConchDesign" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../../design/ConchDesign;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		CB0000000000000000000002 /* ConchDesign */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CB0000000000000000000001 /* XCLocalSwiftPackageReference "../../design/ConchDesign" */;
+			productName = ConchDesign;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		C80000000000000000000001 /* Debug */ = {
