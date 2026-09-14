@@ -47,7 +47,8 @@ final class FogTextTests: XCTestCase {
     }
 
     /// The lab once unpinned without a scroll (its fuzz: full screen, drags, typing, collapse). Here nothing but a scroll
-    /// can: thousands of layouts, arrivals, frames and sends, never a wheel, and it is always pinned.
+    /// can: thousands of layouts, arrivals, frames and sends, many while it glides back after the pill, and it is always
+    /// pinned.
     @MainActor
     func testNothingButAScrollEverUnpins() {
         var seed: UInt64 = 7
@@ -74,8 +75,13 @@ final class FogTextTests: XCTestCase {
                 _ = scroll.follow(dt: 1.0 / 120, reduceMotion: random(2) == 0)
                 state.step(dt: 1.0 / 120, now: now, reduceMotion: false)
             case 3:
+                // The reader scrolls away and takes the pill: from here it glides back, pinned, through whatever comes.
+                scroll.layout(range: 2000)
+                scroll.scroll(by: 300, momentum: false)
                 scroll.toNewest()
-                state.send("sent \(step)")
+                state.measured(content: 3000, box: 300)
+                state.scroll(by: 300, momentum: false)
+                if random(2) == 0 { state.toNewest() } else { state.send("sent \(step)") }
             case 4:
                 state.grow(to: 40 + CGFloat(random(5)) * 31.2)
             default:
@@ -100,6 +106,10 @@ final class FogTextTests: XCTestCase {
         XCTAssertFalse(scroll.unseen)
         for _ in 0..<20 { scroll.scroll(by: 25, momentum: true) }
         XCTAssertTrue(scroll.pinned, "the leftover glide re-unpinned it")
+        // Layout while it glides back doesn't unpin it either.
+        scroll.layout(range: 1200)
+        scroll.layout(range: 95)
+        XCTAssertTrue(scroll.pinned)
         // It glides the rest of the way, quickly.
         var frames = 0
         while !scroll.follow(dt: 1.0 / 120, reduceMotion: false) { frames += 1 }
@@ -297,7 +307,8 @@ final class FogTextTests: XCTestCase {
     func testLongUnbrokenStringsWrapInsideTheColumn() throws {
         let size = CGSize(width: 900, height: 640)
         let path = "/Users/tylerstupart/Projects/conch-design/lab-shots/native-1d-a-really-long-file-name-with-no-breaks-at-all-anywhere.png?query=abcdefghijklmnopqrstuvwxyz0123456789"
-        let turns = [ConversationTurn(id: "1", fromYou: true, text: "Where is it?"), ConversationTurn(id: "2", fromYou: false, text: path)]
+        // Only the path, so every bit of ink above the reply line is its.
+        let turns = [ConversationTurn(id: "2", fromYou: false, text: path)]
         let renderer = ImageRenderer(content: ConversationFog(turns: turns, draft: .constant(""), text: FogTextState(), isListening: false, isFullScreen: false, insets: Self.dock, showsButtons: false, onMic: {}, onSend: {}, onCollapse: {}, onFullScreen: {})
             .frame(width: size.width, height: size.height)
             .environment(\.conchRendersStatically, true)
@@ -309,9 +320,8 @@ final class FogTextTests: XCTestCase {
         let ink = Self.ink(image, in: CGRect(x: 0, y: text.minY, width: size.width, height: text.height - 40 - FogReply.gap))
         let box = try XCTUnwrap(ink)
         XCTAssertLessThanOrEqual(box.maxX, text.maxX + 1, "ran past the column: \(box)")
-        // 150 characters at 24 pt in 540 pt take several lines.
-        let lines = Self.ink(image, in: CGRect(x: 0, y: box.maxY - 140, width: size.width, height: 140))
-        XCTAssertGreaterThan(try XCTUnwrap(lines).height, 3 * 24, "did not wrap: \(box)")
+        // 150-odd characters at 24 pt in 540 pt take several lines.
+        XCTAssertGreaterThan(box.height, 3 * 24, "did not wrap: \(box)")
     }
 
     // MARK: Cost
