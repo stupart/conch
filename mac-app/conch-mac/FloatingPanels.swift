@@ -48,6 +48,17 @@ final class FloatingPanels: ObservableObject {
     static let resizeGrab: CGFloat = 96
     /// The overlay's look: the system blur and a tint, gathered in the corner it is docked to.
     static let showsFog = true
+    /// The look, tunable live with `defaults write ai.blueprintstudio.conch <key> <value>`: the running app picks a
+    /// change up within half a second, no rebuild.
+    enum Look {
+        /// The fog colour over the blur, 0 to 1 (`-float`).
+        static let tintKey = "conch.overlay.tint"
+        /// How much of the system blur shows, 0 to 1 (`-float`).
+        static let blurKey = "conch.overlay.blur"
+        /// The system blur's material, by name (`-string`): fullScreenUI, hudWindow, popover, menu, sidebar, sheet,
+        /// headerView, titlebar, toolTip, windowBackground, underWindowBackground, contentBackground.
+        static let materialKey = "conch.overlay.material"
+    }
 
     private static var installed: FloatingPanels?
 
@@ -65,6 +76,11 @@ final class FloatingPanels: ObservableObject {
     @Published private(set) var insets = EdgeInsets()
     /// The pointer is over the fog (or, collapsed, its corner).
     @Published private(set) var hovering = false
+    /// The tint over the blur (`Look.tintKey`).
+    @Published private(set) var tintOpacity = 0.2
+    /// How much of the blur shows (`Look.blurKey`).
+    private var blurStrength = 1.0
+    private var lookTimer: Timer?
     /// How far into a throw's flight the fog is, 0 at rest to 1 mid-air: it fades, softens and shrinks with it.
     @Published private(set) var throwMotion: CGFloat = 0
     private static let fogMinSize = NSSize(width: 480, height: 420)
@@ -88,9 +104,11 @@ final class FloatingPanels: ObservableObject {
     /// NSVisualEffectView stretches this image to its own size, so one small image serves any panel size.
     private static var masks: [FogCorner: NSImage] = [:]
 
-    private static func blurMask(_ corner: FogCorner) -> NSImage? {
+    private static func blurMask(_ corner: FogCorner, strength: Double) -> NSImage? {
         if let mask = masks[corner] { return mask }
-        let image = ImageRenderer(content: ConversationFog.density(fullScreen: false, corner: corner).frame(width: 256, height: 256)).nsImage
+        let image = ImageRenderer(
+            content: ConversationFog.density(fullScreen: false, corner: corner).opacity(strength).frame(width: 256, height: 256)
+        ).nsImage
         image?.resizingMode = .stretch
         masks[corner] = image
         return image
@@ -125,7 +143,7 @@ final class FloatingPanels: ObservableObject {
         // window's transparent pixels, which with the fog's look off is nearly all of it: a drag or a resize strip
         // would land on the app behind, and so would a click in the collapsed corner.
         fog.ignoresMouseEvents = false
-        blur.material = .underWindowBackground
+        UserDefaults.standard.register(defaults: [Look.tintKey: 0.2, Look.blurKey: 1.0, Look.materialKey: "fullScreenUI"])
         blur.blendingMode = .behindWindow
         blur.state = .active
         blur.isHidden = !Self.showsFog
@@ -158,6 +176,15 @@ final class FloatingPanels: ObservableObject {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.redock() }
         }
+
+        applyLook()
+        // ponytail: polls twice a second, so a `defaults write` from a terminal shows at once; KVO per key if this ever
+        // costs anything.
+        let lookTimer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applyLook() }
+        }
+        RunLoop.main.add(lookTimer, forMode: .common)
+        self.lookTimer = lookTimer
 
         // The menu's toggles write these defaults.
         defaultsObserver = NotificationCenter.default.addObserver(
@@ -200,6 +227,38 @@ final class FloatingPanels: ObservableObject {
         let frame = controlBar.frame
         guard size.width > 0, abs(frame.width - size.width) > 0.5 || abs(frame.height - size.height) > 0.5 else { return }
         controlBar.setFrame(NSRect(x: frame.midX - size.width / 2, y: frame.maxY - size.height, width: size.width, height: size.height), display: true)
+    }
+
+    /// The overlay's look from its defaults (`Look`), applied only where it changed.
+    private func applyLook() {
+        let defaults = UserDefaults.standard
+        let tint = min(max(defaults.double(forKey: Look.tintKey), 0), 1)
+        if tint != tintOpacity { tintOpacity = tint }
+        let material = Self.material(named: defaults.string(forKey: Look.materialKey))
+        if blur.material != material { blur.material = material }
+        let strength = min(max(defaults.double(forKey: Look.blurKey), 0), 1)
+        if strength != blurStrength {
+            blurStrength = strength
+            Self.masks = [:]
+            if !isCollapsed, !isFullScreen { blur.maskImage = Self.blurMask(corner, strength: strength) }
+        }
+    }
+
+    private static func material(named name: String?) -> NSVisualEffectView.Material {
+        switch name {
+        case "hudWindow": .hudWindow
+        case "popover": .popover
+        case "menu": .menu
+        case "sidebar": .sidebar
+        case "sheet": .sheet
+        case "headerView": .headerView
+        case "titlebar": .titlebar
+        case "toolTip": .toolTip
+        case "windowBackground": .windowBackground
+        case "underWindowBackground": .underWindowBackground
+        case "contentBackground": .contentBackground
+        default: .fullScreenUI
+        }
     }
 
     /// The screen under `point`, else the fog's own.
@@ -248,7 +307,7 @@ final class FloatingPanels: ObservableObject {
             // Saved again only once it is back, so the next launch never restores a full-screen frame.
             fog.setFrameAutosaveName(Self.conversationFrameName)
             updateInsets(frame, on: screen)
-            blur.maskImage = Self.blurMask(corner)
+            blur.maskImage = Self.blurMask(corner, strength: blurStrength)
         } else {
             fog.setFrameAutosaveName("")
             fog.setFrame(screen.frame, display: true, animate: animate)
@@ -265,7 +324,7 @@ final class FloatingPanels: ObservableObject {
         if corner != self.corner { self.corner = corner }
         let target = FogDock.frame(size: fogSize, corner: corner, in: screen.frame)
         updateInsets(target, on: screen)
-        blur.maskImage = Self.blurMask(corner)
+        blur.maskImage = Self.blurMask(corner, strength: blurStrength)
         if animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             startSpring(to: target, velocity: velocity)
         } else {
@@ -466,6 +525,7 @@ private struct ConversationFogHost: View {
                     corner: panels.corner,
                     insets: panels.insets,
                     showsFog: FloatingPanels.showsFog,
+                    tint: panels.tintOpacity,
                     showsButtons: false,
                     onMic: { if let row { mic(row) } },
                     onSend: { if let row { send(row) } },
