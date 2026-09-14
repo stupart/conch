@@ -136,3 +136,11 @@ test("the menu bar watcher attaches again after the delay, and says so once if i
     "forName: NSWindow.didChangeOcclusionStateNotification",
   );
 });
+
+// M3: the panels are visible windows, so a Dock click must look for a window that can be main, or it
+// would think conch is already showing and never bring the dashboard back.
+test("M3: a Dock click still reopens the dashboard while the floating panels are showing", () => {
+  const app = readFileSync(join(import.meta.dir, "..", "mac-app/conch-mac/ConchMacApp.swift"), "utf8");
+  expect(app).toContain("if hasVisibleWindows, sender.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) { return true }");
+  expect(app).not.toContain("if hasVisibleWindows { return true }");
+});

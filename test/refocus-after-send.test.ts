@@ -47,6 +47,9 @@ test("a Mac-app send takes the front back only after the daemon says delivery fi
   expect(fog).toBeGreaterThan(captured);
   expect(fog).toBeLessThan(send.indexOf("let task = Task {"));
   const handBack = member(store, "private static func handBack(to pid: pid_t) {");
+  // Presence first: a missing line is indexOf -1, which would pass the ordering check below.
+  expect(handBack).toContain('front.bundleIdentifier == "com.apple.Terminal",');
+  expect(handBack).toContain("NSRunningApplication(processIdentifier: pid)?.activate()");
   expect(handBack.indexOf('front.bundleIdentifier == "com.apple.Terminal",')).toBeLessThan(
     handBack.indexOf("NSRunningApplication(processIdentifier: pid)?.activate()"),
   );
