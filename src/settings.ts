@@ -9,7 +9,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
 import {
@@ -585,7 +585,7 @@ export class SettingsFileError extends Error {
  */
 export function writeSettingsFileAtomic(path: string, values: Readonly<Record<string, unknown>>): void {
   mkdirSync(dirname(path), { recursive: true });
-  const temp = join(dirname(path), `.${SETTINGS_FILE}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`);
+  const temp = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`);
   let fd: number | undefined;
   try {
     fd = openSync(temp, "wx", 0o600);

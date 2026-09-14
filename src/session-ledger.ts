@@ -1,5 +1,10 @@
+import { readFileSync } from "node:fs";
 import type { TurnEvent } from "./hook.ts";
-import type { PanelSessionState } from "./panel.ts";
+import type { PanelSessionState, SessionReview } from "./panel.ts";
+import { writeSettingsFileAtomic } from "./settings.ts";
+
+/** The saved-deliverables file stops growing here: newest reviews first, older ones dropped. */
+export const MAX_REVIEWS_BYTES = 256_000;
 
 type OrderedTurnEvent = Pick<TurnEvent, "type" | "sessionId" | "eventAt">;
 
@@ -53,6 +58,11 @@ export class TurnEventOrder {
  * controller hand-off keep the same shape they had before this extraction.
  */
 export class SessionLedger {
+  constructor(
+    /** Where each session's current deliverable outlives the daemon. Absent writes nothing. */
+    readonly reviewsPath?: string,
+  ) {}
+  #savedReviews = "";
   // session -> last time conch drove it. Cleanup is still the TTL in markInjected.
   readonly injectedAt = new Map<string, number>();
   // Sessions that finished while paused; latest per session.
@@ -90,6 +100,7 @@ export class SessionLedger {
   }
 
   forget(sessionId: string): void {
+    const hadReview = this.sessionStates.get(sessionId)?.review !== undefined;
     this.sessionStates.delete(sessionId);
     this.eventOrder.forget(sessionId);
     this.pausedSessionIds.delete(sessionId);
@@ -101,6 +112,66 @@ export class SessionLedger {
     this.latestTurnBySession.delete(sessionId);
     this.pending.delete(sessionId);
     this.reportedMissingCodexPid.delete(sessionId);
+    // A gone session's deliverable leaves the file with it.
+    if (hadReview) this.saveReviews();
+  }
+
+  /**
+   * Put back each session's deliverable from before a daemon restart with its
+   * filing `at`, so both apps see the same deliverable rather than a new one.
+   * Status is not restored: the latch is `at: 0`, the oldest possible truth,
+   * so the first hook or registry status wins and `carriedReview` keeps the
+   * review. Sessions that are gone are dropped by the first `forgetGone`.
+   */
+  restoreReviews(): void {
+    if (!this.reviewsPath) return;
+    let saved: unknown;
+    try {
+      saved = JSON.parse(readFileSync(this.reviewsPath, "utf8"));
+    } catch {
+      return;
+    }
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return;
+    for (const [sessionId, entry] of Object.entries(saved)) {
+      const { label, review } = (entry ?? {}) as { label?: unknown; review?: { summary?: unknown; link?: unknown; at?: unknown } };
+      if (
+        !sessionId || this.sessionStates.has(sessionId) || typeof label !== "string"
+        || typeof review?.summary !== "string" || typeof review.at !== "number" || !Number.isFinite(review.at)
+        || (review.link !== undefined && typeof review.link !== "string")
+      ) continue;
+      // ponytail: `waiting` shows only on a row nothing gives a status (no registry status, no hook yet); persist status if that bites.
+      this.sessionStates.set(sessionId, {
+        label,
+        status: "waiting",
+        at: 0,
+        review: { summary: review.summary, ...(review.link ? { link: review.link } : {}), at: review.at },
+      });
+    }
+  }
+
+  /** Rewrite the saved deliverables (atomic rename), newest first up to `MAX_REVIEWS_BYTES`. */
+  saveReviews(): void {
+    if (!this.reviewsPath) return;
+    const newestFirst = [...this.sessionStates]
+      .filter((entry): entry is [string, PanelSessionState & { review: SessionReview }] => entry[1].review !== undefined)
+      .sort(([, a], [, b]) => b.review.at - a.review.at);
+    const kept: Record<string, { label: string; review: SessionReview }> = {};
+    let bytes = 5; // "{\n", "\n}" and the trailing newline
+    for (const [sessionId, { label, review }] of newestFirst) {
+      const entry = { label, review: { summary: review.summary, ...(review.link ? { link: review.link } : {}), at: review.at } };
+      // Its pretty-printed lines at depth one, plus the ",\n" joining it.
+      bytes += Buffer.byteLength(JSON.stringify({ [sessionId]: entry }, null, 2)) - 2;
+      if (bytes > MAX_REVIEWS_BYTES) break;
+      kept[sessionId] = entry;
+    }
+    const body = JSON.stringify(kept);
+    if (body === this.#savedReviews) return;
+    try {
+      writeSettingsFileAtomic(this.reviewsPath, kept);
+      this.#savedReviews = body;
+    } catch {
+      // Advisory, like the sessions file: an unwritable /tmp must not break a latch.
+    }
   }
 
   forgetGone(liveIds: ReadonlySet<string>): void {

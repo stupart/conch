@@ -167,6 +167,7 @@ import {
   onLiveDataChange,
   openTheaterReview,
   publishSessionsFile,
+  REVIEWS_FILE,
   renderPanel,
   resizeRenderer,
   scrollTheaterPane,
@@ -615,7 +616,8 @@ export async function runDaemon(cfg: Config): Promise<void> {
   const presented = new PresentedItems(Date.now());
   let holderExpiry: ReturnType<typeof setTimeout> | null = null;
   let shuttingDown = false;
-  const ledger = new SessionLedger();
+  const ledger = new SessionLedger(REVIEWS_FILE);
+  ledger.restoreReviews(); // each session's deliverable, as it was before the restart
   // The ledger owns the per-session/window runtime facts, but exposes the raw
   // collections so render and controller paths keep their existing shape.
   const {

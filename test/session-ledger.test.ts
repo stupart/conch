@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { TurnEvent } from "../src/hook.ts";
-import { SessionLedger } from "../src/session-ledger.ts";
+import { MAX_REVIEWS_BYTES, SessionLedger } from "../src/session-ledger.ts";
 
 type SessionCollection = Map<string, unknown> | Set<string>;
 
@@ -115,5 +118,81 @@ describe("SessionLedger", () => {
     expect(ledger.eventOrder.isCurrent(gone)).toBe(false);
     expect(ledger.eventOrder.isCurrent(live)).toBe(true);
     expect(ledger.eventOrder.isCurrent(orderOnly)).toBe(false);
+  });
+});
+
+describe("saved deliverables", () => {
+  const withFile = (run: (path: string) => void): void => {
+    const dir = mkdtempSync(join(tmpdir(), "conch-ledger-reviews-"));
+    try {
+      run(join(dir, "reviews.json"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const file = (ledger: SessionLedger, id: string, at: number, summary = `${id} ready`): void => {
+    ledger.sessionStates.set(id, { label: id, status: "waiting", at, review: { summary, at } });
+  };
+  const restored = (path: string): SessionLedger => {
+    const ledger = new SessionLedger(path);
+    ledger.restoreReviews();
+    return ledger;
+  };
+
+  test("a session the ledger forgets takes its saved deliverable with it", () => withFile((path) => {
+    const ledger = new SessionLedger(path);
+    file(ledger, "live", 1_000);
+    file(ledger, "gone", 2_000);
+    ledger.saveReviews();
+    expect([...restored(path).sessionStates.keys()].sort()).toEqual(["gone", "live"]);
+
+    ledger.forgetGone(new Set(["live"]));
+    const after = restored(path);
+    expect([...after.sessionStates.keys()]).toEqual(["live"]);
+    expect(after.sessionStates.get("live")).toEqual({
+      label: "live", status: "waiting", at: 0, review: { summary: "live ready", at: 1_000 },
+    });
+  }));
+
+  test("the file is capped, keeping the newest deliverables", () => withFile((path) => {
+    const ledger = new SessionLedger(path);
+    const big = "x".repeat(40_000);
+    for (let i = 0; i < 10; i++) file(ledger, `s${i}`, 1_000 + i, big);
+    ledger.saveReviews();
+    expect(statSync(path).size).toBeLessThanOrEqual(MAX_REVIEWS_BYTES);
+    const kept = [...restored(path).sessionStates.keys()].sort();
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.length).toBeLessThan(10);
+    // Whatever made the cut is newer than everything that did not.
+    expect(kept).toEqual(Array.from({ length: kept.length }, (_, i) => `s${10 - kept.length + i}`).sort());
+  }));
+
+  test("a malformed entry is skipped and a live latch is never overwritten", () => withFile((path) => {
+    const ledger = new SessionLedger(path);
+    file(ledger, "a", 1_000);
+    file(ledger, "b", 2_000);
+    ledger.saveReviews();
+    const saved = JSON.parse(readFileSync(path, "utf8"));
+    saved.b.review.at = "yesterday";
+    writeFileSync(path, JSON.stringify(saved));
+    const fresh = new SessionLedger(path);
+    fresh.sessionStates.set("a", { label: "a", status: "working", at: 5_000 });
+    fresh.restoreReviews();
+    expect(fresh.sessionStates.get("a")).toEqual({ label: "a", status: "working", at: 5_000 });
+    expect(fresh.sessionStates.has("b")).toBe(false);
+  }));
+
+  test("the daemon restores from conch's state location, which the suite redirects", () => {
+    const read = (p: string) => readFileSync(join(import.meta.dir, "..", p), "utf8");
+    const daemon = read("src/daemon.ts");
+    const constructed = daemon.indexOf("const ledger = new SessionLedger(REVIEWS_FILE);");
+    const restoredAt = daemon.indexOf("ledger.restoreReviews();");
+    expect(constructed).toBeGreaterThan(-1);
+    expect(restoredAt).toBeGreaterThan(constructed);
+    expect(read("src/status.ts")).toContain(
+      'export const REVIEWS_FILE = process.env.CONCH_REVIEWS_FILE || "/tmp/conch-reviews.json";',
+    );
+    expect(read("test/preload.ts")).toContain('process.env.CONCH_REVIEWS_FILE = join(process.env.CONCH_LOG_FILE, "..", "reviews.json");');
+    expect(process.env.CONCH_REVIEWS_FILE).not.toBe("/tmp/conch-reviews.json");
   });
 });
