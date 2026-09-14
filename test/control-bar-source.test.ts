@@ -232,6 +232,8 @@ test("M3: the fog stays docked in a corner, is thrown into a corner by its middl
   expect(components).toContain("let top = insets.top + padding + (atBottom ? 0 : row)");
   // The buttons sit in the docked corner, away from the free corner it is resized by.
   expect(panels).toContain("y: ConversationFog.buttonsY(in: proxy.size, corner: panels.corner, insets: insets, fullScreen: panels.isFullScreen)");
+  // Into the corner proper: the Dock's inset doesn't reach a corner, the menu bar's does.
+  expect(panels).toContain("let insets = ConversationFog.buttonInsets(panels.insets)");
   expect(panels).toContain("alignment: ConversationFog.buttonsAlignment(corner: panels.corner, fullScreen: panels.isFullScreen)");
   // The overlay's look is on (Tyler: "i don't see any overlay"), and the testing outline is gone.
   expect(panels).toContain("static let showsFog = true");
