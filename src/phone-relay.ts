@@ -161,6 +161,23 @@ const RELAY_KEEPALIVE_MS = 30_000;
 // be hammered.
 const RELAY_SETTLED_MS = 30_000;
 const RELAY_REORDER_WINDOW = 64;
+// How long an inject that waits for its keystrokes keeps later mutations
+// behind it. Its line reaches the daemon's socket in milliseconds, so this
+// keeps the order things START in; what it no longer does is hold a Stop or an
+// audio claim for the seconds the typing takes (control-server's
+// INJECT_DELIVERY_WAIT_MS).
+const RELAY_DELIVERY_HEAD_START_MS = 250;
+
+/** A phone inject that asked to hear when its keystrokes landed. */
+function awaitsDelivery(path: string, body: Uint8Array): boolean {
+  if (path !== "/control") return false;
+  try {
+    const value = JSON.parse(new TextDecoder().decode(body)) as { type?: unknown; awaitDelivery?: unknown };
+    return value.type === "inject" && value.awaitDelivery === true;
+  } catch {
+    return false;
+  }
+}
 const RELAY_MAX_STATE_BYTES = 2 * 1024 * 1024;
 
 class RelayResponseCacheFullError extends Error {}
@@ -625,7 +642,10 @@ export class MacRelayPeer {
           return { fingerprint, frames };
         },
       ));
-      this.#mutationChain = execution.then(() => {}, () => {});
+      const next = awaitsDelivery(payload.path, body)
+        ? Promise.race([execution, new Promise((resolve) => setTimeout(resolve, RELAY_DELIVERY_HEAD_START_MS))])
+        : execution;
+      this.#mutationChain = next.then(() => {}, () => {});
       let cached: CachedRelayResponse;
       try {
         cached = await execution;

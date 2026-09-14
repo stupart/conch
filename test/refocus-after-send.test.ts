@@ -58,15 +58,22 @@ test("only an inject asks to hear about delivery; no other Mac control does", ()
   expect(store.split("refocusAfterDelivery()").length - 1).toBe(2);
 });
 
-/** The phone's sends are typed on the Mac too, but it is not in front of anyone there. */
+/**
+ * The phone's sends are typed on the Mac too, but it is not in front of anyone
+ * there. It now asks for `awaitDelivery` to show "delivered" on its own screen;
+ * the front coming back is the Mac app's own StateStore path, which a phone
+ * inject never enters.
+ */
 test("phone and remote sends never ask for the front back", () => {
   const phone = read("mobile/conch-ios/conch-ios/BridgeClient.swift");
   expect(phone).toContain('"type": "inject",');
-  expect(phone).not.toContain("awaitDelivery");
+  expect(phone).toContain('"awaitDelivery": true,');
+  expect(phone).not.toContain("refocus");
   const remote = read("mac-app/conch-mac/RemoteMacStore.swift");
   expect(remote).toContain('"type": "inject"');
   expect(remote).not.toContain("awaitDelivery");
-  expect(read("src/phone-bridge.ts")).not.toContain("awaitDelivery");
+  expect(read("src/phone-bridge.ts")).not.toContain("refocus");
+  expect(read("src/control-server.ts")).not.toContain("refocus");
 });
 
 /** These exist to SHOW the terminal; handing the front back would undo them. */

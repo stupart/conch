@@ -365,7 +365,8 @@ export interface VoiceLoopDeps {
 }
 
 export interface VoiceLoop {
-  handle(event: TurnEvent): Promise<void>;
+  /** An inject resolves with whether its words reached the session; everything else with nothing. */
+  handle(event: TurnEvent): Promise<boolean | void>;
   speak(speechCfg: Config, text: string, label?: string, volunteered?: boolean, sessionId?: string): Promise<void>;
   speakBlocker(volunteered: boolean): "mic-open" | "manual" | null;
   /** Exactly the four-term mic gate — never just `micOpen` (see the stop contract in control-server.ts). */
@@ -663,7 +664,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     return true;
   }
 
-  async function handle(event: TurnEvent): Promise<void> {
+  async function handle(event: TurnEvent): Promise<boolean | void> {
     // Inject and interrupt arrive immediately, not through the drain, so a
     // queued exchange may be mid-await right now: they must not touch its stop
     // or its mic (A14). The per-event reset sits below them.
@@ -693,6 +694,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         const delivery = await injectProviderCommand(cfg, { pid: event.pid }, line);
         if (delivery.kind === "delivered") {
           log(`typed ${line} into "${event.label}" via ${delivery.via}`);
+          return true;
         } else {
           log(`could not type ${line} into "${event.label}": ${delivery.reason}`);
           recordDaemonError(
@@ -702,7 +704,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
             { line },
           );
         }
-        return;
+        return false;
       }
 
       // The phone's voice path: text transcribed ON the phone, delivered into
@@ -718,7 +720,9 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         allowNameAddressing: false,
       });
       log(`phone inject into "${event.label}" ${delivered ? "delivered" : "failed"}`);
-      return;
+      // The outcome goes back to whoever is waiting on it (`awaitDelivery`):
+      // the phone shows "delivered" or "not delivered" rather than guessing.
+      return delivered;
     }
     stopKey = false; // a stale press from a past exchange must not skip this one
     micOpen = false; // no listen in flight yet for this event

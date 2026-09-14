@@ -157,6 +157,35 @@ final class TalkController: NSObject, ObservableObject {
     @Published private(set) var committed = "" {
         didSet { persistDrafts() }
     }
+
+    /// A message on its way, or one that did not arrive.
+    ///
+    /// Its words stay where every unsent word lives — `committed` or `parked`,
+    /// persisted — until the Mac confirms them; the composer only stops SHOWING
+    /// them, and the conversation shows them as a bubble instead. Tyler: a sent
+    /// message "dissapears and then u have to wait a long time for it to show
+    /// up", with nothing saying whether it went.
+    struct Outgoing: Identifiable, Equatable {
+        enum State: Equatable {
+            case sending, delivered, accepted
+            case failed(String)
+
+            var isConfirmed: Bool { self == .delivered || self == .accepted }
+        }
+
+        let id = UUID()
+        let session: String
+        let text: String
+        var state: State
+        let sentAt = Date()
+        /// The session's user messages when this was sent, so the transcript's
+        /// copy is told apart from an older line with the same words.
+        let earlierUserItems: Set<String>
+    }
+
+    @Published private(set) var outgoing: [Outgoing] = []
+    /// Each session's user messages at the last look (`reconcile`).
+    private var seenUserItems: [String: Set<String>] = [:]
     /// Unsent words for every OTHER session.
     ///
     /// A draft belongs to a conversation, not to the app. One controller now
@@ -167,9 +196,29 @@ final class TalkController: NSObject, ObservableObject {
     private var parked: [String: String] = [:]
     private static let draftKey = "conch.drafts"
 
-    /// What is waiting to be sent to `session`, active or parked.
+    /// What the composer's field holds for `session`: typed and banked words.
+    ///
+    /// Not the live hypothesis: that is `livePartial`, drawn on its own line
+    /// above the field. Typing into a string the recogniser keeps rewriting
+    /// interleaved the two — "so anywayi t so anywayink". And not a message on
+    /// its way, which is a bubble in the conversation.
     func draft(for session: String) -> String {
-        session == targetSessionId ? transcript : (parked[session] ?? "")
+        let stored = session == targetSessionId ? committed : (parked[session] ?? "")
+        guard let hidden = unconfirmed(session, in: stored) else { return stored }
+        return String(stored.drop(while: \.isWhitespace).dropFirst(hidden.count).drop(while: \.isWhitespace))
+    }
+
+    /// Whether there is anything to send to `session`, words still being heard included.
+    func hasWords(for session: String) -> Bool {
+        !draft(for: session).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || (session == targetSessionId && !partial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    /// The words of `session`'s unconfirmed send, when `stored` still starts with them.
+    private func unconfirmed(_ session: String, in stored: String) -> String? {
+        guard let text = outgoing.last(where: { $0.session == session && !$0.state.isConfirmed })?.text,
+              stored.drop(while: \.isWhitespace).hasPrefix(text) else { return nil }
+        return text
     }
 
     /// Open the mic pointed at `session`, keeping whatever draft it already has.
@@ -200,7 +249,7 @@ final class TalkController: NSObject, ObservableObject {
     /// Clearing follows the same rule either way: only what was ACKNOWLEDGED is
     /// removed, and only the exact prefix that was sent, so anything typed or
     /// heard during the round trip survives.
-    func send(session: String, deliver: @escaping (String) async -> Bool) {
+    func send(session: String, deliver: @escaping (String) async -> BridgeClient.InjectOutcome) {
         if phase == .sending { return }
         if phase == .listening, session == targetSessionId {
             finish(deliver: deliver)
@@ -210,10 +259,12 @@ final class TalkController: NSObject, ObservableObject {
         let text = committed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         phase = .sending
+        let message = beginOutgoing(text, session: session)
         Task { @MainActor [weak self] in
             guard let self else { return }
             let delivered = await deliver(text)
-            if delivered {
+            self.settleOutgoing(message, delivered)
+            if delivered.reachedMac {
                 let held = self.committed.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.committed = held.hasPrefix(text)
                     ? String(held.dropFirst(text.count))
@@ -235,12 +286,92 @@ final class TalkController: NSObject, ObservableObject {
     /// Writes to `committed`, the banked half, and leaves `partial` alone: an
     /// edit must not fight words still arriving from the recogniser mid-sentence.
     func setDraft(_ text: String, for session: String) {
+        let current = session == targetSessionId ? committed : (parked[session] ?? "")
+        // The field never showed an unconfirmed send's words; they stay in front.
+        let stored = unconfirmed(session, in: current).map { text.isEmpty ? $0 : $0 + " " + text } ?? text
         if session == targetSessionId {
-            committed = text
+            committed = stored
         } else {
-            if text.isEmpty { parked.removeValue(forKey: session) } else { parked[session] = text }
+            if stored.isEmpty { parked.removeValue(forKey: session) } else { parked[session] = stored }
             persistDrafts()
         }
+    }
+
+    /// One unconfirmed message per session: its words head this draft, so a
+    /// new send carries them again.
+    private func beginOutgoing(_ text: String, session: String) -> UUID {
+        outgoing.removeAll { $0.session == session && !$0.state.isConfirmed }
+        let message = Outgoing(
+            session: session,
+            text: text,
+            state: .sending,
+            earlierUserItems: seenUserItems[session] ?? []
+        )
+        outgoing.append(message)
+        return message.id
+    }
+
+    private func settleOutgoing(_ id: UUID, _ outcome: BridgeClient.InjectOutcome) {
+        guard let index = outgoing.firstIndex(where: { $0.id == id }) else { return }
+        switch outcome {
+        case .delivered: outgoing[index].state = .delivered
+        case .accepted: outgoing[index].state = .accepted
+        case let .failed(reason): outgoing[index].state = .failed(reason)
+        }
+    }
+
+    /// Retire bubbles the conversation now shows for itself.
+    ///
+    /// A NEW user message with the same words is the transcript's own copy, so
+    /// the bubble gives way instead of the message appearing twice. A send
+    /// reported failed that turns up anyway (a timeout on a slow link) was
+    /// delivered after all: the transcript is the stronger evidence, so its
+    /// words leave the draft too.
+    func reconcile(session: String, items: [ConversationItem]) {
+        let users = items.filter { $0.kind == "user" }
+        seenUserItems[session] = Set(users.map(\.id))
+        for message in outgoing where message.session == session && message.state != .sending {
+            guard users.contains(where: {
+                !message.earlierUserItems.contains($0.id) && Self.sameMessage($0.text, message.text)
+            }) else { continue }
+            if !message.state.isConfirmed { dropFromDraft(message) }
+            outgoing.removeAll { $0.id == message.id }
+        }
+        // ponytail: a confirmed bubble the transcript never shows (no published
+        // conversation, or words the agent rewrote) goes after ten minutes; match
+        // on something sturdier than the text if that proves common.
+        outgoing.removeAll { $0.state.isConfirmed && $0.sentAt.timeIntervalSinceNow < -600 }
+    }
+
+    /// Throw away a message that did not arrive, on purpose.
+    func discardOutgoing(_ id: UUID) {
+        guard let message = outgoing.first(where: { $0.id == id }) else { return }
+        if !message.state.isConfirmed { dropFromDraft(message) }
+        outgoing.removeAll { $0.id == id }
+    }
+
+    private func dropFromDraft(_ message: Outgoing) {
+        func without(_ stored: String) -> String {
+            let held = stored.drop(while: \.isWhitespace)
+            guard held.hasPrefix(message.text) else { return stored }
+            return String(held.dropFirst(message.text.count).drop(while: \.isWhitespace))
+        }
+        if message.session == targetSessionId {
+            committed = without(committed)
+        } else if let held = parked[message.session] {
+            let rest = without(held)
+            if rest.isEmpty { parked.removeValue(forKey: message.session) } else { parked[message.session] = rest }
+            persistDrafts()
+        }
+    }
+
+    /// The transcript's copy of a sent message: the same words give or take
+    /// whitespace, or ending with them when a picture's path leads the line.
+    static func sameMessage(_ transcript: String, _ sent: String) -> Bool {
+        let squash = { (text: String) in text.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        let seen = squash(transcript)
+        let words = squash(sent)
+        return !words.isEmpty && (seen == words || seen.hasSuffix(words))
     }
 
     /// Throw a draft away, on purpose.
@@ -250,6 +381,7 @@ final class TalkController: NSObject, ObservableObject {
     /// explicit is the whole distinction — the bug was words vanishing
     /// without anyone asking.
     func discard(session: String) {
+        outgoing.removeAll { $0.session == session && !$0.state.isConfirmed }
         if session == targetSessionId {
             if phase == .listening || starting { cancel() }
             partial = ""
@@ -339,7 +471,7 @@ final class TalkController: NSObject, ObservableObject {
     private var finalizationContinuation: CheckedContinuation<Void, Never>?
     private var finalizationTimeout: Task<Void, Never>?
 
-    func toggle(session: String, deliver: @escaping (String) async -> Bool) {
+    func toggle(session: String, deliver: @escaping (String) async -> BridgeClient.InjectOutcome) {
         if phase == .sending { return }
         // Send ONLY into the session the words were spoken to. `deliver` comes
         // from whichever screen is on top, so a tap here while another session
@@ -668,7 +800,7 @@ final class TalkController: NSObject, ObservableObject {
         startRecognition(on: recognizer, request: next, generation: generation)
     }
 
-    private func finish(deliver: @escaping (String) async -> Bool) {
+    private func finish(deliver: @escaping (String) async -> BridgeClient.InjectOutcome) {
         guard phase == .listening else { return }
         phase = .sending
         Task { @MainActor [weak self] in
@@ -724,10 +856,12 @@ final class TalkController: NSObject, ObservableObject {
             if !self.finalizationSucceeded {
                 self.failure = "Recognition cut out at the end — sending what it caught."
             }
+            let message = self.beginOutgoing(text, session: self.targetSessionId ?? "")
             let delivered = await deliver(text)
+            self.settleOutgoing(message, delivered)
             // Keep failed text intact; a subsequent Talk starts only after the
             // user has had a chance to copy/retry it from the visible bubble.
-            if delivered {
+            if delivered.reachedMac {
                 // Clear exactly what was acknowledged, never the whole buffer.
                 // Assigning empty after an await deletes anything that arrived
                 // during it — words that were never sent to anyone.
@@ -841,6 +975,32 @@ final class TalkController: NSObject, ObservableObject {
         commit(partial)
         cancel()
     }
+
+    #if DEBUG
+    /// For the snapshot script, with no microphone and no Mac (needs
+    /// `-conchFixtureSession`): `-conchFixtureHearing <words>` with
+    /// `-conchFixtureTyped <words>` is the composer mid-dictation, and
+    /// `-conchFixtureOutgoing sending|failed|delivered` a message in that state.
+    func showFixture() {
+        let defaults = UserDefaults.standard
+        guard let session = defaults.string(forKey: "conchFixtureSession") else { return }
+        switchTarget(to: session)
+        if let hearing = defaults.string(forKey: "conchFixtureHearing") {
+            committed = defaults.string(forKey: "conchFixtureTyped") ?? committed
+            livePartial.text = hearing
+            phase = .listening
+        }
+        guard let state = defaults.string(forKey: "conchFixtureOutgoing") else { return }
+        let text = "Ship it once the tests pass, and update the changelog."
+        let fixtureState: Outgoing.State = switch state {
+        case "sending": .sending
+        case "failed": .failed("The request timed out.")
+        default: .delivered
+        }
+        if !fixtureState.isConfirmed { committed = text }
+        outgoing = [Outgoing(session: session, text: text, state: fixtureState, earlierUserItems: [])]
+    }
+    #endif
 
     func cancel() {
         guard phase == .listening || starting else { return }

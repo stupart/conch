@@ -101,7 +101,8 @@ export function takeNextQueuedEvent(
 }
 
 export interface EventQueueOptions {
-  handle(event: TurnEvent): Promise<void>;
+  /** The resolved value (an inject's outcome) is the caller's; the queue ignores it. */
+  handle(event: TurnEvent): Promise<unknown>;
   handoffOrder(): HandoffOrder;
   prioritized: ReadonlySet<string>;
   shuttingDown(): boolean;

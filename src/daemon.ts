@@ -967,7 +967,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       );
   }
 
-  function enqueue(incoming: TurnEvent): void | Promise<void> {
+  function enqueue(incoming: TurnEvent): void | Promise<boolean | void> {
     if (shuttingDown) return;
     const event = incoming;
     warmTranscript(event.transcriptPath);
@@ -994,6 +994,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
       // only once this settles (control-server.ts).
       return handle(event).catch((error) => {
         log(`error handling ${event.type} "${event.label}": ${error}`);
+        return false;
       });
     }
 
@@ -1628,7 +1629,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     );
   }
 
-  async function handle(event: TurnEvent): Promise<void> {
+  async function handle(event: TurnEvent): Promise<boolean | void> {
     // Wait for the voice engine only when this event will SPEAK.
     //
     // `drain` used to await it before touching the queue, which meant nothing

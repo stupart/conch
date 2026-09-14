@@ -415,6 +415,19 @@ describe("inject and interrupt", () => {
   });
 });
 
+describe("an inject says whether it landed", () => {
+  // The phone waits on this (`awaitDelivery` → inject-done `delivered`) to show
+  // "delivered" or "not delivered" instead of guessing from the ack.
+  test("true only when the words reached the session", async () => {
+    expect(await harness().voice.handle(inject("typed into a pane"))).toBe(true);
+    expect(await harness({ inject: () => ({ via: "clipboard" }) }).voice.handle(inject("on the clipboard"))).toBe(false);
+    expect(await harness({ inject: () => ({ via: "none", interrupted: true }) }).voice.handle(inject("cut off"))).toBe(false);
+    expect(await harness().voice.handle(inject("/model opus"))).toBe(true);
+    const unroutable = harness({ command: () => ({ kind: "unroutable", reason: "session has no routable pid" }) });
+    expect(await unroutable.voice.handle(inject("/compact"))).toBe(false);
+  });
+});
+
 describe("the speech funnel", () => {
   // Tyler was mid-dictation when another session's turn ended and conch read it
   // over the top of him. Dropped, not deferred: the turn stays latched.
@@ -790,7 +803,7 @@ describe("the daemon's wiring of the loop", () => {
   });
 
   test("the daemon's dispatcher waits for the voice engine only for events that speak, then hands everything to the loop", () => {
-    const at = daemon.indexOf("  async function handle(event: TurnEvent): Promise<void> {");
+    const at = daemon.indexOf("  async function handle(event: TurnEvent): Promise<boolean | void> {");
     expect(at).toBeGreaterThan(-1);
     const end = daemon.indexOf("\n  }\n", at);
     const handle = daemon.slice(at, end);

@@ -616,8 +616,8 @@ export interface SocketTurnEventCallbacks {
   isDismissedSession?(sessionId: string): boolean;
   enrichAudioCommand(event: InstantAudioCommand): InstantAudioCommand;
   enqueueInstant(event: InstantAudioCommand): void;
-  /** Resolves when an immediate event (inject, interrupt) has been handled. */
-  enqueue(event: TurnEvent): void | Promise<void>;
+  /** Resolves when an immediate event (inject, interrupt) has been handled; an inject with whether it landed. */
+  enqueue(event: TurnEvent): void | Promise<boolean | void>;
 }
 
 /** Sparse dashboard commands carry only identity; CLI/MCP commands pre-resolve routing. */
@@ -632,7 +632,7 @@ export function isLightweightTargetedAudioCommand(event: InstantAudioCommand): b
 export function dispatchSocketTurnEvent(
   incoming: TurnEvent,
   callbacks: SocketTurnEventCallbacks,
-): void | Promise<void> {
+): void | Promise<boolean | void> {
   const event = incoming;
   if (event.type === "spacebar") {
     // `busy` is the DRAIN LOOP's flag, and a microphone can be open while it is
@@ -890,7 +890,17 @@ export interface ControlServerOptions {
   log(message: string): void;
   sessions: LocalControlSessions;
   application: ControlApplication;
+  /** How long an `awaitDelivery` inject is held open. Tests shorten it. */
+  deliveryWaitMs?: number;
 }
+
+/**
+ * The longest an `awaitDelivery` inject holds its socket before answering
+ * `inject-accepted` (taken, still delivering). Under the phone bridge's 25 s
+ * forward budget (`injectTimeoutFor`), so a slow delivery reads as "sent, not
+ * yet confirmed" on the phone rather than a false "couldn't reach the Mac".
+ */
+export const INJECT_DELIVERY_WAIT_MS = 20_000;
 
 export interface ControlServer {
   /** False means another daemon already owns the path; exiting is the caller's decision. */
@@ -917,7 +927,10 @@ export function createControlServer(options: ControlServerOptions): ControlServe
     const handleLine = async (line: string): Promise<void> => {
       if (handled) return;
       handled = true;
-      let response: ControlResponse | DeviceControlResponse | RoutingRefusal | { kind: "inject-done" } | undefined;
+      let response:
+        | ControlResponse | DeviceControlResponse | RoutingRefusal
+        | { kind: "inject-done"; delivered?: boolean } | { kind: "inject-accepted" }
+        | undefined;
       try {
         let body: unknown = JSON.parse(line);
         // C9b seam: refuse foreign owners BEFORE consulting any local state.
@@ -992,12 +1005,24 @@ export function createControlServer(options: ControlServerOptions): ControlServe
               }
             } else {
               const work = application.turn(turn.value);
-              // The Mac app asks to hear when the keystrokes are DONE, so it can
-              // take the front back from the Terminal window conch raised. Every
-              // other sender (the phone above all) keeps the immediate empty ack.
+              // The Mac app and the phone ask to hear when the keystrokes are
+              // DONE: the app to take the front back from the Terminal window
+              // conch raised, the phone to show "delivered" or "not delivered".
+              // Hooks and the CLI keep the immediate empty ack. The wait is
+              // bounded; past it the inject is still running and says so.
               if (turn.value.type === "inject" && turn.value.awaitDelivery) {
-                await work;
-                response = { kind: "inject-done" };
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                const stillRunning = Symbol("still running");
+                const outcome = await Promise.race([
+                  Promise.resolve(work),
+                  new Promise<typeof stillRunning>((resolve) => {
+                    timer = setTimeout(() => resolve(stillRunning), options.deliveryWaitMs ?? INJECT_DELIVERY_WAIT_MS);
+                  }),
+                ]);
+                clearTimeout(timer);
+                response = outcome === stillRunning
+                  ? { kind: "inject-accepted" }
+                  : { kind: "inject-done", ...(typeof outcome === "boolean" ? { delivered: outcome } : {}) };
               }
             }
           }

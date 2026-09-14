@@ -8,6 +8,8 @@ import SwiftUI
 /// add a setting on the Mac and it appears on the phone.
 struct SettingsView: View {
     @ObservedObject var bridge: BridgeClient
+    /// Forget this pairing and go to the pairing screen.
+    let onPairAgain: () -> Void
     @Environment(\.dismiss) private var dismiss
 
     @State private var entries: [ConchSetting] = []
@@ -17,7 +19,10 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if loading {
+                if bridge.pairingRejected {
+                    PairingRejectedCard(onPairAgain: onPairAgain)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if loading {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if let loadError {
                     VStack(spacing: 10) {
@@ -95,9 +100,19 @@ struct SettingsView: View {
         }
         .preferredColorScheme(.dark)
         .task { await load() }
+        .onChange(of: bridge.isConnected) { _, connected in
+            if connected, loadError != nil { Task { await load() } }
+        }
     }
 
     private func load() async {
+        // Nothing to ask a Mac that is out of reach: say so now, not after the
+        // request gives up, and load when it comes back.
+        guard bridge.isConnected else {
+            loadError = "Can't reach your Mac right now."
+            loading = false
+            return
+        }
         loading = true
         loadError = nil
         switch await bridge.fetchSettings() {

@@ -50,7 +50,7 @@ test("a counted transcript stays correct as it grows", async () => {
  * prompt count unset, so the first count still paid full price.
  */
 test("every event warms its session's transcript, once and off the hot path", () => {
-  const enqueue = daemon.slice(daemon.indexOf("function enqueue(incoming: TurnEvent): void | Promise<void> {"));
+  const enqueue = daemon.slice(daemon.indexOf("function enqueue(incoming: TurnEvent): void | Promise<boolean | void> {"));
   const body = enqueue.slice(0, enqueue.indexOf("\n  }"));
   // Present at all — `indexOf` returns -1 for a MISSING line, and -1 is less
   // than any real index, so an ordering assertion alone passes when the call
