@@ -9,7 +9,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import type { Config } from "./config.ts";
 import {
@@ -585,7 +585,7 @@ export class SettingsFileError extends Error {
  */
 export function writeSettingsFileAtomic(path: string, values: Readonly<Record<string, unknown>>): void {
   mkdirSync(dirname(path), { recursive: true });
-  const temp = join(dirname(path), `.${SETTINGS_FILE}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`);
+  const temp = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`);
   let fd: number | undefined;
   try {
     fd = openSync(temp, "wx", 0o600);
@@ -744,7 +744,8 @@ export const SESSION_COMMANDS = [
 export type SessionCommand = typeof SESSION_COMMANDS[number];
 
 export type SessionControlMessage =
-  | { kind: "session-command"; sessionId: string; command: "rename"; label: string }
+  /** `awaitDelivery`: the Mac app hears `session-delivered` once the `/rename` sync is typed (control-server.ts). */
+  | { kind: "session-command"; sessionId: string; command: "rename"; label: string; awaitDelivery?: true }
   | { kind: "session-command"; sessionId: string; command: "set-voice"; voice: string }
   | { kind: "session-command"; sessionId: string; command: "reset-voice" }
   | { kind: "session-command"; sessionId: string; command: "prioritize"; value: boolean }
@@ -753,7 +754,7 @@ export type SessionControlMessage =
   /** Raise the session's terminal window; a click on its title in the app. */
   | { kind: "session-command"; sessionId: string; command: "reveal" }
   /** Type `/model <model>` into the session's own prompt; the agent handles it natively (B2). */
-  | { kind: "session-command"; sessionId: string; command: "set-model"; model: string }
+  | { kind: "session-command"; sessionId: string; command: "set-model"; model: string; awaitDelivery?: true }
   /** Open a Claude Code background job in a new Terminal window (`claude attach <jobId>`). */
   | { kind: "session-command"; sessionId: string; command: "attach" };
 
@@ -1019,13 +1020,18 @@ export function validateSessionControlMessage(value: unknown): ParseResult<Sessi
   if (!validSessionCommand(value.command)) {
     return { ok: false, err: `unknown session command "${String(value.command)}"` };
   }
+  if (value.awaitDelivery !== undefined && value.awaitDelivery !== true) {
+    return { ok: false, err: "awaitDelivery must be true when present" };
+  }
+  // Only the commands conch TYPES into the session have a delivery to wait on.
+  const delivery = value.awaitDelivery ? { awaitDelivery: true as const } : {};
 
   switch (value.command) {
     case "rename": {
       if (!Object.hasOwn(value, "label")) return { ok: false, err: "rename: label is required" };
       const label = validateSessionLabel(value.label);
       if (!label.ok) return label;
-      return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: "rename", label: label.value } };
+      return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: "rename", label: label.value, ...delivery } };
     }
     case "set-voice": {
       if (!Object.hasOwn(value, "voice") || typeof value.voice !== "string") {
@@ -1047,7 +1053,7 @@ export function validateSessionControlMessage(value: unknown): ParseResult<Sessi
       // flag and whitespace would smuggle a second argument into the prompt.
       if (model.value.startsWith("-")) return { ok: false, err: "set-model: model cannot start with -" };
       if (/\s/.test(model.value)) return { ok: false, err: "set-model: model cannot contain whitespace" };
-      return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: "set-model", model: model.value } };
+      return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: "set-model", model: model.value, ...delivery } };
     }
     case "reset-voice":
     case "dismiss":

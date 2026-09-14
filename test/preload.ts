@@ -26,3 +26,8 @@ if (!process.env.CONCH_TELEMETRY_FILE) {
 if (!process.env.CONCH_STATE_FILE) {
   process.env.CONCH_STATE_FILE = join(process.env.CONCH_LOG_FILE, "..", "state.json");
 }
+// A ledger given this path rewrites it whenever a deliverable is filed or its
+// session forgotten; the live daemon restores from it on start.
+if (!process.env.CONCH_REVIEWS_FILE) {
+  process.env.CONCH_REVIEWS_FILE = join(process.env.CONCH_LOG_FILE, "..", "reviews.json");
+}

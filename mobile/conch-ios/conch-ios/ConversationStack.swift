@@ -19,6 +19,12 @@ struct ConversationStack: View {
     /// i coudl just write something". This points at the composer rather than
     /// growing a second text field inside the question.
     var onFreeform: () -> Void = {}
+    /// Why conch cannot type into this session (a closed or app-server Codex
+    /// thread, a background job with no window). Answering a question IS
+    /// typing, so its buttons go dead and say why instead of failing on tap.
+    var noTerminal: String? = nil
+    /// Offered beside that reason when a window can be attached to the job.
+    var onOpenInTerminal: (() -> Void)? = nil
     @State private var expandedToolIDs: Set<String> = []
     /// Multi-select taps edit a retained set. Nothing crosses the bridge until
     /// the explicit Submit button sends the complete, option-ordered answer.
@@ -298,7 +304,7 @@ struct ConversationStack: View {
                 .buttonStyle(.plain)
                 // The transcript keeps completed questions for context, but
                 // their old choices must not inject a reply into a later turn.
-                .disabled(!isActive || optionReplyInFlight || option.label.isEmpty)
+                .disabled(!isActive || optionReplyInFlight || option.label.isEmpty || noTerminal != nil)
                 .accessibilityHint(
                     !isActive
                         ? "This question is no longer active"
@@ -306,6 +312,25 @@ struct ConversationStack: View {
                             ? "Toggles this option; Submit sends all selected options"
                             : "Sends this option as your reply")
                 )
+            }
+
+            if isActive, let noTerminal {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(noTerminal)
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    if let onOpenInTerminal {
+                        Button(action: onOpenInTerminal) {
+                            Label("Open in Terminal", systemImage: "terminal")
+                                .font(Type.caption)
+                                .foregroundStyle(Palette.textPrimary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Opens this session in a Terminal window on your Mac")
+                    }
+                }
             }
 
             if isActive {
@@ -334,6 +359,7 @@ struct ConversationStack: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .disabled(noTerminal != nil)
                 .accessibilityHint("Moves to the message field so you can answer in your own words")
             }
 
@@ -353,7 +379,7 @@ struct ConversationStack: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .disabled(selected.isEmpty || optionReplyInFlight)
+                .disabled(selected.isEmpty || optionReplyInFlight || noTerminal != nil)
                 .accessibilityHint("Sends all selected options as your reply")
             }
         }

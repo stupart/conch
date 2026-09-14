@@ -296,17 +296,22 @@ struct ConchSessionCommandRequest: Encodable, Sendable {
     let command: ConchSessionCommand
     let label: String?
     let model: String?
+    /// For a command the daemon TYPES (`/model`, the `/rename` sync): after the
+    /// ack, hold the socket and answer `session-delivered` once typing is done.
+    let awaitDelivery: Bool?
 
     init(
         sessionId: String,
         command: ConchSessionCommand,
         label: String? = nil,
-        model: String? = nil
+        model: String? = nil,
+        awaitDelivery: Bool? = nil
     ) {
         self.sessionId = sessionId
         self.command = command
         self.label = label
         self.model = model
+        self.awaitDelivery = awaitDelivery
     }
 }
 
@@ -398,9 +403,12 @@ struct ConchSocketClient: Sendable {
         }.value
     }
 
+    /// `whenDelivered` is for a session command sent with `awaitDelivery`: it
+    /// runs later, if the daemon follows the reply with `session-delivered`.
     func request<Request: Encodable>(
         _ request: Request,
-        timeout: TimeInterval = 1
+        timeout: TimeInterval = 1,
+        whenDelivered: (@Sendable () async -> Void)? = nil
     ) async -> ConchSocketRequestOutcome {
         guard var payload = try? JSONEncoder().encode(request) else {
             return .connectFailed
@@ -414,7 +422,8 @@ struct ConchSocketClient: Sendable {
             Self.transact(
                 payload,
                 with: socketPath,
-                deadline: deadline
+                deadline: deadline,
+                whenDelivered: whenDelivered
             )
         }.value
     }
@@ -478,18 +487,41 @@ struct ConchSocketClient: Sendable {
     private static func transact(
         _ payload: Data,
         with path: String,
-        deadline: UInt64
+        deadline: UInt64,
+        whenDelivered: (@Sendable () async -> Void)? = nil
     ) -> ConchSocketRequestOutcome {
         guard let descriptor = connectedSocket(to: path, deadline: deadline) else {
             return .connectFailed
         }
-        defer { Darwin.close(descriptor) }
 
         guard write(payload, to: descriptor, deadline: deadline) == .complete else {
+            Darwin.close(descriptor)
             return .timeout
         }
 
-        return readReplyLine(from: descriptor, deadline: deadline)
+        var buffered = Data()
+        let outcome = readReplyLine(from: descriptor, deadline: deadline, buffered: &buffered)
+        guard let whenDelivered, case .reply = outcome else {
+            Darwin.close(descriptor)
+            return outcome
+        }
+        // The ack is back and returned now. The daemon holds this socket until
+        // the command's typing is done, then answers session-delivered. No
+        // answer in time, or any other answer, means no call.
+        let alreadyRead = buffered
+        Task.detached(priority: .utility) {
+            defer { Darwin.close(descriptor) }
+            var pending = alreadyRead
+            guard case let .reply(data) = readReplyLine(
+                    from: descriptor,
+                    deadline: makeDeadline(after: deliveryTimeoutNanoseconds),
+                    buffered: &pending
+                  ),
+                  let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  reply["kind"] as? String == "session-delivered" else { return }
+            await whenDelivered()
+        }
+        return outcome
     }
 
     private static func connectedSocket(
@@ -617,11 +649,23 @@ struct ConchSocketClient: Sendable {
         deadline: UInt64
     ) -> ConchSocketRequestOutcome {
         var reply = Data()
+        return readReplyLine(from: descriptor, deadline: deadline, buffered: &reply)
+    }
+
+    /// `reply` keeps whatever arrived after the line, so a second line that
+    /// landed in the same read is not lost.
+    private static func readReplyLine(
+        from descriptor: Int32,
+        deadline: UInt64,
+        buffered reply: inout Data
+    ) -> ConchSocketRequestOutcome {
         var buffer = [UInt8](repeating: 0, count: 4_096)
 
         while true {
             if let newline = reply.firstIndex(of: 0x0A) {
-                return .reply(Data(reply[..<newline]))
+                let line = Data(reply[reply.startIndex..<newline])
+                reply = Data(reply[reply.index(after: newline)...])
+                return .reply(line)
             }
             guard reply.count < maximumReplyLineBytes,
                   DispatchTime.now().uptimeNanoseconds < deadline else {
