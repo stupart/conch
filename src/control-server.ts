@@ -6,6 +6,7 @@ import type { SessionInfo } from "./sessions.ts";
 import type { InstantAudioCommand } from "./instant-controls.ts";
 import {
   invokeSessionAction,
+  type SessionDelivery,
   type SessionActionsController,
   type SessionActionsTarget,
 } from "./session-actions-overlay.ts";
@@ -78,6 +79,7 @@ function sessionCommandAck(
 function applySessionControlMessage(
   message: SessionControlMessage,
   options: SessionCommandDispatchOptions,
+  delivered?: SessionDelivery,
 ): SessionControlResponse {
   const { controller } = options;
   const target = options.targetForSessionId(message.sessionId);
@@ -98,7 +100,7 @@ function applySessionControlMessage(
       const stored = invokeSessionAction(
         controller,
         target,
-        { command: "rename", label: message.label },
+        { command: "rename", label: message.label, delivered },
       );
       const current = options.targetForSessionId(message.sessionId);
       const label = current?.label
@@ -149,7 +151,9 @@ function applySessionControlMessage(
       // Same shape as reveal: the typing is tmux/AppleScript against the
       // session's window and the reply must not wait on it. `changed` means
       // "there is a window to deliver to"; the daemon logs the delivery itself.
-      void invokeSessionAction(controller, target, { command: "set-model", model: message.model });
+      // The typing is handed back for a sender that asked to hear it finish.
+      const typing = invokeSessionAction(controller, target, { command: "set-model", model: message.model });
+      delivered?.(Promise.resolve(typing));
       return sessionCommandAck(message, target.pid !== undefined, target.label);
     }
     case "attach": {
@@ -189,11 +193,12 @@ export function dispatchSessionControlMessage(
 export function applySessionCommand(
   message: SessionControlMessage,
   options: SessionCommandDispatchOptions,
+  delivered?: SessionDelivery,
 ): SessionControlResponse {
   try {
     options.pause.open();
     try {
-      return applySessionControlMessage(message, options);
+      return applySessionControlMessage(message, options, delivered);
     } finally {
       options.pause.close();
     }
@@ -874,7 +879,8 @@ export interface LocalControlSessions {
 
 export interface ControlApplication {
   configuration(message: ConfigControlMessage): ConfigControlResponse;
-  session(message: SessionControlMessage): SessionControlResponse;
+  /** `delivered` receives the typing a command set off; only an `awaitDelivery` command passes it. */
+  session(message: SessionControlMessage, delivered?: SessionDelivery): SessionControlResponse;
   runtime(message: RuntimeControlMessage): SessionControlResponse | Promise<SessionControlResponse>;
   /**
    * Accept synchronously; completion of injection/interrupt is owned by the
@@ -917,7 +923,9 @@ export function createControlServer(options: ControlServerOptions): ControlServe
     const handleLine = async (line: string): Promise<void> => {
       if (handled) return;
       handled = true;
-      let response: ControlResponse | DeviceControlResponse | RoutingRefusal | { kind: "inject-done" } | undefined;
+      let response:
+        | ControlResponse | DeviceControlResponse | RoutingRefusal
+        | { kind: "inject-done" } | { kind: "session-delivered" } | undefined;
       try {
         let body: unknown = JSON.parse(line);
         // C9b seam: refuse foreign owners BEFORE consulting any local state.
@@ -967,7 +975,22 @@ export function createControlServer(options: ControlServerOptions): ControlServe
                 error: control.err,
               };
             } else if (control.value.kind === "session-command") {
-              response = application.session(control.value);
+              const typing: Promise<unknown>[] = [];
+              const awaitDelivery = "awaitDelivery" in control.value && control.value.awaitDelivery === true;
+              response = application.session(
+                control.value,
+                awaitDelivery ? (work) => void typing.push(work) : undefined,
+              );
+              // A `/model` or `/rename` from the Mac app raises Terminal to type,
+              // like its sends (`inject-done` below). The ack still goes out at
+              // once, since the app shows it; then the socket waits for the typing
+              // and says so, and the app takes the front back. Every other
+              // sender (the CLI, the phone) keeps the lone immediate ack.
+              if (typing.length > 0) {
+                sock.write(JSON.stringify(response) + "\n");
+                await Promise.allSettled(typing);
+                response = { kind: "session-delivered" };
+              }
             } else if (
               control.value.kind === "get-config" || control.value.kind === "set-config"
               || control.value.kind === "unset-config"

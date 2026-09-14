@@ -52,10 +52,12 @@ test("a Mac-app send takes the front back only after the daemon says delivery fi
   expect(read("mac-app/conch-mac/CommandPaletteView.swift")).toContain("store.send(.inject(\n");
 });
 
-test("only an inject asks to hear about delivery; no other Mac control does", () => {
+test("only an inject, and the session commands conch types, ask to hear about delivery", () => {
   expect(client.split("awaitDelivery: true").length - 1).toBe(1);
-  // One definition, one caller: send's inject path.
-  expect(store.split("refocusAfterDelivery()").length - 1).toBe(2);
+  // One definition, two callers: send's inject path, and the hand-back that
+  // `/model` and `/rename` take (refocus-after-session-command.test.ts).
+  expect(store.split("refocusAfterDelivery()").length - 1).toBe(3);
+  expect(store.split("Self.refocusWhenDelivered()").length - 1).toBe(2);
 });
 
 /** The phone's sends are typed on the Mac too, but it is not in front of anyone there. */

@@ -212,6 +212,15 @@ final class StateStore: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// The same hand-back for a session command the daemon TYPES (`/model`,
+    /// the `/rename` sync), which raises Terminal just as a send does. Read at
+    /// the press, before the daemon raises anything; nil when conch was not in
+    /// front, and then the command does not ask to hear about delivery at all.
+    private static func refocusWhenDelivered() -> (@Sendable () async -> Void)? {
+        guard NSApp.isActive else { return nil }
+        return { await StateStore.refocusAfterDelivery() }
+    }
+
     /// Tell the daemon the machine woke.
     ///
     /// The app gets `NSWorkspace.didWakeNotification`; the daemon, being a Bun
@@ -249,7 +258,8 @@ final class StateStore: ObservableObject {
             id: id,
             command: .rename,
             label: label,
-            fallbackDismissedRow: nil
+            fallbackDismissedRow: nil,
+            whenDelivered: Self.refocusWhenDelivered()
         )
     }
 
@@ -333,8 +343,14 @@ final class StateStore: ObservableObject {
     /// the daemon's answer in its own words, because the inspector shows it
     /// verbatim rather than pretending to know what the agent did with it.
     func setModel(id: SessionRow.ID, model: String) async -> String {
-        let request = ConchSessionCommandRequest(sessionId: id, command: .setModel, model: model)
-        switch await socketClient.request(request) {
+        let whenDelivered = Self.refocusWhenDelivered()
+        let request = ConchSessionCommandRequest(
+            sessionId: id,
+            command: .setModel,
+            model: model,
+            awaitDelivery: whenDelivered == nil ? nil : true
+        )
+        switch await socketClient.request(request, whenDelivered: whenDelivered) {
         case let .reply(data):
             guard let reply = try? JSONDecoder().decode(ConchSessionCommandReply.self, from: data) else {
                 return "invalid reply from daemon"
@@ -668,7 +684,8 @@ final class StateStore: ObservableObject {
         id: SessionRow.ID,
         command: ConchSessionCommand,
         label: String?,
-        fallbackDismissedRow: DismissedSessionRow?
+        fallbackDismissedRow: DismissedSessionRow?,
+        whenDelivered: (@Sendable () async -> Void)? = nil
     ) -> SessionCommandContext {
         let generation = (commandGenerations[id] ?? 0) &+ 1
         commandGenerations[id] = generation
@@ -677,7 +694,8 @@ final class StateStore: ObservableObject {
         let request = ConchSessionCommandRequest(
             sessionId: id,
             command: command,
-            label: label
+            label: label,
+            awaitDelivery: whenDelivered == nil ? nil : true
         )
         let context = SessionCommandContext(
             id: id,
@@ -700,7 +718,7 @@ final class StateStore: ObservableObject {
         sessionCommandTask = Task { @MainActor [weak self] in
             await previousCommand?.value
             guard !Task.isCancelled else { return }
-            let outcome = await socketClient.request(request)
+            let outcome = await socketClient.request(request, whenDelivered: whenDelivered)
             guard let self else { return }
             finishSessionCommand(context, outcome: outcome)
         }
