@@ -178,6 +178,62 @@ describe("2. keystroke-fallback is a real setting", () => {
     expect(held.returns()).toBe(1);
   });
 
+  // Tyler sent a long reply to a Codex session: the keystroke outlived the AppleScript bound, System Events kept
+  // typing after conch gave up, and every character nothing took was a beep, until he force-quit (2026-09-14).
+  test("a long or multi-line message is pasted in one event and the clipboard given back; short lines are still typed", async () => {
+    const pasteCalls = (calls: Array<{ lines: string[] }>) =>
+      calls.filter((c) => c.lines.some((l) => l.includes('keystroke "v" using command down'))).length;
+    const long = "word ".repeat(80);
+    const f = fakeOsa(() => "/dev/ttys001");
+    const copied: string[] = [];
+    const result = await injectText(cfg(true, false), DEAD_PID, long, undefined, {
+      copyToClipboard: async (t) => { copied.push(t); },
+      readClipboard: async () => "what was on the clipboard",
+      osa: f.osa,
+      ttyForPid: async () => "ttys001",
+    });
+    expect(result).toEqual({ via: "osascript-focused" });
+    expect(f.calls.some((c) => c.argv[0] === long)).toBe(false); // never typed a keystroke at a time
+    expect(pasteCalls(f.calls)).toBe(1);
+    expect(copied).toEqual([long, "what was on the clipboard"]);
+
+    // Across lines, even short: a typed newline is a Return that sends half the message.
+    const g = fakeOsa(() => "/dev/ttys001");
+    const copiedLines: string[] = [];
+    await injectText(cfg(true, false), DEAD_PID, "first line\nsecond line", undefined, {
+      copyToClipboard: async (t) => { copiedLines.push(t); },
+      readClipboard: async () => "",
+      osa: g.osa,
+      ttyForPid: async () => "ttys001",
+    });
+    expect(pasteCalls(g.calls)).toBe(1);
+    expect(copiedLines).toEqual(["first line\nsecond line"]);
+
+    // A dialog eating the paste still leaves the words on the clipboard, as a blocked keystroke does.
+    const m = fakeOsa(() => "/dev/ttys001");
+    const modal: OsaRunner = async (lines, argv) =>
+      lines.some((l) => l.includes("command down")) ? { text: "", timedOut: true } : m.osa(lines, argv);
+    const copiedModal: string[] = [];
+    expect(await injectText(cfg(true, false), DEAD_PID, long, undefined, {
+      copyToClipboard: async (t) => { copiedModal.push(t); },
+      readClipboard: async () => "prior",
+      osa: modal,
+      ttyForPid: async () => "ttys001",
+    })).toEqual({ via: "clipboard", reason: "system-dialog-blocking" });
+    expect(copiedModal.at(-1)).toBe(long);
+
+    // A short single line is still typed.
+    const h = fakeOsa(() => "/dev/ttys001");
+    await injectText(cfg(true, false), DEAD_PID, "hi", undefined, {
+      copyToClipboard: async () => {},
+      readClipboard: async () => "",
+      osa: h.osa,
+      ttyForPid: async () => "ttys001",
+    });
+    expect(h.typed()).toEqual(["hi"]);
+    expect(pasteCalls(h.calls)).toBe(0);
+  }, 15_000);
+
   // deliverToSession had a `via === "none"` branch ("Heard you, but I could
   // not find the session's pane.") that A17 left unreachable: the only "none"
   // injectText returns is its interrupted() helper, which the caller handles
