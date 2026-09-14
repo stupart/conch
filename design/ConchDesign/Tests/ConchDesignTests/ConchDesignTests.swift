@@ -95,8 +95,14 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertEqual(FogDock.freeEdges(.bottomLeading), [.trailing, .top])
         // The words fill the fog less its padding, the Dock and the button row.
         let text = ConversationFog.textFrame(in: size, corner: .bottomLeading, insets: EdgeInsets(top: 0, leading: 0, bottom: 70, trailing: 0), fullScreen: false)
-        XCTAssertEqual(text.maxY, 560 - 70 - ConversationFog.padding, accuracy: 0.01)
-        XCTAssertEqual(text.minY, ConversationFog.padding + ConversationFog.buttonSize + ConchSpace.x3, accuracy: 0.01)
+        // On the bottom, the button row is below the reply, in the docked corner; hanging from the top, above the words.
+        XCTAssertEqual(text.maxY, 560 - 70 - ConversationFog.padding - ConversationFog.buttonSize - ConchSpace.x3, accuracy: 0.01)
+        XCTAssertEqual(text.minY, ConversationFog.padding, accuracy: 0.01)
+        let dock = EdgeInsets(top: 0, leading: 0, bottom: 70, trailing: 0)
+        XCTAssertEqual(ConversationFog.buttonsY(in: size, corner: .bottomLeading, insets: dock, fullScreen: false), 560 - 70 - ConversationFog.padding - ConversationFog.buttonSize, accuracy: 0.01)
+        XCTAssertEqual(ConversationFog.buttonsY(in: size, corner: .topTrailing, insets: EdgeInsets(top: 33, leading: 0, bottom: 0, trailing: 0), fullScreen: false), 33 + ConversationFog.padding, accuracy: 0.01)
+        XCTAssertEqual(ConversationFog.buttonsAlignment(corner: .bottomTrailing, fullScreen: false), .trailing)
+        XCTAssertEqual(ConversationFog.buttonsAlignment(corner: .bottomLeading, fullScreen: false), .leading)
         XCTAssertEqual(text.width, 760 - 2 * ConversationFog.padding, accuracy: 0.01)
     }
 
