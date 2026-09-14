@@ -458,15 +458,35 @@ public enum FogDock {
         )
     }
 
-    /// `start` resized by dragging `edges` (its free edges) by `delta`: its corner stays where it is, and it keeps
-    /// between `minSize` and the screen.
-    public static func resize(_ start: CGRect, corner: FogCorner, edges: Edge.Set, by delta: CGVector, in screen: CGRect, minSize: CGSize) -> CGRect {
-        var size = start.size
-        if !edges.isDisjoint(with: [.leading, .trailing]) { size.width += corner.leading ? delta.dx : -delta.dx }
-        if !edges.isDisjoint(with: [.top, .bottom]) { size.height += corner.bottom ? delta.dy : -delta.dy }
-        size.width = min(max(size.width, minSize.width), screen.width)
-        size.height = min(max(size.height, minSize.height), screen.height)
-        return frame(size: size, corner: corner, in: screen)
+    /// `start` resized by a drag of `delta`, both ways at once: its corner stays where it is. Held between `minSize` and
+    /// the screen, or with `rubberBand`, let a little past them with growing resistance, as a scroll view overscrolls.
+    public static func resize(_ start: CGRect, corner: FogCorner, by delta: CGVector, in screen: CGRect, minSize: CGSize, rubberBand: Bool = false) -> CGRect {
+        let width = limit(start.width + (corner.leading ? delta.dx : -delta.dx), minSize.width, screen.width, rubberBand: rubberBand)
+        let height = limit(start.height + (corner.bottom ? delta.dy : -delta.dy), minSize.height, screen.height, rubberBand: rubberBand)
+        return CGRect(
+            x: corner.leading ? screen.minX : screen.maxX - width,
+            y: corner.bottom ? screen.minY : screen.maxY - height,
+            width: width,
+            height: height
+        )
+    }
+
+    /// `value` between `low` and `high`, or past them by UIScrollView's rubber band: `(1 − 1 / (x·0.55 / d + 1))·d`.
+    static func limit(_ value: CGFloat, _ low: CGFloat, _ high: CGFloat, rubberBand: Bool) -> CGFloat {
+        guard rubberBand else { return min(max(value, low), high) }
+        func band(_ over: CGFloat, _ dimension: CGFloat) -> CGFloat { (1 - 1 / (over * 0.55 / dimension + 1)) * dimension }
+        if value < low { return low - band(low - value, low) }
+        if value > high { return high + band(value - high, high) }
+        return value
+    }
+
+    /// Whether a drag starting at `point` (the fog's own coordinates, y down) resizes it rather than moving it: anywhere
+    /// within reach of a free edge, text included. Reach is a third of the fog or 120 pt, whichever is more; the rest,
+    /// toward its docked corner, moves it.
+    public static func resizes(at point: CGPoint, in size: CGSize, corner: FogCorner) -> Bool {
+        let fromSide = corner.leading ? size.width - point.x : point.x
+        let fromEnd = corner.bottom ? point.y : size.height - point.y
+        return fromSide < max(120, size.width / 3) || fromEnd < max(120, size.height / 3)
     }
 
     /// The two edges away from `corner`.
