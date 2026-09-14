@@ -112,27 +112,32 @@ public struct VoiceOrb: View {
     }
 }
 
-/// The orb with the state and what it is about: "Speaking / Blueprint monorepo".
+/// The orb with the state and what it is about: "Speaking / Blueprint monorepo", or with `leadsWithDetail`,
+/// "Blueprint monorepo / Speaking".
 public struct VoiceStateLabel: View {
     let state: VoiceState
     let detail: String
     let orbSize: CGFloat
+    let leadsWithDetail: Bool
 
-    public init(state: VoiceState, detail: String, orbSize: CGFloat = 36) {
+    public init(state: VoiceState, detail: String, orbSize: CGFloat = 36, leadsWithDetail: Bool = false) {
         self.state = state
         self.detail = detail
         self.orbSize = orbSize
+        self.leadsWithDetail = leadsWithDetail
     }
 
     public var body: some View {
+        let detailFirst = leadsWithDetail && !detail.isEmpty
         HStack(spacing: ConchSpace.x3) {
             VoiceOrb(state: state, size: orbSize)
             VStack(alignment: .leading, spacing: 1) {
-                Text(state.title)
+                Text(detailFirst ? detail : state.title)
                     .font(ConchType.uiEmphasis)
                     .foregroundStyle(ConchColor.textPrimary)
-                if !detail.isEmpty {
-                    Text(detail)
+                    .lineLimit(1)
+                if detailFirst || !detail.isEmpty {
+                    Text(detailFirst ? state.title : detail)
                         .font(ConchType.secondary)
                         .foregroundStyle(ConchColor.textSecondary)
                         .lineLimit(1)
@@ -255,7 +260,7 @@ public struct IconButton: View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: size * 0.42, weight: .semibold))
-                .foregroundStyle(style == .primary ? ConchColor.onAccent : ConchColor.textSecondary)
+                .foregroundStyle(style == .primary ? ConchColor.onAccent : style == .glass ? ConchColor.textPrimary : ConchColor.textSecondary)
                 .frame(width: size, height: size)
                 .background {
                     switch style {
@@ -264,6 +269,7 @@ public struct IconButton: View {
                     case .glass:
                         Circle().fill(ConchColor.glass)
                             .overlay(Circle().strokeBorder(ConchColor.hairlineStrong, lineWidth: 0.5))
+                            .conchElevation(.raised)
                     }
                 }
                 .contentShape(Circle())
@@ -373,7 +379,8 @@ public struct ControlBar: View {
     public var body: some View {
         GlassPill("Voice controls") {
             // A fixed width, so the bar keeps its size and place as the state and the session change.
-            VoiceStateLabel(state: state, detail: detail)
+            // The session first: the orb and the menu bar mark already say what the voice is doing.
+            VoiceStateLabel(state: state, detail: detail, leadsWithDetail: true)
                 .frame(width: 196, alignment: .leading)
             TalkQuietSwitch(mode: $mode)
         }
@@ -411,6 +418,7 @@ public enum FogCorner: Hashable, Sendable {
     public var leading: Bool { self == .bottomLeading || self == .topLeading }
     public var bottom: Bool { self == .bottomLeading || self == .bottomTrailing }
     var unitPoint: UnitPoint { UnitPoint(x: leading ? 0 : 1, y: bottom ? 1 : 0) }
+    var alignment: Alignment { bottom ? (leading ? .bottomLeading : .bottomTrailing) : (leading ? .topLeading : .topTrailing) }
 
     /// The corner of `screen` nearest the middle of `rect`, in screen coordinates (y up). Close to a middle line it
     /// keeps `current`, so dragging across one doesn't flicker between two corners.
@@ -424,18 +432,46 @@ public enum FogCorner: Hashable, Sendable {
     }
 }
 
-/// Keeping the conversation fog on its screen.
-public enum FogPlacement {
-    /// `rect` inside `screen`: cut back on any side that runs past an edge, so pushing it against one makes it
-    /// smaller, but never below `minSize`, which stops at the edge instead.
-    public static func fit(_ rect: CGRect, in screen: CGRect, minSize: CGSize) -> CGRect {
-        func axis(_ start: CGFloat, _ length: CGFloat, _ low: CGFloat, _ high: CGFloat, _ least: CGFloat) -> (CGFloat, CGFloat) {
-            let size = max(min(start + length, high) - max(start, low), min(least, high - low))
-            return (min(max(start, low), high - size), size)
-        }
-        let (x, width) = axis(rect.minX, rect.width, screen.minX, screen.maxX, minSize.width)
-        let (y, height) = axis(rect.minY, rect.height, screen.minY, screen.maxY, minSize.height)
-        return CGRect(x: x, y: y, width: width, height: height)
+/// Where the conversation fog sits: always docked in a corner of its screen, touching one side and the top or the
+/// bottom. Its two other edges are free: they are what it is resized by, and where it fades. Screen coordinates, y up.
+public enum FogDock {
+    /// A fog of `size` docked in `corner` of `screen`, never bigger than the screen.
+    public static func frame(size: CGSize, corner: FogCorner, in screen: CGRect) -> CGRect {
+        let width = min(size.width, screen.width)
+        let height = min(size.height, screen.height)
+        return CGRect(
+            x: corner.leading ? screen.minX : screen.maxX - width,
+            y: corner.bottom ? screen.minY : screen.maxY - height,
+            width: width,
+            height: height
+        )
+    }
+
+    /// The corner a fog let go at `center`, moving at `velocity` (points per second), comes to rest in: the one nearest
+    /// where its momentum would carry it, as iOS picture in picture chooses (WWDC18, "Designing Fluid Interfaces").
+    public static func corner(releasedAt center: CGPoint, velocity: CGVector, in screen: CGRect) -> FogCorner {
+        // The distance a scroll view's normal deceleration (0.998 per millisecond) carries a velocity.
+        let carry = 0.998 / (1 - 0.998) / 1000
+        return FogCorner(
+            leading: center.x + velocity.dx * carry < screen.midX,
+            bottom: center.y + velocity.dy * carry < screen.midY
+        )
+    }
+
+    /// `start` resized by dragging `edges` (its free edges) by `delta`: its corner stays where it is, and it keeps
+    /// between `minSize` and the screen.
+    public static func resize(_ start: CGRect, corner: FogCorner, edges: Edge.Set, by delta: CGVector, in screen: CGRect, minSize: CGSize) -> CGRect {
+        var size = start.size
+        if !edges.isDisjoint(with: [.leading, .trailing]) { size.width += corner.leading ? delta.dx : -delta.dx }
+        if !edges.isDisjoint(with: [.top, .bottom]) { size.height += corner.bottom ? delta.dy : -delta.dy }
+        size.width = min(max(size.width, minSize.width), screen.width)
+        size.height = min(max(size.height, minSize.height), screen.height)
+        return frame(size: size, corner: corner, in: screen)
+    }
+
+    /// The two edges away from `corner`.
+    public static func freeEdges(_ corner: FogCorner) -> Edge.Set {
+        [corner.leading ? .trailing : .leading, corner.bottom ? .top : .bottom]
     }
 }
 
@@ -448,14 +484,16 @@ public struct ConversationFog: View {
     @Binding var draft: String
     let isListening: Bool
     let isFullScreen: Bool
-    /// The screen corner the fog faces: it gathers there, and the words sit there.
+    /// The screen corner the fog is docked in: it gathers there, and the words keep to that side.
     let corner: FogCorner
+    /// Where the Dock and the menu bar overlap the fog, so the words stay clear of them.
+    let insets: EdgeInsets
+    /// Draws the fog's tint; off, the words and buttons stand alone.
+    let showsFog: Bool
     let onMic: () -> Void
     let onSend: () -> Void
     let onCollapse: () -> Void
     let onFullScreen: () -> Void
-    @State private var hovering = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.conchRendersStatically) private var rendersStatically
 
     public init(
@@ -464,6 +502,8 @@ public struct ConversationFog: View {
         isListening: Bool,
         isFullScreen: Bool,
         corner: FogCorner = .bottomLeading,
+        insets: EdgeInsets = EdgeInsets(),
+        showsFog: Bool = true,
         onMic: @escaping () -> Void,
         onSend: @escaping () -> Void,
         onCollapse: @escaping () -> Void,
@@ -474,6 +514,8 @@ public struct ConversationFog: View {
         self.isListening = isListening
         self.isFullScreen = isFullScreen
         self.corner = corner
+        self.insets = insets
+        self.showsFog = showsFog
         self.onMic = onMic
         self.onSend = onSend
         self.onCollapse = onCollapse
@@ -497,26 +539,24 @@ public struct ConversationFog: View {
         )
     }
 
-    /// Room above the words for the collapse and full-screen buttons.
-    static let buttonRoom: CGFloat = 30 + ConchSpace.x2
+    /// Inside the fog, before the screen's own insets.
+    static let padding: CGFloat = ConchSpace.x6
+    static let buttonSize: CGFloat = 36
 
-    /// Where the words and the reply line sit: in the fog's corner, about 50 pt in (where blur.html set them), with
-    /// room above for the buttons. Past its default size, a bigger panel gives them more room, wider and taller.
-    static func textFrame(in size: CGSize, corner: FogCorner, fullScreen: Bool) -> CGRect {
+    /// Where the words and the reply line sit: all of the fog but its padding, the screen's insets and a row for the
+    /// buttons, so a bigger fog is all more room for words. Past a comfortable line they keep to the fog's corner.
+    static func textFrame(in size: CGSize, corner: FogCorner, insets: EdgeInsets, fullScreen: Bool) -> CGRect {
+        let top = insets.top + padding + buttonSize + ConchSpace.x3
+        let height = max(0, size.height - top - insets.bottom - padding)
+        let leading = insets.leading + padding
+        let trailing = insets.trailing + padding
+        let room = max(0, size.width - leading - trailing)
         if fullScreen {
-            let width = max(0, min(1040, size.width - 2 * ConchSpace.x12))
-            let height = max(0, size.height * 0.8)
-            return CGRect(x: (size.width - width) / 2, y: size.height - ConchSpace.x12 - height, width: width, height: height)
+            let width = min(1040, room)
+            return CGRect(x: leading + (room - width) / 2, y: top, width: width, height: height)
         }
-        let inset = ConchSpace.x12
-        let width = max(0, min(max(560, size.width * 0.66), 960, size.width - 2 * inset))
-        let height = max(0, min(max(size.height * 0.62, size.height - 260), size.height - 2 * inset - buttonRoom))
-        return CGRect(
-            x: corner.leading ? inset : size.width - inset - width,
-            y: corner.bottom ? size.height - inset - height : inset + buttonRoom,
-            width: width,
-            height: height
-        )
+        let width = min(960, room)
+        return CGRect(x: corner.leading ? leading : size.width - trailing - width, y: top, width: width, height: height)
     }
 
     /// How much of the fog colour lies over the blur where the fog is densest.
@@ -524,24 +564,26 @@ public struct ConversationFog: View {
 
     public var body: some View {
         GeometryReader { proxy in
-            let text = Self.textFrame(in: proxy.size, corner: corner, fullScreen: isFullScreen)
+            let text = Self.textFrame(in: proxy.size, corner: corner, insets: insets, fullScreen: isFullScreen)
             ZStack(alignment: .topLeading) {
-                Group {
-                    if isFullScreen {
-                        // panel.html's wash: light at the top so the blurred work still shows, deepening toward the words.
-                        Rectangle().fill(ConchColor.fog).mask(LinearGradient(
-                            stops: [.init(color: .black.opacity(0.12), location: 0), .init(color: .black.opacity(0.42), location: 0.55), .init(color: .black.opacity(0.62), location: 1)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ))
-                    } else {
-                        Rectangle()
-                            .fill(ConchColor.fog)
-                            .opacity(Self.tintOpacity)
-                            .mask(Self.density(fullScreen: false, corner: corner))
+                if showsFog {
+                    Group {
+                        if isFullScreen {
+                            // panel.html's wash: light at the top so the blurred work still shows, deepening toward the words.
+                            Rectangle().fill(ConchColor.fog).mask(LinearGradient(
+                                stops: [.init(color: .black.opacity(0.12), location: 0), .init(color: .black.opacity(0.42), location: 0.55), .init(color: .black.opacity(0.62), location: 1)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ))
+                        } else {
+                            Rectangle()
+                                .fill(ConchColor.fog)
+                                .opacity(Self.tintOpacity)
+                                .mask(Self.density(fullScreen: false, corner: corner))
+                        }
                     }
+                    .accessibilityHidden(true)
                 }
-                .accessibilityHidden(true)
                 // The words keep a short soft edge of their own at the bottom, so the gap to the reply is that plus this.
                 VStack(alignment: .leading, spacing: isFullScreen ? ConchSpace.x2 : ConchSpace.x1) {
                     words
@@ -554,14 +596,17 @@ public struct ConversationFog: View {
                     )
                 }
                 .frame(width: text.width, height: text.height, alignment: .bottomLeading)
-                .overlay(alignment: isFullScreen || corner.leading ? .topLeading : .topTrailing) {
-                    panelButtons.offset(y: -Self.buttonRoom)
-                }
                 .offset(x: text.minX, y: text.minY)
+                // On the free side of the top row, away from the edge the fog is docked to.
+                panelButtons
+                    .frame(
+                        width: max(0, proxy.size.width - insets.leading - insets.trailing - 2 * Self.padding),
+                        alignment: isFullScreen || !corner.leading ? .leading : .trailing
+                    )
+                    .offset(x: insets.leading + Self.padding, y: insets.top + Self.padding)
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
         }
-        .onHover { hovering = $0 }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Conversation")
     }
@@ -631,23 +676,26 @@ public struct ConversationFog: View {
         }
     }
 
-    /// Collapse, then full screen: the order a Mac window's minimise and zoom buttons come in.
+    /// Collapse, then full screen: the order a Mac window's minimise and zoom buttons come in. Always fully there: a
+    /// hover can't be relied on in a panel of an app that isn't active.
     private var panelButtons: some View {
         HStack(spacing: ConchSpace.x2) {
-            IconButton("chevron.down", label: "Collapse conversation", style: .glass, size: 30, action: onCollapse)
+            IconButton(
+                corner.bottom || isFullScreen ? "chevron.down" : "chevron.up",
+                label: "Collapse conversation",
+                style: .glass,
+                size: Self.buttonSize,
+                action: onCollapse
+            )
             IconButton(
                 isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
                 label: isFullScreen ? "Exit full screen" : "Full screen",
                 style: .glass,
-                size: 30,
+                size: Self.buttonSize,
                 action: onFullScreen
             )
             .keyboardShortcut(.return, modifiers: .command)
         }
-        // Quiet until the pointer is over the fog, but never gone: hover may not reach a panel of an app that is
-        // not active. Always there for VoiceOver and for Command-Return.
-        .opacity(hovering || rendersStatically ? 1 : 0.4)
-        .animation(ConchMotion.animation(ConchMotion.quick, reduceMotion: reduceMotion), value: hovering)
     }
 
     /// Agent replies are markdown; the fog shows the inline parts (emphasis, code, links) and keeps line breaks.
@@ -659,38 +707,49 @@ public struct ConversationFog: View {
 
 // MARK: - FogHandle
 
-/// The conversation fog collapsed (M3): next to nothing, a small faint dot where the fog's corner was. A click
-/// opens the fog again at the size it had.
+/// The conversation fog collapsed (M3): nothing to see until the pointer comes into the fog's corner, then a caret
+/// that opens it again at the size it had. The whole corner area opens it.
 public struct FogHandle: View {
-    public static let side: CGFloat = 30
+    /// The corner area the pointer shows the caret in.
+    public static let side: CGFloat = 72
 
+    let corner: FogCorner
+    let hovering: Bool
     let onExpand: () -> Void
-    @State private var hovering = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    public init(onExpand: @escaping () -> Void) {
+    public init(corner: FogCorner = .bottomLeading, hovering: Bool = true, onExpand: @escaping () -> Void) {
+        self.corner = corner
+        self.hovering = hovering
         self.onExpand = onExpand
     }
 
     public var body: some View {
-        Button(action: onExpand) {
-            Image(systemName: "chevron.up")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(ConchColor.textSecondary)
-                .frame(width: Self.side, height: Self.side)
-                .background {
-                    Circle().fill(.ultraThinMaterial)
-                    Circle().fill(ConchColor.glass)
-                }
-                .overlay(Circle().strokeBorder(ConchColor.hairlineStrong, lineWidth: 0.5))
-                .contentShape(Circle())
+        ZStack(alignment: corner.alignment) {
+            Color.clear
+            Button(action: onExpand) {
+                Image(systemName: corner.bottom ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(ConchColor.textPrimary)
+                    .frame(width: 44, height: 44)
+                    .background {
+                        Circle().fill(.ultraThinMaterial)
+                        Circle().fill(ConchColor.glass)
+                    }
+                    .overlay(Circle().strokeBorder(ConchColor.hairlineStrong, lineWidth: 0.5))
+                    .conchElevation(.raised)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(ConchSpace.x3)
+            // Hidden until the pointer is in the corner (Tyler: "only shows when your hovering in that area").
+            .opacity(hovering ? 1 : 0)
+            .animation(ConchMotion.animation(ConchMotion.quick, reduceMotion: reduceMotion), value: hovering)
+            .accessibilityLabel("Show conversation")
         }
-        .buttonStyle(.plain)
-        // Faint at rest, clear under the pointer; hover may never arrive, so never invisible.
-        .opacity(hovering ? 1 : 0.8)
-        .onHover { hovering = $0 }
-        .animation(ConchMotion.animation(ConchMotion.quick, reduceMotion: reduceMotion), value: hovering)
-        .accessibilityLabel("Show conversation")
+        .frame(width: Self.side, height: Self.side)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onExpand)
     }
 }
 

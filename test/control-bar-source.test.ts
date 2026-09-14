@@ -29,8 +29,9 @@ test("M3: both panels are non-activating NSPanels on every space, out of the win
     "private let controlBar = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)",
   );
   expect(panels).toContain(
-    "private let fog = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered, defer: true)",
+    "private let fog = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)",
   );
+  expect(panels).toContain("fog.isMovableByWindowBackground = false");
   const setup = panels.slice(panels.indexOf("for panel in [controlBar, fog] {"), panels.indexOf("let bar = FirstClickHostingView"));
   expect(setup).toContain("panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]");
   expect(setup).toContain("panel.level = .floating");
@@ -81,25 +82,22 @@ test("M3: the fog collapses to a small handle and opens again at the size it had
   );
   const collapse = member(panels, "private func setCollapsed(_ collapsed: Bool) {");
   expect(collapse).toContain("if collapsed, isFullScreen { toggleFullScreen() }");
-  expect(collapse).toContain("expandedFrame = fog.frame");
-  expect(collapse).toContain("fog.setFrame(NSRect(x: x, y: y, width: side, height: side), display: true)");
-  expect(collapse).toContain("fog.setFrame(expandedFrame, display: true)");
-  // The handle sits in the fog's own corner.
-  expect(collapse).toContain("let x = corner.leading ? expandedFrame.minX : expandedFrame.maxX - side");
+  // Collapsed, a hover area in its corner clear of the Dock and the menu bar; opened, docked again at its size.
+  expect(collapse).toContain("fog.setFrame(FogDock.frame(size: CGSize(width: side, height: side), corner: corner, in: screen.visibleFrame), display: true)");
+  expect(collapse).toContain("dock(corner, on: screen, velocity: .zero, animated: false)");
   // The collapsed frame is never the one saved: autosave stops before it shrinks and resumes once it is open.
   expect(collapse.indexOf('fog.setFrameAutosaveName("")')).toBeGreaterThan(-1);
   expect(collapse.indexOf('fog.setFrameAutosaveName("")')).toBeLessThan(collapse.indexOf("width: side, height: side"));
-  expect(collapse.indexOf("fog.setFrameAutosaveName(Self.conversationFrameName)")).toBeGreaterThan(collapse.indexOf("fog.setFrame(expandedFrame"));
-  expect(collapse).toContain("fog.minSize = .zero");
-  expect(collapse).toContain("fog.minSize = Self.fogMinSize");
-  // The fog's button collapses it, and the handle opens it.
-  expect(panels).toContain("FogHandle { panels.toggleCollapsed() }");
+  expect(collapse.indexOf("fog.setFrameAutosaveName(Self.conversationFrameName)")).toBeGreaterThan(collapse.indexOf("dock(corner, on: screen"));
+  // The fog's button collapses it; hovering its corner shows the caret that opens it (Tyler: "only shows when your
+  // hovering in that area"), tracked by the panel's own view so it works while conch is in the background.
+  expect(panels).toContain("FogHandle(corner: panels.corner, hovering: panels.hovering) { panels.toggleCollapsed() }");
   expect(panels).toContain("onCollapse: { panels.toggleCollapsed() },");
-  expect(member(components, "private var panelButtons: some View {")).toContain(
-    'IconButton("chevron.down", label: "Collapse conversation", style: .glass, size: 30, action: onCollapse)',
-  );
+  expect(member(components, "private var panelButtons: some View {")).toContain('label: "Collapse conversation",');
   expect(components).toContain("public struct FogHandle: View {");
+  expect(components).toContain(".opacity(hovering ? 1 : 0)");
   expect(components).toContain('.accessibilityLabel("Show conversation")');
+  expect(panels).toContain("options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect]");
 });
 
 test("M3: both panels keep their frames, and the fog goes full screen on Command-Return", () => {
@@ -116,10 +114,9 @@ test("M3: both panels keep their frames, and the fog goes full screen on Command
   expect(button).toContain(".keyboardShortcut(.return, modifiers: .command)");
   expect(panels).toContain("onFullScreen: { panels.toggleFullScreen() }");
   const toggle = member(panels, "func toggleFullScreen() {");
-  expect(toggle).toContain("frameBeforeFullScreen = fog.frame");
   expect(toggle).toContain("fog.setFrame(screen.frame, display: true, animate: animate)");
-  // Leaving restores the frame it had.
-  expect(toggle).toContain("fog.setFrame(frame, display: true, animate: animate)");
+  // Leaving docks it back in its corner at the size it had.
+  expect(toggle).toContain("let frame = FogDock.frame(size: fogSize, corner: corner, in: screen.frame)");
   expect(toggle).toContain("NSWorkspace.shared.accessibilityDisplayShouldReduceMotion");
   // A full-screen frame is never the one saved.
   expect(toggle.indexOf('fog.setFrameAutosaveName("")')).toBeGreaterThan(-1);
@@ -188,30 +185,42 @@ test("M3: a Dock click still reopens the dashboard while the floating panels are
 });
 
 /**
- * Tyler: "revert and try a smart algo that reorients the version we had before as you drag around", and "we shouldn't
- * allow it to go outside the viewport it should just get smaller or something when pushed against edges".
+ * Tyler: "set rules like its always touching one side and top or bottom", "when i drag up i want it to get taller not
+ * move all the way up... unless i drag from middle but then maybe it snaps", and "incrase the areas around the edges
+ * that you pull for resizing".
  */
-test("M3: the corner fog faces its nearest screen corner, and shrinks rather than leaving the screen", () => {
-  const changed = member(panels, "private func fogChanged() {");
-  expect(changed).toContain("let fitted = FogPlacement.fit(NSRect(origin: virtualOrigin, size: preferredSize), in: screen, minSize: Self.fogMinSize)");
-  expect(changed).toContain("let next = FogCorner.nearest(to: fitted, in: screen, current: corner)");
-  expect(changed).toContain("blur.maskImage = Self.blurMask(corner)");
-  // The visible frame, so it stays clear of the menu bar and the Dock.
-  expect(changed).toContain("?.visibleFrame");
-  // A drag moves where the fog would be, so pulling it back from an edge grows it again.
-  expect(changed).toContain("virtualOrigin.x += frame.minX - lastFrame.minX");
-  expect(panels).toContain("for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {");
-  expect(panels).toContain("corner: panels.corner,");
-  // The corner fog again, pointed at a corner: no per-edge fading and no patch behind the words.
+test("M3: the fog stays docked in a corner, is thrown into a corner by its middle, and resizes from wide free edges", () => {
+  // conch owns the geometry: no window-server resizing or background dragging to race.
+  expect(panels).not.toContain(".resizable");
+  const dock = member(panels, "private func dock(_ corner: FogCorner, on screen: NSScreen, velocity: CGVector, animated: Bool) {");
+  expect(dock).toContain("let target = FogDock.frame(size: fogSize, corner: corner, in: screen.frame)");
+  expect(dock).toContain("startSpring(to: target, velocity: velocity)");
+  expect(dock).toContain("!NSWorkspace.shared.accessibilityDisplayShouldReduceMotion");
+  // It follows the pointer from where the drag began; let go, its momentum picks the corner.
+  const moved = member(panels, "func dragMoved() {");
+  expect(moved).toContain("let mouse = NSEvent.mouseLocation");
+  expect(moved).toContain("start.frame.minX + mouse.x - start.mouse.x");
+  const ended = member(panels, "func dragEnded() {");
+  expect(ended).toContain("dock(FogDock.corner(releasedAt: center, velocity: velocity, in: screen.frame), on: screen, velocity: velocity, animated: true)");
+  expect(ended).toContain("let recent = dragSamples.filter { now - $0.time <= 0.1 }");
+  // Resizing keeps its corner, from strips wider than a window's own edge.
+  expect(member(panels, "func resizeMoved(_ edges: Edge.Set) {")).toContain("let next = FogDock.resize(");
+  expect(panels).toContain("static let resizeGrab: CGFloat = 16");
+  expect(panels).toContain(".onChanged { _ in panels.resizeMoved(edges) }");
+  expect(panels).toContain(".onChanged { _ in panels.dragMoved() }");
+  // It reaches the screen's edges, and the words are padded clear of the Dock and the menu bar.
+  expect(member(panels, "private func updateInsets(_ frame: NSRect, on screen: NSScreen) {")).toContain(
+    "bottom: max(0, visible.minY - max(frame.minY, full.minY))",
+  );
+  expect(components).toContain("let top = insets.top + padding + buttonSize + ConchSpace.x3");
+  // For now an outline stands in for the fog's look.
+  expect(panels).toContain("static let showsFog = false");
+  expect(panels).toContain("Rectangle().strokeBorder(Color.black, lineWidth: 1).allowsHitTesting(false)");
   expect(components).toContain("center: corner.unitPoint,");
-  for (const gone of ["flush", "textBacking", "edgeFade"]) expect(components).not.toContain(gone);
-  expect(panels).not.toContain("flush");
   // The transcript still ends in a short fade above the reply, not a cut.
   expect(components).toContain(
     "LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)\n                        .frame(height: ConchSpace.x4)",
   );
-  // A temporary outline of the panel's real bounds while its behaviour is tuned.
-  expect(panels).toContain("Rectangle().strokeBorder(Color.black, lineWidth: 1)");
 });
 
 /**
@@ -225,7 +234,7 @@ test("M3: the blur sits behind the words as a sibling, so its mask never touches
   expect(panels).not.toContain("fog.contentView = blur");
   const collapse = member(panels, "private func setCollapsed(_ collapsed: Bool) {");
   expect(collapse).toContain("blur.isHidden = true");
-  expect(collapse).toContain("blur.isHidden = false");
+  expect(collapse).toContain("blur.isHidden = !Self.showsFog");
   expect(panels).not.toContain("noBlur");
 });
 
@@ -242,7 +251,15 @@ test("M3: the control bar fits what it shows, the reply scrolls past five lines,
   expect(panels).toContain(".onPreferenceChange(ControlBarSize.self, perform: onSize)");
   expect(components).toContain("Text(option.title)\n                        .font(ConchType.uiEmphasis)\n                        .fixedSize()");
   expect(components).toContain(".lineLimit(1...5)");
-  expect(member(components, "static func textFrame(in size: CGSize, corner: FogCorner, fullScreen: Bool) -> CGRect {")).toContain(
-    "min(max(560, size.width * 0.66), 960, size.width - 2 * inset)",
+  expect(member(components, "static func textFrame(in size: CGSize, corner: FogCorner, insets: EdgeInsets, fullScreen: Bool) -> CGRect {")).toContain(
+    "let width = min(960, room)",
   );
+});
+
+/** Tyler: "for pill lets also switch the hierarchy of the project name and the status cause the mark also gives status". */
+test("M3: the control bar leads with the session, with the state beneath it", () => {
+  const bar = member(components, "public var body: some View {\n        GlassPill(\"Voice controls\") {");
+  expect(bar).toContain("VoiceStateLabel(state: state, detail: detail, leadsWithDetail: true)");
+  expect(components).toContain("Text(detailFirst ? detail : state.title)");
+  expect(components).toContain("Text(detailFirst ? state.title : detail)");
 });

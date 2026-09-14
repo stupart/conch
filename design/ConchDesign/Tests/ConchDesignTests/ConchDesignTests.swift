@@ -65,33 +65,39 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertTrue(check.contains { $0.allSatisfy { $0 > 0.95 } }, "no white checkmark in the ready orb")
     }
 
-    /// Pushed against an edge the fog gets smaller rather than leaving the screen, and it faces its nearest corner.
+    /// The fog always sits in a screen corner: let go, it docks in the corner its momentum carries it to, and dragging
+    /// a free edge resizes it from that corner.
     @MainActor
-    func testTheFogFitsItsScreenAndFacesItsNearestCorner() {
-        let screen = CGRect(x: 0, y: 0, width: 1728, height: 1000)
+    func testTheFogDocksInACornerAndResizesFromItsFreeEdges() {
+        let screen = CGRect(x: 0, y: 0, width: 1728, height: 1117)
         let least = CGSize(width: 480, height: 360)
-        let inside = CGRect(x: 100, y: 100, width: 760, height: 560)
-        XCTAssertEqual(FogPlacement.fit(inside, in: screen, minSize: least), inside)
-        // 200 pt past the left edge: pinned to it, 200 pt narrower.
-        XCTAssertEqual(FogPlacement.fit(CGRect(x: -200, y: 100, width: 760, height: 560), in: screen, minSize: least), CGRect(x: 0, y: 100, width: 560, height: 560))
-        // Past the top-right corner: cut back on both.
-        XCTAssertEqual(FogPlacement.fit(CGRect(x: 1100, y: 600, width: 760, height: 560), in: screen, minSize: least), CGRect(x: 1100, y: 600, width: 628, height: 400))
-        // Never below its minimum: it stops at the edge instead.
-        XCTAssertEqual(FogPlacement.fit(CGRect(x: -500, y: 100, width: 760, height: 560), in: screen, minSize: least), CGRect(x: 0, y: 100, width: 480, height: 560))
-        XCTAssertEqual(FogPlacement.fit(CGRect(x: 1600, y: 100, width: 760, height: 560), in: screen, minSize: least), CGRect(x: 1248, y: 100, width: 480, height: 560))
-        // Nearest corner, y up; near a middle line it keeps the one it has.
-        XCTAssertEqual(FogCorner.nearest(to: CGRect(x: 1200, y: 700, width: 400, height: 200), in: screen, current: .bottomLeading), .topTrailing)
-        XCTAssertEqual(FogCorner.nearest(to: CGRect(x: 0, y: 0, width: 400, height: 300), in: screen, current: .topTrailing), .bottomLeading)
-        XCTAssertEqual(FogCorner.nearest(to: CGRect(x: 704, y: 0, width: 400, height: 300), in: screen, current: .bottomLeading), .bottomLeading)
-        XCTAssertEqual(FogCorner.nearest(to: CGRect(x: 704, y: 0, width: 400, height: 300), in: screen, current: .bottomTrailing), .bottomTrailing)
-        // The words sit in the fog's corner; the default keeps its 560 pt column, and a bigger panel gives them room.
-        let topRight = ConversationFog.textFrame(in: CGSize(width: 760, height: 560), corner: .topTrailing, fullScreen: false)
-        XCTAssertEqual(topRight.maxX, 760 - ConchSpace.x12, accuracy: 0.01)
-        XCTAssertEqual(topRight.minY, ConchSpace.x12 + ConversationFog.buttonRoom, accuracy: 0.01)
-        XCTAssertEqual(ConversationFog.textFrame(in: CGSize(width: 760, height: 560), corner: .bottomLeading, fullScreen: false).width, 560, accuracy: 0.01)
-        let big = ConversationFog.textFrame(in: CGSize(width: 1400, height: 1000), corner: .bottomLeading, fullScreen: false)
-        XCTAssertGreaterThan(big.width, 800)
-        XCTAssertGreaterThan(big.height, 700)
+        let size = CGSize(width: 760, height: 560)
+        XCTAssertEqual(FogDock.frame(size: size, corner: .bottomLeading, in: screen), CGRect(x: 0, y: 0, width: 760, height: 560))
+        XCTAssertEqual(FogDock.frame(size: size, corner: .topTrailing, in: screen), CGRect(x: 968, y: 557, width: 760, height: 560))
+        XCTAssertEqual(FogDock.frame(size: CGSize(width: 3000, height: 3000), corner: .topLeading, in: screen), screen)
+        // At rest it docks in the nearest corner; thrown, in the corner it was heading for.
+        XCTAssertEqual(FogDock.corner(releasedAt: CGPoint(x: 400, y: 300), velocity: .zero, in: screen), .bottomLeading)
+        XCTAssertEqual(FogDock.corner(releasedAt: CGPoint(x: 700, y: 300), velocity: CGVector(dx: 2000, dy: 0), in: screen), .bottomTrailing)
+        XCTAssertEqual(FogDock.corner(releasedAt: CGPoint(x: 400, y: 500), velocity: CGVector(dx: 0, dy: 1500), in: screen), .topLeading)
+        // Dragging the top edge up makes a bottom-docked fog taller, and it stays in its corner.
+        let bottomLeft = FogDock.frame(size: size, corner: .bottomLeading, in: screen)
+        XCTAssertEqual(
+            FogDock.resize(bottomLeft, corner: .bottomLeading, edges: .top, by: CGVector(dx: 50, dy: 200), in: screen, minSize: least),
+            CGRect(x: 0, y: 0, width: 760, height: 760)
+        )
+        // A top-right fog grows left and down from its corner, and never below its minimum.
+        let topRight = FogDock.frame(size: size, corner: .topTrailing, in: screen)
+        XCTAssertEqual(
+            FogDock.resize(topRight, corner: .topTrailing, edges: [.leading, .bottom], by: CGVector(dx: -100, dy: -100), in: screen, minSize: least),
+            CGRect(x: 868, y: 457, width: 860, height: 660)
+        )
+        XCTAssertEqual(FogDock.resize(topRight, corner: .topTrailing, edges: .leading, by: CGVector(dx: 600, dy: 0), in: screen, minSize: least).width, 480)
+        XCTAssertEqual(FogDock.freeEdges(.bottomLeading), [.trailing, .top])
+        // The words fill the fog less its padding, the Dock and the button row.
+        let text = ConversationFog.textFrame(in: size, corner: .bottomLeading, insets: EdgeInsets(top: 0, leading: 0, bottom: 70, trailing: 0), fullScreen: false)
+        XCTAssertEqual(text.maxY, 560 - 70 - ConversationFog.padding, accuracy: 0.01)
+        XCTAssertEqual(text.minY, ConversationFog.padding + ConversationFog.buttonSize + ConchSpace.x3, accuracy: 0.01)
+        XCTAssertEqual(text.width, 760 - 2 * ConversationFog.padding, accuracy: 0.01)
     }
 
     func testHairlinesStayAtTenPercentOrLess() {

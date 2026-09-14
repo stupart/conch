@@ -16,14 +16,38 @@ private final class FirstClickHostingView<Content: View>: NSHostingView<Content>
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
+/// The fog's own view. It knows when the pointer is over it even while conch is in the background, which a SwiftUI
+/// hover inside a panel of an app that isn't active can't be relied on for.
+private final class HoverView: NSView {
+    var onHover: (Bool) -> Void = { _ in }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) { onHover(true) }
+    override func mouseExited(with event: NSEvent) { onHover(false) }
+}
+
 /// The floating control bar and the conversation fog (M3), shown and hidden by the menu bar's
 /// Show control bar and Show conversation, and kept where they were last left.
+///
+/// conch owns the fog's geometry outright; the window server never moves or resizes it, so nothing races. The fog is
+/// always docked in a screen corner (`FogDock`). Dragged by its middle it follows the pointer and, let go, glides on a
+/// spring into the corner its momentum carries it to. Dragged by a free edge it grows or shrinks from its corner.
 @MainActor
 final class FloatingPanels: ObservableObject {
     static let controlBarFrameName = "conch.controlBar"
     static let conversationFrameName = "conch.conversation"
     /// The fog folded down to its handle. A default like the two show keys, so the menu can open it too.
     static let conversationCollapsedKey = "conch.conversationCollapsed"
+    /// How wide the strips along the fog's free edges are that resize it.
+    static let resizeGrab: CGFloat = 16
+    // ponytail: the fog's look is off while dragging and resizing are tuned (Tyler, 2026-09-14): a 1 pt outline
+    // stands in for it. The next pass brings back a blur that gathers at the docked edges.
+    static let showsFog = false
 
     private static var installed: FloatingPanels?
 
@@ -32,27 +56,30 @@ final class FloatingPanels: ObservableObject {
         installed = FloatingPanels(store: store)
     }
 
-    /// The fog fills its screen; leaving puts it back in the frame it had.
+    /// The fog fills its screen; leaving docks it back in its corner.
     @Published private(set) var isFullScreen = false
     @Published private(set) var isCollapsed = false
-    /// The screen corner the fog faces (`fogChanged`).
+    /// The screen corner the fog is docked in.
     @Published private(set) var corner: FogCorner = .bottomLeading
-    private var fogObservers: [NSObjectProtocol] = []
-    /// The open fog's frame, to go back to from the handle.
-    private var expandedFrame = NSRect(x: 0, y: 0, width: 760, height: 560)
-    /// Where a drag would have put the fog, and the size it was last given: pushed against an edge it shrinks from
-    /// these, and grows back to them as it comes away.
-    private var virtualOrigin = NSPoint.zero
-    private var preferredSize = NSSize(width: 760, height: 560)
-    private var lastFrame = NSRect.zero
-    /// Set while conch itself moves the fog, so its own frame changes aren't taken for the user's.
-    private var adjusting = false
+    /// Where the Dock and the menu bar overlap the fog, so its words stay clear of them.
+    @Published private(set) var insets = EdgeInsets()
+    /// The pointer is over the fog (or, collapsed, its corner).
+    @Published private(set) var hovering = false
     private static let fogMinSize = NSSize(width: 480, height: 360)
-    private var frameBeforeFullScreen: NSRect?
+    /// The size the fog was last given, kept through moves, collapsing and full screen.
+    private var fogSize = NSSize(width: 760, height: 560)
+    private var dragStart: (mouse: NSPoint, frame: NSRect)?
+    private var dragSamples: [(time: TimeInterval, point: NSPoint)] = []
+    private var resizeStart: (mouse: NSPoint, frame: NSRect)?
+    private var springTimer: Timer?
+    private var springOrigin = NSPoint.zero
+    private var springVelocity = CGVector.zero
+    private var springTarget = NSRect.zero
     private let controlBar = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
-    private let fog = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered, defer: true)
+    private let fog = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private let blur = NSVisualEffectView()
     private var defaultsObserver: NSObjectProtocol?
+    private var screenObserver: NSObjectProtocol?
 
     /// The corner fog as an image for the blur's mask, one per corner: a behind-window blur ignores layer masks, and
     /// NSVisualEffectView stretches this image to its own size, so one small image serves any panel size.
@@ -89,13 +116,18 @@ final class FloatingPanels: ObservableObject {
 
         fog.takesKeys = true
         fog.becomesKeyOnlyIfNeeded = true
-        fog.minSize = Self.fogMinSize
+        // conch moves and resizes the fog itself (dragMoved, resizeMoved), so the window server never races it.
+        fog.isMovableByWindowBackground = false
         blur.material = .underWindowBackground
         blur.blendingMode = .behindWindow
         blur.state = .active
+        blur.isHidden = !Self.showsFog
         // The blur and the words are siblings: a visual effect view's mask shapes everything inside it, which faded
         // the words with the fog and hid the collapsed handle along with the blur.
-        let container = NSView()
+        let container = HoverView()
+        container.onHover = { [weak self] inside in
+            MainActor.assumeIsolated { self?.hovering = inside }
+        }
         fog.contentView = container
         let words = FirstClickHostingView(rootView: ConversationFogHost(store: store, panels: self))
         for view in [blur, words] as [NSView] {
@@ -103,27 +135,24 @@ final class FloatingPanels: ObservableObject {
             view.autoresizingMask = [.width, .height]
             container.addSubview(view)
         }
-        place(fog, name: Self.conversationFrameName, size: NSSize(width: 760, height: 560)) { screen, _ in
+        place(fog, name: Self.conversationFrameName, size: fogSize) { screen, _ in
             // The bottom-left corner.
             screen.origin
         }
-        // Wherever the fog is dragged or resized, it stays on its screen and faces its nearest corner.
-        for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
-            fogObservers.append(NotificationCenter.default.addObserver(forName: name, object: fog, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.fogChanged() }
-            })
+        // Docked in the corner nearest where it was left, at the size it had.
+        fogSize = NSSize(width: max(fog.frame.width, Self.fogMinSize.width), height: max(fog.frame.height, Self.fogMinSize.height))
+        if let screen = screen() {
+            dock(FogCorner.nearest(to: fog.frame, in: screen.frame, current: .bottomLeading), on: screen, velocity: .zero, animated: false)
         }
-        fogObservers.append(NotificationCenter.default.addObserver(
+        screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.fogChanged() }
-        })
-        remember(fog.frame)
-        fogChanged()
+            MainActor.assumeIsolated { self?.redock() }
+        }
 
-        // The menu's toggles and the control bar's conversation button all write these two defaults.
+        // The menu's toggles write these defaults.
         defaultsObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification,
             object: nil,
@@ -141,7 +170,7 @@ final class FloatingPanels: ObservableObject {
             panel.setFrameOrigin(start(screen, size))
         }
         // The control bar's size is its content's, whatever size was saved.
-        if !panel.styleMask.contains(.resizable) { panel.setContentSize(size) }
+        if panel === controlBar { panel.setContentSize(size) }
         panel.setFrameAutosaveName(name)
     }
 
@@ -166,93 +195,200 @@ final class FloatingPanels: ObservableObject {
         controlBar.setFrame(NSRect(x: frame.midX - size.width / 2, y: frame.maxY - size.height, width: size.width, height: size.height), display: true)
     }
 
+    /// The screen under `point`, else the fog's own.
+    private func screen(containing point: NSPoint? = nil) -> NSScreen? {
+        if let point, let screen = NSScreen.screens.first(where: { $0.frame.contains(point) }) { return screen }
+        return fog.screen ?? NSScreen.main ?? NSScreen.screens.first
+    }
+
+    // MARK: Collapsing and full screen
+
     /// The fog's collapse button and its handle both flip the default; `showWhatIsOn` does the rest.
     func toggleCollapsed() {
         UserDefaults.standard.set(!isCollapsed, forKey: Self.conversationCollapsedKey)
     }
 
-    /// Collapsed, the fog is a small handle in its own corner; opened, it has the frame it had.
+    /// Collapsed, the fog is a small hover area in its corner, clear of the Dock and the menu bar; opened, it docks
+    /// there again at the size it had.
     private func setCollapsed(_ collapsed: Bool) {
         guard collapsed != isCollapsed else { return }
         if collapsed, isFullScreen { toggleFullScreen() }
         isCollapsed = collapsed
-        adjusting = true
+        stopSpring()
+        guard let screen = screen() else { return }
         if collapsed {
-            expandedFrame = fog.frame
             // Not saved while collapsed, so the saved frame stays the open one.
             fog.setFrameAutosaveName("")
-            fog.styleMask.remove(.resizable)
-            fog.minSize = .zero
-            // The handle sits in the fog's own corner.
             let side = FogHandle.side
-            let x = corner.leading ? expandedFrame.minX : expandedFrame.maxX - side
-            let y = corner.bottom ? expandedFrame.minY : expandedFrame.maxY - side
-            fog.setFrame(NSRect(x: x, y: y, width: side, height: side), display: true)
-            // Collapsed, the fog is only its handle.
+            fog.setFrame(FogDock.frame(size: CGSize(width: side, height: side), corner: corner, in: screen.visibleFrame), display: true)
             blur.isHidden = true
-            adjusting = false
         } else {
-            fog.styleMask.insert(.resizable)
-            fog.minSize = Self.fogMinSize
-            fog.setFrame(expandedFrame, display: true)
+            dock(corner, on: screen, velocity: .zero, animated: false)
             fog.setFrameAutosaveName(Self.conversationFrameName)
-            blur.isHidden = false
-            adjusting = false
-            remember(expandedFrame)
-            fogChanged()
+            blur.isHidden = !Self.showsFog
         }
     }
 
-    /// Takes `frame` as where the fog is and the size it was given, before any edge cuts it back.
-    private func remember(_ frame: NSRect) {
-        lastFrame = frame
-        virtualOrigin = frame.origin
-        preferredSize = frame.size
-    }
-
-    /// Keeps the fog on its screen and facing the screen corner nearest it. A drag moves where the fog would be and a
-    /// resize sets the size it wants; pushed against an edge it is cut back to fit (never below its minimum), and it
-    /// grows back as it comes away. The visible frame, so it stays clear of the menu bar and the Dock.
-    private func fogChanged() {
-        guard !isCollapsed, !isFullScreen, !adjusting,
-              let screen = (fog.screen ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame else { return }
-        let frame = fog.frame
-        if frame.size != lastFrame.size {
-            remember(frame)
-        } else {
-            virtualOrigin.x += frame.minX - lastFrame.minX
-            virtualOrigin.y += frame.minY - lastFrame.minY
-        }
-        let fitted = FogPlacement.fit(NSRect(origin: virtualOrigin, size: preferredSize), in: screen, minSize: Self.fogMinSize)
-        if fitted != frame {
-            adjusting = true
-            fog.setFrame(fitted, display: true)
-            adjusting = false
-        }
-        lastFrame = fitted
-        let next = FogCorner.nearest(to: fitted, in: screen, current: corner)
-        if next != corner { corner = next }
-        blur.maskImage = Self.blurMask(corner)
-    }
-
-    /// Command-Return or the fog's button: fill the screen, or go back to the frame it had.
+    /// Command-Return or the fog's button: fill the screen, or dock back in its corner at the size it had.
     func toggleFullScreen() {
+        stopSpring()
+        guard let screen = screen() else { return }
         let animate = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        adjusting = true
-        if let frame = frameBeforeFullScreen {
-            frameBeforeFullScreen = nil
+        if isFullScreen {
+            isFullScreen = false
+            let frame = FogDock.frame(size: fogSize, corner: corner, in: screen.frame)
             fog.setFrame(frame, display: true, animate: animate)
             // Saved again only once it is back, so the next launch never restores a full-screen frame.
             fog.setFrameAutosaveName(Self.conversationFrameName)
-            remember(frame)
-        } else if let screen = fog.screen ?? NSScreen.screens.first {
-            frameBeforeFullScreen = fog.frame
+            updateInsets(frame, on: screen)
+            blur.maskImage = Self.blurMask(corner)
+        } else {
             fog.setFrameAutosaveName("")
             fog.setFrame(screen.frame, display: true, animate: animate)
+            isFullScreen = true
+            updateInsets(screen.frame, on: screen)
+            blur.maskImage = nil
         }
-        adjusting = false
-        isFullScreen = frameBeforeFullScreen != nil
-        if isFullScreen { blur.maskImage = nil } else { fogChanged() }
+    }
+
+    // MARK: Docking
+
+    /// Docks the fog in `corner` of `screen` at its size, gliding there on a spring from `velocity` when `animated`.
+    private func dock(_ corner: FogCorner, on screen: NSScreen, velocity: CGVector, animated: Bool) {
+        if corner != self.corner { self.corner = corner }
+        let target = FogDock.frame(size: fogSize, corner: corner, in: screen.frame)
+        updateInsets(target, on: screen)
+        blur.maskImage = Self.blurMask(corner)
+        if animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            startSpring(to: target, velocity: velocity)
+        } else {
+            stopSpring()
+            fog.setFrame(target, display: true)
+        }
+    }
+
+    /// The screens changed (a display, the Dock): dock again where it was.
+    private func redock() {
+        guard !isCollapsed, !isFullScreen, dragStart == nil, resizeStart == nil, let screen = screen() else { return }
+        dock(corner, on: screen, velocity: .zero, animated: false)
+    }
+
+    /// The fog reaches the screen's edges, under the Dock and the menu bar; these are how far they cut into it.
+    private func updateInsets(_ frame: NSRect, on screen: NSScreen) {
+        let full = screen.frame
+        let visible = screen.visibleFrame
+        let next = EdgeInsets(
+            top: max(0, min(frame.maxY, full.maxY) - visible.maxY),
+            leading: max(0, visible.minX - max(frame.minX, full.minX)),
+            bottom: max(0, visible.minY - max(frame.minY, full.minY)),
+            trailing: max(0, min(frame.maxX, full.maxX) - visible.maxX)
+        )
+        if next != insets { insets = next }
+    }
+
+    // MARK: Dragging and resizing
+
+    /// Dragged by anywhere that isn't a control or a free edge, the fog follows the pointer exactly.
+    func dragMoved() {
+        guard !isFullScreen else { return }
+        let mouse = NSEvent.mouseLocation
+        let now = ProcessInfo.processInfo.systemUptime
+        if dragStart == nil {
+            stopSpring()
+            dragStart = (mouse, fog.frame)
+            dragSamples = []
+        }
+        guard let start = dragStart else { return }
+        dragSamples.append((now, mouse))
+        dragSamples.removeAll { now - $0.time > 0.1 }
+        fog.setFrameOrigin(NSPoint(x: start.frame.minX + mouse.x - start.mouse.x, y: start.frame.minY + mouse.y - start.mouse.y))
+    }
+
+    /// Let go, it glides into the corner its momentum was carrying it toward, on the screen it was let go over.
+    func dragEnded() {
+        guard dragStart != nil else { return }
+        dragStart = nil
+        // Only the last tenth of a second counts: a pause before letting go is a throw of nothing.
+        let now = ProcessInfo.processInfo.systemUptime
+        let recent = dragSamples.filter { now - $0.time <= 0.1 }
+        dragSamples = []
+        var velocity = CGVector.zero
+        if let first = recent.first, let last = recent.last, last.time > first.time {
+            let seconds = last.time - first.time
+            velocity = CGVector(dx: (last.point.x - first.point.x) / seconds, dy: (last.point.y - first.point.y) / seconds)
+        }
+        guard let screen = screen(containing: NSEvent.mouseLocation) else { return }
+        let center = CGPoint(x: fog.frame.midX, y: fog.frame.midY)
+        dock(FogDock.corner(releasedAt: center, velocity: velocity, in: screen.frame), on: screen, velocity: velocity, animated: true)
+    }
+
+    /// Dragging a free edge, or the corner between them, resizes the fog; its docked corner stays where it is.
+    func resizeMoved(_ edges: Edge.Set) {
+        guard !isFullScreen, let screen = screen() else { return }
+        let mouse = NSEvent.mouseLocation
+        if resizeStart == nil {
+            stopSpring()
+            resizeStart = (mouse, fog.frame)
+        }
+        guard let start = resizeStart else { return }
+        let next = FogDock.resize(
+            start.frame,
+            corner: corner,
+            edges: edges,
+            by: CGVector(dx: mouse.x - start.mouse.x, dy: mouse.y - start.mouse.y),
+            in: screen.frame,
+            minSize: Self.fogMinSize
+        )
+        fogSize = next.size
+        updateInsets(next, on: screen)
+        fog.setFrame(next, display: true)
+    }
+
+    func resizeEnded() {
+        resizeStart = nil
+    }
+
+    // MARK: Spring
+
+    private static let springStep = 1.0 / 120
+
+    /// Glides the fog to `target` on a critically damped spring starting at the pointer's release `velocity`, so a
+    /// throw lands in its corner instead of jumping there.
+    private func startSpring(to target: NSRect, velocity: CGVector) {
+        stopSpring()
+        springTarget = target
+        springVelocity = velocity
+        springOrigin = fog.frame.origin
+        fog.setFrame(NSRect(origin: springOrigin, size: target.size), display: true)
+        let timer = Timer(timeInterval: Self.springStep, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stepSpring() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        springTimer = timer
+    }
+
+    private func stepSpring() {
+        // ponytail: stiffness 180 and damping 2√180, critically damped with no overshoot; tune by feel.
+        let stiffness = 180.0
+        let damping = 2 * stiffness.squareRoot()
+        let step = Self.springStep
+        springVelocity.dx += (-stiffness * (springOrigin.x - springTarget.minX) - damping * springVelocity.dx) * step
+        springVelocity.dy += (-stiffness * (springOrigin.y - springTarget.minY) - damping * springVelocity.dy) * step
+        springOrigin.x += springVelocity.dx * step
+        springOrigin.y += springVelocity.dy * step
+        let settled = hypot(springOrigin.x - springTarget.minX, springOrigin.y - springTarget.minY) < 0.5
+            && hypot(springVelocity.dx, springVelocity.dy) < 10
+        if settled {
+            stopSpring()
+            fog.setFrame(springTarget, display: true)
+        } else {
+            fog.setFrameOrigin(springOrigin)
+        }
+    }
+
+    private func stopSpring() {
+        springTimer?.invalidate()
+        springTimer = nil
     }
 }
 
@@ -300,7 +436,7 @@ private struct ConversationFogHost: View {
         let row = Self.session(store.state)
         Group {
             if panels.isCollapsed {
-                FogHandle { panels.toggleCollapsed() }
+                FogHandle(corner: panels.corner, hovering: panels.hovering) { panels.toggleCollapsed() }
             } else {
                 ConversationFog(
                     turns: row.map { Self.turns(store.state, $0) } ?? [],
@@ -308,20 +444,70 @@ private struct ConversationFogHost: View {
                     isListening: row.map { ["listening", "recording"].contains(voice(for: $0)) } ?? false,
                     isFullScreen: panels.isFullScreen,
                     corner: panels.corner,
+                    insets: panels.insets,
+                    showsFog: FloatingPanels.showsFog,
                     onMic: { if let row { mic(row) } },
                     onSend: { if let row { send(row) } },
                     onCollapse: { panels.toggleCollapsed() },
                     onFullScreen: { panels.toggleFullScreen() }
                 )
-                // ponytail: a temporary 1 pt outline of the panel's real bounds, to tune dragging, resizing and the
-                // corner it faces (Tyler, 2026-09-14); take it off when the fog's style goes back on.
-                .overlay { if !panels.isFullScreen { Rectangle().strokeBorder(Color.black, lineWidth: 1) } }
+                // Dragged anywhere that isn't a control, it moves, and lets go into the corner its momentum carries it to.
+                .gesture(
+                    DragGesture(minimumDistance: 3)
+                        .onChanged { _ in panels.dragMoved() }
+                        .onEnded { _ in panels.dragEnded() }
+                )
+                .overlay {
+                    if !panels.isFullScreen {
+                        // ponytail: a temporary 1 pt outline standing in for the fog's look while dragging and
+                        // resizing are tuned (Tyler, 2026-09-14); the blur comes back in the next pass.
+                        Rectangle().strokeBorder(Color.black, lineWidth: 1).allowsHitTesting(false)
+                        resizeHandles
+                    }
+                }
             }
         }
         // A dictation lands in the draft once, whichever of this and the dashboard sees it first.
         .onChange(of: store.state?.live.dictated?.id) { _, _ in
             drafts.apply(store.state?.live.dictated)
         }
+    }
+
+    /// Wide strips along the fog's two free edges, and a square where they meet, each resizing it from its docked
+    /// corner: easier to catch than a window's own few-point edge.
+    private var resizeHandles: some View {
+        GeometryReader { proxy in
+            let corner = panels.corner
+            let grab = FloatingPanels.resizeGrab
+            let width = proxy.size.width
+            let height = proxy.size.height
+            let side: Edge.Set = corner.leading ? .trailing : .leading
+            let end: Edge.Set = corner.bottom ? .top : .bottom
+            ZStack(alignment: .topLeading) {
+                resizeHandle(side, cursor: .resizeLeftRight)
+                    .frame(width: grab, height: height)
+                    .offset(x: corner.leading ? width - grab : 0)
+                resizeHandle(end, cursor: .resizeUpDown)
+                    .frame(width: width, height: grab)
+                    .offset(y: corner.bottom ? 0 : height - grab)
+                resizeHandle([side, end], cursor: .crosshair)
+                    .frame(width: grab * 2, height: grab * 2)
+                    .offset(x: corner.leading ? width - grab * 2 : 0, y: corner.bottom ? 0 : height - grab * 2)
+            }
+        }
+    }
+
+    private func resizeHandle(_ edges: Edge.Set, cursor: NSCursor) -> some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside { cursor.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { _ in panels.resizeMoved(edges) }
+                    .onEnded { _ in panels.resizeEnded() }
+            )
     }
 
     /// The session the voice is on, else the daemon's active or selected one, else the first. Never a subagent.
