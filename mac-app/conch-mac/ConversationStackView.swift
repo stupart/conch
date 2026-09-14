@@ -48,6 +48,12 @@ struct ConversationStackView: View {
     /// Open the subagent a Task/Agent block started, in this same pane (C4).
     /// The daemon says which agent that was; the pane decides how to show it.
     var onOpenSubagent: (ConversationItem.Tool.Subagent) -> Void = { _ in }
+    /// Why conch cannot type into this session (a closed or app-server Codex
+    /// thread, a background job with no window). Answering a question IS
+    /// typing, so its buttons go dead and say why instead of failing on press.
+    var noTerminal: String? = nil
+    /// Offered beside that reason when a window can be attached to the job.
+    var onOpenInTerminal: (() -> Void)? = nil
     @EnvironmentObject private var store: StateStore
     /// The last link that would not open — the OS's own words and the
     /// resolved target — shown here, where the click happened, never as a
@@ -284,7 +290,9 @@ struct ConversationStackView: View {
                         )
                     }
                     .buttonStyle(.plain)
-                    .help(asked.multiSelect ? "Select \(option.label)" : "Answer \(option.label)")
+                    .disabled(noTerminal != nil)
+                    .opacity(noTerminal != nil ? 0.58 : 1)
+                    .help(noTerminal ?? (asked.multiSelect ? "Select \(option.label)" : "Answer \(option.label)"))
                     .accessibilityHint(
                         asked.multiSelect
                             ? "Toggles this option; Submit sends all selected options"
@@ -298,6 +306,26 @@ struct ConversationStackView: View {
                     questionOption(option, multiSelect: asked.multiSelect, selected: false)
                         .opacity(0.58)
                         .accessibilityHint("This question is no longer waiting for an answer")
+                }
+            }
+
+            if answerable, let noTerminal {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(noTerminal)
+                        .font(.system(size: 11))
+                        .foregroundStyle(ConchPalette.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                    if let onOpenInTerminal {
+                        Button(action: onOpenInTerminal) {
+                            Label("Open in Terminal", systemImage: "terminal")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(ConchPalette.brandCyan)
+                        .help("Open this session in a new Terminal window")
+                        .fixedSize()
+                    }
                 }
             }
 
@@ -324,7 +352,8 @@ struct ConversationStackView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Answer in your own words")
+                .disabled(noTerminal != nil)
+                .help(noTerminal ?? "Answer in your own words")
                 .accessibilityHint("Moves to the message field so you can answer in your own words")
             }
 
@@ -344,7 +373,7 @@ struct ConversationStackView: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .disabled(selected.isEmpty)
+                .disabled(selected.isEmpty || noTerminal != nil)
                 .accessibilityHint("Sends all selected options to the session")
             }
         }

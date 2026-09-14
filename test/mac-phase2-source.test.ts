@@ -109,7 +109,7 @@ describe("Mac Phase 2 questions and error reporting", () => {
     expect(conversation).toMatch(/if asked\.multiSelect \{[\s\S]*toggleSelection[\s\S]*\} else \{[\s\S]*onAnswer\(option\.label\)/);
     expect(conversation).toContain('onAnswer(selected.joined(separator: ", "))');
     expect(conversation).toContain('selected.isEmpty ? "Submit selections"');
-    expect(conversation).toContain(".disabled(selected.isEmpty)");
+    expect(conversation).toContain(".disabled(selected.isEmpty || noTerminal != nil)");
     expect(dashboard).toMatch(/onAnswer: \{ label in[\s\S]*\.inject\([\s\S]*text: label/);
   });
 

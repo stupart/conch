@@ -102,7 +102,7 @@ describe("iPhone Phase 2 daily controls", () => {
     expect(conversation).toMatch(/if asked\.multiSelect \{[\s\S]*toggleSelection[\s\S]*\} else \{[\s\S]*onSelectOption\(option\.label\)/);
     expect(conversation).toContain('onSelectOption(selected.joined(separator: ", "))');
     expect(conversation).toContain('selected.isEmpty ? "Submit selections"');
-    expect(conversation).toContain(".disabled(!isActive || optionReplyInFlight || option.label.isEmpty)");
+    expect(conversation).toContain(".disabled(!isActive || optionReplyInFlight || option.label.isEmpty || noTerminal != nil)");
     expect(session).toContain("onSelectOption: answerQuestion");
     expect(session).toMatch(/private func answerQuestion[\s\S]*text: label/);
   });
