@@ -93,7 +93,8 @@ test("M3: the fog collapses to a small handle and opens again at the size it had
   // hovering in that area"), tracked by the panel's own view so it works while conch is in the background.
   expect(panels).toContain("FogHandle(corner: panels.corner, hovering: panels.hovering) { panels.toggleCollapsed() }");
   expect(panels).toContain("onCollapse: { panels.toggleCollapsed() },");
-  expect(member(components, "private var panelButtons: some View {")).toContain('label: "Collapse conversation",');
+  const buttons = components.slice(components.indexOf("public struct FogPanelButtons: View {"), components.indexOf("// MARK: - FogHandle"));
+  expect(buttons).toContain('label: "Collapse conversation",');
   expect(components).toContain("public struct FogHandle: View {");
   expect(components).toContain(".opacity(hovering ? 1 : 0)");
   expect(components).toContain('.accessibilityLabel("Show conversation")');
@@ -109,7 +110,8 @@ test("M3: both panels keep their frames, and the fog goes full screen on Command
   expect(panels).toContain('static let controlBarFrameName = "conch.controlBar"');
   expect(panels).toContain('static let conversationFrameName = "conch.conversation"');
 
-  const button = member(components, "private var panelButtons: some View {");
+  const button = components.slice(components.indexOf("public struct FogPanelButtons: View {"), components.indexOf("// MARK: - FogHandle"));
+  expect(button.length).toBeGreaterThan(100);
   expect(button).toContain("action: onFullScreen");
   expect(button).toContain(".keyboardShortcut(.return, modifiers: .command)");
   expect(panels).toContain("onFullScreen: { panels.toggleFullScreen() }");
@@ -207,7 +209,11 @@ test("M3: the fog stays docked in a corner, is thrown into a corner by its middl
   expect(ended).toContain("let recent = dragSamples.filter { now - $0.time <= 0.1 }");
   // Resizing keeps its corner, from strips wider than a window's own edge.
   expect(member(panels, "func resizeMoved(_ edges: Edge.Set) {")).toContain("let next = FogDock.resize(");
-  expect(panels).toContain("static let resizeGrab: CGFloat = 48");
+  expect(panels).toContain("static let resizeGrab: CGFloat = 96");
+  // The host draws the buttons itself, after the strips, so a strip never takes a button's click.
+  expect(panels).toContain("showsButtons: false,");
+  const overlay = panels.slice(panels.indexOf("resizeHandles\n                    }"), panels.indexOf("resizeHandles\n                    }") + 300);
+  expect(overlay).toContain("panelButtons");
   // The words and buttons keep clear of those strips.
   expect(member(panels, "private func updateInsets(_ frame: NSRect, on screen: NSScreen) {")).toContain(
     "let grab = isFullScreen ? 0 : max(0, Self.resizeGrab - ConversationFog.padding)",

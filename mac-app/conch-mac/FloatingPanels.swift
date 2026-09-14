@@ -45,7 +45,7 @@ final class FloatingPanels: ObservableObject {
     static let conversationCollapsedKey = "conch.conversationCollapsed"
     /// How wide the strips along the fog's free edges are that resize it: wide enough to find without looking
     /// (Tyler: "make the area where you can grab an edge to resize much much larger").
-    static let resizeGrab: CGFloat = 48
+    static let resizeGrab: CGFloat = 96
     // ponytail: the fog's look is off while dragging and resizing are tuned (Tyler, 2026-09-14): a 1 pt outline
     // stands in for it. The next pass brings back a blur that gathers at the docked edges.
     static let showsFog = false
@@ -68,7 +68,7 @@ final class FloatingPanels: ObservableObject {
     @Published private(set) var hovering = false
     /// How far into a throw's flight the fog is, 0 at rest to 1 mid-air: it fades, softens and shrinks with it.
     @Published private(set) var throwMotion: CGFloat = 0
-    private static let fogMinSize = NSSize(width: 480, height: 360)
+    private static let fogMinSize = NSSize(width: 480, height: 420)
     /// The size the fog was last given, kept through moves, collapsing and full screen.
     private var fogSize = NSSize(width: 760, height: 560)
     private var dragStart: (mouse: NSPoint, frame: NSRect)?
@@ -285,11 +285,12 @@ final class FloatingPanels: ObservableObject {
     private func updateInsets(_ frame: NSRect, on screen: NSScreen) {
         let full = screen.frame
         let visible = screen.visibleFrame
-        // The free edges are wide resize strips; the words and buttons keep clear of them.
+        // The free edges are wide resize strips. The side strip and a bottom strip would cover the words and the reply,
+        // so those are inset past them; a top strip runs under the buttons, which the host draws above it.
         let grab = isFullScreen ? 0 : max(0, Self.resizeGrab - ConversationFog.padding)
         let free = FogDock.freeEdges(corner)
         let next = EdgeInsets(
-            top: max(0, min(frame.maxY, full.maxY) - visible.maxY) + (free.contains(.top) ? grab : 0),
+            top: max(0, min(frame.maxY, full.maxY) - visible.maxY),
             leading: max(0, visible.minX - max(frame.minX, full.minX)) + (free.contains(.leading) ? grab : 0),
             bottom: max(0, visible.minY - max(frame.minY, full.minY)) + (free.contains(.bottom) ? grab : 0),
             trailing: max(0, min(frame.maxX, full.maxX) - visible.maxX) + (free.contains(.trailing) ? grab : 0)
@@ -466,6 +467,7 @@ private struct ConversationFogHost: View {
                     corner: panels.corner,
                     insets: panels.insets,
                     showsFog: FloatingPanels.showsFog,
+                    showsButtons: false,
                     onMic: { if let row { mic(row) } },
                     onSend: { if let row { send(row) } },
                     onCollapse: { panels.toggleCollapsed() },
@@ -487,12 +489,32 @@ private struct ConversationFogHost: View {
                         Rectangle().strokeBorder(Color.black, lineWidth: 1).allowsHitTesting(false)
                         resizeHandles
                     }
+                    // Above the resize strips, so the top strip never takes a click meant for a button.
+                    panelButtons
                 }
             }
         }
         // A dictation lands in the draft once, whichever of this and the dashboard sees it first.
         .onChange(of: store.state?.live.dictated?.id) { _, _ in
             drafts.apply(store.state?.live.dictated)
+        }
+    }
+
+    /// The collapse and full-screen buttons where the fog would draw them, but over the resize strips.
+    private var panelButtons: some View {
+        GeometryReader { proxy in
+            let insets = panels.insets
+            FogPanelButtons(
+                corner: panels.corner,
+                isFullScreen: panels.isFullScreen,
+                onCollapse: { panels.toggleCollapsed() },
+                onFullScreen: { panels.toggleFullScreen() }
+            )
+            .frame(
+                width: max(0, proxy.size.width - insets.leading - insets.trailing - 2 * ConversationFog.padding),
+                alignment: panels.isFullScreen || !panels.corner.leading ? .leading : .trailing
+            )
+            .offset(x: insets.leading + ConversationFog.padding, y: insets.top + ConversationFog.padding)
         }
     }
 
@@ -514,8 +536,8 @@ private struct ConversationFogHost: View {
                     .frame(width: width, height: grab)
                     .offset(y: corner.bottom ? 0 : height - grab)
                 resizeHandle([side, end], cursor: .crosshair)
-                    .frame(width: grab * 2, height: grab * 2)
-                    .offset(x: corner.leading ? width - grab * 2 : 0, y: corner.bottom ? 0 : height - grab * 2)
+                    .frame(width: grab, height: grab)
+                    .offset(x: corner.leading ? width - grab : 0, y: corner.bottom ? 0 : height - grab)
             }
         }
     }

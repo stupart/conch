@@ -490,6 +490,8 @@ public struct ConversationFog: View {
     let insets: EdgeInsets
     /// Draws the fog's tint; off, the words and buttons stand alone.
     let showsFog: Bool
+    /// Draws the collapse and full-screen buttons; a host that layers its own controls over the fog draws them itself.
+    let showsButtons: Bool
     let onMic: () -> Void
     let onSend: () -> Void
     let onCollapse: () -> Void
@@ -504,6 +506,7 @@ public struct ConversationFog: View {
         corner: FogCorner = .bottomLeading,
         insets: EdgeInsets = EdgeInsets(),
         showsFog: Bool = true,
+        showsButtons: Bool = true,
         onMic: @escaping () -> Void,
         onSend: @escaping () -> Void,
         onCollapse: @escaping () -> Void,
@@ -516,6 +519,7 @@ public struct ConversationFog: View {
         self.corner = corner
         self.insets = insets
         self.showsFog = showsFog
+        self.showsButtons = showsButtons
         self.onMic = onMic
         self.onSend = onSend
         self.onCollapse = onCollapse
@@ -597,13 +601,15 @@ public struct ConversationFog: View {
                 }
                 .frame(width: text.width, height: text.height, alignment: .bottomLeading)
                 .offset(x: text.minX, y: text.minY)
-                // On the free side of the top row, away from the edge the fog is docked to.
-                panelButtons
-                    .frame(
-                        width: max(0, proxy.size.width - insets.leading - insets.trailing - 2 * Self.padding),
-                        alignment: isFullScreen || !corner.leading ? .leading : .trailing
-                    )
-                    .offset(x: insets.leading + Self.padding, y: insets.top + Self.padding)
+                if showsButtons {
+                    // On the free side of the top row, away from the edge the fog is docked to.
+                    FogPanelButtons(corner: corner, isFullScreen: isFullScreen, onCollapse: onCollapse, onFullScreen: onFullScreen)
+                        .frame(
+                            width: max(0, proxy.size.width - insets.leading - insets.trailing - 2 * Self.padding),
+                            alignment: isFullScreen || !corner.leading ? .leading : .trailing
+                        )
+                        .offset(x: insets.leading + Self.padding, y: insets.top + Self.padding)
+                }
             }
             .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
         }
@@ -676,32 +682,48 @@ public struct ConversationFog: View {
         }
     }
 
-    /// Collapse, then full screen: the order a Mac window's minimise and zoom buttons come in. Always fully there: a
-    /// hover can't be relied on in a panel of an app that isn't active.
-    private var panelButtons: some View {
+    /// Agent replies are markdown; the fog shows the inline parts (emphasis, code, links) and keeps line breaks.
+    static func inlineMarkdown(_ text: String) -> AttributedString {
+        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(text)
+    }
+}
+
+// MARK: - FogPanelButtons
+
+/// The fog's collapse and full-screen buttons: in that order, as a Mac window's minimise and zoom come. Always fully
+/// there: a hover can't be relied on in a panel of an app that isn't active.
+public struct FogPanelButtons: View {
+    let corner: FogCorner
+    let isFullScreen: Bool
+    let onCollapse: () -> Void
+    let onFullScreen: () -> Void
+
+    public init(corner: FogCorner, isFullScreen: Bool, onCollapse: @escaping () -> Void, onFullScreen: @escaping () -> Void) {
+        self.corner = corner
+        self.isFullScreen = isFullScreen
+        self.onCollapse = onCollapse
+        self.onFullScreen = onFullScreen
+    }
+
+    public var body: some View {
         HStack(spacing: ConchSpace.x2) {
             IconButton(
                 corner.bottom || isFullScreen ? "chevron.down" : "chevron.up",
                 label: "Collapse conversation",
                 style: .glass,
-                size: Self.buttonSize,
+                size: ConversationFog.buttonSize,
                 action: onCollapse
             )
             IconButton(
                 isFullScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right",
                 label: isFullScreen ? "Exit full screen" : "Full screen",
                 style: .glass,
-                size: Self.buttonSize,
+                size: ConversationFog.buttonSize,
                 action: onFullScreen
             )
             .keyboardShortcut(.return, modifiers: .command)
         }
-    }
-
-    /// Agent replies are markdown; the fog shows the inline parts (emphasis, code, links) and keeps line breaks.
-    static func inlineMarkdown(_ text: String) -> AttributedString {
-        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-            ?? AttributedString(text)
     }
 }
 
