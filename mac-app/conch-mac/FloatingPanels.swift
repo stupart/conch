@@ -74,7 +74,7 @@ final class FloatingPanels: ObservableObject {
             panel.hasShadow = false
         }
 
-        let bar = FirstClickHostingView(rootView: ControlBarHost(store: store))
+        let bar = FirstClickHostingView(rootView: ControlBarHost(store: store, onSize: { [weak self] size in self?.fitControlBar(to: size) }))
         controlBar.contentView = bar
         place(controlBar, name: Self.controlBarFrameName, size: bar.fittingSize) { screen, size in
             // Top centre, just under the menu bar.
@@ -151,6 +151,14 @@ final class FloatingPanels: ObservableObject {
         if on { panel.orderFrontRegardless() } else { panel.orderOut(nil) }
     }
 
+    /// The bar is exactly as big as what it shows, growing or shrinking about its top centre, where it was put.
+    /// Sized once at launch it came out a few points short and cut "Quiet" off.
+    private func fitControlBar(to size: CGSize) {
+        let frame = controlBar.frame
+        guard size.width > 0, abs(frame.width - size.width) > 0.5 || abs(frame.height - size.height) > 0.5 else { return }
+        controlBar.setFrame(NSRect(x: frame.midX - size.width / 2, y: frame.maxY - size.height, width: size.width, height: size.height), display: true)
+    }
+
     /// The fog's collapse button and its handle both flip the default; `showWhatIsOn` does the rest.
     func toggleCollapsed() {
         UserDefaults.standard.set(!isCollapsed, forKey: Self.conversationCollapsedKey)
@@ -220,6 +228,8 @@ final class FloatingPanels: ObservableObject {
 /// sends them. The conversation is the menu's to show and hide.
 private struct ControlBarHost: View {
     @ObservedObject var store: StateStore
+    /// Its ideal size, for the panel to take.
+    let onSize: (CGSize) -> Void
 
     var body: some View {
         let voice = ConchStatusItem.voiceState(store.state)
@@ -235,7 +245,16 @@ private struct ControlBarHost: View {
         .padding(.top, ConchSpace.x3)
         .padding(.horizontal, ConchSpace.x6)
         .padding(.bottom, ConchSpace.x10)
+        // Never squeezed by the panel: the panel follows this size instead.
+        .fixedSize()
+        .background(GeometryReader { proxy in Color.clear.preference(key: ControlBarSize.self, value: proxy.size) })
+        .onPreferenceChange(ControlBarSize.self, perform: onSize)
     }
+}
+
+private struct ControlBarSize: PreferenceKey {
+    static let defaultValue = CGSize.zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
 }
 
 /// The conversation fog on the store, for the session the voice is on. The reply is that session's

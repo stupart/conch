@@ -165,6 +165,7 @@ public struct TalkQuietSwitch: View {
                 } label: {
                     Text(option.title)
                         .font(ConchType.uiEmphasis)
+                        .fixedSize()
                         .foregroundStyle(selected ? ConchColor.textPrimary : ConchColor.textSecondary)
                         .padding(.vertical, 6)
                         .padding(.horizontal, 14)
@@ -334,6 +335,8 @@ public struct InlineReplyLine: View {
                 TextField("", text: $text, prompt: Text(placeholder).foregroundStyle(ConchColor.textTertiary), axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(font)
+                    // Grows to five lines, then scrolls like the transcript rather than pushing it away.
+                    .lineLimit(1...5)
                     .foregroundStyle(ConchColor.textPrimary)
                     .onSubmit(onSend)
                     .accessibilityLabel("Reply")
@@ -517,8 +520,9 @@ public struct ConversationFog: View {
         let trailing = inset(.trailing, flush: flush, fade: fade)
         let bottom = inset(.bottom, flush: flush, fade: fade)
         let top = inset(.top, flush: flush, fade: fade) + buttonRoom
-        let width = max(0, min(560, size.width * 0.66, size.width - leading - trailing))
-        let height = max(0, min(size.height * 0.62, size.height - bottom - top))
+        // Past its default size, a bigger panel gives the words more room: wider up to a comfortable line, and taller.
+        let width = max(0, min(max(560, size.width * 0.66), 960, size.width - leading - trailing))
+        let height = max(0, min(max(size.height * 0.62, size.height - 260), size.height - bottom - top))
         let x: CGFloat = switch anchor(flush).x {
         case 0: leading
         case 1: size.width - trailing - width
