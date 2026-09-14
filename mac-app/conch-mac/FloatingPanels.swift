@@ -118,6 +118,10 @@ final class FloatingPanels: ObservableObject {
         fog.becomesKeyOnlyIfNeeded = true
         // conch moves and resizes the fog itself (dragMoved, resizeMoved), so the window server never races it.
         fog.isMovableByWindowBackground = false
+        // Every click inside the panel is the fog's. Left alone, the window server lets clicks through a see-through
+        // window's transparent pixels, which with the fog's look off is nearly all of it: a drag or a resize strip
+        // would land on the app behind, and so would a click in the collapsed corner.
+        fog.ignoresMouseEvents = false
         blur.material = .underWindowBackground
         blur.blendingMode = .behindWindow
         blur.state = .active
