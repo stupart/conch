@@ -58,9 +58,46 @@ test("M3: Show control bar and Show conversation drive the panels, live", () => 
   const shows = member(panels, "private func showWhatIsOn() {");
   expect(shows).toContain("show(controlBar, defaults.bool(forKey: ConchStatusItem.showControlBarKey))");
   expect(shows).toContain("show(fog, defaults.bool(forKey: ConchStatusItem.showConversationKey))");
-  // The control bar's conversation button flips the same default as the menu.
-  expect(panels).toContain("@AppStorage(ConchStatusItem.showConversationKey) private var conversationShown = false");
-  expect(panels).toContain("onConversation: { conversationShown.toggle() }");
+  // The conversation is the menu's to show: the control bar has no conversation button (Tyler, 2026-09-14).
+  const bar = member(components, "public var body: some View {\n        GlassPill(\"Voice controls\") {");
+  expect(bar).toContain("TalkQuietSwitch(mode: $mode)");
+  expect(bar).not.toContain("IconButton");
+  expect(components).not.toContain("onConversation");
+  expect(panels).not.toContain("conversationShown");
+  // Turned on from the menu, the conversation opens full size rather than as its collapsed handle.
+  const toggleConversation = member(item, "@objc private func toggleConversation() {");
+  expect(toggleConversation).toContain("UserDefaults.standard.set(false, forKey: FloatingPanels.conversationCollapsedKey)");
+  expect(toggleConversation.indexOf("UserDefaults.standard.set(false")).toBeLessThan(toggleConversation.indexOf("toggle(Self.showConversationKey)"));
+});
+
+/** Tyler: "easy to collapse and expand from larger to super minimal like nothing when closed". */
+test("M3: the fog collapses to a small handle and opens again at the size it had", () => {
+  expect(panels).toContain('static let conversationCollapsedKey = "conch.conversationCollapsed"');
+  expect(member(panels, "private func showWhatIsOn() {")).toContain(
+    "setCollapsed(defaults.bool(forKey: Self.conversationCollapsedKey))",
+  );
+  expect(member(panels, "func toggleCollapsed() {")).toContain(
+    "UserDefaults.standard.set(!isCollapsed, forKey: Self.conversationCollapsedKey)",
+  );
+  const collapse = member(panels, "private func setCollapsed(_ collapsed: Bool) {");
+  expect(collapse).toContain("if collapsed, isFullScreen { toggleFullScreen() }");
+  expect(collapse).toContain("expandedSize = fog.frame.size");
+  expect(collapse).toContain("fog.setFrame(NSRect(origin: origin, size: NSSize(width: FogHandle.side, height: FogHandle.side)), display: true)");
+  expect(collapse).toContain("fog.setFrame(NSRect(origin: origin, size: expandedSize), display: true)");
+  // The collapsed frame is never the one saved: autosave stops before it shrinks and resumes once it is open.
+  expect(collapse.indexOf('fog.setFrameAutosaveName("")')).toBeGreaterThan(-1);
+  expect(collapse.indexOf('fog.setFrameAutosaveName("")')).toBeLessThan(collapse.indexOf("size: NSSize(width: FogHandle.side"));
+  expect(collapse.indexOf("fog.setFrameAutosaveName(Self.conversationFrameName)")).toBeGreaterThan(collapse.indexOf("size: expandedSize"));
+  expect(collapse).toContain("fog.minSize = .zero");
+  expect(collapse).toContain("fog.minSize = Self.fogMinSize");
+  // The fog's button collapses it, and the handle opens it.
+  expect(panels).toContain("FogHandle { panels.toggleCollapsed() }");
+  expect(panels).toContain("onCollapse: { panels.toggleCollapsed() },");
+  expect(member(components, "private var panelButtons: some View {")).toContain(
+    'IconButton("chevron.down", label: "Collapse conversation", style: .glass, size: 30, action: onCollapse)',
+  );
+  expect(components).toContain("public struct FogHandle: View {");
+  expect(components).toContain('.accessibilityLabel("Show conversation")');
 });
 
 test("M3: both panels keep their frames, and the fog goes full screen on Command-Return", () => {
@@ -72,7 +109,7 @@ test("M3: both panels keep their frames, and the fog goes full screen on Command
   expect(panels).toContain('static let controlBarFrameName = "conch.controlBar"');
   expect(panels).toContain('static let conversationFrameName = "conch.conversation"');
 
-  const button = member(components, "private var fullScreenButton: some View {");
+  const button = member(components, "private var panelButtons: some View {");
   expect(button).toContain("action: onFullScreen");
   expect(button).toContain(".keyboardShortcut(.return, modifiers: .command)");
   expect(panels).toContain("onFullScreen: { panels.toggleFullScreen() }");
@@ -105,7 +142,10 @@ test("M3: the fog replies through inject and dictates through the composer's dic
   expect(components).toContain(".fill(ConchColor.fog)");
   expect(panels).toContain("blur.blendingMode = .behindWindow");
   expect(panels).toContain("blur.maskImage = Self.cornerMask");
-  expect(components).toContain(".font(age == 0 ? ConchType.conversationNow : ConchType.conversationPast)");
+  expect(components).toContain(".font(Self.font(latest: age == 0, fullScreen: isFullScreen))");
+  expect(member(components, "static func font(latest: Bool, fullScreen: Bool) -> Font {")).toContain(
+    "case (true, true): ConchType.conversationNowFull",
+  );
 });
 
 test("M3: the control bar's Talk and Quiet are the daemon's global resume and pause", () => {

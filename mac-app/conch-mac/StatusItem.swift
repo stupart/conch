@@ -173,7 +173,13 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     @objc private func stopSpeaking() { store.send(.stop()) }
 
     @objc private func toggleControlBar() { toggle(Self.showControlBarKey) }
-    @objc private func toggleConversation() { toggle(Self.showConversationKey) }
+    @objc private func toggleConversation() {
+        // Turned on from the menu, the conversation opens full size, not as its collapsed handle.
+        if !UserDefaults.standard.bool(forKey: Self.showConversationKey) {
+            UserDefaults.standard.set(false, forKey: FloatingPanels.conversationCollapsedKey)
+        }
+        toggle(Self.showConversationKey)
+    }
 
     private func toggle(_ key: String) {
         UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: key), forKey: key)

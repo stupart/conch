@@ -365,6 +365,7 @@ struct FogScreen: View {
                 isFullScreen: fullScreen,
                 onMic: {},
                 onSend: {},
+                onCollapse: {},
                 onFullScreen: {}
             )
             .frame(width: panel.width, height: panel.height)
@@ -380,16 +381,14 @@ let barDetails: [VoiceState: String] = [
 ]
 
 try render("m3-control-bar") {
-    Heading(title: "Control bar", note: "M3. A non-activating panel under the menu bar, one row per voice state. The Speaking row has the conversation shown.")
+    Heading(title: "Control bar", note: "M3. A non-activating panel under the menu bar, one row per voice state. The conversation is shown and hidden from the menu bar menu.")
     ForEach(VoiceState.allCases, id: \.self) { state in
         ZStack {
             OtherApp(compact: true)
             ControlBar(
                 state: state,
                 detail: barDetails[state] ?? "",
-                mode: .constant(state == .quiet ? .quiet : .talk),
-                conversationShown: state == .speaking,
-                onConversation: {}
+                mode: .constant(state == .quiet ? .quiet : .talk)
             )
         }
         .frame(width: 880, height: 104)
@@ -404,5 +403,16 @@ try render("m3-fog-corner", width: 1280) {
 
 try render("m3-fog-fullscreen", width: 1280) {
     Heading(title: "Conversation fog, full screen", note: "Command-Return or the button; leaving restores the corner's frame. Listening, with a reply typed.")
-    FogScreen(fullScreen: true, draft: "Looks good. Ship it, then do the same for the Dayloop invite", listening: true)
+    FogScreen(fullScreen: true, draft: "Looks good. Ship it, then the Dayloop invite", listening: true)
+}
+
+try render("m3-fog-collapsed", width: 1280) {
+    Heading(title: "Conversation fog, collapsed", note: "The fog's collapse button folds it to this handle in its corner; a click opens it again at the size it had.")
+    ZStack(alignment: .bottomLeading) {
+        OtherApp()
+        FogHandle {}
+            .padding(ConchSpace.x4)
+    }
+    .frame(width: FogScreen.screen.width, height: FogScreen.screen.height)
+    .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large))
 }

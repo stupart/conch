@@ -124,6 +124,9 @@ public enum ConchType {
     public static let code = Font.system(size: 12, design: .monospaced)
     public static let conversationNow = Font.system(size: 24, weight: .medium)
     public static let conversationPast = Font.system(size: 17)
+    /// The conversation full screen: the words grow with the space they have.
+    public static let conversationNowFull = Font.system(size: 36, weight: .medium)
+    public static let conversationPastFull = Font.system(size: 24)
     #else
     public static let title = Font.title2.weight(.semibold)
     public static let heading = Font.headline
@@ -135,6 +138,8 @@ public enum ConchType {
     public static let code = Font.system(.footnote, design: .monospaced)
     public static let conversationNow = Font.system(.title, weight: .medium)
     public static let conversationPast = Font.title3
+    public static let conversationNowFull = Font.largeTitle.weight(.medium)
+    public static let conversationPastFull = Font.title2
     #endif
 
     /// Line spacing to add to reading text.
@@ -151,6 +156,8 @@ public enum ConchType {
         .init(name: "code", font: code, mac: "12 SF Mono", iOS: ".footnote SF Mono (13)"),
         .init(name: "conversationNow", font: conversationNow, mac: "24 medium", iOS: ".title medium (28)"),
         .init(name: "conversationPast", font: conversationPast, mac: "17 regular", iOS: ".title3 (20)"),
+        .init(name: "conversationNowFull", font: conversationNowFull, mac: "36 medium", iOS: ".largeTitle medium (34)"),
+        .init(name: "conversationPastFull", font: conversationPastFull, mac: "24 regular", iOS: ".title2 (22)"),
     ]
 }
 

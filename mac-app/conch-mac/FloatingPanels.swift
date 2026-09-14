@@ -22,6 +22,8 @@ private final class FirstClickHostingView<Content: View>: NSHostingView<Content>
 final class FloatingPanels: ObservableObject {
     static let controlBarFrameName = "conch.controlBar"
     static let conversationFrameName = "conch.conversation"
+    /// The fog folded down to its handle. A default like the two show keys, so the menu can open it too.
+    static let conversationCollapsedKey = "conch.conversationCollapsed"
 
     private static var installed: FloatingPanels?
 
@@ -32,6 +34,12 @@ final class FloatingPanels: ObservableObject {
 
     /// The fog fills its screen; leaving puts it back in the frame it had.
     @Published private(set) var isFullScreen = false
+    @Published private(set) var isCollapsed = false
+    /// The open fog's size, to go back to from the handle.
+    private var expandedSize = NSSize(width: 760, height: 560)
+    private static let fogMinSize = NSSize(width: 480, height: 360)
+    /// A blur mask with nothing in it: collapsed, the fog is only its handle.
+    private static let noBlur = NSImage(size: NSSize(width: 1, height: 1), flipped: false) { _ in true }
     private var frameBeforeFullScreen: NSRect?
     private let controlBar = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private let fog = FloatingPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel, .resizable], backing: .buffered, defer: true)
@@ -69,7 +77,7 @@ final class FloatingPanels: ObservableObject {
 
         fog.takesKeys = true
         fog.becomesKeyOnlyIfNeeded = true
-        fog.minSize = NSSize(width: 480, height: 360)
+        fog.minSize = Self.fogMinSize
         blur.material = .underWindowBackground
         blur.blendingMode = .behindWindow
         blur.state = .active
@@ -108,6 +116,7 @@ final class FloatingPanels: ObservableObject {
 
     private func showWhatIsOn() {
         let defaults = UserDefaults.standard
+        setCollapsed(defaults.bool(forKey: Self.conversationCollapsedKey))
         show(controlBar, defaults.bool(forKey: ConchStatusItem.showControlBarKey))
         show(fog, defaults.bool(forKey: ConchStatusItem.showConversationKey))
     }
@@ -116,6 +125,34 @@ final class FloatingPanels: ObservableObject {
     private func show(_ panel: NSPanel, _ on: Bool) {
         guard on != panel.isVisible else { return }
         if on { panel.orderFrontRegardless() } else { panel.orderOut(nil) }
+    }
+
+    /// The fog's collapse button and its handle both flip the default; `showWhatIsOn` does the rest.
+    func toggleCollapsed() {
+        UserDefaults.standard.set(!isCollapsed, forKey: Self.conversationCollapsedKey)
+    }
+
+    /// Collapsed, the fog is a small handle at its bottom-left corner; opened, it has the size it had.
+    private func setCollapsed(_ collapsed: Bool) {
+        guard collapsed != isCollapsed else { return }
+        if collapsed, isFullScreen { toggleFullScreen() }
+        isCollapsed = collapsed
+        let origin = fog.frame.origin
+        if collapsed {
+            expandedSize = fog.frame.size
+            // Not saved while collapsed, so the saved frame stays the open one.
+            fog.setFrameAutosaveName("")
+            fog.styleMask.remove(.resizable)
+            fog.minSize = .zero
+            fog.setFrame(NSRect(origin: origin, size: NSSize(width: FogHandle.side, height: FogHandle.side)), display: true)
+            blur.maskImage = Self.noBlur
+        } else {
+            fog.styleMask.insert(.resizable)
+            fog.minSize = Self.fogMinSize
+            fog.setFrame(NSRect(origin: origin, size: expandedSize), display: true)
+            fog.setFrameAutosaveName(Self.conversationFrameName)
+            blur.maskImage = Self.cornerMask
+        }
     }
 
     /// Command-Return or the fog's button: fill the screen, or go back to the frame it had.
@@ -137,10 +174,9 @@ final class FloatingPanels: ObservableObject {
 }
 
 /// The control bar on the store. Talk and Quiet are the daemon's global resume and pause, as the menu bar
-/// sends them; the conversation button flips the same default as Show conversation.
+/// sends them. The conversation is the menu's to show and hide.
 private struct ControlBarHost: View {
     @ObservedObject var store: StateStore
-    @AppStorage(ConchStatusItem.showConversationKey) private var conversationShown = false
 
     var body: some View {
         let voice = ConchStatusItem.voiceState(store.state)
@@ -150,13 +186,12 @@ private struct ControlBarHost: View {
             mode: Binding(
                 get: { store.state?.mode.paused == true ? .quiet : .talk },
                 set: { store.send($0 == .talk ? .global(.resume) : .global(.pause)) }
-            ),
-            conversationShown: conversationShown,
-            onConversation: { conversationShown.toggle() }
+            )
         )
-        // Room for the glass's shadow, and a small gap under the menu bar.
+        // A small gap under the menu bar, and room below for the glass's dropped shadow.
         .padding(.top, ConchSpace.x3)
-        .padding([.horizontal, .bottom], ConchSpace.x6)
+        .padding(.horizontal, ConchSpace.x6)
+        .padding(.bottom, ConchSpace.x10)
     }
 }
 
@@ -169,15 +204,22 @@ private struct ConversationFogHost: View {
 
     var body: some View {
         let row = Self.session(store.state)
-        ConversationFog(
-            turns: row.map { Self.turns(store.state, $0) } ?? [],
-            draft: row.map { drafts.textBinding(for: $0.id) } ?? .constant(""),
-            isListening: row.map { ["listening", "recording"].contains(voice(for: $0)) } ?? false,
-            isFullScreen: panels.isFullScreen,
-            onMic: { if let row { mic(row) } },
-            onSend: { if let row { send(row) } },
-            onFullScreen: { panels.toggleFullScreen() }
-        )
+        Group {
+            if panels.isCollapsed {
+                FogHandle { panels.toggleCollapsed() }
+            } else {
+                ConversationFog(
+                    turns: row.map { Self.turns(store.state, $0) } ?? [],
+                    draft: row.map { drafts.textBinding(for: $0.id) } ?? .constant(""),
+                    isListening: row.map { ["listening", "recording"].contains(voice(for: $0)) } ?? false,
+                    isFullScreen: panels.isFullScreen,
+                    onMic: { if let row { mic(row) } },
+                    onSend: { if let row { send(row) } },
+                    onCollapse: { panels.toggleCollapsed() },
+                    onFullScreen: { panels.toggleFullScreen() }
+                )
+            }
+        }
         // A dictation lands in the draft once, whichever of this and the dashboard sees it first.
         .onChange(of: store.state?.live.dictated?.id) { _, _ in
             drafts.apply(store.state?.live.dictated)
