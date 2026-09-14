@@ -26,6 +26,11 @@ final class ComposerDraftStore: ObservableObject {
     private var appliedDictationID = 0
     private let defaults: UserDefaults
     private var previewSeed: String?
+    /// The pending save. Saving every keystroke JSON-encoded every draft and wrote it to preferences; with a long
+    /// draft that froze the app (a sample on 2026-09-14 had ComposerDraftStore.persist heaviest on the main thread),
+    /// and each write woke everything watching preferences. It now saves once typing pauses, and when the app quits.
+    private var saveTask: Task<Void, Never>?
+    private var terminateObserver: NSObjectProtocol?
 
     init(
         defaults: UserDefaults = .standard,
@@ -38,6 +43,13 @@ final class ComposerDraftStore: ObservableObject {
             drafts = saved.filter { !$0.value.isEmpty }
         } else {
             drafts = [:]
+        }
+        terminateObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.saveNow() }
         }
     }
 
@@ -91,13 +103,33 @@ final class ComposerDraftStore: ObservableObject {
     }
 
     private func update(_ sessionID: String, mutate: (inout Entry) -> Void) {
-        var entry = drafts[sessionID] ?? Entry()
+        let before = drafts[sessionID]
+        var entry = before ?? Entry()
         mutate(&entry)
+        // Nothing changed (a view re-sending the same text): no publish, no save.
+        guard entry.text != (before?.text ?? "") || entry.attachments != (before?.attachments ?? []) else { return }
         if entry.isEmpty {
             drafts[sessionID] = nil
         } else {
             drafts[sessionID] = entry
         }
+        scheduleSave()
+    }
+
+    /// Saves half a second after the last change, so typing costs nothing but the keystroke.
+    // ponytail: up to half a second of typing is unsaved if conch is killed outright; quitting saves at once.
+    private func scheduleSave() {
+        saveTask?.cancel()
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            self?.persist()
+        }
+    }
+
+    func saveNow() {
+        saveTask?.cancel()
+        saveTask = nil
         persist()
     }
 
