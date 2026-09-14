@@ -76,6 +76,8 @@ final class FloatingPanels: ObservableObject {
     @Published private(set) var insets = EdgeInsets()
     /// The pointer is over the fog (or, collapsed, its corner).
     @Published private(set) var hovering = false
+    /// Off its corner, dragged or in flight: it fades on every side until it lands.
+    @Published private(set) var floating = false
     /// The tint over the blur (`Look.tintKey`).
     @Published private(set) var tintOpacity = 0.2
     /// How much of the blur shows (`Look.blurKey`).
@@ -102,15 +104,18 @@ final class FloatingPanels: ObservableObject {
 
     /// The corner fog as an image for the blur's mask, one per corner: a behind-window blur ignores layer masks, and
     /// NSVisualEffectView stretches this image to its own size, so one small image serves any panel size.
-    private static var masks: [FogCorner: NSImage] = [:]
+    private static var masks: [String: NSImage] = [:]
 
-    private static func blurMask(_ corner: FogCorner, strength: Double) -> NSImage? {
-        if let mask = masks[corner] { return mask }
+    private static func blurMask(_ corner: FogCorner, strength: Double, floating: Bool) -> NSImage? {
+        let key = "\(corner)-\(floating)"
+        if let mask = masks[key] { return mask }
         let image = ImageRenderer(
-            content: ConversationFog.density(fullScreen: false, corner: corner).opacity(strength).frame(width: 256, height: 256)
+            content: ConversationFog.density(fullScreen: false, corner: corner, floating: floating)
+                .opacity(strength)
+                .frame(width: 256, height: 256)
         ).nsImage
         image?.resizingMode = .stretch
-        masks[corner] = image
+        masks[key] = image
         return image
     }
 
@@ -240,7 +245,7 @@ final class FloatingPanels: ObservableObject {
         if strength != blurStrength {
             blurStrength = strength
             Self.masks = [:]
-            if !isCollapsed, !isFullScreen { blur.maskImage = Self.blurMask(corner, strength: strength) }
+            if !isCollapsed, !isFullScreen { blur.maskImage = Self.blurMask(corner, strength: strength, floating: floating) }
         }
     }
 
@@ -307,7 +312,7 @@ final class FloatingPanels: ObservableObject {
             // Saved again only once it is back, so the next launch never restores a full-screen frame.
             fog.setFrameAutosaveName(Self.conversationFrameName)
             updateInsets(frame, on: screen)
-            blur.maskImage = Self.blurMask(corner, strength: blurStrength)
+            blur.maskImage = Self.blurMask(corner, strength: blurStrength, floating: floating)
         } else {
             fog.setFrameAutosaveName("")
             fog.setFrame(screen.frame, display: true, animate: animate)
@@ -324,13 +329,21 @@ final class FloatingPanels: ObservableObject {
         if corner != self.corner { self.corner = corner }
         let target = FogDock.frame(size: fogSize, corner: corner, in: screen.frame)
         updateInsets(target, on: screen)
-        blur.maskImage = Self.blurMask(corner, strength: blurStrength)
+        blur.maskImage = Self.blurMask(corner, strength: blurStrength, floating: floating)
         if animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             startSpring(to: target, velocity: velocity)
         } else {
             stopSpring()
             fog.setFrame(target, display: true)
+            setFloating(false)
         }
+    }
+
+    /// Off its corner (dragged or in flight) the overlay fades on every side; docked, it gathers in its corner again.
+    private func setFloating(_ value: Bool) {
+        guard value != floating else { return }
+        floating = value
+        if !isCollapsed, !isFullScreen { blur.maskImage = Self.blurMask(corner, strength: blurStrength, floating: value) }
     }
 
     /// The screens changed (a display, the Dock): dock again where it was.
@@ -367,6 +380,7 @@ final class FloatingPanels: ObservableObject {
             stopSpring()
             dragStart = (mouse, fog.frame)
             dragSamples = []
+            setFloating(true)
         }
         guard let start = dragStart else { return }
         dragSamples.append((now, mouse))
@@ -452,6 +466,7 @@ final class FloatingPanels: ObservableObject {
         if distance < 0.5, hypot(springVelocity.dx, springVelocity.dy) < 10 {
             stopSpring()
             fog.setFrame(springTarget, display: true)
+            setFloating(false)
         } else {
             fog.setFrameOrigin(springOrigin)
             // Mid-flight it fades, softens and shrinks a little and comes back whole as it lands, like it was pulled
@@ -527,6 +542,7 @@ private struct ConversationFogHost: View {
                     showsFog: FloatingPanels.showsFog,
                     tint: panels.tintOpacity,
                     showsButtons: false,
+                    floating: panels.floating,
                     onMic: { if let row { mic(row) } },
                     onSend: { if let row { send(row) } },
                     onCollapse: { panels.toggleCollapsed() },
