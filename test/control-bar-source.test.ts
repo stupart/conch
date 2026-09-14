@@ -98,7 +98,7 @@ test("M3: the fog collapses to a small handle and opens again at the size it had
   expect(components).toContain("public struct FogHandle: View {");
   expect(components).toContain(".opacity(hovering ? 1 : 0)");
   expect(components).toContain('.accessibilityLabel("Show conversation")');
-  expect(panels).toContain("options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect]");
+  expect(panels).toContain("options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect]");
 });
 
 test("M3: both panels keep their frames, and the fog goes full screen on Command-Return", () => {
@@ -191,47 +191,48 @@ test("M3: a Dock click still reopens the dashboard while the floating panels are
  * move all the way up... unless i drag from middle but then maybe it snaps", and "incrase the areas around the edges
  * that you pull for resizing".
  */
-test("M3: the fog stays docked in a corner, moves by its middle, and resizes both ways from anywhere near a free edge", () => {
+test("M3: the fog stays docked in a corner, is thrown into a corner by its middle, and resizes from wide free edges", () => {
   // conch owns the geometry: no window-server resizing or background dragging to race.
   expect(panels).not.toContain(".resizable");
-  // Its transparent parts still take the pointer, or drags fall through to the app behind.
+  // Its transparent parts still take the pointer, or drags and resize strips fall through to the app behind.
   expect(panels).toContain("fog.ignoresMouseEvents = false");
   const dock = member(panels, "private func dock(_ corner: FogCorner, on screen: NSScreen, velocity: CGVector, animated: Bool) {");
   expect(dock).toContain("let target = FogDock.frame(size: fogSize, corner: corner, in: screen.frame)");
   expect(dock).toContain("startSpring(to: target, velocity: velocity)");
   expect(dock).toContain("!NSWorkspace.shared.accessibilityDisplayShouldReduceMotion");
-  // One gesture over the whole fog, text included; where it starts decides resize or move (Tyler: "grabbing onto text
-  // area should still allow resize"), with no strips and no margin kept for them.
-  expect(panels).toContain(".onChanged { value in panels.dragChanged(startedAt: value.startLocation) }");
-  expect(member(panels, "func dragChanged(startedAt point: CGPoint) {")).toContain(
-    "dragMode = FogDock.resizes(at: point, in: fog.frame.size, corner: corner) ? .resize : .move",
-  );
-  for (const gone of ["resizeHandle", "resizeGrab", "showsButtons: false"]) expect(panels).not.toContain(gone);
-  // Moving follows the pointer from where the drag began; let go, momentum picks the corner.
-  const moved = member(panels, "private func dragMoved() {");
+  // It follows the pointer from where the drag began; let go, its momentum picks the corner.
+  const moved = member(panels, "func dragMoved() {");
   expect(moved).toContain("let mouse = NSEvent.mouseLocation");
   expect(moved).toContain("start.frame.minX + mouse.x - start.mouse.x");
-  const ended = member(panels, "private func moveEnded() {");
+  const ended = member(panels, "func dragEnded() {");
   expect(ended).toContain("dock(FogDock.corner(releasedAt: center, velocity: velocity, in: screen.frame), on: screen, velocity: velocity, animated: true)");
   expect(ended).toContain("let recent = dragSamples.filter { now - $0.time <= 0.1 }");
-  // Resizing goes both ways at once (Tyler: "i shouldn't get locked into resizing vertically or horizontally"),
-  // rubber-bands past its limits, and eases back inside them when let go.
-  expect(member(panels, "private func resizeMoved() {")).toContain("rubberBand: true");
-  expect(member(panels, "private func resizeEnded() {")).toContain("fog.animator().setFrame(target, display: true)");
-  // The words are padded clear of the Dock and the menu bar, and nothing else.
-  const insets = member(panels, "private func updateInsets(_ frame: NSRect, on screen: NSScreen) {");
-  expect(insets).toContain("bottom: max(0, visible.minY - max(frame.minY, full.minY)),");
-  expect(insets).not.toContain("grab");
-  expect(components).toContain("let top = insets.top + padding + buttonSize + ConchSpace.x3");
-  // A throw fades, softens and shrinks a little mid-flight, and lands whole.
+  // Resizing keeps its corner, from strips wider than a window's own edge.
+  expect(member(panels, "func resizeMoved(_ edges: Edge.Set) {")).toContain("let next = FogDock.resize(");
+  expect(panels).toContain("static let resizeGrab: CGFloat = 96");
+  // The host draws the buttons itself, after the strips, so a strip never takes a button's click.
+  expect(panels).toContain("showsButtons: false,");
+  const overlay = panels.slice(panels.indexOf("resizeHandles\n                    }"), panels.indexOf("resizeHandles\n                    }") + 300);
+  expect(overlay).toContain("panelButtons");
+  // The words and buttons keep clear of those strips.
+  expect(member(panels, "private func updateInsets(_ frame: NSRect, on screen: NSScreen) {")).toContain(
+    "let grab = isFullScreen ? 0 : max(0, Self.resizeGrab - ConversationFog.padding)",
+  );
+  // A throw fades, softens and shrinks a little mid-flight, and lands whole (Tyler: "so it feels more liquid").
   expect(member(panels, "private func stepSpring() {")).toContain("fog.alphaValue = 1 - 0.45 * motion");
   expect(member(panels, "private func stopSpring() {")).toContain("fog.alphaValue = 1");
   expect(panels).toContain(".scaleEffect(1 - 0.1 * panels.throwMotion)");
   expect(panels).toContain(".blur(radius: 10 * panels.throwMotion)");
-  // The outline thickens where a drag would resize.
-  expect(panels).toContain("lineWidth: panels.pointerResizes ? 3 : 1");
+  expect(panels).toContain(".onChanged { _ in panels.resizeMoved(edges) }");
+  expect(panels).toContain(".onChanged { _ in panels.dragMoved() }");
+  // It reaches the screen's edges, and the words are padded clear of the Dock and the menu bar.
+  expect(member(panels, "private func updateInsets(_ frame: NSRect, on screen: NSScreen) {")).toContain(
+    "bottom: max(0, visible.minY - max(frame.minY, full.minY))",
+  );
+  expect(components).toContain("let top = insets.top + padding + buttonSize + ConchSpace.x3");
   // For now an outline stands in for the fog's look.
   expect(panels).toContain("static let showsFog = false");
+  expect(panels).toContain("Rectangle().strokeBorder(Color.black, lineWidth: 1).allowsHitTesting(false)");
   expect(components).toContain("center: corner.unitPoint,");
   // The transcript still ends in a short fade above the reply, not a cut.
   expect(components).toContain(

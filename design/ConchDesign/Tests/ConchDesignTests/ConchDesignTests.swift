@@ -79,30 +79,19 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertEqual(FogDock.corner(releasedAt: CGPoint(x: 400, y: 300), velocity: .zero, in: screen), .bottomLeading)
         XCTAssertEqual(FogDock.corner(releasedAt: CGPoint(x: 700, y: 300), velocity: CGVector(dx: 2000, dy: 0), in: screen), .bottomTrailing)
         XCTAssertEqual(FogDock.corner(releasedAt: CGPoint(x: 400, y: 500), velocity: CGVector(dx: 0, dy: 1500), in: screen), .topLeading)
-        // A drag near a free edge grows a bottom-left fog both ways at once, and it stays in its corner.
+        // Dragging the top edge up makes a bottom-docked fog taller, and it stays in its corner.
         let bottomLeft = FogDock.frame(size: size, corner: .bottomLeading, in: screen)
         XCTAssertEqual(
-            FogDock.resize(bottomLeft, corner: .bottomLeading, by: CGVector(dx: 50, dy: 200), in: screen, minSize: least),
-            CGRect(x: 0, y: 0, width: 810, height: 760)
+            FogDock.resize(bottomLeft, corner: .bottomLeading, edges: .top, by: CGVector(dx: 50, dy: 200), in: screen, minSize: least),
+            CGRect(x: 0, y: 0, width: 760, height: 760)
         )
         // A top-right fog grows left and down from its corner, and never below its minimum.
         let topRight = FogDock.frame(size: size, corner: .topTrailing, in: screen)
         XCTAssertEqual(
-            FogDock.resize(topRight, corner: .topTrailing, by: CGVector(dx: -100, dy: -100), in: screen, minSize: least),
+            FogDock.resize(topRight, corner: .topTrailing, edges: [.leading, .bottom], by: CGVector(dx: -100, dy: -100), in: screen, minSize: least),
             CGRect(x: 868, y: 457, width: 860, height: 660)
         )
-        XCTAssertEqual(FogDock.resize(topRight, corner: .topTrailing, by: CGVector(dx: 600, dy: 0), in: screen, minSize: least).width, 480)
-        // Rubber-banding, it gives past its minimum with resistance: short of where the pointer is, but below the limit.
-        let stretched = FogDock.resize(topRight, corner: .topTrailing, by: CGVector(dx: 600, dy: 0), in: screen, minSize: least, rubberBand: true).width
-        XCTAssertLessThan(stretched, 480)
-        XCTAssertGreaterThan(stretched, 300)
-        // A drag resizes when it starts within reach of a free edge, text or not; toward the docked corner it moves.
-        let fog = CGSize(width: 760, height: 560)
-        XCTAssertTrue(FogDock.resizes(at: CGPoint(x: 700, y: 400), in: fog, corner: .bottomLeading))
-        XCTAssertTrue(FogDock.resizes(at: CGPoint(x: 100, y: 50), in: fog, corner: .bottomLeading))
-        XCTAssertFalse(FogDock.resizes(at: CGPoint(x: 100, y: 500), in: fog, corner: .bottomLeading))
-        XCTAssertTrue(FogDock.resizes(at: CGPoint(x: 50, y: 300), in: fog, corner: .topTrailing))
-        XCTAssertFalse(FogDock.resizes(at: CGPoint(x: 600, y: 300), in: fog, corner: .topTrailing))
+        XCTAssertEqual(FogDock.resize(topRight, corner: .topTrailing, edges: .leading, by: CGVector(dx: 600, dy: 0), in: screen, minSize: least).width, 480)
         XCTAssertEqual(FogDock.freeEdges(.bottomLeading), [.trailing, .top])
         // The words fill the fog less its padding, the Dock and the button row.
         let text = ConversationFog.textFrame(in: size, corner: .bottomLeading, insets: EdgeInsets(top: 0, leading: 0, bottom: 70, trailing: 0), fullScreen: false)
