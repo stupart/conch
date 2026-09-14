@@ -192,6 +192,8 @@ test("M3: a Dock click still reopens the dashboard while the floating panels are
 test("M3: the fog stays docked in a corner, is thrown into a corner by its middle, and resizes from wide free edges", () => {
   // conch owns the geometry: no window-server resizing or background dragging to race.
   expect(panels).not.toContain(".resizable");
+  // Its transparent parts still take the pointer, or drags and resize strips fall through to the app behind.
+  expect(panels).toContain("fog.ignoresMouseEvents = false");
   const dock = member(panels, "private func dock(_ corner: FogCorner, on screen: NSScreen, velocity: CGVector, animated: Bool) {");
   expect(dock).toContain("let target = FogDock.frame(size: fogSize, corner: corner, in: screen.frame)");
   expect(dock).toContain("startSpring(to: target, velocity: velocity)");
