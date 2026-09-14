@@ -34,7 +34,7 @@ struct BridgeResponse: Equatable, Sendable {
     }
 }
 
-protocol BridgeTransport: AnyObject {
+protocol BridgeTransport: AnyObject, Sendable {
     var onStateData: ((Data) -> Void)? { get set }
     var onConnectionChange: ((Bool, String?) -> Void)? { get set }
 
@@ -53,6 +53,8 @@ enum BridgeTransportError: Error, LocalizedError {
     case responseTooLarge
     case tooManyRequests
     case httpStatus(Int)
+    /// The Mac answered and refused the credential.
+    case unauthorized
 
     var errorDescription: String? {
         switch self {
@@ -63,6 +65,7 @@ enum BridgeTransportError: Error, LocalizedError {
         case .responseTooLarge: "The response is too large to hold in memory."
         case .tooManyRequests: "Too many relay requests are already waiting."
         case let .httpStatus(status): "The Mac returned HTTP \(status)."
+        case .unauthorized: "This Mac no longer knows this phone."
         }
     }
 }
@@ -560,6 +563,16 @@ private actor RelayTransportEngine {
         handshake: RelayHandshakeCrypto,
         generation: Int
     ) async throws {
+        // A new session is a new link to the Mac even when this socket stayed up:
+        // it dropped the old session's subscription and took the audio back.
+        // Saying so lets the client claim it again. A Mac that re-dialled the
+        // relay used to leave the phone "connected" and the Mac speaking
+        // ("phone disconnected — audio back on this Mac", 9/11 15:52, and no
+        // claim after it). The client's grace keeps this off the screen.
+        if reportedConnected {
+            reportedConnected = false
+            callbacks.publishConnection(false, error: "Reconnecting to your Mac.")
+        }
         sessionGeneration += 1
         let establishedSession = sessionGeneration
         flushingSession = nil

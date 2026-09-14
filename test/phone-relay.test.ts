@@ -577,6 +577,64 @@ describe("Mac phone relay adapter", () => {
   });
 });
 
+describe("a phone inject waiting on its keystrokes", () => {
+  // The phone's inject now holds its request open until the typing is done
+  // (awaitDelivery, up to control-server's bound). Relay mutations finish in
+  // sequence, so without a head start a Stop or an audio claim sent meanwhile
+  // would sit behind seconds of keystrokes.
+  async function race(options: { awaitDelivery: boolean }) {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const forwarded: string[] = [];
+    const h = await connectedHarness({
+      forward: async (line) => {
+        const value = JSON.parse(line) as { type?: string; kind?: string };
+        forwarded.push(value.type ?? value.kind ?? "");
+        if (value.type !== "inject") return '{"kind":"audio-sink-ack","sink":"phone"}';
+        await gate;
+        return '{"kind":"inject-done","delivered":true}';
+      },
+    });
+    const inject = await h.phone.seal(
+      { id: "slow-inject", method: "POST", kind: "request" },
+      requestBody("/control", h.relay.secret, JSON.stringify({
+        type: "inject", ...(options.awaitDelivery ? { awaitDelivery: true } : {}),
+      })),
+    );
+    const claim = await h.phone.seal(
+      { id: "audio-claim", method: "POST", kind: "request" },
+      requestBody("/control", h.relay.secret, JSON.stringify({ kind: "audio-sink", sink: "phone" })),
+    );
+    const injected = h.peer.receive(JSON.stringify(inject));
+    let claimAnswered = false;
+    const claimed = h.peer.receive(JSON.stringify(claim)).then(() => { claimAnswered = true; });
+    return { h, forwarded, release, injected, claimed, claimAnswered: () => claimAnswered };
+  }
+
+  test("does not hold a later control behind it, and still starts first", async () => {
+    const run = await race({ awaitDelivery: true });
+    await settle(run.claimAnswered, "the audio claim's answer", 2_000);
+    expect(run.forwarded).toEqual(["inject", "audio-sink"]);
+    const early = await openSent(run.h.phone, run.h.sent);
+    expect(early.some((frame) => frame.header.id === "audio-claim" && frame.header.kind === "response-end")).toBe(true);
+    expect(early.some((frame) => frame.header.id === "slow-inject")).toBe(false);
+    run.release();
+    await run.injected;
+    const late = await openSent(run.h.phone, run.h.sent);
+    expect(late.some((frame) => frame.header.id === "slow-inject" && frame.header.kind === "response-end")).toBe(true);
+  });
+
+  test("any other slow mutation still finishes before the next one runs", async () => {
+    const run = await race({ awaitDelivery: false });
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(run.claimAnswered()).toBe(false);
+    expect(run.forwarded).toEqual(["inject"]);
+    run.release();
+    await Promise.all([run.injected, run.claimed]);
+    expect(run.forwarded).toEqual(["inject", "audio-sink"]);
+  });
+});
+
 describe("a Mac that has lost its session says so", () => {
   test("an application frame with no cipher closes instead of vanishing", async () => {
     // After the Mac's relay socket reconnects it holds no cipher, but the phone

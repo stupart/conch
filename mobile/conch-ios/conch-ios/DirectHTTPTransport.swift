@@ -67,11 +67,16 @@ final class DirectHTTPTransport: BridgeTransport, @unchecked Sendable {
         task = nil
         lock.unlock()
         current?.cancel(with: .goingAway, reason: nil)
+        // A new socket is a new subscription on the Mac, which hands the audio
+        // back when the old one closes; the client re-claims on the way up.
+        if current != nil { publishConnection(false, nil) }
         connect()
     }
 
     func request(_ request: BridgeRequest) async throws -> BridgeResponse {
-        var urlRequest = try makeURLRequest(request, timeout: 10)
+        // A control can now wait for its keystrokes (an inject's `awaitDelivery`,
+        // bounded at 20 s on the Mac), which a 10 s timeout would call a failure.
+        var urlRequest = try makeURLRequest(request, timeout: request.path == "/control" ? 30 : 10)
         urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: urlRequest)
         guard let http = response as? HTTPURLResponse else {
@@ -156,6 +161,8 @@ final class DirectHTTPTransport: BridgeTransport, @unchecked Sendable {
     }
 
     private func fail(_ expected: URLSessionWebSocketTask, generation expectedGeneration: Int, error: Error) {
+        // A refused token is not a network blip: the Mac answered, and said no.
+        let refused = (expected.response as? HTTPURLResponse)?.statusCode == 401
         lock.lock()
         guard task === expected, generation == expectedGeneration, !stopped else {
             lock.unlock()
@@ -173,7 +180,10 @@ final class DirectHTTPTransport: BridgeTransport, @unchecked Sendable {
             self.connect()
         }
         lock.unlock()
-        publishConnection(false, error.localizedDescription)
+        publishConnection(
+            false,
+            refused ? BridgeTransportError.unauthorized.localizedDescription : error.localizedDescription
+        )
     }
 
     private func clearReconnectTask() {

@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import UIKit
 
 /// The phone's protocol client. Pairing selects exactly one transport; state,
@@ -6,7 +7,13 @@ import UIKit
 @MainActor
 final class BridgeClient: ObservableObject {
     @Published private(set) var state: PublishedState?
+    /// What the screen shows: true through a short blip, false after a real
+    /// outage (`outageGrace`). The transport's own view is `linkUp`.
     @Published private(set) var isConnected = false
+    /// The Mac answered and refused this phone's credential. Waiting will not
+    /// fix that and neither will Try again, so the screens say it plainly and
+    /// offer pairing again instead of a spinner.
+    @Published private(set) var pairingRejected = false
     @Published private(set) var lastError: String?
     /// Recent connection history, so a failure away from the desk leaves
     /// evidence instead of a shrug.
@@ -113,30 +120,155 @@ final class BridgeClient: ObservableObject {
         }
         transport.onConnectionChange = { [weak self] connected, error in
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                let becameConnected = connected && !self.isConnected
-                // Record every TRANSITION, not every callback: a retry loop
-                // fires constantly, and sixty lines of "still trying" would push
-                // out the one line that says why.
-                if connected != self.isConnected || (!connected && error != self.lastError) {
-                    self.record(connected: connected, detail: error)
-                }
-                self.isConnected = connected
-                if connected { self.hasEverConnected = true }
-                self.lastError = connected ? nil : error
-                if becameConnected { self.onConnected?() }
+                self?.linkChanged(connected: connected, error: error)
             }
         }
         transport.start()
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let route = path.status == .satisfied
+                ? (path.availableInterfaces.first?.name ?? "online")
+                : "offline"
+            Task { @MainActor [weak self] in self?.routeChanged(to: route) }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "conch.bridge.route"))
     }
 
     deinit {
+        pathMonitor.cancel()
         transport.stop()
     }
 
     func stop() {
+        pathMonitor.cancel()
+        outage?.cancel()
         transport.stop()
         isConnected = false
+    }
+
+    // MARK: - Connection lifecycle
+
+    /// A drop is shown only once it has lasted this long.
+    ///
+    /// Coming back to the app, a new Wi-Fi network, the Mac re-dialling the
+    /// relay: each is a second or two of re-handshaking, and the banner, the
+    /// dimmed rows and the hidden toolbar used to flash for every one of them.
+    /// Tyler: "the iphone app loses connection a lot".
+    private static let outageGrace = Duration.seconds(6)
+    /// The transport's own view of the link, which `isConnected` trails.
+    private var linkUp = false
+    private var outage: Task<Void, Never>?
+    private var backgroundedAt: ContinuousClock.Instant?
+    private var suspended = false
+    private let pathMonitor = NWPathMonitor()
+    /// The preferred interface, "offline", or "" before the first report.
+    private var route = ""
+
+    private func linkChanged(connected: Bool, error: String?) {
+        if error == BridgeTransportError.unauthorized.localizedDescription { pairingRejected = true }
+        // Record every TRANSITION, not every callback: a retry loop fires
+        // constantly, and sixty lines of "still trying" would push out the one
+        // line that says why. The journal keeps the real link, blips included.
+        if connected != linkUp || (!connected && error != lastError) {
+            record(connected: connected, detail: error)
+        }
+        let relinked = connected && !linkUp
+        linkUp = connected
+        lastError = connected ? nil : error
+        guard connected else {
+            if !suspended { beginOutageGrace() }
+            return
+        }
+        outage?.cancel()
+        outage = nil
+        isConnected = true
+        hasEverConnected = true
+        pairingRejected = false
+        // Every new link, not every change on screen: the Mac hands the audio
+        // back whenever a link drops, and a blip the grace hid is still a drop.
+        if relinked { onConnected?() }
+    }
+
+    private func beginOutageGrace() {
+        guard isConnected, outage == nil else { return }
+        outage = Task { [weak self] in
+            try? await Task.sleep(for: Self.outageGrace)
+            guard let self, !Task.isCancelled else { return }
+            self.outage = nil
+            if !self.linkUp { self.isConnected = false }
+        }
+    }
+
+    /// The app went to the background. What happens to the link is decided
+    /// once the audio hand-back has gone out, or when the app comes back.
+    func enterBackground() {
+        backgroundedAt = .now
+    }
+
+    /// Let the link go, unless the app has already come back.
+    ///
+    /// The hand-back before this is a round trip, and a quick return used to
+    /// beat it: the stop then landed on the link the return had just revived,
+    /// and the phone sat disconnected until someone tapped Try again.
+    func suspendIfStillAway() {
+        guard backgroundedAt != nil, !suspended else { return }
+        suspended = true
+        transport.stop()
+    }
+
+    /// The app is in front again. Re-dial only a link that cannot still be good:
+    /// one that was let go, or one the Mac has expired (a silent phone's session
+    /// ends after 30 s, and the heartbeat does not run in the background).
+    ///
+    /// Anything shorter — Control Centre, a notification, a glance at another
+    /// app, which iOS reports as `.inactive` then `.active` — keeps the session
+    /// it has. Re-dialling a healthy one cost a handshake and handed the Mac the
+    /// audio for a moment: six of the eleven "phone disconnected — audio back on
+    /// this Mac" lines in the daemon log were a live session replaced in the
+    /// same second by the phone's own re-dial.
+    func enterForeground() {
+        guard let away = backgroundedAt else { return }
+        backgroundedAt = nil
+        guard suspended || away.duration(to: .now) > .seconds(20) else { return }
+        suspended = false
+        transport.reconnectNow()
+        if !linkUp { beginOutageGrace() }
+    }
+
+    /// A different way out: Wi-Fi to cellular, or back online after none.
+    ///
+    /// A socket belongs to the interface it was opened on, and the only thing
+    /// that noticed it had gone was the 30-second relay heartbeat (the LAN
+    /// socket has none), behind a backoff that kept growing to thirty seconds
+    /// while there was no network at all. Losing the route is left to the
+    /// transport to discover; gaining one re-dials now.
+    private func routeChanged(to next: String) {
+        let previous = route
+        route = next
+        guard !previous.isEmpty, next != previous, next != "offline",
+              backgroundedAt == nil, !suspended else { return }
+        transport.reconnectNow()
+    }
+
+    /// Every request something waits on ends.
+    ///
+    /// The relay holds a request until a Mac answers it, and with no Mac in the
+    /// room that was forever: the settings sheet spun until the phone was
+    /// unpaired. The relay request is cancelled with the wait, so nothing is
+    /// left queued to fire later.
+    private func perform(_ request: BridgeRequest, within limit: Duration = .seconds(30)) async throws -> BridgeResponse {
+        let transport = transport
+        let response = try await withThrowingTaskGroup(of: BridgeResponse.self) { group in
+            group.addTask { try await transport.request(request) }
+            group.addTask {
+                try await Task.sleep(for: limit)
+                throw URLError(.timedOut)
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw URLError(.timedOut) }
+            return first
+        }
+        if response.status == 401 { pairingRejected = true }
+        return response
     }
 
     /// Session labels last handed to the speech recogniser.
@@ -166,23 +298,66 @@ final class BridgeClient: ObservableObject {
 
     // MARK: - Commands
 
-    /// Deliver spoken text into a session. Returns true when the daemon took it.
-    func inject(sessionId: String, label: String, text: String) async -> Bool {
-        let delivered = await post(control: [
+    /// What became of a message.
+    enum InjectOutcome: Equatable {
+        /// The Mac typed it and saw it land.
+        case delivered
+        /// Taken, not confirmed: a daemon that only acknowledges, or a delivery
+        /// still running at the Mac's bound. What every send meant before.
+        case accepted
+        case failed(String)
+
+        var reachedMac: Bool {
+            if case .failed = self { return false }
+            return true
+        }
+    }
+
+    /// Deliver words into a session, and hear whether they landed.
+    func inject(sessionId: String, label: String, text: String) async -> InjectOutcome {
+        let body = try? JSONSerialization.data(withJSONObject: [
             "type": "inject",
             "sessionId": sessionId,
             "label": label,
             "announce": text,
             "eventAt": Date().timeIntervalSince1970 * 1000,
-        ])
-        if !delivered {
+            // Answer once the keystrokes are done (bounded on the Mac), not when
+            // the line is read. An older daemon ignores this and acknowledges at
+            // once, which reads as `accepted`: never a false failure.
+            "awaitDelivery": true,
+        ] as [String: Any])
+        let outcome = await deliveryOutcome(body)
+        if case let .failed(reason) = outcome {
+            lastError = reason
             _ = await reportAppError(
                 operation: "message-delivery",
-                message: lastError ?? "The daemon did not confirm delivery.",
+                message: reason,
                 sessionId: sessionId
             )
         }
-        return delivered
+        return outcome
+    }
+
+    private func deliveryOutcome(_ body: Data?) async -> InjectOutcome {
+        guard let body else { return .failed("The phone couldn't encode that message.") }
+        let response: BridgeResponse
+        do {
+            // Past the Mac's own 20 s bound, with room for the relay's round trip.
+            response = try await perform(
+                authorizedRequest(method: "POST", path: "/control", body: body),
+                within: .seconds(40)
+            )
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+        guard response.status == 200 else { return .failed("The Mac returned HTTP \(response.status).") }
+        let reply = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
+        // A scoped inject can return session-error: the daemon rejected the target.
+        if let error = reply?["error"] as? String { return .failed(error) }
+        if reply?["kind"] as? String == "inject-done", let delivered = reply?["delivered"] as? Bool {
+            return delivered ? .delivered : .failed("It didn't land in the session.")
+        }
+        return .accepted
     }
 
     /// Send one image, in pieces, and get back the path it landed at.
@@ -219,7 +394,7 @@ final class BridgeClient: ObservableObject {
             }
             let response: BridgeResponse
             do {
-                response = try await transport.request(authorizedRequest(
+                response = try await perform(authorizedRequest(
                     method: "POST",
                     path: "/image",
                     body: body
@@ -579,7 +754,7 @@ final class BridgeClient: ObservableObject {
             return false
         }
         do {
-            let response = try await transport.request(authorizedRequest(
+            let response = try await perform(authorizedRequest(
                 method: "POST",
                 path: "/control",
                 body: body
@@ -636,7 +811,7 @@ final class BridgeClient: ObservableObject {
 
     private func postControlRaw(_ message: [String: Any]) async -> [String: Any]? {
         guard let body = try? JSONSerialization.data(withJSONObject: message),
-              let response = try? await transport.request(authorizedRequest(
+              let response = try? await perform(authorizedRequest(
                 method: "POST",
                 path: "/control",
                 body: body
@@ -655,7 +830,7 @@ final class BridgeClient: ObservableObject {
         components.path = "/reply"
         components.queryItems = [URLQueryItem(name: "session", value: sessionId)]
         guard let path = components.string,
-              let response = try? await transport.request(authorizedRequest(method: "GET", path: path)),
+              let response = try? await perform(authorizedRequest(method: "GET", path: path)),
               response.status == 200,
               let body = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any],
               let markdown = body["markdown"] as? String,
@@ -850,10 +1025,19 @@ final class FixtureTransport: BridgeTransport, @unchecked Sendable {
     var onStateData: ((Data) -> Void)?
     var onConnectionChange: ((Bool, String?) -> Void)?
     private let url: URL
+    /// The Mac refused this phone, through the same signal a LAN 401 raises.
+    private let rejected: Bool
 
-    init(url: URL) { self.url = url }
+    init(url: URL, rejected: Bool = false) {
+        self.url = url
+        self.rejected = rejected
+    }
 
     func start() {
+        if rejected {
+            onConnectionChange?(false, BridgeTransportError.unauthorized.localizedDescription)
+            return
+        }
         guard let data = try? Data(contentsOf: url) else {
             onConnectionChange?(false, "Fixture unreadable: \(url.path)")
             return

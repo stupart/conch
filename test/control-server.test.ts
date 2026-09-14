@@ -2,7 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { connect, type Socket } from "node:net";
 import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { injectTimeoutFor } from "../src/daemon.ts";
 import {
+  INJECT_DELIVERY_WAIT_MS,
   createControlServer,
   type ControlApplication,
   type ControlEnvelope,
@@ -49,6 +51,7 @@ async function fixture(overrides: {
   sessions?: Partial<LocalControlSessions>;
   stale?: boolean;
   persistentIdentity?: boolean;
+  deliveryWaitMs?: number;
 } = {}) {
   // A short /tmp path also fits Darwin's sockaddr_un limit.
   const root = mkdtempSync("/tmp/conch-control-");
@@ -90,6 +93,7 @@ async function fixture(overrides: {
     socketPath,
     ownerDeviceId: overrides.persistentIdentity ? await loadDeviceId(root) : "this-mac",
     log: (line) => logs.push(line), sessions, application,
+    ...(overrides.deliveryWaitMs === undefined ? {} : { deliveryWaitMs: overrides.deliveryWaitMs }),
   };
   if (overrides.stale) writeFileSync(socketPath, "leftover");
   const server = createControlServer(options);
@@ -448,7 +452,7 @@ describe("control server over a real Unix socket", () => {
     expect(await within(p.done)).toBe('{"kind":"inject-done"}\n');
   });
 
-  test("the phone's forwarded inject still returns at acceptance, never waiting on delivery", async () => {
+  test("an inject that does not ask still returns at acceptance, never waiting on delivery", async () => {
     const delivery = deferred<void>();
     const f = await fixture();
     f.application.turn = (event) => {
@@ -462,6 +466,35 @@ describe("control server over a real Unix socket", () => {
     } finally {
       delivery.resolve();
     }
+  });
+
+  // The phone shows "delivered" or "not delivered" from this, so the outcome
+  // rides the answer; a delivery with no outcome (an interrupt-shaped turn)
+  // keeps the bare inject-done the Mac app already reads.
+  test("inject-done carries whether the words landed", async () => {
+    for (const landed of [true, false]) {
+      const f = await fixture({ application: { turn: () => Promise.resolve(landed) } });
+      expect(JSON.parse(await f.request({ ...inject, awaitDelivery: true }))).toEqual({
+        kind: "inject-done", delivered: landed,
+      });
+    }
+  });
+
+  // Bounded: a delivery still running past the wait is answered as taken, not
+  // left to the phone bridge's forward timeout, which would read as a failure.
+  test("a delivery still running at the bound is answered inject-accepted", async () => {
+    const delivery = deferred<boolean>();
+    const f = await fixture({ deliveryWaitMs: 40, application: { turn: () => delivery.promise } });
+    try {
+      expect(JSON.parse(await f.request({ ...inject, awaitDelivery: true }))).toEqual({ kind: "inject-accepted" });
+    } finally {
+      delivery.resolve(true);
+    }
+  });
+
+  test("the bound sits under the phone bridge's inject forward budget", () => {
+    expect(INJECT_DELIVERY_WAIT_MS).toBeGreaterThan(5_000);
+    expect(INJECT_DELIVERY_WAIT_MS).toBeLessThan(injectTimeoutFor(JSON.stringify(inject)) - 2_000);
   });
 
   test("awaitDelivery must be true when present", async () => {

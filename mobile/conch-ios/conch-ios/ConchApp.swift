@@ -85,25 +85,28 @@ struct ConchApp: App {
                     Task { await bridge?.reportDevice(sample) }
                 }
                 telemetry.start()
+                #if DEBUG
+                talk.showFixture()
+                #endif
             }
             .onChange(of: scenePhase) { _, phase in
                 guard let bridge else { return }
                 switch phase {
                 case .active:
-                    // Reconnect FIRST, then claim.
+                    // Resume FIRST, then claim.
                     //
                     // The phone pings every 10s and the Mac expires a silent
                     // peer after 30, but that heartbeat is a Task and iOS
-                    // suspends it on background — so backgrounding always kills
-                    // the session about half a minute later. Handing the audio
-                    // back then is correct. Coming back and NOT re-dialling is
-                    // not: the app sat on a dead socket waiting out a backoff,
-                    // which is the "it disconnects and won't come back" that
-                    // has made pairing feel unreliable.
+                    // suspends it on background. Coming back and NOT re-dialling
+                    // a link that died sat on a dead socket waiting out a
+                    // backoff; re-dialling EVERY return tore down healthy links
+                    // for a glance at Control Centre. `enterForeground` re-dials
+                    // only a link that cannot still be good.
                     //
-                    // Before claimAudio, because a claim sent over a dead
-                    // socket accomplishes nothing.
-                    bridge.reconnectNow()
+                    // The claim rides whatever link there is, queued until it is
+                    // up. Claiming again is harmless, and needed: the hand-back
+                    // sent on the way out can land after the app is back.
+                    bridge.enterForeground()
                     telemetry.start()
                     Task { await bridge.claimAudio(true) }
                 case .background:
@@ -129,19 +132,19 @@ struct ConchApp: App {
                     //
                     // iOS suspends the 10s heartbeat the moment we background,
                     // so the Mac expires this peer 30 seconds later and the
-                    // phone re-handshakes on the way back — 496 connect and
-                    // disconnect pairs in one day's log, each one an encrypted
-                    // handshake the phone paid for. Leaving a socket behind to
-                    // rot is strictly worse than closing it: same outcome,
-                    // more work, and a spell of looking connected while
-                    // nothing can arrive.
+                    // phone re-handshakes on the way back. Leaving a socket
+                    // behind to rot is worse than closing it: same outcome, more
+                    // work, and a spell of looking connected while nothing can
+                    // arrive. Nothing is lost by closing: replies queue while the
+                    // app is away, and .active resumes before it claims.
                     //
-                    // Nothing is lost by closing. Replies already queue while
-                    // the app is away and are read when it comes forward, and
-                    // .active reconnects before it claims anything.
+                    // Only if still away: the hand-back is a round trip, and a
+                    // quick return used to beat it, so this stop landed on the
+                    // link that return had just revived.
+                    bridge.enterBackground()
                     Task {
                         await bridge.claimAudio(false)
-                        bridge.stop()
+                        bridge.suspendIfStillAway()
                     }
                 case .inactive:
                     // NOT a handback. iOS reports .inactive for anything that
@@ -163,7 +166,10 @@ struct ConchApp: App {
         #if DEBUG
         let created = BridgeClient(
             pairing: pairing,
-            transport: Self.fixtureURL.map { FixtureTransport(url: $0) }
+            // `-conchFixtureRejected YES`: this Mac no longer knows this phone.
+            transport: Self.fixtureURL.map {
+                FixtureTransport(url: $0, rejected: UserDefaults.standard.bool(forKey: "conchFixtureRejected"))
+            }
         )
         #else
         let created = BridgeClient(pairing: pairing)
