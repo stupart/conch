@@ -48,7 +48,12 @@ struct LedgerView: View {
                         // A dead connection must be LEGIBLE, not a private 8px
                         // dot: these rows are a snapshot, and their ages keep
                         // counting as if live. Say so, and dim what's stale.
-                        if !bridge.isConnected {
+                        if bridge.pairingRejected {
+                            PairingRejectedCard(onPairAgain: onUnpair)
+                                .frame(maxWidth: .infinity)
+                                .listRowBackground(Palette.bg)
+                                .listRowSeparator(.hidden)
+                        } else if !bridge.isConnected {
                             HStack(spacing: 8) {
                                 ProgressView().controlSize(.small)
                                 Text("Reconnecting to your Mac — showing the last known state.")
@@ -199,7 +204,10 @@ struct LedgerView: View {
             speech.consider(state: next)
         }
         .sheet(isPresented: $showingSettings) {
-            SettingsView(bridge: bridge)
+            SettingsView(bridge: bridge, onPairAgain: {
+                showingSettings = false
+                onUnpair()
+            })
         }
         .sheet(isPresented: $showingStartSession) {
             StartSessionSheet(bridge: bridge)
@@ -316,7 +324,9 @@ struct LedgerView: View {
             // that matters, and it needs to say what is wrong and offer the
             // thing that fixes it — Tyler: "theres nothing one can do if it
             // doesnt (like press a button or what not)".
-            if bridge.isConnected {
+            if bridge.pairingRejected {
+                PairingRejectedCard(onPairAgain: onUnpair)
+            } else if bridge.isConnected {
                 Image(systemName: "terminal")
                     .font(.system(size: 22))
                     .foregroundStyle(Palette.textFaint)
@@ -346,6 +356,39 @@ struct LedgerView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Geometric centre reads low; optical centre sits a little above it.
         .offset(y: -28)
+    }
+}
+
+/// The Mac answered and refused this phone.
+///
+/// Unlike every other failure on these screens, waiting does not fix it and
+/// neither does Try again, so pairing again is the one thing offered. It used to
+/// be a settings sheet spinning until someone found Unpair and scanned again.
+struct PairingRejectedCard: View {
+    let onPairAgain: () -> Void
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "iphone.slash")
+                .font(.system(size: 26))
+                .foregroundStyle(Palette.needs)
+            Text("This Mac no longer knows this phone")
+                .font(Type.label(16, weight: .medium))
+                .foregroundStyle(Palette.textPrimary)
+                .multilineTextAlignment(.center)
+            Text("Its pairing was replaced, so this phone's isn't accepted any more. Pair again with the code on your Mac.")
+                .font(Type.caption)
+                .foregroundStyle(Palette.textFaint)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Pair again", action: onPairAgain)
+                .buttonStyle(.borderedProminent)
+                .tint(Palette.micOpen)
+                .foregroundStyle(Palette.bg)
+                .padding(.top, 6)
+        }
+        .padding(20)
+        .frame(maxWidth: 320)
     }
 }
 

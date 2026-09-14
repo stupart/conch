@@ -293,7 +293,7 @@ describe("3. an agent cannot undo a person's manual mode", () => {
   });
 
   test("the daemon records every pause's origin and refuses before it flips the mode", () => {
-    const enqueueAt = daemon.indexOf("  function enqueue(incoming: TurnEvent): void | Promise<void> {");
+    const enqueueAt = daemon.indexOf("  function enqueue(incoming: TurnEvent): void | Promise<boolean | void> {");
     expect(enqueueAt).toBeGreaterThan(-1);
     const enqueue = daemon.slice(enqueueAt, daemon.indexOf("void eventQueue.submit(event);", enqueueAt));
     const refuseAt = enqueue.indexOf('pauseOrigin.refusal("", event.origin, { globalPaused: pause.paused, sessionPaused: false })');

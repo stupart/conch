@@ -37,7 +37,11 @@ struct SessionView: View {
     private var conversationRevision: String {
         let conversation = bridge.state?.conversations[sessionId]
         let items = conversation?.items ?? []
-        return "\(items.count)-\(items.last?.id ?? "")-\(items.last?.rev ?? 0)"
+        return "\(items.count)-\(items.last?.id ?? "")-\(items.last?.rev ?? 0)-\(talk.outgoing.count)"
+    }
+
+    private var conversationItems: [ConversationItem] {
+        bridge.state?.conversations[sessionId]?.items ?? []
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
@@ -167,12 +171,19 @@ struct SessionView: View {
                             .frame(maxWidth: .infinity)
                     }
 
-                    // No draft bubble here any more. It existed because the
-                    // input bar did not — there was nowhere else to watch your
-                    // words arrive. Now the field holds them, and showing the
-                    // same sentence twice while you type reads as a bug.
-                    // Tyler: "its also showing the preview in blue tho as I
-                    // type so its kinda weird".
+                    // No DRAFT bubble: the field holds what you are writing, and
+                    // showing it twice read as a bug ("its also showing the
+                    // preview in blue tho as I type so its kinda weird"). What
+                    // is here is a message you SENT, the moment you send it,
+                    // with what became of it; it gives way to the transcript's
+                    // own copy when that arrives (TalkController.reconcile).
+                    ForEach(talk.outgoing.filter { $0.session == sessionId }) { message in
+                        YourTurnBubble(
+                            message: message,
+                            onRetry: sendWords,
+                            onDiscard: { talk.discardOutgoing(message.id) }
+                        )
+                    }
 
                     // The artifact, where it happened rather than above
                     // everything. It used to sit at the TOP of this scroll — and
@@ -214,6 +225,7 @@ struct SessionView: View {
                 scrollToBottom(scroller, animated: false)
             }
             .onChange(of: conversationRevision) { _, _ in
+                talk.reconcile(session: sessionId, items: conversationItems)
                 // Follow new messages only while already at the end, so
                 // reading history is not yanked away by an arriving reply —
                 // the same rule the Mac settled on.
@@ -389,6 +401,19 @@ struct SessionView: View {
             Text(closeError ?? "The Mac didn't confirm a clean exit, so conch left the agent running.")
         }
         .onAppear {
+            talk.reconcile(session: sessionId, items: conversationItems)
+            #if DEBUG
+            // `-conchFixtureSend <words>`: send them through the real composer
+            // path, so a simulator paired to a stand-in bridge shows a message
+            // sending, delivered or failed without anyone typing.
+            if let words = UserDefaults.standard.string(forKey: "conchFixtureSend") {
+                Task {
+                    try? await Task.sleep(for: .seconds(3))
+                    talk.setDraft(words, for: sessionId)
+                    sendDraft()
+                }
+            }
+            #endif
             // Auto-open the mic when a reply for THIS session finishes reading.
             // Only while the session is on screen: a phone in your pocket must
             // not silently start recording.
@@ -500,7 +525,7 @@ struct SessionView: View {
             }
 
             if sendFailed {
-                Text("Couldn't reach the Mac — your words are kept above.")
+                Text("Couldn't reach the Mac — try again.")
                     .font(Type.caption)
                     .foregroundStyle(Palette.needs)
             }
@@ -576,6 +601,17 @@ struct SessionView: View {
             // rounded container, the row is part of the composer rather than
             // chrome stacked beneath it.
             VStack(spacing: 10) {
+                // What the recogniser hears right now, on its own line; it joins
+                // the field when the phrase is final. In the field it was one
+                // string you and the recogniser rewrote at once, and typing
+                // mid-dictation garbled both: "so anywayi t so anywayink".
+                if isTalkingHere, !talk.livePartial.text.isEmpty {
+                    Text(talk.livePartial.text)
+                        .font(Type.body)
+                        .foregroundStyle(Palette.micOpen)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityLabel("Hearing: \(talk.livePartial.text)")
+                }
                 // The field says why Send is off on a row with no terminal.
                 TextField(row?.noTerminal ?? "Type or talk…", text: draftBinding, axis: .vertical)
                     .textFieldStyle(.plain)
@@ -735,7 +771,7 @@ struct SessionView: View {
                 text: label
             )
             optionReplyInFlight = false
-            if !delivered { sendFailed = true }
+            if !delivered.reachedMac { sendFailed = true }
         }
     }
 
@@ -754,8 +790,7 @@ struct SessionView: View {
     }
 
     private var canSend: Bool {
-        !attachments.isEmpty
-            || !talk.draft(for: sessionId).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !attachments.isEmpty || talk.hasWords(for: sessionId)
     }
 
     /// A send in flight on either path — the controller's, or the direct one
@@ -820,7 +855,7 @@ struct SessionView: View {
         // which made an image-only send a silent no-op. With no words to
         // protect there is nothing for it to guard, so this send goes direct,
         // its own flag standing in for the controller's `.sending`.
-        if talk.draft(for: sessionId).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !talk.hasWords(for: sessionId) {
             guard !pending.isEmpty, !isSending else { return }
             sendingImagesOnly = true
             Task {
@@ -829,9 +864,17 @@ struct SessionView: View {
             }
             return
         }
-        // Route through the controller so a typed message takes exactly the
-        // path a spoken one does: the mic closes, the draft is cleared only on
-        // a CONFIRMED delivery, and a failure leaves your words on screen.
+        sendWords()
+    }
+
+    /// Route through the controller so a typed message takes exactly the path a
+    /// spoken one does: the mic closes, the draft is cleared only on a
+    /// CONFIRMED delivery, and a failure leaves your words on a bubble to retry.
+    /// Retry is this same call: an unconfirmed send's words head the draft.
+    private func sendWords() {
+        sendFailed = false
+        let label = row?.label ?? ""
+        let pending = attachments
         talk.send(session: sessionId) { text in
             await deliver(text: text, pending: pending, label: label)
         }
@@ -840,7 +883,11 @@ struct SessionView: View {
     /// Pictures first, because the message references their paths. If one
     /// fails the whole send fails, which keeps the words AND the images —
     /// half a message is worse than none.
-    private func deliver(text: String, pending: [PendingAttachment], label: String) async -> Bool {
+    private func deliver(
+        text: String,
+        pending: [PendingAttachment],
+        label: String
+    ) async -> BridgeClient.InjectOutcome {
         var paths: [String] = []
         for attachment in pending {
             guard let path = await bridge.uploadImage(
@@ -848,13 +895,18 @@ struct SessionView: View {
                 ext: attachment.ext
             ) else {
                 attachError = "Couldn't send the picture — try again."
-                return false
+                return .failed("The picture didn't upload.")
             }
             paths.append(path)
         }
         let body = (paths + [text]).filter { !$0.isEmpty }.joined(separator: "\n")
         let delivered = await bridge.inject(sessionId: sessionId, label: label, text: body)
-        if delivered { attachments = [] } else { sendFailed = true }
+        if delivered.reachedMac {
+            attachments = []
+        } else if text.isEmpty {
+            // Words say this on their own bubble; pictures alone have nowhere else.
+            sendFailed = true
+        }
         return delivered
     }
 
@@ -896,36 +948,69 @@ private struct ComposerUpdateScope<Content: View>: View {
     }
 }
 
+/// A message you sent, until the conversation shows it for itself.
+///
+/// Drawn like the conversation's own user row, so the handover is a caption
+/// going away rather than a bubble jumping.
 private struct YourTurnBubble: View {
-    let text: String
-    let isSending: Bool
+    let message: TalkController.Outgoing
+    let onRetry: () -> Void
     let onDiscard: () -> Void
 
     var body: some View {
-        HStack {
-            Spacer(minLength: 40)
-            VStack(alignment: .leading, spacing: 6) {
-                Text(text.isEmpty ? "Listening…" : text)
+        VStack(alignment: .trailing, spacing: 4) {
+            HStack {
+                Spacer(minLength: 40)
+                Text(message.text)
                     .font(Type.body)
-                    .foregroundStyle(text.isEmpty ? Palette.textFaint : Palette.bg)
+                    .foregroundStyle(Palette.textPrimary)
                     .multilineTextAlignment(.leading)
                     .textSelection(.enabled)
-                if isSending {
-                    Text("Sending…")
-                        .font(Type.caption)
-                        .foregroundStyle(Palette.bg.opacity(0.7))
-                }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Palette.raised, in: RoundedRectangle(cornerRadius: 14))
+                    .opacity(message.state == .sending ? 0.6 : 1)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Palette.micOpen, in: RoundedRectangle(cornerRadius: 16))
+            status
         }
-        .padding(.top, 8)
-        .transition(.opacity.combined(with: .move(edge: .bottom)))
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .transition(.opacity)
         .contextMenu {
-            Button("Discard draft", systemImage: "trash", role: .destructive, action: onDiscard)
+            if case .failed = message.state {
+                Button("Try again", systemImage: "arrow.clockwise", action: onRetry)
+                Button("Discard", systemImage: "trash", role: .destructive, action: onDiscard)
+            }
         }
-        .accessibilityHint("Long press to discard this draft")
+    }
+
+    @ViewBuilder
+    private var status: some View {
+        switch message.state {
+        case .sending:
+            Text("Sending…")
+                .font(Type.caption)
+                .foregroundStyle(Palette.textFaint)
+        case .delivered:
+            Label("Delivered", systemImage: "checkmark")
+                .font(Type.caption)
+                .foregroundStyle(Palette.textFaint)
+        case .accepted:
+            Text("Sent")
+                .font(Type.caption)
+                .foregroundStyle(Palette.textFaint)
+        case let .failed(reason):
+            HStack(spacing: 10) {
+                Text("Not delivered — \(reason)")
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.needs)
+                    .multilineTextAlignment(.trailing)
+                Button("Retry", action: onRetry)
+                    .font(Type.caption.weight(.semibold))
+                    .foregroundStyle(Palette.micOpen)
+                    .buttonStyle(.plain)
+            }
+            .accessibilityHint("Long press to discard it")
+        }
     }
 }
 

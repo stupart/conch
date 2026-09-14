@@ -45,7 +45,16 @@ struct ConchPairingView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(ConchPalette.bg)
-        .task { await store.open() }
+        .task {
+            // A current code, always: a new one as the old one runs out, so a
+            // phone that has to pair again finds one waiting. It used to read
+            // "expires in 2 min" long after it had, then wait for New code.
+            while !Task.isCancelled {
+                await store.open()
+                let left = (store.pairing?.expiresAt ?? 0) / 1000 - Date().timeIntervalSince1970
+                try? await Task.sleep(for: .seconds(store.pairing == nil ? 10 : max(1, left - 4)))
+            }
+        }
     }
 
     private var status: some View {
@@ -124,9 +133,11 @@ struct ConchPairingView: View {
                     .font(.system(size: 28, weight: .semibold, design: .monospaced))
                     .foregroundStyle(ConchPalette.textPrimary)
                     .textSelection(.enabled)
-                Text(store.expiryLine)
-                    .font(.caption)
-                    .foregroundStyle(ConchPalette.textDim)
+                TimelineView(.periodic(from: .now, by: 15)) { _ in
+                    Text(store.expiryLine)
+                        .font(.caption)
+                        .foregroundStyle(ConchPalette.textDim)
+                }
             }
         }
     }
@@ -203,7 +214,8 @@ final class ConchPairingStore: ObservableObject {
     }
 
     func open(force: Bool = false) async {
-        if pairing != nil && !force { return }
+        // A code with seconds left is as good as expired: replace it.
+        if let pairing, !force, pairing.expiresAt / 1000 - Date().timeIntervalSince1970 > 5 { return }
         isLoading = true
         error = nil
         defer { isLoading = false }
