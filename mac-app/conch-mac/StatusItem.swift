@@ -81,7 +81,8 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     /// The whole mark recolours; Talk is the template image macOS tints for the bar.
     private func show(_ voice: VoiceState) {
         guard let button = item.button else { return }
-        button.image = ConchMark.statusImage(for: voice)
+        // A touch larger than the 16 pt default (Tyler: "can also be a touch larger up there").
+        button.image = ConchMark.statusImage(for: voice, side: 18)
         button.setAccessibilityLabel("conch, \(voice.title)")
     }
 

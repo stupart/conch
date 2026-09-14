@@ -559,7 +559,9 @@ public struct ConversationFog: View {
         let row = buttonSize + ConchSpace.x3
         let atBottom = buttonsAtBottom(corner: corner, fullScreen: fullScreen)
         let top = insets.top + padding + (atBottom ? 0 : row)
-        let height = max(0, size.height - top - insets.bottom - padding - (atBottom ? row : 0))
+        // Below the words: the Dock's inset, or on the bottom the button row in the corner, whichever is taller.
+        let bottom = atBottom ? max(insets.bottom, row) + padding : insets.bottom + padding
+        let height = max(0, size.height - top - bottom)
         let leading = insets.leading + padding
         let trailing = insets.trailing + padding
         let room = max(0, size.width - leading - trailing)
@@ -580,6 +582,12 @@ public struct ConversationFog: View {
 
     public static func buttonsY(in size: CGSize, corner: FogCorner, insets: EdgeInsets, fullScreen: Bool) -> CGFloat {
         buttonsAtBottom(corner: corner, fullScreen: fullScreen) ? size.height - insets.bottom - padding - buttonSize : insets.top + padding
+    }
+
+    /// The buttons go into the corner proper. The Dock doesn't run edge to edge, so its inset doesn't reach a corner;
+    /// only the menu bar, which does, keeps them clear.
+    public static func buttonInsets(_ insets: EdgeInsets) -> EdgeInsets {
+        EdgeInsets(top: insets.top, leading: 0, bottom: 0, trailing: 0)
     }
 
     public static func buttonsAlignment(corner: FogCorner, fullScreen: Bool) -> Alignment {
@@ -625,14 +633,15 @@ public struct ConversationFog: View {
                 .frame(width: text.width, height: text.height, alignment: .bottomLeading)
                 .offset(x: text.minX, y: text.minY)
                 if showsButtons {
+                    let buttons = Self.buttonInsets(insets)
                     FogPanelButtons(corner: corner, isFullScreen: isFullScreen, onCollapse: onCollapse, onFullScreen: onFullScreen)
                         .frame(
-                            width: max(0, proxy.size.width - insets.leading - insets.trailing - 2 * Self.padding),
+                            width: max(0, proxy.size.width - buttons.leading - buttons.trailing - 2 * Self.padding),
                             alignment: Self.buttonsAlignment(corner: corner, fullScreen: isFullScreen)
                         )
                         .offset(
-                            x: insets.leading + Self.padding,
-                            y: Self.buttonsY(in: proxy.size, corner: corner, insets: insets, fullScreen: isFullScreen)
+                            x: buttons.leading + Self.padding,
+                            y: Self.buttonsY(in: proxy.size, corner: corner, insets: buttons, fullScreen: isFullScreen)
                         )
                 }
             }

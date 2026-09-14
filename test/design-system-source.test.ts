@@ -105,7 +105,7 @@ test("M2: the whole mark recolours by state, and Talk is the template image", ()
   expect(mark).toContain("image.isTemplate = state == .talk");
   expect(mark).toContain("public static func statusImage(for state: VoiceState, side: CGFloat = 16) -> NSImage {");
   expect(item).toContain(".map(Self.voiceState)");
-  expect(item).toContain("button.image = ConchMark.statusImage(for: voice)");
+  expect(item).toContain("button.image = ConchMark.statusImage(for: voice, side: 18)");
 });
 
 test("M2: the notch hiding the item is noticed, logged, and conch stays in the Dock", () => {

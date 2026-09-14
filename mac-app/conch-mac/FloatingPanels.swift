@@ -559,7 +559,7 @@ private struct ConversationFogHost: View {
     /// The collapse and full-screen buttons where the fog would draw them, but over the resize strips.
     private var panelButtons: some View {
         GeometryReader { proxy in
-            let insets = panels.insets
+            let insets = ConversationFog.buttonInsets(panels.insets)
             FogPanelButtons(
                 corner: panels.corner,
                 isFullScreen: panels.isFullScreen,
