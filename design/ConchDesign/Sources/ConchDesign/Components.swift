@@ -490,6 +490,8 @@ public struct ConversationFog: View {
     let insets: EdgeInsets
     /// Draws the fog's tint; off, the words and buttons stand alone.
     let showsFog: Bool
+    /// How much of the fog colour lies over the blur where it is densest.
+    let tint: Double
     /// Draws the collapse and full-screen buttons; a host that layers its own controls over the fog draws them itself.
     let showsButtons: Bool
     let onMic: () -> Void
@@ -506,6 +508,7 @@ public struct ConversationFog: View {
         corner: FogCorner = .bottomLeading,
         insets: EdgeInsets = EdgeInsets(),
         showsFog: Bool = true,
+        tint: Double = ConversationFog.tintOpacity,
         showsButtons: Bool = true,
         onMic: @escaping () -> Void,
         onSend: @escaping () -> Void,
@@ -519,6 +522,7 @@ public struct ConversationFog: View {
         self.corner = corner
         self.insets = insets
         self.showsFog = showsFog
+        self.tint = tint
         self.showsButtons = showsButtons
         self.onMic = onMic
         self.onSend = onSend
@@ -563,8 +567,8 @@ public struct ConversationFog: View {
         return CGRect(x: corner.leading ? leading : size.width - trailing - width, y: top, width: width, height: height)
     }
 
-    /// How much of the fog colour lies over the blur where the fog is densest.
-    static let tintOpacity = 0.86
+    /// The tint a host doesn't choose one: how much of the fog colour lies over the blur where it is densest.
+    public static let tintOpacity = 0.86
 
     public var body: some View {
         GeometryReader { proxy in
@@ -582,7 +586,7 @@ public struct ConversationFog: View {
                         } else {
                             Rectangle()
                                 .fill(ConchColor.fog)
-                                .opacity(Self.tintOpacity)
+                                .opacity(tint)
                                 .mask(Self.density(fullScreen: false, corner: corner))
                         }
                     }

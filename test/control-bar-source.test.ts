@@ -142,7 +142,7 @@ test("M3: the fog replies through inject and dictates through the composer's dic
   // A fog, not a pane: the fog tint, and a behind-window blur masked to the corner.
   expect(components).toContain(".fill(ConchColor.fog)");
   expect(panels).toContain("blur.blendingMode = .behindWindow");
-  expect(panels).toContain("blur.maskImage = Self.blurMask(corner)");
+  expect(panels).toContain("blur.maskImage = Self.blurMask(corner, strength: blurStrength)");
   expect(components).toContain(".font(Self.font(latest: age == 0, fullScreen: isFullScreen))");
   expect(member(components, "static func font(latest: Bool, fullScreen: Bool) -> Font {")).toContain(
     "case (true, true): ConchType.conversationNowFull",
@@ -279,4 +279,20 @@ test("M3: the control bar leads with the session, with the state beneath it", ()
   expect(bar).toContain("VoiceStateLabel(state: state, detail: detail, leadsWithDetail: true)");
   expect(components).toContain("Text(detailFirst ? detail : state.title)");
   expect(components).toContain("Text(detailFirst ? state.title : detail)");
+});
+
+/** Tyler: the blur "looks bad". Its look is tuned by eye, so it's live: a `defaults write` shows at once, no rebuild. */
+test("M3: the overlay's tint, blur and material are live defaults the running app picks up", () => {
+  expect(panels).toContain('static let tintKey = "conch.overlay.tint"');
+  expect(panels).toContain('static let blurKey = "conch.overlay.blur"');
+  expect(panels).toContain('static let materialKey = "conch.overlay.material"');
+  expect(panels).toContain('UserDefaults.standard.register(defaults: [Look.tintKey: 0.2, Look.blurKey: 1.0, Look.materialKey: "fullScreenUI"])');
+  expect(panels).toContain("let lookTimer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in");
+  expect(panels).toContain("MainActor.assumeIsolated { self?.applyLook() }");
+  const look = member(panels, "private func applyLook() {");
+  expect(look).toContain("if tint != tintOpacity { tintOpacity = tint }");
+  expect(look).toContain("if blur.material != material { blur.material = material }");
+  expect(look).toContain("Self.masks = [:]");
+  expect(panels).toContain("tint: panels.tintOpacity,");
+  expect(components).toContain(".opacity(tint)");
 });
