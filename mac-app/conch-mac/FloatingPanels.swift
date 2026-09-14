@@ -35,6 +35,9 @@ final class FloatingPanels: ObservableObject {
     /// The fog fills its screen; leaving puts it back in the frame it had.
     @Published private(set) var isFullScreen = false
     @Published private(set) var isCollapsed = false
+    /// The fog's edges that sit on its screen's edges (`fogMoved`).
+    @Published private(set) var flush: Edge.Set = [.leading, .bottom]
+    private var fogObservers: [NSObjectProtocol] = []
     /// The open fog's size, to go back to from the handle.
     private var expandedSize = NSSize(width: 760, height: 560)
     private static let fogMinSize = NSSize(width: 480, height: 360)
@@ -46,13 +49,18 @@ final class FloatingPanels: ObservableObject {
     private let blur = NSVisualEffectView()
     private var defaultsObserver: NSObjectProtocol?
 
-    /// The corner fog's density as an image for the blur's mask: a behind-window blur ignores layer masks,
-    /// and NSVisualEffectView stretches this image to its own size.
-    private static let cornerMask: NSImage? = {
-        let image = ImageRenderer(content: ConversationFog.density(fullScreen: false).frame(width: 256, height: 256)).nsImage
+    /// The fog's density as an image for the blur's mask, at the panel's size and placement: a behind-window blur
+    /// ignores layer masks, and NSVisualEffectView stretches this image to its own size. A quarter scale is plenty
+    /// for a soft gradient.
+    private static func blurMask(size: NSSize, flush: Edge.Set) -> NSImage? {
+        let renderer = ImageRenderer(
+            content: ConversationFog.density(fullScreen: false, flush: flush).frame(width: size.width, height: size.height)
+        )
+        renderer.scale = 0.25
+        let image = renderer.nsImage
         image?.resizingMode = .stretch
         return image
-    }()
+    }
 
     private init(store: StateStore) {
         for panel in [controlBar, fog] {
@@ -81,7 +89,6 @@ final class FloatingPanels: ObservableObject {
         blur.material = .underWindowBackground
         blur.blendingMode = .behindWindow
         blur.state = .active
-        blur.maskImage = Self.cornerMask
         let words = FirstClickHostingView(rootView: ConversationFogHost(store: store, panels: self))
         words.autoresizingMask = [.width, .height]
         blur.addSubview(words)
@@ -91,6 +98,20 @@ final class FloatingPanels: ObservableObject {
             // The bottom-left corner.
             screen.origin
         }
+        // Wherever the fog is moved or resized, its blur and tint follow the screen edges it sits on.
+        for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
+            fogObservers.append(NotificationCenter.default.addObserver(forName: name, object: fog, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.fogMoved() }
+            })
+        }
+        fogObservers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.fogMoved() }
+        })
+        fogMoved()
 
         // The menu's toggles and the control bar's conversation button all write these two defaults.
         defaultsObserver = NotificationCenter.default.addObserver(
@@ -151,8 +172,25 @@ final class FloatingPanels: ObservableObject {
             fog.minSize = Self.fogMinSize
             fog.setFrame(NSRect(origin: origin, size: expandedSize), display: true)
             fog.setFrameAutosaveName(Self.conversationFrameName)
-            blur.maskImage = Self.cornerMask
+            fogMoved()
         }
+    }
+
+    /// Which of the fog's edges sit on its screen's edges: the fog runs out to those and fades on the rest
+    /// (ConversationFog.density). The whole screen, not its visible frame, so a fog above the Dock fades there;
+    /// within a few points counts, for a hidden Dock's sliver.
+    private func fogMoved() {
+        guard !isCollapsed, !isFullScreen, let screen = (fog.screen ?? NSScreen.screens.first)?.frame else { return }
+        let frame = fog.frame
+        let near: CGFloat = 8
+        var edges: Edge.Set = []
+        if frame.minX - screen.minX <= near { edges.insert(.leading) }
+        if screen.maxX - frame.maxX <= near { edges.insert(.trailing) }
+        if frame.minY - screen.minY <= near { edges.insert(.bottom) }
+        if screen.maxY - frame.maxY <= near { edges.insert(.top) }
+        if edges != flush { flush = edges }
+        // ponytail: redrawn on every move and resize step (a quarter-scale gradient); cache by size and edges if a drag stutters.
+        blur.maskImage = Self.blurMask(size: frame.size, flush: edges)
     }
 
     /// Command-Return or the fog's button: fill the screen, or go back to the frame it had.
@@ -169,7 +207,7 @@ final class FloatingPanels: ObservableObject {
             fog.setFrame(screen.frame, display: true, animate: animate)
         }
         isFullScreen = frameBeforeFullScreen != nil
-        blur.maskImage = isFullScreen ? nil : Self.cornerMask
+        if isFullScreen { blur.maskImage = nil } else { fogMoved() }
     }
 }
 
@@ -213,6 +251,7 @@ private struct ConversationFogHost: View {
                     draft: row.map { drafts.textBinding(for: $0.id) } ?? .constant(""),
                     isListening: row.map { ["listening", "recording"].contains(voice(for: $0)) } ?? false,
                     isFullScreen: panels.isFullScreen,
+                    flush: panels.flush,
                     onMic: { if let row { mic(row) } },
                     onSend: { if let row { send(row) } },
                     onCollapse: { panels.toggleCollapsed() },

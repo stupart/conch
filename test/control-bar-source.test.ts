@@ -141,7 +141,7 @@ test("M3: the fog replies through inject and dictates through the composer's dic
   // A fog, not a pane: the fog tint, and a behind-window blur masked to the corner.
   expect(components).toContain(".fill(ConchColor.fog)");
   expect(panels).toContain("blur.blendingMode = .behindWindow");
-  expect(panels).toContain("blur.maskImage = Self.cornerMask");
+  expect(panels).toContain("blur.maskImage = Self.blurMask(size: frame.size, flush: edges)");
   expect(components).toContain(".font(Self.font(latest: age == 0, fullScreen: isFullScreen))");
   expect(member(components, "static func font(latest: Bool, fullScreen: Bool) -> Font {")).toContain(
     "case (true, true): ConchType.conversationNowFull",
@@ -183,4 +183,45 @@ test("M3: a Dock click still reopens the dashboard while the floating panels are
   const app = readFileSync(join(import.meta.dir, "..", "mac-app/conch-mac/ConchMacApp.swift"), "utf8");
   expect(app).toContain("if hasVisibleWindows, sender.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) { return true }");
   expect(app).not.toContain("if hasVisibleWindows { return true }");
+});
+
+/**
+ * Tyler: "there should never be a hard line at the bottom and it should kinda adjust to the context of where it
+ * is on the screen so it looks natural ... as well as if you make it larger or smaller".
+ */
+test("M3: the fog follows the screen edges it sits on and fades on every other edge, at any size", () => {
+  const moved = member(panels, "private func fogMoved() {");
+  for (const line of [
+    "if frame.minX - screen.minX <= near { edges.insert(.leading) }",
+    "if screen.maxX - frame.maxX <= near { edges.insert(.trailing) }",
+    "if frame.minY - screen.minY <= near { edges.insert(.bottom) }",
+    "if screen.maxY - frame.maxY <= near { edges.insert(.top) }",
+    "blur.maskImage = Self.blurMask(size: frame.size, flush: edges)",
+  ]) expect(moved).toContain(line);
+  // The whole screen, not the visible frame: a fog resting on the Dock is not on an edge, so it fades there.
+  expect(moved).toContain("let screen = (fog.screen ?? NSScreen.screens.first)?.frame");
+  expect(panels).toContain("for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {");
+  expect(panels).toContain("forName: NSApplication.didChangeScreenParametersNotification");
+  expect(panels).toContain("flush: panels.flush,");
+  expect(panels).not.toContain("cornerMask");
+  // The tint and the blur share one density, which stops short of every free edge.
+  const densityAt = components.indexOf("public static func density(fullScreen: Bool, flush: Edge.Set");
+  expect(densityAt).toBeGreaterThan(-1);
+  const density = components.slice(densityAt, components.indexOf("public static func edgeFade("));
+  for (const edge of ["leading", "trailing", "top", "bottom"]) {
+    expect(density).toContain(`.padding(.${edge}, flush.contains(.${edge}) ? -fade : fade / 2)`);
+  }
+  expect(density).toContain(".blur(radius: fade / 4)");
+  // Tyler: "need some background blur behind the text so its more readable": thick behind the words wherever they are.
+  expect(density).toContain("textBacking(textFrame(in: proxy.size, flush: flush, fullScreen: false), fade: fade)");
+  expect(components).toContain("let text = Self.textFrame(in: proxy.size, flush: flush, fullScreen: isFullScreen)");
+  expect(components).toContain(".offset(x: text.minX, y: text.minY)");
+  expect(components).toContain(".mask(Self.density(fullScreen: false, flush: flush))");
+  expect(member(components, "public static func edgeFade(_ size: CGSize) -> CGFloat {")).toContain(
+    "min(size.width, size.height) * 0.16",
+  );
+  // And the transcript's bottom is a short fade, not a cut.
+  expect(components).toContain(
+    "LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)\n                        .frame(height: ConchSpace.x4)",
+  );
 });

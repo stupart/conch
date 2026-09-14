@@ -339,6 +339,10 @@ struct FogScreen: View {
     let fullScreen: Bool
     let draft: String
     let listening: Bool
+    var size = CGSize(width: 760, height: 560)
+    /// From the screen's bottom-left corner.
+    var offset = CGSize.zero
+    var flush: Edge.Set = [.leading, .bottom]
 
     static let screen = CGSize(width: 1200, height: 750)
     static let turns = [
@@ -349,26 +353,30 @@ struct FogScreen: View {
     ]
 
     var body: some View {
-        let panel = fullScreen ? Self.screen : CGSize(width: 760, height: 560)
+        let panel = fullScreen ? Self.screen : size
         ZStack(alignment: .bottomLeading) {
             OtherApp()
             // ImageRenderer cannot draw the app's behind-window blur (and tiles SwiftUI's own blur), so a copy of the
             // page blurred by Core Image stands in for it, under the same mask.
             BlurredOtherApp(size: Self.screen)
                 .mask(alignment: .bottomLeading) {
-                    ConversationFog.density(fullScreen: fullScreen).frame(width: panel.width, height: panel.height)
+                    ConversationFog.density(fullScreen: fullScreen, flush: flush)
+                        .frame(width: panel.width, height: panel.height)
+                        .offset(x: offset.width, y: -offset.height)
                 }
             ConversationFog(
                 turns: Self.turns,
                 draft: .constant(draft),
                 isListening: listening,
                 isFullScreen: fullScreen,
+                flush: flush,
                 onMic: {},
                 onSend: {},
                 onCollapse: {},
                 onFullScreen: {}
             )
             .frame(width: panel.width, height: panel.height)
+            .offset(x: offset.width, y: -offset.height)
         }
         .frame(width: Self.screen.width, height: Self.screen.height)
         .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large))
@@ -415,4 +423,19 @@ try render("m3-fog-collapsed", width: 1280) {
     }
     .frame(width: FogScreen.screen.width, height: FogScreen.screen.height)
     .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large))
+}
+
+try render("m3-fog-floating", width: 1280) {
+    Heading(title: "Conversation fog, moved off the edges", note: "Dragged into the open: no screen edge to sit on, so it fades out on every side and gathers around the words.")
+    FogScreen(fullScreen: false, draft: "", listening: false, size: CGSize(width: 640, height: 470), offset: CGSize(width: 300, height: 140), flush: [])
+}
+
+try render("m3-fog-right-edge", width: 1280) {
+    Heading(title: "Conversation fog, on the right edge", note: "Against the right edge it runs out to that edge and fades on the other three, and the words move to that side.")
+    FogScreen(fullScreen: false, draft: "", listening: false, size: CGSize(width: 560, height: 520), offset: CGSize(width: 640, height: 110), flush: [.trailing])
+}
+
+try render("m3-fog-small", width: 1280) {
+    Heading(title: "Conversation fog, smallest, above the Dock", note: "480 by 360 and resting on the Dock rather than the screen's edge, so the bottom fades too, and the fade shrinks with the panel.")
+    FogScreen(fullScreen: false, draft: "", listening: false, size: CGSize(width: 480, height: 360), offset: CGSize(width: 0, height: 70), flush: [.leading])
 }

@@ -401,6 +401,8 @@ public struct ConversationFog: View {
     @Binding var draft: String
     let isListening: Bool
     let isFullScreen: Bool
+    /// The panel's edges that sit on its screen's edges. The fog runs out to those and fades on the rest.
+    let flush: Edge.Set
     let onMic: () -> Void
     let onSend: () -> Void
     let onCollapse: () -> Void
@@ -414,6 +416,7 @@ public struct ConversationFog: View {
         draft: Binding<String>,
         isListening: Bool,
         isFullScreen: Bool,
+        flush: Edge.Set = [.leading, .bottom],
         onMic: @escaping () -> Void,
         onSend: @escaping () -> Void,
         onCollapse: @escaping () -> Void,
@@ -423,52 +426,143 @@ public struct ConversationFog: View {
         _draft = draft
         self.isListening = isListening
         self.isFullScreen = isFullScreen
+        self.flush = flush
         self.onMic = onMic
         self.onSend = onSend
         self.onCollapse = onCollapse
         self.onFullScreen = onFullScreen
     }
 
-    /// Where the fog is: everywhere when full screen; otherwise strongest in the bottom-left corner and gone
-    /// three quarters of the way out, so there is no edge to look at. A mask, so only its alpha matters.
-    public static func density(fullScreen: Bool) -> EllipticalGradient {
-        EllipticalGradient(
-            stops: fullScreen
-                ? [.init(color: .black, location: 0), .init(color: .black, location: 1)]
-                : [
-                    .init(color: .black, location: 0.36),
-                    .init(color: .black.opacity(0.75), location: 0.5),
-                    .init(color: .black.opacity(0.3), location: 0.64),
-                    .init(color: .clear, location: 0.78),
-                ],
-            center: .bottomLeading,
-            endRadiusFraction: 1.1
+    /// Where the fog is, as a mask (only its alpha matters). Full screen, everywhere. Otherwise it gathers toward
+    /// the screen edges the panel sits on (`flush`) and thins away from them, and every edge that is not on a
+    /// screen edge fades to nothing, so wherever the panel is moved and however it is sized there is never a line
+    /// to look at. In the bottom-left corner this is the original corner fog.
+    @ViewBuilder
+    public static func density(fullScreen: Bool, flush: Edge.Set = [.leading, .bottom]) -> some View {
+        if fullScreen {
+            Color.black
+        } else {
+            GeometryReader { proxy in
+                let fade = edgeFade(proxy.size)
+                ZStack(alignment: .topLeading) {
+                    EllipticalGradient(
+                        stops: [
+                            .init(color: .black, location: 0.36),
+                            .init(color: .black.opacity(0.75), location: 0.5),
+                            .init(color: .black.opacity(0.3), location: 0.64),
+                            .init(color: .clear, location: 0.78),
+                        ],
+                        center: anchor(flush),
+                        endRadiusFraction: reach(flush)
+                    )
+                    // Thick behind the words, the reply line and their buttons, wherever the panel is, so they read.
+                    textBacking(textFrame(in: proxy.size, flush: flush, fullScreen: false), fade: fade)
+                }
+                .mask {
+                    // A soft rectangle: short of every free edge, past every edge that is on the screen's.
+                    Rectangle()
+                        .padding(.leading, flush.contains(.leading) ? -fade : fade / 2)
+                        .padding(.trailing, flush.contains(.trailing) ? -fade : fade / 2)
+                        .padding(.top, flush.contains(.top) ? -fade : fade / 2)
+                        .padding(.bottom, flush.contains(.bottom) ? -fade : fade / 2)
+                        .blur(radius: fade / 4)
+                }
+            }
+        }
+    }
+
+    /// How far in from a free edge the fog takes to thicken. It grows and shrinks with the panel.
+    public static func edgeFade(_ size: CGSize) -> CGFloat {
+        min(96, max(32, min(size.width, size.height) * 0.16))
+    }
+
+    /// The fog's densest point: on the screen edges the panel touches, else its middle.
+    static func anchor(_ flush: Edge.Set) -> UnitPoint {
+        func along(_ start: Bool, _ end: Bool) -> CGFloat { start == end ? 0.5 : (start ? 0 : 1) }
+        return UnitPoint(
+            x: along(flush.contains(.leading), flush.contains(.trailing)),
+            y: along(flush.contains(.top), flush.contains(.bottom))
         )
     }
 
+    /// From a corner the fog reaches across the panel; centred on an axis it has half as far to go.
+    static func reach(_ flush: Edge.Set) -> CGFloat {
+        let point = anchor(flush)
+        return [1.1, 0.85, 0.62][[point.x, point.y].filter { $0 == 0.5 }.count]
+    }
+
+    /// Room above the words for the collapse and full-screen buttons.
+    static let buttonRoom: CGFloat = 30 + ConchSpace.x2
+
+    /// A soft patch around the words, the reply line and the buttons above them.
+    static func textBacking(_ text: CGRect, fade: CGFloat) -> some View {
+        // Wide and very soft, so it thickens the fog behind the words without ever reading as a pane.
+        let pad = ConchSpace.x10
+        return RoundedRectangle(cornerRadius: fade)
+            .frame(width: text.width + 2 * pad, height: text.height + buttonRoom + 2 * pad)
+            .offset(x: text.minX - pad, y: text.minY - buttonRoom - pad)
+            .blur(radius: fade / 2)
+    }
+
+    /// Where the words and the reply line sit in a panel of `size`: toward the edge the fog gathers on, inset
+    /// from every edge, with room above for the buttons. The fog's density is built around this same frame.
+    static func textFrame(in size: CGSize, flush: Edge.Set, fullScreen: Bool) -> CGRect {
+        if fullScreen {
+            let width = max(0, min(1040, size.width - 2 * ConchSpace.x12))
+            let height = max(0, size.height * 0.8)
+            return CGRect(x: (size.width - width) / 2, y: size.height - ConchSpace.x12 - height, width: width, height: height)
+        }
+        let fade = edgeFade(size)
+        let leading = inset(.leading, flush: flush, fade: fade)
+        let trailing = inset(.trailing, flush: flush, fade: fade)
+        let bottom = inset(.bottom, flush: flush, fade: fade)
+        let top = inset(.top, flush: flush, fade: fade) + buttonRoom
+        let width = max(0, min(560, size.width * 0.66, size.width - leading - trailing))
+        let height = max(0, min(size.height * 0.62, size.height - bottom - top))
+        let x: CGFloat = switch anchor(flush).x {
+        case 0: leading
+        case 1: size.width - trailing - width
+        default: (size.width - width) / 2
+        }
+        return CGRect(x: x, y: size.height - bottom - height, width: width, height: height)
+    }
+
+    /// About 50 pt in from a screen edge, where blur.html set the corner's words; clear of the fade on a free edge.
+    static func inset(_ edge: Edge.Set, flush: Edge.Set, fade: CGFloat) -> CGFloat {
+        flush.contains(edge) ? ConchSpace.x12 : fade + ConchSpace.x4
+    }
+
     /// How much of the fog colour lies over the blur where the fog is densest.
-    static let tintOpacity = 0.86
+    static let tintOpacity = 0.9
 
     public var body: some View {
         GeometryReader { proxy in
-            ZStack(alignment: isFullScreen ? .bottom : .bottomLeading) {
+            let text = Self.textFrame(in: proxy.size, flush: flush, fullScreen: isFullScreen)
+            ZStack(alignment: .topLeading) {
                 Group {
                     if isFullScreen {
-                        // panel.html's wash: light at the top so the blurred work still shows, deepening toward the words.
-                        Rectangle().fill(ConchColor.fog).mask(LinearGradient(
-                            stops: [.init(color: .black.opacity(0.12), location: 0), .init(color: .black.opacity(0.42), location: 0.55), .init(color: .black.opacity(0.62), location: 1)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ))
+                        // panel.html's wash, light at the top so the blurred work still shows and deepening toward the
+                        // words, with a thicker patch right behind them.
+                        Rectangle().fill(ConchColor.fog).mask {
+                            ZStack(alignment: .topLeading) {
+                                LinearGradient(
+                                    stops: [.init(color: .black.opacity(0.12), location: 0), .init(color: .black.opacity(0.42), location: 0.55), .init(color: .black.opacity(0.62), location: 1)],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                                Self.textBacking(text, fade: 64).opacity(0.5)
+                            }
+                        }
                     } else {
                         Rectangle()
                             .fill(ConchColor.fog)
                             .opacity(Self.tintOpacity)
-                            .mask(Self.density(fullScreen: false))
+                            .mask(Self.density(fullScreen: false, flush: flush))
                     }
                 }
                 .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: isFullScreen ? ConchSpace.x6 : ConchSpace.x4) {
+                // The words keep a short soft edge of their own at the bottom, so the gap to the reply is that plus this.
+                VStack(alignment: .leading, spacing: isFullScreen ? ConchSpace.x2 : ConchSpace.x1) {
                     words
                     InlineReplyLine(
                         text: $draft,
@@ -478,20 +572,11 @@ public struct ConversationFog: View {
                         onSend: onSend
                     )
                 }
-                // In the corner the words stay where the fog is dense; full screen they take a wide reading column.
-                .frame(
-                    width: max(0, isFullScreen ? min(1040, proxy.size.width - 2 * ConchSpace.x12) : min(560, proxy.size.width * 0.66)),
-                    height: max(0, proxy.size.height * (isFullScreen ? 0.8 : 0.62)),
-                    alignment: .bottomLeading
-                )
-                // Just above the words at the leading edge, where the fog is still dense, rather than out over
-                // the other app or on top of the oldest turn.
-                .overlay(alignment: .topLeading) { panelButtons.offset(y: -(30 + ConchSpace.x2)) }
-                // Where blur.html set the corner's words: about 50 pt in from the screen's corner.
-                .padding(.leading, isFullScreen ? 0 : ConchSpace.x12)
-                .padding(.bottom, ConchSpace.x12)
+                .frame(width: text.width, height: text.height, alignment: .bottomLeading)
+                .overlay(alignment: .topLeading) { panelButtons.offset(y: -Self.buttonRoom) }
+                .offset(x: text.minX, y: text.minY)
             }
-            .frame(width: proxy.size.width, height: proxy.size.height)
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
         }
         .onHover { hovering = $0 }
         .accessibilityElement(children: .contain)
@@ -525,18 +610,33 @@ public struct ConversationFog: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // At rest the latest turn sits above the soft bottom edge, not in it.
+        .padding(.bottom, ConchSpace.x4)
 
         return Group {
             if rendersStatically {
                 // ImageRenderer cannot draw a scroll view: the same column, pinned to the bottom.
-                column.frame(maxHeight: .infinity, alignment: .bottom).clipped()
+                // minHeight 0, or the frame grows to fit the column and nothing is clipped.
+                column.frame(minHeight: 0, maxHeight: .infinity, alignment: .bottom).clipped()
             } else {
                 ScrollView { column }
                     .scrollIndicators(.never)
                     .defaultScrollAnchor(.bottom)
             }
         }
-        .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: isFullScreen ? 0.34 : 0.26)], startPoint: .top, endPoint: .bottom))
+        // Soft at both ends: turns thin out as they rise, and anything scrolled below slips under a short fade
+        // above the reply line instead of ending in a cut.
+        .mask {
+            GeometryReader { proxy in
+                VStack(spacing: 0) {
+                    LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                        .frame(height: proxy.size.height * (isFullScreen ? 0.34 : 0.26))
+                    Rectangle()
+                    LinearGradient(colors: [.black, .clear], startPoint: .top, endPoint: .bottom)
+                        .frame(height: ConchSpace.x4)
+                }
+            }
+        }
     }
 
     static func font(latest: Bool, fullScreen: Bool) -> Font {

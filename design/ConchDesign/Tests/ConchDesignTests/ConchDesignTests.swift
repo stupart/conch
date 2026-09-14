@@ -65,6 +65,30 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertTrue(check.contains { $0.allSatisfy { $0 > 0.95 } }, "no white checkmark in the ready orb")
     }
 
+    /// The fog gathers on the screen edges it touches and centres itself when it touches none.
+    @MainActor
+    func testTheFogGathersOnTheScreenEdgesItTouches() {
+        XCTAssertEqual(ConversationFog.anchor([.leading, .bottom]), .bottomLeading)
+        XCTAssertEqual(ConversationFog.anchor([]), .center)
+        XCTAssertEqual(ConversationFog.anchor([.trailing]), UnitPoint(x: 1, y: 0.5))
+        XCTAssertEqual(ConversationFog.anchor([.leading, .trailing, .bottom]), UnitPoint(x: 0.5, y: 1))
+        XCTAssertEqual(ConversationFog.reach([.leading, .bottom]), 1.1)
+        XCTAssertEqual(ConversationFog.reach([.trailing]), 0.85)
+        XCTAssertEqual(ConversationFog.reach([]), 0.62)
+        // The words sit toward the edge the fog gathers on, clear of every free edge's fade.
+        let right = ConversationFog.textFrame(in: CGSize(width: 560, height: 520), flush: [.trailing], fullScreen: false)
+        XCTAssertEqual(right.maxX, 560 - ConchSpace.x12, accuracy: 0.01)
+        let floating = ConversationFog.textFrame(in: CGSize(width: 640, height: 470), flush: [], fullScreen: false)
+        let fade = ConversationFog.edgeFade(CGSize(width: 640, height: 470))
+        XCTAssertGreaterThanOrEqual(floating.minX, fade + ConchSpace.x4 - 0.01)
+        XCTAssertEqual(floating.maxY, 470 - fade - ConchSpace.x4, accuracy: 0.01)
+        XCTAssertGreaterThanOrEqual(floating.minY, fade + ConchSpace.x4 + ConversationFog.buttonRoom - 0.01)
+        // The fade scales with the panel, within limits.
+        XCTAssertEqual(ConversationFog.edgeFade(CGSize(width: 480, height: 360)), 57.6, accuracy: 0.01)
+        XCTAssertEqual(ConversationFog.edgeFade(CGSize(width: 3000, height: 2000)), 96)
+        XCTAssertEqual(ConversationFog.edgeFade(CGSize(width: 100, height: 100)), 32)
+    }
+
     func testHairlinesStayAtTenPercentOrLess() {
         for line in [ConchColor.hairline, ConchColor.hairlineStrong] {
             XCTAssertLessThanOrEqual(line.light.alpha, 0.1)
