@@ -219,10 +219,14 @@ test("M3: the fog stays docked in a corner, is thrown into a corner by its middl
     "let grab = isFullScreen ? 0 : max(0, Self.resizeGrab - ConversationFog.padding)",
   );
   // A throw fades, softens and shrinks a little mid-flight, and lands whole (Tyler: "so it feels more liquid").
-  expect(member(panels, "private func stepSpring() {")).toContain("fog.alphaValue = 1 - 0.45 * motion");
+  expect(member(panels, "private func stepSpring() {")).toContain("fog.alphaValue = 1 - (1 - ConchMotion.flightOpacity) * motion");
+  // On the design system's dock spring, the overlay lab's, and calm under Reduce Motion.
+  expect(member(panels, "private func stepSpring() {")).toContain(
+    "ConchMotion.dock.resolved(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)",
+  );
   expect(member(panels, "private func stopSpring() {")).toContain("fog.alphaValue = 1");
-  expect(panels).toContain(".scaleEffect(1 - 0.1 * panels.throwMotion)");
-  expect(panels).toContain(".blur(radius: 10 * panels.throwMotion)");
+  expect(panels).toContain(".scaleEffect(1 - (1 - ConchMotion.flightScale) * panels.throwMotion)");
+  expect(panels).toContain(".blur(radius: ConchMotion.flightBlur * panels.throwMotion)");
   expect(panels).toContain(".onChanged { _ in panels.resizeMoved(edges) }");
   expect(panels).toContain(".onChanged { _ in panels.dragMoved() }");
   // It reaches the screen's edges, and the words are padded clear of the Dock and the menu bar.
