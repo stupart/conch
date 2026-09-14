@@ -453,10 +453,10 @@ final class FloatingPanels: ObservableObject {
     }
 
     private func stepSpring() {
-        // ponytail: stiffness 180 at a damping ratio of 0.85, about half a second to settle with the faintest
-        // overshoot; tune by feel.
-        let stiffness = 180.0
-        let damping = 2 * 0.85 * stiffness.squareRoot()
+        // The overlay lab's dock spring; Reduce Motion drops its overshoot.
+        let spring = ConchMotion.dock.resolved(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        let stiffness = spring.stiffness
+        let damping = spring.damping
         let step = Self.springStep
         springVelocity.dx += (-stiffness * (springOrigin.x - springTarget.minX) - damping * springVelocity.dx) * step
         springVelocity.dy += (-stiffness * (springOrigin.y - springTarget.minY) - damping * springVelocity.dy) * step
@@ -473,7 +473,7 @@ final class FloatingPanels: ObservableObject {
             // there; a short hop barely does.
             let progress = 1 - min(1, distance / max(springStartDistance, 1))
             let motion = sin(.pi * progress) * min(1, springStartDistance / 300)
-            fog.alphaValue = 1 - 0.45 * motion
+            fog.alphaValue = 1 - (1 - ConchMotion.flightOpacity) * motion
             if abs(motion - throwMotion) > 0.01 { throwMotion = motion }
         }
     }
@@ -555,8 +555,8 @@ private struct ConversationFogHost: View {
                         .onEnded { _ in panels.dragEnded() }
                 )
                 // A throw's flight: it softens and shrinks a little mid-air, and lands whole.
-                .scaleEffect(1 - 0.1 * panels.throwMotion)
-                .blur(radius: 10 * panels.throwMotion)
+                .scaleEffect(1 - (1 - ConchMotion.flightScale) * panels.throwMotion)
+                .blur(radius: ConchMotion.flightBlur * panels.throwMotion)
                 .overlay {
                     if !panels.isFullScreen {
                         resizeHandles

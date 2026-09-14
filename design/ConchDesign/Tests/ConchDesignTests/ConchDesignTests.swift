@@ -110,6 +110,35 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertEqual(text.width, 760 - 2 * ConversationFog.padding, accuracy: 0.01)
     }
 
+    /// The springs are the overlay lab's, in SwiftUI's own terms, so the apps move the way the lab felt.
+    func testTheSpringsAreTheOverlayLabsAndStepLikeSwiftUI() {
+        XCTAssertEqual(ConchMotion.dock, ConchSpring(bounce: 0.2, response: 0.45))
+        XCTAssertEqual(ConchMotion.morph, ConchSpring(bounce: 0.12, response: 0.46))
+        XCTAssertEqual(ConchMotion.pop, ConchSpring(bounce: 0.34, response: 0.36))
+        XCTAssertEqual(ConchMotion.grow, ConchSpring(bounce: 0.12, response: 0.34))
+        // Stepped by hand, a spring follows the same curve SwiftUI animates.
+        for (name, spring) in ConchMotion.springs {
+            let swiftUI = Spring(duration: spring.response, bounce: spring.bounce)
+            XCTAssertEqual(spring.stiffness, swiftUI.stiffness, accuracy: 0.01, name)
+            XCTAssertEqual(spring.damping, swiftUI.damping, accuracy: 0.01, name)
+        }
+        // Reduce Motion keeps the timing and drops the overshoot.
+        XCTAssertEqual(ConchMotion.dock.resolved(reduceMotion: true), ConchSpring(bounce: 0, response: 0.45))
+        XCTAssertEqual(ConchMotion.dock.resolved(reduceMotion: false), ConchMotion.dock)
+        // A 1000 pt/s flick carries about 500 pt.
+        XCTAssertEqual(ConchMotion.projectedDistance(1000), 499, accuracy: 0.01)
+    }
+
+    /// The overlay's words read at 4.5:1 on its own wash, in light and in dark.
+    func testTheOverlaysWordsReadOnItsWash() {
+        for scheme in [ColorScheme.light, .dark] {
+            for text in [ConchColor.overlayText, ConchColor.overlayTextSecondary] {
+                let ratio = text.rgba(scheme).contrast(on: ConchColor.fog.rgba(scheme))
+                XCTAssertGreaterThanOrEqual(ratio, 4.5, "\(text.name) on the wash, \(scheme): \(ratio)")
+            }
+        }
+    }
+
     func testHairlinesStayAtTenPercentOrLess() {
         for line in [ConchColor.hairline, ConchColor.hairlineStrong] {
             XCTAssertLessThanOrEqual(line.light.alpha, 0.1)

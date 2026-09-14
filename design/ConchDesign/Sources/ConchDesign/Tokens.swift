@@ -66,7 +66,7 @@ public enum ConchColor {
     public static let surface = ConchColorToken("surface", .init(0xFFFFFF), .init(0x1F1F1E))
     public static let surfaceRaised = ConchColorToken("surfaceRaised", .init(0xFFFFFF), .init(0x2C2C2B))
     /// The conversation fog's tint (M3).
-    public static let fog = ConchColorToken("fog", .init(0xFAF9F7), .init(0x1A1A19))
+    public static let fog = ConchColorToken("fog", .init(0xFAF9F7), .init(0x161619))
     /// Laid over a material, for floating controls only.
     public static let glass = ConchColorToken("glass", .init(0xFFFFFF, alpha: 0.7), .init(0x262625, alpha: 0.7))
     /// The quiet fill behind a round control or a switch track.
@@ -94,11 +94,29 @@ public enum ConchColor {
     public static let ready = ConchColorToken("ready", both: .init(0x30B35A))
     public static let listeningRing = ConchColorToken("listeningRing", both: .init(0xFF9F0A, alpha: 0.22))
     public static let onVoice = ConchColorToken("onVoice", both: .init(0xFFFFFF))
+    /// The overlay's glow while nobody is talking: a calm iris between listening's orange and speaking's teal.
+    public static let idleGlow = ConchColorToken("idleGlow", both: .init(0x7F8CFF))
+
+    // The conversation overlay, drawn over whatever is on screen, from the overlay lab's light and dark palettes.
+    public static let overlayText = ConchColorToken("overlayText", .init(0x1D1D1F), .init(0xF5F5F7))
+    public static let overlayTextSecondary = ConchColorToken("overlayTextSecondary", .init(0x6E6E73), .init(0xB8B8BE))
+    /// Words still to be read out.
+    public static let overlayTextPending = ConchColorToken("overlayTextPending", .init(0x1D1D1F, alpha: 0.32), .init(0xF5F5F7, alpha: 0.36))
+    public static let overlayPlaceholder = ConchColorToken("overlayPlaceholder", .init(0x1D1D1F, alpha: 0.28), .init(0xF5F5F7, alpha: 0.32))
+    public static let overlayFill = ConchColorToken("overlayFill", .init(0x1D1D1F, alpha: 0.07), .init(0xFFFFFF, alpha: 0.12))
+    public static let overlayFillStrong = ConchColorToken("overlayFillStrong", .init(0x1D1D1F, alpha: 0.12), .init(0xFFFFFF, alpha: 0.2))
+    /// The overlay's round buttons.
+    public static let overlayGlass = ConchColorToken("overlayGlass", .init(0xFFFFFF, alpha: 0.55), .init(0x3E3E42, alpha: 0.55))
+    public static let overlayGlassStrong = ConchColorToken("overlayGlassStrong", .init(0xFFFFFF, alpha: 0.9), .init(0x56565C, alpha: 0.85))
+    public static let overlayGlassIcon = ConchColorToken("overlayGlassIcon", .init(0x6E6E73), .init(0xD6D6DC))
+    public static let overlayLine = ConchColorToken("overlayLine", .init(0x000000, alpha: 0.14), .init(0xFFFFFF, alpha: 0.16))
 
     public static let grounds = [ground, surface, surfaceRaised, fog]
     public static let text = [textPrimary, textSecondary, textTertiary]
     public static let all = grounds + [glass, fill, fillSelected] + text + [hairline, hairlineStrong, accent, onAccent]
-        + [speaking, listening, quiet, ready, listeningRing, onVoice]
+        + [speaking, listening, quiet, ready, listeningRing, onVoice, idleGlow] + overlay
+    public static let overlay = [overlayText, overlayTextSecondary, overlayTextPending, overlayPlaceholder, overlayFill,
+                                 overlayFillStrong, overlayGlass, overlayGlassStrong, overlayGlassIcon, overlayLine]
 }
 
 // MARK: - Type
@@ -225,7 +243,68 @@ extension View {
     }
 }
 
+/// A spring in SwiftUI's own terms: `bounce` 0 settles without overshoot and higher overshoots more; `response` is
+/// roughly how long it takes, in seconds. Tuned in the overlay lab (~/Projects/conch-design/overlay-lab.html).
+public struct ConchSpring: Equatable, Sendable {
+    public let bounce: Double
+    public let response: Double
+
+    public init(bounce: Double, response: Double) {
+        self.bounce = bounce
+        self.response = response
+    }
+
+    /// For stepping a spring by hand, as a window frame has to be: unit mass, the same curve as `animation`.
+    public var stiffness: Double { pow(2 * .pi / response, 2) }
+    public var damping: Double { 4 * .pi * (1 - bounce) / response }
+
+    /// Reduce Motion keeps the timing and drops the overshoot, so things still resolve, calmly.
+    public func resolved(reduceMotion: Bool) -> ConchSpring {
+        reduceMotion ? ConchSpring(bounce: 0, response: response) : self
+    }
+
+    public func animation(reduceMotion: Bool) -> Animation {
+        let spring = resolved(reduceMotion: reduceMotion)
+        return .spring(duration: spring.response, bounce: spring.bounce)
+    }
+}
+
 public enum ConchMotion {
+    // Springs: the overlay lab's Default feel. Its Calm and Island presets are still to be chosen between.
+    /// A throw docking in its corner.
+    public static let dock = ConchSpring(bounce: 0.2, response: 0.45)
+    /// A big view changing shape: collapse, full screen. Big things bounce less.
+    public static let morph = ConchSpring(bounce: 0.12, response: 0.46)
+    /// A small control appearing, like the collapsed caret. Small things bounce more.
+    public static let pop = ConchSpring(bounce: 0.34, response: 0.36)
+    /// The reply line growing a line.
+    public static let grow = ConchSpring(bounce: 0.12, response: 0.34)
+    /// A voice state's colour taking over.
+    public static let voiceColour = ConchSpring(bounce: 0, response: 0.4)
+    /// Light and dark trading places.
+    public static let appearance = ConchSpring(bounce: 0, response: 0.3)
+    public static let springs: [(name: String, spring: ConchSpring)] = [
+        ("dock", dock), ("morph", morph), ("pop", pop), ("grow", grow), ("voiceColour", voiceColour), ("appearance", appearance),
+    ]
+
+    /// A thrown view mid-air: a little smaller, softer and fainter, whole again as it lands.
+    public static let flightScale: CGFloat = 0.97
+    public static let flightBlur: CGFloat = 3
+    public static let flightOpacity: CGFloat = 0.9
+
+    /// Words arriving: each fades up out of a small blur, at a talking pace.
+    public static let wordReveal: Double = 0.36
+    public static let wordRevealBlur: CGFloat = 4
+    public static let wordsPerSecond: Double = 13
+
+    /// A scroll view's normal deceleration, per millisecond.
+    public static let deceleration = 0.998
+    /// How far `velocity` (points per second) carries under that deceleration: where a throw is heading
+    /// (WWDC18, "Designing Fluid Interfaces").
+    public static func projectedDistance(_ velocity: CGFloat) -> CGFloat {
+        velocity * deceleration / (1 - deceleration) / 1000
+    }
+
     public static let quick: Double = 0.15
     public static let standard: Double = 0.25
     public static let gentle: Double = 0.4

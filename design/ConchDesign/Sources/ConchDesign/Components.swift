@@ -450,11 +450,9 @@ public enum FogDock {
     /// The corner a fog let go at `center`, moving at `velocity` (points per second), comes to rest in: the one nearest
     /// where its momentum would carry it, as iOS picture in picture chooses (WWDC18, "Designing Fluid Interfaces").
     public static func corner(releasedAt center: CGPoint, velocity: CGVector, in screen: CGRect) -> FogCorner {
-        // The distance a scroll view's normal deceleration (0.998 per millisecond) carries a velocity.
-        let carry = 0.998 / (1 - 0.998) / 1000
-        return FogCorner(
-            leading: center.x + velocity.dx * carry < screen.midX,
-            bottom: center.y + velocity.dy * carry < screen.midY
+        FogCorner(
+            leading: center.x + ConchMotion.projectedDistance(velocity.dx) < screen.midX,
+            bottom: center.y + ConchMotion.projectedDistance(velocity.dy) < screen.midY
         )
     }
 

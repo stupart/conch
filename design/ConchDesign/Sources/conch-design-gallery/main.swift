@@ -171,6 +171,11 @@ try render("tokens-scale") {
         Caption("motion (seconds; none under Reduce Motion)")
         Text(verbatim: "quick \(ConchMotion.quick) · standard \(ConchMotion.standard) · gentle \(ConchMotion.gentle) · wave \(ConchMotion.wavePeriod) · breath \(ConchMotion.breathPeriod)")
             .font(ConchType.code).foregroundStyle(ConchColor.textSecondary)
+        Caption("springs, bounce / response (s), from the overlay lab; Reduce Motion drops the bounce")
+        Text(verbatim: ConchMotion.springs.map { "\($0.name) \($0.spring.bounce) / \($0.spring.response)" }.joined(separator: " · "))
+            .font(ConchType.code).foregroundStyle(ConchColor.textSecondary)
+        Text(verbatim: "flight: scale \(ConchMotion.flightScale) · blur \(ConchMotion.flightBlur) · opacity \(ConchMotion.flightOpacity) · words: reveal \(ConchMotion.wordReveal) s · blur \(ConchMotion.wordRevealBlur) · \(ConchMotion.wordsPerSecond)/s")
+            .font(ConchType.code).foregroundStyle(ConchColor.textSecondary)
     }
 }
 
