@@ -7,6 +7,7 @@ import {
   type BarrierTicket,
   type CapturedAudio,
   type DictationEvent,
+  type DictationClock,
   type RecorderHandle,
 } from "./dictation-controller.ts";
 import {
@@ -89,6 +90,9 @@ export interface ListenHooks {
 
 export interface ListenResult {
   text: string;
+  /** Opt-in read-gap handoff: caller owns this still-running session and its queued events. */
+  activeSession?: RuntimeDictationSession;
+  finalizedAt?: number;
   error?: string;
   /** Present only when CONCH_KEEP_RAW=1; used to enrich the single recorder row. */
   diagnosticId?: string;
@@ -278,6 +282,14 @@ export function killActiveRecorders(
  * Conversation-scoped continuous capture. The backend owns SoX processes;
  * DictationController owns rearming, FIFO work, barriers, and final ordering.
  */
+export interface DictationRuntime {
+  clock: DictationClock & { now(): number };
+  armRecorder: typeof armContinuousRecorder;
+  readCapture(capture: CapturedAudio): Uint8Array;
+  transcribe: typeof transcribePcm;
+  discard: typeof discard;
+}
+
 export function createDictationSession(
   cfg: Config,
   hooks: ListenHooks = {},
@@ -286,16 +298,22 @@ export function createDictationSession(
     startPct?: number;
     minimumBytes?: number;
     idleWindowSecs?: number;
+    /** Reading gaps become held dictation as soon as speech starts, before STT. */
+    afterSpeechIdleWindowSecs?: number;
     parent?: string;
     traceSequence?: () => number;
   } = {},
+  runtime: Partial<DictationRuntime> = {},
 ): RuntimeDictationSession {
+  const now = runtime.clock ? () => runtime.clock!.now() : Date.now;
+  const transcribe = runtime.transcribe ?? transcribePcm;
   const tag = options.tag ?? "utt";
   const startPct = options.startPct ?? cfg.startThresholdPct;
   const minimumBytes = options.minimumBytes ?? MIN_PCM_BYTES;
   const parent = options.parent ?? createRecorderParent(tag === "utt" ? "listen" : tag);
   let idleWindowSecs = options.idleWindowSecs ?? cfg.listenWindowSecs;
-  let idleDeadline = Date.now() + idleWindowSecs * 1000;
+  let afterSpeechIdleWindowSecs = options.afterSpeechIdleWindowSecs;
+  let idleDeadline = now() + idleWindowSecs * 1000;
   let nextOpenBeginsNewWindow = false;
   let latestCaptureFinalizedAt: number | undefined;
   let controller!: DictationController;
@@ -304,7 +322,7 @@ export function createDictationSession(
 
   const backend = {
     open(context: { sequence: number; generation: number }): RecorderHandle {
-      const recorder = armContinuousRecorder(
+      const recorder = (runtime.armRecorder ?? armContinuousRecorder)(
         cfg,
         tag,
         startPct,
@@ -313,8 +331,12 @@ export function createDictationSession(
         options.traceSequence?.() ?? context.sequence,
         context,
         hooks,
-        (pcm) => transcriptionGate.tryRunPartial(() => transcribePcm(cfg, pcm, undefined, { coldFallback: false })),
+        (pcm) => transcriptionGate.tryRunPartial(() => transcribe(cfg, pcm, undefined, { coldFallback: false })),
         () => {
+          if (afterSpeechIdleWindowSecs !== undefined) {
+            idleWindowSecs = afterSpeechIdleWindowSecs;
+            afterSpeechIdleWindowSecs = undefined;
+          }
           nextOpenBeginsNewWindow = true;
           controller.cancelTimeout();
         },
@@ -330,22 +352,23 @@ export function createDictationSession(
       queueMicrotask(() => {
         if (controller.state === "running" && controller.activeSequence === context.sequence) {
           if (nextOpenBeginsNewWindow) {
-            idleDeadline = (latestCaptureFinalizedAt ?? Date.now()) + idleWindowSecs * 1000;
+            idleDeadline = (latestCaptureFinalizedAt ?? now()) + idleWindowSecs * 1000;
             nextOpenBeginsNewWindow = false;
           }
-          controller.scheduleTimeout(Math.max(0, idleDeadline - Date.now()));
+          controller.scheduleTimeout(Math.max(0, idleDeadline - now()));
         }
       });
       return handle;
     },
     read(capture: CapturedAudio): Uint8Array {
-      return new Uint8Array(readFileSync(capture.rawPath));
+      return runtime.readCapture?.(capture) ?? new Uint8Array(readFileSync(capture.rawPath));
     },
   };
 
   controller = new DictationController({
     backend,
     minimumBytes,
+    ...(runtime.clock ? { clock: runtime.clock } : {}),
     transcriber: {
       async transcribe(pcm, context) {
         hooks.onState?.("transcribing");
@@ -354,7 +377,7 @@ export function createDictationSession(
           : undefined;
         try {
           const result = await transcriptionGate.runFinal(
-            () => transcribePcm(
+            () => transcribe(
               cfg,
               pcm,
               context.diagnosticId
@@ -371,9 +394,9 @@ export function createDictationSession(
       },
     },
     deleteRaw(capture) {
-      if (!capture.diagnosticId) discard(capture.rawPath);
+      if (!capture.diagnosticId) (runtime.discard ?? discard)(capture.rawPath);
     },
-    onPartial: hooks.onPartial ? (text) => hooks.onPartial!(text) : undefined,
+    onPartial: (text) => hooks.onPartial?.(text),
   });
 
   return {
@@ -385,13 +408,13 @@ export function createDictationSession(
       return controller.state;
     },
     start(initialCapture) {
-      idleDeadline = Date.now() + idleWindowSecs * 1000;
+      idleDeadline = now() + idleWindowSecs * 1000;
       nextOpenBeginsNewWindow = false;
       controller.start(initialCapture);
       activeControllers.add(controller);
     },
     resume(initialCapture) {
-      idleDeadline = Date.now() + idleWindowSecs * 1000;
+      idleDeadline = now() + idleWindowSecs * 1000;
       nextOpenBeginsNewWindow = false;
       controller.resume(initialCapture);
       activeControllers.add(controller);
@@ -415,14 +438,14 @@ export function createDictationSession(
     setIdleWindowSecs(seconds, finalizedAt) {
       idleWindowSecs = seconds;
       const deadlineBase = finalizedAt === undefined
-        ? Date.now()
+        ? now()
         : Math.max(finalizedAt, latestCaptureFinalizedAt ?? finalizedAt);
       idleDeadline = deadlineBase + seconds * 1000;
       // A successor may already be recording while Whisper handles the prior
       // capture. Its first byte cancelled the old deadline; a late transcript
       // must not put that deadline back over live speech.
       if (controller.micOpen && !nextOpenBeginsNewWindow) {
-        controller.scheduleTimeout(Math.max(0, idleDeadline - Date.now()));
+        controller.scheduleTimeout(Math.max(0, idleDeadline - now()));
       }
     },
   };
@@ -469,7 +492,7 @@ export async function listenFromCapture(
   return collectContinuousResult(cfg, hooks, initialCapture, options);
 }
 
-async function collectContinuousResult(
+export async function collectContinuousResult(
   cfg: Config,
   hooks: ListenHooks,
   initialCapture?: RecorderHandle,
@@ -477,10 +500,15 @@ async function collectContinuousResult(
     parent?: string;
     traceSequence?: () => number;
     tag?: string;
+    handoff?: boolean;
+    sessionFactory?: typeof createDictationSession;
     onSessionStarted?: (session: RuntimeDictationSession) => void;
   } = {},
 ): Promise<ListenResult> {
-  const session = createDictationSession(cfg, hooks, options);
+  const session = (options.sessionFactory ?? createDictationSession)(cfg, hooks, {
+    ...options,
+    ...(options.handoff ? { afterSpeechIdleWindowSecs: cfg.holdSubmitSecs } : {}),
+  });
   const texts: string[] = [];
   const diagnosticIds: string[] = [];
   let error: string | undefined;
@@ -494,6 +522,10 @@ async function collectContinuousResult(
       if (event.text) {
         texts.push(event.text);
         if (!closing) {
+          if (options.handoff && session.state === "running") {
+            return { text: texts.join(" "), activeSession: session, finalizedAt: event.finalizedAt,
+              ...(diagnosticIds[0] ? { diagnosticId: diagnosticIds[0], diagnosticIds } : {}) };
+          }
           closing = true;
           session.requestBarrier("listen-result");
         }
@@ -696,11 +728,13 @@ export async function listenGap(
     parent?: string;
     traceSequence?: () => number;
     onSessionStarted?: (session: RuntimeDictationSession) => void;
+    handoff?: boolean;
+    hooks?: ListenHooks;
   } = {},
 ): Promise<ListenResult> {
   return collectContinuousResult(
     { ...cfg, listenWindowSecs: maxWaitSecs },
-    {},
+    options.hooks ?? {},
     undefined,
     { ...options, tag: "gap" },
   );

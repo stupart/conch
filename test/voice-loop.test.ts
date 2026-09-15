@@ -13,7 +13,7 @@ import type { WatchdogProcess } from "../src/audio-watchdog.ts";
 import { DictationController, type CapturedAudio, type DictationEvent, type RecorderHandle } from "../src/dictation-controller.ts";
 import type { InjectTextResult } from "../src/inject.ts";
 import type { ProviderCommandResult } from "../src/provider-rename.ts";
-import type { ListenHooks, ListenResult, RuntimeDictationSession } from "../src/listen.ts";
+import { collectContinuousResult, createDictationSession, type ListenHooks, type ListenResult, type RuntimeDictationSession } from "../src/listen.ts";
 import { addressParkedWindow, registrySnapshot, type SessionInfo } from "../src/sessions.ts";
 import { buildPanelModel, buildPublishedState, reviewReady } from "../src/panel.ts";
 import { voiceFor } from "../src/speak.ts";
@@ -89,7 +89,8 @@ class FakeSession {
   requestTimeout() {
     return this.requestBarrier("timeout");
   }
-  setIdleWindowSecs(): void {}
+  readonly windows: number[] = [];
+  setIdleWindowSecs(seconds: number): void { this.windows.push(seconds); }
   async abort(): Promise<void> {
     this.state = "idle";
   }
@@ -116,7 +117,7 @@ interface Options {
   command?: (line: string) => ProviderCommandResult;
   /** One script per mic window, in order. */
   heard?: string[][];
-  gap?: () => ListenResult;
+  gap?: (...args: Parameters<NonNullable<VoiceLoopDeps["ear"]>["listenGap"]>) => ListenResult | Promise<ListenResult>;
   dictationSession?: () => RuntimeDictationSession;
   /** The ledger to run over: a restarted daemon's, restored from its reviews file. */
   ledger?: SessionLedger;
@@ -203,6 +204,7 @@ function harness(options: Options = {}) {
   let barges = 0;
   const deps: VoiceLoopDeps = {
     cfg,
+    sleep: async () => {},
     log: (message) => void logs.push(message),
     ledger,
     pause,
@@ -250,7 +252,7 @@ function harness(options: Options = {}) {
         sessions.push(session);
         return session as unknown as RuntimeDictationSession;
       },
-      listenGap: async () => options.gap?.() ?? { text: "" },
+      listenGap: async (...args) => options.gap?.(...args) ?? { text: "" },
       armBargeRecorder: () => {
         barges++;
         throw new Error("these tests never arm a barge recorder");
@@ -1071,7 +1073,7 @@ describe("the daemon's wiring of the loop", () => {
   });
 
   test("the daemon's dispatcher waits for the voice engine only for events that speak, then hands everything to the loop", () => {
-    const at = daemon.indexOf("  async function handle(event: TurnEvent): Promise<boolean | void> {");
+    const at = daemon.indexOf("  async function handle(event: TurnEvent): Promise<boolean | \"staged\" | void> {");
     expect(at).toBeGreaterThan(-1);
     const end = daemon.indexOf("\n  }\n", at);
     const handle = daemon.slice(at, end);
@@ -1292,4 +1294,324 @@ test("a failed transport keeps the words as a draft and never presses Return", a
   expect(await h.voice.handle(inject("words that never landed"))).toBe(false);
   expect(h.keys).toEqual([]);
   expect(getLiveState().dictated).toEqual({ text: "words that never landed", id: before + 1, sessionId: "s1" });
+});
+
+
+/** Real capture queue and reducer, entirely synthetic audio and clock. */
+function continuousAudio() {
+  const captures: Array<{ finish(text: string, bytes?: number): void; stopReasons: string[] }> = [];
+  const pending = new Map<string, Promise<void>>();
+  const contents = new Map<string, string>();
+  const windows: number[] = [];
+  let started = 0;
+  const controller = new DictationController({
+    minimumBytes: 16_000,
+    backend: {
+      open({ sequence }) {
+        const end = deferred<CapturedAudio>();
+        const stopReasons: string[] = [];
+        const rawPath = `fake-${sequence}`;
+        const capture = { stopReasons, finish(text: string, bytes = 32_000) {
+          contents.set(rawPath, text);
+          end.resolve({ rawPath, finalBytes: bytes, finalizedAt: 1000 + sequence });
+        } };
+        captures.push(capture);
+        return { finished: end.promise, stop(reason) {
+          stopReasons.push(reason);
+          end.resolve({ rawPath, finalBytes: 6_000, cause: reason, finalizedAt: 1000 + sequence });
+        } };
+      },
+      read: () => new Uint8Array(1),
+    },
+    transcriber: { async transcribe(_pcm, capture) {
+      await pending.get(capture.rawPath);
+      return { text: contents.get(capture.rawPath) ?? "tail" };
+    } },
+    deleteRaw() {},
+    clock: { setTimeout: () => 1, clearTimeout() {} },
+  });
+  const session: RuntimeDictationSession = {
+    controller,
+    get micOpen() { return controller.micOpen; },
+    get state() { return controller.state; },
+    start(capture) { started++; controller.start(capture); },
+    resume(capture) { controller.resume(capture); },
+    nextEvent: () => controller.nextEvent(),
+    acknowledge: (event) => controller.acknowledge(event),
+    requestBarrier: (reason) => controller.requestBarrier(reason),
+    requestTimeout: () => controller.requestTimeout(),
+    setIdleWindowSecs(seconds) { windows.push(seconds); },
+    abort: async () => { controller.requestBarrier("abort"); },
+  };
+  return { session, captures, contents, pending, windows, starts: () => started };
+}
+
+function startSyntheticGap(
+  audio: ReturnType<typeof continuousAudio>, text: string,
+  cfg: Config, seconds: number,
+  options: Parameters<NonNullable<VoiceLoopDeps["ear"]>["listenGap"]>[2],
+): Promise<ListenResult> {
+  const result = collectContinuousResult({ ...cfg, listenWindowSecs: seconds }, options?.hooks ?? {}, undefined, {
+    ...options, sessionFactory: () => audio.session,
+  });
+  audio.captures[0]!.finish(text);
+  return result;
+}
+
+describe("FIX8 continuous handoff and truthful delivery", () => {
+  test("gap collector transfers the running controller without stopping its 6 KB successor", async () => {
+    const audio = continuousAudio();
+    const h = harness();
+    const result = collectContinuousResult(h.cfg, {}, undefined, {
+      handoff: true, sessionFactory: () => audio.session,
+    });
+    audio.captures[0]!.finish("please add");
+    const heard = await result as ListenResult & { activeSession?: RuntimeDictationSession };
+    const observed = { same: heard.activeSession === audio.session, state: audio.session.state, stopped: [...(audio.captures[1]?.stopReasons ?? [])] };
+    const ticket = audio.session.requestBarrier("test-cleanup");
+    while (true) { const e = await audio.session.nextEvent(); if(e.kind === "barrier") {audio.session.acknowledge(e); if(e.id === ticket.id) break;} }
+    expect(observed).toEqual({ same: true, state: "running", stopped: [] });
+  });
+
+  test("read gap keeps its controller and in-flight next transcript through normal dictation", async () => {
+    const path = transcript(assistant({ type: "text", text: "First sentence. Second sentence." }));
+    const audio = continuousAudio();
+    const blocked = deferred();
+    audio.pending.set("fake-2", blocked.promise);
+    const h = harness({ cfg: { readFull: true, holdSubmit: true }, window: busy,
+      gap: async (_cfg, _seconds, options) => {
+        const first = await startSyntheticGap(audio, "please add", _cfg, _seconds, options);
+        audio.captures[1]!.finish("the regression");
+        return first;
+      },
+    });
+    const run = h.voice.handle(accepted(h, turnEnd({ announce: "", transcriptPath: path })));
+    await waitFor("handoff or replacement", () => h.sessions.length > 0 || audio.windows.length > 0);
+    const replacements = h.sessions.length;
+    blocked.resolve();
+    await Bun.sleep(5);
+    h.voice.stop("spacebar");
+    await run;
+    if (audio.session.state === "running") { const ticket = audio.session.requestBarrier("cleanup"); while(true) {const e=await audio.session.nextEvent(); if(e.kind==="barrier"){audio.session.acknowledge(e);if(e.id===ticket.id)break;}} }
+    expect(replacements).toBe(0);
+    expect(audio.starts()).toBe(1);
+    expect(h.texts).toEqual(["please add the regression tail"]);
+    expect(h.violations).toEqual([]);
+    rmSync(join(path, ".."), { recursive: true, force: true });
+  });
+
+  test("non-hold handoff includes a 6 KB tail stopped by the send barrier", async () => {
+    const path = transcript(assistant({ type: "text", text: "First sentence. Second sentence." }));
+    const audio = continuousAudio();
+    const h = harness({ cfg: { readFull: true, holdSubmit: false }, window: busy,
+      gap: async (_cfg, _seconds, options) => startSyntheticGap(audio, "please add", _cfg, _seconds, options),
+    });
+    await h.voice.handle(accepted(h, turnEnd({ announce: "", transcriptPath: path })));
+    expect(audio.captures[1]!.stopReasons).toEqual(["dictation-send"]);
+    expect(h.texts).toEqual(["please add tail"]);
+    expect(audio.starts()).toBe(1);
+    expect(h.violations).toEqual([]);
+    rmSync(join(path, ".."), { recursive: true, force: true });
+  });
+
+  test("a handed-off continue command drains before TTS and rearms only after playback", async () => {
+    const path = transcript(assistant({ type: "text", text: "First sentence. Second sentence." }));
+    const audio = continuousAudio();
+    const h = harness({ cfg: { readFull: true, continueSentences: 1 }, holdSpeech: true, window: busy,
+      gap: async (_cfg, _seconds, options) => {
+        return startSyntheticGap(audio, "continue", _cfg, _seconds, options);
+      },
+    });
+    const run = h.voice.handle(accepted(h, turnEnd({ announce: "", transcriptPath: path })));
+    await waitFor("empty announcement", () => h.playing.has(""));
+    h.playing.get("")!.finish();
+    await waitFor("continued reading", () => h.said.includes("First sentence."));
+    expect(audio.session.state).toBe("idle");
+    expect(audio.captures).toHaveLength(2);
+    expect(h.voice.capturing()).toBe(false);
+    h.playing.get("First sentence.")!.finish();
+    await waitFor("same controller rearmed", () => audio.captures.length === 3);
+    h.voice.stop("spacebar"); await run;
+    expect(audio.starts()).toBe(1);
+    expect(h.sessions).toEqual([]);
+    expect(h.violations).toEqual([]);
+    rmSync(join(path, ".."), { recursive: true, force: true });
+  });
+
+  test("a remote ear taking ownership during handoff drains the old controller and resolves close", async () => {
+    const path = transcript(assistant({ type: "text", text: "First sentence. Second sentence." }));
+    const audio = continuousAudio();
+    const h = harness({ cfg: { readFull: true },
+      gap: async (_cfg, _seconds, options) => {
+        const result = await startSyntheticGap(audio, "please add", _cfg, _seconds, options);
+        h.lease.request("phone", 1);
+        return result;
+      },
+    });
+    await h.voice.handle(accepted(h, turnEnd({ announce: "", transcriptPath: path })));
+    await h.voice.close();
+    expect(audio.session.state).toBe("idle");
+    expect(audio.captures[1]!.stopReasons).toEqual(["handoff-exit"]);
+    expect(h.voice.capturing()).toBe(false);
+    expect(h.texts).toEqual([]);
+    rmSync(join(path, ".."), { recursive: true, force: true });
+  });
+
+  test("shutdown during transfer waits for queued STT and never reopens or submits", async () => {
+    const path = transcript(assistant({ type: "text", text: "First sentence. Second sentence." }));
+    const audio = continuousAudio();
+    const blocked = deferred();
+    audio.pending.set("fake-2", blocked.promise);
+    let closeDone = false;
+    let closing: Promise<void> | undefined;
+    const h = harness({ cfg: { readFull: true },
+      gap: async (_cfg, _seconds, options) => {
+        const result = await startSyntheticGap(audio, "please add", _cfg, _seconds, options);
+        audio.captures[1]!.finish("the queued words");
+        closing = h.voice.close()?.then(() => { closeDone = true; });
+        return result;
+      },
+    });
+    const run = h.voice.handle(accepted(h, turnEnd({ announce: "", transcriptPath: path })));
+    await waitFor("shutdown requested", () => Boolean(closing));
+    const closedBeforeStt = closeDone;
+    blocked.resolve();
+    await Promise.all([run, closing]);
+    expect(closedBeforeStt).toBe(false);
+    expect(closeDone).toBe(true);
+    expect(audio.session.state).toBe("idle");
+    expect(audio.captures).toHaveLength(2);
+    expect(h.sessions).toEqual([]);
+    expect(h.texts).toEqual([]);
+    expect(h.voice.capturing()).toBe(false);
+    rmSync(join(path, ".."), { recursive: true, force: true });
+  });
+
+  test("FIX8 final review: a shutdown queued behind handoff cleanup does not strand its done promise", async () => {
+    const path = transcript(assistant({ type: "text", text: "First sentence. Second sentence." }));
+    const audio = continuousAudio();
+    const releaseOldLoop = deferred<DictationEvent>();
+    const next = audio.session.nextEvent;
+    const barrierIds: number[] = [];
+    audio.session.nextEvent = async () => {
+      const event = await Promise.race([next(), releaseOldLoop.promise]);
+      if (event.kind === "barrier") barrierIds.push(event.id);
+      return event;
+    };
+    const request = audio.session.requestBarrier;
+    let cleanupId = 0;
+    audio.session.requestBarrier = (reason) => {
+      const ticket = request(reason);
+      if (reason === "handoff-exit") {
+        cleanupId = ticket.id;
+        // Models recorder shutdown occurring after the voice loop has already
+        // requested its cleanup barrier, before either reaches acknowledgement.
+        audio.session.controller.shutdown();
+      }
+      return ticket;
+    };
+    const h = harness({ cfg: { readFull: true },
+      gap: async (_cfg, _seconds, options) => {
+        const result = await startSyntheticGap(audio, "please add", _cfg, _seconds, options);
+        h.lease.request("phone", 1);
+        return result;
+      },
+    });
+    let completed = false;
+    const run = h.voice.handle(accepted(h, turnEnd({ announce: "", transcriptPath: path }))).then(() => { completed = true; });
+    await waitFor("all real barriers acknowledged", () => cleanupId > 0 && audio.session.state === "closed");
+    await Bun.sleep(0);
+    const completedAfterLastAck = { completed, cleanupId, barrierIds: [...barrierIds], capturing: h.voice.capturing() };
+    // Release the old buggy loop without leaving a hanging test task. This
+    // fabricated replay is used only after recording the regression verdict.
+    releaseOldLoop.resolve({ kind: "barrier", id: cleanupId, reason: "test-release" });
+    await run;
+    expect(completedAfterLastAck).toEqual({ completed: true, cleanupId: 1, barrierIds: [1, 2], capturing: false });
+    expect(h.voice.capturing()).toBe(false);
+    expect(h.texts).toEqual([]);
+    rmSync(join(path, ".."), { recursive: true, force: true });
+  });
+
+  test("a long handed-off composer prompt retains its trailing capture in the draft", async () => {
+    const path = transcript(assistant({ type: "text", text: "First sentence. Second sentence." }));
+    const audio = continuousAudio();
+    const h = harness({ cfg: { readFull: true, holdSubmit: true },
+      gap: async (_cfg, _seconds, options) => {
+        return startSyntheticGap(audio, "please add all these details", _cfg, _seconds, options);
+      },
+    });
+    const run = h.voice.handle(accepted(h, turnEnd({ compose: true, announce: "", transcriptPath: path })));
+    await waitFor("held draft", () => audio.windows.length > 1);
+    h.voice.stop("spacebar"); await run;
+    expect(h.texts).toEqual([]);
+    expect(getLiveState().dictated?.text).toBe("please add all these details tail");
+    expect(h.violations).toEqual([]);
+    rmSync(join(path, ".."), { recursive: true, force: true });
+  });
+
+  test("runtime partials reach the composer after empty gap hooks are handed off", async () => {
+    const path = transcript(assistant({ type: "text", text: "First sentence. Second sentence." }));
+    const captured = deferred<CapturedAudio>();
+    let active!: RuntimeDictationSession;
+    const h = harness({ cfg: { readFull: true, holdSubmit: true },
+      gap: async (_cfg, _seconds, options) => {
+        // An adopted fake capture avoids recorder spawning and real STT. The
+        // runtime controller's partial callback and the voice hooks are real.
+        active = createDictationSession(_cfg, options?.hooks ?? {});
+        active.start({ finished: captured.promise, stop(reason) {
+          captured.resolve({ rawPath: "", finalBytes: 0, cause: reason });
+        } });
+        options?.onSessionStarted?.(active);
+        return { text: "please add", activeSession: active };
+      },
+    });
+    const run = h.voice.handle(accepted(h, turnEnd({ compose: true, announce: "", transcriptPath: path })));
+    await waitFor("normal reducer owns the gap", () => h.logs.some((line) => line.includes("· holding")));
+    active.controller.publishPartial({ generation: active.controller.generation, sequence: active.controller.activeSequence!, text: "these final words" });
+    const partial = getLiveState().partial;
+    const prefix = getLiveState().transcriptPrefix;
+    h.voice.stop("spacebar"); await run;
+    expect(partial).toBe("these final words");
+    expect(prefix).toBe("please add");
+    expect(h.texts).toEqual([]);
+    rmSync(join(path, ".."), { recursive: true, force: true });
+  });
+
+  test("held text sets the 8 second deadline with diagnostics disabled", async () => {
+    const h = harness({ cfg: { holdSubmit: true, holdSubmitSecs: 8, listenWindowSecs: 30 } });
+    const run = h.voice.handle(wake());
+    await waitFor("microphone", () => h.sessions[0]?.started === 1);
+    h.sessions[0]!.hear("keep these words");
+    await Bun.sleep(5);
+    const windows = [...h.sessions[0]!.windows];
+    h.voice.stop("spacebar"); await run;
+    expect(windows).toEqual([8]);
+  });
+
+  test("autoSubmit false stages text without retries, submitted annotations or sent claim", async () => {
+    const path = transcript(user({ type: "text", text: "previous" }));
+    const h = harness({ cfg: { autoSubmit: false } });
+    const result = await h.voice.handle(inject("review before sending", { transcriptPath: path }));
+    expect({ result, keys: h.keys, marked: h.ledger.injectedAt.has("s1"), warnings: h.said }).toEqual({ result: "staged", keys: [], marked: false, warnings: [] });
+    expect(h.logs).toContain('phone inject into "alpha" staged');
+    rmSync(join(path, ".."), { recursive: true, force: true });
+  });
+
+  test("a rejected input transaction recovers the addressed draft and returns failure", async () => {
+    const h = harness({ inject: () => { throw new Error("synthetic input suspended"); } });
+    const result = await h.voice.handle(inject("recover after rejection"));
+    expect(result).toBe(false);
+    expect(h.ledger.injectedAt.has("s1")).toBe(false);
+    expect(getLiveState().dictated).toMatchObject({ text: "recover after rejection", sessionId: "s1" });
+    expect(h.keys).toEqual([]);
+  });
+
+  test("failed transport returns recoverable draft without marking submission", async () => {
+    const h = harness({ inject: () => ({ via: "none", failed: true, reason: "automation-failed" } as unknown as InjectTextResult) });
+    const result = await h.voice.handle(inject("recover this"));
+    expect(result).toBe(false);
+    expect(h.ledger.injectedAt.has("s1")).toBe(false);
+    expect(getLiveState().dictated?.text).toBe("recover this");
+    expect(h.said.join(" ")).not.toContain("clipboard");
+  });
 });

@@ -722,7 +722,7 @@ describe("daemon config controller", () => {
     expect(handleEntry).toContain("event.sessionId");
     expect(handleEntry).toContain("if (shuttingDown || interruptedByPause() || consumeStopKey()) return");
 
-    const micGate = sliceOf(voiceSource, "// Mic gate (auto turns only)", "if (!initialDictationCapture && !deferredInitialExternal)");
+    const micGate = sliceOf(voiceSource, "// Mic gate (auto turns only)", "if (!initialDictationCapture && !gapHandoff && !deferredInitialExternal)");
     expect(micGate).toContain("const gone = await sessionGone(event.sessionId);");
     expect(micGate).toContain("event.sessionId");
     expect(micGate).toContain("activelyTyping || responded || gone");

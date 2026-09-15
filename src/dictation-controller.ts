@@ -149,6 +149,8 @@ const systemClock: DictationClock = {
 
 const ABRUPT_USER_FINALIZATIONS = new Set([
   "dictation-spacebar",
+  // A send (including non-hold mode) intentionally drains a hot successor.
+  "dictation-send",
   // Controller tests also model the coarser diagnostic kill-cause vocabulary.
   "abort",
 ]);
@@ -468,8 +470,9 @@ export class DictationController {
         cause: capture.cause,
       };
     } else if (
-      capture.finalBytes < (capture.minimumBytes ?? this.minimumBytes)
-      && !ABRUPT_USER_FINALIZATIONS.has(capture.cause ?? "")
+      capture.finalBytes <= 0
+      || (capture.finalBytes < (capture.minimumBytes ?? this.minimumBytes)
+        && !ABRUPT_USER_FINALIZATIONS.has(capture.cause ?? ""))
     ) {
       result = {
         kind: "short",

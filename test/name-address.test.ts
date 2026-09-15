@@ -148,7 +148,7 @@ describe("spoken name routing", () => {
     expect(deliver).toContain("event = addressed.event");
     expect(deliver).toContain("text = addressed.text");
     expect(deliver).toContain("markInjected(event.sessionId)");
-    expect(deliver).toContain("const beforeCount = event.transcriptPath");
-    expect(deliver).toContain("event.pid,\n      text,");
+    expect(deliver).toContain("const beforeCount = cfg.autoSubmit && event.transcriptPath");
+    expect(deliver).toContain("injectText(cfg, event.pid, text, beforeInject)");
   });
 });

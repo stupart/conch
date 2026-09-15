@@ -990,7 +990,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       );
   }
 
-  function enqueue(incoming: TurnEvent): void | Promise<boolean | void> {
+  function enqueue(incoming: TurnEvent): void | Promise<boolean | "staged" | void> {
     if (shuttingDown) return;
     const event = incoming;
     warmTranscript(event.transcriptPath);
@@ -1663,7 +1663,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     );
   }
 
-  async function handle(event: TurnEvent): Promise<boolean | void> {
+  async function handle(event: TurnEvent): Promise<boolean | "staged" | void> {
     // Wait for the voice engine only when this event will SPEAK.
     //
     // `drain` used to await it before touching the queue, which meant nothing
