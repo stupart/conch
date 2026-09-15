@@ -24,12 +24,16 @@ export interface InjectTextResult {
 export type OsaRunner = (lines: string[], argv?: string[]) => Promise<{ text: string; timedOut: boolean }>;
 
 export interface InjectTextOptions {
+  /** Set false to skip failure-only clipboard fallback; successful paste still uses it. */
+  clipboardFallback?: boolean;
   /** Test seam for proving the clipboard branches without mutating the real clipboard. */
   copyToClipboard?(text: string): Promise<void>;
   /** Test seam: every AppleScript the route runs goes through here. */
   osa?: OsaRunner;
   /** Test seam: the controlling tty of a pid, as `ps -o tty=` prints it. */
   ttyForPid?(pid: number): Promise<string>;
+  /** Test seam: resolve a tmux route without probing real processes or panes. */
+  findTmuxPane?(pid: number): Promise<string | null>;
   /** Test seam: what is on the clipboard, to give it back after a paste. */
   readClipboard?(): Promise<string>;
 }
@@ -107,13 +111,14 @@ export async function injectText(
   const interrupted = (): InjectTextResult => ({ via: "none", interrupted: true });
   const clipboard = async (reason: NonNullable<InjectTextResult["reason"]>): Promise<InjectTextResult> => {
     if (!(await mayInject())) return interrupted();
+    if (options.clipboardFallback === false) return { via: "none", reason };
     await copyToClipboard(text);
     step(`clipboard (${reason})`);
     return { via: "clipboard", reason };
   };
   if (!sessionPid) return clipboard("session-not-routable");
 
-  const pane = await findTmuxPane(sessionPid);
+  const pane = await (options.findTmuxPane ?? findTmuxPane)(sessionPid);
   step(`findTmuxPane -> ${pane ?? "none"}`);
   if (pane) {
     if (!(await mayInject())) return interrupted();
