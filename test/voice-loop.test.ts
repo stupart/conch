@@ -68,6 +68,9 @@ class FakeSession {
       this.#deliver({ kind: "transcript", text, rawPath: "", finalBytes: 0 } as DictationEvent);
     }
   }
+  hear(text: string): void {
+    this.#deliver({ kind: "transcript", text, rawPath: "", finalBytes: 32_000 } as DictationEvent);
+  }
   resume(): void {
     this.state = "running";
   }
@@ -109,6 +112,7 @@ interface Options {
   window?: (sessionId: string) => SessionInfo | undefined;
   inject?: (text: string) => InjectTextResult;
   key?: (key: string) => InjectTextResult;
+  beforeKey?: (key: string) => void | Promise<void>;
   command?: (line: string) => ProviderCommandResult;
   /** One script per mic window, in order. */
   heard?: string[][];
@@ -225,7 +229,9 @@ function harness(options: Options = {}) {
         if (beforeInject && !(await beforeInject())) return { via: "none", interrupted: true };
         return options.inject?.(text) ?? { via: "tmux" };
       },
-      injectKey: async (_cfg, _pid, key) => {
+      injectKey: async (_cfg, _pid, key, beforeInject) => {
+        await options.beforeKey?.(key);
+        if (beforeInject && !(await beforeInject())) return { via: "none", interrupted: true };
         keys.push(key);
         order.push(`key:${key}`);
         return options.key?.(key) ?? { via: "tmux" };
@@ -618,6 +624,131 @@ describe("turns and the audio holder", () => {
     await turn;
     expect(h.barges()).toBe(0);
     expect(h.said).toEqual(["the lane is busy"]);
+  });
+});
+
+/** Synthetic provider state; the production pending-approval reader observes each change. */
+function replaceApproval(path: string, next: "resolved" | "new-request"): void {
+  const entries = next === "resolved"
+    ? [assistant(bash), user({ type: "tool_result", tool_use_id: "tu_1", content: "answered by keyboard" })]
+    // Same tool/summary, distinct native ID: textual equality does not authorize it.
+    : [assistant({ ...bash, id: "tu_new" })];
+  writeFileSync(path, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+}
+
+describe("permission request lifetime", () => {
+  test("keyboard resolution closes an idle permission mic without another voice event", async () => {
+    const path = pendingBash();
+    const h = harness({ heard: [[]] });
+    const turn = h.voice.handle(accepted(h, permission(path)));
+    try {
+      await waitFor("permission mic", () => h.sessions[0]?.started === 1);
+      replaceApproval(path, "resolved");
+      await waitFor("stale permission mic to close", () => !h.voice.capturing());
+      await turn;
+      expect(h.keys).toEqual([]);
+    } finally {
+      h.voice.stop("test cleanup");
+      await turn;
+    }
+  });
+
+  for (const next of ["resolved", "new-request"] as const) {
+    test(`${next} during the announcement cancels the mic and approval`, async () => {
+      const path = pendingBash();
+      const h = harness({ holdSpeech: true, heard: [["yes"]] });
+      const announce = approvalAnnounce("alpha", ask);
+      const turn = h.voice.handle(accepted(h, permission(path)));
+      await waitFor("permission announcement", () => h.playing.has(announce));
+      replaceApproval(path, next);
+      h.playing.get(announce)!.finish();
+      await turn;
+      expect(h.keys).toEqual([]);
+      expect(h.sessions).toEqual([]);
+    });
+
+    test(`${next} while listening cannot use the captured yes`, async () => {
+      const path = pendingBash();
+      const h = harness({ heard: [[]] });
+      const turn = h.voice.handle(accepted(h, permission(path)));
+      await waitFor("permission mic", () => h.sessions[0]?.started === 1);
+      replaceApproval(path, next);
+      h.sessions[0]!.hear("yes");
+      await turn;
+      expect(h.keys).toEqual([]);
+      expect(h.voice.capturing()).toBe(false);
+    });
+  }
+
+  test("a request resolved during the bell is never announced", async () => {
+    const path = pendingBash();
+    const h = harness({ holdCues: true, cfg: { bell: true }, heard: [["yes"]] });
+    const turn = h.voice.handle(accepted(h, permission(path)));
+    await waitFor("attention bell", () => h.cueExits.length === 1);
+    replaceApproval(path, "resolved");
+    // Finish every cue the old path erroneously reaches, so this fails on its assertions.
+    h.cfg.micCues = false;
+    h.cueExits[0]!(0);
+    await turn;
+    expect(h.said).toEqual([]);
+    expect(h.keys).toEqual([]);
+  });
+
+  test("the final injection callback rejects a replacement request", async () => {
+    const path = pendingBash();
+    const h = harness({ heard: [["yes"]], beforeKey: () => replaceApproval(path, "new-request") });
+    await h.voice.handle(accepted(h, permission(path)));
+    expect(h.keys).toEqual([]);
+  });
+
+  test("replacement during the always confirmation announcement cancels both keys", async () => {
+    const path = pendingBash();
+    const h = harness({ holdSpeech: true, heard: [["always"], ["yes"]] });
+    const announce = approvalAnnounce("alpha", ask);
+    const confirmation = confirmAlwaysPrompt(ask);
+    const turn = h.voice.handle(accepted(h, permission(path)));
+    await waitFor("permission announcement", () => h.playing.has(announce));
+    h.playing.get(announce)!.finish();
+    await waitFor("always confirmation", () => h.playing.has(confirmation));
+    replaceApproval(path, "new-request");
+    h.playing.get(confirmation)!.finish();
+    await turn;
+    expect(h.keys).toEqual([]);
+    expect(h.sessions).toHaveLength(1);
+  });
+
+  test("manual resolution during the second always listen invalidates its yes", async () => {
+    const path = pendingBash();
+    const h = harness({ heard: [["always"], []] });
+    const turn = h.voice.handle(accepted(h, permission(path)));
+    await waitFor("second permission mic", () => h.sessions[1]?.started === 1);
+    replaceApproval(path, "resolved");
+    h.sessions[1]!.hear("yes");
+    await turn;
+    expect(h.keys).toEqual([]);
+  });
+
+  for (const next of ["resolved", "new-request"] as const) {
+    test(`an alternative after our Escape handles ${next} without answering a new ask`, async () => {
+      const path = pendingBash();
+      const h = harness({ heard: [["no, use main instead"]], key: () => {
+        replaceApproval(path, next);
+        return { via: "tmux" };
+      } });
+      await h.voice.handle(accepted(h, permission(path)));
+      expect(h.keys).toEqual(["Escape"]);
+      expect(h.texts).toEqual(next === "resolved" ? ["use main instead"] : []);
+    });
+  }
+
+  test("replacement after Down cannot receive the confirming Enter", async () => {
+    const path = pendingBash();
+    const h = harness({ heard: [["always"], ["yes"]], key: (key) => {
+      if (key === "Down") replaceApproval(path, "new-request");
+      return { via: "tmux" };
+    } });
+    await h.voice.handle(accepted(h, permission(path)));
+    expect(h.keys).toEqual(["Down"]);
   });
 });
 
