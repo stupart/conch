@@ -1,6 +1,7 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import {
   stripMarkdown,
   speakable,
@@ -13,6 +14,8 @@ import {
   transcriptMark,
   userRespondedSince,
   parseReviewRequest,
+  checkReviewLink,
+  parsePublishableReview,
   TRANSCRIPT_READ_CHUNK_BYTES,
   type TranscriptSource,
 } from "../src/snippet.ts";
@@ -677,4 +680,45 @@ test("a hook-injected turn is not you replying", async () => {
   expect(mark).toBe(1);
   // And nothing "responded" after the human's own prompt.
   expect(await userRespondedSince(path, 1)).toBe(false);
+});
+
+test("a published file sits under the session's folder or a temp folder, and is never hidden or a key", async () => {
+  const tmp = mkdtempSync(join(tmpdir(), "conch-link-rule-"));
+  // This checkout: a real folder outside the temp folder.
+  const repo = join(import.meta.dir, "..");
+  const file = (relative: string) => {
+    const path = join(tmp, relative);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "x", { mode: 0o600 });
+    return path;
+  };
+  const outside = /is outside this session's folder .* and the temp folder/;
+  const secret = /is a hidden file, in a hidden folder, or a key or certificate/;
+  try {
+    // Allowed: a render in the temp folder, a file under the session's cwd
+    // (relative or absolute), and a repo's .worktrees.
+    expect(await checkReviewLink(file("hero-v3.png"), "/no/such/cwd")).toEqual({ ok: true, link: join(tmp, "hero-v3.png") });
+    expect(await checkReviewLink("package.json", repo)).toEqual({ ok: true, link: join(repo, "package.json") });
+    expect((await checkReviewLink(file("app/.worktrees/task/page.html"), "/no/such/cwd")).ok).toBe(true);
+
+    // Refused: outside both, even as a symlink placed in the temp folder.
+    const away = await checkReviewLink(join(repo, "package.json"), tmp);
+    expect(away.ok).toBe(false);
+    expect(!away.ok && away.reason).toMatch(outside);
+    symlinkSync(join(repo, "package.json"), join(tmp, "looks-local.json"));
+    expect(await checkReviewLink(join(tmp, "looks-local.json"), tmp)).toMatchObject({ ok: false, reason: expect.stringMatching(outside) });
+
+    // Refused: hidden, in a hidden folder, a key or certificate, or a symlink to one.
+    for (const path of [".ssh/id_ed25519", ".config/conch/phone-token", "proj/.env", "push.p12", "AuthKey.p8", "server.pem", "api.key"]) {
+      expect(await checkReviewLink(file(path), tmp)).toMatchObject({ ok: false, reason: expect.stringMatching(secret) });
+    }
+    symlinkSync(join(tmp, ".ssh/id_ed25519"), join(tmp, "notes.txt"));
+    expect(await checkReviewLink(join(tmp, "notes.txt"), tmp)).toMatchObject({ ok: false, reason: expect.stringMatching(secret) });
+
+    // The marker route shares the rule: the link is dropped, the summary kept.
+    expect(await parsePublishableReview(`conch:review the key | ${join(tmp, ".ssh/id_ed25519")}`, tmp))
+      .toEqual({ summary: "the key" });
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });

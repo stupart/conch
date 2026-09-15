@@ -43,7 +43,8 @@ import {
 } from "../src/daemon.ts";
 import type { TurnEvent } from "../src/hook.ts";
 import type { RegistrySnapshot, SessionInfo } from "../src/sessions.ts";
-import { findSessionByName, registrySnapshot } from "../src/sessions.ts";
+import { AmbiguousSessionError, findSessionByName, registrySnapshot } from "../src/sessions.ts";
+import { appServerNoTerminal } from "../src/codex-threads.ts";
 
 const TOOL_NAMES = [
   "conch_sessions",
@@ -171,6 +172,8 @@ interface FakeOptions {
   daemonAccepts?: boolean;
   controlResult?: ControlResult;
   renameAckLabel?: string;
+  /** This server's parent. Defaults to this test process's real parent, which no fake row carries: an unverified caller. */
+  parentPid?: number;
 }
 
 function defaultConfigSnapshot(): ConfigSnapshot {
@@ -309,6 +312,7 @@ function fakeHarness(options: FakeOptions = {}): {
       return ["First.", "Second!", "Third?", "Fourth."];
     },
     now: () => 1_234_567,
+    parentPid: () => options.parentPid ?? process.ppid,
   };
 
   return { calls, dependencies, session };
@@ -525,7 +529,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
       return {};
     };
     try {
-      const h = fakeHarness();
+      const h = fakeHarness({ parentPid: 4321 });
       const handlers = createMcpToolHandlers({
         claudeDir: "/virtual/claude",
         socketPath: "/virtual/conch.sock",
@@ -544,7 +548,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(Object.keys(defaultMcpDependencies)).not.toContain("openLink");
   });
 
-  test("sessions uses the published file unchanged and does not touch the registry", async () => {
+  test("sessions returns the published file unchanged, plus the caller's binding", async () => {
     const published = {
       v: 1,
       ts: 99,
@@ -585,9 +589,13 @@ describe("real MCP tool handlers with injected dependencies", () => {
 
     const response = await callTool(handlers, "conch_sessions", {});
 
-    expect(JSON.parse(toolText(response))).toEqual(published);
+    expect(JSON.parse(toolText(response))).toEqual({
+      ...published,
+      caller: { status: "unverified", reason: expect.stringContaining("is not a live session conch knows") },
+    });
     expect(h.calls.sessionsFiles).toEqual(["/virtual/conch-sessions.json"]);
-    expect(h.calls.registries).toEqual([]);
+    // Read once, for the binding; the rows are the daemon's.
+    expect(h.calls.registries).toEqual(["/virtual/claude"]);
     expect(h.calls.daemon).toEqual([]);
   });
 
@@ -618,8 +626,9 @@ describe("real MCP tool handlers with injected dependencies", () => {
       }],
       dismissed: [],
       dismissedRows: [],
+      caller: { status: "unverified", reason: expect.any(String) },
     });
-    expect(h.calls.registries).toEqual(["/virtual/claude"]);
+    expect(h.calls.registries).toEqual(["/virtual/claude", "/virtual/claude"]);
   });
 
   test("wake, recite, speak, and mode send exact TurnEvents through the fake daemon seam", async () => {
@@ -796,7 +805,11 @@ describe("real MCP tool handlers with injected dependencies", () => {
         "read-full": { value: true, source: "default" },
       },
     });
-    expect(toolText(tail)).toBe("Second! Third? Fourth.");
+    expect(JSON.parse(toolText(tail))).toEqual({
+      sessionId: "session-123",
+      label: "Build label",
+      text: "Second! Third? Fourth.",
+    });
     expect(h.calls.assistantReads).toEqual(["/virtual/session-123.jsonl"]);
     expect(h.calls.sentenceSplits).toEqual(["First. Second! Third? Fourth."]);
     expect(h.calls.daemon).toEqual([]);
@@ -894,7 +907,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
   });
 
   test("review_to_front publishes the exact review, as a publication and not a turn end", async () => {
-    const h = fakeHarness();
+    const h = fakeHarness({ parentPid: 4321 });
     const handlers = createMcpToolHandlers({
       claudeDir: "/virtual/claude",
       socketPath: "/virtual/conch.sock",
@@ -937,7 +950,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
     const relativeLink = relative(process.cwd(), absolute);
     expect(isAbsolute(relativeLink)).toBe(false);
 
-    const h = fakeHarness();
+    const h = fakeHarness({ parentPid: 4321 });
     const handlers = createMcpToolHandlers({
       claudeDir: "/virtual/claude",
       socketPath: "/virtual/conch.sock",
@@ -955,7 +968,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
   });
 
   test("review_to_front leaves a web link exactly as given", async () => {
-    const h = fakeHarness();
+    const h = fakeHarness({ parentPid: 4321 });
     const handlers = createMcpToolHandlers({
       claudeDir: "/virtual/claude",
       socketPath: "/virtual/conch.sock",
@@ -969,58 +982,12 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(published).toBe("https://example.com/review");
   });
 
-  test("review_to_front requires the worker session and lists live session labels", async () => {
-    const h = fakeHarness({
-      registry: {
-        infos: [
-          {
-            sessionId: "session-a",
-            name: "Alpha",
-            cwd: "/work/alpha",
-            status: "busy",
-          },
-          {
-            sessionId: "session-b",
-            name: "Beta",
-            cwd: "/work/beta",
-            status: "busy",
-          },
-        ],
-        liveIds: new Set(["session-a", "session-b"]),
-        complete: true,
-      },
-    });
-    h.dependencies.sessionLabel = (session) => session?.name ?? "unnamed";
-    const handlers = createMcpToolHandlers({
-      claudeDir: "/virtual/claude",
-      socketPath: "/virtual/conch.sock",
-    }, h.dependencies);
-
-    let thrown: unknown;
-    try {
-      await handlers.review_to_front({ summary: "Review this" });
-    } catch (error) {
-      thrown = error;
-    }
-
-    expect(thrown).toBeInstanceOf(Error);
-    expect((thrown as Error).name).toBe("ToolInputError");
-    expect((thrown as Error).message).toBe(
-      "refused: session is required and must name the worker whose deliverable this is"
-        + "; live sessions: Alpha, Beta",
-    );
-    // Two reads: one to identify the caller, one to list labels for the error.
-    expect(h.calls.registries).toEqual(["/virtual/claude", "/virtual/claude"]);
-    expect(h.calls.sessionLookups).toEqual([]);
-    expect(h.calls.daemon).toEqual([]);
-  });
-
   test("review_to_front accepts an existing non-executable file link", async () => {
     const root = await mkdtemp(join(tmpdir(), "conch-mcp-review-"));
     const link = join(root, "review.html");
     try {
       await writeFile(link, "<h1>Review</h1>", { mode: 0o600 });
-      const h = fakeHarness();
+      const h = fakeHarness({ parentPid: 4321 });
       const handlers = createMcpToolHandlers({
         claudeDir: "/virtual/claude",
         socketPath: "/virtual/conch.sock",
@@ -1051,7 +1018,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
       await writeFile(executableFile, "#!/bin/sh\n", { mode: 0o700 });
       await chmod(executableFile, 0o700);
 
-      const h = fakeHarness();
+      const h = fakeHarness({ parentPid: 4321 });
       const handlers = createMcpToolHandlers({
         claudeDir: "/virtual/claude",
         socketPath: "/virtual/conch.sock",
@@ -1069,7 +1036,6 @@ describe("real MCP tool handlers with injected dependencies", () => {
         const response = await callTool(handlers, "review_to_front", {
           summary: "Inspect the finished dashboard",
           link,
-          session: "Build",
         });
         expect(rpcResult(response)).toMatchObject({ isError: true });
         expect(toolText(response)).toBe(
@@ -1085,7 +1051,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
   });
 
   test("review_to_front reports a daemon that is not there as failed", async () => {
-    const h = fakeHarness({ daemonAccepts: false });
+    const h = fakeHarness({ daemonAccepts: false , parentPid: 4321 });
     const handlers = createMcpToolHandlers({
       claudeDir: "/virtual/claude",
       socketPath: "/virtual/conch.sock",
@@ -1105,7 +1071,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
   });
 
   test("a publication is not a turn end: a newer Stop never makes it stale, and it never displaces one", async () => {
-    const h = fakeHarness();
+    const h = fakeHarness({ parentPid: 4321 });
     const handlers = createMcpToolHandlers({
       claudeDir: "/virtual/claude",
       socketPath: "/virtual/conch.sock",
@@ -1139,7 +1105,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
   });
 
   test("review_to_front says it was accepted, and reports a summary it had to cut", async () => {
-    const h = fakeHarness();
+    const h = fakeHarness({ parentPid: 4321 });
     const handlers = createMcpToolHandlers({
       claudeDir: "/virtual/claude",
       socketPath: "/virtual/conch.sock",
@@ -1266,10 +1232,10 @@ describe("real MCP tool handlers with injected dependencies", () => {
     }
   });
 
-  test("review_to_front naming the hidden window's stale id files under the job's row", async () => {
-    // A caller conch cannot identify (neither registry pid is this server's
-    // parent) that names the window's old id: the id is no row, so it used to
-    // be refused as "no live session matching". The job holds that conversation.
+  test("review_to_front from a caller conch cannot identify is refused, even naming a real session's stale id", async () => {
+    // Neither registry pid is this server's parent. Such a caller used to be
+    // able to name any session and file under it; a name is not proof of who
+    // is asking, so nothing is filed.
     const claudeDir = mkdtempSync(join(tmpdir(), "conch-mcp-stale-"));
     await mkdir(join(claudeDir, "sessions"), { recursive: true });
     const register = (pid: number, entry: object) => writeFileSync(
@@ -1289,10 +1255,9 @@ describe("real MCP tool handlers with injected dependencies", () => {
     h.dependencies.findSessionByName = (dir, query) => findSessionByName(dir, query, options);
     const handlers = createMcpToolHandlers({ claudeDir, socketPath: "/virtual/conch.sock" }, h.dependencies);
     try {
-      await handlers.review_to_front({ summary: "stale id", session: "pred" });
-      expect(h.calls.daemon.map((call) => call.event.sessionId)).toEqual(["succ"]);
-      expect(h.calls.daemon[0]!.event.review).toEqual({ summary: "stale id" });
-      expect(h.calls.daemon[0]!.event.pid).toBe(process.pid);
+      await expect(handlers.review_to_front({ summary: "stale id", session: "pred" }))
+        .rejects.toThrow("refused: conch cannot verify which session is calling");
+      expect(h.calls.daemon).toEqual([]);
     } finally {
       rmSync(claudeDir, { recursive: true, force: true });
     }
@@ -1502,7 +1467,7 @@ describe("C5: what conch refuses an agent, and what it still allows", () => {
   test("wake and recite say where the audio went, from the published audioControl", async () => {
     const published = (control: unknown) => JSON.stringify({ v: 1, ts: 1, audioControl: control });
     const at = async (sessionsFile: string | null) => {
-      const h = fakeHarness({ sessionsFile });
+      const h = fakeHarness({ sessionsFile , parentPid: 4321 });
       const handlers = createMcpToolHandlers(runtime, h.dependencies);
       const wake = JSON.parse(toolText(await callTool(handlers, "conch_wake", {})));
       const recite = JSON.parse(toolText(await callTool(handlers, "conch_recite", { session: "Build" })));
@@ -1547,5 +1512,147 @@ describe("C5: what conch refuses an agent, and what it still allows", () => {
     }
     expect(doc).toContain("conch help-session");
     expect(doc).toContain("absolute path");
+  });
+});
+
+describe("caller binding: which session is calling, and what that allows", () => {
+  const runtime = { claudeDir: "/virtual/claude", socketPath: "/virtual/conch.sock" };
+  const alpha: SessionInfo = { sessionId: "session-a", name: "Alpha", cwd: "/work/alpha", status: "busy", pid: 4321 };
+  const beta: SessionInfo = { sessionId: "session-b", name: "Beta", cwd: "/work/beta", status: "busy", pid: 5555 };
+
+  /** `parentPid` plays this MCP server's parent process. */
+  function harness(infos: SessionInfo[], parentPid: number) {
+    const h = fakeHarness({
+      parentPid,
+      registry: { infos, liveIds: new Set(infos.map((session) => session.sessionId)), complete: true },
+    });
+    h.dependencies.sessionLabel = (session) => session?.name ?? session?.sessionId ?? "unnamed";
+    h.dependencies.findSessionByName = async (_dir, query) =>
+      infos.find((session) => session.name === query || session.sessionId === query) ?? null;
+    return { h, handlers: createMcpToolHandlers(runtime, h.dependencies) };
+  }
+
+  async function caller(handlers: McpToolHandlers) {
+    return JSON.parse(toolText(await callTool(handlers, "conch_sessions", {}))).caller;
+  }
+
+  async function refused(handlers: McpToolHandlers, name: McpToolName, args: Record<string, unknown>) {
+    const response = await callTool(handlers, name, args);
+    expect(rpcResult(response)).toMatchObject({ isError: true });
+    return toolText(response);
+  }
+
+  test("the one row with the parent's pid is verified, and conch_sessions returns that beside the rows", async () => {
+    const { handlers } = harness([alpha, beta], 4321);
+    const state = JSON.parse(toolText(await callTool(handlers, "conch_sessions", {})));
+    expect(state.caller).toEqual({ status: "verified", sessionId: "session-a", label: "Alpha" });
+    expect(state.rows.map((row: { id: string }) => row.id)).toEqual(["session-a", "session-b"]);
+  });
+
+  test("a parent no row carries is unverified, with the reason", async () => {
+    const { handlers } = harness([alpha, beta], 9999);
+    expect(await caller(handlers)).toEqual({
+      status: "unverified",
+      reason: "its parent (pid 9999) is not a live session conch knows",
+    });
+  });
+
+  test("a shared Codex app-server is unverified: no publishing, and no wake or recite of 'my' session", async () => {
+    const hosted = (sessionId: string): SessionInfo => ({
+      sessionId,
+      backend: "codex",
+      cwd: "/work/codex",
+      pid: 0,
+      noTerminal: appServerNoTerminal(74676),
+    });
+    const { h, handlers } = harness([hosted("thread-1"), hosted("thread-2")], 74676);
+
+    const binding = await caller(handlers);
+    expect(binding.status).toBe("unverified");
+    expect(binding.reason).toContain("Codex app-server, which hosts many threads under one pid");
+
+    const publish = await refused(handlers, "review_to_front", { summary: "mine", session: "thread-1" });
+    expect(publish).toStartWith("refused: conch cannot verify which session is calling");
+    expect(publish).toContain("Leave the result in your reply");
+    expect(publish).toContain("`conch:review <one-line summary> | <link-or-path>`");
+    expect(await refused(handlers, "review_to_front", { summary: "mine" })).toContain("cannot verify");
+    expect(await refused(handlers, "conch_wake", {}))
+      .toContain("conch_wake without `session` means your own session, and conch cannot verify");
+    expect(await refused(handlers, "conch_recite", {})).toContain("conch_recite without `session`");
+    expect(h.calls.daemon).toEqual([]);
+  });
+
+  test("a pid two rows carry is unverified: it names neither", async () => {
+    const { h, handlers } = harness([alpha, { ...beta, pid: 4321 }], 4321);
+    expect((await caller(handlers)).reason).toBe(
+      "its parent (pid 4321) runs 2 sessions (session-a, session-b), so the pid cannot say which one is calling",
+    );
+    expect(await refused(handlers, "review_to_front", { summary: "whose?" })).toContain("cannot verify");
+    expect(h.calls.daemon).toEqual([]);
+  });
+
+  test("an unverified caller cannot publish under a session it names", async () => {
+    const { h, handlers } = harness([alpha, beta], 9999);
+    expect(await refused(handlers, "review_to_front", { summary: "trust me", session: "Alpha" }))
+      .toContain("including one you name");
+    expect(h.calls.daemon).toEqual([]);
+  });
+
+  test("a verified caller may name itself; another session, or a name that is not it, is refused", async () => {
+    const { h, handlers } = harness([alpha, beta], 4321);
+    await callTool(handlers, "review_to_front", { summary: "own", session: "Alpha" });
+    expect(await refused(handlers, "review_to_front", { summary: "theirs", session: "Beta" }))
+      .toBe('refused: a session can only surface its own work — you are "Alpha" (session-a), and "Beta" is "Beta". Omit `session` to surface your own deliverable.');
+    expect(await refused(handlers, "review_to_front", { summary: "nobody", session: "Gamma" }))
+      .toContain('"Gamma" does not name you alone');
+    expect(h.calls.daemon.map((call) => call.event.sessionId)).toEqual(["session-a"]);
+  });
+
+  test("wake and recite without session go to the verified caller, never conch's last session", async () => {
+    const { h, handlers } = harness([alpha, beta], 5555);
+    await callTool(handlers, "conch_wake", {});
+    await callTool(handlers, "conch_recite", {});
+    expect(h.calls.daemon.map((call) => [call.event.type, call.event.sessionId, call.event.label]))
+      .toEqual([["wake", "session-b", "Beta"], ["recite", "session-b", "Beta"]]);
+  });
+
+  test("wake and recite without session from an unverified caller are refused, and nothing is sent", async () => {
+    const { h, handlers } = harness([alpha, beta], 9999);
+    for (const tool of ["conch_wake", "conch_recite"] as const) {
+      expect(await refused(handlers, tool, {})).toContain("Pass `session` with an id from conch_sessions");
+    }
+    // Naming one still works: that is the user's explicit request.
+    await callTool(handlers, "conch_wake", { session: "Alpha" });
+    expect(h.calls.daemon.map((call) => call.event.sessionId)).toEqual(["session-a"]);
+  });
+
+  test("an ambiguous name comes back refused with its candidates, and nothing is sent", async () => {
+    const { h, handlers } = harness([alpha, beta], 4321);
+    h.dependencies.findSessionByName = async (_dir, query) => {
+      throw new AmbiguousSessionError(query, [
+        { sessionId: "session-a", label: "Alpha" },
+        { sessionId: "session-b", label: "Beta" },
+      ]);
+    };
+    for (const tool of ["conch_wake", "conch_recite", "conch_transcript_tail"] as const) {
+      expect(await refused(handlers, tool, { session: "a" })).toBe(
+        '"a" matches 2 live sessions, so none was chosen; name one by id: session-a ("Alpha"), session-b ("Beta")',
+      );
+    }
+    expect(await refused(handlers, "conch_mode", { action: "pause", session: "a" })).toContain("session-b (\"Beta\")");
+    expect(h.calls.daemon).toEqual([]);
+  });
+
+  test("a publication's file must not be a key: refused with the reason, nothing sent", async () => {
+    const root = await mkdtemp(join(tmpdir(), "conch-mcp-secret-"));
+    try {
+      await writeFile(join(root, "signing.p8"), "-----BEGIN PRIVATE KEY-----\n", { mode: 0o600 });
+      const { h, handlers } = harness([alpha], 4321);
+      expect(await refused(handlers, "review_to_front", { summary: "the key", link: join(root, "signing.p8") }))
+        .toContain("a hidden file, in a hidden folder, or a key or certificate");
+      expect(h.calls.daemon).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

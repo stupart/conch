@@ -344,12 +344,17 @@ export function codexThreadRoute(
     return { pid: 0, noTerminal: "closed: no Codex process has this thread open" };
   }
   if (holder > 0 && args !== undefined && APP_SERVER_ARGS.test(args)) {
-    return {
-      pid: 0,
-      noTerminal: `hosted by codex app-server (pid ${holder}), which has no terminal to type into`,
-    };
+    return { pid: 0, noTerminal: appServerNoTerminal(holder) };
   }
   return { pid: holder };
+}
+
+/**
+ * Why a row an app-server hosts has no terminal. It names the pid, which is
+ * also how the MCP server knows its parent is a shared app-server (`mcp.ts`).
+ */
+export function appServerNoTerminal(pid: number): string {
+  return `hosted by codex app-server (pid ${pid}), which has no terminal to type into`;
 }
 
 /**

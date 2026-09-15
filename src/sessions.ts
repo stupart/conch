@@ -827,7 +827,30 @@ export async function listSessions(
   return (await registrySnapshot(claudeDir, options))?.infos ?? [];
 }
 
-/** Match an exact id, then conch overrides, registry names, and project folders. */
+/**
+ * A name more than one live session answers to. Refused, never guessed: acting
+ * on the wrong session is worse than asking which one was meant.
+ */
+export class AmbiguousSessionError extends Error {
+  constructor(
+    readonly query: string,
+    readonly candidates: ReadonlyArray<{ sessionId: string; label: string }>,
+  ) {
+    super(
+      `"${query}" matches ${candidates.length} live sessions, so none was chosen; name one by id: `
+        + candidates.map((c) => `${c.sessionId} ("${c.label}")`).join(", "),
+    );
+    this.name = "AmbiguousSessionError";
+  }
+}
+
+/**
+ * Resolve a session by id or name, most exact first: its id, the agent id two
+ * windows share, a hidden window's stale id, the label conch shows, a registry
+ * or folder name, then part of a label or name. The first step with a match
+ * decides, and more than one match there throws `AmbiguousSessionError` with
+ * the candidates. It used to take the first partial match in registry order.
+ */
 export async function findSessionByName(
   claudeDir: string,
   query: string,
@@ -836,24 +859,28 @@ export async function findSessionByName(
   const q = query.toLowerCase().trim();
   if (!q) return null;
   const sessions = await listSessions(claudeDir, options);
-  const overrides = labelOverrides(options);
-  const overrideFor = (session: SessionInfo): string | undefined => {
-    return Object.hasOwn(overrides, session.sessionId)
-      ? overrides[session.sessionId]
-      : undefined;
+  const labels = new Map(sessions.map((s) => [s, sessionLabel(s, s.cwd, options)]));
+  const is = (value: string | undefined) => value?.toLowerCase() === q;
+  const has = (value: string | undefined) => Boolean(value?.toLowerCase().includes(q));
+  const only = (matches: SessionInfo[]): SessionInfo | null => {
+    if (matches.length > 1) {
+      throw new AmbiguousSessionError(
+        query.trim(),
+        matches.map((s) => ({ sessionId: s.sessionId, label: labels.get(s)! })),
+      );
+    }
+    return matches[0] ?? null;
   };
-  return (
-    sessions.find((s) => s.sessionId.toLowerCase() === q) ??
-    sessions.find((s) => overrideFor(s)?.toLowerCase() === q) ??
-    sessions.find((s) => s.name?.toLowerCase() === q) ??
-    sessions.find((s) => s.name?.toLowerCase().includes(q)) ??
-    sessions.find((s) => (s.cwd ?? "").split("/").pop()?.toLowerCase() === q) ??
-    (await parkedJobRow(claudeDir, query.trim(), sessions)) ??
-    null
-  );
+  return only(sessions.filter((s) => is(s.sessionId)))
+    ?? only(sessions.filter((s) => is(s.agentSessionId)))
+    ?? (await parkedJobRow(claudeDir, query.trim(), sessions))
+    ?? only(sessions.filter((s) => is(labels.get(s))))
+    ?? only(sessions.filter((s) => is(s.name) || is(s.cwd?.split("/").pop())))
+    ?? only(sessions.filter((s) => has(labels.get(s)) || has(s.name)))
+    ?? null;
 }
 
-/** A hidden window's stale id, answered by its job's row. Last: it reads the registry again. */
+/** A hidden window's stale id, answered by its job's row. After the ids: it reads the registry again. */
 async function parkedJobRow(
   claudeDir: string,
   query: string,

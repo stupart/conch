@@ -31,15 +31,15 @@ import {
   type SettingKey,
 } from "./settings.ts";
 import {
-  publishableReviewLink,
+  checkReviewLink,
   REVIEW_SUMMARY_MAX,
-  SAFE_REVIEW_LINK,
   sanitizeReviewSummary,
   splitSentences,
   transcriptMark,
 } from "./snippet.ts";
 import { lastAssistantReply, readConversationTail } from "./conversation.ts";
 import { windowKey } from "./window-key.ts";
+import { appServerNoTerminal } from "./codex-threads.ts";
 import { transcriptFormatFor } from "./agent-adapter.ts";
 
 export const MCP_PROTOCOL_VERSION = "2024-11-05";
@@ -155,7 +155,7 @@ export interface McpToolDefinition {
 export const MCP_TOOLS = [
   {
     name: "conch_sessions",
-    description: "Return conch's current versioned session state.",
+    description: "Read live session state and IDs, and `caller`: whether conch verified which session you are. This is not complete conversation history.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -164,14 +164,14 @@ export const MCP_TOOLS = [
   },
   {
     name: "conch_wake",
-    description: "Open conch's microphone for the last session or a named live session.",
+    description: "At the user’s request, open the microphone addressed to a session. Defaults to your verified session. Does not stage a scene.",
     inputSchema: {
       type: "object",
       properties: {
         session: {
           type: "string",
           minLength: 1,
-          description: "Live session id or name. Omit to use conch's last session.",
+          description: "Live session id or label. Omit for your own verified session; a name that matches several sessions is refused.",
         },
       },
       additionalProperties: false,
@@ -179,14 +179,14 @@ export const MCP_TOOLS = [
   },
   {
     name: "conch_recite",
-    description: "Read the latest response from the last session or a named live session.",
+    description: "At the user’s request, read a session’s latest assistant reply aloud. Defaults to your verified session. Does not open its workspace.",
     inputSchema: {
       type: "object",
       properties: {
         session: {
           type: "string",
           minLength: 1,
-          description: "Live session id or name. Omit to use conch's last session.",
+          description: "Live session id or label. Omit for your own verified session; a name that matches several sessions is refused.",
         },
       },
       additionalProperties: false,
@@ -238,7 +238,7 @@ export const MCP_TOOLS = [
   },
   {
     name: "conch_rename",
-    description: "Persist a display label for a live conch session.",
+    description: "Persist the user-requested display label for a session. Prefer its ID; ambiguous names are refused.",
     inputSchema: {
       type: "object",
       properties: {
@@ -344,6 +344,8 @@ export interface McpDependencies {
   lastAssistantText(transcriptPath: string, session: Readonly<SessionInfo>): Promise<string>;
   splitSentences(text: string): string[];
   now(): number;
+  /** The process that spawned this server: the calling session, when it is one. */
+  parentPid(): number;
 }
 
 export const defaultMcpDependencies: McpDependencies = {
@@ -377,6 +379,7 @@ export const defaultMcpDependencies: McpDependencies = {
   },
   splitSentences,
   now: Date.now,
+  parentPid: () => process.ppid,
 };
 
 class ToolInputError extends Error {
@@ -538,76 +541,108 @@ async function resolveSession(
   return session;
 }
 
+/** Whether conch could tell which session is calling this server, and why not when it could not. */
+export type CallerBinding =
+  | { status: "verified"; session: SessionInfo }
+  | { status: "unverified"; reason: string };
+
 /**
- * The session that OWNS this MCP server.
+ * The session that OWNS this MCP server, verified or not.
  *
  * Claude Code spawns the plugin's MCP server as a direct child of the session
- * process, so the parent pid identifies the caller. That is what lets a review
- * default to "mine" and lets us refuse to file one under somebody else's name.
- * Returns null when the parent isn't a known session (a bare `conch mcp` run).
+ * process, so the parent pid identifies the caller when exactly one row has
+ * it. A pid more than one row carries says only "one of these", and so does a
+ * Codex app-server's: it hosts every thread it has open under one pid, which
+ * conch withholds from those rows. Neither is a binding.
  *
  * A background session's row carries no pid (`BG_NO_TERMINAL`), so the pid
  * match misses it. Claude Code names each registry file after its process,
  * though, so the parent's own file still says which session is asking.
  */
-async function callerSession(
+async function callerBinding(
   config: McpRuntimeConfig,
   dependencies: McpDependencies,
-): Promise<SessionInfo | null> {
-  const parentPid = typeof process.ppid === "number" ? process.ppid : 0;
-  if (!parentPid) return null;
+): Promise<CallerBinding> {
+  const unverified = (reason: string): CallerBinding => ({ status: "unverified", reason });
+  const parentPid = dependencies.parentPid();
+  if (!Number.isSafeInteger(parentPid) || parentPid <= 1) {
+    return unverified("this server has no parent session process");
+  }
   const infos = (await dependencies.registrySnapshot(config.claudeDir))?.infos ?? [];
-  const byPid = infos.find((session) => session.pid === parentPid);
-  if (byPid) return byPid;
+  if (infos.some((session) => session.noTerminal === appServerNoTerminal(parentPid))) {
+    return unverified(
+      `its parent (pid ${parentPid}) is a Codex app-server, which hosts many threads under one pid,`
+        + " so the pid cannot say which thread is calling",
+    );
+  }
+  const byPid = infos.filter((session) => session.pid === parentPid);
+  if (byPid.length === 1) return { status: "verified", session: byPid[0]! };
+  if (byPid.length > 1) {
+    return unverified(
+      `its parent (pid ${parentPid}) runs ${byPid.length} sessions`
+        + ` (${byPid.map((session) => session.sessionId).join(", ")}), so the pid cannot say which one is calling`,
+    );
+  }
   const own = await readFile(join(config.claudeDir, "sessions", `${parentPid}.json`), "utf8")
     .then((raw) => JSON.parse(raw)?.sessionId)
     .catch(() => undefined);
-  if (typeof own !== "string" || !own) return null;
-  const window = windowKey(own, parentPid, true);
-  return infos.find((session) => session.sessionId === window)
-    ?? infos.find((session) => session.sessionId === own)
-    ?? null;
+  const window = typeof own === "string" && own ? windowKey(own, parentPid, true) : undefined;
+  const found = window === undefined
+    ? undefined
+    : infos.find((session) => session.sessionId === window)
+      ?? infos.find((session) => session.sessionId === own);
+  return found
+    ? { status: "verified", session: found }
+    : unverified(`its parent (pid ${parentPid}) is not a live session conch knows`);
+}
+
+/** Your own session, for a tool whose `session` was omitted; refused when conch can't verify it. */
+async function ownSession(
+  tool: string,
+  config: McpRuntimeConfig,
+  dependencies: McpDependencies,
+): Promise<SessionInfo> {
+  const binding = await callerBinding(config, dependencies);
+  if (binding.status === "verified") return binding.session;
+  throw new ToolInputError(
+    `${tool} without \`session\` means your own session, and conch cannot verify which session is`
+      + ` calling: ${binding.reason}. Pass \`session\` with an id from conch_sessions.`,
+  );
 }
 
 /**
- * A session may only surface its OWN deliverable.
+ * A session may only surface its OWN deliverable, and only a verified one.
  *
- * Nothing used to stop one session filing a review under another's name, and
- * the dashboard attributes it to the named session — so a caller could put
- * words in a sibling's mouth. Reviews are an approval gate; misattributing one
- * is worse than failing to file it.
+ * The dashboard attributes a review to the session it is filed under, so a
+ * misattributed one puts words in a sibling's mouth, which is worse than not
+ * filing at all. A `session` string is not proof of who is asking: an
+ * unverified caller used to be able to name any session.
  */
 async function requiredReviewSession(
   argumentsValue: Readonly<Record<string, unknown>>,
   config: McpRuntimeConfig,
   dependencies: McpDependencies,
-): Promise<string> {
-  const caller = await callerSession(config, dependencies);
+): Promise<SessionInfo> {
   const value = argumentsValue.session;
   const named = typeof value === "string" ? value.trim() : "";
-
-  if (caller) {
-    // Naming yourself is fine and is the normal case; naming anyone else is not.
-    if (!named) return caller.sessionId;
-    const requested = await dependencies.findSessionByName(config.claudeDir, named);
-    if (requested && requested.sessionId !== caller.sessionId) {
-      throw new ToolInputError(
-        `a session can only surface its own work — you are "`
-          + `${dependencies.sessionLabel(caller, caller.cwd)}", not "${named}". `
-          + "Omit `session` to surface your own deliverable.",
-      );
-    }
-    return caller.sessionId;
+  const binding = await callerBinding(config, dependencies);
+  if (binding.status !== "verified") {
+    throw new ToolInputError(
+      `conch cannot verify which session is calling (${binding.reason}), so it will not attribute`
+        + " a publication to any session, including one you name. Leave the result in your reply,"
+        + " or end your final reply with its own line: `conch:review <one-line summary> | <link-or-path>`.",
+    );
   }
-
-  if (named) return named;
-  const infos = (await dependencies.registrySnapshot(config.claudeDir))?.infos ?? [];
-  const labels = Array.from(new Set(
-    infos.map((session) => dependencies.sessionLabel(session, session.cwd)),
-  ));
+  const caller = binding.session;
+  if (!named) return caller;
+  // Naming yourself is fine; a name that is anyone else, or not only you, is not.
+  const requested = await dependencies.findSessionByName(config.claudeDir, named).catch(() => null);
+  if (requested?.sessionId === caller.sessionId) return caller;
   throw new ToolInputError(
-    "session is required and must name the worker whose deliverable this is"
-      + `; live sessions: ${labels.length ? labels.join(", ") : "(none)"}`,
+    `a session can only surface its own work — you are "`
+      + `${dependencies.sessionLabel(caller, caller.cwd)}" (${caller.sessionId}), and "${named}" `
+      + (requested ? `is "${dependencies.sessionLabel(requested, requested.cwd)}"` : "does not name you alone")
+      + ". Omit `session` to surface your own deliverable.",
   );
 }
 
@@ -664,40 +699,41 @@ export function createMcpToolHandlers(
     async conch_sessions(argumentsValue) {
       const argumentsObject = toolArguments(argumentsValue);
       allowOnly(argumentsObject, []);
+      const binding = await callerBinding(config, dependencies);
+      const caller = binding.status === "verified"
+        ? {
+          status: binding.status,
+          sessionId: binding.session.sessionId,
+          label: dependencies.sessionLabel(binding.session, binding.session.cwd),
+        }
+        : binding;
 
       try {
         const raw = await dependencies.readSessionsFile(sessionsPath);
         if (raw !== null) {
           const parsed: unknown = JSON.parse(raw);
           if (!isRecord(parsed)) throw new Error("published state is not a JSON object");
-          return parsed as unknown as PublishedState;
+          return { ...(parsed as unknown as PublishedState), caller };
         }
       } catch {
         // The daemon snapshot is advisory. A missing, unreadable, or malformed file
         // falls through to Claude's registry so the plugin remains useful.
       }
-      return publishedStateFromRegistry(
-        await dependencies.registrySnapshot(config.claudeDir),
-        dependencies,
-      );
+      return {
+        ...publishedStateFromRegistry(await dependencies.registrySnapshot(config.claudeDir), dependencies),
+        caller,
+      };
     },
 
     async conch_wake(argumentsValue) {
       const argumentsObject = toolArguments(argumentsValue);
       allowOnly(argumentsObject, ["session"]);
       const query = optionalString(argumentsObject, "session");
+      // No global "last session" for an agent: omitted means the verified caller.
+      const session = query
+        ? await resolveSession(query, config, dependencies)
+        : await ownSession("conch_wake", config, dependencies);
       const audio = await audioWhere(sessionsPath, dependencies);
-      if (!query) {
-        const sent = await sendTurn(config, dependencies, {
-          type: "wake",
-          sessionId: "",
-          label: "",
-          announce: "",
-          origin: "agent",
-        });
-        return { ...sent, audio };
-      }
-      const session = await resolveSession(query, config, dependencies);
       const sent = await sendTurn(config, dependencies, {
         type: "wake",
         sessionId: session.sessionId,
@@ -718,17 +754,10 @@ export function createMcpToolHandlers(
       const argumentsObject = toolArguments(argumentsValue);
       allowOnly(argumentsObject, ["session"]);
       const query = optionalString(argumentsObject, "session");
+      const session = query
+        ? await resolveSession(query, config, dependencies)
+        : await ownSession("conch_recite", config, dependencies);
       const audio = await audioWhere(sessionsPath, dependencies);
-      if (!query) {
-        const sent = await sendTurn(config, dependencies, {
-          type: "recite",
-          sessionId: "",
-          label: "",
-          announce: "",
-        });
-        return { ...sent, audio };
-      }
-      const session = await resolveSession(query, config, dependencies);
       const label = dependencies.sessionLabel(session, session.cwd);
       const transcriptPath = dependencies.findTranscript(
         config.claudeDir,
@@ -815,16 +844,17 @@ export function createMcpToolHandlers(
       // One session, the same scoped event the Mac's per-row control sends:
       // the daemon routes a pause/resume that names a session to
       // setSessionPaused, never to the global flip.
-      const session = query
-        ? await resolveSession(query, config, dependencies)
-        : await callerSession(config, dependencies);
-      if (!session) {
+      const binding = query ? undefined : await callerBinding(config, dependencies);
+      if (binding?.status === "unverified") {
         throw new ToolInputError(
-          `${action} needs a session and this server has no calling session — `
-            + "pass `session` to name one, or `scope: \"all\"` to switch every "
+          `${action} needs a session and this server has no calling session it can verify`
+            + ` (${binding.reason}) — pass \`session\` to name one, or \`scope: "all"\` to switch every `
             + `session (which the user can also do with \`conch ${action}\`)`,
         );
       }
+      const session = binding?.status === "verified"
+        ? binding.session
+        : await resolveSession(query!, config, dependencies);
       return sendTurn(config, dependencies, {
         type: action,
         sessionId: session.sessionId,
@@ -984,7 +1014,12 @@ export function createMcpToolHandlers(
         );
       }
       const text = await dependencies.lastAssistantText(transcriptPath, session);
-      return dependencies.splitSentences(text).slice(-countValue).join(" ");
+      // Which session answered, since a name can resolve to one you didn't spell out.
+      return {
+        sessionId: session.sessionId,
+        label: dependencies.sessionLabel(session, session.cwd),
+        text: dependencies.splitSentences(text).slice(-countValue).join(" "),
+      };
     },
 
     async review_to_front(argumentsValue) {
@@ -995,18 +1030,18 @@ export function createMcpToolHandlers(
         allowOnly(argumentsObject, ["summary", "link", "session"]);
         const cleaned = sanitizeReviewSummary(requiredString(argumentsObject, "summary"), Infinity);
         if (!cleaned) throw new ToolInputError("summary must be a non-empty string");
-        const query = await requiredReviewSession(argumentsObject, config, dependencies);
+        const session = await requiredReviewSession(argumentsObject, config, dependencies);
         const rawLink = optionalString(argumentsObject, "link");
         // Absolute by the time it leaves here, resolved against this process's
         // cwd (the session's): the raw relative string reached the Mac app,
         // which resolved it against its own cwd and previewed a missing file.
-        const link = rawLink?.trim() ? await publishableReviewLink(rawLink, process.cwd()) : undefined;
-        if (link === null) throw new ToolInputError(SAFE_REVIEW_LINK);
+        const checked = rawLink === undefined ? undefined : await checkReviewLink(rawLink, process.cwd());
+        if (checked && !checked.ok) throw new ToolInputError(checked.reason);
         return {
           summary: cleaned.slice(0, REVIEW_SUMMARY_MAX),
           truncatedFrom: cleaned.length > REVIEW_SUMMARY_MAX ? cleaned.length : undefined,
-          link,
-          session: await resolveSession(query, config, dependencies),
+          link: checked?.link,
+          session,
         };
       })().catch((error) => {
         throw new ToolInputError(`refused: ${errorMessage(error)}`);

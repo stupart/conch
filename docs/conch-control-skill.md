@@ -38,10 +38,10 @@ MCP server loads. If Homebrew is missing, say so and point at
 https://brew.sh rather than trying to install Homebrew yourself.
 
 ## What you can do
-- **See everything** — `conch_sessions` returns every live session: its label, what it's doing (working / waiting / needs-you / has-work-to-review), whether it is in manual mode, and its last spoken line. Lead with this when the user asks what's happening.
-- **Bring one forward** — `conch_recite {session}` reads a session's latest reply aloud again; `conch_wake {session}` reopens the mic pointed at it so the user can talk to it. `session` is a label or id — "dayloop", "the one that needs me". The result's `audio` line says where that went: this Mac, the phone when it holds the audio, or refused because this Mac has yielded its audio to another Mac (see below). Waking a sibling while the phone holds the audio opens the PHONE's mic at a session the user is not looking at, so say which session you woke.
+- **See everything** — `conch_sessions` returns every live session: its id, label, what it's doing (working / waiting / needs-you / has-work-to-review), whether it is in manual mode, and its last spoken line. Its `caller` says whether conch verified which session YOU are (`verified`, with your id), or `unverified` with the reason. Lead with this when the user asks what's happening.
+- **Bring one forward** — `conch_recite {session}` reads a session's latest reply aloud again; `conch_wake {session}` reopens the mic pointed at it so the user can talk to it. `session` is an id or a label — prefer the id from `conch_sessions`. A name that fits more than one session is refused with the candidates; a partial name that fits one resolves, and the result names the session it reached. Omit `session` for your own session, which works only when your `caller` is verified. The result's `audio` line says where that went: this Mac, the phone when it holds the audio, or refused because this Mac has yielded its audio to another Mac (see below). Waking a sibling while the phone holds the audio opens the PHONE's mic at a session the user is not looking at, so say which session you woke.
 - **Speak** — `conch_speak {text}` says something aloud in conch's voice, up to 600 characters and one at a time. Use it to confirm an action or read a short answer, not to narrate — your reply is announced anyway.
-- **Answer from a transcript** — `conch_transcript_tail {session}` gives you the tail of a session's last reply, so you can answer "did the tests pass?" without switching to it.
+- **Answer from a transcript** — `conch_transcript_tail {session}` gives you the tail of a session's last reply, with the id and label of the session it read, so you can answer "did the tests pass?" without switching to it.
 - **Put the artifact you are working on where the user looks** —
   `review_to_front {summary, link?}`.
 
@@ -71,11 +71,16 @@ https://brew.sh rather than trying to install Homebrew yourself.
   `session` is optional and defaults to you. A session may only surface its own
   work; naming a different session is refused, because the dashboard attributes
   the artifact to whoever is named and putting words in a sibling's mouth is
-  worse than not filing at all. `link` must be an http(s) URL or an existing,
-  non-executable file path; a relative path is resolved to an absolute path
-  against your cwd before it is sent, so the file you checked is the file the
-  apps open. If the tool isn't available to you at all, end your
-  final reply with its own line instead: `conch:review <one-line spoken summary> | <link-or-path>`.
+  worse than not filing at all. Publishing needs a verified `caller`: when conch
+  cannot tell which session you are (a Codex app-server hosts many threads
+  under one process), it is refused whatever `session` says. `link` must be an
+  http(s) URL or an existing, non-executable file path; a relative path is
+  resolved to an absolute path against your cwd before it is sent, so the file
+  you checked is the file the apps open. A file is sent to the phone, so it must
+  sit under your cwd or a temp folder (`/tmp`), and not be hidden, in a hidden
+  folder (`~/.ssh`, `~/.config`, `.env`; a repo's `.worktrees` is fine), or a
+  key or certificate. If the tool isn't available to you or refuses you as
+  unverified, end your final reply with its own line instead: `conch:review <one-line spoken summary> | <link-or-path>`.
 - **Auto / manual** — `conch_mode {action, session?, scope?}` uses `pause` for lossless manual mode and `resume` for auto read-and-listen mode. Without `session` or `scope` it switches only YOUR session; `session` names another one. Switching every session at once — the whole daemon, what the user's `p` key and `conch pause` do — needs `scope: "all"` explicitly, and only when the user asked for exactly that. A `resume` from an agent is refused while the user put conch in manual themselves (the `p` key, the Mac's toggle, `conch pause`) — only a person undoes a person's pause, and a `conch_speak` is held then too: not spoken and not queued, and its result carries `held` saying so.
 - **Rename** — `conch_rename {session, label}` gives a session a name the user actually uses ("call that one 'the api work'").
 - **Tune** — `conch_config {key, value}` reads any conch setting live and changes these, and only these: `end-silence`, `voice-speed`, `haiku-timeout`, `read-full`, `announce-summary`, `whisper-idle-unload` — the voice and timing knobs. Every other key (the phone, the relay, permissions, meeting detection) is the user's own, by name, forever; the refusal tells you the `conch set` command to hand them. Only touch a setting the user named.
@@ -96,12 +101,15 @@ Each of these comes back as a tool error whose text says what to do instead.
 Do not retry the same call; do the alternative, or tell the user in one line.
 
 - `review_to_front` naming **another session's** artifact — omit `session`; you may only surface your own work.
-- `review_to_front` with a link that is not an http(s) URL or an existing, **non-executable** regular file — a directory, a missing file, a script, a `file://` or `javascript:` URL.
+- `review_to_front` from a caller conch **cannot verify** — leave the result in your reply, or use the `conch:review` line.
+- `review_to_front` with a link that is not an http(s) URL or an existing, **non-executable** regular file — a directory, a missing file, a script, a `file://` or `javascript:` URL — or a file **outside your cwd and the temp folder**, hidden, or a key or certificate.
+- A `session` name that **matches several sessions** — the refusal lists them by id and label; pass the id.
+- `conch_wake` / `conch_recite` **without `session`** when your caller is unverified — pass the session's id.
 - `conch_config` setting or unsetting a key that is **not on the list** above — the refusal names the `conch set <key> <value>` (or `conch unset <key>`) command the user can run themselves.
 - `conch_speak` with more than **600 characters** — refused with the count, never silently cut. Say the short version; the rest is in your reply.
 - `conch_speak` while your previous one is still being spoken — "**already speaking** for this session". Wait, or put the words in your reply.
 - `conch_mode` for every session without `scope: "all"` — a bare `pause` is your own session. `scope: "all"` together with `session`, or any scope other than `"all"`, is refused too.
-- `conch_mode` when this server has no calling session and you named none — pass `session`, or `scope: "all"`.
+- `conch_mode` when this server has no calling session it can verify and you named none — pass `session`, or `scope: "all"`.
 - `conch_wake` / `conch_recite` on a Mac that has **yielded** its audio to another Mac — the send succeeds, but the result's `audio` line says the daemon refused it: nothing opens or speaks on this Mac until the other Mac's app releases the audio or the lease expires.
 
 ## Two Macs, the phone, and the help session

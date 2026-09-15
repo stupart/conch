@@ -2,7 +2,7 @@ import { expect, test, describe } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { findSessionByName, findSessionBySpokenName, findSession, isEngageable, normalizeSessionLabel, registrySnapshot, renameSessionLabel, sessionGoneFromSnapshot, sessionLabel, setLabelOverride } from "../src/sessions.ts";
+import { AmbiguousSessionError, findSessionByName, findSessionBySpokenName, findSession, isEngageable, normalizeSessionLabel, registrySnapshot, renameSessionLabel, sessionGoneFromSnapshot, sessionLabel, setLabelOverride } from "../src/sessions.ts";
 import { activeSessionIdForRows, buildPanelRows } from "../src/panel.ts";
 import { setVoiceOverride, voiceFor } from "../src/speak.ts";
 import { loadConfig } from "../src/config.ts";
@@ -196,10 +196,12 @@ describe("conch session-label overrides", () => {
 
       setLabelOverride(session.sessionId, "  conch-name  ", { labelsPath: f.labelsPath });
       expect(sessionLabel(session, session.cwd, { labelsPath: f.labelsPath })).toBe("conch-name");
-      expect((await findSessionByName(f.claudeDir, "CONCH-NAME", {
+      // Both rows now SHOW "conch-name" (a's override, b's registry name), so
+      // the name is refused with both, not given to the override by rank.
+      await expect(findSessionByName(f.claudeDir, "CONCH-NAME", {
         labelsPath: f.labelsPath,
         configDir: join(f.root, "config"),
-      }))?.sessionId).toBe(session.sessionId);
+      })).rejects.toThrow('"CONCH-NAME" matches 2 live sessions');
       expect((await findSessionByName(f.claudeDir, "SESSION-A", {
         labelsPath: f.labelsPath,
         configDir: join(f.root, "config"),
@@ -239,10 +241,11 @@ describe("conch session-label overrides", () => {
       }));
       setLabelOverride("override", "spoken target", { labelsPath: f.labelsPath });
 
-      expect((await findSessionBySpokenName(f.claudeDir, "SPOKEN TARGET", {
+      // Two rows show "spoken target": refused, not the override's by rank.
+      await expect(findSessionBySpokenName(f.claudeDir, "SPOKEN TARGET", {
         labelsPath: f.labelsPath,
         configDir: join(f.root, "config"),
-      }))?.sessionId).toBe("override");
+      })).rejects.toBeInstanceOf(AmbiguousSessionError);
       expect((await findSessionBySpokenName(f.claudeDir, "day loop", {
         labelsPath: f.labelsPath,
         configDir: join(f.root, "config"),
@@ -251,6 +254,42 @@ describe("conch session-label overrides", () => {
         labelsPath: f.labelsPath,
         configDir: join(f.root, "config"),
       })).toBeNull();
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
+  test("an id wins, then an exact label, and a partial name two sessions share is refused with both", async () => {
+    const f = fixture();
+    const options = { labelsPath: f.labelsPath, configDir: join(f.root, "config") };
+    const register = (n: number, entry: object) => writeFileSync(
+      join(f.claudeDir, "sessions", `${n}.json`),
+      JSON.stringify({ kind: "interactive", entrypoint: "cli", ...entry }),
+    );
+    try {
+      register(1, { sessionId: "conch", name: "conch-ui", cwd: "/work/ui" });
+      register(2, { sessionId: "s-api", name: "conch-api", cwd: "/work/api" });
+      register(3, { sessionId: "s-docs", name: "docs", cwd: "/work/conch" });
+      register(4, { sessionId: "s-api2", name: "api", cwd: "/work/api2" });
+
+      // The exact id beats s-docs' folder and a partial of both conch-* names.
+      expect((await findSessionByName(f.claudeDir, "conch", options))?.sessionId).toBe("conch");
+      // An exact label beats "conch-api" containing it.
+      expect((await findSessionByName(f.claudeDir, "api", options))?.sessionId).toBe("s-api2");
+      // One partial match resolves to that one.
+      expect((await findSessionByName(f.claudeDir, "UI", options))?.sessionId).toBe("conch");
+
+      // Two partial matches: refused, never the first one the registry lists.
+      const error = await findSessionByName(f.claudeDir, "conch-", options).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(AmbiguousSessionError);
+      const candidates = (error as AmbiguousSessionError).candidates;
+      expect([...candidates].sort((a, b) => a.sessionId.localeCompare(b.sessionId))).toEqual([
+        { sessionId: "conch", label: "conch-ui" },
+        { sessionId: "s-api", label: "conch-api" },
+      ]);
+      expect((error as Error).message).toStartWith('"conch-" matches 2 live sessions, so none was chosen; name one by id: ');
+      expect((error as Error).message).toContain('conch ("conch-ui")');
+      expect((error as Error).message).toContain('s-api ("conch-api")');
     } finally {
       rmSync(f.root, { recursive: true, force: true });
     }

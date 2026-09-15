@@ -1,6 +1,7 @@
 /** Turn a markdown reply into something worth hearing. */
 
-import { open as openFile, stat, type FileHandle } from "node:fs/promises";
+import { open as openFile, realpath, stat, type FileHandle } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
 
 const BARE_URL = /(?:<)?\bhttps?:\/\/[^\s<>"'`]+(?:>)?/gi;
@@ -875,26 +876,67 @@ export function sanitizeReviewSummary(raw: string, max = REVIEW_SUMMARY_MAX): st
 export const SAFE_REVIEW_LINK =
   "link must be an http(s) URL or an existing, non-executable regular file";
 
+/** Keys and certificates, in whatever folder. */
+const SECRET_FILE = /\.(pem|key|p8|p12|pfx|keychain|keychain-db)$/i;
+
+/**
+ * Why a local file may not be published, or null when it may.
+ *
+ * A published file is served to the phone (`phone-bridge.ts` `/file`), so it
+ * has to be work, not whatever an agent can read. It must sit under the
+ * publishing session's folder or a temp folder, where screenshots and renders
+ * go. It must not be hidden or sit in a hidden folder (~/.ssh, ~/.config,
+ * ~/.codex, ~/.claude, .env, .git), and it must not be a key or certificate.
+ * `.worktrees` is the one hidden folder allowed: a repo's worktrees live there.
+ * Checked on the real path, so a symlink can't launder its target.
+ */
+async function reviewFileRefusal(path: string, cwd: string): Promise<string | null> {
+  const real = await realpath(path).catch(() => null);
+  if (!real) return SAFE_REVIEW_LINK;
+  const roots = await Promise.all([cwd, tmpdir(), "/tmp"].map((root) => realpath(root).catch(() => null)));
+  if (!roots.some((root) => root && real.startsWith(root.endsWith("/") ? root : `${root}/`))) {
+    return `link ${real} is outside this session's folder (${cwd}) and the temp folder, so it is not`
+      + " sent to the phone; publish a copy under your folder or /tmp";
+  }
+  if (real.split("/").some((part) => part.startsWith(".") && part !== ".worktrees") || SECRET_FILE.test(real)) {
+    return `link ${real} is a hidden file, in a hidden folder, or a key or certificate, so it is not`
+      + " sent to the phone";
+  }
+  return null;
+}
+
 /**
  * The one link check for both ways a session publishes: `review_to_front` and
- * the `conch:review` marker. Returns the link as published — an http(s) URL
+ * the `conch:review` marker. Returns the link as published (an http(s) URL
  * unchanged, a file made absolute against `cwd` so the apps open the file that
- * was checked rather than resolving it against their own cwd — or null when it
- * is not safe to hand an app.
+ * was checked rather than resolving it against their own cwd), or the reason
+ * it is not safe to hand an app and the phone.
  */
-export async function publishableReviewLink(link: string, cwd: string): Promise<string | null> {
+export async function checkReviewLink(
+  link: string,
+  cwd: string,
+): Promise<{ ok: true; link: string } | { ok: false; reason: string }> {
+  const refused = { ok: false, reason: SAFE_REVIEW_LINK } as const;
   const trimmed = link.trim();
-  if (!trimmed) return null;
+  if (!trimmed) return refused;
   let url: URL | undefined;
   try {
     url = new URL(trimmed);
   } catch {
     // Not a URL; it may still be a filesystem path.
   }
-  if (url) return (url.protocol === "http:" || url.protocol === "https:") && url.hostname ? trimmed : null;
+  if (url) return (url.protocol === "http:" || url.protocol === "https:") && url.hostname ? { ok: true, link: trimmed } : refused;
   const path = resolve(cwd, trimmed);
   const file = await stat(path).catch(() => null);
-  return file?.isFile() && (file.mode & 0o111) === 0 ? path : null;
+  if (!file?.isFile() || (file.mode & 0o111) !== 0) return refused;
+  const where = await reviewFileRefusal(path, cwd);
+  return where ? { ok: false, reason: where } : { ok: true, link: path };
+}
+
+/** `checkReviewLink` for a caller that can only drop an unsafe link: the link, or null. */
+export async function publishableReviewLink(link: string, cwd: string): Promise<string | null> {
+  const checked = await checkReviewLink(link, cwd);
+  return checked.ok ? checked.link : null;
 }
 
 /** Last `conch:review …` marker line in a reply, or null. */
