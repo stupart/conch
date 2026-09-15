@@ -1016,6 +1016,10 @@ private struct YourTurnBubble: View {
             Text("Sent")
                 .font(Type.caption)
                 .foregroundStyle(Palette.textFaint)
+        case .staged:
+            Text("Staged — not submitted")
+                .font(Type.caption)
+                .foregroundStyle(Palette.needs)
         case let .failed(reason):
             HStack(spacing: 10) {
                 Text("Not delivered — \(reason)")

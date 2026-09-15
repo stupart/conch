@@ -1,3 +1,4 @@
+import { ControlFrameError, ControlFrameReader } from "./control-framing.ts";
 import { createServer, connect } from "node:net";
 import { chmodSync, existsSync, lstatSync, renameSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -616,6 +617,8 @@ export function enrichTargetedAudioCommand(
   };
 }
 
+export type SocketTurnOutcome = boolean | "staged" | void;
+
 export interface SocketTurnEventCallbacks {
   busy(): boolean;
   /** Is a microphone actually open? Not the same question as `busy`. */
@@ -628,7 +631,7 @@ export interface SocketTurnEventCallbacks {
   enrichAudioCommand(event: InstantAudioCommand): InstantAudioCommand;
   enqueueInstant(event: InstantAudioCommand): void;
   /** Resolves when an immediate event (inject, interrupt) has been handled; an inject with whether it landed. */
-  enqueue(event: TurnEvent): void | Promise<boolean | void>;
+  enqueue(event: TurnEvent): void | Promise<SocketTurnOutcome>;
 }
 
 /** Sparse dashboard commands carry only identity; CLI/MCP commands pre-resolve routing. */
@@ -643,7 +646,7 @@ export function isLightweightTargetedAudioCommand(event: InstantAudioCommand): b
 export function dispatchSocketTurnEvent(
   incoming: TurnEvent,
   callbacks: SocketTurnEventCallbacks,
-): void | Promise<boolean | void> {
+): void | Promise<SocketTurnOutcome> {
   const event = incoming;
   if (event.type === "spacebar") {
     // `busy` is the DRAIN LOOP's flag, and a microphone can be open while it is
@@ -964,18 +967,24 @@ export function createControlServer(options: ControlServerOptions): ControlServe
     socketIdentity = undefined;
   };
   const server = createServer({ allowHalfOpen: true }, (sock) => {
-    let buf = "";
+    const frame = new ControlFrameReader();
     let handled = false;
+    const framingError = (error: unknown): void => {
+      handled = true;
+      const failure = error instanceof ControlFrameError ? error : new ControlFrameError("invalid-json", "control frame is not valid JSON");
+      sock.end(JSON.stringify({ kind: "protocol-error", code: failure.code, error: failure.message }) + "\n", () => sock.destroy());
+    };
     sock.on("error", () => {}); // a hook killed mid-write (ECONNRESET) must not throw
     const handleLine = async (line: string): Promise<void> => {
       if (handled) return;
       handled = true;
       let response:
         | ControlResponse | DeviceControlResponse | RoutingRefusal
-        | { kind: "inject-done"; delivered?: boolean } | { kind: "inject-accepted" }
+        | { kind: "inject-done"; delivered: boolean; staged?: true; error?: string } | { kind: "inject-accepted" }
         | { kind: "session-delivered" } | undefined;
       try {
-        let body: unknown = JSON.parse(line);
+        let body: unknown;
+        try { body = JSON.parse(line); } catch (error) { framingError(error); return; }
         // C9b seam: refuse foreign owners BEFORE consulting any local state.
         // No client sends this yet. Untargeted commands still name one daemon.
         if (socketRecord(body) && body.kind === "control-envelope") {
@@ -1058,64 +1067,55 @@ export function createControlServer(options: ControlServerOptions): ControlServe
             }
             if (!turn.ok) {
               log(`ignoring malformed event: ${turn.err}`);
-              if (socketRecord(value) && value.type === "inject") {
-                response = { kind: "session-error", error: turn.err };
-              }
+              response = { kind: "session-error", error: turn.err };
             } else {
               const work = application.turn(turn.value);
               // The Mac app and the phone ask to hear when the keystrokes are
               // DONE: the app to take the front back from the Terminal window
               // conch raised, the phone to show "delivered" or "not delivered".
-              // Hooks and the CLI keep the immediate empty ack. The wait is
+              // Hooks and the CLI keep an immediate explicit ack. The wait is
               // bounded; past it the inject is still running and says so.
               if (turn.value.type === "inject" && turn.value.awaitDelivery) {
                 let timer: ReturnType<typeof setTimeout> | undefined;
                 const stillRunning = Symbol("still running");
-                const outcome = await Promise.race([
-                  Promise.resolve(work),
-                  new Promise<typeof stillRunning>((resolve) => {
-                    timer = setTimeout(() => resolve(stillRunning), options.deliveryWaitMs ?? INJECT_DELIVERY_WAIT_MS);
-                  }),
-                ]);
-                clearTimeout(timer);
+                let outcome: unknown;
+                try {
+                  outcome = await Promise.race([
+                    Promise.resolve(work),
+                    new Promise<typeof stillRunning>((resolve) => {
+                      timer = setTimeout(() => resolve(stillRunning), options.deliveryWaitMs ?? INJECT_DELIVERY_WAIT_MS);
+                    }),
+                  ]);
+                } finally {
+                  clearTimeout(timer);
+                }
                 response = outcome === stillRunning
                   ? { kind: "inject-accepted" }
-                  : { kind: "inject-done", ...(typeof outcome === "boolean" ? { delivered: outcome } : {}) };
+                  : outcome === "staged"
+                    ? { kind: "inject-done", delivered: false, staged: true }
+                    : typeof outcome === "boolean"
+                      ? { kind: "inject-done", delivered: outcome }
+                      : { kind: "inject-done", delivered: false, error: "delivery outcome is unknown" };
               }
             }
           }
         }
       } catch {
-        log("ignoring malformed event");
+        log("control request failed");
+        response = { kind: "session-error", error: "control request failed" };
       }
-      if (response) sock.end(JSON.stringify(response) + "\n");
-      else sock.end();
+      sock.end(JSON.stringify(response ?? { kind: "ack" }) + "\n");
     };
     sock.on("data", (data) => {
       if (handled) return;
-      // A peer that never sends a newline would otherwise grow this string
-      // until the daemon OOMs. Cap the frame and drop the connection.
-      //
-      // Append FIRST. The check used to run on the buffer before the incoming
-      // chunk was added, so a single oversized chunk that happened to end in a
-      // newline was appended and parsed anyway — the cap only ever caught the
-      // slow-drip case. Found by Codex during the split recon.
-      buf += data.toString();
-      if (buf.length > 64_000) {
-        sock.destroy();
-        return;
-      }
-      const newline = buf.indexOf("\n");
-      if (newline !== -1) void handleLine(buf.slice(0, newline));
+      try {
+        const line = frame.push(typeof data === "string" ? Buffer.from(data) : data);
+        if (line !== undefined) void handleLine(line);
+      } catch (error) { framingError(error); }
     });
     sock.on("end", () => {
-      // Bun 1.4 emits `end` after `destroy()`, and the cap above destroys with
-      // `handled` still false — so the oversized frame it just refused was
-      // parsed and dispatched from here, unacknowledged (A16). A destroyed
-      // connection has nothing left to answer.
-      if (sock.destroyed) return;
-      if (!handled && buf.trim()) void handleLine(buf.trim());
-      else if (!handled) sock.end();
+      if (handled || sock.destroyed) return;
+      try { frame.end(); } catch (error) { framingError(error); }
     });
   });
   server.on("error", (e) => log(`socket server error: ${e}`));

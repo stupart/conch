@@ -146,7 +146,7 @@ describe("control server over a real Unix socket", () => {
         expect(await restarted.start()).toBe(true);
       }
       for (const ownerDeviceId of [undefined, learnedId]) {
-        expect(await f.request({ kind: "control-envelope", ownerDeviceId, body: inject })).toBe("");
+        expect(await f.request({ kind: "control-envelope", ownerDeviceId, body: inject })).toBe('{"kind":"ack"}\n');
       }
       expect(f.calls.turn).toHaveLength((boot + 1) * 2);
       const beforeReads = structuredClone(f.reads);
@@ -167,15 +167,15 @@ describe("control server over a real Unix socket", () => {
     const f = await fixture({
       sessions: { resolve: async (value) => ({ ...(value as object), sessionId: "job-row" }) },
     });
-    expect(await f.request({ type: "turn-end", sessionId: "stale-window", label: "conch", announce: "", eventAt: 1 })).toBe("");
+    expect(await f.request({ type: "turn-end", sessionId: "stale-window", label: "conch", announce: "", eventAt: 1 })).toBe('{"kind":"ack"}\n');
     expect(f.calls.turn).toHaveLength(1);
     expect(f.calls.turn[0]).toMatchObject({ type: "turn-end", sessionId: "job-row" });
   });
 
   test("A1 persisted-owner inject equals an unwrapped turn and foreign inject has zero local reads", async () => {
     const f = await fixture({ persistentIdentity: true });
-    expect(await f.request(inject)).toBe("");
-    expect(await f.request({ kind: "control-envelope", ownerDeviceId: await loadDeviceId(f.root), body: inject })).toBe("");
+    expect(await f.request(inject)).toBe('{"kind":"ack"}\n');
+    expect(await f.request({ kind: "control-envelope", ownerDeviceId: await loadDeviceId(f.root), body: inject })).toBe('{"kind":"ack"}\n');
     expect(f.calls.turn).toHaveLength(2);
     expect({ ...f.calls.turn[1], eventAt: 0 }).toEqual({ ...f.calls.turn[0], eventAt: 0 });
     expect(f.calls.turn[1]).toMatchObject({ type: "inject", sessionId: "local-key", label: "canonical", announce: "deliver this", cwd: "/local", pid: 42, transcriptPath: "/local/turn.jsonl" });
@@ -204,10 +204,10 @@ describe("control server over a real Unix socket", () => {
     const f = await fixture();
     const p = await f.peer({ endOnReply: false });
     const json = JSON.stringify({ kind: "get-config" });
-    const frame = json + " ".repeat(64_000 - json.length) + "\n";
-    expect(frame.length).toBe(64_001);
+    const frame = json + " ".repeat(65_536 - json.length) + "\n";
+    expect(frame.length).toBe(65_537);
     p.socket.write(frame);
-    expect(await within(p.done)).toBe("");
+    expect(JSON.parse(await within(p.done)).kind).toBe("protocol-error");
     // The server destroyed its side rather than leaving an open half-connection.
     expect(p.socket.writableEnded).toBe(false);
     // Bun 1.4 emits `end` after `destroy()`. The EOF handler used to parse and
@@ -218,12 +218,12 @@ describe("control server over a real Unix socket", () => {
     await within(f.server.close(), "destroyed connection to close");
   });
 
-  test("a frame of exactly 64_000 characters including newline is accepted", async () => {
+  test("a frame of exactly 64 KiB including newline is accepted", async () => {
     const f = await fixture();
     const p = await f.peer();
     const json = JSON.stringify({ kind: "get-config" });
-    const frame = json + " ".repeat(63_999 - json.length) + "\n";
-    expect(frame.length).toBe(64_000);
+    const frame = json + " ".repeat(65_535 - json.length) + "\n";
+    expect(frame.length).toBe(65_536);
     p.socket.write(frame);
     expect(JSON.parse(await within(p.done)).kind).toBe("config-error");
     expect(f.calls.configuration).toHaveLength(1);
@@ -263,38 +263,24 @@ describe("control server over a real Unix socket", () => {
     expect(f.calls.configuration).toHaveLength(1);
   });
 
-  test("EOF handles a trimmed request and preserves a delayed reply after the client half-closes", async () => {
-    const entered = deferred<void>();
-    const result = deferred<SessionControlResponse>();
+  test("EOF rejects an unterminated request without dispatch", async () => {
     const f = await fixture();
-    f.application.runtime = (message) => {
-      f.calls.runtime.push(message);
-      entered.resolve();
-      return result.promise;
-    };
-    try {
-      const p = await f.peer();
-      p.socket.end('  {"kind":"resumable"}  ');
-      await within(entered.promise, "EOF dispatch");
-      await Bun.sleep(25);
-      result.resolve({ kind: "resumable", sessions: [], complete: true });
-      expect(await within(p.done)).toBe('{"kind":"resumable","sessions":[],"complete":true}\n');
-      expect(f.calls.runtime).toEqual([{ kind: "resumable" }]);
-    } finally {
-      result.resolve({ kind: "app-error-ack" });
-    }
+    const p = await f.peer();
+    p.socket.end('  {"kind":"resumable"}  ');
+    expect(JSON.parse(await within(p.done))).toMatchObject({ kind: "protocol-error", code: "truncated-frame" });
+    expect(f.calls.runtime).toEqual([]);
   });
 
   test.each(["", "  \t "])("empty or whitespace EOF closes without dispatch: %j", async (frame) => {
     const f = await fixture();
     const p = await f.peer();
     p.socket.end(frame);
-    expect(await within(p.done)).toBe("");
+    expect(JSON.parse(await within(p.done)).kind).toBe("protocol-error");
     expect(f.reads.resolve).toEqual([]);
     expect(Object.values(f.calls).flat()).toEqual([]);
   });
 
-  test("accepted turn is delivered synchronously and replies empty without awaiting completion", async () => {
+  test("accepted turn is delivered synchronously and replies with an ack without awaiting completion", async () => {
     const completion = deferred<void>();
     const f = await fixture();
     const synchronous: number[] = [];
@@ -310,7 +296,7 @@ describe("control server over a real Unix socket", () => {
       return completion.promise;
     };
     try {
-      expect(await f.request(inject)).toBe("");
+      expect(await f.request(inject)).toBe('{"kind":"ack"}\n');
       expect(synchronous).toEqual([1]);
       expect(f.calls.turn).toHaveLength(1);
       expect(f.calls.turn[0]).toMatchObject({
@@ -352,7 +338,7 @@ describe("control server over a real Unix socket", () => {
     expect(JSON.parse(await f.request({ kind: "set-config", key: "read-full", value: true, extra: 1 })).kind).toBe("config-error");
     expect(JSON.parse(await f.request({ kind: "session-command", sessionId: " local ", command: "dismiss", extra: 1 })).kind).toBe("session-error");
     expect(JSON.parse(await f.request({ kind: "resumable", query: "  project ", extra: 1 })).kind).toBe("app-error-ack");
-    expect(await f.request({ type: "pause" })).toBe("");
+    expect(await f.request({ type: "pause" })).toBe('{"kind":"ack"}\n');
     expect(JSON.parse(await f.request({ kind: "system-woke", extra: 1 })).kind).toBe("ack");
     expect(f.calls).toEqual({
       configuration: [{ kind: "set-config", key: "read-full", value: true }],
@@ -383,10 +369,10 @@ describe("control server over a real Unix socket", () => {
       expect(JSON.parse(await f.request(body)).kind).toBe("session-error");
     }
     expect(JSON.parse(await f.request({ kind: "set-config", key: "bogus" })).kind).toBe("config-error");
-    expect(await f.request({ type: "bogus" })).toBe("");
+    expect(JSON.parse(await f.request({ type: "bogus" })).kind).toBe("session-error");
     const p = await f.peer();
     p.socket.end("not json");
-    expect(await within(p.done)).toBe("");
+    expect(JSON.parse(await within(p.done)).kind).toBe("protocol-error");
     expect(Object.values(f.calls).flat()).toEqual([]);
   });
 
@@ -426,7 +412,7 @@ describe("control server over a real Unix socket", () => {
     expect(existsSync(f.socketPath)).toBe(true);
     await second.close();
     expect(await f.server.start()).toBe(true);
-    expect(await f.request({ type: "pause" })).toBe("");
+    expect(await f.request({ type: "pause" })).toBe('{"kind":"ack"}\n');
   });
 
   /**
@@ -450,7 +436,7 @@ describe("control server over a real Unix socket", () => {
     expect(f.calls.turn[0]).toMatchObject({ type: "inject", awaitDelivery: true });
     expect(answered).toBe(false);
     delivery.resolve();
-    expect(await within(p.done)).toBe('{"kind":"inject-done"}\n');
+    expect(JSON.parse(await within(p.done))).toMatchObject({ kind: "inject-done", delivered: false, error: "delivery outcome is unknown" });
   });
 
   test("an inject that does not ask still returns at acceptance, never waiting on delivery", async () => {
@@ -461,7 +447,7 @@ describe("control server over a real Unix socket", () => {
       return delivery.promise;
     };
     try {
-      expect(await within(forwardToDaemonSocket(f.socketPath, JSON.stringify(inject)))).toBe("");
+      expect(await within(forwardToDaemonSocket(f.socketPath, JSON.stringify(inject)))).toBe('{"kind":"ack"}');
       expect(f.calls.turn).toHaveLength(1);
       expect(f.calls.turn[0]!.awaitDelivery).toBeUndefined();
     } finally {
@@ -470,8 +456,7 @@ describe("control server over a real Unix socket", () => {
   });
 
   // The phone shows "delivered" or "not delivered" from this, so the outcome
-  // rides the answer; a delivery with no outcome (an interrupt-shaped turn)
-  // keeps the bare inject-done the Mac app already reads.
+  // rides the answer; a delivery with no outcome is explicitly unconfirmed.
   test("inject-done carries whether the words landed", async () => {
     for (const landed of [true, false]) {
       const f = await fixture({ application: { turn: () => Promise.resolve(landed) } });
@@ -551,7 +536,6 @@ test("a competing daemon never initializes child services", async () => {
   await runDaemon({ socketPath: f.socketPath } as never, async () => { initialized = true; });
   expect(initialized).toBe(false);
 });
-
 
 test("a supplied ownership token cannot be reused after close to replace a new owner", async () => {
   const f = await fixture();

@@ -167,7 +167,7 @@ final class TalkController: NSObject, ObservableObject {
     /// up", with nothing saying whether it went.
     struct Outgoing: Identifiable, Equatable {
         enum State: Equatable {
-            case sending, delivered, accepted
+            case sending, delivered, accepted, staged
             case failed(String)
 
             var isConfirmed: Bool { self == .delivered || self == .accepted }
@@ -265,11 +265,7 @@ final class TalkController: NSObject, ObservableObject {
             let delivered = await deliver(text)
             self.settleOutgoing(message, delivered)
             if delivered.reachedMac {
-                let held = self.committed.trimmingCharacters(in: .whitespacesAndNewlines)
-                self.committed = held.hasPrefix(text)
-                    ? String(held.dropFirst(text.count))
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    : ""
+                self.committed = delivered.remainingDraft(self.committed, sent: text)
             }
             self.phase = .idle
         }
@@ -316,6 +312,7 @@ final class TalkController: NSObject, ObservableObject {
         switch outcome {
         case .delivered: outgoing[index].state = .delivered
         case .accepted: outgoing[index].state = .accepted
+        case .staged: outgoing[index].state = .staged
         case let .failed(reason): outgoing[index].state = .failed(reason)
         }
     }
@@ -865,11 +862,7 @@ final class TalkController: NSObject, ObservableObject {
                 // Clear exactly what was acknowledged, never the whole buffer.
                 // Assigning empty after an await deletes anything that arrived
                 // during it — words that were never sent to anyone.
-                let held = self.committed.trimmingCharacters(in: .whitespacesAndNewlines)
-                self.committed = held.hasPrefix(text)
-                    ? String(held.dropFirst(text.count))
-                        .trimmingCharacters(in: .whitespacesAndNewlines)
-                    : ""
+                self.committed = delivered.remainingDraft(self.committed, sent: text)
             }
             self.phase = .idle
         }

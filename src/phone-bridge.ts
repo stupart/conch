@@ -1,3 +1,5 @@
+import { connect } from "node:net";
+import { ControlFrameError, ControlFrameReader, encodeControlFrame, readControlBody } from "./control-framing.ts";
 import type { UploadChunk, UploadResult } from "./phone-uploads.ts";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -162,7 +164,6 @@ function presentedToken(req: Request): string | null {
     : null;
 }
 
-const CONTROL_MAX_BYTES = 64 * 1024; // mirrors the Unix socket's frame cap
 
 type PairingRedemption =
   | { kind: "token" }
@@ -470,9 +471,11 @@ export class PhoneBridgeApplication {
 
     if (url.pathname === "/control" && req.method === "POST") {
       return (async () => {
-        const body = await req.text();
-        if (body.length > CONTROL_MAX_BYTES) {
-          return new Response("too large", { status: 413 });
+        let body: string;
+        try { body = await readControlBody(req); }
+        catch (error) {
+          return Response.json({ error: error instanceof Error ? error.message : "bad control body" },
+            { status: error instanceof ControlFrameError && error.code === "frame-too-large" ? 413 : 400 });
         }
         try {
           const reply = await this.#dependencies.forwardControl(body);
@@ -597,38 +600,32 @@ export function forwardToDaemonSocket(
   timeoutMs = 4000,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    let buffer = "";
+    let request: Buffer;
+    try { request = encodeControlFrame(line); } catch (error) { reject(error); return; }
+    const socket = connect({ path: socketPath });
+    const frame = new ControlFrameReader();
     let settled = false;
-    const finish = (fn: () => void) => {
+    const finish = (error?: unknown, reply?: string): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      fn();
+      socket.destroy();
+      if (error) reject(error); else resolve(reply!);
     };
-    const timer = setTimeout(
-      () => finish(() => reject(new Error("daemon reply timed out"))),
-      timeoutMs,
-    );
-    Bun.connect({
-      unix: socketPath,
-      socket: {
-        open(sock) {
-          sock.write(line.endsWith("\n") ? line : `${line}\n`);
-        },
-        data(sock, chunk) {
-          buffer += chunk.toString();
-          if (buffer.includes("\n")) {
-            finish(() => resolve(buffer.split("\n", 1)[0] ?? ""));
-            sock.end();
-          }
-        },
-        close() {
-          finish(() => resolve(buffer.trim()));
-        },
-        error(_sock, error) {
-          finish(() => reject(error));
-        },
-      },
-    }).catch((error) => finish(() => reject(error)));
+    const timer = setTimeout(() => finish(new Error("daemon reply timed out")), timeoutMs);
+    socket.once("connect", () => socket.write(request));
+    socket.on("data", (chunk) => {
+      if (settled) return;
+      try {
+        const reply = frame.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+        if (reply !== undefined) {
+          try { JSON.parse(reply); } catch { throw new ControlFrameError("invalid-json", "daemon reply is not valid JSON"); }
+          finish(undefined, reply);
+        }
+      } catch (error) { finish(error); }
+    });
+    socket.once("end", () => { if (!settled) { try { frame.end(); } catch (error) { finish(error); } } });
+    socket.once("close", () => { if (!settled) finish(new Error("daemon closed without a complete reply")); });
+    socket.once("error", (error) => finish(error));
   });
 }

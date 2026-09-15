@@ -172,7 +172,7 @@ describe("settings control IPC", () => {
     expect(validateControlMessage(null).ok).toBe(false);
   });
 
-  test("hostile session-command frames always receive session-error replies", async () => {
+  test("hostile session-command frames within the transport limit receive session-error replies", async () => {
     const controller: SessionActionsController = {
       voiceCandidates: () => [],
       effectiveVoice: () => "",
@@ -217,7 +217,7 @@ describe("settings control IPC", () => {
         kind: "session-command",
         sessionId: "session-a",
         command: "rename",
-        label: "x".repeat(10_000_000),
+        label: "x".repeat(10_000),
       },
       {
         kind: "session-command",

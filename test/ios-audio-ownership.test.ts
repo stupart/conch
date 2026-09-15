@@ -162,7 +162,7 @@ describe("only one side of the phone owns the audio route", () => {
     expect(conchApp.slice(inactive, inactive + 500)).not.toMatch(/claimAudio/);
   });
 
-  test("a confirmed send clears only what it acknowledged", () => {
+  test("capture teardown uses the behavior-tested receipt draft reducer", () => {
     // A late callback can append during the `await deliver`, and assigning
     // empty afterwards deletes words that were never sent to anyone.
     const talk = app("TalkController.swift");
@@ -173,7 +173,7 @@ describe("only one side of the phone owns the audio route", () => {
     expect(finish).toBeGreaterThan(-1);
     const send = talk.indexOf("let delivered = await deliver(text)", finish);
     const after = talk.slice(send);
-    expect(after).toMatch(/held\.hasPrefix\(text\)/);
+    expect(after).toContain("delivered.remainingDraft(self.committed, sent: text)");
     // Belt and braces: the capture's callbacks go inert before that await.
     const cleanup = talk.indexOf("self.finishingGeneration = nil");
     expect(talk.slice(cleanup, send)).toMatch(/self\.generation \+= 1/);
