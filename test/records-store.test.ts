@@ -1,11 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RecordStore, type RecordIngest } from "../src/records-store.ts";
 import { SOURCE_PROBE_BYTES, type StoredRecordSource } from "../src/records-source.ts";
 import type { RecordReceipt, RecordSession } from "../src/records-types.ts";
+import { RECORD_MIGRATIONS } from "../src/records-schema.ts";
 
 const directories: string[] = [];
 const stores: RecordStore[] = [];
@@ -48,7 +49,7 @@ function batch(bytes: Uint8Array, previous?: StoredRecordSource, overrides: Part
 test("records migrate once, use WAL, and keep the database and sidecars owner-only", () => {
   const store = open();
   store.appendReceipt(receipt);
-  expect(rows(store, "PRAGMA user_version")[0].user_version).toBe(1);
+  expect(rows(store, "PRAGMA user_version")[0].user_version).toBe(2);
   expect(rows(store, "PRAGMA journal_mode")[0].journal_mode).toBe("wal");
   expect(rows(store, "SELECT name FROM sqlite_master WHERE type='table'").map((row) => row.name).sort())
     .toEqual(["sessions", "sources", "turns", "items", "item_sources", "tool_calls", "responses", "receipts"].sort());
@@ -56,6 +57,39 @@ test("records migrate once, use WAL, and keep the database and sidecars owner-on
   expect(statSync(join(store.path, "..")).mode & 0o777).toBe(0o700);
   const reopened = open(join(store.path, "..", ".."));
   expect(reopened.receipts(receipt.actionId)).toEqual([receipt]);
+});
+
+test("coverage migration upgrades the foundation without changing its receipt journal", () => {
+  const dir = directory();
+  mkdirSync(join(dir, "records"));
+  const db = new Database(join(dir, "records", "history.sqlite"));
+  db.exec(RECORD_MIGRATIONS[0]!);
+  db.exec("PRAGMA user_version=1");
+  db.query("INSERT INTO receipts VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?, ?, NULL)")
+    .run(receipt.id, receipt.sessionId, receipt.actionId, receipt.kind, receipt.state, receipt.observedAt);
+  db.close();
+  const store = open(dir);
+  expect(rows(store, "PRAGMA user_version")[0].user_version).toBe(2);
+  expect(store.receipts(receipt.actionId)).toEqual([receipt]);
+});
+
+test("source registration, bounded metadata pages and recovery coverage survive reopening", () => {
+  const dir = directory();
+  const store = open(dir);
+  const file = { id: "one", path: "/fixture/one.jsonl", device: "1", inode: "1" };
+  const first = store.registerSource(session, file);
+  store.registerSource(session, { ...file, id: "two", inode: "2" });
+  expect(first.offset).toBe(0);
+  expect(store.sourcePage({ limit: 1 }).map((entry) => entry.source.id)).toEqual(["one"]);
+  expect(store.sourcePage({ after: "one", limit: 1 }).map((entry) => entry.source.id)).toEqual(["two"]);
+  store.setCoverage("one", { status: "missing", error: "ENOENT", at: 12 });
+  expect(open(dir).sourcePage()[0]!.coverage).toEqual({ status: "missing", error: "ENOENT", replayRequired: false, updatedAt: 12 });
+  store.reindex(session.id);
+  expect(store.sourcePage().every((entry) => entry.coverage.replayRequired && entry.source.offset === 0)).toBe(true);
+  store.setCoverage("one", { status: "complete", at: 13 });
+  expect(store.sourcePage()[0]!.coverage.replayRequired).toBe(false);
+  expect(store.sourcePage()[1]!.coverage.replayRequired).toBe(true);
+  expect(() => store.setCoverage("one", { status: "error", error: "must not store raw file content" })).toThrow("invalid source coverage");
 });
 
 test("unknown future schema is refused without downgrading it", () => {

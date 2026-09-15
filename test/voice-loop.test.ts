@@ -26,6 +26,7 @@ import {
   confirmAlwaysPrompt,
 } from "../src/approval.ts";
 import { createVoiceLoop, type VoiceLoop, type VoiceLoopDeps } from "../src/voice-loop.ts";
+import type { RecordObservation } from "../src/records-receipts.ts";
 
 /**
  * The voice loop, executed. `runDaemon` still runs in no test, but since cut
@@ -102,6 +103,7 @@ class FakeSession {
 }
 
 interface Options {
+  observeRecords?: VoiceLoopDeps["observeRecords"];
   cfg?: Partial<Config>;
   paused?: boolean;
   /** Utterances play until the test finishes them. */
@@ -170,7 +172,7 @@ function harness(options: Options = {}) {
   const speech = new SpeechManager(backend, async (operation, task) => {
     if (voice.capturing()) violations.push(operation);
     return task();
-  }, { spawnAudio, warn: () => {} });
+  }, { spawnAudio, warn: () => {}, observeRecords: options.observeRecords });
   const ledger = options.ledger ?? new SessionLedger();
   const lease = new AudioSinkLease();
   const holder = new AudioHolder();
@@ -203,6 +205,7 @@ function harness(options: Options = {}) {
   const heard = [...(options.heard ?? [])];
   let barges = 0;
   const deps: VoiceLoopDeps = {
+    observeRecords: options.observeRecords,
     cfg,
     sleep: async () => {},
     log: (message) => void logs.push(message),
@@ -301,6 +304,103 @@ const permission = (path: string, over: Partial<TurnEvent> = {}): TurnEvent => (
   type: "needs-you", ntype: "permission_prompt", sessionId: "s1", label: "alpha", announce: "", transcriptPath: path, eventAt: 1, ...over,
 });
 const busy = () => ({ sessionId: "s1", status: "busy" }) as SessionInfo;
+
+describe("operation-owned record observations", () => {
+  test("delivery captures the original native owner and reports transport evidence without prompt content", async () => {
+    const events: RecordObservation[] = [];
+    let nativeId = "native-before";
+    const h = harness({
+      observeRecords: (event) => events.push(event),
+      window: () => ({ ...busy(), backend: "codex", agentSessionId: nativeId }),
+      inject: () => { nativeId = "native-after"; return { via: "tmux" }; },
+    });
+    expect(await h.voice.handle(inject("sensitive message"))).toBe(true);
+    const delivery = events.filter(({ kind }) => kind === "delivery");
+    expect(delivery.map(({ state }) => state)).toEqual(["accepted", "delivered"]);
+    expect(delivery.at(-1)?.code).toBe("transport-submitted");
+    expect(delivery.map(({ nativeId }) => nativeId)).toEqual(["native-before", "native-before"]);
+    expect(new Set(delivery.map(({ actionId }) => actionId)).size).toBe(1);
+    expect(JSON.stringify(delivery)).not.toContain("sensitive message");
+  });
+
+  test("staging, known transport failure and thrown transport remain distinct receipts", async () => {
+    const scenarios: Array<{ options: Options; result: boolean | "staged"; state: RecordObservation["state"]; code: string }> = [
+      { options: { cfg: { autoSubmit: false } }, result: "staged", state: "staged", code: "staged-not-submitted" },
+      { options: { inject: () => ({ via: "none", failed: true, reason: "automation-failed" }) }, result: false, state: "failed", code: "automation-failed" },
+      { options: { inject: () => { throw Error("synthetic uncertainty"); } }, result: false, state: "unknown", code: "transport-error" },
+    ];
+    for (const scenario of scenarios) {
+      const events: RecordObservation[] = [];
+      const h = harness({ ...scenario.options, observeRecords: (event) => events.push(event) });
+      expect(await h.voice.handle(inject("test"))).toBe(scenario.result);
+      const delivery = events.filter(({ kind }) => kind === "delivery");
+      expect(delivery.map(({ state }) => state)).toEqual(["accepted", scenario.state]);
+      expect(delivery.at(-1)?.code).toBe(scenario.code);
+    }
+  });
+
+  test("busy provider queuing and exhausted transcript confirmation record their actual evidence", async () => {
+    const path = transcript(user({ type: "text", text: "prior" }));
+    try {
+      for (const busyNow of [true, false]) {
+        const events: RecordObservation[] = [];
+        const h = harness({ window: busyNow ? busy : undefined, observeRecords: (event) => events.push(event) });
+        expect(await h.voice.handle(inject("next", { transcriptPath: path }))).toBe(busyNow);
+        const delivery = events.filter(({ kind }) => kind === "delivery");
+        expect(delivery.map(({ state }) => state)).toEqual(["accepted", busyNow ? "delivered" : "unknown"]);
+        expect(delivery.at(-1)?.code).toBe(busyNow ? "provider-input-queued" : "delivery-unconfirmed");
+      }
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+
+  test("a failed Return retry cannot disprove that the original submission landed", async () => {
+    const path = transcript(user({ type: "text", text: "prior" }));
+    try {
+      for (const retry of [
+        { via: "none", failed: true, reason: "front-window-changed" },
+        { via: "none" },
+      ] as const) {
+        const events: RecordObservation[] = [];
+        const h = harness({ key: () => retry, observeRecords: (event) => events.push(event) });
+        expect(await h.voice.handle(inject("possibly submitted", { transcriptPath: path }))).toBe(false);
+        expect(h.texts).toEqual(["possibly submitted"]);
+        expect(h.keys).toEqual(["Enter"]);
+        const delivery = events.filter(({ kind }) => kind === "delivery");
+        expect(delivery.map(({ state }) => state)).toEqual(["accepted", "unknown"]);
+        expect(delivery.at(-1)?.code).toBe("reason" in retry ? retry.reason : "delivery-failed");
+        expect(new Set(delivery.map(({ actionId }) => actionId)).size).toBe(1);
+      }
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+
+  test("provider commands have their own action and publication receipts follow accepted state only", async () => {
+    const events: RecordObservation[] = [];
+    const h = harness({ paused: true, observeRecords: (event) => events.push(event) });
+    expect(await h.voice.handle(inject("/model"))).toBe(true);
+    expect(events.map(({ state }) => state)).toEqual(["accepted", "delivered"]);
+    events.length = 0;
+    const published = (at: number): TurnEvent => ({
+      type: "review-published", sessionId: "s1", label: "alpha", announce: "private announcement",
+      eventAt: at, review: { summary: "private result", link: "https://example.test/private" },
+    });
+    await h.voice.handle(accepted(h, published(2_000)));
+    await h.voice.handle(accepted(h, published(1_000)));
+    expect(events.map(({ state }) => state)).toEqual(["published"]);
+    expect(events[0]?.observedAt).toBe(2_000);
+    expect(JSON.stringify(events)).not.toContain("private");
+    expect(h.said).toEqual([]);
+  });
+
+  test("speech gets the event session and a broken receipt observer cannot change a send", async () => {
+    const events: RecordObservation[] = [];
+    const h = harness({ observeRecords: (event) => events.push(event) });
+    await h.voice.speak(h.cfg, "read this", "display-only", true, "s1");
+    expect(events.map(({ state }) => state)).toEqual(["queued", "started", "unknown"]);
+    expect(events.every(({ sessionId }) => sessionId === "s1")).toBeTrue();
+    const broken = harness({ observeRecords: () => { throw Error("optional journal unavailable"); } });
+    expect(await broken.voice.handle(inject("still delivered"))).toBe(true);
+  });
+});
 
 /**
  * A14. Immediate `handle` calls (the inject/interrupt path that skips the
@@ -839,6 +939,55 @@ describe("permission by voice", () => {
     expect(h.order.filter((step) => step.startsWith("key:") || step.startsWith("text:")))
       .toEqual(["key:Escape", "text:use main instead"]);
     expect(h.ledger.injectedAt.has("s1")).toBe(true);
+  });
+
+  test("alternative prompts observe direct delivery without adding keys or confirmation retries", async () => {
+    const scenarios: Array<{ result: InjectTextResult; autoSubmit: boolean; state: RecordObservation["state"]; code: string }> = [
+      { result: { via: "tmux" }, autoSubmit: true, state: "delivered", code: "transport-submitted" },
+      { result: { via: "tmux" }, autoSubmit: false, state: "staged", code: "staged-not-submitted" },
+      { result: { via: "none", failed: true, reason: "automation-failed" }, autoSubmit: true, state: "failed", code: "automation-failed" },
+      { result: { via: "clipboard" }, autoSubmit: true, state: "failed", code: "clipboard-fallback" },
+      { result: { via: "none", interrupted: true }, autoSubmit: true, state: "unknown", code: "delivery-interrupted" },
+    ];
+    for (const scenario of scenarios) {
+      const path = pendingBash();
+      const events: RecordObservation[] = [];
+      let nativeId = "original-native-id";
+      const h = harness({
+        heard: [["no, use main instead"]], cfg: { autoSubmit: scenario.autoSubmit },
+        observeRecords: (event) => events.push(event),
+        window: () => ({ ...busy(), backend: "claude", agentSessionId: nativeId }),
+        inject: () => { nativeId = "replacement-native-id"; return scenario.result; },
+      });
+      try {
+        await h.voice.handle(accepted(h, permission(path)));
+        expect(h.keys).toEqual(["Escape"]);
+        expect(h.texts).toEqual(["use main instead"]);
+        const delivery = events.filter(({ kind }) => kind === "delivery");
+        expect(delivery.map(({ state }) => state)).toEqual(["accepted", scenario.state]);
+        expect(delivery[0]?.code).toBe("alternative-prompt-accepted");
+        expect(delivery.at(-1)?.code).toBe(scenario.code);
+        expect(delivery.map(({ nativeId }) => nativeId)).toEqual(["original-native-id", "original-native-id"]);
+        expect(new Set(delivery.map(({ actionId }) => actionId)).size).toBe(1);
+        expect(JSON.stringify(delivery)).not.toContain("use main instead");
+      } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+    }
+  });
+
+  test("a thrown alternative transport records uncertainty and preserves the thrown outcome", async () => {
+    const path = pendingBash();
+    const events: RecordObservation[] = [];
+    const h = harness({
+      heard: [["no, use main instead"]], observeRecords: (event) => events.push(event),
+      inject: () => { throw Error("synthetic transport uncertainty"); },
+    });
+    try {
+      await expect(h.voice.handle(accepted(h, permission(path)))).rejects.toThrow("synthetic transport uncertainty");
+      expect(h.keys).toEqual(["Escape"]);
+      const delivery = events.filter(({ kind }) => kind === "delivery");
+      expect(delivery.map(({ state }) => state)).toEqual(["accepted", "unknown"]);
+      expect(delivery.at(-1)?.code).toBe("delivery-outcome-unknown");
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
   });
 
   // reserveNormalMic is the invariant: no mic while TTS speaks.

@@ -7,6 +7,10 @@ import {
   type WatchdogWarning,
 } from "./audio-watchdog.ts";
 import type { TtsWorkerBackend } from "./tts-worker.ts";
+import { createRecordOperation, type RecordObservationScope, type RecordObserver } from "./records-receipts.ts";
+
+export type SpeechRecordContext = Omit<RecordObservationScope, "actionId"> & { actionId?: string };
+type SpeechRecordOperation = ReturnType<typeof createRecordOperation>;
 
 export interface CancellableSpeech {
   done: Promise<void>;
@@ -34,6 +38,7 @@ export interface SpeechBackend {
 }
 
 interface LaneTask<T> {
+  receipt?: SpeechRecordOperation;
   kind: "speech" | "cue" | "probe";
   operation: string;
   cancelled: boolean;
@@ -55,6 +60,7 @@ interface Enqueued<T> {
 export type SpeechAudioGate = <T>(operation: string, task: () => Promise<T>) => Promise<T>;
 
 export interface SpeechManagerOptions {
+  observeRecords?: RecordObserver;
   spawnAudio?: AudioSpawner;
   timeoutForText?: (text: string) => number;
   warn?: WatchdogWarning;
@@ -83,6 +89,7 @@ export class SpeechManager {
   private readonly warn: WatchdogWarning;
   private readonly onKokoroFailure: (reason: "readiness-failed" | "synth-timeout") => void;
   private readonly worker: TtsWorkerBackend | null;
+  private readonly observeRecords?: RecordObserver;
 
   constructor(
     private readonly backend: SpeechBackend,
@@ -94,26 +101,30 @@ export class SpeechManager {
     this.warn = options.warn ?? console.warn;
     this.onKokoroFailure = options.onKokoroFailure ?? (() => {});
     this.worker = options.worker ?? null;
+    this.observeRecords = options.observeRecords;
   }
 
-  speak(cfg: Config, text: string, label = ""): Promise<void> {
-    return this.speakCancellable(cfg, text, label).done;
+  speak(cfg: Config, text: string, label = "", context?: SpeechRecordContext): Promise<void> {
+    return this.speakCancellable(cfg, text, label, context).done;
   }
 
-  speakCancellable(cfg: Config, text: string, label = ""): ManagedSpeech {
+  speakCancellable(cfg: Config, text: string, label = "", context?: SpeechRecordContext): ManagedSpeech {
     let active: CancellableSpeech | null = null;
+    const receipt = context && createRecordOperation(this.observeRecords, context, "speech", text.length);
     const managed = this.enqueue<void>(
       async () => {
+        receipt?.emit(cfg.speak && text ? "started" : "unknown", cfg.speak && text ? "backend-invoked" : "speech-disabled");
         active = this.watchSpeech(this.backend.speakCancellable(cfg, text, label, {
           warn: this.warn,
           onKokoroFailure: this.onKokoroFailure,
           worker: this.worker,
-        }), text, "TTS");
+        }), text, "TTS", receipt);
         await active.done;
       },
       () => active?.cancel(),
       "speech",
       "TTS",
+      receipt,
     );
     return managed;
   }
@@ -128,12 +139,15 @@ export class SpeechManager {
     text: string,
     label: string,
     interaction: (startSpeech: () => CancellableSpeech) => Promise<T>,
+    context?: SpeechRecordContext,
   ): Promise<T | undefined> {
     let active: CancellableSpeech | null = null;
+    const receipt = context && createRecordOperation(this.observeRecords, context, "speech", text.length);
     return this.enqueue<T>(
       () =>
         interaction(() => {
           if (active) throw new Error("interruptible speech already started");
+          receipt?.emit(cfg.speak && text ? "started" : "unknown", cfg.speak && text ? "backend-invoked" : "speech-disabled");
           active = this.watchSpeech(
             this.backend.speakCancellable(cfg, text, label, {
               warn: this.warn,
@@ -142,12 +156,14 @@ export class SpeechManager {
             }),
             text,
             "barge-in TTS",
+            receipt,
           );
           return active;
         }),
       () => active?.cancel(),
       "speech",
       "barge-in TTS",
+      receipt,
     ).done;
   }
 
@@ -185,6 +201,7 @@ export class SpeechManager {
   cancelCurrent(): void {
     if (this.current) {
       this.current.cancelled = true;
+      this.current.receipt?.emit("interrupted", "speech-cancelled");
       this.current.cancelActive();
     }
     // Also cover a backend process that predates the manager or failed before
@@ -194,7 +211,10 @@ export class SpeechManager {
 
   cancelAll(): void {
     this.cancelCurrent();
-    for (const task of this.queue) task.cancelled = true;
+    for (const task of this.queue) {
+      task.cancelled = true;
+      task.receipt?.emit("interrupted", "speech-cancelled");
+    }
   }
 
   /** Permanently skip future work while synchronously cancelling current/queued work. */
@@ -206,7 +226,10 @@ export class SpeechManager {
   /** Cancel speech/cues already queued behind a probe; future work is unaffected. */
   cancelPendingAudio(): void {
     for (const task of this.queue) {
-      if (task.kind === "speech" || task.kind === "cue") task.cancelled = true;
+      if (task.kind === "speech" || task.kind === "cue") {
+        task.cancelled = true;
+        task.receipt?.emit("interrupted", "speech-cancelled");
+      }
     }
   }
 
@@ -221,23 +244,33 @@ export class SpeechManager {
    * Contain a backend that ignores its own cancel contract. The wrapper settles
    * independently, so pump() reaches finally and releases the lane on timeout.
    */
-  private watchSpeech(active: CancellableSpeech, text: string, operation: string): CancellableSpeech {
+  private watchSpeech(active: CancellableSpeech, text: string, operation: string, receipt?: SpeechRecordOperation): CancellableSpeech {
     const abort = new AbortController();
     const done = (async () => {
-      await awaitWithWatchdog(active.done, {
-        operation,
-        timeoutMs: this.timeoutForText(text),
-        signal: abort.signal,
-        onCancel: () => active.cancel(),
-        onTimeout: () => {
-          try { active.cancel(); } catch {}
-          try { this.backend.stopSpeaking(); } catch {}
-        },
-        timeoutAction: "cancelled",
-        warn: this.warn,
-      });
+      try {
+        const result = await awaitWithWatchdog(active.done, {
+          operation,
+          timeoutMs: this.timeoutForText(text),
+          signal: abort.signal,
+          onCancel: () => active.cancel(),
+          onTimeout: () => {
+            try { active.cancel(); } catch {}
+            try { this.backend.stopSpeaking(); } catch {}
+          },
+          timeoutAction: "cancelled",
+          warn: this.warn,
+        });
+        // The legacy backend's void promise also resolves after internal failures.
+        // Only cancellation/timeout is observable here; return is not proof of playback.
+        if (result.status === "completed") receipt?.emit("unknown", "backend-returned");
+        else if (result.status === "timed-out") receipt?.emit("failed", "speech-timeout");
+        else receipt?.emit("interrupted", "speech-cancelled");
+      } catch (error) {
+        receipt?.emit("failed", "speech-backend-failed");
+        throw error;
+      }
     })();
-    return { done, cancel: () => abort.abort() };
+    return { done, cancel: () => { receipt?.emit("interrupted", "speech-cancelled"); abort.abort(); } };
   }
 
   private enqueue<T>(
@@ -245,8 +278,11 @@ export class SpeechManager {
     cancelActive: () => void = () => {},
     kind: LaneTask<T>["kind"] = "probe",
     operation = "audio task",
+    receipt?: SpeechRecordOperation,
   ): Enqueued<T> {
+    receipt?.emit("queued", "speech-queued");
     if (this.closed) {
+      receipt?.emit("unknown", "speech-manager-closed");
       return {
         started: Promise.resolve(),
         done: Promise.resolve(undefined as T),
@@ -262,6 +298,7 @@ export class SpeechManager {
       reject = rej;
     });
     const task: LaneTask<T> = {
+      receipt,
       kind,
       operation,
       cancelled: false,
@@ -280,6 +317,7 @@ export class SpeechManager {
       done,
       cancel: () => {
         task.cancelled = true;
+        task.receipt?.emit("interrupted", "speech-cancelled");
         if (task.started) task.cancelActive();
       },
     };
@@ -303,8 +341,10 @@ export class SpeechManager {
             ));
           }
         } catch (error) {
+          task.receipt?.emit("failed", "speech-operation-failed");
           task.reject(error);
         } finally {
+          task.receipt?.emit("unknown", "speech-operation-returned");
           this.current = null;
         }
       }
