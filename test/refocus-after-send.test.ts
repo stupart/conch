@@ -92,7 +92,7 @@ test("phone and remote sends never ask for the front back", () => {
 /** These exist to SHOW the terminal; handing the front back would undo them. */
 test("reveal, Open in Terminal and close never take the front back", () => {
   for (const [marker, request] of [
-    ["func reveal(_ row: SessionRow) {", "ConchSessionCommandRequest(sessionId: row.id, command: .reveal)"],
+    ["func reveal(_ row: SessionRow) -> Task<Bool, Never> {", "ConchSessionCommandRequest(sessionId: row.id, command: .reveal)"],
     ["func openInTerminal(_ row: SessionRow) {", "ConchSessionCommandRequest(sessionId: row.id, command: .attach)"],
     ["func closeSession(_ row: SessionRow) {", "ConchSessionCloseRequest(sessionId: row.id)"],
   ] as const) {

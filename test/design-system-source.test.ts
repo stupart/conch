@@ -62,7 +62,8 @@ test("M2: each menu item calls the command the dashboard already sends", () => {
   expect(content).toContain("store.send(.stop())");
 
   // A session: bring the window forward and select it through ContentView's own selectSession.
-  const open = body(item, "@objc private func openSession(_ sender: NSMenuItem) {");
+  expect(body(item, "@objc private func openSession(_ sender: NSMenuItem) {")).toContain("Self.openSession(id)");
+  const open = body(item, "static func openSession(_ id: SessionRow.ID) {");
   expect(open).toContain("bringConchForward()");
   expect(open).toContain("NotificationCenter.default.post(name: .selectSessionFromStatusItem, object: id)");
   const receive = at(content, "NotificationCenter.default.publisher(for: .selectSessionFromStatusItem)");

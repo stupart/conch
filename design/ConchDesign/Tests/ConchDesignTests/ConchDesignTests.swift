@@ -170,4 +170,49 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertEqual(points[1173].y, 4.966, accuracy: 0.001)
         XCTAssertEqual(ConchMark.lineWidth(forSide: 16), 1.15, accuracy: 0.001)
     }
+
+    /// The Ready pill brings the scene to you: the deliverable, else conch's window if open, else the terminal, else conch.
+    func testTheReadyPillsSceneIsTheLinkThenConchsWindowThenTheTerminal() {
+        let page = URL(string: "https://example.com/pull/1")!
+        let file = URL(fileURLWithPath: "/tmp/guide.md")
+        let there: (String) -> Bool = { $0 == "/tmp/guide.md" }
+        let gone: (String) -> Bool = { _ in false }
+        // A web page, or a file that is there, whatever else is open.
+        XCTAssertEqual(ReviewScene.choose(link: page, fileExists: gone, appWindowOpen: true, revealable: true), .open(page))
+        XCTAssertEqual(ReviewScene.choose(link: file, fileExists: there, appWindowOpen: true, revealable: true), .open(file))
+        // A file that has gone, or a link that is neither, is no scene of its own.
+        XCTAssertEqual(ReviewScene.choose(link: file, fileExists: gone, appWindowOpen: false, revealable: true), .terminal)
+        XCTAssertEqual(ReviewScene.choose(link: URL(string: "mailto:a@b.c"), fileExists: there, appWindowOpen: false, revealable: true), .terminal)
+        // Then conch's window if it is open, then the terminal, then conch's window anyway.
+        XCTAssertEqual(ReviewScene.choose(link: nil, fileExists: there, appWindowOpen: true, revealable: true), .app)
+        XCTAssertEqual(ReviewScene.choose(link: nil, fileExists: there, appWindowOpen: false, revealable: true), .terminal)
+        XCTAssertEqual(ReviewScene.choose(link: nil, fileExists: there, appWindowOpen: false, revealable: false), .app)
+    }
+
+    /// "Ready for you · 2 sessions": oldest filed first, ties in a fixed order, the unopened before the opened, round and round.
+    func testEachClickShowsTheNextReadyReview() {
+        let ready: [(key: String, at: Double)] = [("c@3", 3), ("b@1", 1), ("a@1", 1)]
+        // Oldest first, a tie by version whatever order the rows came in, and round again.
+        XCTAssertEqual(ReviewScene.next(after: nil, in: ready, opened: []), "a@1")
+        XCTAssertEqual(ReviewScene.next(after: "a@1", in: ready, opened: []), "b@1")
+        XCTAssertEqual(ReviewScene.next(after: "b@1", in: ready, opened: []), "c@3")
+        XCTAssertEqual(ReviewScene.next(after: "c@3", in: ready, opened: []), "a@1")
+        // The unopened first, wherever the last click was; once every one is opened, round them all again.
+        XCTAssertEqual(ReviewScene.next(after: "a@1", in: ready, opened: ["a@1", "c@3"]), "b@1")
+        XCTAssertEqual(ReviewScene.next(after: "c@3", in: ready, opened: ["a@1", "b@1"]), "c@3")
+        XCTAssertEqual(ReviewScene.next(after: "c@3", in: ready, opened: ["a@1", "b@1", "c@3"]), "a@1")
+        // A newer review from the same session is a new version, unopened; one no longer ready starts over; none, nothing.
+        XCTAssertEqual(ReviewScene.next(after: "a@1", in: [("a@5", 5), ("b@1", 1)], opened: ["a@1", "b@1"]), "a@5")
+        XCTAssertEqual(ReviewScene.next(after: "gone", in: ready, opened: []), "a@1")
+        XCTAssertNil(ReviewScene.next(after: "a@1", in: [], opened: []))
+    }
+
+    @MainActor
+    func testOnlyAReadyPillTakesAClick() {
+        XCTAssertTrue(ControlBar(state: .ready, detail: "2 sessions", mode: .constant(.talk), onTap: {}).taps)
+        XCTAssertFalse(ControlBar(state: .ready, detail: "2 sessions", mode: .constant(.talk)).taps)
+        for state in VoiceState.allCases where state != .ready {
+            XCTAssertFalse(ControlBar(state: state, detail: "", mode: .constant(.talk), onTap: {}).taps, "\(state)")
+        }
+    }
 }

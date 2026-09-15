@@ -483,26 +483,93 @@ private struct ReplyField: NSViewRepresentable {
 // MARK: - ControlBar
 
 /// The floating control bar (M3): the voice and what it is about, and Talk or Quiet. The conversation is
-/// shown and hidden from the menu bar menu, not from here.
+/// shown and hidden from the menu bar menu, not from here. Ready, its label is a button that brings forward
+/// what is ready (`ReviewScene`).
 public struct ControlBar: View {
     let state: VoiceState
     let detail: String
     @Binding var mode: VoiceMode
+    let onTap: (() -> Void)?
+    /// What a click would show, as a tooltip on the Ready label.
+    let help: String
 
-    public init(state: VoiceState, detail: String, mode: Binding<VoiceMode>) {
+    public init(state: VoiceState, detail: String, mode: Binding<VoiceMode>, onTap: (() -> Void)? = nil, help: String = "") {
         self.state = state
         self.detail = detail
         _mode = mode
+        self.onTap = onTap
+        self.help = help
     }
+
+    /// Only a Ready pill takes a click, and only on its label: Talk and Quiet keep their own.
+    var taps: Bool { onTap != nil && state == .ready }
 
     public var body: some View {
         GlassPill("Voice controls") {
             // A fixed width, so the bar keeps its size and place as the state and the session change.
             // The session first: the orb and the menu bar mark already say what the voice is doing.
-            VoiceStateLabel(state: state, detail: detail, leadsWithDetail: true)
+            let label = VoiceStateLabel(state: state, detail: detail, leadsWithDetail: true)
                 .frame(width: 196, alignment: .leading)
+            if taps, let onTap {
+                Button(action: onTap) { label.contentShape(Rectangle()) }
+                    .buttonStyle(PillPress())
+                    #if os(macOS)
+                    .onContinuousHover { phase in
+                        if case .active = phase { NSCursor.pointingHand.set() } else { NSCursor.arrow.set() }
+                    }
+                    #endif
+                    .help(help)
+                    .accessibilityHint("Brings forward what is ready")
+            } else {
+                label
+            }
             TalkQuietSwitch(mode: $mode)
         }
+    }
+}
+
+/// A pressed pill label settles in a little on the pop spring, and springs back.
+private struct PillPress: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(ConchMotion.pop.animation(reduceMotion: reduceMotion), value: configuration.isPressed)
+    }
+}
+
+// MARK: - ReviewScene
+
+/// What a click on the Ready pill brings forward for one review: the agents showing you their work, rather than you
+/// going to find it (Tyler: "it's like the agents are messaging me 'look at this' and showing me stuff").
+public enum ReviewScene: Equatable {
+    /// The deliverable itself, in whatever app macOS opens it with.
+    case open(URL)
+    /// conch's window, on the session.
+    case app
+    /// The session's terminal.
+    case terminal
+
+    /// The link first, a web page or a file that is there; else conch's window if it is open; else the session's
+    /// terminal; else conch's window anyway, for a session there is nothing else to show of.
+    public static func choose(link: URL?, fileExists: (String) -> Bool, appWindowOpen: Bool, revealable: Bool) -> ReviewScene {
+        if let link, ["http", "https"].contains(link.scheme?.lowercased() ?? "") { return .open(link) }
+        if let link, link.isFileURL, fileExists(link.path) { return .open(link) }
+        if appWindowOpen { return .app }
+        if revealable { return .terminal }
+        return .app
+    }
+
+    /// The review a click brings forward, from the ready ones by version (a session and when its review was filed) and
+    /// filing time. Oldest filed first, ties by version so the order never shuffles; the unopened before any already
+    /// opened; the next after `last`, round to the first again. A `last` no longer ready starts the queue over.
+    public static func next<Key: Comparable & Hashable>(after last: Key?, in ready: [(key: Key, at: Double)], opened: Set<Key>) -> Key? {
+        let queue = ready.sorted { ($0.at, $0.key) < ($1.at, $1.key) }.map { $0.key }
+        let unopened = queue.filter { !opened.contains($0) }
+        let pool = unopened.isEmpty ? queue : unopened
+        guard let lastIndex = last.flatMap(queue.firstIndex(of:)) else { return pool.first }
+        return pool.first { queue.firstIndex(of: $0)! > lastIndex } ?? pool.first
     }
 }
 

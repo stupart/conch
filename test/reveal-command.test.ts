@@ -70,7 +70,7 @@ test("the Mac app makes the title a button only when the row says it can be rais
   expect(bar).toContain("if row.revealable {");
   expect(bar).toContain("Button { store.reveal(row) } label: { sessionTitle(row) }");
   const store = read("mac-app/conch-mac/StateStore.swift");
-  expect(store).toContain("guard row.revealable else { return }");
+  expect(store).toContain("guard row.revealable else { return Task { false } }");
   expect(store).toContain("ConchSessionCommandRequest(sessionId: row.id, command: .reveal)");
   expect(read("mac-app/conch-mac/Models.swift"))
     .toContain('(try? container.decodeIfPresent(Bool.self, forKey: .revealable)) ?? false');

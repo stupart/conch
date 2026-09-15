@@ -188,17 +188,63 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
 
     @objc private func openSession(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
+        Self.openSession(id)
+    }
+
+    /// conch's window on a session: chosen in the menu, or the Ready pill's scene.
+    static func openSession(_ id: SessionRow.ID) {
         bringConchForward()
         // ponytail: if the window has to be rebuilt first, this selection is lost; conch still opens.
         NotificationCenter.default.post(name: .selectSessionFromStatusItem, object: id)
     }
 
     @objc private func openConch() {
-        bringConchForward()
+        Self.bringConchForward()
     }
 
-    /// The one place the status item takes focus, for Open conch and choosing a session.
-    private func bringConchForward() {
+    /// A click on the Ready pill (FloatingPanels): what this session's review is about, brought forward, in
+    /// `ReviewScene`'s order. A scene that fails falls through to the next, down to conch's window on the session. True
+    /// once it was handed off; nothing is raised later.
+    static func stage(_ row: SessionRow, store: StateStore) async -> Bool {
+        let window = ReviewNotifications.shared.reviewWindow
+        var link = ReviewItem(row: row)?.link.map { LinkTarget.url(for: $0, cwd: row.cwd) }
+        var revealable = row.revealable
+        while true {
+            switch ReviewScene.choose(
+                link: link,
+                fileExists: { FileManager.default.fileExists(atPath: $0) },
+                appWindowOpen: window.map { $0.isVisible && !$0.isMiniaturized } ?? false,
+                revealable: revealable
+            ) {
+            case let .open(url):
+                // Through the one door for links, which logs a failure; the pill has no pane to show it in.
+                let opened = await withCheckedContinuation { done in
+                    store.openLink(LinkTarget.text(of: url), cwd: nil, rowId: row.id, onOpened: { done.resume(returning: true) }) { _ in
+                        done.resume(returning: false)
+                    }
+                }
+                if opened { return true }
+                link = nil
+            case .terminal:
+                // The daemon's ack, a process to raise, is the handoff. reveal raises the window inside Terminal and leaves
+                // the front alone (revealOnTurn's raise), so a click brings Terminal forward too: opening a running app
+                // activates it, and never launches one that isn't running.
+                if await store.reveal(row).value {
+                    if let terminal = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Terminal").first?.bundleURL {
+                        _ = try? await NSWorkspace.shared.openApplication(at: terminal, configuration: NSWorkspace.OpenConfiguration())
+                    }
+                    return true
+                }
+                revealable = false
+            case .app:
+                openSession(row.id)
+                return true
+            }
+        }
+    }
+
+    /// The one place the status item takes focus, for Open conch, choosing a session, and the Ready pill's conch scene.
+    private static func bringConchForward() {
         NSApp.activate(ignoringOtherApps: true)
         guard let window = ReviewNotifications.shared.reviewWindow else {
             // No dashboard window: open conch the way a Dock click does, which builds one.

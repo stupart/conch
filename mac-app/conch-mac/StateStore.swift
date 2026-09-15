@@ -340,10 +340,16 @@ final class StateStore: ObservableObject {
     /// the daemon answers before AppleScript has raised anything, and a
     /// session it only observes has nothing to raise — the row says so, and
     /// the title is not a button for those.
-    func reveal(_ row: SessionRow) {
-        guard row.revealable else { return }
+    /// Its value is the daemon's `changed`: there was a process to raise.
+    @discardableResult
+    func reveal(_ row: SessionRow) -> Task<Bool, Never> {
+        guard row.revealable else { return Task { false } }
         let request = ConchSessionCommandRequest(sessionId: row.id, command: .reveal)
-        Task { _ = await socketClient.request(request) }
+        return Task {
+            guard case let .reply(data) = await socketClient.request(request),
+                  case let .acknowledgement(ack)? = try? JSONDecoder().decode(ConchSessionCommandReply.self, from: data) else { return false }
+            return ack.changed
+        }
     }
 
     /// Open a background job no window is attached to in a new Terminal
@@ -654,6 +660,7 @@ final class StateStore: ObservableObject {
         cwd: String?,
         rowId: String?,
         reveal: Bool = false,
+        onOpened: @escaping @MainActor () -> Void = {},
         onFailure: @escaping @MainActor (String) -> Void
     ) {
         let url = LinkTarget.url(for: link, cwd: cwd)
@@ -677,7 +684,7 @@ final class StateStore: ObservableObject {
         // The alert is ours to show, in the pane — not Finder's "-50".
         configuration.promptsUserIfNeeded = false
         NSWorkspace.shared.open(url, configuration: configuration) { _, error in
-            guard let error else { return }
+            guard let error else { Task { @MainActor in onOpened() }; return }
             Task { @MainActor in fail(error) }
         }
     }
