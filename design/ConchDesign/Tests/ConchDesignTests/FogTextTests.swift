@@ -390,8 +390,10 @@ final class FogTextTests: XCTestCase {
         print("fog text cost: first layout \(String(format: "%.1f", first)) ms; typing \(summary(typing)); draft replaced \(String(format: "%.1f", replaced)) ms; streaming frames \(summary(frames))")
         XCTAssertLessThan(first, 2000)
         XCTAssertLessThan(replaced, 500)
-        XCTAssertLessThan(typing.reduce(0, +) / Double(typing.count), 16)
-        XCTAssertLessThan(frames.reduce(0, +) / Double(frames.count), 16)
+        // Bounds for a hang, not a dropped frame: this Mac's debug build averages about 7 ms, CI's virtual Macs 17 to 25.
+        // The freeze this guards against (#210) took seconds per keystroke.
+        XCTAssertLessThan(typing.reduce(0, +) / Double(typing.count), 50)
+        XCTAssertLessThan(frames.reduce(0, +) / Double(frames.count), 50)
     }
 
     // MARK: Helpers
