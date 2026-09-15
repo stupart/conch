@@ -312,6 +312,199 @@
           "at": 1759998230000
         }
       ]
+    },
+    "review-web": {
+      "sessionId": "review-web",
+      "truncated": false,
+      "items": [
+        {
+          "id": "review-web-1",
+          "rev": 1,
+          "kind": "user",
+          "text": "Ship the new hero copy to the pricing page.",
+          "at": 1759997940000
+        },
+        {
+          "id": "review-web-2",
+          "rev": 2,
+          "kind": "assistant",
+          "text": "Deployed. The hero now leads with the voice loop instead of the dashboard.",
+          "at": 1759998000000
+        }
+      ]
+    },
+    "review-localhost": {
+      "sessionId": "review-localhost",
+      "truncated": false,
+      "items": [
+        {
+          "id": "review-localhost-1",
+          "rev": 1,
+          "kind": "user",
+          "text": "Build the onboarding flow and run it so I can click through.",
+          "at": 1759998140000
+        },
+        {
+          "id": "review-localhost-2",
+          "rev": 2,
+          "kind": "assistant",
+          "text": "It's running on the Vite dev server. Three screens: welcome, pairing, first session.",
+          "at": 1759998200000
+        }
+      ]
+    },
+    "review-image": {
+      "sessionId": "review-image",
+      "truncated": false,
+      "items": [
+        {
+          "id": "review-image-1",
+          "rev": 1,
+          "kind": "user",
+          "text": "Screenshot the ledger after the spacing change.",
+          "at": 1759998340000
+        },
+        {
+          "id": "review-image-2",
+          "rev": 2,
+          "kind": "assistant",
+          "text": "Here's the ledger at the default text size.",
+          "at": 1759998400000
+        }
+      ]
+    },
+    "review-pdf": {
+      "sessionId": "review-pdf",
+      "truncated": false,
+      "items": [
+        {
+          "id": "review-pdf-1",
+          "rev": 1,
+          "kind": "user",
+          "text": "Export a sample invoice as PDF.",
+          "at": 1759998540000
+        },
+        {
+          "id": "review-pdf-2",
+          "rev": 2,
+          "kind": "assistant",
+          "text": "Exported one page. Totals and tax lines are right-aligned now.",
+          "at": 1759998600000
+        }
+      ]
+    },
+    "review-video": {
+      "sessionId": "review-video",
+      "truncated": false,
+      "items": [
+        {
+          "id": "review-video-1",
+          "rev": 1,
+          "kind": "user",
+          "text": "Record the pairing flow on the simulator.",
+          "at": 1759998740000
+        },
+        {
+          "id": "review-video-2",
+          "rev": 2,
+          "kind": "assistant",
+          "text": "Recorded the whole flow, from the code screen to the first session.",
+          "at": 1759998800000
+        }
+      ]
+    },
+    "review-code": {
+      "sessionId": "review-code",
+      "truncated": false,
+      "items": [
+        {
+          "id": "review-code-1",
+          "rev": 1,
+          "kind": "user",
+          "text": "Show me the phone's current palette file.",
+          "at": 1759998940000
+        },
+        {
+          "id": "review-code-2",
+          "rev": 2,
+          "kind": "assistant",
+          "text": "This is the whole palette. Nothing here reads ConchDesign yet.",
+          "at": 1759999000000
+        }
+      ]
+    },
+    "review-diff": {
+      "sessionId": "review-diff",
+      "truncated": false,
+      "items": [
+        {
+          "id": "review-diff-1",
+          "rev": 1,
+          "kind": "user",
+          "text": "Draft the session header fix as a diff first.",
+          "at": 1759999140000
+        },
+        {
+          "id": "review-diff-2",
+          "rev": 2,
+          "kind": "assistant",
+          "text": "The status line moves under the title, so the chip can't clip.",
+          "at": 1759999200000
+        }
+      ]
+    },
+    "review-file": {
+      "sessionId": "review-file",
+      "truncated": false,
+      "items": [
+        {
+          "id": "review-file-1",
+          "rev": 1,
+          "kind": "user",
+          "text": "Zip the build logs from the failed run.",
+          "at": 1759999340000
+        },
+        {
+          "id": "review-file-2",
+          "rev": 2,
+          "kind": "assistant",
+          "text": "Zipped. It's one diff and the xcodebuild log.",
+          "at": 1759999400000
+        }
+      ]
+    },
+    "claude-permission": {
+      "sessionId": "claude-permission",
+      "truncated": false,
+      "items": [
+        {
+          "id": "p1",
+          "rev": 1,
+          "kind": "user",
+          "text": "Clear the stale simulator build and rebuild.",
+          "at": 1759999600000
+        },
+        {
+          "id": "p2",
+          "rev": 2,
+          "kind": "assistant",
+          "text": "The derived data is from an older Xcode, so I'll remove it first.",
+          "at": 1759999650000
+        },
+        {
+          "id": "p3",
+          "rev": 3,
+          "kind": "tool",
+          "text": "rm -rf build/ios-sim.noindex",
+          "at": 1759999700000,
+          "tool": {
+            "kind": "command_execution",
+            "name": "Bash",
+            "wireName": "Bash",
+            "status": "running"
+          }
+        }
+      ]
     }
   },
   "rows": [
@@ -424,6 +617,168 @@
       "at": 1759994300000,
       "cwd": "/Users/you/Projects/conch",
       "noTerminal": "closed: no Codex process has this thread open"
+    },
+    {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "review-web",
+      "label": "pricing page",
+      "backend": "claude",
+      "status": "waiting",
+      "at": 1759997970000,
+      "cwd": "/Users/you/Projects/conch",
+      "review": {
+        "summary": "Pricing page: the new hero copy is live",
+        "link": "https://example.com/",
+        "at": 1759998000000
+      }
+    },
+    {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "review-localhost",
+      "label": "onboarding flow preview for the new signup and pairing screens",
+      "backend": "claude",
+      "status": "waiting",
+      "at": 1759998170000,
+      "cwd": "/Users/you/Projects/conch",
+      "context": {
+        "usedTokens": 180000,
+        "limitTokens": 200000
+      },
+      "review": {
+        "summary": "Onboarding: three screens, running locally",
+        "link": "http://localhost:5173/onboarding",
+        "at": 1759998200000
+      }
+    },
+    {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "review-image",
+      "label": "ledger screenshot",
+      "backend": "claude",
+      "status": "waiting",
+      "at": 1759998370000,
+      "cwd": "/Users/you/Projects/conch",
+      "review": {
+        "summary": "Ledger after the spacing pass",
+        "link": "mobile/conch-ios/fixtures/deliverables/ledger-shot.png",
+        "at": 1759998400000
+      }
+    },
+    {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "review-pdf",
+      "label": "invoice export",
+      "backend": "claude",
+      "status": "waiting",
+      "at": 1759998570000,
+      "cwd": "/Users/you/Projects/conch",
+      "review": {
+        "summary": "Invoice export: sample PDF",
+        "link": "test/fixtures/deliverables/sample.pdf",
+        "at": 1759998600000
+      }
+    },
+    {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "review-video",
+      "label": "pairing recording",
+      "backend": "claude",
+      "status": "waiting",
+      "at": 1759998770000,
+      "cwd": "/Users/you/Projects/conch",
+      "review": {
+        "summary": "Pairing, recorded end to end",
+        "link": "test/fixtures/deliverables/sample.mp4",
+        "at": 1759998800000
+      }
+    },
+    {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "review-code",
+      "label": "palette tokens",
+      "backend": "claude",
+      "status": "waiting",
+      "at": 1759998970000,
+      "cwd": "/Users/you/Projects/conch",
+      "review": {
+        "summary": "The phone palette, for comparison with ConchDesign",
+        "link": "mobile/conch-ios/conch-ios/Theme.swift",
+        "at": 1759999000000
+      }
+    },
+    {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "review-diff",
+      "label": "session header fix",
+      "backend": "claude",
+      "status": "waiting",
+      "at": 1759999170000,
+      "cwd": "/Users/you/Projects/conch",
+      "review": {
+        "summary": "Header: status moves under the title",
+        "link": "mobile/conch-ios/fixtures/deliverables/header-fix.diff",
+        "at": 1759999200000
+      }
+    },
+    {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "review-file",
+      "label": "build logs",
+      "backend": "claude",
+      "status": "waiting",
+      "at": 1759999370000,
+      "cwd": "/Users/you/Projects/conch",
+      "review": {
+        "summary": "Build logs, zipped",
+        "link": "mobile/conch-ios/fixtures/deliverables/build-logs.zip",
+        "at": 1759999400000
+      }
+    },
+    {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "claude-permission",
+      "label": "build cleanup",
+      "backend": "claude",
+      "status": "needs",
+      "at": 1759999700000,
+      "cwd": "/Users/you/Projects/conch",
+      "detail": "permission: Bash — rm -rf build/ios-sim.noindex"
     }
   ],
   "dismissed": [

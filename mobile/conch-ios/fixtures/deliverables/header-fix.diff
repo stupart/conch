@@ -1,0 +1,22 @@
+diff --git a/mobile/conch-ios/conch-ios/SessionView.swift b/mobile/conch-ios/conch-ios/SessionView.swift
+index 3b1c2d4..8e9f0a1 100644
+--- a/mobile/conch-ios/conch-ios/SessionView.swift
++++ b/mobile/conch-ios/conch-ios/SessionView.swift
+@@ -212,11 +212,15 @@ struct SessionView: View {
+         .toolbar {
+             ToolbarItem(placement: .principal) {
+-                HStack(spacing: 7) {
+-                    Text(row?.label ?? "")
+-                        .font(Type.sessionName)
+-                        .lineLimit(1)
+-                    AgentBadge(backend: row?.backend)
++                VStack(spacing: 1) {
++                    HStack(spacing: 7) {
++                        Text(row?.label ?? "")
++                            .font(Type.sessionName)
++                            .lineLimit(1)
++                        AgentBadge(backend: row?.backend)
++                    }
++                    statusLine
+                 }
+             }

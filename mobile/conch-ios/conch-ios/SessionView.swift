@@ -131,15 +131,28 @@ struct SessionView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // What a blocked session is asking, above everything. It reached
+            // only the ledger's subtitle, so opening the session hid the one
+            // thing it was waiting on.
+            if row?.status == "needs", let detail = row?.detail, !detail.isEmpty {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: StatusMark.needs.symbol)
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.needs)
+                        .accessibilityHidden(true)
+                    Text(detail)
+                        .font(Type.summary)
+                        .foregroundStyle(Palette.textPrimary)
+                        .textSelection(.enabled)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .background(Palette.raised)
+            }
             ScrollViewReader { scroller in
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if let context = row?.context, context.limitTokens > 0 {
-                        ContextMeter(usage: context)
-                            .padding(12)
-                            .background(Color.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
-                    }
-
                     // The whole conversation when the daemon has one for THIS
                     // session, which is what finally puts Codex sessions on the
                     // phone: their content never arrives as `reply`, because
@@ -159,6 +172,7 @@ struct SessionView: View {
                     } else if let replyText {
                         MarkdownView(text: replyText)
                             .foregroundStyle(Palette.textPrimary)
+                            .textSelection(.enabled)
                     } else if loadingReply {
                         ProgressView()
                             .padding(.top, 32)
@@ -270,13 +284,21 @@ struct SessionView: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // The name, and under it the state. The state was a chip in the
+            // trailing capsule, which clipped it to "! N" and "W…".
             ToolbarItem(placement: .principal) {
-                HStack(spacing: 7) {
-                    Text(row?.label ?? "")
-                        .font(Type.sessionName)
-                        .foregroundStyle(Palette.textPrimary)
-                        .lineLimit(1)
-                    AgentBadge(backend: row?.backend)
+                VStack(spacing: 1) {
+                    HStack(spacing: 7) {
+                        Text(row?.label ?? "")
+                            .font(Type.sessionName)
+                            .foregroundStyle(Palette.textPrimary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        AgentBadge(backend: row?.backend)
+                    }
+                    if let mark {
+                        statusLine(mark)
+                    }
                 }
             }
 
@@ -300,73 +322,21 @@ struct SessionView: View {
                 .accessibilityLabel(speech.isSpeaking ? "Stop reading" : "Read this aloud")
             }
 
-            if let mark {
-                ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 6) {
-                        if !bridge.isConnected {
-                            Circle().fill(Palette.needs).frame(width: 7, height: 7)
-                                .accessibilityLabel("Disconnected")
-                        }
-                        // THIS phone's mic, not the daemon's. The published
-                        // state describes the Mac, so while the phone held the
-                        // ear the indicator was reporting a microphone on the
-                        // other side of the room — the one state you cannot
-                        // afford to be wrong about.
-                        // While this phone holds the mic, the whole glyph-and-
-                        // word chip becomes the way to CLOSE it — which the app
-                        // had no way to do at all, since the bottom button
-                        // sends. Icon and label are one Button on purpose: a
-                        // button's hit area is its label's frame, so wrapping
-                        // only the 12pt glyph would leave a 12pt target sitting
-                        // next to inert text that looks like part of it.
-                        //
-                        // It is otherwise a plain status glyph. A status glyph
-                        // that sometimes does something is worse than one that
-                        // never does.
-                        if isTalkingHere {
-                            Button { talk.closeMic() } label: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "mic.fill")
-                                        .font(.system(size: 12))
-                                    Text("Mic open")
-                                        .font(Type.caption)
-                                }
-                                .foregroundStyle(Palette.micOpen)
-                                // The trailing inset goes here, matching this
-                                // HStack's own spacing so the gap at the screen
-                                // edge equals the gap between glyph and word.
-                                .padding(.trailing, 6)
-                            }
-                            .accessibilityLabel("Close the microphone")
-                            .accessibilityHint("Keeps what you have said")
-                        } else {
-                            // THIS phone's mic, not the daemon's. The published
-                            // state describes the Mac, so while the phone held
-                            // the ear the indicator was reporting a microphone
-                            // on the other side of the room — the one state you
-                            // cannot afford to be wrong about.
-                            Image(systemName: mark.symbol)
-                                .font(.system(size: 12))
-                                .foregroundStyle(mark.color)
-                        }
-                        // The word earns its place only when nothing else on
-                        // screen explains the glyph — a review card directly
-                        // beneath saying the same thing is clutter.
-                        if !isTalkingHere, mark != .review {
-                            Text(mark.meaning)
-                                .font(Type.caption)
-                                .foregroundStyle(mark.color)
-                                .padding(.trailing, 6)
-                        }
-                    }
-                }
-            }
-
             // Ending a resumable agent is the most expensive tap on this
             // screen. It lives behind an overflow item AND a confirmation,
             // never in the composer or a full-swipe gesture.
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
+                    // How full the context is, where you look for it on
+                    // purpose. It was the first line of every conversation,
+                    // and Tyler called it secondary.
+                    if let context = row?.context, context.limitTokens > 0 {
+                        Label(
+                            "Context \(Int((context.proportion * 100).rounded()))% used",
+                            systemImage: context.proportion >= 0.80 ? "exclamationmark.triangle" : "gauge.with.dots.needle.33percent"
+                        )
+                        Divider()
+                    }
                     Button("End session…", systemImage: "rectangle.portrait.and.arrow.right", role: .destructive) {
                         confirmingClose = true
                     }
@@ -381,8 +351,8 @@ struct SessionView: View {
             }
         }
         .sheet(isPresented: $showReview) {
-            if let review = row?.review {
-                DeliverableSheet(bridge: bridge, review: review, sessionId: sessionId)
+            if row?.review != nil {
+                ReviewSheet(bridge: bridge, talk: talk, sessionId: sessionId)
             }
         }
         .confirmationDialog(
@@ -484,6 +454,54 @@ struct SessionView: View {
             if let whole, !whole.isEmpty {
                 fetchedReply = whole
                 fetchedFor = wanted
+            }
+        }
+    }
+
+    /// The session's state under its name: this phone's mic, a dropped link,
+    /// or what the row is waiting on.
+    private func statusLine(_ mark: StatusMark) -> some View {
+        HStack(spacing: 6) {
+            if !bridge.isConnected {
+                Circle().fill(Palette.needs).frame(width: 7, height: 7)
+                    .accessibilityLabel("Disconnected")
+            }
+            // THIS phone's mic, not the daemon's. The published state describes
+            // the Mac, so while the phone held the ear the indicator was
+            // reporting a microphone on the other side of the room — the one
+            // state you cannot afford to be wrong about.
+            //
+            // While this phone holds the mic, glyph and word become the way to
+            // CLOSE it. Icon and label are one Button on purpose: a button's hit
+            // area is its label's frame, so wrapping only the 12pt glyph would
+            // leave a 12pt target beside inert text that looks like part of it.
+            // Otherwise it is a plain status glyph: one that sometimes does
+            // something is worse than one that never does.
+            if isTalkingHere {
+                Button { talk.closeMic() } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "mic.fill")
+                            .font(.system(size: 12))
+                        Text("Mic open")
+                            .font(Type.caption)
+                    }
+                    .foregroundStyle(Palette.micOpen)
+                }
+                .accessibilityLabel("Close the microphone")
+                .accessibilityHint("Keeps what you have said")
+            } else {
+                Image(systemName: mark.symbol)
+                    .font(.system(size: 12))
+                    .foregroundStyle(mark.color)
+            }
+            // The word earns its place only when nothing else on screen
+            // explains the glyph — a review card beneath saying the same
+            // thing is clutter.
+            if !isTalkingHere, mark != .review {
+                Text(mark.meaning)
+                    .font(Type.caption)
+                    .foregroundStyle(mark.color)
+                    .lineLimit(1)
             }
         }
     }
@@ -1052,4 +1070,79 @@ private struct PendingAttachment: Identifiable {
     let data: Data
     let ext: String
     let thumbnail: UIImage?
+}
+
+/// A reply to the session whose work is on the review screen, so looking at
+/// the work is not a dead end. It is the composer's own path: the session's
+/// draft, `talk.send` clearing it only on a confirmed delivery, and the same
+/// Sending, Delivered and Not delivered line with Retry.
+struct ReviewReplyBar: View {
+    @ObservedObject var bridge: BridgeClient
+    @ObservedObject var talk: TalkController
+    let sessionId: String
+
+    private var row: PublishedState.Row? {
+        bridge.state?.rows.first { $0.id == sessionId }
+    }
+
+    private var isSending: Bool {
+        talk.phase == .sending && talk.targetSessionId == sessionId
+    }
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            if let latest = talk.outgoing.last(where: { $0.session == sessionId }) {
+                YourTurnBubble(
+                    message: latest,
+                    onRetry: send,
+                    onDiscard: { talk.discardOutgoing(latest.id) }
+                )
+            }
+            HStack(alignment: .bottom, spacing: 10) {
+                TextField(
+                    row?.noTerminal ?? "Reply to \(row?.label ?? "this session")…",
+                    text: Binding(
+                        get: { talk.draft(for: sessionId) },
+                        set: { talk.setDraft($0, for: sessionId) }
+                    ),
+                    axis: .vertical
+                )
+                .textFieldStyle(.plain)
+                .font(Type.body)
+                .foregroundStyle(Palette.textPrimary)
+                .lineLimit(1...4)
+                .padding(.vertical, 9)
+                Button(action: send) {
+                    Group {
+                        if isSending {
+                            ProgressView().controlSize(.small).tint(Palette.bg)
+                        } else {
+                            Image(systemName: "arrow.up")
+                                .font(.system(size: 17, weight: .bold))
+                        }
+                    }
+                    .frame(width: 38, height: 38)
+                    .background(Palette.textPrimary, in: Circle())
+                    .foregroundStyle(Palette.bg)
+                }
+                .buttonStyle(.plain)
+                .disabled(isSending || row?.noTerminal != nil)
+                .accessibilityLabel("Send reply")
+            }
+            .padding(.leading, 16)
+            .padding(.trailing, 6)
+            .padding(.vertical, 3)
+            .background(Palette.raised, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+    }
+
+    /// An empty draft is refused by the controller itself.
+    private func send() {
+        let label = row?.label ?? ""
+        talk.send(session: sessionId) { text in
+            await bridge.inject(sessionId: sessionId, label: label, text: text)
+        }
+    }
 }

@@ -16,7 +16,9 @@ struct ConchApp: App {
     @State private var pairing: BridgeClient.Pairing? = {
         #if DEBUG
         // A placeholder pairing, never saved: the fixture stands in for the Mac.
-        if ConchApp.fixtureURL != nil { return .lan(host: "fixture", token: "") }
+        // Shaped like a real LAN host, so what the phone derives from it (the
+        // Mac's address for a localhost page) renders as it would.
+        if ConchApp.fixtureURL != nil { return .lan(host: "192.168.1.20:8674", token: "") }
         #endif
         let env = ProcessInfo.processInfo.environment
         if let host = env["CONCH_PAIR_HOST"], let token = env["CONCH_PAIR_TOKEN"] {
@@ -52,6 +54,7 @@ struct ConchApp: App {
                     )
                 } else {
                     PairingView { newPairing in
+                        LastStateTransport.forget()
                         PairingStore.save(newPairing)
                         pairing = newPairing
                     }
@@ -164,15 +167,17 @@ struct ConchApp: App {
     private func bridgeClient(for pairing: BridgeClient.Pairing) -> BridgeClient {
         if let bridge { return bridge }
         #if DEBUG
-        let created = BridgeClient(
-            pairing: pairing,
-            // `-conchFixtureRejected YES`: this Mac no longer knows this phone.
-            transport: Self.fixtureURL.map {
-                FixtureTransport(url: $0, rejected: UserDefaults.standard.bool(forKey: "conchFixtureRejected"))
-            }
-        )
+        let fixture: BridgeTransport? = Self.fixtureURL.map {
+            // `-conchFixtureOffline YES`: a Mac that never answers, so the
+            // ledger is what the last launch saved, as on a cold launch.
+            UserDefaults.standard.bool(forKey: "conchFixtureOffline")
+                ? SilentTransport() as BridgeTransport
+                // `-conchFixtureRejected YES`: this Mac no longer knows this phone.
+                : FixtureTransport(url: $0, rejected: UserDefaults.standard.bool(forKey: "conchFixtureRejected"))
+        }
+        let created = BridgeClient(pairing: pairing, transport: LastStateTransport(fixture ?? Self.transport(for: pairing)))
         #else
-        let created = BridgeClient(pairing: pairing)
+        let created = BridgeClient(pairing: pairing, transport: LastStateTransport(Self.transport(for: pairing)))
         #endif
         // Claim the voice as soon as we are connected, and re-claim on every
         // reconnect — the daemon hands audio back to the Mac whenever the last
@@ -193,10 +198,114 @@ struct ConchApp: App {
         return created
     }
 
+    /// The transport the pairing names, as BridgeClient picks it, so it can be
+    /// wrapped to keep the last state.
+    private static func transport(for pairing: BridgeClient.Pairing) -> BridgeTransport {
+        switch pairing {
+        case let .lan(host, token): DirectHTTPTransport(host: host, token: token)
+        case let .relay(payload): RelayTransport(pairing: payload)
+        }
+    }
+
     private func unpair() {
         bridge?.stop()
         bridge = nil
         PairingStore.delete()
+        LastStateTransport.forget()
         pairing = nil
     }
 }
+
+/// The last state the Mac published, kept so a cold launch draws the ledger at
+/// once, marked as the last known state, instead of "Looking for your Mac" over
+/// an empty screen until the handshake lands.
+///
+/// One small file, overwritten: the raw bytes the Mac sent, so a restore goes
+/// through the app's own decoder like any publish. It holds transcripts, so it
+/// is never backed up, is unreadable while the phone is locked, and goes with
+/// the pairing.
+final class LastStateTransport: BridgeTransport, @unchecked Sendable {
+    static let defaultFile = URL.applicationSupportDirectory.appendingPathComponent("last-state.json")
+    /// One queue for every write and delete, so a forget always lands after a flush.
+    private static let disk = DispatchQueue(label: "conch.last-state")
+
+    var onStateData: ((Data) -> Void)?
+    var onConnectionChange: ((Bool, String?) -> Void)? {
+        get { inner.onConnectionChange }
+        set { inner.onConnectionChange = newValue }
+    }
+    private let inner: BridgeTransport
+    private let file: URL
+    /// The newest publish not yet on disk. Touched only on `disk`.
+    private var pending: Data?
+    private var restored = false
+
+    init(_ inner: BridgeTransport, file: URL = LastStateTransport.defaultFile) {
+        self.inner = inner
+        self.file = file
+        inner.onStateData = { [weak self] data in
+            self?.onStateData?(data)
+            self?.save(data)
+        }
+    }
+
+    func start() {
+        // Once, and before the link: the first live publish replaces it, and a
+        // later start must never draw an older state over a newer one.
+        if !restored, let saved = try? Data(contentsOf: file) {
+            onStateData?(saved)
+        }
+        restored = true
+        inner.start()
+    }
+
+    func stop() {
+        // Leaving for the background stops the link: write what is waiting now.
+        Self.disk.async { [self] in flush() }
+        inner.stop()
+    }
+
+    func reconnectNow() { inner.reconnectNow() }
+    func request(_ request: BridgeRequest) async throws -> BridgeResponse { try await inner.request(request) }
+    func download(_ request: BridgeRequest) async throws -> URL { try await inner.download(request) }
+
+    /// Coalesced: a working session republishes many times a second, and one
+    /// write every two seconds keeps the newest.
+    private func save(_ data: Data) {
+        Self.disk.async { [self] in
+            let scheduled = pending != nil
+            pending = data
+            guard !scheduled else { return }
+            Self.disk.asyncAfter(deadline: .now() + 2) { [self] in flush() }
+        }
+    }
+
+    private func flush() {
+        guard let latest = pending else { return }
+        pending = nil
+        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? latest.write(to: file, options: [.atomic, .completeFileProtection])
+        var saved = file
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? saved.setResourceValues(values)
+    }
+
+    /// With the pairing: another Mac's sessions must never be drawn as this one's.
+    static func forget(file: URL = LastStateTransport.defaultFile) {
+        disk.async { try? FileManager.default.removeItem(at: file) }
+    }
+}
+
+#if DEBUG
+/// A Mac that never answers (`-conchFixtureOffline`).
+final class SilentTransport: BridgeTransport, @unchecked Sendable {
+    var onStateData: ((Data) -> Void)?
+    var onConnectionChange: ((Bool, String?) -> Void)?
+    func start() {}
+    func stop() {}
+    func reconnectNow() {}
+    func request(_ request: BridgeRequest) async throws -> BridgeResponse { throw BridgeTransportError.stopped }
+    func download(_ request: BridgeRequest) async throws -> URL { throw BridgeTransportError.stopped }
+}
+#endif

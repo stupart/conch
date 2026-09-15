@@ -56,7 +56,7 @@ struct LedgerView: View {
                         } else if !bridge.isConnected {
                             HStack(spacing: 8) {
                                 ProgressView().controlSize(.small)
-                                Text("Reconnecting to your Mac — showing the last known state.")
+                                Text(staleLine(state))
                                     .font(Type.caption)
                                     .foregroundStyle(Palette.waiting)
                             }
@@ -226,6 +226,15 @@ struct LedgerView: View {
         } message: {
             Text(sessionActionError ?? "Your Mac may have gone away.")
         }
+    }
+
+    /// What the dimmed rows are, with their age: on a cold launch they are what
+    /// an earlier launch saved, which can be hours old.
+    private func staleLine(_ state: PublishedState) -> String {
+        let age = relativeAge(epochMilliseconds: state.ts).map { $0 == "<1m" ? "" : ", \($0) old" } ?? ""
+        return bridge.hasEverConnected
+            ? "Reconnecting to your Mac — showing the last known state\(age)."
+            : "Looking for your Mac — showing what it last sent\(age)."
     }
 
     private func runSessionCommand(
@@ -589,41 +598,6 @@ struct AgentBadge: View {
         case "codex": "Codex"
         default: nil
         }
-    }
-}
-
-struct ContextMeter: View {
-    let usage: PublishedState.Row.ContextUsage
-
-    private var tint: Color {
-        // A routine session stays quiet. Colour starts carrying urgency only
-        // once context pressure can plausibly change the next decision.
-        if usage.proportion >= 0.95 { return Palette.needs }
-        if usage.proportion >= 0.80 { return Palette.waiting }
-        return Palette.textFaint
-    }
-
-    /// A number, not a bar, and only where you have already committed to
-    /// looking at one session — the same call the Mac made.
-    ///
-    /// A filled capsule under every ledger row gave context pressure the same
-    /// visual weight as the session itself, on the one surface you scan
-    /// constantly. Tyler: "its a nice to have when u need it feature but not
-    /// something thats like primary form of data". Colour still carries the
-    /// warning; it just stops shouting when there is nothing to warn about.
-    var body: some View {
-        HStack(spacing: 6) {
-            Text("Context")
-                .font(Type.caption.weight(.medium))
-                .foregroundStyle(Palette.textDim)
-            Text("\(Int((usage.proportion * 100).rounded()))%")
-                .font(Type.caption.monospacedDigit())
-                .foregroundStyle(tint)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(
-            "Context \(Int((usage.proportion * 100).rounded())) percent used"
-        )
     }
 }
 
