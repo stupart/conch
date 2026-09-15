@@ -10,7 +10,7 @@ import { SessionLedger } from "../src/session-ledger.ts";
 import { PauseController } from "../src/pause-controller.ts";
 import { SpeechManager, type SpeechBackend } from "../src/speech-manager.ts";
 import type { WatchdogProcess } from "../src/audio-watchdog.ts";
-import type { DictationEvent } from "../src/dictation-controller.ts";
+import { DictationController, type CapturedAudio, type DictationEvent, type RecorderHandle } from "../src/dictation-controller.ts";
 import type { InjectTextResult } from "../src/inject.ts";
 import type { ProviderCommandResult } from "../src/provider-rename.ts";
 import type { ListenHooks, ListenResult, RuntimeDictationSession } from "../src/listen.ts";
@@ -102,6 +102,7 @@ interface Options {
   paused?: boolean;
   /** Utterances play until the test finishes them. */
   holdSpeech?: boolean;
+  failSpeech?: (text: string) => boolean;
   /** Cues play until the test ends them. */
   holdCues?: boolean;
   sessionGone?: (sessionId: string) => boolean | Promise<boolean>;
@@ -112,6 +113,7 @@ interface Options {
   /** One script per mic window, in order. */
   heard?: string[][];
   gap?: () => ListenResult;
+  dictationSession?: () => RuntimeDictationSession;
   /** The ledger to run over: a restarted daemon's, restored from its reviews file. */
   ledger?: SessionLedger;
 }
@@ -137,6 +139,7 @@ function harness(options: Options = {}) {
     speakCancellable: (_cfg, text) => {
       said.push(text);
       order.push(`said:${text}`);
+      if (options.failSpeech?.(text)) throw new Error("synthetic speech failure");
       const done = deferred();
       const entry = { finish: () => done.resolve(), cancelled: false };
       playing.set(text, entry);
@@ -236,6 +239,7 @@ function harness(options: Options = {}) {
     ear: {
       createDictationSession: (_cfg, listenHooks = {}) => {
         hooks.push(listenHooks);
+        if (options.dictationSession) return options.dictationSession();
         const session = new FakeSession(heard.shift() ?? [], order);
         sessions.push(session);
         return session as unknown as RuntimeDictationSession;
@@ -771,6 +775,137 @@ describe("the mic, the cue and the composer", () => {
     expect(getLiveState().dictated).toEqual({ text: "please also add a regression test", id: before + 1, sessionId: "s1" });
     expect(h.texts).toEqual([]);
   });
+});
+
+/** Real controller/FIFO/reducer, with synthetic bytes and no processes or files. */
+function failingDictation(stage: "capture" | "read" | "transcribe", firstResult?: Promise<void>) {
+  const recorders: Array<{ finish(text: string, error?: string): void; stops: string[] }> = [];
+  const callbacks = new Set<() => void>();
+  const controller = new DictationController({
+    backend: {
+      open() {
+        const result = deferred<CapturedAudio>();
+        const stops: string[] = [];
+        const recorder = {
+          stops,
+          finish(text: string, error?: string) {
+            result.resolve({ rawPath: text, finalBytes: 32_000, ...(error ? { error } : {}) });
+          },
+        };
+        recorders.push(recorder);
+        return {
+          finished: result.promise,
+          stop(reason) {
+            stops.push(reason);
+            recorder.finish("but keep the comments");
+          },
+        } satisfies RecorderHandle;
+      },
+      read(capture) {
+        if (stage === "read" && capture.rawPath === "failed fragment") throw new Error("synthetic read failure");
+        return new TextEncoder().encode(capture.rawPath);
+      },
+    },
+    transcriber: {
+      async transcribe(pcm) {
+        const text = new TextDecoder().decode(pcm);
+        if (text !== "failed fragment") await firstResult;
+        return stage === "transcribe" && text === "failed fragment"
+          ? { text: "", error: "synthetic transcription failure" }
+          : { text };
+      },
+    },
+    minimumBytes: 16_000,
+    deleteRaw() {},
+    clock: {
+      setTimeout(callback) { callbacks.add(callback); return callback; },
+      clearTimeout(handle) { callbacks.delete(handle as () => void); },
+    },
+  });
+  const session: RuntimeDictationSession = {
+    controller,
+    get micOpen() { return controller.micOpen; },
+    get state() { return controller.state; },
+    start: (capture) => controller.start(capture),
+    resume: (capture) => controller.resume(capture),
+    nextEvent: () => controller.nextEvent(),
+    acknowledge: (event) => controller.acknowledge(event),
+    requestBarrier: (reason) => controller.requestBarrier(reason),
+    requestTimeout: () => controller.requestTimeout(),
+    setIdleWindowSecs: (seconds) => controller.scheduleTimeout(seconds * 1000),
+    abort: () => controller.requestBarrier("manual-reply").done,
+  };
+  return { controller, session, recorders };
+}
+
+describe("dictation failure recovery", () => {
+  test("draft recovery completes even when the post-drain warning fails", async () => {
+    const audio = failingDictation("transcribe");
+    const h = harness({
+      dictationSession: () => audio.session,
+      cfg: { interruptOnManualReply: false },
+      failSpeech: (text) => text.startsWith("Dictation was incomplete"),
+    });
+    const before = getLiveState().dictated?.id ?? 0;
+    const turn = h.voice.handle(wake());
+    const outcome = turn.then(() => null, (error) => error);
+    await waitFor("first synthetic recorder", () => audio.recorders.length === 1);
+    audio.recorders[0]!.finish("make the change");
+    await waitFor("first result to drain", () => audio.recorders.length === 2 && audio.controller.finalWorkerIdle);
+    audio.recorders[1]!.finish("failed fragment");
+    expect(await outcome).toEqual(new Error("synthetic speech failure"));
+    expect(h.texts).toEqual([]);
+    expect(getLiveState().dictated).toEqual({
+      text: "make the change but keep the comments", id: before + 1, sessionId: "s1",
+    });
+    expect(h.voice.capturing()).toBe(false);
+    expect(h.violations).toEqual([]);
+  });
+
+  test("a failed tail cancels an earlier send already waiting for its barrier", async () => {
+    const first = deferred<void>();
+    const audio = failingDictation("transcribe", first.promise);
+    const h = harness({ dictationSession: () => audio.session, cfg: { interruptOnManualReply: false } });
+    const before = getLiveState().dictated?.id ?? 0;
+    const turn = h.voice.handle(wake());
+    await waitFor("first synthetic recorder", () => audio.recorders.length === 1);
+    audio.recorders[0]!.finish("make the change. Send.");
+    await waitFor("second synthetic recorder", () => audio.recorders.length === 2);
+    audio.recorders[1]!.finish("failed fragment");
+    await waitFor("failed capture queued before send", () => audio.recorders.length === 3);
+    first.resolve();
+    await turn;
+    expect(h.texts).toEqual([]);
+    expect(getLiveState().dictated).toEqual({
+      text: "make the change. but keep the comments", id: before + 1, sessionId: "s1",
+    });
+    expect(audio.controller.state).toBe("idle");
+    expect(h.violations).toEqual([]);
+  });
+
+  for (const stage of ["capture", "read", "transcribe"] as const) {
+    test(`a ${stage} failure preserves good speech as a draft and never submits it`, async () => {
+      const audio = failingDictation(stage);
+      const h = harness({ dictationSession: () => audio.session, cfg: { interruptOnManualReply: false } });
+      const before = getLiveState().dictated?.id ?? 0;
+      const turn = h.voice.handle(wake());
+      await waitFor("first synthetic recorder", () => audio.recorders.length === 1);
+      audio.recorders[0]!.finish("make the change");
+      await waitFor("first result to drain", () => audio.recorders.length === 2 && audio.controller.finalWorkerIdle);
+      audio.recorders[1]!.finish("failed fragment", stage === "capture" ? "synthetic capture failure" : undefined);
+      await turn;
+      expect(h.texts).toEqual([]);
+      expect(h.keys).toEqual([]);
+      expect(getLiveState().dictated).toEqual({
+        text: "make the change but keep the comments", id: before + 1, sessionId: "s1",
+      });
+      expect(h.errors.some((entry) => String(entry[1]).includes("incomplete"))).toBe(true);
+      expect(h.said.at(-1)).toBe("Dictation was incomplete. Your recovered words are in the draft. Review them or retry before sending.");
+      expect(h.voice.capturing()).toBe(false);
+      expect(audio.controller.state).toBe("idle");
+      expect(h.violations).toEqual([]);
+    });
+  }
 });
 
 describe("the daemon's wiring of the loop", () => {
