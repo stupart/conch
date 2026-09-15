@@ -426,15 +426,13 @@ describe("schemas state what the handlers enforce", () => {
   const schema = (name: McpToolName) =>
     MCP_TOOLS.find((tool) => tool.name === name)!.inputSchema as Record<string, any>;
 
-  test("speak text is capped, mode refuses session with scope, config mutations need a key and never value with unset", () => {
+  test("speak text is capped in the schema, and no schema uses a conditional keyword", () => {
     expect(schema("conch_speak").properties.text.maxLength).toBe(MAX_SPEAK_CHARS);
-    expect(schema("conch_mode").dependentSchemas).toEqual({
-      scope: { not: { required: ["session"] } },
-    });
-    expect(schema("conch_config").dependentSchemas).toEqual({
-      value: { required: ["key"], properties: { unset: { const: false } } },
-      unset: { anyOf: [{ properties: { unset: { const: false } } }, { required: ["key"] }] },
-    });
+    for (const tool of MCP_TOOLS) {
+      for (const keyword of ["dependentSchemas", "dependentRequired", "if", "not"]) {
+        expect(JSON.stringify(tool.inputSchema)).not.toContain(`"${keyword}"`);
+      }
+    }
     // The Anthropic API rejects these at the top of a tool's input_schema.
     for (const tool of MCP_TOOLS) {
       for (const keyword of ["anyOf", "oneOf", "allOf"]) {

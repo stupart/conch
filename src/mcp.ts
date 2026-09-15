@@ -143,7 +143,6 @@ interface JsonSchema {
   minimum?: number;
   const?: unknown;
   not?: JsonSchema;
-  dependentSchemas?: Readonly<Record<string, JsonSchema>>;
   default?: unknown;
 }
 
@@ -232,9 +231,8 @@ export const MCP_TOOLS = [
         },
       },
       required: ["action"],
-      // What the handler refuses, stated up front. Not top-level anyOf/oneOf/
-      // allOf: the Anthropic API rejects those in a tool's input_schema.
-      dependentSchemas: { scope: { not: { required: ["session"] } } },
+      // `scope` with `session` is refused by the handler, not the schema: conditional keywords aren't
+      // reliably accepted in a tool's input_schema, and a rejected schema would hide every conch tool.
       additionalProperties: false,
     },
   },
@@ -267,11 +265,8 @@ export const MCP_TOOLS = [
         },
         unset: { type: "boolean", default: false },
       },
-      // A change names its key, and a value never comes with `unset: true`.
-      dependentSchemas: {
-        value: { required: ["key"], properties: { unset: { const: false } } },
-        unset: { anyOf: [{ properties: { unset: { const: false } } }, { required: ["key"] }] },
-      },
+      // A change names its key, and a value never comes with `unset: true`: the handler refuses both,
+      // for the same reason as conch_mode.
       additionalProperties: false,
     },
   },
