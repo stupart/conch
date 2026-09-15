@@ -298,20 +298,7 @@ final class BridgeClient: ObservableObject {
 
     // MARK: - Commands
 
-    /// What became of a message.
-    enum InjectOutcome: Equatable {
-        /// The Mac typed it and saw it land.
-        case delivered
-        /// Taken, not confirmed: a daemon that only acknowledges, or a delivery
-        /// still running at the Mac's bound. What every send meant before.
-        case accepted
-        case failed(String)
-
-        var reachedMac: Bool {
-            if case .failed = self { return false }
-            return true
-        }
-    }
+    typealias InjectOutcome = InjectReceipt
 
     /// Deliver words into a session, and hear whether they landed.
     func inject(sessionId: String, label: String, text: String) async -> InjectOutcome {
@@ -321,9 +308,7 @@ final class BridgeClient: ObservableObject {
             "label": label,
             "announce": text,
             "eventAt": Date().timeIntervalSince1970 * 1000,
-            // Answer once the keystrokes are done (bounded on the Mac), not when
-            // the line is read. An older daemon ignores this and acknowledges at
-            // once, which reads as `accepted`: never a false failure.
+            // Keep the draft until the Mac returns an explicit delivery receipt.
             "awaitDelivery": true,
         ] as [String: Any])
         let outcome = await deliveryOutcome(body)
@@ -350,14 +335,7 @@ final class BridgeClient: ObservableObject {
         } catch {
             return .failed(error.localizedDescription)
         }
-        guard response.status == 200 else { return .failed("The Mac returned HTTP \(response.status).") }
-        let reply = (try? JSONSerialization.jsonObject(with: response.body)) as? [String: Any]
-        // A scoped inject can return session-error: the daemon rejected the target.
-        if let error = reply?["error"] as? String { return .failed(error) }
-        if reply?["kind"] as? String == "inject-done", let delivered = reply?["delivered"] as? Bool {
-            return delivered ? .delivered : .failed("It didn't land in the session.")
-        }
-        return .accepted
+        return InjectOutcome.decode(status: response.status, body: response.body)
     }
 
     /// Send one image, in pieces, and get back the path it landed at.

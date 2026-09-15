@@ -1,24 +1,13 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { ControlFrameReader, CONTROL_FRAME_MAX_BYTES } from "../src/control-framing.ts";
 
-const controlServer = readFileSync(join(import.meta.dir, "..", "src", "control-server.ts"), "utf8");
+test("an oversized first chunk is rejected before its newline can dispatch it", () => {
+  const reader = new ControlFrameReader();
+  expect(() => reader.push(Buffer.from("x".repeat(CONTROL_FRAME_MAX_BYTES) + "\n"))).toThrow("frame exceeds");
+});
 
-/**
- * The frame cap has to see the chunk it is capping.
- *
- * It ran on the buffer BEFORE the incoming chunk was appended, so one
- * oversized chunk that ended in a newline was appended and parsed anyway; the
- * cap only ever caught a slow drip. This is a trust boundary — anything can
- * connect to the socket — so the order is asserted, with presence first.
- */
-test("the socket frame cap checks the buffer after appending the chunk", () => {
-  const at = controlServer.indexOf("A peer that never sends a newline");
-  expect(at).toBeGreaterThan(-1);
-  const block = controlServer.slice(at, at + 900);
-  const append = block.indexOf("buf += data.toString();");
-  const cap = block.indexOf("if (buf.length > 64_000) {");
-  expect(append).toBeGreaterThan(-1);
-  expect(cap).toBeGreaterThan(-1);
-  expect(append).toBeLessThan(cap);
+test("the delimiter needs one byte even when the body arrives in separate chunks", () => {
+  const reader = new ControlFrameReader();
+  expect(reader.push(Buffer.alloc(CONTROL_FRAME_MAX_BYTES - 1, 32))).toBeUndefined();
+  expect(() => reader.push(Buffer.from("x"))).toThrow("frame exceeds");
 });

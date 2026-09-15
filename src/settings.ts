@@ -1,4 +1,5 @@
 import { connect } from "node:net";
+import { ControlFrameReader, encodeControlFrame } from "./control-framing.ts";
 import {
   closeSync,
   existsSync,
@@ -1617,10 +1618,16 @@ export function sendControlMessage(
   timeoutMs = 500,
 ): Promise<ControlResult> {
   return new Promise((resolve) => {
+    let request: Buffer;
+    try { request = encodeControlFrame(JSON.stringify(message)); }
+    catch (error) {
+      resolve({ ok: false, reason: "ack-unknown", diagnostic: error instanceof Error ? error.message : String(error) });
+      return;
+    }
     const sock = connect({ path: socketPath, allowHalfOpen: true });
     let connected = false;
     let settled = false;
-    let buffer = "";
+    const frame = new ControlFrameReader();
 
     const finish = (result: ControlResult): void => {
       if (settled) return;
@@ -1653,16 +1660,20 @@ export function sendControlMessage(
       // Keep the readable half alive for the reply. Bun's net.Socket can close
       // both halves on end(), even with allowHalfOpen, so request/reply uses a
       // complete newline frame without a client FIN.
-      sock.write(JSON.stringify(message) + "\n");
+      sock.write(request);
     });
+    const framingFailure = (error: unknown): void => {
+      finish({ ok: false, reason: "ack-unknown", diagnostic: error instanceof Error ? error.message : String(error) });
+    };
     sock.on("data", (data) => {
-      buffer += data.toString();
-      const newline = buffer.indexOf("\n");
-      if (newline !== -1) parseLine(buffer.slice(0, newline));
+      if (settled) return;
+      try {
+        const line = frame.push(typeof data === "string" ? Buffer.from(data) : data);
+        if (line !== undefined) parseLine(line);
+      } catch (error) { framingFailure(error); }
     });
     sock.on("end", () => {
-      if (!settled && buffer.trim()) parseLine(buffer.trim());
-      else if (!settled) finish({ ok: false, reason: "ack-unknown", diagnostic: "daemon closed without a reply" });
+      if (!settled) { try { frame.end(); } catch (error) { framingFailure(error); } }
     });
     sock.on("error", (error) => {
       finish({

@@ -803,21 +803,6 @@ describe("daemon config controller", () => {
     expect(order.accept({ ...closed, eventAt: 1_000 })).toBe(true);
   });
 
-  test("socket data stops buffering after the first message is handled", () => {
-    const controlSource = readFileSync(new URL("../src/control-server.ts", import.meta.url), "utf8");
-    const dataAt = controlSource.indexOf('sock.on("data", (data) => {');
-    const endAt = controlSource.indexOf('sock.on("end", () => {');
-    expect(dataAt).toBeGreaterThan(-1);
-    expect(endAt).toBeGreaterThan(-1);
-    expect(dataAt).toBeLessThan(endAt);
-    const dataHandler = controlSource.slice(dataAt, endAt);
-    const handledAt = dataHandler.indexOf("if (handled) return;");
-    const appendAt = dataHandler.indexOf("buf += data.toString();");
-    expect(handledAt).toBeGreaterThan(-1);
-    expect(appendAt).toBeGreaterThan(-1);
-    expect(handledAt).toBeLessThan(appendAt);
-  });
-
   test("applies a live set by mutating the shared Config object in place", () => {
     const { path } = fixture();
     const env = {};

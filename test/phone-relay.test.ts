@@ -408,7 +408,7 @@ describe("Mac phone relay adapter", () => {
     const order: string[] = [];
     const harness = await connectedHarness({
       forward: async (line) => {
-        order.push(line);
+        order.push(JSON.parse(line).ordinal);
         return "";
       },
     });
@@ -422,7 +422,7 @@ describe("Mac phone relay adapter", () => {
     );
     const control = await harness.phone.seal(
       { id: "ordered-control", method: "POST", kind: "request" },
-      requestBody("/control", harness.relay.secret, "third"),
+      requestBody("/control", harness.relay.secret, JSON.stringify({ ordinal: "third" })),
     );
 
     await harness.peer.receive(JSON.stringify(control));

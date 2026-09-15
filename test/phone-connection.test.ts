@@ -136,18 +136,12 @@ describe("a message shows what became of it", () => {
     expect(Number(lanTimeout![1]) * 1000).toBeGreaterThan(INJECT_DELIVERY_WAIT_MS);
   });
 
-  test("the phone asks for delivery, and a daemon that only acknowledges is never a failure", () => {
+  test("the phone requests delivery and delegates to the behavior-tested receipt parser", () => {
     const inject = between(bridge, "func inject(sessionId: String, label: String, text: String) async -> InjectOutcome {", "\n    }\n");
     inOrder(inject, ['"type": "inject",', '"awaitDelivery": true,', "await deliveryOutcome(body)"]);
     const outcome = between(bridge, "private func deliveryOutcome(", "\n    }\n");
-    inOrder(outcome, [
-      'reply?["kind"] as? String == "inject-done", let delivered = reply?["delivered"] as? Bool',
-      'return delivered ? .delivered : .failed("It didn\'t land in the session.")',
-      "return .accepted",
-    ]);
-    // After the inject-done check, nothing else fails: an empty ack is `accepted`.
-    expect(outcome.slice(outcome.indexOf("let delivered = reply"))).not.toContain(".failed(error)");
-    expect(outcome.trimEnd().endsWith("return .accepted")).toBe(true);
+    expect(outcome).toContain("InjectOutcome.decode(status: response.status, body: response.body)");
+    expect(outcome).not.toContain("return .accepted");
   });
 
   test("the bubble appears before the wait and settles after it, on both send paths", () => {
