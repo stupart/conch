@@ -13,7 +13,7 @@ import {
   type SessionInfo,
 } from "./sessions.ts";
 import {
-  parseReviewRequest,
+  parsePublishableReview,
   spokenSnippet,
   transcriptMark,
 } from "./snippet.ts";
@@ -262,7 +262,7 @@ export async function handleCodexHookPayload(
   }
 
   const finalText = payload.last_assistant_message ?? "";
-  const review = parseReviewRequest(finalText);
+  const review = await parsePublishableReview(finalText, payload.cwd ?? process.cwd());
   const snippet = payload.transcript_path
     ? await dependencies.spokenSnippet(
       payload.transcript_path,

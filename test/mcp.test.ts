@@ -422,6 +422,32 @@ describe("MCP tool discovery", () => {
   });
 });
 
+describe("schemas state what the handlers enforce", () => {
+  const schema = (name: McpToolName) =>
+    MCP_TOOLS.find((tool) => tool.name === name)!.inputSchema as Record<string, any>;
+
+  test("speak text is capped in the schema, and no schema uses a conditional keyword", () => {
+    expect(schema("conch_speak").properties.text.maxLength).toBe(MAX_SPEAK_CHARS);
+    for (const tool of MCP_TOOLS) {
+      for (const keyword of ["dependentSchemas", "dependentRequired", "if", "not"]) {
+        expect(JSON.stringify(tool.inputSchema)).not.toContain(`"${keyword}"`);
+      }
+    }
+    // The Anthropic API rejects these at the top of a tool's input_schema.
+    for (const tool of MCP_TOOLS) {
+      for (const keyword of ["anyOf", "oneOf", "allOf"]) {
+        expect(Object.hasOwn(tool.inputSchema, keyword)).toBe(false);
+      }
+    }
+  });
+
+  test("review_to_front describes publishing, not opening or finishing", () => {
+    expect(MCP_TOOLS.find((tool) => tool.name === "review_to_front")!.description).toBe(
+      "Publish your session’s result for Tyler to inspect, with a concise summary and optional artifact or conversation scene. Tyler’s pill click stages it. Publishing does not open applications or finish the running turn.",
+    );
+  });
+});
+
 describe("MCP dispatch", () => {
   test("initialize advertises the supported protocol and tool capability", async () => {
     const response = await dispatchJsonRpc({
@@ -867,7 +893,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(h.calls.renames).toEqual([]);
   });
 
-  test("review_to_front sends the exact review turn", async () => {
+  test("review_to_front publishes the exact review, as a publication and not a turn end", async () => {
     const h = fakeHarness();
     const handlers = createMcpToolHandlers({
       claudeDir: "/virtual/claude",
@@ -883,7 +909,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
     });
 
     expect(h.calls.daemon[0]?.event).toEqual({
-      type: "turn-end",
+      type: "review-published",
       sessionId: "session-123",
       label: "Build label",
       cwd: "/work/build",
@@ -980,7 +1006,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(thrown).toBeInstanceOf(Error);
     expect((thrown as Error).name).toBe("ToolInputError");
     expect((thrown as Error).message).toBe(
-      "session is required and must name the worker whose deliverable this is"
+      "refused: session is required and must name the worker whose deliverable this is"
         + "; live sessions: Alpha, Beta",
     );
     // Two reads: one to identify the caller, one to list labels for the error.
@@ -1047,7 +1073,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
         });
         expect(rpcResult(response)).toMatchObject({ isError: true });
         expect(toolText(response)).toBe(
-          "link must be an http(s) URL or an existing, non-executable regular file",
+          "refused: link must be an http(s) URL or an existing, non-executable regular file",
         );
       }
 
@@ -1058,7 +1084,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
     }
   });
 
-  test("review_to_front reports a daemon that rejects the turn", async () => {
+  test("review_to_front reports a daemon that is not there as failed", async () => {
     const h = fakeHarness({ daemonAccepts: false });
     const handlers = createMcpToolHandlers({
       claudeDir: "/virtual/claude",
@@ -1072,13 +1098,13 @@ describe("real MCP tool handlers with injected dependencies", () => {
     });
 
     expect(rpcResult(response)).toEqual({
-      content: [{ type: "text", text: "conch daemon is not running" }],
+      content: [{ type: "text", text: "failed: conch daemon is not running, so nothing was published" }],
       isError: true,
     });
     expect(h.calls.daemon).toHaveLength(1);
   });
 
-  test("a review_to_front turn survives event ordering and live-work downgrade intact", async () => {
+  test("a publication is not a turn end: a newer Stop never makes it stale, and it never displaces one", async () => {
     const h = fakeHarness();
     const handlers = createMcpToolHandlers({
       claudeDir: "/virtual/claude",
@@ -1094,13 +1120,51 @@ describe("real MCP tool handlers with injected dependencies", () => {
     if (!event) throw new Error("expected review_to_front to build a TurnEvent");
     const review = event.review;
     const order = new TurnEventOrder();
+    // The session's own Stop, which happened after the publication, lands first.
+    const stop: TurnEvent = {
+      type: "turn-end",
+      sessionId: event.sessionId,
+      label: event.label,
+      announce: "Build label: done",
+      eventAt: (event.eventAt ?? 0) + 1,
+    };
 
+    expect(order.accept(stop)).toBe(true);
     expect(order.accept(event)).toBe(true);
+    expect(order.isCurrent(event)).toBe(true);
+    expect(order.isCurrent(stop)).toBe(true);
     expect(downgradeTurnWithLiveBackgroundWork(event, true)).toBe(event);
-    expect(event.type).toBe("turn-end");
+    expect(event.type).toBe("review-published");
     expect(event.review).toBe(review);
-    expect(event.review).toEqual({
-      summary: "Inspect the finished dashboard",
+  });
+
+  test("review_to_front says it was accepted, and reports a summary it had to cut", async () => {
+    const h = fakeHarness();
+    const handlers = createMcpToolHandlers({
+      claudeDir: "/virtual/claude",
+      socketPath: "/virtual/conch.sock",
+    }, h.dependencies);
+
+    const long = await callTool(handlers, "review_to_front", { summary: "x".repeat(250), session: "Build" });
+    expect(JSON.parse(toolText(long))).toEqual({
+      outcome: "accepted",
+      sessionId: "session-123",
+      label: "Build label",
+      summary: "x".repeat(200),
+      summaryTruncated: { from: 250, to: 200 },
+    });
+    expect(h.calls.daemon[0]?.event.review).toEqual({ summary: "x".repeat(200) });
+
+    const short = await callTool(handlers, "review_to_front", {
+      summary: "the dashboard",
+      link: "https://example.com/review",
+      session: "Build",
+    });
+    expect(JSON.parse(toolText(short))).toEqual({
+      outcome: "accepted",
+      sessionId: "session-123",
+      label: "Build label",
+      summary: "the dashboard",
       link: "https://example.com/review",
     });
   });

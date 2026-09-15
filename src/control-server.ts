@@ -405,6 +405,7 @@ const TURN_EVENT_TYPES = new Set<TurnEvent["type"]>([
   "inject",
   "interrupt",
   "turn-end",
+  "review-published",
   "needs-you",
   "wake",
   "recite",
@@ -514,6 +515,9 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
     if (value.review.link !== undefined && typeof value.review.link !== "string") {
       return { ok: false, err: "review link must be a string" };
     }
+  }
+  if (type === "review-published" && value.review === undefined) {
+    return { ok: false, err: "review is required for review-published" };
   }
 
   // Hook/state traffic and explicit speech retain the original complete shape.

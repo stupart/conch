@@ -1,5 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { AudioControl } from "./audio-holder.ts";
 import { audioTimeoutMs } from "./audio-watchdog.ts";
 import { loadConfig, type Config } from "./config.ts";
@@ -31,6 +31,9 @@ import {
   type SettingKey,
 } from "./settings.ts";
 import {
+  publishableReviewLink,
+  REVIEW_SUMMARY_MAX,
+  SAFE_REVIEW_LINK,
   sanitizeReviewSummary,
   splitSentences,
   transcriptMark,
@@ -136,7 +139,10 @@ interface JsonSchema {
   enum?: readonly (string | number | boolean | null)[];
   anyOf?: readonly JsonSchema[];
   minLength?: number;
+  maxLength?: number;
   minimum?: number;
+  const?: unknown;
+  not?: JsonSchema;
   default?: unknown;
 }
 
@@ -192,7 +198,7 @@ export const MCP_TOOLS = [
     inputSchema: {
       type: "object",
       properties: {
-        text: { type: "string", minLength: 1 },
+        text: { type: "string", minLength: 1, maxLength: MAX_SPEAK_CHARS },
         voice: {
           type: "string",
           minLength: 1,
@@ -225,6 +231,8 @@ export const MCP_TOOLS = [
         },
       },
       required: ["action"],
+      // `scope` with `session` is refused by the handler, not the schema: conditional keywords aren't
+      // reliably accepted in a tool's input_schema, and a rejected schema would hide every conch tool.
       additionalProperties: false,
     },
   },
@@ -257,6 +265,8 @@ export const MCP_TOOLS = [
         },
         unset: { type: "boolean", default: false },
       },
+      // A change names its key, and a value never comes with `unset: true`: the handler refuses both,
+      // for the same reason as conch_mode.
       additionalProperties: false,
     },
   },
@@ -279,7 +289,7 @@ export const MCP_TOOLS = [
   },
   {
     name: "review_to_front",
-    description: "Put the artifact you are working on into conch's artifact pane, where the user actually looks at it. conch's apps show ONE artifact per session beside the conversation; this is what fills it, and it stays there until you send another. Send whatever the turn produced that has to be LOOKED at — a page, a screenshot, a render, a PDF, a diff, a document, a video — and send it again as it changes, not only when it is finished. conch renders it inline on the Mac and the phone rather than printing a path. Always send one when you want the user to review something. Pass a one-line spoken summary plus the link or file path. Defaults to the calling session; a session may only surface its own work.",
+    description: "Publish your session’s result for Tyler to inspect, with a concise summary and optional artifact or conversation scene. Tyler’s pill click stages it. Publishing does not open applications or finish the running turn.",
     inputSchema: {
       type: "object",
       properties: {
@@ -599,46 +609,6 @@ async function requiredReviewSession(
     "session is required and must name the worker whose deliverable this is"
       + `; live sessions: ${labels.length ? labels.join(", ") : "(none)"}`,
   );
-}
-
-const SAFE_REVIEW_LINK =
-  "link must be an http(s) URL or an existing, non-executable regular file";
-
-function isWebUrl(link: string): boolean {
-  try {
-    const url = new URL(link);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-async function validateReviewLink(link: string): Promise<void> {
-  let url: URL | undefined;
-  try {
-    url = new URL(link);
-  } catch {
-    // A non-URL may still be a filesystem path.
-  }
-  if (url) {
-    if (
-      (url.protocol === "http:" || url.protocol === "https:")
-      && Boolean(url.hostname)
-    ) {
-      return;
-    }
-    throw new ToolInputError(SAFE_REVIEW_LINK);
-  }
-
-  let file;
-  try {
-    file = await stat(link);
-  } catch {
-    throw new ToolInputError(SAFE_REVIEW_LINK);
-  }
-  if (!file.isFile() || (file.mode & 0o111) !== 0) {
-    throw new ToolInputError(SAFE_REVIEW_LINK);
-  }
 }
 
 function unwrapControlResult(result: ControlResult): ControlResponse {
@@ -1018,54 +988,61 @@ export function createMcpToolHandlers(
     },
 
     async review_to_front(argumentsValue) {
-      const argumentsObject = toolArguments(argumentsValue);
-      allowOnly(argumentsObject, ["summary", "link", "session"]);
-      const summary = sanitizeReviewSummary(
-        requiredString(argumentsObject, "summary"),
-      );
-      if (!summary) {
-        throw new ToolInputError("summary must be a non-empty string");
-      }
-      const query = await requiredReviewSession(
-        argumentsObject,
-        config,
-        dependencies,
-      );
-      const rawLink = optionalString(argumentsObject, "link");
-      const trimmed = rawLink?.trim();
-      if (trimmed) await validateReviewLink(trimmed);
-      // Absolute by the time it leaves here. validateReviewLink stats a
-      // relative path against THIS process's cwd — the session's — and passes;
-      // the raw string then reached the Mac app, which resolved it against its
-      // own cwd and found nothing. So a deliverable given as
-      // `codebase-analysis/handoff.md` validated fine and previewed as missing,
-      // while this tool's own description promises it renders inline. Resolved
-      // against the same cwd the stat used, so the file that was checked is the
-      // file that is linked. URLs pass through untouched.
-      const link = trimmed && !isWebUrl(trimmed) ? resolve(trimmed) : trimmed;
-      const session = await resolveSession(query, config, dependencies);
+      // Accepted, refused or failed, and each says which. A refusal names its
+      // reason and nothing reaches the daemon.
+      const { summary, truncatedFrom, link, session } = await (async () => {
+        const argumentsObject = toolArguments(argumentsValue);
+        allowOnly(argumentsObject, ["summary", "link", "session"]);
+        const cleaned = sanitizeReviewSummary(requiredString(argumentsObject, "summary"), Infinity);
+        if (!cleaned) throw new ToolInputError("summary must be a non-empty string");
+        const query = await requiredReviewSession(argumentsObject, config, dependencies);
+        const rawLink = optionalString(argumentsObject, "link");
+        // Absolute by the time it leaves here, resolved against this process's
+        // cwd (the session's): the raw relative string reached the Mac app,
+        // which resolved it against its own cwd and previewed a missing file.
+        const link = rawLink?.trim() ? await publishableReviewLink(rawLink, process.cwd()) : undefined;
+        if (link === null) throw new ToolInputError(SAFE_REVIEW_LINK);
+        return {
+          summary: cleaned.slice(0, REVIEW_SUMMARY_MAX),
+          truncatedFrom: cleaned.length > REVIEW_SUMMARY_MAX ? cleaned.length : undefined,
+          link,
+          session: await resolveSession(query, config, dependencies),
+        };
+      })().catch((error) => {
+        throw new ToolInputError(`refused: ${errorMessage(error)}`);
+      });
       const label = dependencies.sessionLabel(session, session.cwd);
-      const transcriptPath = dependencies.findTranscript(
-        config.claudeDir,
-        session.sessionId,
-      );
-      const result = await sendTurn(config, dependencies, {
-        type: "turn-end",
+      const sent = await (async () => {
+        const transcriptPath = dependencies.findTranscript(config.claudeDir, session.sessionId);
+        // Not a turn-end: publishing happens mid-turn, and the turn's own Stop
+        // says when it finished.
+        return dependencies.sendToDaemon(config.socketPath, {
+          type: "review-published",
+          sessionId: session.sessionId,
+          label,
+          cwd: session.cwd,
+          pid: session.pid,
+          announce: `${label} has work ready for your review: ${summary}`,
+          ...(transcriptPath
+            ? { transcriptPath, mark: await dependencies.transcriptMark(transcriptPath) }
+            : {}),
+          eventAt: dependencies.now(),
+          review: { summary, ...(link ? { link } : {}) },
+        });
+      })().catch((error) => {
+        throw new Error(`failed: ${errorMessage(error)}`);
+      });
+      if (!sent) throw new Error("failed: conch daemon is not running, so nothing was published");
+      return {
+        outcome: "accepted",
         sessionId: session.sessionId,
         label,
-        cwd: session.cwd,
-        pid: session.pid,
-        announce: `${label} has work ready for your review: ${summary}`,
-        ...(transcriptPath
-          ? {
-            transcriptPath,
-            mark: await dependencies.transcriptMark(transcriptPath),
-          }
-          : {}),
-        eventAt: dependencies.now(),
-        review: { summary, ...(link ? { link } : {}) },
-      });
-      return result;
+        summary,
+        ...(link ? { link } : {}),
+        ...(truncatedFrom === undefined
+          ? {}
+          : { summaryTruncated: { from: truncatedFrom, to: REVIEW_SUMMARY_MAX } }),
+      };
     },
   };
 }

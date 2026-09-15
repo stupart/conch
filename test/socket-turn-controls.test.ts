@@ -240,6 +240,8 @@ describe("validateSocketTurnEvent", () => {
     };
 
     expect(validateSocketTurnEvent(event)).toEqual({ ok: true, value: event });
+    const publication: TurnEvent = { ...event, type: "review-published" };
+    expect(validateSocketTurnEvent(publication)).toEqual({ ok: true, value: publication });
   });
 
   test("rejects unknown, incomplete, and wrong-shaped JSON before dispatch", () => {
@@ -257,6 +259,7 @@ describe("validateSocketTurnEvent", () => {
       { type: "working", sessionId: "session-a", label: "alpha", announce: "", pid: "42" },
       { type: "turn-end", sessionId: "session-a", label: "alpha", announce: "", backgroundWork: false },
       { type: "turn-end", sessionId: "session-a", label: "alpha", announce: "", review: { summary: 42 } },
+      { type: "review-published", sessionId: "session-a", label: "alpha", announce: "" },
     ];
 
     for (const value of invalid) expect(validateSocketTurnEvent(value).ok).toBeFalse();

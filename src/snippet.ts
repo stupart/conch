@@ -1,7 +1,7 @@
 /** Turn a markdown reply into something worth hearing. */
 
-import { open as openFile, type FileHandle } from "node:fs/promises";
-import { basename } from "node:path";
+import { open as openFile, stat, type FileHandle } from "node:fs/promises";
+import { basename, resolve } from "node:path";
 
 const BARE_URL = /(?:<)?\bhttps?:\/\/[^\s<>"'`]+(?:>)?/gi;
 const FILESYSTEM_PATH = /(^|[\s([{'":=])((?:(?:~?|\.\.?)\/|[A-Za-z0-9_.-]+\/)[^\s)\]}>,"'`]+)/g;
@@ -858,13 +858,43 @@ export function looksLikeAwaitingReply(text: string): boolean {
   return /\b(let me know|tell me|your call|which (one|way|option)|should i|do you want|want me to|say the word|waiting on you|give me the go)\b/i.test(tail);
 }
 
-const REVIEW_MARKER = /^conch:review[^\S\r\n]+([^|\r\n]+?)(?:[^\S\r\n]*\|[^\S\r\n]*(\S+))?[^\S\r\n]*$/gim;
+// The link runs to the end of the line: `\S+` stopped at the first space, and
+// the trailing `$` then failed, so a path with a space dropped the whole marker.
+const REVIEW_MARKER = /^conch:review[^\S\r\n]+([^|\r\n]+?)(?:[^\S\r\n]*\|[^\S\r\n]*([^\r\n]*?))?[^\S\r\n]*$/gim;
 
-export function sanitizeReviewSummary(raw: string): string {
+/** A published summary is cut here; `review_to_front` reports when it was. */
+export const REVIEW_SUMMARY_MAX = 200;
+
+export function sanitizeReviewSummary(raw: string, max = REVIEW_SUMMARY_MAX): string {
   return raw
     .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
     .trim()
-    .slice(0, 200);
+    .slice(0, max);
+}
+
+export const SAFE_REVIEW_LINK =
+  "link must be an http(s) URL or an existing, non-executable regular file";
+
+/**
+ * The one link check for both ways a session publishes: `review_to_front` and
+ * the `conch:review` marker. Returns the link as published — an http(s) URL
+ * unchanged, a file made absolute against `cwd` so the apps open the file that
+ * was checked rather than resolving it against their own cwd — or null when it
+ * is not safe to hand an app.
+ */
+export async function publishableReviewLink(link: string, cwd: string): Promise<string | null> {
+  const trimmed = link.trim();
+  if (!trimmed) return null;
+  let url: URL | undefined;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    // Not a URL; it may still be a filesystem path.
+  }
+  if (url) return (url.protocol === "http:" || url.protocol === "https:") && url.hostname ? trimmed : null;
+  const path = resolve(cwd, trimmed);
+  const file = await stat(path).catch(() => null);
+  return file?.isFile() && (file.mode & 0o111) === 0 ? path : null;
 }
 
 /** Last `conch:review …` marker line in a reply, or null. */
@@ -875,6 +905,17 @@ export function parseReviewRequest(text: string): { summary: string; link?: stri
   const summary = sanitizeReviewSummary(match[1]!);
   if (!summary) return null;
   return { summary, ...(match[2] ? { link: match[2] } : {}) };
+}
+
+/** A marker's review with its link through `publishableReviewLink`: an unsafe link is dropped, the summary kept. */
+export async function parsePublishableReview(
+  text: string,
+  cwd: string,
+): Promise<{ summary: string; link?: string } | null> {
+  const review = parseReviewRequest(text);
+  if (!review?.link) return review;
+  const link = await publishableReviewLink(review.link, cwd);
+  return { summary: review.summary, ...(link ? { link } : {}) };
 }
 
 const SUMMARY_PROMPT = [

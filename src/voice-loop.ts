@@ -666,6 +666,45 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     return true;
   }
 
+  /**
+   * An agent published a result (`review_to_front`). That is not the end of
+   * its turn.
+   *
+   * It used to arrive as a synthetic `turn-end`, so a publication mid-turn
+   * latched the row `waiting` while the agent still worked, raised its window,
+   * opened the mic for a reply, and then the real Stop announced and opened it
+   * again. It also shared the turn's ordering, so a Stop that landed first made
+   * the publication stale and it was never filed at all. Now it files the
+   * deliverable onto whatever status the session has and says so once. Status,
+   * reading, the mic and `lastTurn` stay with the turn's own hooks, and nothing
+   * is held for replay: the row keeps the deliverable.
+   */
+  async function publishReview(event: TurnEvent): Promise<void> {
+    const { sessionId, label } = event;
+    if (!sessionId || !event.review) return;
+    const review = { ...event.review, at: eventTimestamp(event.eventAt) };
+    const prior = sessionStates.get(sessionId);
+    // A replayed or reordered older publication never displaces a newer one.
+    if (prior?.review && prior.review.at > review.at) return;
+    // No latch yet: the oldest-truth latch a restored review gets
+    // (`restoreReviews`), so the registry or the next hook decides status.
+    sessionStates.set(sessionId, prior ? { ...prior, review } : { label, status: "waiting", at: 0, review });
+    ledger.saveReviews();
+    void renderSessionPanel();
+
+    if (pause.paused || pausedSessionIds.has(sessionId) || dismissedSessionIds.has(sessionId)) {
+      return log(`filed a review for "${label}" — manual, not announced`);
+    }
+    // The phone reads published state itself, as it does for a turn.
+    if (audioLease.sink !== "mac") return;
+    if (cfg.awayAfterSecs && ((await idleSeconds()) ?? 0) >= cfg.awayAfterSecs) return;
+    log(`review published by "${label}"`);
+    // Another Mac holding the audio gets nothing: `speak` holds a line nobody
+    // asked for, and the two outbox sites stay the only ones (C9b Cut B).
+    if (audioHolder.isLocal() && !normalMicOpen()) await ringBell();
+    await speak(cfg, event.announce, label, false, sessionId);
+  }
+
   async function handle(event: TurnEvent): Promise<boolean | void> {
     // Inject and interrupt arrive immediately, not through the drain, so a
     // queued exchange may be mid-await right now: they must not touch its stop
@@ -746,6 +785,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   async function handleTurn(event: TurnEvent, pauseGeneration: number): Promise<void> {
     const interruptedByPause = (): boolean => pause.interrupted(pauseGeneration);
     if (!eventOrder.isCurrent(event)) return;
+    if (event.type === "review-published") return publishReview(event);
 
     if (
       event.type === "turn-end"
