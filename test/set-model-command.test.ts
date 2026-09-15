@@ -106,10 +106,11 @@ test("the daemon types /model through the same slash-command route as the /renam
   const at = daemon.indexOf("const sessionActions: SessionActionsController = {");
   expect(at).toBeGreaterThan(-1);
   const controller = daemon.slice(at, daemon.indexOf("\n  };", at));
-  expect(controller).toContain(
-    "setModel: (target, model) => injectProviderCommand(cfg, target, `/model ${model}`).then((delivery) => {",
+  const model = controller.slice(controller.indexOf("setModel:"));
+  expect(model).toContain(
+    "return injectProviderCommand(cfg, target, `/model ${model}`).then((delivery) => {",
   );
-  expect(controller).toContain('recordDaemonError(\n        "session-model",');
+  expect(model).toMatch(/recordDaemonError\(\s*"session-model",/);
   const rename = controller.indexOf("renameProviderSession(cfg, target, renamed.label)");
   expect(rename).toBeGreaterThan(-1);
   expect(controller.indexOf("setModel:")).toBeGreaterThan(rename);

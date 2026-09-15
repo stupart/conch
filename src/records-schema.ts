@@ -75,4 +75,10 @@ CREATE TRIGGER receipts_immutable_update BEFORE UPDATE ON receipts
 BEGIN SELECT RAISE(ABORT, 'receipts are immutable'); END;
 CREATE TRIGGER receipts_immutable_delete BEFORE DELETE ON receipts
 BEGIN SELECT RAISE(ABORT, 'receipts are immutable'); END;
+`, String.raw`
+ALTER TABLE sources ADD COLUMN coverage_status TEXT NOT NULL DEFAULT 'queued';
+ALTER TABLE sources ADD COLUMN coverage_error TEXT;
+ALTER TABLE sources ADD COLUMN coverage_updated_at REAL NOT NULL DEFAULT 0;
+ALTER TABLE sources ADD COLUMN replay_required INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX sources_session ON sources(session_id, id);
 `];

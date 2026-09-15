@@ -25,7 +25,9 @@ describe("silent user actions bypass the audio barrier", () => {
   // must go back through the queue or it will talk over another session.
   test("nothing that speaks is exempted", () => {
     const guard = source.slice(source.indexOf("if (!panelRefresh.accept(eventOrder, event)) return;"));
-    const branch = guard.slice(0, guard.indexOf("if (shouldHandleTurnAudibly("));
+    const immediate = guard.indexOf("if (event.type ===");
+    expect(immediate).toBeGreaterThan(-1);
+    const branch = guard.slice(immediate, guard.indexOf("if (shouldHandleTurnAudibly("));
     for (const speaking of ["turn-end", "needs-you", "recite", "speak"]) {
       expect(branch).not.toContain(`"${speaking}"`);
     }

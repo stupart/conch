@@ -35,6 +35,35 @@ describe("record worker", () => {
     expect(existsSync(configDir)).toBe(false);
   });
 
+  test("cancelled startup creates no directory or worker", async () => {
+    const configDir = join(directory(), "absent");
+    const controller = new AbortController();
+    controller.abort();
+    await expect(RecordsClient.open({ configDir, signal: controller.signal })).rejects.toThrow("startup cancelled");
+    expect(existsSync(configDir)).toBe(false);
+  });
+
+  test("ingestion starts explicitly, accepts priorities, and closes after earlier receipts", async () => {
+    const configDir = directory();
+    const client = await open(configDir);
+    expect(await client.ingestionStatus()).toBeUndefined();
+    const options = {
+      ownerDeviceId: "fixture-device", claudeHome: join(configDir, "claude"), codexHome: join(configDir, "codex"),
+    };
+    await client.startIngestion(options);
+    await client.prioritize({ selected: { provider: "claude", nativeId: "fixture-session" }, live: [] });
+    expect(await client.ingestionStatus()).toMatchObject({ running: true });
+    const duplicate = await client.startIngestion(options).catch((error: unknown) => error);
+    expect(duplicate).toBeInstanceOf(Error);
+    expect((duplicate as Error).message).toContain("already started");
+    const accepted = client.appendReceipt(receipt);
+    await client.close();
+    expect(await accepted).toBe(true);
+    const reopened = await open(configDir);
+    expect(await reopened.ingestionStatus()).toBeUndefined();
+    expect(await reopened.receipts(receipt.actionId)).toEqual([receipt]);
+  });
+
   test("enabled construction persists receipts and returns typed operations", async () => {
     const configDir = directory();
     const client = await openRecordsIfEnabled({ recordsEnabled: true }, { configDir });

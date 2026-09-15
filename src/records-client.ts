@@ -3,10 +3,19 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "./config.ts";
 import type { RecordStore } from "./records-store.ts";
+import type { RecordsIndexerOptions, RecordsIndexerStatus, RecordsPriorityHints } from "./records-indexer.ts";
 
-type RecordMethod = "ingest" | "source" | "appendReceipt" | "receipts" | "reindex" | "counts" | "close";
+export type RecordsIngestionOptions = RecordsIndexerOptions;
+export type { RecordsPriorityHints, RecordsIndexerStatus } from "./records-indexer.ts";
+type StoreMethod = "ingest" | "source" | "appendReceipt" | "receipts" | "reindex" | "counts" | "close";
+type RecordOperations = Pick<RecordStore, StoreMethod> & {
+  startIngestion(options: RecordsIngestionOptions): void;
+  prioritize(hints: RecordsPriorityHints): void;
+  ingestionStatus(): RecordsIndexerStatus | undefined;
+};
+type RecordMethod = keyof RecordOperations;
 type RecordArguments<K extends RecordMethod> = K extends "ingest"
-  ? [Parameters<RecordStore["ingest"]>[0]] : Parameters<RecordStore[K]>;
+  ? [Parameters<RecordStore["ingest"]>[0]] : Parameters<RecordOperations[K]>;
 export type RecordsRequest = {
   [K in RecordMethod]: { id: number; method: K; args: RecordArguments<K> }
 }[RecordMethod];
@@ -24,6 +33,7 @@ export class RecordsClient {
   private pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
   private ready: Promise<void>;
   private worker: Worker;
+  private termination?: Promise<void>;
 
   private constructor(configDir: string) {
     this.worker = new Worker(new URL("./records-worker.ts", import.meta.url), { workerData: { configDir } });
@@ -54,14 +64,20 @@ export class RecordsClient {
     });
   }
 
-  static async open(options: { configDir: string }): Promise<RecordsClient> {
+  static async open(options: { configDir: string; signal?: AbortSignal }): Promise<RecordsClient> {
+    if (options.signal?.aborted) throw new Error("record worker startup cancelled");
     const client = new RecordsClient(options.configDir);
+    const abort = () => { void client.terminate().catch(() => {}); };
+    options.signal?.addEventListener("abort", abort, { once: true });
     try {
       await client.ready;
+      if (options.signal?.aborted) throw new Error("record worker startup cancelled");
       return client;
     } catch (error) {
-      await client.worker.terminate();
+      await client.terminate();
       throw error;
+    } finally {
+      options.signal?.removeEventListener("abort", abort);
     }
   }
 
@@ -71,12 +87,12 @@ export class RecordsClient {
     this.pending.clear();
   }
 
-  private request<K extends RecordMethod>(method: K, ...args: RecordArguments<K>): Promise<ReturnType<RecordStore[K]>> {
+  private request<K extends RecordMethod>(method: K, ...args: RecordArguments<K>): Promise<ReturnType<RecordOperations[K]>> {
     if (this.failure) return Promise.reject(this.failure);
     if (this.closing && method !== "close") return Promise.reject(new Error("record store is closed"));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve: (value) => resolve(value as ReturnType<RecordStore[K]>), reject });
+      this.pending.set(id, { resolve: (value) => resolve(value as ReturnType<RecordOperations[K]>), reject });
       try {
         this.worker.postMessage({ id, method, args });
       } catch (error) {
@@ -92,10 +108,19 @@ export class RecordsClient {
   receipts(...args: Parameters<RecordStore["receipts"]>) { return this.request("receipts", ...args); }
   reindex(...args: Parameters<RecordStore["reindex"]>) { return this.request("reindex", ...args); }
   counts() { return this.request("counts"); }
+  startIngestion(options: RecordsIngestionOptions) { return this.request("startIngestion", options); }
+  prioritize(hints: RecordsPriorityHints) { return this.request("prioritize", hints); }
+  ingestionStatus() { return this.request("ingestionStatus"); }
+
+  terminate(): Promise<void> {
+    this.fail(new Error("record worker terminated"));
+    this.termination ??= this.worker.terminate().then(() => {});
+    return this.termination;
+  }
 
   close(): Promise<void> {
     // Messages are FIFO: earlier writes finish before SQLite closes.
-    this.closing ??= this.request("close").finally(async () => { await this.worker.terminate(); });
+    this.closing ??= this.request("close").finally(async () => { await this.terminate(); });
     return this.closing;
   }
 }

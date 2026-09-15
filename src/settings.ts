@@ -508,7 +508,7 @@ export const SETTING_DESCRIPTORS = [
     parse: parseBoolean,
     bounds: null,
     apply: "live",
-    help: "allow new local record-store clients; does not start ingestion or change existing clients",
+    help: "index local agent history and journal observed outcomes; off by default, stops and drains when disabled",
   },
 ] as const satisfies readonly SettingDescriptor[];
 

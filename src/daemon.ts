@@ -1,4 +1,8 @@
 import { SessionReconciler } from "./session-reconciler.ts";
+import { RecordsRuntime } from "./records-runtime.ts";
+import { createRecordOperation, createRecordReceiptObserver, type RecordObserver } from "./records-receipts.ts";
+import { recordSessionFor } from "./records-routing.ts";
+import type { RecordsPriorityHints } from "./records-indexer.ts";
 import { bindSessionProcess, readProcessIdentity } from "./process-identity.ts";
 import {
   createControlServer,
@@ -691,6 +695,46 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   let terminalComposer: TerminalComposer | null = null;
   let terminalQuestionController: TerminalQuestionController | null = null;
   let meetingMic: MicClaimPoller | null = null;
+  let recordsMayStart = false;
+  const records = new RecordsRuntime({
+    configDir: dirname(daemonSettingsPath), ownerDeviceId,
+    claudeHome: cfg.claudeDir, codexHome: codexHomeDir() ?? undefined,
+    onError: (message) => log(`records: ${message}`),
+  });
+  const receiptObserver = createRecordReceiptObserver({
+    ownerDeviceId,
+    resolveSession: (sessionId, observation) => recordSessionFor(ownerDeviceId, panelSessions.get(sessionId),
+      observation ?? { sessionId }),
+    appendReceipt: (receipt) => records.appendReceipt(receipt),
+    onError: () => log("records: receipt could not be journaled"),
+  });
+  const observeRecords: RecordObserver = (event) => {
+    // Late settlements release their captured session even if indexing was disabled meanwhile.
+    const settlement = event.kind !== "review" && event.state !== "accepted" && event.state !== "queued";
+    if (recordsMayStart && (cfg.recordsEnabled || settlement)) receiptObserver(event);
+  };
+  function prioritizeRecords(sessions: readonly SessionInfo[], selected: string | null, event?: TurnEvent): void {
+    if (!cfg.recordsEnabled || shuttingDown) return;
+    const live: RecordsPriorityHints["live"] = [];
+    let selectedRef: RecordsPriorityHints["selected"];
+    for (const session of sessions) {
+      const record = recordSessionFor(ownerDeviceId, session, { sessionId: session.sessionId });
+      if (!record) continue;
+      const hint = { provider: record.provider, nativeId: record.nativeId, path: session.transcriptPath,
+        cwd: record.cwd, parentNativeId: record.parentNativeId };
+      if (session.sessionId === selected) { selectedRef = hint; live.unshift(hint); }
+      else live.push(hint);
+    }
+    if (event?.transcriptPath) {
+      const record = recordSessionFor(ownerDeviceId, panelSessions.get(event.sessionId), event);
+      if (record) {
+        const hint = { provider: record.provider, nativeId: record.nativeId, path: event.transcriptPath, cwd: record.cwd };
+        live.unshift(hint);
+        if (event.sessionId === selected) selectedRef = hint;
+      }
+    }
+    records.prioritize({ selected: selectedRef, live });
+  }
   function labelForSessionId(id: string): string {
     const session = panelSessions.get(id);
     const known = latestTurnBySession.get(id)
@@ -799,6 +843,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     ),
     {
       warn: log,
+      observeRecords,
       worker: cfg.ttsEngine === "worker" ? ttsWorker : null,
       onKokoroFailure: (reason) => {
         if (cfg.ttsEngine === "server") ttsSupervisor?.requestRecovery(reason);
@@ -995,6 +1040,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     const event = incoming;
     warmTranscript(event.transcriptPath);
     if (!panelRefresh.accept(eventOrder, event)) return;
+    prioritizeRecords([...panelSessions.values()],
+      ["wake", "recite", "inject", "speak"].includes(event.type) ? event.sessionId : theaterNavigation.manualSelectedId ?? selectedId,
+      event);
 
     // Answering a session must not wait for a DIFFERENT session to finish
     // being read aloud.
@@ -1135,6 +1183,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     phoneLatch: { arm: armPhoneSpeechLatch, clear: clearPhoneSpeechLatch },
     raiseWindow,
     reportError: recordDaemonError,
+    observeRecords,
     prewarmEar: () => whisperSupervisor?.prewarm(),
     control: handleControl,
   });
@@ -1553,6 +1602,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       } else {
         for (const session of registryLive) panelSessions.set(session.sessionId, session);
       }
+      // This snapshot passed the reconciler's current() check; indexing never uses the eight-row preview cap.
+      prioritizeRecords([...panelSessions.values(), ...nested], navSelectedId ?? nextActiveSessionId);
       numberedSessionRows = numberPanelSessionRows(model.rows, live);
       // Read mode state after the async registry snapshot so a slow older redraw
       // cannot repaint a stale manual banner over a newer toggle.
@@ -1710,6 +1761,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       if (key === "meeting-autopause") meetingMic?.setEnabled(value === true);
       if (key === "phone" || key === "phone-port" || key === "phone-relay-url") syncPhoneBridge();
       if (key === "whisper-idle-unload") whisperSupervisor?.armIdleUnload(); // re-arm with the new window (cfg is already updated)
+      if (key === "records" && recordsMayStart && !shuttingDown) {
+        void records.setEnabled(value === true);
+        if (value === true) prioritizeRecords([...panelSessions.values()], theaterNavigation.manualSelectedId ?? selectedId);
+      }
     },
   });
   // These controllers own settings/session-action data and side effects for
@@ -1804,7 +1859,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         renamed.voiceMigrated ? " (voice pin migrated)" : ""
       }`);
       const agent = adapterFor(target.backend).displayName;
+      const receipt = createRecordOperation(observeRecords, { sessionId: target.sessionId }, "delivery");
+      receipt.emit("accepted", "provider-command-accepted");
       const synced = renameProviderSession(cfg, target, renamed.label).then((provider) => {
+        receipt.emit(provider.kind === "delivered" ? "delivered" : "failed",
+          provider.kind === "delivered" ? "transport-submitted" : provider.kind === "unsupported" ? "provider-command-unsupported" : provider.reason);
         if (provider.kind === "delivered") {
           log(`synced ${agent} label via ${provider.via}`);
         } else if (provider.kind === "unroutable") {
@@ -1816,6 +1875,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           );
         }
       }).catch((error) => {
+        receipt.emit("unknown", "delivery-outcome-unknown");
         recordDaemonError(
           "session-rename",
           `Conch renamed the session, but ${agent} did not: ${
@@ -1873,19 +1933,27 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     },
     // B2: `/model <model>` typed into the session's own prompt, the way the
     // `/rename` sync is — Claude Code or Codex handles it natively.
-    setModel: (target, model) => injectProviderCommand(cfg, target, `/model ${model}`).then((delivery) => {
-      if (delivery.kind === "delivered") {
-        log(`sent /model ${model} to "${target.label}" via ${delivery.via}`);
-        return true;
-      }
-      recordDaemonError(
-        "session-model",
-        `Could not send /model ${model} to the session: ${delivery.reason}`,
-        target.sessionId,
-        { model, backend: target.backend ?? "claude" },
-      );
-      return false;
-    }),
+    setModel: (target, model) => {
+      const receipt = createRecordOperation(observeRecords, { sessionId: target.sessionId }, "delivery");
+      receipt.emit("accepted", "provider-command-accepted");
+      return injectProviderCommand(cfg, target, `/model ${model}`).then((delivery) => {
+        receipt.emit(delivery.kind === "delivered" ? "delivered" : "failed", delivery.kind === "delivered" ? "transport-submitted" : delivery.reason);
+        if (delivery.kind === "delivered") {
+          log(`sent /model ${model} to "${target.label}" via ${delivery.via}`);
+          return true;
+        }
+        recordDaemonError(
+          "session-model",
+          `Could not send /model ${model} to the session: ${delivery.reason}`,
+          target.sessionId,
+          { model, backend: target.backend ?? "claude" },
+        );
+        return false;
+      }, (error) => {
+        receipt.emit("unknown", "delivery-outcome-unknown");
+        throw error;
+      });
+    },
   };
   sessionActionsOverlay = new SessionActionsOverlay({
     controller: sessionActions,
@@ -2256,6 +2324,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     whisperSupervisor?.close();
     ttsSupervisor?.close();
     ttsWorker.close();
+    // Preserve the synchronous audio cancellation above, then drain accepted journal writes before exit.
+    await records.close();
     // KEEP_RAW diagnostics are exact opt-in. The default path stays lean and
     // exits after synchronous cancellation instead of waiting on transcription.
     if (!diagnosticsEnabled) process.exit(0);
@@ -2385,6 +2455,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // Only the socket's owner may claim to be the daemon (A2): the Mac app reads
   // this to say who started what it adopted, and to tell its own child apart.
   writeIdentity();
+  recordsMayStart = true;
+  if (!shuttingDown) void records.setEnabled(cfg.recordsEnabled);
   syncPhoneBridge();
   void rehydrateFromTranscripts();
   log(`listening on ${cfg.socketPath} — wire hooks with \`conch install\``);
