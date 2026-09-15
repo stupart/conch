@@ -1,3 +1,4 @@
+import { SessionReconciler } from "./session-reconciler.ts";
 import {
   createControlServer,
   acquireControlOwnership,
@@ -201,7 +202,6 @@ import {
   buildPanelModel,
   buildPanelRows,
   buildPublishedState,
-  commitLatestPanelRender,
   panelReplyText,
   numberPanelSessionRows,
   previewForPanelSelection,
@@ -988,7 +988,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     if (shuttingDown) return;
     const event = incoming;
     warmTranscript(event.transcriptPath);
-    if (!eventOrder.accept(event)) return;
+    if (!panelRefresh.accept(eventOrder, event)) return;
 
     // Answering a session must not wait for a DIFFERENT session to finish
     // being read aloud.
@@ -1052,7 +1052,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // The at-rest status reflects the one lossless quiet mode.
   const restState = (): ConchState => (pause.paused ? "paused" : "idle");
 
-  let panelRenderVersion = 0;
+  const panelRefresh = new SessionReconciler({
+    read: () => registrySnapshot(cfg.claudeDir).catch(() => null),
+    reconcile: reconcileSessionSnapshot,
+    render: buildSessionPanel,
+    onError: (error) => log(`session refresh failed: ${error}`),
+  });
   let lastPublishedPanelState: PublishedState | null = null;
   let lastPanelModel: PanelModel | null = null;
   /**
@@ -1327,11 +1332,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
 
   async function renderSessionPanel(): Promise<void> {
     if (shuttingDown) return;
-    const version = ++panelRenderVersion;
-    let snap: Awaited<ReturnType<typeof registrySnapshot>> = null;
-    try {
-      snap = await registrySnapshot(cfg.claudeDir);
-    } catch {}
+    return panelRefresh.request();
+  }
+
+  function reconcileSessionSnapshot(snap: Awaited<ReturnType<typeof registrySnapshot>>): void {
     const registryLive = snap?.infos ?? [];
     for (const session of registryLive) {
       if (shouldReportMissingCodexPid(session, reportedMissingCodexPid)) {
@@ -1350,6 +1354,13 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       const liveIds = new Set(registryLive.map((s) => s.sessionId));
       ledger.forgetGone(liveIds);
     }
+  }
+
+  async function buildSessionPanel(
+    snap: Awaited<ReturnType<typeof registrySnapshot>>,
+    current: () => boolean,
+  ): Promise<void> {
+    const registryLive = snap?.infos ?? [];
     const live = withoutDismissedSessions(registryLive, dismissedSessionIds);
     // Live background subagents, nested under their parents (C4). Rows and
     // conversations only: `live` stays the set of sessions conch can address,
@@ -1466,7 +1477,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     if (shuttingDown) return;
     // Registry and transcript reads can overlap; only the newest complete model
     // may reach the renderer.
-    commitLatestPanelRender(version, panelRenderVersion, () => {
+    if (current()) {
       // Partial transcription and reading progress can change while the registry
       // or transcript is being read. Sample at commit so an older full render
       // cannot overwrite the lightweight publisher with stale conversation data.
@@ -1569,7 +1580,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       );
       publishedStateWriter.request();
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
-    });
+    }
   }
   /**
    * Rebuild what each session last said, from disk, at startup.
@@ -2223,6 +2234,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     rendererLifecycle.restore();
     theaterNavigation.dispose();
     shuttingDown = true;
+    panelRefresh.close();
     onLiveDataChange(null);
     publishedStateWriter.flush();
     meetingMic?.close();

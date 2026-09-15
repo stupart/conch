@@ -58,7 +58,7 @@ test("every event warms its session's transcript, once and off the hot path", ()
   expect(body).toContain("warmTranscript(event.transcriptPath)");
   // ...and before the ordering check, so an event dropped as stale still warms.
   expect(body.indexOf("warmTranscript(event.transcriptPath)"))
-    .toBeLessThan(body.indexOf("eventOrder.accept(event)"));
+    .toBeLessThan(body.indexOf("panelRefresh.accept(eventOrder, event)"));
 
   const warm = daemon.slice(daemon.indexOf("function warmTranscript(path: string | undefined): void {"));
   const warmBody = warm.slice(0, warm.indexOf("\n  }"));

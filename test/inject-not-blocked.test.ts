@@ -15,7 +15,7 @@ describe("silent user actions bypass the audio barrier", () => {
   const source = readFileSync(new URL("../src/daemon.ts", import.meta.url), "utf8");
 
   test("inject and interrupt are handled immediately", () => {
-    const guard = source.slice(source.indexOf("if (!eventOrder.accept(event)) return;"));
+    const guard = source.slice(source.indexOf("if (!panelRefresh.accept(eventOrder, event)) return;"));
     const window = guard.slice(0, 1600);
     expect(window).toContain('event.type === "inject" || event.type === "interrupt"');
     expect(window).toContain("immediate ");
@@ -24,7 +24,7 @@ describe("silent user actions bypass the audio barrier", () => {
   // The exemption holds only while these stay silent. Anything that speaks
   // must go back through the queue or it will talk over another session.
   test("nothing that speaks is exempted", () => {
-    const guard = source.slice(source.indexOf("if (!eventOrder.accept(event)) return;"));
+    const guard = source.slice(source.indexOf("if (!panelRefresh.accept(eventOrder, event)) return;"));
     const branch = guard.slice(0, guard.indexOf("if (shouldHandleTurnAudibly("));
     for (const speaking of ["turn-end", "needs-you", "recite", "speak"]) {
       expect(branch).not.toContain(`"${speaking}"`);

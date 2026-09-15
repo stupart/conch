@@ -200,10 +200,10 @@ describe("daemon listen status hooks", () => {
     const firstGuard = render.indexOf("if (shuttingDown) return;");
     const awaitPoint = render.indexOf("await Promise.all");
     const postAwaitGuard = render.indexOf("if (shuttingDown) return;", firstGuard + 1);
-    const commit = render.indexOf("commitLatestPanelRender(");
+    const commit = render.indexOf("if (current()) {");
 
     expect(firstGuard).toBeGreaterThanOrEqual(0);
-    expect(firstGuard).toBeLessThan(render.indexOf("++panelRenderVersion"));
+    expect(firstGuard).toBeLessThan(render.indexOf("panelRefresh.request()"));
     expect(postAwaitGuard).toBeGreaterThan(awaitPoint);
     expect(postAwaitGuard).toBeLessThan(commit);
     expect(shutdown.indexOf("shuttingDown = true")).toBeLessThan(
