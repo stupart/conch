@@ -14,12 +14,27 @@ function terminal(focusable = true) {
   const pasted: string[] = [];
   const submitted: string[] = [];
   const copies: string[] = [];
+  let changeCount = 0;
+  const write = (value: string) => { copies.push(value); clipboard = value; changeCount++; };
+  const pasteboard = {
+    prepare: async (value: string) => {
+      const items = [{ text: clipboard }];
+      write(value);
+      return { items, changeCount };
+    },
+    restore: async (lease: { items: Array<Record<string, string>>; changeCount: number }) => {
+      if (lease.changeCount !== changeCount) return false;
+      write(lease.items[0]?.text ?? "");
+      return true;
+    },
+  };
   const inject: ProviderRenameInjector = (cfg, pid, text, before, commandOptions) => injectText(
     cfg, pid, text, before, {
       findTmuxPane: async () => null,
       ttyForPid: async () => "ttys-test",
-      readClipboard: async () => clipboard,
-      copyToClipboard: async (value) => { copies.push(value); clipboard = value; },
+      pasteboard,
+      sleep: async () => {},
+      copyToClipboard: async (value) => { write(value); },
       osa: async (lines, argv = []) => {
         const script = lines.join("\n");
         if (script === FRONT_TTY_SCRIPT) return { text: "/dev/ttys-test", timedOut: false };

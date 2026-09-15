@@ -35,8 +35,11 @@ const cfg = (keystrokeFallback: boolean, autoSubmit = true): Config =>
 function fakeOsa(front: () => string) {
   const calls: Array<{ lines: string[]; argv: string[] }> = [];
   const osa: OsaRunner = async (lines, argv = []) => {
-    calls.push({ lines, argv });
     const script = lines.join("\n");
+    if (script.includes("conch-focus-guard") && front().trim() !== argv.at(-1)) {
+      return { text: "front-window-changed", timedOut: false };
+    }
+    calls.push({ lines, argv });
     if (script === FRONT_TTY_SCRIPT) return { text: front() + "\n", timedOut: false };
     if (script.includes("activate")) return { text: "ok\n", timedOut: false };
     return { text: "", timedOut: false };
@@ -44,6 +47,23 @@ function fakeOsa(front: () => string) {
   const typed = () => calls.filter((c) => c.lines.some((l) => l.includes("keystroke"))).map((c) => c.argv[0]);
   const returns = () => calls.filter((c) => c.lines.some((l) => l.includes("key code 36"))).length;
   return { osa, calls, typed, returns };
+}
+
+function fakePasteboard(initial: string, copied: string[]) {
+  let value = initial;
+  let changeCount = 0;
+  return {
+    prepare: async (text: string) => {
+      const items = value ? [{ text: value }] : [];
+      copied.push(text); value = text; changeCount++;
+      return { items, changeCount };
+    },
+    restore: async (lease: { items: Array<Record<string, string>>; changeCount: number }) => {
+      if (changeCount !== lease.changeCount) return false;
+      value = lease.items[0]?.text ?? ""; copied.push(value); changeCount++;
+      return true;
+    },
+  };
 }
 
 describe("1. there is no blind typing route", () => {
@@ -103,6 +123,8 @@ describe("2. keystroke-fallback is a real setting", () => {
     const result = await injectText(cfg(false), DEAD_PID, "words", undefined, {
       copyToClipboard: async (t) => { copied.push(t); },
       osa: f.osa,
+      findTmuxPane: async () => null,
+      sleep: async () => {},
       ttyForPid: async () => "ttys001",
     });
     expect(result).toEqual({ via: "clipboard", reason: "keystroke-fallback-off" });
@@ -116,6 +138,8 @@ describe("2. keystroke-fallback is a real setting", () => {
     const result = await injectText(cfg(true), DEAD_PID, "hi", undefined, {
       copyToClipboard: async (t) => { copied.push(t); },
       osa: f.osa,
+      findTmuxPane: async () => null,
+      sleep: async () => {},
       ttyForPid: async () => "ttys001",
     });
     expect(result).toEqual({ via: "osascript-focused" });
@@ -126,7 +150,7 @@ describe("2. keystroke-fallback is a real setting", () => {
     const kinds = f.calls.map((c) => c.lines.join("\n") === FRONT_TTY_SCRIPT ? "look"
       : c.lines.some((l) => l.includes("activate")) ? "focus"
         : c.lines.some((l) => l.includes("keystroke")) ? "type" : "return");
-    expect(kinds).toEqual(["focus", "look", "type", "focus", "look", "return"]);
+    expect(kinds).toEqual(["focus", "look", "type", "focus", "return"]);
   });
 
   test("another app in front aborts to the clipboard with its own reason, and nothing is typed", async () => {
@@ -135,6 +159,8 @@ describe("2. keystroke-fallback is a real setting", () => {
     const result = await injectText(cfg(true), DEAD_PID, "hi", undefined, {
       copyToClipboard: async (t) => { copied.push(t); },
       osa: f.osa,
+      findTmuxPane: async () => null,
+      sleep: async () => {},
       ttyForPid: async () => "ttys001",
     });
     expect(result).toEqual({ via: "clipboard", reason: "front-window-changed" });
@@ -148,6 +174,8 @@ describe("2. keystroke-fallback is a real setting", () => {
     const result = await injectText(cfg(true), DEAD_PID, "hi", undefined, {
       copyToClipboard: async () => {},
       osa: f.osa,
+      findTmuxPane: async () => null,
+      sleep: async () => {},
       ttyForPid: async () => "ttys001",
     });
     expect(result).toEqual({ via: "clipboard", reason: "front-window-changed" });
@@ -156,24 +184,26 @@ describe("2. keystroke-fallback is a real setting", () => {
 
   test("focus drifting after the text landed skips the Return rather than pressing it elsewhere", async () => {
     let looks = 0;
-    const f = fakeOsa(() => (++looks === 1 ? "/dev/ttys001" : "front:Slack"));
+    const f = fakeOsa(() => (++looks <= 2 ? "/dev/ttys001" : "front:Slack"));
     const result = await injectText(cfg(true), DEAD_PID, "hi", undefined, {
       copyToClipboard: async () => {},
       osa: f.osa,
+      findTmuxPane: async () => null,
+      sleep: async () => {},
       ttyForPid: async () => "ttys001",
     });
-    expect(result).toEqual({ via: "osascript-focused" });
+    expect(result).toEqual({ via: "none", failed: true, reason: "front-window-changed" });
     expect(f.typed()).toEqual(["hi"]);
     expect(f.returns()).toBe(0);
   });
 
   test("a single key looks before it presses too", async () => {
     const drifted = fakeOsa(() => "front:Finder");
-    expect(await injectKey(cfg(true), DEAD_PID, "Enter", undefined, { osa: drifted.osa, ttyForPid: async () => "ttys001" }))
-      .toEqual({ via: "none" });
+    expect(await injectKey(cfg(true), DEAD_PID, "Enter", undefined, { osa: drifted.osa, findTmuxPane: async () => null, sleep: async () => {}, ttyForPid: async () => "ttys001" }))
+      .toEqual({ via: "none", failed: true, reason: "front-window-changed" });
     expect(drifted.returns()).toBe(0);
     const held = fakeOsa(() => "/dev/ttys001");
-    expect(await injectKey(cfg(true), DEAD_PID, "Enter", undefined, { osa: held.osa, ttyForPid: async () => "ttys001" }))
+    expect(await injectKey(cfg(true), DEAD_PID, "Enter", undefined, { osa: held.osa, findTmuxPane: async () => null, sleep: async () => {}, ttyForPid: async () => "ttys001" }))
       .toEqual({ via: "osascript-focused" });
     expect(held.returns()).toBe(1);
   });
@@ -188,8 +218,10 @@ describe("2. keystroke-fallback is a real setting", () => {
     const copied: string[] = [];
     const result = await injectText(cfg(true, false), DEAD_PID, long, undefined, {
       copyToClipboard: async (t) => { copied.push(t); },
-      readClipboard: async () => "what was on the clipboard",
+      pasteboard: fakePasteboard("what was on the clipboard", copied),
       osa: f.osa,
+      findTmuxPane: async () => null,
+      sleep: async () => {},
       ttyForPid: async () => "ttys001",
     });
     expect(result).toEqual({ via: "osascript-focused" });
@@ -202,43 +234,44 @@ describe("2. keystroke-fallback is a real setting", () => {
     const copiedLines: string[] = [];
     await injectText(cfg(true, false), DEAD_PID, "first line\nsecond line", undefined, {
       copyToClipboard: async (t) => { copiedLines.push(t); },
-      readClipboard: async () => "",
+      pasteboard: fakePasteboard("", copiedLines),
       osa: g.osa,
+      findTmuxPane: async () => null,
+      sleep: async () => {},
       ttyForPid: async () => "ttys001",
     });
     expect(pasteCalls(g.calls)).toBe(1);
-    expect(copiedLines).toEqual(["first line\nsecond line"]);
+    expect(copiedLines).toEqual(["first line\nsecond line", ""]);
 
-    // A dialog eating the paste still leaves the words on the clipboard, as a blocked keystroke does.
+    // A failed paste restores the clipboard and reports an unsuccessful transport.
     const m = fakeOsa(() => "/dev/ttys001");
     const modal: OsaRunner = async (lines, argv) =>
       lines.some((l) => l.includes("command down")) ? { text: "", timedOut: true } : m.osa(lines, argv);
     const copiedModal: string[] = [];
     expect(await injectText(cfg(true, false), DEAD_PID, long, undefined, {
       copyToClipboard: async (t) => { copiedModal.push(t); },
-      readClipboard: async () => "prior",
+      pasteboard: fakePasteboard("prior", copiedModal),
       osa: modal,
+      findTmuxPane: async () => null,
+      sleep: async () => {},
       ttyForPid: async () => "ttys001",
-    })).toEqual({ via: "clipboard", reason: "system-dialog-blocking" });
-    expect(copiedModal.at(-1)).toBe(long);
+    })).toEqual({ via: "none", failed: true, reason: "system-dialog-blocking" });
+    expect(copiedModal.at(-1)).toBe("prior");
 
     // A short single line is still typed.
     const h = fakeOsa(() => "/dev/ttys001");
     await injectText(cfg(true, false), DEAD_PID, "hi", undefined, {
       copyToClipboard: async () => {},
-      readClipboard: async () => "",
       osa: h.osa,
+      findTmuxPane: async () => null,
+      sleep: async () => {},
       ttyForPid: async () => "ttys001",
     });
     expect(h.typed()).toEqual(["hi"]);
     expect(pasteCalls(h.calls)).toBe(0);
   }, 15_000);
 
-  // deliverToSession had a `via === "none"` branch ("Heard you, but I could
-  // not find the session's pane.") that A17 left unreachable: the only "none"
-  // injectText returns is its interrupted() helper, which the caller handles
-  // first. Every route and every stop point, so a bare "none" fails here.
-  test("injectText never answers via none without interrupted", async () => {
+  test("undelivered ordinary injections return an explicit failure or interruption", async () => {
     const results: Array<Awaited<ReturnType<typeof injectText>>> = [];
     const run = async (config: Config, pid: number | undefined, front: string, o: { tty?: string; modal?: boolean; allow?: number } = {}) => {
       const f = fakeOsa(() => front);
@@ -249,7 +282,9 @@ describe("2. keystroke-fallback is a real setting", () => {
       results.push(await injectText(config, pid, "hi", o.allow === undefined ? undefined : () => ++asked <= o.allow!, {
         copyToClipboard: async () => {},
         osa,
-        ttyForPid: async () => o.tty ?? "ttys001",
+        findTmuxPane: async () => null,
+      sleep: async () => {},
+      ttyForPid: async () => o.tty ?? "ttys001",
       }));
     };
     await run(cfg(true), undefined, "/dev/ttys001"); // no pid
@@ -261,7 +296,7 @@ describe("2. keystroke-fallback is a real setting", () => {
     await run(cfg(true, false), DEAD_PID, "/dev/ttys001"); // typed, no Return
     await run(cfg(true), undefined, "/dev/ttys001", { allow: 0 }); // stopped before the clipboard
     for (const allow of [0, 1, 2]) await run(cfg(true), DEAD_PID, "/dev/ttys001", { allow }); // stopped at each look
-    expect(results.filter((r) => r.via === "none" && !r.interrupted)).toEqual([]);
+    expect(results.filter((r) => r.via === "none" && !r.interrupted && !r.failed)).toEqual([]);
     // Not vacuous: every route was reached, the stop included.
     expect(new Set(results.map((r) => r.via))).toEqual(new Set(["clipboard", "osascript-focused", "none"]));
     expect(results.filter((r) => r.interrupted)).toHaveLength(4);
@@ -272,6 +307,8 @@ describe("2. keystroke-fallback is a real setting", () => {
     const result = await injectText(cfg(true), DEAD_PID, "hi", undefined, {
       copyToClipboard: async () => {},
       osa: f.osa,
+      findTmuxPane: async () => null,
+      sleep: async () => {},
       ttyForPid: async () => "",
     });
     expect(result).toEqual({ via: "clipboard", reason: "window-not-focusable" });
