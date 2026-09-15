@@ -1864,6 +1864,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     let timeoutRequestId: number | undefined;
     let reductionSequence = 0;
     let terminal = false;
+    let incompleteDictation: string[] | null = null;
     let deferredExternal: ExternalDictationAction | undefined;
     let deferredExternalBarrierReason: string | undefined;
     let awaitingInitialBarge = Boolean(initialDictationCapture);
@@ -2334,9 +2335,17 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
             bufferCountAfterReduction: reducer.snapshot.buffer.length,
           });
           log(`listen error: ${controllerEvent.error}`);
-          if (!reducer.snapshot.pendingAction) {
-            applyEffects(reducer.requestExternalAction("spacebar"));
-          }
+          // A failed fragment cannot authorize a send, including one already
+          // waiting behind this capture. Drain the recorder in finally and
+          // recover every successful fragment for an explicit review/retry.
+          incompleteDictation = reducer.snapshot.buffer.map((segment) => segment.text);
+          recordDaemonError(
+            "dictation",
+            "Dictation incomplete. Review the recovered draft or retry before sending.",
+            event.sessionId,
+            { stage: controllerEvent.stage },
+          );
+          terminal = true;
           continue;
         } else {
           const requestId = barrierRequests.get(controllerEvent.id)
@@ -2542,6 +2551,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         while (true) {
           const pendingEvent = await session.nextEvent();
           if (pendingEvent.kind === "transcript") {
+            if (incompleteDictation && pendingEvent.text) incompleteDictation.push(pendingEvent.text);
             emitRecorderTrace(pendingEvent.diagnosticId, {
               intent: exitIntent,
               bufferCountAfterReduction: reducer.snapshot.buffer.length,
@@ -2575,6 +2585,9 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       activeDictation = null;
       micOpen = false;
       bargeHandoffOpen = false;
+      if (incompleteDictation && !shuttingDown && !interruptedByPause() && !interruptedByManualReply()) {
+        publishDictation(incompleteDictation.join(" "), event.sessionId);
+      }
       const pendingIds = expandDiagnosticIds(
         reducer.snapshot.buffer.flatMap((segment) => segment.diagnosticId ? [segment.diagnosticId] : []),
       );
@@ -2593,6 +2606,13 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     }
     if (interruptedByManualReply() || manualReplyWatchError instanceof ManualReplyInterrupt) {
       log(`closed mic for "${event.label}" — you replied by text`);
+    }
+    if (incompleteDictation && !shuttingDown && !interruptedByPause() && !interruptedByManualReply()) {
+      // Recovery is already published and the mic drained. A failed warning
+      // must never prevent the words from reaching their addressed composer.
+      await speak(cfg, incompleteDictation.some((text) => text.trim())
+        ? "Dictation was incomplete. Your recovered words are in the draft. Review them or retry before sending."
+        : "Dictation failed. Please try again.", event.label);
     }
   }
 
