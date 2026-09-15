@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   applyPlan,
@@ -321,6 +322,92 @@ describe("planning Codex", () => {
 });
 
 describe("applying", () => {
+  test("config artifacts are private and exclusive before their contents are written", () => {
+    const f = fixture();
+    const plan = planToggle({ agent: "codex", scope: "user", capability: "plugin", id: "conch@conch-local", enabled: false }, f.homes);
+    const writes: Array<{ file: string; options: unknown; mode: number }> = [];
+    const realWrite = fs.writeFileSync;
+    const spy = spyOn(fs, "writeFileSync").mockImplementation(((file, data, options) => {
+      realWrite(file, data, options);
+      if (typeof file === "string" && (file.includes(".conch-tmp-") || file.includes(".conch-backup-"))) {
+        writes.push({ file, options, mode: fs.statSync(file).mode & 0o777 });
+      }
+    }) as typeof fs.writeFileSync);
+    const oldUmask = process.umask(0o022);
+    const targetMode = fs.statSync(plan.file).mode & 0o777;
+    try {
+      const result = applyPlan(plan);
+      expect(writes).toHaveLength(2);
+      for (const write of writes) {
+        expect(write.options).toMatchObject({ flag: "wx", mode: 0o600 });
+        expect(write.mode).toBe(0o600);
+      }
+      expect(fs.statSync(result.backup!).mode & 0o777).toBe(0o600);
+      // The replaced file keeps its own mode; only the transient and backup copies are forced private.
+      expect(fs.statSync(plan.file).mode & 0o777).toBe(targetMode);
+    } finally {
+      process.umask(oldUmask);
+      spy.mockRestore();
+    }
+  });
+
+  test.each(["tmp", "backup"])("a competing %s artifact is never overwritten", (kind) => {
+    const f = fixture();
+    const plan = planToggle({ agent: "codex", scope: "user", capability: "plugin", id: "conch@conch-local", enabled: false }, f.homes);
+    const realWrite = fs.writeFileSync;
+    let collided: string | undefined;
+    const spy = spyOn(fs, "writeFileSync").mockImplementation(((file, data, options) => {
+      if (typeof file === "string" && file.includes(`.conch-${kind}-`) && !collided) {
+        collided = file;
+        realWrite(file, "another writer's artifact");
+      }
+      realWrite(file, data, options);
+    }) as typeof fs.writeFileSync);
+    try {
+      expect(() => applyPlan(plan)).toThrow("EEXIST");
+      expect(collided).toBeDefined();
+      expect(readFileSync(collided!, "utf8")).toBe("another writer's artifact");
+      expect(readFileSync(plan.file, "utf8")).toBe(plan.before);
+      expect(existsSync(`${plan.file}.lock`)).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("a writer committing just before lock acquisition makes the plan stale", () => {
+    const f = fixture();
+    const plan = planToggle({ agent: "claude", scope: "user", capability: "plugin", id: "conch@conch", enabled: false }, f.homes);
+    const concurrent = plan.before.replace('"theme": "dark"', '"theme": "light"');
+    expect(concurrent).not.toBe(plan.before);
+    const realMkdir = fs.mkdirSync;
+    let competed = false;
+    const spy = spyOn(fs, "mkdirSync").mockImplementation(((path, options) => {
+      if (path === `${plan.file}.lock`) {
+        competed = true;
+        writeFileSync(plan.file, concurrent);
+      }
+      return realMkdir(path, options);
+    }) as typeof fs.mkdirSync);
+    try {
+      expect(() => applyPlan(plan)).toThrow("changed since the preview");
+      expect(competed).toBe(true);
+      expect(readFileSync(plan.file, "utf8")).toBe(concurrent);
+      expect(backupsFor(plan.file)).toEqual([]);
+      expect(existsSync(`${plan.file}.lock`)).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("Codex writes honour the same per-target lock", () => {
+    const f = fixture();
+    const plan = planToggle({ agent: "codex", scope: "user", capability: "plugin", id: "conch@conch-local", enabled: false }, f.homes);
+    mkdirSync(`${plan.file}.lock`);
+    expect(() => applyPlan(plan)).toThrow("is writing");
+    expect(readFileSync(plan.file, "utf8")).toBe(plan.before);
+    expect(backupsFor(plan.file)).toEqual([]);
+  });
+
   test("writes the plan, keeps a backup of the previous bytes, and bounds backups to the newest three", () => {
     const f = fixture();
     const file = join(f.homes.claudeHome, "settings.json");
@@ -598,4 +685,15 @@ describe("the surfaces", () => {
     expect(socket).toContain("let expectBeforeHash: String?");
     expect(socket).toContain("struct ConchConfigToggleReply: Decodable, Equatable, Sendable {");
   });
+});
+
+test("a private config stays private and a readable one keeps its mode after a write", () => {
+  for (const mode of [0o600, 0o644]) {
+    const f = fixture();
+    const plan = planToggle({ agent: "codex", scope: "user", capability: "plugin", id: "conch@conch-local", enabled: false }, f.homes);
+    chmodSync(plan.file, mode);
+    const result = applyPlan(plan);
+    expect(statSync(plan.file).mode & 0o777).toBe(mode);
+    expect(statSync(result.backup!).mode & 0o777).toBe(0o600);
+  }
 });
