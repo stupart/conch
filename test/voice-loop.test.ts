@@ -1281,6 +1281,22 @@ describe("a publication is not the end of a turn", () => {
     expect(h.ledger.lastTurn?.type).toBe("turn-end");
   });
 
+  test("its scene is filed with it and published on the row as rows[].review.scene", async () => {
+    const h = harness({ paused: true });
+    const scene = { v: 1 as const, target: { kind: "conversation" as const }, inspect: "Check that Save stays reachable" };
+    await h.voice.handle(accepted(h, published({ review: { ...review, scene } })));
+    const state = buildPublishedState("device", buildPanelModel({
+      sessions: [{ sessionId: "s1", name: "alpha" } as SessionInfo],
+      sessionStates: h.ledger.sessionStates,
+      pausedSessionIds: new Set(),
+      live: { state: "idle", label: "", partial: "" },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+    }), new Map(), new Set(), Date.now());
+    expect(state.rows[0]!.review).toEqual({ ...review, scene, at: 2_000 });
+  });
+
   test("in manual it files silently and holds nothing for replay", async () => {
     const h = harness({ paused: true });
     await h.voice.handle(accepted(h, published()));

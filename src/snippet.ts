@@ -873,6 +873,55 @@ export function sanitizeReviewSummary(raw: string, max = REVIEW_SUMMARY_MAX): st
     .slice(0, max);
 }
 
+/** A scene's `inspect` line is refused past this, never cut: it is one short thing to check. */
+export const REVIEW_INSPECT_MAX = 200;
+export const REVIEW_SCENE_KINDS = ["auto", "link", "conversation", "terminal"] as const;
+export type ReviewSceneKind = (typeof REVIEW_SCENE_KINDS)[number];
+
+/** What a click on the Ready pill should bring forward for a review, and what to check there (scene v1). */
+export interface ReviewScene {
+  v: 1;
+  target: { kind: ReviewSceneKind };
+  inspect?: string;
+}
+
+/**
+ * The one scene check, wherever a scene arrives: `review_to_front`, the
+ * daemon's socket, and the saved reviews. Returns the scene as published, or
+ * why not. `target.ref` is reserved until conch issues verified surface
+ * references, so it is refused rather than silently dropped, and `link` needs
+ * a link to open.
+ */
+export function checkReviewScene(
+  value: unknown,
+  hasLink: boolean,
+): { ok: true; scene: ReviewScene } | { ok: false; reason: string } {
+  const record = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+  const refuse = (reason: string) => ({ ok: false, reason: `scene ${reason}` }) as const;
+  if (!record(value)) return refuse("must be an object");
+  const extra = Object.keys(value).find((key) => key !== "v" && key !== "target" && key !== "inspect");
+  if (extra) return refuse(`has unknown field "${extra}"`);
+  if (value.v !== 1) return refuse("v must be 1");
+  const target = value.target;
+  if (!record(target)) return refuse("target must be an object with a kind");
+  if (Object.hasOwn(target, "ref")) {
+    return refuse("target.ref is not accepted yet: conch does not issue surface references, so omit it");
+  }
+  const extraTarget = Object.keys(target).find((key) => key !== "kind");
+  if (extraTarget) return refuse(`target has unknown field "${extraTarget}"`);
+  const kind = REVIEW_SCENE_KINDS.find((known) => known === target.kind);
+  if (!kind) return refuse(`target.kind must be one of ${REVIEW_SCENE_KINDS.join(", ")}`);
+  if (kind === "link" && !hasLink) return refuse('target.kind "link" needs a link to open; pass link, or use "auto"');
+  if (!Object.hasOwn(value, "inspect")) return { ok: true, scene: { v: 1, target: { kind } } };
+  if (typeof value.inspect !== "string") return refuse("inspect must be a string");
+  const inspect = sanitizeReviewSummary(value.inspect, Infinity);
+  if (!inspect) return refuse("inspect must be a non-empty string");
+  if (inspect.length > REVIEW_INSPECT_MAX) {
+    return refuse(`inspect is ${inspect.length} characters; at most ${REVIEW_INSPECT_MAX}, one short thing to check`);
+  }
+  return { ok: true, scene: { v: 1, target: { kind }, inspect } };
+}
+
 export const SAFE_REVIEW_LINK =
   "link must be an http(s) URL or an existing, non-executable regular file";
 

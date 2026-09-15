@@ -167,6 +167,18 @@ describe("saved deliverables", () => {
     expect(kept).toEqual(Array.from({ length: kept.length }, (_, i) => `s${10 - kept.length + i}`).sort());
   }));
 
+  test("a review's scene is saved and restored with it, and one this conch can't read is dropped", () => withFile((path) => {
+    const ledger = new SessionLedger(path);
+    const scene = { v: 1 as const, target: { kind: "terminal" as const }, inspect: "the build log" };
+    ledger.sessionStates.set("a", { label: "a", status: "waiting", at: 1_000, review: { summary: "a ready", scene, at: 1_000 } });
+    ledger.saveReviews();
+    expect(restored(path).sessionStates.get("a")?.review).toEqual({ summary: "a ready", scene, at: 1_000 });
+    const saved = JSON.parse(readFileSync(path, "utf8"));
+    saved.a.review.scene = { v: 9 };
+    writeFileSync(path, JSON.stringify(saved));
+    expect(restored(path).sessionStates.get("a")?.review).toEqual({ summary: "a ready", at: 1_000 });
+  }));
+
   test("a malformed entry is skipped and a live latch is never overwritten", () => withFile((path) => {
     const ledger = new SessionLedger(path);
     file(ledger, "a", 1_000);

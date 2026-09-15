@@ -6,8 +6,8 @@ import {
   rmSync,
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { renderAgentsMd, renderSkillMd } from "../src/agent-instructions.ts";
 import {
-  AGENTS_ALWAYS_ON,
   buildInstallCommands,
   buildMcpInvocation,
   buildMcpJson,
@@ -127,18 +127,13 @@ describe("plugin installer helpers", () => {
     // NOT the prose. AGENTS.md is always-on context for Codex while the skill
     // loads on demand, so shipping the same bytes to both made every Codex
     // session permanently carry a Homebrew install pitch.
-    expect(readFileSync(join(pluginRoot, "AGENTS.md"), "utf8")).toBe(AGENTS_ALWAYS_ON);
+    expect(readFileSync(join(pluginRoot, "AGENTS.md"), "utf8")).toBe(renderAgentsMd());
     expect(
       readFileSync(
         join(pluginRoot, "skills", "conch-control", "SKILL.md"),
         "utf8",
       ),
-    ).toBe(`---
-name: conch-control
-description: Put finished work in front of the user when a turn produces something to look at (a page, a diff, a screenshot, a built app), and see or steer their other Claude Code and Codex sessions. Use when you have made something viewable, or when asked what the other sessions are doing.
----
-
-${prose}`);
+    ).toBe(renderSkillMd(prose));
     // The plugin MUST ship its own .mcp.json — that file is the only thing
     // that registers conch's MCP server when a stranger installs the plugin.
     expect(existsSync(join(repoRoot, "plugin", "plugins", "conch", ".mcp.json")))
@@ -175,18 +170,13 @@ ${prose}`);
       "utf8",
     );
     expect(readFileSync(join(distDir, "plugins", "conch", "AGENTS.md"), "utf8"))
-      .toBe(AGENTS_ALWAYS_ON);
+      .toBe(renderAgentsMd());
     expect(
       readFileSync(
         join(distDir, "plugins", "conch", "skills", "conch-control", "SKILL.md"),
         "utf8",
       ),
-    ).toBe(`---
-name: conch-control
-description: Put finished work in front of the user when a turn produces something to look at (a page, a diff, a screenshot, a built app), and see or steer their other Claude Code and Codex sessions. Use when you have made something viewable, or when asked what the other sessions are doing.
----
-
-${prose}`);
+    ).toBe(renderSkillMd(prose));
 
     expect(
       JSON.parse(
@@ -268,7 +258,7 @@ describe("the two install paths ship the same prose", () => {
   const pluginRoot = join(repoRoot, "plugin", "plugins", "conch");
 
   test("the checked-in AGENTS.md is the short always-on text", () => {
-    expect(readFileSync(join(pluginRoot, "AGENTS.md"), "utf8")).toBe(AGENTS_ALWAYS_ON);
+    expect(readFileSync(join(pluginRoot, "AGENTS.md"), "utf8")).toBe(renderAgentsMd());
   });
 
   test("the checked-in SKILL.md is the generated prose under its frontmatter", () => {
@@ -276,8 +266,8 @@ describe("the two install paths ship the same prose", () => {
       join(pluginRoot, "skills", "conch-control", "SKILL.md"),
       "utf8",
     );
-    expect(skill.endsWith(prose)).toBe(true);
-    expect(skill.slice(0, skill.length - prose.length)).toMatch(/^---\nname: conch-control\n/);
+    expect(skill).toBe(renderSkillMd(prose));
+    expect(skill).toMatch(/^---\nname: conch-control\n/);
   });
 
   test("the shipped contract matches what review_to_front actually enforces", () => {

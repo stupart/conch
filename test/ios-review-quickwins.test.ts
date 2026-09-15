@@ -116,6 +116,36 @@ describe("Next walks the ready reviews by the Mac pill's rule", () => {
   });
 });
 
+describe("a review's scene on the iPhone", () => {
+  test.skipIf(!swift)(
+    "inspect decodes when sent, and a missing or unreadable scene never fails the review",
+    () => {
+      const models = ios("Models.swift");
+      const start = models.indexOf("        struct Review: Decodable, Equatable {");
+      expect(start).toBeGreaterThan(-1);
+      const review = models.slice(start, models.indexOf("\n        }\n", start) + 10);
+      const out = runSwift([
+        review,
+        "func show(_ json: String) {",
+        "  let r = try! JSONDecoder().decode(Review.self, from: Data(json.utf8))",
+        '  print("\\(r.summary)|\\(r.link ?? "-")|\\(r.inspect ?? "-")")',
+        "}",
+        'show(#"{"summary":"page","link":"https://x.test","scene":{"v":1,"target":{"kind":"conversation"},"inspect":"Check Save"}}"#)',
+        'show(#"{"summary":"page"}"#)',
+        'show(#"{"summary":"page","scene":{"inspect":42}}"#)',
+        'show(#"{"summary":"page","scene":"conversation"}"#)',
+      ]);
+      expect(out).toEqual(["page|https://x.test|Check Save", "page|-|-", "page|-|-", "page|-|-"]);
+    },
+    60_000,
+  );
+
+  test("the review screen and the ledger row show it on one line", () => {
+    expect(between(sheet, "if let inspect = row?.review?.inspect {", "if let next {")).toContain(".lineLimit(1)");
+    expect(between(ledger, "if let inspect = row.review?.inspect {", "Spacer(minLength: 8)")).toContain(".lineLimit(1)");
+  });
+});
+
 describe("a cold launch draws the last state the Mac sent", () => {
   test.skipIf(!swift)(
     "publishes pass straight through, the newest lands on disk, and the next launch draws it once, before dialling",

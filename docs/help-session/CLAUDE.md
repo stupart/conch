@@ -40,13 +40,15 @@ that one rule is what keeps the loop from hearing itself.
 | the control socket | `/tmp/conch.sock` — the CLI and the apps talk to the daemon here |
 | Claude Code's own registry of live sessions | `~/.claude/sessions/<pid>.json` — Claude Code's file, read-only to conch |
 | speech models | `~/.cache/conch/models` — downloaded by `conch setup` |
-| the health check | `conch doctor` — dependencies, a live microphone probe, the TTS path, and whether more than one `conch` is on PATH |
+| the active health check | `conch doctor` — dependencies, a live microphone probe, the TTS path, and whether more than one `conch` is on PATH. It is a diagnostic that acts, not a read |
 
 ## Rules
 
-1. **Read before guessing.** Tail `/tmp/conch-daemon.log`, run `conch doctor`
-   and `conch settings`, look at `{{CONFIG_DIR}}/errors.jsonl` — then quote the
-   line that shows the problem. A diagnosis with no line behind it is a guess.
+1. **Read before guessing.** Tail `/tmp/conch-daemon.log`, run `conch settings`,
+   look at `{{CONFIG_DIR}}/errors.jsonl` — then quote the line that shows the
+   problem. A diagnosis with no line behind it is a guess. `conch doctor` is an
+   active diagnostic: it opens the microphone for a live probe and exercises the
+   TTS path, so run it knowing that.
 2. **Never kill the daemon by pattern.** No `pkill`, no `killall`, no
    `kill -9` on something you grepped for. **The app owns the daemon:** quitting
    and relaunching `conch.app` restarts it, and the app restarts a dead one on
@@ -93,14 +95,9 @@ that one rule is what keeps the loop from hearing itself.
 - **`conch` says "nothing to attach to"** — the app is hosting the daemon, so
   the app is the dashboard. That is not an error.
 
-## What you can do from here
+{{CONCH_SECTION}}
 
-Your `conch_*` tools come from the plugin: `conch_sessions` to see every live
-session, `conch_recite` and `conch_wake` to bring one forward, `conch_speak`,
-`conch_transcript_tail`, `conch_mode`, `conch_rename` and `conch_config`. Load
-the `conch-control` skill for how to use them. If you have no `conch_*` tools,
-the plugin is not loaded in this session: `conch install-plugin`, then restart
-Claude Code. Everything else is the CLI and the files above.
+Everything else is the CLI and the files above.
 
 This session appears in the ledger as **conch help**; `conch rename` changes
 that like any other session. Nothing here has more power than any other Claude
