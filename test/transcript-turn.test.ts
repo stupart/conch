@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { currentTurnText } from "../src/transcript-turn.ts";
 
-const write = (lines: unknown[]): string => {
-  const path = join(mkdtempSync(join(tmpdir(), "conch-turn-")), "t.jsonl");
+const write = (lines: unknown[], name = "t.jsonl"): string => {
+  const path = join(mkdtempSync(join(tmpdir(), "conch-turn-")), name);
   writeFileSync(path, lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
   return path;
 };
@@ -78,5 +78,46 @@ describe("the turn in progress, as the Mac shows it", () => {
     const path = write([user("go"), assistant("kept")]);
     writeFileSync(path, `{ not json\n${JSON.stringify(assistant("also kept"))}\n`, { flag: "a" });
     expect(await currentTurnText(path)).toContain("also kept");
+  });
+});
+
+describe("the turn in progress, in a Codex rollout", () => {
+  const event = (payload: Record<string, unknown>) => ({ type: "event_msg", payload });
+  const item = (payload: Record<string, unknown>) => ({ type: "response_item", payload });
+  const said = (role: string, text: string, phase?: string) =>
+    item({ type: "message", role, content: [{ type: role === "user" ? "input_text" : "output_text", text }], ...(phase ? { phase } : {}) });
+
+  test("reads the turn in progress, not the previous answer", async () => {
+    // Codex wraps every record in a payload envelope. The Claude scan saw no
+    // assistant text in it, so the phone fell back to the last COMPLETED answer.
+    const path = write([
+      event({ type: "task_started", turn_id: "t1" }),
+      event({ type: "user_message", message: "first question" }),
+      said("user", "first question"),
+      said("assistant", "The previous answer."),
+      event({ type: "agent_message", message: "The previous answer." }),
+      event({ type: "task_complete", turn_id: "t1", last_agent_message: "The previous answer." }),
+      event({ type: "task_started", turn_id: "t2" }),
+      event({ type: "user_message", message: "second question" }),
+      said("user", "second question"),
+      item({ type: "reasoning", summary: [] }),
+      said("assistant", "Looking at it now.", "commentary"),
+      item({ type: "function_call", name: "exec_command", arguments: "{}", call_id: "c1" }),
+      item({ type: "function_call_output", call_id: "c1", output: "ok" }),
+      said("assistant", "Found it.", "commentary"),
+    ], "rollout-2026-09-16T00-00-00-abc.jsonl");
+    expect(await currentTurnText(path)).toBe("Looking at it now.\nFound it.");
+  });
+
+  test("a finished Codex turn reads as its own words, once", async () => {
+    // event_msg and response_item repeat the same reply; it is one block.
+    const path = write([
+      event({ type: "user_message", message: "go" }),
+      said("user", "go"),
+      said("assistant", "Done."),
+      event({ type: "agent_message", message: "Done." }),
+      event({ type: "task_complete", turn_id: "t1", last_agent_message: "Done." }),
+    ], "rollout-2026-09-16T00-00-00-def.jsonl");
+    expect(await currentTurnText(path)).toBe("Done.");
   });
 });
