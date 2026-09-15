@@ -14,6 +14,7 @@ import {
   AGENT_TUNABLE_SETTINGS,
   MAX_SPEAK_CHARS,
   MCP_PROTOCOL_VERSION,
+  MCP_HISTORY_MAX_BYTES,
   MCP_TOOLS,
   createMcpToolHandlers,
   defaultMcpDependencies,
@@ -45,6 +46,7 @@ import type { TurnEvent } from "../src/hook.ts";
 import type { RegistrySnapshot, SessionInfo } from "../src/sessions.ts";
 import { AmbiguousSessionError, findSessionByName, registrySnapshot } from "../src/sessions.ts";
 import { appServerNoTerminal } from "../src/codex-threads.ts";
+import { HISTORY_PAYLOAD_MAX_BYTES, type HistoryRequest, type HistoryResponse } from "../src/history.ts";
 
 const TOOL_NAMES = [
   "conch_sessions",
@@ -56,6 +58,8 @@ const TOOL_NAMES = [
   "conch_config",
   "conch_transcript_tail",
   "review_to_front",
+  "conch_history",
+  "conch_item",
 ] as const satisfies readonly McpToolName[];
 
 const DEFERRED_TOOL_NAMES = [
@@ -157,7 +161,7 @@ interface FakeCalls {
   renames: Array<{ sessionId: string; oldLabel: string; newLabel: string }>;
   providerRenames: Array<{ sessionId: string; label: string }>;
   daemon: Array<{ socketPath: string; event: TurnEvent }>;
-  control: Array<{ socketPath: string; message: ControlMessage }>;
+  control: Array<{ socketPath: string; message: ControlMessage | HistoryRequest }>;
   marks: string[];
   assistantReads: string[];
   sentenceSplits: string[];
@@ -261,6 +265,9 @@ function fakeHarness(options: FakeOptions = {}): {
     async sendControlMessage(socketPath, message) {
       calls.control.push({ socketPath, message });
       if (options.controlResult) return options.controlResult;
+      if (message.kind === "history-page" || message.kind === "history-item") {
+        return { ok: true, response: { kind: "history-off", error: "history is off" } };
+      }
       if (message.kind === "session-command") {
         return {
           ok: true,
@@ -335,6 +342,8 @@ function recordingHandlers(
     conch_config: handler("conch_config"),
     conch_transcript_tail: handler("conch_transcript_tail"),
     review_to_front: handler("review_to_front"),
+    conch_history: handler("conch_history"),
+    conch_item: handler("conch_item"),
   };
 }
 
@@ -358,8 +367,111 @@ describe("MCP JSON-RPC framing", () => {
   });
 });
 
+describe("recorded history MCP tools", () => {
+  const config = { claudeDir: "/virtual/claude", socketPath: "/virtual/conch.sock" };
+  const page: HistoryResponse = {
+    kind: "history-page", session: "recorded-session", items: [], previousCursor: "older", changeCursor: "watermark", epoch: "epoch-1",
+    coverage: { sources: 1, statuses: { complete: 1 }, replayRequired: false, malformedLines: 0, indexedBytes: 20,
+      observedBytes: 20, branch: "all", order: "timestamp-source" },
+  };
+
+  test("requires explicit IDs and proxies each page field without a live lookup or transcript read", async () => {
+    const h = fakeHarness({ parentPid: 0, controlResult: { ok: true, response: page } });
+    const handlers = createMcpToolHandlers(config, h.dependencies);
+    const args = { session: "closed-record", branch: "branch-1", before: "opaque-cursor", limit: 23 };
+    expect(JSON.parse(toolText(await callTool(handlers, "conch_history", args)))).toEqual(page);
+    expect(h.calls.control).toEqual([{ socketPath: config.socketPath, message: { kind: "history-page", ...args } }]);
+    expect(h.calls.registries).toEqual([]);
+    expect(h.calls.sessionLookups).toEqual([]);
+    expect(h.calls.transcripts).toEqual([]);
+    expect(h.calls.assistantReads).toEqual([]);
+    expect(h.calls.daemon).toEqual([]);
+  });
+
+  test("self uses only the verified caller and passes its exact window ID to daemon alias resolution", async () => {
+    const session: SessionInfo = { sessionId: "native@4321", agentSessionId: "native", pid: 4321, status: "idle" };
+    const h = fakeHarness({ parentPid: 4321, session });
+    const handlers = createMcpToolHandlers(config, h.dependencies);
+    await callTool(handlers, "conch_history", { session: "self" });
+    expect(h.calls.control[0]?.message).toEqual({ kind: "history-page", session: "native@4321" });
+    expect(h.calls.transcripts).toEqual([]);
+
+    const unverified = fakeHarness({ parentPid: 0 });
+    const refused = await callTool(createMcpToolHandlers(config, unverified.dependencies), "conch_item", { session: "self", item: "item-1" });
+    expect(rpcResult(refused)).toMatchObject({ isError: true });
+    expect(toolText(refused)).toContain("cannot verify");
+    expect(unverified.calls.control).toEqual([]);
+  });
+
+  test("Codex self binds to its client-provided thread metadata", async () => {
+    const session: SessionInfo = { sessionId: "codex-thread", backend: "codex", status: "idle" };
+    const h = fakeHarness({ parentPid: 0, session });
+    const handlers = createMcpToolHandlers(config, h.dependencies);
+    await dispatchJsonRpc({ jsonrpc: "2.0", id: 1, method: "tools/call", params: {
+      name: "conch_history", arguments: { session: "self" }, _meta: { "x-codex-turn-metadata": { thread_id: "codex-thread" } },
+    } }, handlers);
+    expect(h.calls.control[0]?.message).toEqual({ kind: "history-page", session: "codex-thread" });
+  });
+
+  test("item body chunks and continuation cursors are returned without truncation or re-encoding", async () => {
+    const body: HistoryResponse = { kind: "history-item", item: "item-1", content: 'line\n🐚\u0000{"ok":true}', nextBodyCursor: "next-chunk", revision: 2, encoding: "json" };
+    const h = fakeHarness({ parentPid: 0, controlResult: { ok: true, response: body } });
+    const args = { session: "closed-record", item: "item-1", bodyCursor: "previous-chunk" };
+    expect(JSON.parse(toolText(await callTool(createMcpToolHandlers(config, h.dependencies), "conch_item", args)))).toEqual(body);
+    expect(h.calls.control[0]?.message).toEqual({ kind: "history-item", ...args });
+  });
+
+  test("off and stale-cursor outcomes stay explicit and cause no fallback or mutation", async () => {
+    for (const response of [{ kind: "history-off", error: "history is off" },
+      { kind: "history-error", code: "stale-cursor", error: "read a fresh page", epoch: "new-epoch" }] as const) {
+      const h = fakeHarness({ parentPid: 0, controlResult: { ok: true, response } });
+      expect(JSON.parse(toolText(await callTool(createMcpToolHandlers(config, h.dependencies), "conch_history", { session: "closed" })))).toEqual(response);
+      expect(h.calls.control).toHaveLength(1);
+      expect(h.calls.transcripts).toEqual([]);
+      expect(h.calls.daemon).toEqual([]);
+    }
+  });
+
+  test("invalid inputs are refused before reaching the daemon", async () => {
+    const h = fakeHarness({ parentPid: 0 });
+    const handlers = createMcpToolHandlers(config, h.dependencies);
+    for (const [name, args] of [
+      ["conch_history", {}], ["conch_history", { session: "s", limit: 101 }],
+      ["conch_history", { session: "s", limit: 1.5 }], ["conch_history", { session: "s", after: "x" }],
+      ["conch_history", { session: "🐚".repeat(2000) }], ["conch_item", { session: "s" }],
+      ["conch_item", { session: "s", item: "i", branch: "b" }],
+      ["conch_item", { session: "s", item: "i", bodyCursor: "x".repeat(17 * 1024) }],
+    ] as const) expect(rpcResult(await callTool(handlers, name, args))).toMatchObject({ isError: true });
+    expect(h.calls.control).toEqual([]);
+  });
+
+  test("the final MCP frame is bounded after JSON escaping, including errors and request IDs", async () => {
+    const handlers = recordingHandlers([]);
+    handlers.conch_item = async () => ({ kind: "history-item", content: '\\"🐚'.repeat(20_000) });
+    for (const id of [1, "x".repeat(MCP_HISTORY_MAX_BYTES)] as const) {
+      const response = await callTool(handlers, "conch_item", { session: "s", item: "i" }, id);
+      expect(Buffer.byteLength(serializeJsonRpcLine(response) + "\n")).toBeLessThanOrEqual(MCP_HISTORY_MAX_BYTES);
+    }
+    handlers.conch_item = async () => { throw new Error("x".repeat(MCP_HISTORY_MAX_BYTES)); };
+    const response = await callTool(handlers, "conch_item", { session: "s", item: "i" });
+    expect(Buffer.byteLength(serializeJsonRpcLine(response) + "\n")).toBeLessThanOrEqual(MCP_HISTORY_MAX_BYTES);
+    expect(JSON.parse(toolText(response))).toMatchObject({ kind: "history-error", code: "response-too-large" });
+  });
+
+  test("oversized or mismatched daemon responses are refused", async () => {
+    for (const response of [
+      { kind: "history-item", item: "i", content: "x".repeat(HISTORY_PAYLOAD_MAX_BYTES), nextBodyCursor: null, revision: 1, encoding: "text" },
+      { kind: "history-item", item: "i", content: "wrong kind", nextBodyCursor: null, revision: 1, encoding: "text" },
+    ] as const) {
+      const h = fakeHarness({ parentPid: 0, controlResult: { ok: true, response } });
+      const result = await callTool(createMcpToolHandlers(config, h.dependencies), "conch_history", { session: "s" });
+      expect(JSON.parse(toolText(result))).toMatchObject({ kind: "history-error", code: "unavailable" });
+    }
+  });
+});
+
 describe("MCP tool discovery", () => {
-  test("tools/list returns exactly the nine safe tools with valid closed schemas", async () => {
+  test("tools/list returns exactly the eleven tools with valid closed schemas", async () => {
     const handlers = recordingHandlers([]);
     const response = await dispatchJsonRpc({
       jsonrpc: "2.0",
@@ -373,8 +485,8 @@ describe("MCP tool discovery", () => {
 
     expect(response?.id).toBe(11);
     expect(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).toEqual([...TOOL_NAMES]);
-    expect(result.tools).toHaveLength(9);
-    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(9);
+    expect(result.tools).toHaveLength(11);
+    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(11);
     for (const deferred of DEFERRED_TOOL_NAMES) {
       expect(result.tools.some((tool: unknown) => isRecord(tool) && tool.name === deferred)).toBe(false);
     }
@@ -389,6 +501,8 @@ describe("MCP tool discovery", () => {
       conch_config: ["key", "value", "unset"],
       conch_transcript_tail: ["session", "sentences"],
       review_to_front: ["summary", "link", "session", "scene"],
+      conch_history: ["session", "branch", "before", "limit"],
+      conch_item: ["session", "item", "bodyCursor"],
     };
     const expectedRequired: Record<McpToolName, string[]> = {
       conch_sessions: [],
@@ -401,6 +515,8 @@ describe("MCP tool discovery", () => {
       conch_transcript_tail: ["session"],
       // session is optional now: it defaults to the CALLING session.
       review_to_front: ["summary"],
+      conch_history: ["session"],
+      conch_item: ["session", "item"],
     };
 
     for (const tool of result.tools) {

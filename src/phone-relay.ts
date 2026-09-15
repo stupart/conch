@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { PhoneBridgeApplication, PhoneStateSink } from "./phone-bridge.ts";
+import { isPhoneHistoryRead, type PhoneBridgeApplication, type PhoneStateSink } from "./phone-bridge.ts";
 import {
   RELAY_CHUNK_BYTES,
   RELAY_MAX_FRAME_BYTES,
@@ -642,7 +642,7 @@ export class MacRelayPeer {
       },
     });
 
-    if (opened.header.method === "POST") {
+    if (opened.header.method === "POST" && !isPhoneHistoryRead(payload.path, body)) {
       const control = controlMessage(payload.path, body);
       const run = async (): Promise<CachedRelayResponse> => {
         const result = invoke();

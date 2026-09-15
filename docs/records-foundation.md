@@ -1,7 +1,8 @@
 # Local record store foundation
 
-This is PR 5 only. Nothing calls the store from the daemon, watches transcripts, or
-changes the existing conversation renderer. `records` / `CONCH_RECORDS_ENABLED`
+This describes the shipped PR 5 foundation; see [incremental ingestion](records-ingestion.md)
+for PR 6 wiring and limits. In PR 5, nothing called the store from the daemon,
+watched transcripts, or changed the existing conversation renderer. `records` / `CONCH_RECORDS_ENABLED`
 defaults to false. `openRecordsIfEnabled(config)` is the construction gate; enabling
 it does not start ingestion. An explicit `configDir` overrides `CONCH_CONFIG_DIR`.
 

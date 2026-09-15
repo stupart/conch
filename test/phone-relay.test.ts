@@ -584,6 +584,37 @@ describe("Mac phone relay adapter", () => {
 // Review finding 18: the cache kept every POST reply for the daemon's lifetime,
 // telemetry included, and refused all sends once it held 4,096.
 describe("the relay retry cache over a long-lived daemon", () => {
+  test("history POSTs read fresh responses without reserving mutation retry entries", async () => {
+    const cache = new RelayResponseCache();
+    let forwarded = 0;
+    const harness = await connectedHarness({ cache, forward: async () => {
+      forwarded++;
+      return JSON.stringify({ kind: "history-off", error: "history is off" });
+    } });
+    const reads = [
+      ["/history/page", { session: "archived" }],
+      ["/history/item", { session: "archived", item: "item" }],
+      ["/control", { kind: "history-page", session: "archived" }],
+      ["/control", { kind: "control-envelope", ownerDeviceId: "owner", body: { kind: "history-item", session: "archived", item: "item" } }],
+    ] as const;
+    for (const [path, body] of reads) {
+      for (let retry = 0; retry < 2; retry++) {
+        const frame = await harness.phone.seal({ id: "history-retry", method: "POST", kind: "request" },
+          requestBody(path, harness.relay.secret, JSON.stringify(body)));
+        await harness.peer.receive(JSON.stringify(frame));
+        expect(responseStatus(await openSent(harness.phone, harness.sent))).toBe(200);
+      }
+    }
+    expect(forwarded).toBe(8);
+    expect(cache.size).toBe(0);
+    const mutation = await harness.phone.seal({ id: "mutation", method: "POST", kind: "request" },
+      requestBody("/control", harness.relay.secret, JSON.stringify({ type: "interrupt", sessionId: "s" })));
+    await harness.peer.receive(JSON.stringify(mutation));
+    expect(responseStatus(await openSent(harness.phone, harness.sent))).toBe(200);
+    expect(cache.size).toBe(1);
+    harness.peer.close();
+  });
+
   async function post(
     harness: Awaited<ReturnType<typeof connectedHarness>>,
     phone: RelaySessionCipher,

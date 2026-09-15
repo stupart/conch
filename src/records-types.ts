@@ -107,7 +107,7 @@ export interface RecordReceipt {
   turnId?: string;
   itemId?: string;
   kind: "delivery" | "review" | "speech";
-  state: "accepted" | "delivered" | "failed" | "unknown" | "published" | "opened" | "queued" | "completed" | "interrupted";
+  state: "accepted" | "delivered" | "staged" | "failed" | "unknown" | "published" | "opened" | "queued" | "started" | "completed" | "interrupted";
   observedAt: number;
   /** Deliberately small allowlist: receipts do not duplicate prompts, audio, or tool arguments. */
   details?: { code?: string; reviewId?: string; surfaceRef?: string; characterCount?: number };

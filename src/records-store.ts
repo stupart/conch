@@ -5,6 +5,8 @@ import { normalizeClaudeRecord } from "./records-claude.ts";
 import { normalizeCodexRecord } from "./records-codex.ts";
 import { RECORD_MIGRATIONS } from "./records-schema.ts";
 import { recordValue } from "./records-sanitize.ts";
+import { RecordsHistory } from "./records-history.ts";
+import type { HistoryItemRequest, HistoryPageRequest } from "./history.ts";
 import {
   completeRecordLines, inspectRecordSource, recordFingerprint, RECORD_PARSER_VERSION, SOURCE_PROBE_BYTES,
   type RecordSourceRead, type StoredRecordSource,
@@ -15,6 +17,12 @@ export type { StoredRecordSource } from "./records-source.ts";
 export interface RecordIngest { session: RecordSession; source: RecordSourceRead }
 export interface RecordIngestResult { source: StoredRecordSource; lines: number; malformedLines: number; change: string }
 export type RecordCounts = { [K in "sessions" | "sources" | "turns" | "items" | "item_sources" | "tool_calls" | "responses" | "receipts"]: number };
+export type RecordCoverageStatus = "queued" | "indexing" | "complete" | "partial" | "missing" | "error" | "oversized";
+export interface RecordSourceEntry {
+  source: StoredRecordSource;
+  session: RecordSession;
+  coverage: { status: RecordCoverageStatus; error?: string; replayRequired: boolean; updatedAt: number };
+}
 
 const TABLES = ["sessions", "sources", "turns", "items", "item_sources", "tool_calls", "responses", "receipts"] as const;
 const json = (value: unknown): string | null => {
@@ -27,6 +35,7 @@ const nonempty = (value: unknown): value is string => typeof value === "string" 
 export class RecordStore {
   readonly path: string;
   private readonly db: Database;
+  private readonly history: RecordsHistory;
 
   constructor(options: { configDir: string }) {
     if (!nonempty(options.configDir)) throw new Error("record store requires a config directory");
@@ -60,6 +69,7 @@ export class RecordStore {
       for (const suffix of ["", "-wal", "-shm"]) {
         if (existsSync(this.path + suffix)) chmodSync(this.path + suffix, 0o600);
       }
+      this.history = new RecordsHistory(this.db);
     } catch (error) {
       this.db.close();
       throw error;
@@ -69,6 +79,10 @@ export class RecordStore {
   source(id: string): StoredRecordSource | undefined {
     const row = this.db.query("SELECT * FROM sources WHERE id = ?").get(id) as any;
     if (!row) return undefined;
+    return this.sourceFromRow(row);
+  }
+
+  private sourceFromRow(row: any): StoredRecordSource {
     return {
       id: row.id, sessionId: row.session_id, path: row.path, device: row.device, inode: row.inode,
       size: row.size, modifiedMs: row.modified_ms, generation: row.generation, offset: row.committed_offset,
@@ -76,6 +90,61 @@ export class RecordStore {
       checkpointHash: row.checkpoint_hash, checkpointLength: row.checkpoint_length,
       parserVersion: row.parser_version, state: JSON.parse(row.state_json), malformedLines: row.malformed_lines,
     };
+  }
+
+  /** Keep unavailable sources discoverable across restarts, before their first complete line. */
+  registerSource(session: RecordSession, file: Pick<StoredRecordSource, "id" | "path" | "device" | "inode">): StoredRecordSource {
+    if (![file.id, file.path, file.device, file.inode].every(nonempty)) throw new Error("invalid record source");
+    return this.db.transaction(() => {
+      this.ensureSession(session);
+      const previous = this.source(file.id);
+      if (previous) {
+        if (previous.sessionId !== session.id || previous.device !== file.device || previous.inode !== file.inode) {
+          throw new Error("registered source identity cannot change");
+        }
+        if (previous.path !== file.path) this.db.query("UPDATE sources SET path=? WHERE id=?").run(file.path, file.id);
+        return { ...previous, path: file.path };
+      }
+      const source: StoredRecordSource = {
+        ...file, sessionId: session.id, size: 0, modifiedMs: 0, generation: 1, offset: 0,
+        prefixHash: recordFingerprint(new Uint8Array()), prefixLength: 0,
+        checkpointHash: recordFingerprint(new Uint8Array()), checkpointLength: 0,
+        parserVersion: RECORD_PARSER_VERSION, state: {}, malformedLines: 0,
+      };
+      this.writeSource(source);
+      return source;
+    })();
+  }
+
+  /** Internal metadata pages keep recovery work bounded; this is not the conversation paging API. */
+  sourcePage(options: { sessionId?: string; after?: string; limit?: number } = {}): RecordSourceEntry[] {
+    const limit = Math.max(1, Math.min(256, Math.floor(options.limit ?? 128)));
+    if (!Number.isFinite(limit)) throw new Error("invalid source page limit");
+    const rows = this.db.query(`SELECT sources.*, sessions.owner_device_id, sessions.provider,
+      sessions.native_id AS session_native_id, sessions.title, sessions.cwd, sessions.parent_native_id, sessions.fork_native_id
+      FROM sources JOIN sessions ON sessions.id=sources.session_id
+      WHERE sources.id>? AND (? IS NULL OR sources.session_id=?) ORDER BY sources.id LIMIT ?`)
+      .all(options.after ?? "", options.sessionId ?? null, options.sessionId ?? null, limit) as any[];
+    return rows.map((row) => ({
+      source: this.sourceFromRow(row),
+      session: { id: row.session_id, ownerDeviceId: row.owner_device_id, provider: row.provider, nativeId: row.session_native_id,
+        ...(row.title === null ? {} : { title: row.title }), ...(row.cwd === null ? {} : { cwd: row.cwd }),
+        ...(row.parent_native_id === null ? {} : { parentNativeId: row.parent_native_id }),
+        ...(row.fork_native_id === null ? {} : { forkNativeId: row.fork_native_id }) },
+      coverage: { status: row.coverage_status, replayRequired: row.replay_required === 1, updatedAt: row.coverage_updated_at,
+        ...(row.coverage_error === null ? {} : { error: row.coverage_error }) },
+    }));
+  }
+
+  setCoverage(id: string, update: { status: RecordCoverageStatus; error?: string; at?: number }): void {
+    const at = update.at ?? Date.now();
+    if (!["queued", "indexing", "complete", "partial", "missing", "error", "oversized"].includes(update.status)
+      || !Number.isFinite(at) || (update.error !== undefined && !/^[a-zA-Z0-9_.:-]{1,96}$/.test(update.error))) {
+      throw new Error("invalid source coverage");
+    }
+    this.db.query(`UPDATE sources SET coverage_status=?, coverage_error=?, coverage_updated_at=?,
+      replay_required=CASE WHEN ?='complete' THEN 0 ELSE replay_required END WHERE id=?`)
+      .run(update.status, update.error ?? null, at, update.status, id);
   }
 
   /** The callback is a fault seam: tests kill a process after writes but before the checkpoint. */
@@ -125,6 +194,7 @@ export class RecordStore {
       const framed = completeRecordLines(bytes, plan.from);
       this.ensureSession(session);
       if (plan.change === "rewrite") this.clearProjection(session.id);
+      else if (plan.change === "rotation") this.db.query("UPDATE sessions SET history_epoch=history_epoch+1 WHERE id=?").run(session.id);
       const state = plan.change === "append" || plan.change === "rotation" ? previous!.state : {};
       const offset = plan.from + framed.consumed;
       const checkpoint = Buffer.concat([plan.from ? read.checkpoint : new Uint8Array(), bytes.subarray(0, framed.consumed)])
@@ -170,14 +240,16 @@ export class RecordStore {
     if (existing && (existing.owner_device_id !== session.ownerDeviceId || existing.provider !== session.provider || existing.native_id !== session.nativeId)) {
       throw new Error("session identity cannot change");
     }
-    this.db.query(`INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    this.db.query(`INSERT INTO sessions (id,owner_device_id,provider,native_id,title,cwd,parent_native_id,fork_native_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET title=COALESCE(excluded.title,title), cwd=COALESCE(excluded.cwd,cwd),
       parent_native_id=COALESCE(excluded.parent_native_id,parent_native_id), fork_native_id=COALESCE(excluded.fork_native_id,fork_native_id)`)
       .run(session.id, session.ownerDeviceId, session.provider, session.nativeId, session.title ?? null, session.cwd ?? null, session.parentNativeId ?? null, session.forkNativeId ?? null);
   }
 
   private writeSource(source: StoredRecordSource): void {
-    this.db.query(`INSERT INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    this.db.query(`INSERT INTO sources (id,session_id,path,device,inode,size,modified_ms,generation,committed_offset,
+      prefix_hash,prefix_length,checkpoint_hash,checkpoint_length,parser_version,state_json,malformed_lines)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET path=excluded.path, device=excluded.device, inode=excluded.inode, size=excluded.size,
       modified_ms=excluded.modified_ms, generation=excluded.generation, committed_offset=excluded.committed_offset,
       prefix_hash=excluded.prefix_hash, prefix_length=excluded.prefix_length, checkpoint_hash=excluded.checkpoint_hash,
@@ -201,7 +273,7 @@ export class RecordStore {
           turn.startedAt ?? null, turn.endedAt ?? null, turn.status ?? null, json(turn.context));
     }
     for (const [selector, item] of records.items.entries()) {
-      this.db.query(`INSERT INTO items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      this.db.query(`INSERT INTO items (id,session_id,turn_id,native_id,parent_id,kind,role,text,content_json,at,order_key,revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         ON CONFLICT(id) DO UPDATE SET turn_id=COALESCE(excluded.turn_id,turn_id), parent_id=COALESCE(excluded.parent_id,parent_id),
         native_id=COALESCE(excluded.native_id,native_id),
         text=COALESCE(excluded.text,text), content_json=COALESCE(excluded.content_json,content_json), revision=revision+1
@@ -212,7 +284,7 @@ export class RecordStore {
           OR (excluded.parent_id IS NOT NULL AND items.parent_id IS NOT excluded.parent_id)`)
         .run(item.id, session.id, item.turnId ?? null, item.nativeId ?? null, item.parentId ?? null, item.kind,
           item.role ?? null, item.text ?? null, json(item.content), item.at ?? null,
-          `${source.id}:${String(source.generation).padStart(8, "0")}:${String(offset).padStart(16, "0")}:${selector}`);
+          `${source.id}:${String(source.generation).padStart(8, "0")}:${String(offset).padStart(16, "0")}:${String(selector).padStart(8, "0")}`);
       // Keep the original file identity even after the cursor follows a rotated file.
       this.db.query("INSERT OR IGNORE INTO item_sources VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(item.id, source.id, source.path, source.device, source.inode, source.generation, offset, length, selector);
@@ -244,10 +316,12 @@ export class RecordStore {
 
   /** Shared turns/tools can span sources. A rewrite invalidates this session's projection, not its journal. */
   private clearProjection(sessionId: string): void {
+    this.db.query("UPDATE sessions SET history_epoch=history_epoch+1, change_sequence=0 WHERE id=?").run(sessionId);
     this.db.query("DELETE FROM items WHERE session_id = ?").run(sessionId);
     for (const table of ["tool_calls", "responses", "turns"] as const) this.db.query(`DELETE FROM ${table} WHERE session_id = ?`).run(sessionId);
     this.db.query(`UPDATE sources SET generation=generation+1, committed_offset=0, prefix_length=0,
-      prefix_hash=?, checkpoint_length=0, checkpoint_hash=?, state_json='{}', malformed_lines=0, size=0, parser_version=?
+      prefix_hash=?, checkpoint_length=0, checkpoint_hash=?, state_json='{}', malformed_lines=0, size=0, parser_version=?,
+      replay_required=1, coverage_status='queued', coverage_error=NULL
       WHERE session_id=?`).run(recordFingerprint(new Uint8Array()), recordFingerprint(new Uint8Array()), RECORD_PARSER_VERSION, sessionId);
   }
 
@@ -256,7 +330,7 @@ export class RecordStore {
   }
 
   appendReceipt(receipt: RecordReceipt): boolean {
-    const states = { delivery: ["accepted", "delivered", "failed", "unknown"], review: ["published", "opened", "failed", "unknown"], speech: ["queued", "completed", "interrupted", "failed", "unknown"] };
+    const states = { delivery: ["accepted", "delivered", "staged", "failed", "unknown"], review: ["published", "opened", "failed", "unknown"], speech: ["queued", "started", "completed", "interrupted", "failed", "unknown"] };
     if (![receipt.id, receipt.sessionId, receipt.actionId].every(nonempty) || !Number.isFinite(receipt.observedAt)
       || !states[receipt.kind]?.includes(receipt.state)) throw new Error("invalid record receipt");
     const details = receipt.details && {
@@ -290,6 +364,14 @@ export class RecordStore {
 
   counts(): RecordCounts {
     return Object.fromEntries(TABLES.map((table) => [table, (this.db.query(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n])) as RecordCounts;
+  }
+
+  historyPage(request: HistoryPageRequest, ownerDeviceId: string) {
+    return this.db.transaction(() => this.history.page(request, ownerDeviceId))();
+  }
+
+  historyItem(request: HistoryItemRequest, ownerDeviceId: string) {
+    return this.db.transaction(() => this.history.item(request, ownerDeviceId))();
   }
 
   close(): void { this.db.close(); }

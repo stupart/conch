@@ -6,12 +6,90 @@ import {
   type SpeechBackend,
 } from "../src/speech-manager.ts";
 import type { TtsWorkerBackend } from "../src/tts-worker.ts";
+import type { RecordObservation } from "../src/records-receipts.ts";
 
 function loadConfig() {
   return loadRealConfig({ env: {}, settingsPath: `/tmp/conch-speech-manager-test-${process.pid}/settings.json` });
 }
 
 const passThroughGate: SpeechAudioGate = async (_operation, task) => task();
+
+test("speech receipts distinguish lane admission, backend invocation and unproved completion", async () => {
+  const events: RecordObservation[] = [];
+  const manager = new SpeechManager({
+    speakCancellable: () => ({ done: Promise.resolve(), cancel() {} }), stopSpeaking() {},
+  }, passThroughGate, { observeRecords: (event) => events.push(event) });
+  await manager.speak({ ...loadConfig(), speak: true }, "private speech", "not an identity", { sessionId: "native-session" });
+  expect(events.map(({ state }) => state)).toEqual(["queued", "started", "unknown"]);
+  expect(events.at(-1)?.code).toBe("backend-returned");
+  expect(new Set(events.map(({ actionId }) => actionId)).size).toBe(1);
+  expect(events.every(({ sessionId }) => sessionId === "native-session")).toBeTrue();
+  expect(JSON.stringify(events)).not.toContain("private speech");
+  events.length = 0;
+  await manager.speak(loadConfig(), "unattributed", "native-session");
+  expect(events).toEqual([]); // Never guess a session from a label.
+});
+
+test("close journals active and pending cancellation synchronously, without false starts", async () => {
+  const events: RecordObservation[] = [];
+  const active = deferred<void>();
+  const manager = new SpeechManager({
+    speakCancellable: () => ({ done: active.promise, cancel: () => active.resolve() }), stopSpeaking() {},
+  }, passThroughGate, { observeRecords: (event) => events.push(event) });
+  const cfg = { ...loadConfig(), speak: true };
+  const first = manager.speak(cfg, "active", "", { sessionId: "s1", actionId: "a" });
+  const second = manager.speak(cfg, "pending", "", { sessionId: "s2", actionId: "b" });
+  manager.close();
+  expect(events.filter(({ actionId }) => actionId === "a").map(({ state }) => state)).toEqual(["queued", "started", "interrupted"]);
+  expect(events.filter(({ actionId }) => actionId === "b").map(({ state }) => state)).toEqual(["queued", "interrupted"]);
+  await Promise.all([first, second, manager.quiescent()]);
+  expect(events.filter(({ state }) => state === "interrupted")).toHaveLength(2);
+  expect(events.some(({ state }) => state === "unknown" || state === "completed")).toBeFalse();
+});
+
+test("barge-in cancellation owns its terminal receipt and skipped speech has no started receipt", async () => {
+  const events: RecordObservation[] = [];
+  const manager = new SpeechManager({
+    speakCancellable: () => ({ done: new Promise<void>(() => {}), cancel() {} }), stopSpeaking() {},
+  }, passThroughGate, { observeRecords: (event) => events.push(event) });
+  await manager.runInterruptible({ ...loadConfig(), speak: true }, "read", "", async (startSpeech) => {
+    const playback = startSpeech();
+    playback.cancel();
+    playback.cancel();
+    expect(events.at(-1)?.state).toBe("interrupted");
+    await playback.done;
+  }, { sessionId: "s1" });
+  expect(events.map(({ state }) => state)).toEqual(["queued", "started", "interrupted"]);
+  events.length = 0;
+  await manager.runInterruptible(loadConfig(), "skipped", "", async () => undefined, { sessionId: "s1" });
+  expect(events.map(({ state }) => state)).toEqual(["queued", "unknown"]);
+});
+
+test("a rejected audio gate and a watchdog timeout are observable speech failures", async () => {
+  const events: RecordObservation[] = [];
+  let allow = false;
+  const manager = new SpeechManager({
+    speakCancellable: () => ({ done: new Promise<void>(() => {}), cancel() {} }), stopSpeaking() {},
+  }, async (_operation, task) => { if (!allow) throw Error("mic open"); return task(); }, {
+    observeRecords: (event) => events.push(event), timeoutForText: () => 5, warn() {},
+  });
+  await expect(manager.speak(loadConfig(), "gated", "", { sessionId: "s1" })).rejects.toThrow("mic open");
+  expect(events.map(({ state }) => state)).toEqual(["queued", "failed"]);
+  allow = true; events.length = 0;
+  await manager.speak({ ...loadConfig(), speak: true }, "hang", "", { sessionId: "s1" });
+  expect(events.map(({ state }) => state)).toEqual(["queued", "started", "failed"]);
+  expect(events.at(-1)?.code).toBe("speech-timeout");
+});
+
+test("disabled speech never claims backend playback started", async () => {
+  const events: RecordObservation[] = [];
+  const manager = new SpeechManager({
+    speakCancellable: () => ({ done: Promise.resolve(), cancel() {} }), stopSpeaking() {},
+  }, passThroughGate, { observeRecords: (event) => events.push(event) });
+  await manager.speak({ ...loadConfig(), speak: false }, "held", "", { sessionId: "s1" });
+  expect(events.map(({ state }) => state)).toEqual(["queued", "unknown"]);
+  expect(events.at(-1)?.code).toBe("speech-disabled");
+});
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;

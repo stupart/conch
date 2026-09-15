@@ -63,6 +63,10 @@ If publication is unavailable, leave the result in your reply. Where supported, 
       "Read the last sentences of a live session’s latest assistant reply. Does not retrieve full history or verify tool results.",
     review_to_front:
       "Publish your session’s result for the user to inspect, with a concise summary and optional artifact or conversation scene. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
+    conch_history:
+      "Read a page of recorded session history, including coverage and continuation cursors.",
+    conch_item:
+      "Read the full recorded content of an item in bounded chunks.",
   },
 };
 

@@ -3,6 +3,7 @@ import type { TurnEvent } from "./hook.ts";
 import { presentedTo, type AudioHolder } from "./audio-holder.ts";
 import { voiceFor } from "./speak.ts";
 import type { SpeechManager } from "./speech-manager.ts";
+import { createRecordOperation, emitRecordObservation, reviewPublicationObservation, type RecordObservationScope, type RecordObserver } from "./records-receipts.ts";
 import * as listen from "./listen.ts";
 import type { ListenHooks, RuntimeDictationSession } from "./listen.ts";
 import type { RecorderHandle } from "./dictation-controller.ts";
@@ -334,6 +335,7 @@ const CUE_SOUND = {
 };
 
 export interface VoiceLoopDeps {
+  observeRecords?: RecordObserver;
   cfg: Config;
   sleep?: (ms: number) => Promise<void>;
   log(message: string): void;
@@ -401,6 +403,14 @@ export interface VoiceLoop {
 
 export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   const { cfg, log, ledger, pause, speech, presentElsewhere, raiseWindow, sessionGone, prewarmEar, control } = deps;
+  const recordScope = (sessionId: string, transcriptPath?: string): Omit<RecordObservationScope, "actionId"> => {
+    const target = deps.window(sessionId);
+    return {
+      sessionId,
+      ...(target ? { provider: target.backend ?? "claude", nativeId: target.agentSessionId ?? target.sessionId } : {}),
+      ...(transcriptPath ?? target?.transcriptPath ? { transcriptPath: transcriptPath ?? target?.transcriptPath } : {}),
+    };
+  };
   const eventQueue = deps.queue;
   const audioLease = deps.audio.lease;
   const audioHolder = deps.audio.holder;
@@ -563,7 +573,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       return;
     }
     clearPhoneSpeechLatch();
-    await speech.speak(speechCfg, text, label);
+    await speech.speak(speechCfg, text, label, sessionId ? recordScope(sessionId) : undefined);
   };
 
   /**
@@ -675,6 +685,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     sessionStates.set(sessionId, incoming);
     // A newly filed deliverable is written out, so a daemon restart keeps it.
     if (carried !== prior?.review) ledger.saveReviews();
+    if (review && carried) emitRecordObservation(deps.observeRecords, reviewPublicationObservation(recordScope(sessionId), carried));
     void renderSessionPanel();
     return true;
   }
@@ -703,6 +714,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // (`restoreReviews`), so the registry or the next hook decides status.
     sessionStates.set(sessionId, prior ? { ...prior, review } : { label, status: "waiting", at: 0, review });
     ledger.saveReviews();
+    emitRecordObservation(deps.observeRecords, reviewPublicationObservation(recordScope(sessionId, event.transcriptPath), review));
     void renderSessionPanel();
 
     if (pause.paused || pausedSessionIds.has(sessionId) || dismissedSessionIds.has(sessionId)) {
@@ -745,7 +757,12 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // retries would choose for you.
       if (isProviderCommandLine(event.announce)) {
         const line = event.announce.trim();
-        const delivery = await injectProviderCommand(cfg, { pid: event.pid }, line);
+        const receipt = createRecordOperation(deps.observeRecords, recordScope(event.sessionId, event.transcriptPath), "delivery", line.length);
+        receipt.emit("accepted", "provider-command-accepted");
+        let delivery: Awaited<ReturnType<typeof injectProviderCommand>>;
+        try { delivery = await injectProviderCommand(cfg, { pid: event.pid }, line); }
+        catch (error) { receipt.emit("unknown", "delivery-outcome-unknown"); throw error; }
+        receipt.emit(delivery.kind === "delivered" ? "delivered" : "failed", delivery.kind === "delivered" ? "transport-submitted" : delivery.reason);
         if (delivery.kind === "delivered") {
           log(`typed ${line} into "${event.label}" via ${delivery.via}`);
           return true;
@@ -1185,6 +1202,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     initialCapture?: RecorderHandle;
     captureParent?: string;
   }> {
+    const speechScope = recordScope(event.sessionId, event.transcriptPath);
     if (interrupted()) return { heard: "", cut: true };
     // The phone owns the voice AND the ear: this path both speaks and arms the
     // Mac's recorder, so it must return before either. So does another Mac
@@ -1193,7 +1211,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     if (audioLease.isPhone() || !audioHolder.isLocal()) return { heard: "", cut: false };
     setState("speaking", event.label);
     if (!cfg.bargeThresholdPct || disabled) {
-      const playback = speech.speakCancellable(cfg, text, event.label);
+      const playback = speech.speakCancellable(cfg, text, event.label, speechScope);
       await watchManualReplyDuringSpeech(
         event,
         playback,
@@ -1251,7 +1269,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         clearInterval(watch);
         if (!disposed) await barge.abort().catch(() => {});
       }
-    });
+    }, speechScope);
     return result ?? { heard: "", cut: true };
   }
 
@@ -1307,186 +1325,213 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     diagnosticIds?: string | Iterable<string | undefined>,
     beforeInject?: () => boolean | Promise<boolean>,
   ): Promise<boolean | "staged"> {
-    let committed = false;
-    const commit = (): void => {
-      if (committed) return;
-      committed = true;
-      if (typeof diagnosticIds === "string") {
-        emitRecorderTrace(diagnosticIds, { finalSubmittedPayload: text });
-      } else if (diagnosticIds) {
-        emitRecorderTraces(diagnosticIds, { finalSubmittedPayload: text });
+    const receipt = createRecordOperation(deps.observeRecords, recordScope(event.sessionId, event.transcriptPath), "delivery", text.length);
+    receipt.emit("accepted", "delivery-accepted");
+    let receiptCode = "delivery-unconfirmed";
+    let uncertain = false;
+    const performDelivery = async (): Promise<boolean | "staged"> => {
+      let committed = false;
+      const commit = (): void => {
+        if (committed) return;
+        committed = true;
+        if (typeof diagnosticIds === "string") {
+          emitRecorderTrace(diagnosticIds, { finalSubmittedPayload: text });
+        } else if (diagnosticIds) {
+          emitRecorderTraces(diagnosticIds, { finalSubmittedPayload: text });
+        }
+        markInjected(event.sessionId);
+        // Which session got a dictation and how long it was, never the words: the
+        // log lives for weeks in /tmp. The words are in the session it reached,
+        // and a failed delivery keeps them as the recovered draft.
+        log(`heard → "${event.label}" (${text.length} chars)`);
+      };
+      const failedDelivery = async (reason?: string): Promise<false> => {
+        receiptCode = reason ?? "delivery-failed";
+        // A failed retry cannot disprove that the original submission landed.
+        uncertain ||= reason === "transport-error" || reason === "submit-error";
+        publishDictation(text, event.sessionId);
+        log(`delivery to "${event.label}" failed${reason ? ` (${reason})` : ""}`);
+        recordDaemonError("inject", "Could not deliver the prompt. Review the recovered draft before retrying.", event.sessionId);
+        if (!beforeInject || await beforeInject()) {
+          await speak(cfg, "Couldn't deliver that. Your words are in the draft. Review them before trying again.", event.label, false, event.sessionId);
+        }
+        return false;
+      };
+
+      // Baseline the target session's user-prompt count so we can CONFIRM the
+      // prompt actually submitted. null ⇒ no transcript to watch, skip confirmation.
+      const beforeCount = cfg.autoSubmit && event.transcriptPath ? await transcriptMark(event.transcriptPath) : null;
+      const injectStartedAt = Date.now();
+      let result: inject.InjectTextResult;
+      try {
+        result = await injectText(cfg, event.pid, text, beforeInject);
+      } catch {
+        return failedDelivery("transport-error");
       }
-      markInjected(event.sessionId);
-      // Which session got a dictation and how long it was, never the words: the
-      // log lives for weeks in /tmp. The words are in the session it reached,
-      // and a failed delivery keeps them as the recovered draft.
-      log(`heard → "${event.label}" (${text.length} chars)`);
-    };
-    const failedDelivery = async (reason?: string): Promise<false> => {
-      publishDictation(text, event.sessionId);
-      log(`delivery to "${event.label}" failed${reason ? ` (${reason})` : ""}`);
-      recordDaemonError("inject", "Could not deliver the prompt. Review the recovered draft before retrying.", event.sessionId);
-      if (!beforeInject || await beforeInject()) {
-        await speak(cfg, "Couldn't deliver that. Your words are in the draft. Review them before trying again.", event.label);
+      const { via, interrupted, reason } = result;
+      // Undelivered words go back to the composer (A8). The app clears its
+      // draft the moment the daemon ACCEPTS a send, which is before anything is
+      // typed anywhere — so an inject that then stops (interrupted) or lands
+      // on the clipboard had already erased the only copy on screen. The
+      // dictation channel exists to hand text to a composer once, by id, for
+      // exactly one session; a failed delivery is the same shape.
+      if (interrupted) {
+        receiptCode = "delivery-interrupted";
+        uncertain = true;
+        publishDictation(text, event.sessionId);
+        return false;
       }
-      return false;
-    };
 
-    // Baseline the target session's user-prompt count so we can CONFIRM the
-    // prompt actually submitted. null ⇒ no transcript to watch, skip confirmation.
-    const beforeCount = cfg.autoSubmit && event.transcriptPath ? await transcriptMark(event.transcriptPath) : null;
-    const injectStartedAt = Date.now();
-    let result: inject.InjectTextResult;
-    try {
-      result = await injectText(cfg, event.pid, text, beforeInject);
-    } catch {
-      return failedDelivery("transport-error");
-    }
-    const { via, interrupted, reason } = result;
-    // Undelivered words go back to the composer (A8). The app clears its
-    // draft the moment the daemon ACCEPTS a send, which is before anything is
-    // typed anywhere — so an inject that then stops (interrupted) or lands
-    // on the clipboard had already erased the only copy on screen. The
-    // dictation channel exists to hand text to a composer once, by id, for
-    // exactly one session; a failed delivery is the same shape.
-    if (interrupted) {
-      publishDictation(text, event.sessionId);
-      return false;
-    }
-
-    if (via === "clipboard") {
-      publishDictation(text, event.sessionId);
-      // Name the cause: "keystroke-fallback-off" means the session isn't in a
-      // tmux pane AND typing is disabled, so EVERY utterance lands here — a
-      // config problem, not a transient one. Without this the log line is
-      // identical either way and the real cause takes an hour to find.
-      log(`injected into "${event.label}" via ${via}${reason ? ` (${reason})` : ""}`);
-      recordTelemetry("inject", {
-        route: via,
-        confirmed: false,
-        chars: text.length,
-        ...(reason ? { reason } : {}),
-      });
-      const failure = clipboardFallbackError({
-        sessionId: event.sessionId,
-        label: event.label,
-        cwd: event.cwd,
-        reason,
-      });
-      recordDaemonError(
-        failure.operation,
-        failure.message,
-        failure.sessionId,
-        failure.state,
-      );
-      if (beforeInject && !(await beforeInject())) return false;
-      // Name the actual obstacle. A modal dialog on the Mac blocks every
-      // AppleScript call for as long as it is up, so this is not a session
-      // problem and not something retrying fixes — it stays broken until
-      // someone dismisses the popup, and saying so is the difference between
-      // a fixable minute and a baffling one.
-      await speak(
-        cfg,
-        reason === "automation-permission-denied"
-          ? "macOS is blocking conch from controlling Terminal. Turn conch on under Privacy and Security, Automation."
-          : reason === "system-dialog-blocking"
-            ? "A system dialog is open on the Mac and it's blocking me. Dismiss it and send again."
-            : "Couldn't reach the session's window — your words are on the clipboard, just paste.",
-        event.label,
-      );
-      // NOT delivered. The words are on a clipboard, not in the session, and
-      // saying otherwise is the failure that cost Tyler a real message: the
-      // phone was told "delivered", cleared his draft, and the text existed
-      // only on a Mac he was nowhere near. Whoever is standing at the machine
-      // can still paste — that is what the spoken line above is for — but the
-      // caller must not be told this reached the agent.
-      return false;
-    }
-    if (("failed" in result && result.failed) || via === "none") return failedDelivery(reason);
-    if (!cfg.autoSubmit) {
-      publishDictation(text, event.sessionId);
-      log(`staged text in "${event.label}" via ${via} — waiting for explicit send`);
-      recordTelemetry("inject", { route: via, confirmed: false, staged: true, chars: text.length });
-      return "staged";
-    }
-    if (beforeCount === null) {
-      commit();
-      log(`injected into "${event.label}" via ${via}`); // no transcript to confirm against — trust it
-      return true;
-    }
-
-    // A busy session cannot be confirmed this way, and demanding it anyway is a
-    // trap. Both agents accept typed input mid-turn and queue it themselves,
-    // but neither writes the prompt to its transcript until it STARTS that
-    // turn — so the mark cannot move, every retry re-presses Return into a
-    // working session, and a message that queued perfectly gets reported as
-    // failed. The phone then keeps the draft and you send it twice.
-    //
-    // Only routes that put real keystrokes into a real pane qualify: a blind
-    // or clipboard fallback has no such evidence and must still be proven.
-    const keysLanded = via === "tmux" || via === "osascript-focused";
-    if (keysLanded && deps.window(event.sessionId)?.status === "busy") {
-      commit();
-      log(`injected into "${event.label}" via ${via} — queued behind the running turn`);
-      recordTelemetry("inject", {
-        route: via,
-        confirmed: true,
-        queued: true,
-        chars: text.length,
-        latencyMs: Date.now() - injectStartedAt,
-      });
-      return true;
-    }
-
-    // The osascript path can type the text without the Return landing ("typed but
-    // didn't send"). Watch the transcript for a NEW user prompt; if it doesn't
-    // appear, re-press Return (the text is sitting in the input) a couple of times;
-    // if it still won't take, drop the words on the clipboard so they survive.
-    for (let attempt = 0; attempt < 3; attempt++) {
-      await (deps.sleep ?? Bun.sleep)(900 + attempt * 600); // give Claude Code time to write the prompt entry
-      if (beforeInject && !(await beforeInject())) return false;
-      if ((await transcriptMark(event.transcriptPath!)) > beforeCount) {
+      if (via === "clipboard") {
+        receiptCode = reason ?? "clipboard-fallback";
+        publishDictation(text, event.sessionId);
+        // Name the cause: "keystroke-fallback-off" means the session isn't in a
+        // tmux pane AND typing is disabled, so EVERY utterance lands here — a
+        // config problem, not a transient one. Without this the log line is
+        // identical either way and the real cause takes an hour to find.
+        log(`injected into "${event.label}" via ${via}${reason ? ` (${reason})` : ""}`);
+        recordTelemetry("inject", {
+          route: via,
+          confirmed: false,
+          chars: text.length,
+          ...(reason ? { reason } : {}),
+        });
+        const failure = clipboardFallbackError({
+          sessionId: event.sessionId,
+          label: event.label,
+          cwd: event.cwd,
+          reason,
+        });
+        recordDaemonError(
+          failure.operation,
+          failure.message,
+          failure.sessionId,
+          failure.state,
+        );
+        if (beforeInject && !(await beforeInject())) return false;
+        // Name the actual obstacle. A modal dialog on the Mac blocks every
+        // AppleScript call for as long as it is up, so this is not a session
+        // problem and not something retrying fixes — it stays broken until
+        // someone dismisses the popup, and saying so is the difference between
+        // a fixable minute and a baffling one.
+        await speak(
+          cfg,
+          reason === "automation-permission-denied"
+            ? "macOS is blocking conch from controlling Terminal. Turn conch on under Privacy and Security, Automation."
+            : reason === "system-dialog-blocking"
+              ? "A system dialog is open on the Mac and it's blocking me. Dismiss it and send again."
+              : "Couldn't reach the session's window — your words are on the clipboard, just paste.",
+          event.label,
+          false,
+          event.sessionId,
+        );
+        // NOT delivered. The words are on a clipboard, not in the session, and
+        // saying otherwise is the failure that cost Tyler a real message: the
+        // phone was told "delivered", cleared his draft, and the text existed
+        // only on a Mac he was nowhere near. Whoever is standing at the machine
+        // can still paste — that is what the spoken line above is for — but the
+        // caller must not be told this reached the agent.
+        return false;
+      }
+      if (("failed" in result && result.failed) || via === "none") return failedDelivery(reason);
+      if (!cfg.autoSubmit) {
+        receiptCode = "staged-not-submitted";
+        publishDictation(text, event.sessionId);
+        log(`staged text in "${event.label}" via ${via} — waiting for explicit send`);
+        recordTelemetry("inject", { route: via, confirmed: false, staged: true, chars: text.length });
+        return "staged";
+      }
+      if (beforeCount === null) {
+        receiptCode = "transport-submitted";
         commit();
-        log(`injected into "${event.label}" via ${via} — confirmed sent${attempt ? ` (after ${attempt} re-send${attempt > 1 ? "s" : ""})` : ""}`);
+        log(`injected into "${event.label}" via ${via}`); // no transcript to confirm against — trust it
+        return true;
+      }
+
+      // A busy session cannot be confirmed this way, and demanding it anyway is a
+      // trap. Both agents accept typed input mid-turn and queue it themselves,
+      // but neither writes the prompt to its transcript until it STARTS that
+      // turn — so the mark cannot move, every retry re-presses Return into a
+      // working session, and a message that queued perfectly gets reported as
+      // failed. The phone then keeps the draft and you send it twice.
+      //
+      // Only routes that put real keystrokes into a real pane qualify: a blind
+      // or clipboard fallback has no such evidence and must still be proven.
+      const keysLanded = via === "tmux" || via === "osascript-focused";
+      if (keysLanded && deps.window(event.sessionId)?.status === "busy") {
+        receiptCode = "provider-input-queued";
+        commit();
+        log(`injected into "${event.label}" via ${via} — queued behind the running turn`);
         recordTelemetry("inject", {
           route: via,
           confirmed: true,
-          resends: attempt,
+          queued: true,
           chars: text.length,
           latencyMs: Date.now() - injectStartedAt,
         });
         return true;
       }
-      if (attempt < 2) {
-        log(`not confirmed yet — re-pressing Return (try ${attempt + 1})`);
-        let retry: inject.InjectTextResult;
-        try {
-          retry = await injectKey(cfg, event.pid, "Enter", beforeInject);
-        } catch {
-          return failedDelivery("submit-error");
+
+      uncertain = true; // Submission may have happened even if the transcript never confirms it.
+      // The osascript path can type the text without the Return landing ("typed but
+      // didn't send"). Watch the transcript for a NEW user prompt; if it doesn't
+      // appear, re-press Return (the text is sitting in the input) a couple of times;
+      // if it still won't take, drop the words on the clipboard so they survive.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await (deps.sleep ?? Bun.sleep)(900 + attempt * 600); // give Claude Code time to write the prompt entry
+        if (beforeInject && !(await beforeInject())) return false;
+        if ((await transcriptMark(event.transcriptPath!)) > beforeCount) {
+          receiptCode = "transcript-advanced";
+          commit();
+          log(`injected into "${event.label}" via ${via} — confirmed sent${attempt ? ` (after ${attempt} re-send${attempt > 1 ? "s" : ""})` : ""}`);
+          recordTelemetry("inject", {
+            route: via,
+            confirmed: true,
+            resends: attempt,
+            chars: text.length,
+            latencyMs: Date.now() - injectStartedAt,
+          });
+          return true;
         }
-        if (retry.interrupted) { publishDictation(text, event.sessionId); return false; }
-        if (("failed" in retry && retry.failed) || retry.via === "none" || retry.via === "clipboard") return failedDelivery(retry.reason);
+        if (attempt < 2) {
+          log(`not confirmed yet — re-pressing Return (try ${attempt + 1})`);
+          let retry: inject.InjectTextResult;
+          try {
+            retry = await injectKey(cfg, event.pid, "Enter", beforeInject);
+          } catch {
+            return failedDelivery("submit-error");
+          }
+          if (retry.interrupted) { receiptCode = "delivery-interrupted"; uncertain = true; publishDictation(text, event.sessionId); return false; }
+          if (("failed" in retry && retry.failed) || retry.via === "none" || retry.via === "clipboard") return failedDelivery(retry.reason);
+        }
       }
+      if (beforeInject && !(await beforeInject())) return false;
+      log(`⚠ inject into "${event.label}" via ${via} NOT confirmed — words placed on clipboard`);
+      recordTelemetry("inject", {
+        route: via,
+        confirmed: false,
+        resends: 2,
+        chars: text.length,
+        reason: "never-confirmed",
+        latencyMs: Date.now() - injectStartedAt,
+      });
+      publishDictation(text, event.sessionId);
+      await toClipboard(text);
+      if (beforeInject && !(await beforeInject())) return false;
+      await speak(cfg, "I typed that but it didn't send. Your words are on the clipboard — just paste and press return.", event.label, false, event.sessionId);
+      // Three attempts and the transcript never grew, so the text is sitting
+      // unsent in an input box at best. 15 of Tyler's sends landed here today
+      // against 57 confirmed — a 21% failure rate reported to him as success.
+      return false;
+    };
+    try {
+      const outcome = await performDelivery();
+      receipt.emit(outcome === true ? "delivered" : outcome === "staged" ? "staged" : uncertain ? "unknown" : "failed", receiptCode);
+      return outcome;
+    } catch (error) {
+      receipt.emit("unknown", "delivery-outcome-unknown");
+      throw error;
     }
-    if (beforeInject && !(await beforeInject())) return false;
-    log(`⚠ inject into "${event.label}" via ${via} NOT confirmed — words placed on clipboard`);
-    recordTelemetry("inject", {
-      route: via,
-      confirmed: false,
-      resends: 2,
-      chars: text.length,
-      reason: "never-confirmed",
-      latencyMs: Date.now() - injectStartedAt,
-    });
-    publishDictation(text, event.sessionId);
-    await toClipboard(text);
-    if (beforeInject && !(await beforeInject())) return false;
-    await speak(cfg, "I typed that but it didn't send. Your words are on the clipboard — just paste and press return.", event.label);
-    // Three attempts and the transcript never grew, so the text is sitting
-    // unsent in an input box at best. 15 of Tyler's sends landed here today
-    // against 57 confirmed — a 21% failure rate reported to him as success.
-    return false;
   }
 
   /** Shared handling for anything heard while reading aloud (gap or barge-in). */
@@ -1525,7 +1570,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       case "discard":
         emitRecorderTraces(traceIds, { intent: "discard", bufferCountAfterReduction: 0 });
         markInjected(event.sessionId); // "no response" also suppresses the follow-up needs-you nag
-        await speak(cfg, "Okay.", event.label);
+        await speak(cfg, "Okay.", event.label, false, event.sessionId);
         return "handled";
       case "prompt":
         for (const id of traceIds) updateRecorderTrace(id, { intent: "prompt", bufferCountAfterReduction: 0 });
@@ -2107,19 +2152,19 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         case "discard": {
           emitTerminalRows(action);
           markInjected(event.sessionId);
-          await speak(cfg, "Okay.", event.label);
+          await speak(cfg, "Okay.", event.label, false, event.sessionId);
           if (interruptedByPause()) return "done";
           return action.shouldResume ? "resume" : "done";
         }
         case "repeat":
           emitTerminalRows(action);
-          await speak(cfg, lastSpoken, event.label);
+          await speak(cfg, lastSpoken, event.label, false, event.sessionId);
           if (interruptedByPause()) return "done";
           return "resume";
         case "continue": {
           emitTerminalRows(action);
           if (!event.transcriptPath) {
-            await speak(cfg, "I don't have the full message for this one.", event.label);
+            await speak(cfg, "I don't have the full message for this one.", event.label, false, event.sessionId);
             if (interruptedByPause()) return "done";
             return "resume";
           }
@@ -2127,12 +2172,12 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           if (interruptedByPause()) return "done";
           const chunk = full.slice(cursor, cursor + cfg.continueSentences).join(" ");
           if (!chunk) {
-            await speak(cfg, "That's the whole message.", event.label);
+            await speak(cfg, "That's the whole message.", event.label, false, event.sessionId);
             if (interruptedByPause()) return "done";
             return "resume";
           }
           lastSpoken = chunk;
-          await speak(cfg, chunk, event.label);
+          await speak(cfg, chunk, event.label, false, event.sessionId);
           if (interruptedByPause()) return "done";
           cursor += cfg.continueSentences;
           updateReadingProgress(
@@ -2444,7 +2489,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           // Real prompt-like tail also disproves the false trigger. Keep it in
           // the held buffer and resume silently instead of self-hearing a replay.
           if (!shuttingDown && reducer.snapshot.buffer.length === 0) {
-            await speak(cfg, lastSpoken, event.label);
+            await speak(cfg, lastSpoken, event.label, false, event.sessionId);
           }
           if (interruptedByPause()) {
             terminal = true;
@@ -2682,7 +2727,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // must never prevent the words from reaching their addressed composer.
       await speak(cfg, incompleteDictation.some((text) => text.trim())
         ? "Dictation was incomplete. Your recovered words are in the draft. Review them or retry before sending."
-        : "Dictation failed. Please try again.", event.label);
+        : "Dictation failed. Please try again.", event.label, false, event.sessionId);
     }
     } finally {
       // Covers every early return between gap transfer and the normal loop's
@@ -2798,7 +2843,19 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       if (!mayTypeAlternative()) return;
       await Bun.sleep(400);
       if (!mayTypeAlternative()) return;
-      const { via, interrupted } = await injectText(cfg, event.pid, answer.text, mayTypeAlternative);
+      const receipt = createRecordOperation(deps.observeRecords, recordScope(event.sessionId, event.transcriptPath), "delivery", answer.text.length);
+      receipt.emit("accepted", "alternative-prompt-accepted");
+      let delivery: inject.InjectTextResult;
+      try { delivery = await injectText(cfg, event.pid, answer.text, mayTypeAlternative); }
+      catch (error) { receipt.emit("unknown", "delivery-outcome-unknown"); throw error; }
+      const { via, interrupted } = delivery;
+      // Observe this direct send without adding retries or changing the permission
+      // lifetime. The Escape above is a control action, not a prompt delivery.
+      if (interrupted) receipt.emit("unknown", "delivery-interrupted");
+      else if (delivery.failed || via === "none" || via === "clipboard") {
+        receipt.emit("failed", delivery.reason ?? (via === "clipboard" ? "clipboard-fallback" : "delivery-failed"));
+      } else if (!cfg.autoSubmit) receipt.emit("staged", "staged-not-submitted");
+      else receipt.emit("delivered", "transport-submitted");
       if (interrupted || interruptedByPause()) return;
       if (via === "none") return void (await say("Could not type the alternative — do it by hand."));
       if (via === "clipboard") return void (await say("The alternative is on the clipboard — paste it into the session."));
@@ -2999,7 +3056,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     const { via } = await injectKey(cfg, known?.pid, "Escape");
     if (via === "none") {
       log(`⚠ could not reach "${label}" to stop it`);
-      await speak(cfg, `Couldn't reach ${label} to stop it.`, label);
+      await speak(cfg, `Couldn't reach ${label} to stop it.`, label, false, event.sessionId);
       return;
     }
     log(`⏹ stopped "${label}" via ${via}`);
