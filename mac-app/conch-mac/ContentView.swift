@@ -170,6 +170,8 @@ struct ContentView: View {
                   let row = store.state?.rows.first(where: { $0.id == id }) else { return }
             selectSession(row)
         }
+        // A session picked here takes the overlay's conversation off the Ready pill's scene, unless it is that one.
+        .onChange(of: selectedSessionID) { _, id in if let id { FloatingPanels.picked(id) } }
         .onChange(of: rowIDs) { _, currentIDs in
             if let selectedSessionID, !currentIDs.contains(selectedSessionID) {
                 self.selectedSessionID = nil

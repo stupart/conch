@@ -11,9 +11,17 @@ final class FloatingPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// The first click on a control acts. conch never comes forward, so there is no click to focus it first.
+/// The first click on a control acts. conch never comes forward, so there is no click to focus it first. For the same
+/// reason SwiftUI's hover can't be relied on (`FogView`), so an always-active tracking area feeds it the pointer: the
+/// Ready pill's pointing hand.
 private final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        guard !trackingAreas.contains(where: { $0.owner === self && $0.options.contains(.activeAlways) }) else { return }
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect], owner: self))
+    }
 }
 
 /// The look over the fog's blur never takes the pointer: a press there is the fog's (`FogView.hitTest`).
@@ -129,6 +137,12 @@ final class FloatingPanels: ObservableObject {
         installed = FloatingPanels(store: store)
     }
 
+    /// A session picked in conch's window: the conversation comes off the Ready pill's scene, unless that is the one.
+    static func picked(_ id: SessionRow.ID) {
+        guard let panels = installed, panels.staged != nil, panels.staged != id else { return }
+        panels.staged = nil
+    }
+
     /// The fog fills its screen; leaving docks it back in its corner.
     @Published private(set) var isFullScreen = false
     @Published private(set) var isCollapsed = false
@@ -151,6 +165,9 @@ final class FloatingPanels: ObservableObject {
     private var lookTimer: Timer?
     /// How far into a throw's flight the fog is, 0 at rest to 1 mid-air: it fades, softens and shrinks with it.
     @Published private(set) var throwMotion: CGFloat = 0
+    /// The session the Ready pill last brought forward. The conversation stays on it, whatever the voice does, until the
+    /// pill is clicked again or another session is picked (`picked`).
+    @Published var staged: SessionRow.ID?
     /// Where the fog is, at what size, and how it is moving; kept through collapsing and full screen.
     private var motion = FogMotion(size: CGSize(width: 760, height: 560), corner: .bottomLeading, in: .zero)
     /// Where the fog's buttons and reply line are (`FogControls`): a press there is theirs.
@@ -190,7 +207,7 @@ final class FloatingPanels: ObservableObject {
             panel.hasShadow = false
         }
 
-        let bar = FirstClickHostingView(rootView: ControlBarHost(store: store, onSize: { [weak self] size in self?.fitControlBar(to: size) }))
+        let bar = FirstClickHostingView(rootView: ControlBarHost(store: store, panels: self, onSize: { [weak self] size in self?.fitControlBar(to: size) }))
         controlBar.contentView = bar
         place(controlBar, name: Self.controlBarFrameName, size: bar.fittingSize) { screen, size in
             // Top centre, just under the menu bar.
@@ -555,18 +572,28 @@ final class FloatingPanels: ObservableObject {
 /// sends them. The conversation is the menu's to show and hide.
 private struct ControlBarHost: View {
     @ObservedObject var store: StateStore
+    /// Not observed: the bar only tells it what it staged, and the fog's motion publishes every frame.
+    let panels: FloatingPanels
     /// Its ideal size, for the panel to take.
     let onSize: (CGSize) -> Void
+    /// The review version the last click brought forward, and the versions handed off: for the next click to move on from.
+    @State private var lastStaged: ReviewItem.ID?
+    @State private var opened: Set<ReviewItem.ID> = []
+    /// The click being staged. Clicks run one at a time.
+    @State private var staging: Task<Void, Never>?
 
     var body: some View {
         let voice = ConchStatusItem.voiceState(store.state)
+        let ready = Self.ready(store.state)
         ControlBar(
             state: voice,
             detail: ConchStatusItem.detail(store.state, voice, message: store.daemonMessage),
             mode: Binding(
                 get: { store.state?.mode.paused == true ? .quiet : .talk },
                 set: { store.send($0 == .talk ? .global(.resume) : .global(.pause)) }
-            )
+            ),
+            onTap: stageNext,
+            help: next(in: ready).map { "Show \($0.label) · \(ready.count) ready" } ?? ""
         )
         // A small gap under the menu bar, and room below for the glass's dropped shadow.
         .padding(.top, ConchSpace.x3)
@@ -576,6 +603,34 @@ private struct ControlBarHost: View {
         .fixedSize()
         .background(GeometryReader { proxy in Color.clear.preference(key: ControlBarSize.self, value: proxy.size) })
         .onPreferenceChange(ControlBarSize.self, perform: onSize)
+    }
+
+    /// The reviews waiting on you, as the menu counts them.
+    private static func ready(_ state: PublishedState?) -> [ReviewItem] {
+        ConchStatusItem.readyRows(state).compactMap(ReviewItem.init(row:))
+    }
+
+    /// The review the next click brings forward, by its exact version (`ReviewItem.id`: the session and when its review
+    /// was filed), never by a place in the queue.
+    private func next(in ready: [ReviewItem]) -> ReviewItem? {
+        let key = ReviewScene.next(after: lastStaged, in: ready.map { (key: $0.id, at: $0.reviewedAt ?? 0) }, opened: opened)
+        return ready.first { $0.id == key }
+    }
+
+    /// A click on the Ready pill. The version is taken at the click. Clicks run one at a time, so an earlier one finishing
+    /// late can't retarget the conversation after a later one; each checks its review is still that version and still
+    /// ready, pins the conversation to its session, brings its scene forward (`ConchStatusItem.stage`), and counts it
+    /// opened only once handed off. Never the mic or speech.
+    private func stageNext() {
+        guard let key = next(in: Self.ready(store.state))?.id else { return }
+        lastStaged = key
+        let previous = staging
+        staging = Task { @MainActor in
+            await previous?.value
+            guard let row = ConchStatusItem.readyRows(store.state).first(where: { ReviewItem(row: $0)?.id == key }) else { return }
+            panels.staged = row.id
+            if await ConchStatusItem.stage(row, store: store) { opened.insert(key) }
+        }
     }
 }
 
@@ -605,7 +660,7 @@ private struct ConversationFogHost: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let row = Self.session(store.state)
+        let row = Self.session(store.state, staged: panels.staged)
         let turns = row.map { Self.turns(store.state, $0) } ?? []
         Group {
             if panels.isCollapsed {
@@ -650,10 +705,12 @@ private struct ConversationFogHost: View {
         .onChange(of: turns, initial: true) { _, turns in panels.text.update(turns: turns, now: ProcessInfo.processInfo.systemUptime) }
     }
 
-    /// The session the voice is on, else the daemon's active or selected one, else the first. Never a subagent.
-    static func session(_ state: PublishedState?) -> SessionRow? {
+    /// The session the Ready pill staged, else the one the voice is on, else the daemon's active or selected one, else
+    /// the first. Never a subagent.
+    static func session(_ state: PublishedState?, staged: SessionRow.ID? = nil) -> SessionRow? {
         let rows = state?.rows.filter { $0.parentSessionId == nil } ?? []
-        return rows.first { LiveState.isExchangeActive($0.live ?? "") }
+        return rows.first { $0.id == staged }
+            ?? rows.first { LiveState.isExchangeActive($0.live ?? "") }
             ?? rows.first(where: \.active)
             ?? rows.first(where: \.navSelected)
             ?? rows.first

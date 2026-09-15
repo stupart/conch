@@ -160,7 +160,6 @@ interface FakeCalls {
   marks: string[];
   assistantReads: string[];
   sentenceSplits: string[];
-  opened: string[];
 }
 
 interface FakeOptions {
@@ -221,7 +220,6 @@ function fakeHarness(options: FakeOptions = {}): {
     marks: [],
     assistantReads: [],
     sentenceSplits: [],
-    opened: [],
   };
 
   const dependencies: McpDependencies = {
@@ -309,9 +307,6 @@ function fakeHarness(options: FakeOptions = {}): {
     splitSentences(text) {
       calls.sentenceSplits.push(text);
       return ["First.", "Second!", "Third?", "Fourth."];
-    },
-    openLink(link) {
-      calls.opened.push(link);
     },
     now: () => 1_234_567,
   };
@@ -491,20 +486,36 @@ describe("MCP dispatch", () => {
 });
 
 describe("real MCP tool handlers with injected dependencies", () => {
-  test("the production review launcher terminates open options before the link", () => {
+  /**
+   * Publishing used to `open` the link from the agent's own MCP process, taking the front the moment an agent filed,
+   * before Tyler asked for anything. It files and announces now; the Mac's Ready pill brings the scene forward on a click.
+   */
+  test("review_to_front files and announces a review and opens nothing", async () => {
     const bun = Bun as any;
     const originalSpawn = bun.spawn;
-    const calls: unknown[][] = [];
+    const spawned: unknown[][] = [];
     bun.spawn = (args: unknown[]) => {
-      calls.push(args);
+      spawned.push(args);
       return {};
     };
     try {
-      defaultMcpDependencies.openLink("--looks-like-an-option");
-      expect(calls).toEqual([["open", "--", "--looks-like-an-option"]]);
+      const h = fakeHarness();
+      const handlers = createMcpToolHandlers({
+        claudeDir: "/virtual/claude",
+        socketPath: "/virtual/conch.sock",
+      }, h.dependencies);
+      const response = await callTool(handlers, "review_to_front", {
+        summary: "Inspect the finished dashboard",
+        link: "https://example.com/review",
+        session: "Build",
+      });
+      expect(rpcResult(response)).not.toMatchObject({ isError: true });
+      expect(h.calls.daemon).toHaveLength(1);
+      expect(spawned).toEqual([]);
     } finally {
       bun.spawn = originalSpawn;
     }
+    expect(Object.keys(defaultMcpDependencies)).not.toContain("openLink");
   });
 
   test("sessions uses the published file unchanged and does not touch the registry", async () => {
@@ -856,7 +867,7 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(h.calls.renames).toEqual([]);
   });
 
-  test("review_to_front sends the exact review turn before opening its link", async () => {
+  test("review_to_front sends the exact review turn", async () => {
     const h = fakeHarness();
     const handlers = createMcpToolHandlers({
       claudeDir: "/virtual/claude",
@@ -886,7 +897,6 @@ describe("real MCP tool handlers with injected dependencies", () => {
         link,
       },
     });
-    expect(h.calls.opened).toEqual([link]);
   });
 
   test("review_to_front publishes a relative file link as an absolute path", async () => {
@@ -915,7 +925,6 @@ describe("real MCP tool handlers with injected dependencies", () => {
 
     const published = (h.calls.daemon[0]?.event as { review?: { link?: string } }).review?.link;
     expect(published).toBe(absolute);
-    expect(h.calls.opened).toEqual([absolute]);
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -978,7 +987,6 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(h.calls.registries).toEqual(["/virtual/claude", "/virtual/claude"]);
     expect(h.calls.sessionLookups).toEqual([]);
     expect(h.calls.daemon).toEqual([]);
-    expect(h.calls.opened).toEqual([]);
   });
 
   test("review_to_front accepts an existing non-executable file link", async () => {
@@ -1000,7 +1008,6 @@ describe("real MCP tool handlers with injected dependencies", () => {
 
       expect(rpcResult(response)).not.toMatchObject({ isError: true });
       expect(h.calls.daemon).toHaveLength(1);
-      expect(h.calls.opened).toEqual([link]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1046,13 +1053,12 @@ describe("real MCP tool handlers with injected dependencies", () => {
 
       expect(h.calls.sessionLookups).toEqual([]);
       expect(h.calls.daemon).toEqual([]);
-      expect(h.calls.opened).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
 
-  test("review_to_front does not open its link when the daemon rejects the turn", async () => {
+  test("review_to_front reports a daemon that rejects the turn", async () => {
     const h = fakeHarness({ daemonAccepts: false });
     const handlers = createMcpToolHandlers({
       claudeDir: "/virtual/claude",
@@ -1070,7 +1076,6 @@ describe("real MCP tool handlers with injected dependencies", () => {
       isError: true,
     });
     expect(h.calls.daemon).toHaveLength(1);
-    expect(h.calls.opened).toEqual([]);
   });
 
   test("a review_to_front turn survives event ordering and live-work downgrade intact", async () => {
@@ -1148,9 +1153,8 @@ describe("real MCP tool handlers with injected dependencies", () => {
     expect(thrown).toBeInstanceOf(Error);
     expect((thrown as Error).name).toBe("ToolInputError");
     expect((thrown as Error).message).toContain("can only surface its own work");
-    // Nothing was announced or opened on the refused path.
+    // Nothing was announced on the refused path.
     expect(h.calls.daemon).toEqual([]);
-    expect(h.calls.opened).toEqual([]);
   });
 
   /**

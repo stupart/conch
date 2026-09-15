@@ -333,7 +333,6 @@ export interface McpDependencies {
   transcriptMark(transcriptPath: string): Promise<number>;
   lastAssistantText(transcriptPath: string, session: Readonly<SessionInfo>): Promise<string>;
   splitSentences(text: string): string[];
-  openLink(link: string): void;
   now(): number;
 }
 
@@ -367,9 +366,6 @@ export const defaultMcpDependencies: McpDependencies = {
     return lastAssistantReply(conversation);
   },
   splitSentences,
-  openLink(link) {
-    Bun.spawn(["open", "--", link], { stdout: "ignore", stderr: "ignore" });
-  },
   now: Date.now,
 };
 
@@ -1069,7 +1065,6 @@ export function createMcpToolHandlers(
         eventAt: dependencies.now(),
         review: { summary, ...(link ? { link } : {}) },
       });
-      if (link) dependencies.openLink(link);
       return result;
     },
   };
