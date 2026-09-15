@@ -137,7 +137,9 @@ describe("close on a background job", () => {
 
   test("a terminal session still closes with Ctrl-D, and a no-terminal row still refuses", async () => {
     let argv: string[] = [];
-    await closeSession({ pid: 4321 }, {
+    const identity = { pid: 4321, birth: "1000.000001", birthTimeMs: 1_000_000.001, executable: "/opt/bin/claude", ttyDevice: 7 };
+    await closeSession({ pid: 4321, processIdentity: identity }, {
+      processIdentity: () => identity,
       ttyForPid: async () => "ttys007",
       pidIsAlive: async () => false,
       sleep: async () => {},

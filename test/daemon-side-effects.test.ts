@@ -507,6 +507,7 @@ describe("6. files", () => {
 
 describe("7. a dead daemon's sox is reaped", () => {
   const ARGV = soxCaptureArgs({ micGainDb: 0, endSilenceSecs: 3.5, endThresholdPct: 2 }, "/tmp/conch-normal-1-2.raw", 2).join(" ");
+  const identityFor = (pid: number) => ({ pid, birth: "1000.000001", birthTimeMs: 1_000_000.001, executable: "/opt/bin/sox", ttyDevice: null });
   const recordAt = (record: object): string => {
     const path = join(mkdtempSync(join(tmpdir(), "conch-a17-sox-")), "sox-recorders.json");
     writeFileSync(path, JSON.stringify(record));
@@ -518,6 +519,7 @@ describe("7. a dead daemon's sox is reaped", () => {
       kills,
       deps: {
         alive: (pid: number) => pids.has(pid),
+        identity: (pid: number) => pids.has(pid) ? identityFor(pid) : null,
         command: (pid: number) => (pids.has(pid) ? argv[pid] ?? null : null),
         kill: (pid: number) => { kills.push(pid); pids.delete(pid); },
       },
@@ -526,15 +528,15 @@ describe("7. a dead daemon's sox is reaped", () => {
 
   test("the record names the writing daemon, grows per spawn and shrinks per exit", () => {
     const path = join(mkdtempSync(join(tmpdir(), "conch-a17-sox-")), "nested", "sox-recorders.json");
-    recordSpawnedSox(101, path);
-    recordSpawnedSox(102, path);
-    expect(readSoxRecord(path)).toEqual({ daemonPid: process.pid, pids: [101, 102] });
+    recordSpawnedSox(101, path, identityFor);
+    recordSpawnedSox(102, path, identityFor);
+    expect(readSoxRecord(path)).toEqual({ daemonPid: process.pid, pids: [101, 102], identities: { 101: identityFor(101), 102: identityFor(102) } });
     forgetSox(101, path);
-    expect(readSoxRecord(path)).toEqual({ daemonPid: process.pid, pids: [102] });
+    expect(readSoxRecord(path)).toEqual({ daemonPid: process.pid, pids: [102], identities: { 102: identityFor(102) } });
     // Another daemon's record is replaced, not merged: its pids are not ours to keep.
     writeFileSync(path, JSON.stringify({ daemonPid: 1, pids: [7] }));
-    recordSpawnedSox(103, path);
-    expect(readSoxRecord(path)).toEqual({ daemonPid: process.pid, pids: [103] });
+    recordSpawnedSox(103, path, identityFor);
+    expect(readSoxRecord(path)).toEqual({ daemonPid: process.pid, pids: [103], identities: { 103: identityFor(103) } });
   });
 
   test("only conch's own capture argv qualifies", () => {
@@ -547,7 +549,7 @@ describe("7. a dead daemon's sox is reaped", () => {
   });
 
   test("kills exactly the recorded sox pids once their daemon is dead", async () => {
-    const path = recordAt({ daemonPid: 999, pids: [4242, 4243, 4244] });
+    const path = recordAt({ daemonPid: 999, pids: [4242, 4243, 4244], identities: Object.fromEntries([4242, 4243, 4244].map((pid) => [pid, identityFor(pid)])) });
     const r = reaper(new Set([4242, 4243, 4244]), { 4242: ARGV, 4243: "node server.js", 4244: ARGV });
     expect(await reapOrphanedSox(path, r.deps)).toEqual([4242, 4244]);
     expect(r.kills).toEqual([4242, 4244]);

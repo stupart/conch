@@ -1,3 +1,4 @@
+import { readProcessIdentity, sameProcessIdentity, validProcessIdentity, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -18,6 +19,7 @@ import type { OrphanReaperDeps } from "./whisper-orphan.ts";
 export interface SoxSpawnRecord {
   daemonPid: number;
   pids: number[];
+  identities?: Record<string, ProcessIdentity>;
 }
 
 export const SOX_RECORD_PATH = join(homedir(), ".cache/conch/sox-recorders.json");
@@ -28,32 +30,40 @@ export function readSoxRecord(path = SOX_RECORD_PATH): SoxSpawnRecord | null {
     if (typeof parsed !== "object" || parsed === null) return null;
     const record = parsed as Partial<SoxSpawnRecord>;
     if (typeof record.daemonPid !== "number" || !Array.isArray(record.pids)) return null;
-    return { daemonPid: record.daemonPid, pids: record.pids.filter((pid): pid is number => typeof pid === "number") };
+    const identities = Object.fromEntries(Object.entries(record.identities ?? {}).filter(([pid, identity]) =>
+      validProcessIdentity(identity) && identity.pid === Number(pid)));
+    return { daemonPid: record.daemonPid, pids: record.pids.filter((pid): pid is number => Number.isSafeInteger(pid) && pid > 0),
+      ...(Object.keys(identities).length ? { identities } : {}) };
   } catch {
     return null;
   }
 }
 
-function writeSoxRecord(pids: number[], path: string): void {
+function writeSoxRecord(pids: number[], path: string, identities: Record<string, ProcessIdentity> = {}): void {
   try {
     mkdirSync(join(path, ".."), { recursive: true });
-    writeFileSync(path, JSON.stringify({ daemonPid: process.pid, pids } satisfies SoxSpawnRecord) + "\n");
+    writeFileSync(path, JSON.stringify({ daemonPid: process.pid, pids, identities: Object.fromEntries(
+      pids.filter((pid) => identities[pid]).map((pid) => [pid, identities[pid]!])) } satisfies SoxSpawnRecord) + "\n");
   } catch {
     // An aid, never a dependency: without it the orphan merely lives on as before.
   }
 }
 
 /** Another daemon's record is replaced, not merged: its pids are not ours to keep. */
-export function recordSpawnedSox(pid: number, path = SOX_RECORD_PATH): void {
+export function recordSpawnedSox(pid: number, path = SOX_RECORD_PATH, probe: ProcessIdentityProbe = readProcessIdentity): void {
   const current = readSoxRecord(path);
   const pids = current?.daemonPid === process.pid ? current.pids.filter((p) => p !== pid) : [];
-  writeSoxRecord([...pids, pid], path);
+  const identities = current?.daemonPid === process.pid ? { ...current.identities } : {};
+  delete identities[pid];
+  const identity = probe(pid);
+  if (identity) identities[pid] = identity;
+  writeSoxRecord([...pids, pid], path, identities);
 }
 
 export function forgetSox(pid: number, path = SOX_RECORD_PATH): void {
   const current = readSoxRecord(path);
   if (current?.daemonPid !== process.pid) return;
-  writeSoxRecord(current.pids.filter((p) => p !== pid), path);
+  writeSoxRecord(current.pids.filter((p) => p !== pid), path, current.identities);
 }
 
 /**
@@ -89,8 +99,11 @@ export async function reapOrphanedSox(
   const kill = deps.kill ?? ((pid: number) => process.kill(pid, "SIGKILL"));
   const killed: number[] = [];
   for (const pid of record.pids) {
+    const identity = record.identities?.[pid];
+    if (!identity) continue;
     const argv = command(pid);
     if (!argv || !isConchSox(argv)) continue;
+    if (!sameProcessIdentity(identity, (deps.identity ?? readProcessIdentity)(pid))) continue;
     kill(pid);
     killed.push(pid);
   }

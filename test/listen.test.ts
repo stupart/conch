@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import * as processIdentity from "../src/process-identity.ts";
+import { describe, expect, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -111,6 +112,7 @@ test("a wedged recorder is killed rather than left holding the mic", async () =>
 });
 
 test("runtime session abort closes its recorder through a manual-reply barrier", async () => {
+  const identityProbe = spyOn(processIdentity, "readProcessIdentity").mockReturnValue(null);
   const root = mkdtempSync(join(tmpdir(), "conch-listen-abort-test-"));
   const fakeSox = join(root, "sox");
   const fakeSoxReady = join(root, "sox-ready");
@@ -165,6 +167,7 @@ await new Promise(() => {});
     await barge.abort();
     expect(hasActiveRecorders()).toBeFalse();
   } finally {
+    identityProbe.mockRestore();
     bun.spawn = originalSpawn;
     rmSync(root, { recursive: true, force: true });
   }

@@ -1,3 +1,4 @@
+import { readProcessIdentity, sameProcessIdentity, validProcessIdentity, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -24,12 +25,14 @@ export interface WhisperSpawnRecord {
   /** The daemon that spawned it. Alive means that daemon still owns it. */
   daemonPid: number;
   startedAt: number;
+  identity?: ProcessIdentity;
 }
 
 export const WHISPER_RECORD_PATH = join(homedir(), ".cache/conch/whisper-server.json");
 
-export function recordSpawnedWhisper(pid: number, port: number, path = WHISPER_RECORD_PATH): void {
-  const record: WhisperSpawnRecord = { pid, port, daemonPid: process.pid, startedAt: Date.now() };
+export function recordSpawnedWhisper(pid: number, port: number, path = WHISPER_RECORD_PATH, probe: ProcessIdentityProbe = readProcessIdentity): void {
+  const identity = probe(pid);
+  const record: WhisperSpawnRecord = { pid, port, daemonPid: process.pid, startedAt: Date.now(), ...(identity ? { identity } : {}) };
   try {
     mkdirSync(join(path, ".."), { recursive: true });
     writeFileSync(path, JSON.stringify(record) + "\n");
@@ -46,7 +49,8 @@ export function readWhisperRecord(path = WHISPER_RECORD_PATH): WhisperSpawnRecor
     if (typeof record.pid !== "number" || typeof record.port !== "number" || typeof record.daemonPid !== "number") {
       return null;
     }
-    return { pid: record.pid, port: record.port, daemonPid: record.daemonPid, startedAt: record.startedAt ?? 0 };
+    return { pid: record.pid, port: record.port, daemonPid: record.daemonPid, startedAt: record.startedAt ?? 0,
+      ...(validProcessIdentity(record.identity) && record.identity.pid === record.pid ? { identity: record.identity } : {}) };
   } catch {
     return null;
   }
@@ -56,6 +60,7 @@ export interface OrphanReaperDeps {
   alive?: (pid: number) => boolean;
   /** The argv of a live pid, or null when it is gone. */
   command?: (pid: number) => string | null;
+  identity?: ProcessIdentityProbe;
   kill?: (pid: number) => void;
   sleep?: (ms: number) => Promise<unknown>;
 }
@@ -74,7 +79,7 @@ function psCommand(pid: number): string | null {
 /**
  * Kill the whisper-server a DEAD conch daemon spawned on this port — and only
  * that. Resolves to the pid killed, or null when nothing was provably ours:
- * no record, another port, its daemon still alive, or a pid that is gone or
+ * no birth-stamped record, another port, its daemon still alive, or a pid that is gone or
  * reused by something that is not a whisper-server on this port. A stranger
  * on the port is never touched; the supervisor adopts it as before.
  */
@@ -84,11 +89,12 @@ export async function reapOrphanedWhisper(
   deps: OrphanReaperDeps = {},
 ): Promise<number | null> {
   const record = readWhisperRecord(path);
-  if (!record || record.port !== port) return null;
+  if (!record || record.port !== port || !record.identity) return null;
   const alive = deps.alive ?? processAlive;
   if (alive(record.daemonPid)) return null;
   const command = (deps.command ?? psCommand)(record.pid);
   if (!command || !isWhisperServerOn(command, port)) return null;
+  if (!sameProcessIdentity(record.identity, (deps.identity ?? readProcessIdentity)(record.pid))) return null;
   (deps.kill ?? ((pid) => process.kill(pid, "SIGKILL")))(record.pid);
   // Wait for the port to be released, or the supervisor's first presence
   // probe would adopt the corpse and sit in fallback until its next canary.

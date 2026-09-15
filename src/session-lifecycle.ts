@@ -1,3 +1,6 @@
+import { withUITransaction } from "./inject.ts";
+import { runUICommand } from "./pasteboard.ts";
+import { processMatchesProvider, readProcessIdentity, sameProcessIdentity, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
 import { homedir } from "node:os";
 import { statSync } from "node:fs";
 import {
@@ -57,6 +60,9 @@ export interface SessionLifecycleProcess {
 export interface SessionLifecycleDependencies {
   spawn?(argv: string[]): SessionLifecycleProcess;
   ttyForPid?(pid: number): Promise<string>;
+  processIdentity?: ProcessIdentityProbe;
+  expectedIdentity?: ProcessIdentity;
+  backend?: SessionBackend;
   pidIsAlive?(pid: number): Promise<boolean>;
   which?(executable: string): string | null;
   isDirectory?(path: string): boolean;
@@ -257,13 +263,32 @@ async function boundedExit(
   return result;
 }
 
+/** UI work shares the injector's child-exit seal as well as its transaction queue. */
+async function runTerminalAutomation(argv: string[], dependencies: SessionLifecycleDependencies) {
+  const result = await runUICommand(argv, undefined, {
+    timeoutMs: dependencies.automationTimeoutMs,
+    spawn: dependencies.spawn && ((args) => {
+      const child = dependencies.spawn!(args);
+      return {
+        exited: child.exited,
+        stdout: child.stdout ?? new Response("").body!,
+        stderr: child.stderr ?? new Response("").body!,
+        kill: () => child.cancel(),
+      };
+    }),
+  });
+  if (result.timedOut) throw new Error("Terminal automation timed out");
+  if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `Terminal returned ${result.exitCode}`);
+  return result;
+}
+
 /** Native Terminal prevents a launched agent from inheriting conch's tmux environment. */
 export async function startTerminalSession(
   request: StartSessionRequest,
   dependencies: SessionLifecycleDependencies = {},
 ): Promise<void> {
   const command = terminalSessionCommand(request);
-  await runInTerminal(command, adapterFor(request.backend).executable, request.cwd, dependencies);
+  await withUITransaction(() => runInTerminal(command, adapterFor(request.backend).executable, request.cwd, dependencies));
 }
 
 /**
@@ -277,7 +302,7 @@ export async function attachTerminalSession(
   dependencies: SessionLifecycleDependencies = {},
 ): Promise<void> {
   const command = attachTerminalCommand(jobId, cwd);
-  await runInTerminal(command, adapterFor("claude").executable, cwd, dependencies);
+  await withUITransaction(() => runInTerminal(command, adapterFor("claude").executable, cwd, dependencies));
 }
 
 async function runInTerminal(
@@ -286,7 +311,6 @@ async function runInTerminal(
   requestedCwd: string | undefined,
   dependencies: SessionLifecycleDependencies,
 ): Promise<void> {
-  const spawn = dependencies.spawn ?? defaultSpawn;
   const which = dependencies.which ?? ((name: string) => Bun.which(name));
   if (!which(executable)) throw new Error(`${executable} is not installed or is not on PATH`);
   const cwd = requestedCwd?.trim() || homedir();
@@ -299,7 +323,7 @@ async function runInTerminal(
   } catch {
     throw new Error(`session directory does not exist: ${cwd}`);
   }
-  const child = spawn([
+  await runTerminalAutomation([
     "osascript",
     "-e", "on run argv",
     "-e", 'tell application "Terminal"',
@@ -309,12 +333,7 @@ async function runInTerminal(
     "-e", "end run",
     "--",
     command,
-  ]);
-  const stderr = processText(child.stderr);
-  const code = await boundedExit(child, dependencies.automationTimeoutMs);
-  if (code !== 0) {
-    throw new Error((await stderr).trim() || `Terminal returned ${code}`);
-  }
+  ], dependencies);
 }
 
 /**
@@ -351,16 +370,31 @@ async function defaultPidIsAlive(pid: number): Promise<boolean> {
 }
 
 /** Ctrl-D asks the CLI to leave through its normal EOF path; no signal is sent to the agent. */
-export async function closeTerminalSession(
+export function closeTerminalSession(
+  pid: number,
+  dependencies: SessionLifecycleDependencies = {},
+): Promise<void> {
+  return withUITransaction(() => closeTerminalSessionInTransaction(pid, dependencies));
+}
+
+async function closeTerminalSessionInTransaction(
   pid: number,
   dependencies: SessionLifecycleDependencies = {},
 ): Promise<void> {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("session has no routable pid");
+  const probe = dependencies.processIdentity ?? readProcessIdentity;
+  const expected = dependencies.expectedIdentity;
+  const verify = (): void => {
+    if (!expected || expected.pid !== pid || expected.ttyDevice === null
+      || !processMatchesProvider(expected, dependencies.backend)
+      || !sameProcessIdentity(expected, probe(pid))) throw new Error("session process identity changed or is unavailable; refresh before closing");
+  };
+  verify();
   const tty = await (dependencies.ttyForPid ?? defaultTtyForPid)(pid);
   if (!tty || tty === "??") throw new Error("session is not attached to a Terminal tty");
 
-  const spawn = dependencies.spawn ?? defaultSpawn;
-  const child = spawn([
+  verify();
+  const { text: stdout } = await runTerminalAutomation([
     "osascript",
     "-e", "on run argv",
     "-e", 'tell application "Terminal"',
@@ -380,13 +414,7 @@ export async function closeTerminalSession(
     "-e", "end run",
     "--",
     tty,
-  ]);
-  const [code, stdout, stderr] = await Promise.all([
-    boundedExit(child, dependencies.automationTimeoutMs),
-    processText(child.stdout),
-    processText(child.stderr),
-  ]);
-  if (code !== 0) throw new Error(stderr.trim() || `Terminal returned ${code}`);
+  ], dependencies);
   if (stdout.trim() !== "ok") throw new Error("session Terminal tab was not found");
   await waitForExit(pid, dependencies, "session did not exit cleanly after Ctrl-D");
 }
@@ -402,6 +430,8 @@ async function waitForExit(
   const intervalMs = dependencies.exitPollIntervalMs ?? 100;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     if (!(await pidIsAlive(pid))) return;
+    if (dependencies.expectedIdentity && !sameProcessIdentity(dependencies.expectedIdentity,
+      (dependencies.processIdentity ?? readProcessIdentity)(pid))) return;
     await sleep(intervalMs);
   }
   throw new Error(failure);
@@ -442,10 +472,28 @@ export async function stopBackgroundSession(
  * else leaves its terminal through Ctrl-D.
  */
 export async function closeSession(
-  session: Pick<SessionInfo, "pid" | "jobId" | "agentPid" | "noTerminal">,
+  session: Pick<SessionInfo, "pid" | "jobId" | "agentPid" | "noTerminal" | "processIdentity" | "backend">,
   dependencies: SessionLifecycleDependencies = {},
 ): Promise<void> {
   if (session.jobId) return stopBackgroundSession(session.jobId, session.agentPid, dependencies);
   if (!session.pid) throw new Error(session.noTerminal ?? "session has no routable pid");
-  return closeTerminalSession(session.pid, dependencies);
+  return closeTerminalSession(session.pid, { ...dependencies, expectedIdentity: session.processIdentity, backend: session.backend });
+}
+
+/** The selected cached row is a binding, never a substitute for fresh discovery. */
+export async function refreshSessionForClose(
+  sessionId: string,
+  expected: SessionInfo | undefined,
+  refresh: () => Promise<readonly SessionInfo[] | null>,
+): Promise<SessionInfo> {
+  const fresh = (await refresh())?.filter((session) => session.sessionId === sessionId);
+  if (!fresh || fresh.length !== 1) throw new Error("session is not live or is ambiguous");
+  const session = fresh[0]!;
+  if (!expected || expected.sessionId !== sessionId || expected.pid !== session.pid
+    || (expected.backend ?? "claude") !== (session.backend ?? "claude")
+    || expected.agentSessionId !== session.agentSessionId || expected.startedAt !== session.startedAt
+    || expected.jobId !== session.jobId || expected.agentPid !== session.agentPid) {
+    throw new Error("session identity changed or is unavailable; refresh before closing");
+  }
+  return { ...session, processIdentity: expected.processIdentity };
 }
