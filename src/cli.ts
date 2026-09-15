@@ -109,6 +109,11 @@ async function runDashboard(): Promise<void> {
 
 const cfg = loadConfig();
 const [command, ...rest] = process.argv.slice(2);
+/** A lookup refused (a name several live sessions match) is a message for a person, not a stack trace. */
+const exitOnLookupError = (error: unknown): never => {
+  console.error(`[conch] ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+};
 const settingsPath = settingsPathFor(process.env);
 
 function settingValue(value: SettingValue): string {
@@ -302,7 +307,7 @@ switch (command) {
     };
     const query = rest.join(" ").trim();
     if (query) {
-      const s = await findSessionByName(cfg.claudeDir, query);
+      const s = await findSessionByName(cfg.claudeDir, query).catch(exitOnLookupError);
       if (!s) {
         const names = (await listSessions(cfg.claudeDir)).map((x) => x.name ?? x.cwd?.split("/").pop() ?? x.sessionId.slice(0, 8));
         console.error(`[conch] no live session matching "${query}". Live: ${names.join(", ") || "none"}`);
@@ -333,7 +338,7 @@ switch (command) {
     let event = { type: "recite" as const, sessionId: "", label: "", announce: "" };
     const query = rest.join(" ").trim();
     if (query) {
-      const s = await findSessionByName(cfg.claudeDir, query);
+      const s = await findSessionByName(cfg.claudeDir, query).catch(exitOnLookupError);
       if (!s) {
         const names = (await listSessions(cfg.claudeDir)).map((session) =>
           sessionLabel(session, session.cwd)
@@ -380,7 +385,7 @@ switch (command) {
       renameSessionLabel,
       sessionLabel,
     } = await import("./sessions.ts");
-    const session = await findSessionByName(cfg.claudeDir, query);
+    const session = await findSessionByName(cfg.claudeDir, query).catch(exitOnLookupError);
     if (!session) {
       console.error(`[conch] no live session matching "${query}"`);
       process.exit(1);
@@ -437,7 +442,7 @@ switch (command) {
       process.exit(1);
     }
     const { findSessionByName, sessionLabel } = await import("./sessions.ts");
-    const session = await findSessionByName(cfg.claudeDir, query);
+    const session = await findSessionByName(cfg.claudeDir, query).catch(exitOnLookupError);
     if (!session) {
       console.error(`[conch] no live session matching "${query}"`);
       process.exit(1);
