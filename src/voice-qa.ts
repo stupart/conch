@@ -19,7 +19,7 @@ export type VoiceQaAsk = (
 export interface VoiceQaDependencies {
   askClaude: VoiceQaAsk;
   speak(text: string): Promise<void>;
-  inject(text: string): Promise<boolean>;
+  inject(text: string): Promise<boolean | "staged">;
   readLastAssistantText?: (transcriptPath: string) => Promise<string>;
   canContinue?: () => boolean | Promise<boolean>;
 }
@@ -33,7 +33,7 @@ export async function routeVoicePrompt(
   text: string,
   transcriptPath: string | undefined,
   dependencies: VoiceQaDependencies,
-): Promise<boolean> {
+): Promise<boolean | "staged"> {
   const question = enabled ? parseQuery(text) : null;
   if (!question) return dependencies.inject(text);
 

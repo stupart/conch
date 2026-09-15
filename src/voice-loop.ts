@@ -323,6 +323,7 @@ const CUE_SOUND = {
 
 export interface VoiceLoopDeps {
   cfg: Config;
+  sleep?: (ms: number) => Promise<void>;
   log(message: string): void;
   /** Carries `lastTurn`, which both the loop and the daemon write. */
   ledger: SessionLedger;
@@ -365,8 +366,8 @@ export interface VoiceLoopDeps {
 }
 
 export interface VoiceLoop {
-  /** An inject resolves with whether its words reached the session; everything else with nothing. */
-  handle(event: TurnEvent): Promise<boolean | void>;
+  /** An inject resolves true when submitted, "staged" when placed without Return, or false on failure. */
+  handle(event: TurnEvent): Promise<boolean | "staged" | void>;
   speak(speechCfg: Config, text: string, label?: string, volunteered?: boolean, sessionId?: string): Promise<void>;
   speakBlocker(volunteered: boolean): "mic-open" | "manual" | null;
   /** Exactly the four-term mic gate — never just `micOpen` (see the stop contract in control-server.ts). */
@@ -705,7 +706,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     await speak(cfg, event.announce, label, false, sessionId);
   }
 
-  async function handle(event: TurnEvent): Promise<boolean | void> {
+  async function handle(event: TurnEvent): Promise<boolean | "staged" | void> {
     // Inject and interrupt arrive immediately, not through the drain, so a
     // queued exchange may be mid-await right now: they must not touch its stop
     // or its mic (A14). The per-event reset sits below them.
@@ -760,7 +761,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       const delivered = await deliver(target, event.announce, undefined, undefined, {
         allowNameAddressing: false,
       });
-      log(`phone inject into "${event.label}" ${delivered ? "delivered" : "failed"}`);
+      log(`phone inject into "${event.label}" ${delivered === "staged" ? "staged" : delivered ? "delivered" : "failed"}`);
       // The outcome goes back to whoever is waiting on it (`awaitDelivery`):
       // the phone shows "delivered" or "not delivered" rather than guessing.
       return delivered;
@@ -1251,7 +1252,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     options: {
       allowNameAddressing?: boolean;
     } = {},
-  ): Promise<boolean> {
+  ): Promise<boolean | "staged"> {
     if (event.transcriptPath) {
       try {
         const conversation = await readConversationTail(
@@ -1293,11 +1294,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     text: string,
     diagnosticIds?: string | Iterable<string | undefined>,
     beforeInject?: () => boolean | Promise<boolean>,
-  ): Promise<boolean> {
+  ): Promise<boolean | "staged"> {
     let committed = false;
-    const commit = async (): Promise<boolean> => {
-      if (beforeInject && !(await beforeInject())) return false;
-      if (committed) return true;
+    const commit = (): void => {
+      if (committed) return;
       committed = true;
       if (typeof diagnosticIds === "string") {
         emitRecorderTrace(diagnosticIds, { finalSubmittedPayload: text });
@@ -1308,22 +1308,28 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // Record the utterance itself, not just the route — a mis-fire used to be
       // unrecoverable because only "injected via X" was logged, never the words.
       log(`heard → ${JSON.stringify(text)}`);
-      return true;
     };
-    // Reading-phase delivery has no live listen watcher; retain its established
-    // annotation timing. Dictation commits inside injectText at the actual route.
-    if (!beforeInject) await commit();
+    const failedDelivery = async (reason?: string): Promise<false> => {
+      publishDictation(text, event.sessionId);
+      log(`delivery to "${event.label}" failed${reason ? ` (${reason})` : ""}`);
+      recordDaemonError("inject", "Could not deliver the prompt. Review the recovered draft before retrying.", event.sessionId);
+      if (!beforeInject || await beforeInject()) {
+        await speak(cfg, "Couldn't deliver that. Your words are in the draft. Review them before trying again.", event.label);
+      }
+      return false;
+    };
 
     // Baseline the target session's user-prompt count so we can CONFIRM the
     // prompt actually submitted. null ⇒ no transcript to watch, skip confirmation.
-    const beforeCount = event.transcriptPath ? await transcriptMark(event.transcriptPath) : null;
+    const beforeCount = cfg.autoSubmit && event.transcriptPath ? await transcriptMark(event.transcriptPath) : null;
     const injectStartedAt = Date.now();
-    const { via, interrupted, reason } = await injectText(
-      cfg,
-      event.pid,
-      text,
-      beforeInject ? commit : undefined,
-    );
+    let result: inject.InjectTextResult;
+    try {
+      result = await injectText(cfg, event.pid, text, beforeInject);
+    } catch {
+      return failedDelivery("transport-error");
+    }
+    const { via, interrupted, reason } = result;
     // Undelivered words go back to the composer (A8). The app clears its
     // draft the moment the daemon ACCEPTS a send, which is before anything is
     // typed anywhere — so an inject that then stops (interrupted) or lands
@@ -1383,18 +1389,15 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // caller must not be told this reached the agent.
       return false;
     }
-    // Past interruption, "none" is a failed transport: the words never reached
-    // the session, so nothing may report delivery or re-press its Return.
-    if (via === "none") {
+    if (("failed" in result && result.failed) || via === "none") return failedDelivery(reason);
+    if (!cfg.autoSubmit) {
       publishDictation(text, event.sessionId);
-      log(`delivery to "${event.label}" failed${reason ? ` (${reason})` : ""}`);
-      recordDaemonError("inject", "Could not deliver the prompt. Review the recovered draft before retrying.", event.sessionId);
-      if (!beforeInject || await beforeInject()) {
-        await speak(cfg, "Couldn't deliver that. Your words are in the draft. Review them before trying again.", event.label);
-      }
-      return false;
+      log(`staged text in "${event.label}" via ${via} — waiting for explicit send`);
+      recordTelemetry("inject", { route: via, confirmed: false, staged: true, chars: text.length });
+      return "staged";
     }
     if (beforeCount === null) {
+      commit();
       log(`injected into "${event.label}" via ${via}`); // no transcript to confirm against — trust it
       return true;
     }
@@ -1410,6 +1413,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // or clipboard fallback has no such evidence and must still be proven.
     const keysLanded = via === "tmux" || via === "osascript-focused";
     if (keysLanded && deps.window(event.sessionId)?.status === "busy") {
+      commit();
       log(`injected into "${event.label}" via ${via} — queued behind the running turn`);
       recordTelemetry("inject", {
         route: via,
@@ -1426,9 +1430,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // appear, re-press Return (the text is sitting in the input) a couple of times;
     // if it still won't take, drop the words on the clipboard so they survive.
     for (let attempt = 0; attempt < 3; attempt++) {
-      await Bun.sleep(900 + attempt * 600); // give Claude Code time to write the prompt entry
+      await (deps.sleep ?? Bun.sleep)(900 + attempt * 600); // give Claude Code time to write the prompt entry
       if (beforeInject && !(await beforeInject())) return false;
       if ((await transcriptMark(event.transcriptPath!)) > beforeCount) {
+        commit();
         log(`injected into "${event.label}" via ${via} — confirmed sent${attempt ? ` (after ${attempt} re-send${attempt > 1 ? "s" : ""})` : ""}`);
         recordTelemetry("inject", {
           route: via,
@@ -1441,8 +1446,14 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       }
       if (attempt < 2) {
         log(`not confirmed yet — re-pressing Return (try ${attempt + 1})`);
-        const retry = await injectKey(cfg, event.pid, "Enter", beforeInject ? commit : undefined);
-        if (retry.interrupted) return false;
+        let retry: inject.InjectTextResult;
+        try {
+          retry = await injectKey(cfg, event.pid, "Enter", beforeInject);
+        } catch {
+          return failedDelivery("submit-error");
+        }
+        if (retry.interrupted) { publishDictation(text, event.sessionId); return false; }
+        if (("failed" in retry && retry.failed) || retry.via === "none" || retry.via === "clipboard") return failedDelivery(retry.reason);
       }
     }
     if (beforeInject && !(await beforeInject())) return false;
@@ -1455,6 +1466,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       reason: "never-confirmed",
       latencyMs: Date.now() - injectStartedAt,
     });
+    publishDictation(text, event.sessionId);
     await toClipboard(text);
     if (beforeInject && !(await beforeInject())) return false;
     await speak(cfg, "I typed that but it didn't send. Your words are on the clipboard — just paste and press return.", event.label);
@@ -1547,6 +1559,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       text: string;
       diagnosticId?: string;
       diagnosticIds: string[];
+      finalizedAt?: number;
     }> = [];
     // A wake just reopens the mic (per the README); it must NOT recite the last
     // message from the top — the user says "continue" if they want to hear it.
@@ -1554,10 +1567,12 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     let initialDictationCapture = announcedCapture;
     let initialCaptureParent = announcedCaptureParent;
     let deferredInitialExternal: ExternalDictationAction | undefined;
+    let gapHandoff: { session: listen.RuntimeDictationSession; hooks: listen.ListenHooks; done(): void } | undefined;
     const traceParent = suppliedTraceParent ?? announcedCaptureParent ?? createRecorderParent("conversation");
     let localTraceSequence = 0;
     const nextTraceSequence = suppliedNextTraceSequence ?? (() => ++localTraceSequence);
 
+    try {
     // A normal cancelled read has no recorder ownership to settle. An adopted
     // barge capture is the exception: attach it below, then abort the session.
     if (interruptedByPause() && !announcedCapture) return;
@@ -1651,6 +1666,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           });
           let gapActive: typeof activeDictation = null;
           let gapResult!: Awaited<ReturnType<typeof listenGap>>;
+          const gapHooks: listen.ListenHooks = {};
           try {
             if (!(await reserveNormalMic())) break reading;
             if (interruptedByPause()) {
@@ -1667,6 +1683,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
             micOpen = true;
             normalMicReserved = false;
             gapResult = await listenGap(cfg, gapSecs, {
+              handoff: true,
+              hooks: gapHooks,
               parent: traceParent,
               traceSequence: nextTraceSequence,
               onSessionStarted(gapSession) {
@@ -1685,11 +1703,22 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
                 micOpen = true;
               },
             });
+            if (gapResult.activeSession) {
+              gapHandoff = { session: gapResult.activeSession, hooks: gapHooks, done: resolveGapDone };
+              // The gap deadline belongs to reading. Replace it before any
+              // asynchronous dictation setup can let that short window fire.
+              gapHandoff.session.setIdleWindowSecs(
+                classifyReadingGap(gapResult.text) === "stop" ? cfg.listenWindowSecs : cfg.holdSubmitSecs,
+                gapResult.finalizedAt,
+              );
+            }
           } finally {
             normalMicReserved = false;
-            if (activeDictation === gapActive) activeDictation = null;
-            micOpen = false;
-            resolveGapDone();
+            if (!gapHandoff) {
+              if (activeDictation === gapActive) activeDictation = null;
+              micOpen = false;
+              resolveGapDone();
+            }
           }
           if (interruptedByPause()) {
             emitRecorderTraces(
@@ -1727,6 +1756,18 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
             }
             deferredInitialExternal = external;
             break reading; // spacebar during the gap
+          }
+          if (gapHandoff) {
+            // Keep both the hot successor and the serial STT worker. Commands
+            // enter the reducer too, so any TTS waits for its drain barrier.
+            if (classifyReadingGap(gapText) !== "stop") {
+              const diagnosticIds = (gapDiagnosticIds ?? [gapDiagnosticId]).filter((id): id is string => Boolean(id));
+              seededSegments.push({ text: gapText, diagnosticId: gapDiagnosticId, diagnosticIds, finalizedAt: gapResult.finalizedAt });
+            } else {
+              emitRecorderTraces(gapDiagnosticIds ?? [gapDiagnosticId], { intent: "stop", bufferCountAfterReduction: 0 });
+              gapHandoff.session.setIdleWindowSecs(cfg.listenWindowSecs, gapResult.finalizedAt);
+            }
+            break reading;
           }
           if (gapError) {
             emitRecorderTraces(gapDiagnosticIds ?? [gapDiagnosticId], { intent: "transcription-error", bufferCountAfterReduction: 0 });
@@ -1860,12 +1901,14 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       micRequestedAt = null;
       log(`mic armed ${(took / 1000).toFixed(1)}s after the press`);
     };
-    const session = createDictationSession(cfg, listenHooks(
+    const dictationHooks = listenHooks(
       event.label,
       () => reducer.snapshot.buffer.map((segment) => segment.text).join(" "),
       undefined,
       reportArmed,
-    ), {
+    );
+    if (gapHandoff) Object.assign(gapHandoff.hooks, dictationHooks);
+    const session = gapHandoff?.session ?? createDictationSession(cfg, dictationHooks, {
       parent: traceParent ?? initialCaptureParent,
       traceSequence: nextTraceSequence,
     });
@@ -1944,7 +1987,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       }
       beginExternalAction(action, barrierReason);
     };
-    let attachedInitialCapture = false;
+    let attachedInitialCapture = Boolean(gapHandoff);
     if (initialDictationCapture) {
       // Ownership was transferred out of the barge helper already. Attach and
       // establish controller ownership synchronously before any transcript or
@@ -2024,7 +2067,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         case "timeout":
         case "spacebar": {
           if (action.payload) {
-            await micCue(cfg, "sent");
+            if (event.compose) {
+              publishDictation(action.payload, event.sessionId);
+              return "done";
+            }
             if (interruptedByPause()) return "done";
             const delivered = await deliver(
               event,
@@ -2037,6 +2083,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
               },
             );
             if (!delivered) return interruptedByPause() ? "done" : "manual-reply";
+            if (delivered === true) await micCue(cfg, "sent");
           } else {
             emitTerminalRows(action);
             await micCue(cfg, "close");
@@ -2088,7 +2135,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // heads-up. Now, only open the mic if you're NOT handling this by keyboard.
     // Skip it when you're actively typing (idle < grace) OR you already sent a text
     // reply to this session (userRespondedSince). A wake is explicit and never gated.
-    if (autoTurn && !initialDictationCapture && !deferredInitialExternal) {
+    if (autoTurn && !initialDictationCapture && !gapHandoff && !deferredInitialExternal) {
       const idle = cfg.typingGraceSecs > 0 ? await idleSeconds() : null;
       if (interruptedByPause()) return;
       const activelyTyping = idle !== null && idle < cfg.typingGraceSecs;
@@ -2122,7 +2169,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       );
       return;
     }
-    if (!initialDictationCapture && !deferredInitialExternal) {
+    if (!initialDictationCapture && !gapHandoff && !deferredInitialExternal) {
       // Fired, not awaited. This was the whole delay: the daemon's own timing
       // print says `mic cue took 3.9s` on a 3.9s open, so the courtesy sound
       // WAS the wait. A 0.56s tink costs ~0.8s of fixed afplay overhead in a
@@ -2235,7 +2282,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           ...(seed.diagnosticId ? { diagnosticId: seed.diagnosticId } : {}),
         }));
       }
-      if (seededSegments.length) session.setIdleWindowSecs(cfg.holdSubmitSecs);
+      if (seededSegments.length) session.setIdleWindowSecs(cfg.holdSubmitSecs, seededSegments.at(-1)?.finalizedAt);
       if (deferredInitialExternal) {
         if (needsCapture) requestExternal(deferredInitialExternal);
         else beginExternalAction(deferredInitialExternal);
@@ -2297,6 +2344,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
               continue; // reading is already stopped; keep the continuous mic open
             }
           }
+          const heldBefore = reducer.snapshot.buffer.length;
           effects = reducer.consume({
             type: "transcript",
             sequence: ++reductionSequence,
@@ -2306,9 +2354,9 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           const trace = effects.find((effect) => effect.type === "trace");
           if (trace?.type === "trace") {
             log(`heard: "${controllerEvent.text}" -> ${trace.intent}${reducer.snapshot.buffer.length ? " (holding)" : ""}`);
-            if (trace.intent === "prompt") {
-              session.setIdleWindowSecs(cfg.holdSubmitSecs, controllerEvent.finalizedAt);
-            }
+          }
+          if (reducer.snapshot.buffer.length > heldBefore) {
+            session.setIdleWindowSecs(cfg.holdSubmitSecs, controllerEvent.finalizedAt);
           }
           if (initialBargeResult && !controllerEvent.text) {
             emptyBargeBarrierId = session.requestBarrier("barge-empty").id;
@@ -2622,6 +2670,32 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       await speak(cfg, incompleteDictation.some((text) => text.trim())
         ? "Dictation was incomplete. Your recovered words are in the draft. Review them or retry before sending."
         : "Dictation failed. Please try again.", event.label);
+    }
+    } finally {
+      // Covers every early return between gap transfer and the normal loop's
+      // cleanup (pause, shutdown, remote ear, or setup failure).
+      if (gapHandoff) {
+        const session = gapHandoff.session;
+        try {
+          if (session.state === "running" || session.state === "draining") {
+            const ticket = session.requestBarrier("handoff-exit");
+            let exitBarrierReached = false;
+            while (true) {
+              const pending = await session.nextEvent();
+              if (pending.kind === "barrier") {
+                session.acknowledge(pending);
+                if (pending.id === ticket.id) exitBarrierReached = true;
+                if (exitBarrierReached && session.state !== "draining") break;
+              }
+            }
+            await ticket.done;
+          }
+        } finally {
+          if (activeDictation?.session === session) activeDictation = null;
+          micOpen = false;
+          gapHandoff.done();
+        }
+      }
     }
   }
 
