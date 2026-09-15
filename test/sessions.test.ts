@@ -272,6 +272,29 @@ describe("conch session-label overrides", () => {
     }
   });
 
+  test("default label reads and writes stay inside the redirected config directory", async () => {
+    const f = fixture();
+    try {
+      const configDir = join(f.root, "config");
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(f.labelsPath, JSON.stringify({ "session-a": "Fixture label" }));
+      const child = Bun.spawn([process.execPath, "--eval", `
+        import { sessionLabel, setLabelOverride } from ${JSON.stringify(new URL("../src/sessions.ts", import.meta.url).pathname)};
+        const info = { sessionId: "session-a", cwd: "/fixture", name: "Original" };
+        if (sessionLabel(info, info.cwd) !== "Fixture label") throw new Error("label redirect was not applied");
+        setLabelOverride(info.sessionId, "Changed fixture label");
+      `], {
+        env: { ...process.env, CONCH_CONFIG_DIR: configDir },
+        stdout: "pipe", stderr: "pipe",
+      });
+      const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+      expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+      expect(JSON.parse(readFileSync(f.labelsPath, "utf8"))).toEqual({ "session-a": "Changed fixture label" });
+    } finally {
+      rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+
   test("voice-pin migration on rename persists one canonical operation and preserves the old pin", () => {
     const f = fixture();
     const cfg = loadConfig({

@@ -338,7 +338,7 @@ async function tryWorkerSynth(
 // --- readiness + voices -------------------------------------------------
 
 function voiceOverridePath(options: VoiceOverrideOptions): string {
-  return options.voicesPath ?? VOICES_FILE;
+  return options.voicesPath ?? join(process.env.CONCH_CONFIG_DIR ?? dirname(VOICES_FILE), "voices.json");
 }
 
 /** Read the tiny label-keyed override file afresh so short-lived CLI/hooks see changes. */
