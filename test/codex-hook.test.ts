@@ -119,6 +119,23 @@ afterEach(() => {
 });
 
 describe("handleCodexHookPayload", () => {
+  test("a marker link passes the same check as review_to_front: a path with spaces is kept, an unsafe link dropped", async () => {
+    const h = harness();
+    const file = join(h.root, "hand off.md");
+    writeFileSync(file, "# handoff\n");
+    const stop = (link: string): CodexHookPayload => ({
+      hook_event_name: "Stop",
+      session_id: "session-123",
+      cwd: h.root,
+      agent_type: null,
+      last_assistant_message: `Done.\nconch:review The handoff | ${link}`,
+    });
+    expect((await handleCodexHookPayload(stop("hand off.md"), h.cfg, h.dependencies))?.review)
+      .toEqual({ summary: "The handoff", link: file });
+    expect((await handleCodexHookPayload(stop("javascript:alert(1)"), h.cfg, h.dependencies))?.review)
+      .toEqual({ summary: "The handoff" });
+  });
+
   test("Stop writes an idle registry entry and sends an exact review TurnEvent", async () => {
     const h = harness();
     const payload: CodexHookPayload = {

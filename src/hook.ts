@@ -9,7 +9,7 @@ import {
   stripMarkdown,
   looksLikeAwaitingReply,
   transcriptMark,
-  parseReviewRequest,
+  parsePublishableReview,
 } from "./snippet.ts";
 import { currentTurnText } from "./transcript-turn.ts";
 import { findHookWindow, sessionLabel, isEngageable } from "./sessions.ts";
@@ -26,7 +26,7 @@ interface HookPayload {
 }
 
 export interface TurnEvent {
-  type: "turn-end" | "needs-you" | "wake" | "recite" | "spacebar" | "pause" | "resume" | "speak" | "working" | "inject" | "interrupt";
+  type: "turn-end" | "review-published" | "needs-you" | "wake" | "recite" | "spacebar" | "pause" | "resume" | "speak" | "working" | "inject" | "interrupt";
   sessionId: string;
   label: string;
   cwd?: string;
@@ -44,7 +44,7 @@ export interface TurnEvent {
   eventAt?: number;
   /** This working state came from a Stop reclassified for live background work. */
   backgroundWork?: true;
-  /** Set when the final reply carried a conch:review marker. */
+  /** Set when the final reply carried a conch:review marker, and always on `review-published`. */
   review?: { summary: string; link?: string };
   /**
    * The tool a permission dialog is waiting on (B5). Attached by the daemon
@@ -221,7 +221,7 @@ export async function runHook(cfg: Config): Promise<void> {
     const reviewSource = payload.transcript_path
       ? await currentTurnText(payload.transcript_path)
       : "";
-    const review = parseReviewRequest(reviewSource || settledText || finalText);
+    const review = await parsePublishableReview(reviewSource || settledText || finalText, payload.cwd ?? process.cwd());
     // The hook is a separate short-lived process with no terminal and no log,
     // so every failure here has been invisible — three rounds of reasoning
     // about reviews from OUTSIDE the process that decides. Record what it

@@ -266,6 +266,11 @@ test("parseReviewRequest trims and sanitizes a summary before capping it at 200 
   expect(review).toEqual({ summary: "x".repeat(200), link: "/tmp/review" });
 });
 
+test("parseReviewRequest keeps a link whose path has spaces", () => {
+  expect(parseReviewRequest("Done.\nconch:review The handoff | /tmp/my review/hand off.md  "))
+    .toEqual({ summary: "The handoff", link: "/tmp/my review/hand off.md" });
+});
+
 test("parseReviewRequest matches the marker case-insensitively", () => {
   expect(parseReviewRequest("CONCH:REVIEW Check the uppercase marker | /tmp/review"))
     .toEqual({ summary: "Check the uppercase marker", link: "/tmp/review" });

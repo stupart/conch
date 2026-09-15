@@ -957,3 +957,65 @@ describe("a deliverable keeps one identity from filing until a newer one", () =>
     }
   });
 });
+
+/**
+ * `review_to_front` used to send a synthetic `turn-end`: a publication mid-turn
+ * latched the row waiting while the agent worked, opened the mic for a reply,
+ * and the real Stop announced again. It is its own event now.
+ */
+describe("a publication is not the end of a turn", () => {
+  const rowFor = (h: Harness) => buildPanelModel({
+    sessions: [{ sessionId: "s1", name: "alpha" } as SessionInfo],
+    sessionStates: h.ledger.sessionStates,
+    pausedSessionIds: new Set(),
+    live: { state: "idle", label: "", partial: "" },
+    mode: { muted: false, paused: false, holding: 0 },
+    activeSessionId: null,
+    navSelectedId: null,
+  }).rows[0]!;
+  const review = { summary: "hero v3", link: "/tmp/hero-v3.png" };
+  const announce = "alpha has work ready for your review: hero v3";
+  const published = (over: Partial<TurnEvent> = {}): TurnEvent => ({
+    type: "review-published", sessionId: "s1", label: "alpha", announce, eventAt: 2_000, review, ...over,
+  });
+
+  test("mid-turn it files the deliverable and says so once; the turn works on until its own Stop", async () => {
+    // Live for its turn's own check, gone from then on, so the Stop's mic window closes.
+    let checks = 0;
+    const h = harness({ sessionGone: () => ++checks > 1 });
+    await h.voice.handle(accepted(h, { type: "working", sessionId: "s1", label: "alpha", announce: "", eventAt: 1_000 }));
+    await h.voice.handle(accepted(h, published()));
+    expect(rowFor(h)).toMatchObject({ status: "working", review: { ...review, at: 2_000 } });
+    expect(reviewReady(rowFor(h))).toBe(false);
+    expect(h.said).toEqual([announce]);
+    expect(h.sessions).toHaveLength(0); // no mic opened for a reply
+    expect(h.ledger.lastTurn ?? null).toBeNull();
+
+    await h.voice.handle(accepted(h, turnEnd({ eventAt: 3_000 })));
+    expect(rowFor(h)).toMatchObject({ status: "waiting", review: { ...review, at: 2_000 } });
+    expect(reviewReady(rowFor(h))).toBe(true);
+    expect(h.said).toEqual([announce, "alpha: the build is green."]);
+    expect(h.ledger.lastTurn?.type).toBe("turn-end");
+  });
+
+  test("in manual it files silently and holds nothing for replay", async () => {
+    const h = harness({ paused: true });
+    await h.voice.handle(accepted(h, published()));
+    expect(rowFor(h).review).toEqual({ ...review, at: 2_000 });
+    expect(h.said).toEqual([]);
+    expect(h.ledger.pending.size).toBe(0);
+  });
+
+  test("a Stop that lands first does not make it stale, and an older one replayed later does not replace a newer one", async () => {
+    const h = harness({ paused: true });
+    const stop = accepted(h, turnEnd({ eventAt: 3_000 }));
+    const publication = accepted(h, published());
+    await h.voice.handle(stop);
+    await h.voice.handle(publication);
+    expect(rowFor(h)).toMatchObject({ status: "waiting", review: { ...review, at: 2_000 } });
+
+    await h.voice.handle(accepted(h, published({ eventAt: 5_000, review: { summary: "hero v4" } })));
+    await h.voice.handle(publication);
+    expect(rowFor(h).review).toEqual({ summary: "hero v4", at: 5_000 });
+  });
+});
