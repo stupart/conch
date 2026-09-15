@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createPhoneBridgeApplication } from "../src/phone-bridge.ts";
 import {
   MacRelayPeer,
+  RELAY_RESPONSE_CACHE_LIMIT,
   RelayResponseCache,
   createPhoneRelay,
   ensureRelayPairing,
@@ -69,6 +70,7 @@ async function connectedHarness(options: {
   forward?: (line: string) => Promise<string>;
   cache?: RelayResponseCache;
   send?: (wire: string, sent: string[]) => Promise<void>;
+  onProtocolFailure?: () => void;
 } = {}) {
   const relay = pairing();
   const sent: string[] = [];
@@ -112,6 +114,8 @@ async function connectedHarness(options: {
       }
     },
     () => {},
+    undefined,
+    options.onProtocolFailure,
   );
   const macHelloWire = await peer.hello();
   const macHello = JSON.parse(macHelloWire) as unknown;
@@ -574,6 +578,120 @@ describe("Mac phone relay adapter", () => {
     expect(fileChunks.length).toBeGreaterThan(2);
     expect(controlHead).toBeGreaterThan(fileChunks[0]!.index);
     expect(controlHead).toBeLessThan(fileChunks[1]!.index);
+  });
+});
+
+// Review finding 18: the cache kept every POST reply for the daemon's lifetime,
+// telemetry included, and refused all sends once it held 4,096.
+describe("the relay retry cache over a long-lived daemon", () => {
+  async function post(
+    harness: Awaited<ReturnType<typeof connectedHarness>>,
+    phone: RelaySessionCipher,
+    id: string,
+    body: string,
+  ): Promise<OpenedRelayFrame[]> {
+    const frame = await phone.seal(
+      { id, method: "POST", kind: "request" },
+      requestBody("/control", harness.relay.secret, body),
+    );
+    await harness.peer.receive(JSON.stringify(frame));
+    return openSent(phone, harness.sent);
+  }
+
+  test("4,200 requests with telemetry every fourth keep working, and telemetry holds no slot", async () => {
+    const cache = new RelayResponseCache();
+    let forwarded = 0;
+    let rekeys = 0;
+    const harness = await connectedHarness({
+      cache,
+      forward: async () => { forwarded += 1; return "{}"; },
+      onProtocolFailure: () => { rekeys += 1; },
+    });
+    const total = RELAY_RESPONSE_CACHE_LIMIT + 104;
+    let controls = 0;
+    for (let index = 0; index < total; index += 1) {
+      const telemetry = index % 4 === 0;
+      if (!telemetry) controls += 1;
+      const body = telemetry
+        ? `{"kind":"phone-device","footprintMB":${index}}`
+        : `{"type":"interrupt","sessionId":"s${index}"}`;
+      expect(responseStatus(await post(harness, harness.phone, `load-request-${index}`, body))).toBe(200);
+    }
+    expect(forwarded).toBe(total);
+    expect(cache.size).toBe(controls);
+    expect(rekeys).toBe(0);
+  }, 120_000);
+
+  test("a session that outgrows the cache rekeys instead of refusing, and its last request still runs once", async () => {
+    const cache = new RelayResponseCache();
+    let forwarded = 0;
+    let rekeys = 0;
+    const forward = async () => { forwarded += 1; return "{}"; };
+    const first = await connectedHarness({
+      cache,
+      forward,
+      onProtocolFailure: () => { rekeys += 1; first.peer.close(); },
+    });
+    for (let index = 0; index < RELAY_RESPONSE_CACHE_LIMIT; index += 1) {
+      expect(responseStatus(await post(first, first.phone, `full-request-${index}`, `{"n":${index}}`))).toBe(200);
+    }
+    expect(rekeys).toBe(0);
+    const lastId = "full-request-overflow";
+    const lastBody = `{"n":"overflow"}`;
+    // One past the limit: the Mac rekeys rather than answering 503. The reply
+    // is lost with the old keys, but the mutation itself ran.
+    expect(await post(first, first.phone, lastId, lastBody)).toEqual([]);
+    expect(rekeys).toBe(1);
+    expect(forwarded).toBe(RELAY_RESPONSE_CACHE_LIMIT + 1);
+
+    // The phone resends what is still pending before anything new.
+    const second = await connectedHarness({ cache, forward });
+    expect(responseStatus(await post(second, second.phone, lastId, lastBody))).toBe(200);
+    expect(forwarded).toBe(RELAY_RESPONSE_CACHE_LIMIT + 1);
+    expect(responseStatus(await post(second, second.phone, "after-rekey-request", "{}"))).toBe(200);
+    expect(forwarded).toBe(RELAY_RESPONSE_CACHE_LIMIT + 2);
+    expect(cache.size).toBe(2);
+  }, 120_000);
+
+  test("a request the phone may still resend stays deduplicated across reconnects; finished ones retire", async () => {
+    const cache = new RelayResponseCache();
+    let forwarded = 0;
+    const forward = async () => { forwarded += 1; return "{}"; };
+    const pendingId = "pending-inject-request";
+    const pendingBody = `{"type":"inject","text":"ship it"}`;
+
+    // Session 1: the inject runs, its reply is lost; another request finishes.
+    const first = await connectedHarness({ cache, forward });
+    await post(first, first.phone, pendingId, pendingBody);
+    await post(first, first.phone, "finished-request-one", "{}");
+    expect(forwarded).toBe(2);
+    first.peer.close();
+
+    // Session 2 (socket reconnect): the pending inject is resent first and
+    // replayed, then something new arrives. The finished request was not
+    // resent, so the phone is done with it and it retires.
+    const second = await connectedHarness({ cache, forward });
+    expect(responseStatus(await post(second, second.phone, pendingId, pendingBody))).toBe(200);
+    expect(forwarded).toBe(2);
+    expect(responseStatus(await post(second, second.phone, "new-request-two", "{}"))).toBe(200);
+    expect(forwarded).toBe(3);
+
+    // Session 3 (the phone rekeys on the same Mac socket): that reply was lost
+    // too. However late the resend arrives, it must not run the inject again.
+    const challenge = Uint8Array.from({ length: 32 }, (_, index) => index + 40);
+    await second.peer.receive(JSON.stringify(await sealRelayHello(
+      "phone",
+      second.relay.roomId,
+      second.relay.secret,
+      challenge,
+    )));
+    const third = await second.rekey(challenge);
+    second.sent.splice(0);
+    expect(responseStatus(await post(second, third, pendingId, pendingBody))).toBe(200);
+    expect(responseStatus(await post(second, third, "new-request-two", "{}"))).toBe(200);
+    expect(forwarded).toBe(3);
+    // Only the two requests still in play remain; the finished one retired.
+    expect(cache.size).toBe(2);
   });
 });
 

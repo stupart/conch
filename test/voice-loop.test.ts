@@ -900,6 +900,21 @@ describe("the mic, the cue and the composer", () => {
     await h.voice.close();
   });
 
+  // The daemon log lives for weeks in /tmp: it records which session got a
+  // dictation and how long it was, and at most a short classifier preview.
+  test("dictated and injected words never reach the log in full", async () => {
+    const path = transcript(assistant({ type: "text", text: "First part of the reply. Second part follows. A third closes it." }));
+    const composer = harness({ cfg: { readFull: true }, gap: () => ({ text: "please also add a regression test" }) });
+    await composer.voice.handle(accepted(composer, turnEnd({ compose: true, transcriptPath: path, announce: "alpha: First part of the reply." })));
+    const sent = harness();
+    await sent.voice.handle(inject("tell the database team the migration is ready"));
+    expect(sent.texts).toEqual(["tell the database team the migration is ready"]);
+    const logs = [...composer.logs, ...sent.logs];
+    expect(logs).toContain("dictated → composer (33 chars)");
+    expect(logs).toContain('heard → "alpha" (45 chars)');
+    expect(logs.filter((line) => line.includes("regression test") || line.includes("migration is ready"))).toEqual([]);
+  });
+
   test("a composer dictation heard mid-read goes back to the composer, never into the session", async () => {
     const path = transcript(assistant({ type: "text", text: "First part of the reply. Second part follows. A third closes it." }));
     const h = harness({ cfg: { readFull: true }, gap: () => ({ text: "please also add a regression test" }) });
