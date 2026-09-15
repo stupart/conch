@@ -284,7 +284,9 @@ struct DeliverableSheet: View {
                 if let downloaded { try? FileManager.default.removeItem(at: downloaded) }
                 return
             }
-            localURL = downloaded
+            // Under its own name: Quick Look titles it and Share sends it by
+            // that name, and both transports download to a random one.
+            localURL = downloaded.map { Self.named($0, like: link) }
             // The bridge's own reason, read on the main actor straight after
             // the call that set it; "couldn't be fetched" alone said nothing.
             if downloaded == nil {
@@ -292,8 +294,28 @@ struct DeliverableSheet: View {
             }
         }
         .onDisappear {
-            if let localURL { try? FileManager.default.removeItem(at: localURL) }
+            if let localURL {
+                try? FileManager.default.removeItem(at: localURL)
+                // The folder `named` made for it, and only that.
+                let folder = localURL.deletingLastPathComponent()
+                if UUID(uuidString: folder.lastPathComponent) != nil {
+                    try? FileManager.default.removeItem(at: folder)
+                }
+            }
             localURL = nil
+        }
+    }
+
+    /// The download, moved into a folder of its own under the file's real name.
+    private static func named(_ file: URL, like link: String) -> URL {
+        let folder = file.deletingLastPathComponent().appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let named = folder.appendingPathComponent((link as NSString).lastPathComponent)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try FileManager.default.moveItem(at: file, to: named)
+            return named
+        } catch {
+            return file
         }
     }
 

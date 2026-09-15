@@ -211,7 +211,8 @@ describe("a page on the Mac's localhost is said, not loaded", () => {
         'let page = URL(string: "http://localhost:5173/onboarding?step=2#top")!',
         'print(MacLocalPage.onLAN(page, pairedHost: "192.168.1.20:8674", isRelay: false)?.absoluteString ?? "nil")',
         'print(MacLocalPage.onLAN(page, pairedHost: "tylers-mac.local", isRelay: false)?.absoluteString ?? "nil")',
-        'print(MacLocalPage.onLAN(page, pairedHost: "Relay · relay.example.com", isRelay: true)?.absoluteString ?? "nil")',
+        // A relay pairing never rewrites, even given a host it could parse.
+        'print(MacLocalPage.onLAN(page, pairedHost: "192.168.1.20:8674", isRelay: true)?.absoluteString ?? "nil")',
       ]);
       expect(out).toEqual([
         "true", "true", "true", "true", "true", "true",
