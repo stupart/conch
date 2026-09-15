@@ -871,7 +871,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     log,
     speak: (text) => voice.speak(cfg, text),
     liveSessionIds: async () => (await registrySnapshot(cfg.claudeDir))?.liveIds ?? null,
-    userRespondedSince: (event) => userRespondedSince(event.transcriptPath, event.mark),
+    // A window of a shared transcript counts only its own branch's prompts (A8).
+    userRespondedSince: (event) => userRespondedSince(
+      event.transcriptPath,
+      event.mark,
+      isWindowKey(event.sessionId) ? panelSessions.get(event.sessionId) ?? {} : undefined,
+    ),
     enqueue,
     onHold: (event) => {
       ledger.lastTurn = event;
