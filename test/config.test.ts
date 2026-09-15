@@ -31,6 +31,15 @@ describe("loadConfig tunable layering", () => {
     expect(cfg.meetingAutopause).toBe(false);
     expect(cfg.interruptOnManualReply).toBe(true);
     expect(cfg.handoffOrder).toBe("oldest");
+    expect(cfg.recordsEnabled).toBe(false);
+  });
+
+  test("records is opt-in and environment overrides the saved construction gate", () => {
+    const path = settingsPath({ records: true });
+    expect(loadConfig({ env: {}, settingsPath: path }).recordsEnabled).toBe(true);
+    expect(loadConfig({ env: { CONCH_RECORDS_ENABLED: "false" }, settingsPath: path }).recordsEnabled).toBe(false);
+    expect(loadConfig({ env: { CONCH_RECORDS_ENABLED: "invalid" }, settingsPath: path }).recordsEnabled).toBe(true);
+    expect(loadConfig({ env: { CONCH_RECORDS_ENABLED: "1" }, settingsPath: settingsPath() }).recordsEnabled).toBe(true);
   });
 
   test("loads native numbers and booleans from settings.json", () => {

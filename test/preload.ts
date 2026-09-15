@@ -1,6 +1,13 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// Default config/provider discovery and IPC must stay away from a running install.
+const testConfigRoot = mkdtempSync(join(tmpdir(), "conch-test-config-"));
+process.env.CONCH_CONFIG_DIR ??= join(testConfigRoot, "config");
+process.env.CLAUDE_CONFIG_DIR ??= join(testConfigRoot, "claude");
+process.env.CONCH_SOCKET ??= join(testConfigRoot, "conch.sock");
+process.on("exit", () => rmSync(testConfigRoot, { recursive: true, force: true }));
 
 // Runs before any test module is imported. The daemon log path is read once
 // at import time by src/status.ts, so this is the only place it can be

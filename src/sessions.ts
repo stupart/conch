@@ -426,7 +426,7 @@ function toInfo(entry: any, backend?: SessionInfo["backend"], entries: readonly 
 }
 
 function labelOverridePath(options: LabelOverrideOptions): string {
-  return options.labelsPath ?? LABELS_FILE;
+  return options.labelsPath ?? join(process.env.CONCH_CONFIG_DIR ?? dirname(LABELS_FILE), "labels.json");
 }
 
 /** Canonical persisted form: printable, trimmed, non-empty, and dashboard-sized. */

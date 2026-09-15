@@ -89,6 +89,27 @@ test("voice override reset returns a label to its automatic ring voice", () => {
   }
 });
 
+test("default voice reads and writes stay inside the redirected config directory", async () => {
+  const root = mkdtempSync(join(tmpdir(), "conch-voice-config-"));
+  const voicesPath = join(root, "voices.json");
+  try {
+    setVoiceOverride("fixture", "am_adam", { voicesPath });
+    const child = Bun.spawn([process.execPath, "--eval", `
+      import { voiceOverrides, setVoiceOverride } from ${JSON.stringify(new URL("../src/speak.ts", import.meta.url).pathname)};
+      if (voiceOverrides().fixture !== "am_adam") throw new Error("voice redirect was not applied");
+      setVoiceOverride("fixture", "af_heart");
+    `], {
+      env: { ...process.env, CONCH_CONFIG_DIR: root },
+      stdout: "pipe", stderr: "pipe",
+    });
+    const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    expect(JSON.parse(readFileSync(voicesPath, "utf8"))).toEqual({ fixture: "af_heart" });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("voice-pin map migration is a same-key no-op and the migrating pin wins a collision", () => {
   expect(migrateVoiceOverrideMap(
     { old: "am_adam", new: "af_heart", untouched: "bf_emma" },

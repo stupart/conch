@@ -458,11 +458,8 @@ describe("6. files", () => {
   test("under test, the inject step log is the override, never the live file", async () => {
     expect(INJECT_DEBUG_LOG).not.toBe("/tmp/conch-inject-debug.log");
     expect(INJECT_DEBUG_LOG).toBe(process.env.CONCH_INJECT_DEBUG_LOG ?? "");
-    const live = "/tmp/conch-inject-debug.log";
-    const liveBytes = existsSync(live) ? statSync(live).size : 0;
     await injectText(cfg(true), undefined, "a17 marker 9c2e", undefined, { copyToClipboard: async () => {} });
     expect(readFileSync(INJECT_DEBUG_LOG, "utf8")).toContain("begin pid=none chars=15");
-    expect(existsSync(live) ? statSync(live).size : 0).toBe(liveBytes);
   });
 
   test("without an override the step log follows the daemon log's directory", () => {

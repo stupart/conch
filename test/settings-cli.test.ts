@@ -244,7 +244,7 @@ describe("rename CLI daemon hand-off", () => {
         command: "rename",
         label: "Release",
       }]);
-      expect(existsSync(join(f.root, ".config", "conch", "labels.json"))).toBe(false);
+      expect(existsSync(join(f.configDir, "labels.json"))).toBe(false);
     } finally {
       await daemon.close();
     }
@@ -259,7 +259,7 @@ describe("rename CLI daemon hand-off", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("Build -> Release");
     expect(JSON.parse(readFileSync(
-      join(f.root, ".config", "conch", "labels.json"),
+      join(f.configDir, "labels.json"),
       "utf8",
     ))).toEqual({ "session-123": "Release" });
   });
@@ -276,7 +276,7 @@ describe("rename CLI daemon hand-off", () => {
 
       expect(result.exitCode).not.toBe(0);
       expect(result.stderr).toContain("session was pruned");
-      expect(existsSync(join(f.root, ".config", "conch", "labels.json"))).toBe(false);
+      expect(existsSync(join(f.configDir, "labels.json"))).toBe(false);
     } finally {
       await daemon.close();
     }

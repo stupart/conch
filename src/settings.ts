@@ -35,6 +35,7 @@ export const SETTING_KEYS = [
   "voice-speed",
   "keystroke-fallback",
   "bypass-permissions",
+  "records",
   "phone",
   "phone-port",
   "phone-relay-url",
@@ -57,6 +58,7 @@ export const SETTING_KEYS = [
 export type SettingKey = typeof SETTING_KEYS[number];
 export type SettingField =
   | "bypassPermissions"
+  | "recordsEnabled"
   | "endSilenceSecs"
   | "micGainDb"
   | "holdSubmitSecs"
@@ -495,6 +497,17 @@ export const SETTING_DESCRIPTORS = [
     bounds: zeroable,
     apply: "live",
     help: "minutes without a transcription before the warm whisper-server (~628MB) is unloaded; it reloads when a mic is about to open; 0 keeps it loaded",
+  },
+  {
+    key: "records",
+    field: "recordsEnabled",
+    env: "CONCH_RECORDS_ENABLED",
+    kind: "boolean",
+    default: false,
+    parse: parseBoolean,
+    bounds: null,
+    apply: "live",
+    help: "allow new local record-store clients; does not start ingestion or change existing clients",
   },
 ] as const satisfies readonly SettingDescriptor[];
 
