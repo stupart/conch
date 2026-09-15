@@ -416,8 +416,9 @@ export function planToggle(
 
 function writeAtomically(file: string, content: string, io: ConfigWriteIo): void {
   const temp = `${file}.conch-tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(temp, content);
+  writeFileSync(temp, content, { flag: "wx", mode: 0o600 });
   try {
+    // Created private, then given the target's own mode: never looser than the file it replaces.
     if (existsSync(file)) chmodSync(temp, statSync(file).mode & 0o777);
     (io.rename ?? renameSync)(temp, file);
   } catch (error) {
@@ -443,7 +444,7 @@ function writeBackup(file: string, content: string): string {
   let stamp = Date.now();
   while (existsSync(`${file}${BACKUP_INFIX}${stamp}`)) stamp += 1;
   const backup = `${file}${BACKUP_INFIX}${stamp}`;
-  writeFileSync(backup, content);
+  writeFileSync(backup, content, { flag: "wx", mode: 0o600 });
   for (const stale of backupsFor(file).slice(0, -BACKUP_KEEP)) rmSync(stale, { force: true });
   return backup;
 }
@@ -453,15 +454,18 @@ function writeBackup(file: string, content: string): string {
  * after ten seconds) around `~/.claude.json` and its settings files, and
  * re-reads when the file's mtime moved under it. Holding the same lock for
  * the few milliseconds of a write keeps the two writers from interleaving.
+ * TOML uses the same per-target lock to serialize conch writers; native Codex
+ * writers do not cooperate with this lock.
  */
-function acquireClaudeLock(file: string): () => void {
+function acquireConfigLock(file: string): () => void {
   const lock = `${file}.lock`;
   try {
     mkdirSync(lock);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     if (Date.now() - statSync(lock).mtimeMs < CLAUDE_LOCK_STALE_MS) {
-      throw new Error(`Claude Code is writing ${file} right now (${lock} is held); try again in a moment.`);
+      const writer = file.endsWith(".json") ? "Claude Code" : "Another conch writer";
+      throw new Error(`${writer} is writing ${file} right now (${lock} is held); try again in a moment.`);
     }
     rmSync(lock, { recursive: true, force: true });
     mkdirSync(lock);
@@ -471,9 +475,14 @@ function acquireClaudeLock(file: string): () => void {
 
 function replaceFile(file: string, before: string, after: string, io: ConfigWriteIo): string | undefined {
   mkdirSync(dirname(file), { recursive: true });
-  const release = file.endsWith(".json") ? acquireClaudeLock(file) : () => {};
+  const release = acquireConfigLock(file);
   try {
-    const backup = before === "" ? undefined : writeBackup(file, before);
+    const current = readText(file);
+    if (current !== before) {
+      throw new Error(`${file} changed since the preview; ask for a new preview.`);
+    }
+    if (current === after) return undefined;
+    const backup = current === "" ? undefined : writeBackup(file, current);
     writeAtomically(file, after, io);
     let why: string | null = null;
     try {
@@ -497,10 +506,6 @@ function replaceFile(file: string, before: string, after: string, io: ConfigWrit
 
 /** Write the plan. Refuses when the file moved since it was planned, or reads back wrong. */
 export function applyPlan(plan: ConfigTogglePlan, io: ConfigWriteIo = {}): ConfigApplyResult {
-  if (readText(plan.file) !== plan.before) {
-    throw new Error(`${plan.file} changed since the preview; ask for a new preview.`);
-  }
-  if (plan.before === plan.after) return { file: plan.file };
   const backup = replaceFile(plan.file, plan.before, plan.after, io);
   return { file: plan.file, ...(backup ? { backup } : {}) };
 }
