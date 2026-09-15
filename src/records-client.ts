@@ -7,7 +7,7 @@ import type { RecordsIndexerOptions, RecordsIndexerStatus, RecordsPriorityHints 
 
 export type RecordsIngestionOptions = RecordsIndexerOptions;
 export type { RecordsPriorityHints, RecordsIndexerStatus } from "./records-indexer.ts";
-type StoreMethod = "ingest" | "source" | "appendReceipt" | "receipts" | "reindex" | "counts" | "close";
+type StoreMethod = "ingest" | "source" | "appendReceipt" | "receipts" | "reindex" | "counts" | "historyPage" | "historyItem" | "close";
 type RecordOperations = Pick<RecordStore, StoreMethod> & {
   startIngestion(options: RecordsIngestionOptions): void;
   prioritize(hints: RecordsPriorityHints): void;
@@ -108,6 +108,8 @@ export class RecordsClient {
   receipts(...args: Parameters<RecordStore["receipts"]>) { return this.request("receipts", ...args); }
   reindex(...args: Parameters<RecordStore["reindex"]>) { return this.request("reindex", ...args); }
   counts() { return this.request("counts"); }
+  historyPage(...args: Parameters<RecordStore["historyPage"]>) { return this.request("historyPage", ...args); }
+  historyItem(...args: Parameters<RecordStore["historyItem"]>) { return this.request("historyItem", ...args); }
   startIngestion(options: RecordsIngestionOptions) { return this.request("startIngestion", options); }
   prioritize(hints: RecordsPriorityHints) { return this.request("prioritize", hints); }
   ingestionStatus() { return this.request("ingestionStatus"); }

@@ -41,9 +41,15 @@ import { lastAssistantReply, readConversationTail } from "./conversation.ts";
 import { windowKey } from "./window-key.ts";
 import { appServerNoTerminal } from "./codex-threads.ts";
 import { transcriptFormatFor } from "./agent-adapter.ts";
+import {
+  HISTORY_CURSOR_MAX_BYTES, HISTORY_DEFAULT_LIMIT, HISTORY_ID_MAX_BYTES, HISTORY_MAX_LIMIT,
+  historyError, parseHistoryItemRequest, parseHistoryPageRequest, validateHistoryResponse,
+  type HistoryRequest, type HistoryResponse,
+} from "./history.ts";
 
 export const MCP_PROTOCOL_VERSION = "2024-11-05";
 export const MCP_SESSIONS_FILE = "/tmp/conch-sessions.json";
+export const MCP_HISTORY_MAX_BYTES = 64 * 1024;
 
 type PublishedSessionStatus = "working" | "waiting" | "needs";
 type PublishedLiveState =
@@ -141,6 +147,7 @@ interface JsonSchema {
   minLength?: number;
   maxLength?: number;
   minimum?: number;
+  maximum?: number;
   const?: unknown;
   not?: JsonSchema;
   default?: unknown;
@@ -305,6 +312,41 @@ export const MCP_TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "conch_history",
+    description: "Read a page of recorded session history, including coverage and continuation cursors.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: { type: "string", minLength: 1, maxLength: HISTORY_ID_MAX_BYTES,
+          description: "Recorded session ID or exact live session ID. Use self only for your verified caller. Labels are not IDs." },
+        branch: { type: "string", minLength: 1, maxLength: HISTORY_ID_MAX_BYTES,
+          description: "Optional recorded Claude item ID whose ancestry to read. Omit for all indexed items; keep it unchanged while following a page cursor." },
+        before: { type: "string", minLength: 1, maxLength: HISTORY_CURSOR_MAX_BYTES,
+          description: "Opaque previousCursor from an earlier page for this session and branch." },
+        limit: { type: "integer", minimum: 1, maximum: HISTORY_MAX_LIMIT, default: HISTORY_DEFAULT_LIMIT },
+      },
+      required: ["session"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "conch_item",
+    description: "Read the full recorded content of an item in bounded chunks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session: { type: "string", minLength: 1, maxLength: HISTORY_ID_MAX_BYTES,
+          description: "Recorded session ID or exact live session ID. Use self only for your verified caller. Labels are not IDs." },
+        item: { type: "string", minLength: 1, maxLength: HISTORY_ID_MAX_BYTES,
+          description: "Item ID returned by conch_history." },
+        bodyCursor: { type: "string", minLength: 1, maxLength: HISTORY_CURSOR_MAX_BYTES,
+          description: "Opaque nextBodyCursor returned for this item. Omit to begin reading." },
+      },
+      required: ["session", "item"],
+      additionalProperties: false,
+    },
+  },
 ] as const satisfies readonly McpToolDefinition[];
 
 export type McpToolName = (typeof MCP_TOOLS)[number]["name"];
@@ -336,7 +378,7 @@ export interface McpDependencies {
   sendToDaemon(socketPath: string, event: TurnEvent): Promise<boolean>;
   sendControlMessage(
     socketPath: string,
-    message: ControlMessage,
+    message: ControlMessage | HistoryRequest,
     timeoutMs?: number,
   ): Promise<ControlResult>;
   getSettingDescriptor: typeof getSettingDescriptor;
@@ -732,7 +774,40 @@ export function createMcpToolHandlers(
   // never reads a reply; upgrade to the daemon's ack if speak ever gets one.
   let speakingUntil = 0;
 
+  async function readHistory(request: HistoryRequest, meta: unknown): Promise<HistoryResponse> {
+    if (request.session === "self") {
+      const binding = await callerBinding(config, dependencies, meta);
+      if (binding.status !== "verified") {
+        throw new ToolInputError("conch cannot verify which session is calling; pass an explicit recorded session ID or exact live ID from conch_sessions");
+      }
+      // The daemon maps this exact live/window ID to its indexed record. No transcript read here.
+      request = { ...request, session: binding.session.sessionId };
+    }
+    let result: ControlResult;
+    try { result = await dependencies.sendControlMessage(config.socketPath, request, 5_000); }
+    catch { return historyError("unavailable", "recorded history is unavailable; the daemon did not answer"); }
+    if (!result.ok) return historyError("unavailable", "recorded history is unavailable; the daemon did not answer");
+    const parsed = validateHistoryResponse(result.response);
+    if (!parsed.ok) return historyError("unavailable", "daemon returned an invalid recorded history response");
+    if (parsed.value.kind !== request.kind && parsed.value.kind !== "history-off" && parsed.value.kind !== "history-error") {
+      return historyError("unavailable", "daemon reply did not match the recorded history request");
+    }
+    return parsed.value;
+  }
+
   return {
+    async conch_history(argumentsValue, meta) {
+      const parsed = parseHistoryPageRequest(argumentsValue);
+      if (!parsed.ok) throw new ToolInputError(parsed.err);
+      return readHistory({ kind: "history-page", ...parsed.value }, meta);
+    },
+
+    async conch_item(argumentsValue, meta) {
+      const parsed = parseHistoryItemRequest(argumentsValue);
+      if (!parsed.ok) throw new ToolInputError(parsed.err);
+      return readHistory({ kind: "history-item", ...parsed.value }, meta);
+    },
+
     async conch_sessions(argumentsValue, meta) {
       const argumentsObject = toolArguments(argumentsValue);
       allowOnly(argumentsObject, []);
@@ -1191,6 +1266,14 @@ function toolError(error: unknown): {
   };
 }
 
+function historyRpcResult(id: JsonRpcId, result: unknown): JsonRpcResponse {
+  const response = jsonRpcResult(id, result);
+  const fits = (value: JsonRpcResponse) => Buffer.byteLength(serializeJsonRpcLine(value), "utf8") + 1 <= MCP_HISTORY_MAX_BYTES;
+  if (fits(response)) return response;
+  const refused = jsonRpcResult(id, toolResult(JSON.stringify(historyError("response-too-large", "recorded history response exceeds its wire limit"))));
+  return fits(refused) ? refused : jsonRpcError(null, -32600, "history request ID exceeds its wire limit");
+}
+
 /**
  * Dispatch one already-parsed JSON-RPC message. All failures are converted to
  * JSON-RPC errors or MCP isError tool results; this function never rejects.
@@ -1253,10 +1336,18 @@ export async function dispatchJsonRpc(
         }
         try {
           const value = await handlers[name as McpToolName](argumentsValue, message.params._meta);
+          if (name === "conch_history" || name === "conch_item") {
+            if (!shouldReply) return null;
+            // A text content block escapes the JSON again. Budget the final UTF-8 wire frame.
+            return historyRpcResult(requestId, toolResult(JSON.stringify(value)));
+          }
           return shouldReply
             ? jsonRpcResult(requestId, toolResult(value))
             : null;
         } catch (error) {
+          if (name === "conch_history" || name === "conch_item") {
+            return shouldReply ? historyRpcResult(requestId, toolError(error)) : null;
+          }
           return shouldReply
             ? jsonRpcResult(requestId, toolError(error))
             : null;

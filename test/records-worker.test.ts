@@ -101,6 +101,17 @@ describe("record worker", () => {
     expect(await client.source("source-1")).toEqual(first.source);
     expect((await client.ingest(input)).lines).toBe(0);
     expect(await client.counts()).toMatchObject({ sessions: 1, sources: 1, turns: 1, items: 2, item_sources: 2 });
+    const page = await client.historyPage({ session: "native-1", limit: 1 }, "device-1");
+    expect(page.kind).toBe("history-page");
+    if (page.kind !== "history-page") throw Error("missing worker history");
+    expect(page.session).toBe("session-1");
+    expect(page.items[0]?.preview).toBe("Read it");
+    const older = await client.historyPage({ session: "session-1", before: page.previousCursor! }, "device-1");
+    expect(older.kind).toBe("history-page");
+    if (older.kind !== "history-page") throw Error("missing worker history");
+    expect(await client.historyItem({ session: "session-1", item: older.items[0]!.id }, "device-1"))
+      .toMatchObject({ kind: "history-item", content: "Read this 🐚", encoding: "text" });
+    expect(await client.historyPage({ session: "session-1" }, "other-device")).toMatchObject({ code: "unauthorized" });
   });
 
   test("operation errors reject their request without poisoning the worker", async () => {

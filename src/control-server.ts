@@ -1,4 +1,5 @@
-import { ControlFrameError, ControlFrameReader } from "./control-framing.ts";
+import { ControlFrameError, ControlFrameReader, encodeControlFrame } from "./control-framing.ts";
+import type { HistoryPageRequest, HistoryItemRequest, HistoryResponse } from "./history.ts";
 import { createServer, connect } from "node:net";
 import { chmodSync, existsSync, lstatSync, renameSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -238,6 +239,7 @@ export function dispatchControlMessage(
   }
   if (
     validated.value.kind === "resumable"
+    || validated.value.kind === "history-page" || validated.value.kind === "history-item"
     || validated.value.kind === "agent-capabilities"
     || validated.value.kind === "session-start"
     || validated.value.kind === "session-close"
@@ -280,6 +282,8 @@ export function applyConfigControlMessage(
 }
 
 export interface RuntimeControlDispatchOptions {
+  historyPage?(message: HistoryPageRequest): HistoryResponse | Promise<HistoryResponse>;
+  historyItem?(message: HistoryItemRequest): HistoryResponse | Promise<HistoryResponse>;
   listResumable(
     message: Extract<RuntimeControlMessage, { kind: "resumable" }>,
   ): ResumableSessionsRead | Promise<ResumableSessionsRead>;
@@ -313,6 +317,9 @@ async function dispatchRuntimeRequest(
 
   const validated = validateRuntimeControlMessage(value);
   if (!validated.ok) {
+    if (socketRecord(value) && (value.kind === "history-page" || value.kind === "history-item")) {
+      return { handled: true, response: { kind: "history-error", code: "invalid-request", error: validated.err } };
+    }
     return { handled: true, response: { kind: "session-error", error: validated.err } };
   }
   return { handled: true, response: await runtime(validated.value) };
@@ -324,6 +331,14 @@ export async function applyRuntimeControlMessage(
   options: RuntimeControlDispatchOptions,
 ): Promise<SessionControlResponse> {
   try {
+    if (message.kind === "history-page") {
+      const { kind, ...request } = message;
+      return await options.historyPage?.(request) ?? { kind: "history-off", error: "history is off" };
+    }
+    if (message.kind === "history-item") {
+      const { kind, ...request } = message;
+      return await options.historyItem?.(request) ?? { kind: "history-off", error: "history is off" };
+    }
     if (message.kind === "resumable") {
       const result = await options.listResumable(message);
       return {
@@ -400,6 +415,9 @@ export async function applyRuntimeControlMessage(
     await options.report(message);
     return { kind: "app-error-ack" };
   } catch (error) {
+    if (message.kind === "history-page" || message.kind === "history-item") {
+      return { kind: "history-error", code: "unavailable", error: "history is unavailable" };
+    }
     return sessionCommandError(error);
   }
 }
@@ -946,6 +964,7 @@ export interface ControlServer {
 function isRuntimeControlCandidate(value: unknown): boolean {
   return socketRecord(value) && (
     value.kind === "session-start" || value.kind === "session-close"
+    || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "app-error" || value.kind === "resumable"
     || value.kind === "agent-capabilities"
     || value.kind === "config-toggle" || value.kind === "config-rollback"
@@ -992,7 +1011,7 @@ export function createControlServer(options: ControlServerOptions): ControlServe
             const refusal: RoutingRefusal = {
               kind: "routing-error", code: "invalid-envelope", error: "ownerDeviceId must be a string",
             };
-            sock.end(JSON.stringify(refusal) + "\n");
+            sock.end(encodeControlFrame(JSON.stringify(refusal)));
             return;
           }
           if (body.ownerDeviceId !== undefined && body.ownerDeviceId !== options.ownerDeviceId) {
@@ -1000,10 +1019,28 @@ export function createControlServer(options: ControlServerOptions): ControlServe
               kind: "routing-error", code: "foreign-owner", ownerDeviceId: body.ownerDeviceId,
               error: "this daemon cannot route to a foreign owner",
             };
-            sock.end(JSON.stringify(refusal) + "\n");
+            let frame: Buffer;
+            try { frame = encodeControlFrame(JSON.stringify(refusal)); }
+            catch {
+              // The owner ID may fill the request. Its echo must not overflow the refusal.
+              const { ownerDeviceId, ...bounded } = refusal;
+              frame = encodeControlFrame(JSON.stringify(bounded));
+            }
+            sock.end(frame);
             return;
           }
           body = body.body;
+        }
+        // History uses durable record identities, including sessions no longer in live state.
+        if (socketRecord(body) && (body.kind === "history-page" || body.kind === "history-item")) {
+          try {
+            const history = await dispatchRuntimeRequest(body, (message) => application.runtime(message));
+            if (history.handled) sock.end(encodeControlFrame(JSON.stringify(history.response)));
+          } catch (error) {
+            sock.end(encodeControlFrame(JSON.stringify({ kind: "history-error",
+              code: error instanceof ControlFrameError ? "response-too-large" : "unavailable", error: "history response unavailable" })));
+          }
+          return;
         }
         // C9b Cut B: the audio-holder commands are decoded here, after the
         // owner check and BEFORE any session resolution — they name a device.

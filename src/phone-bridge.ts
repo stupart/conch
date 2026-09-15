@@ -1,5 +1,6 @@
 import { connect } from "node:net";
-import { ControlFrameError, ControlFrameReader, encodeControlFrame, readControlBody } from "./control-framing.ts";
+import { ControlFrameError, ControlFrameReader, decodeControlText, encodeControlFrame, readControlBody } from "./control-framing.ts";
+import { validateHistoryRequest } from "./history.ts";
 import type { UploadChunk, UploadResult } from "./phone-uploads.ts";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -109,6 +110,28 @@ export interface PhoneRequestContext {
 }
 
 export type PhoneRequestResult = Response | Promise<Response> | undefined;
+
+function historyRequest(pathname: string, value: unknown): ReturnType<typeof validateHistoryRequest> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false, err: "history request must be an object" };
+  const body = value as Record<string, unknown>;
+  const kind = pathname === "/history/page" ? "history-page" : "history-item";
+  if (body.kind !== undefined && body.kind !== kind) return { ok: false, err: "history request kind does not match route" };
+  return validateHistoryRequest({ ...body, kind });
+}
+
+/** Only reads that the shared router will dispatch may skip mutation retry reservations. */
+export function isPhoneHistoryRead(path: string, bytes: Uint8Array): boolean {
+  try {
+    const pathname = new URL(path, "https://conch.invalid").pathname;
+    if (pathname !== "/history/page" && pathname !== "/history/item" && pathname !== "/control") return false;
+    const text = decodeControlText(bytes);
+    encodeControlFrame(text);
+    let value = JSON.parse(text);
+    if (pathname !== "/control") return historyRequest(pathname, value).ok;
+    if (value?.kind === "control-envelope") value = value.body;
+    return validateHistoryRequest(value).ok;
+  } catch { return false; }
+}
 
 /** Bun reports a connection-dropped frame with 0; backpressure (-1) is alive. */
 export function sendPhoneFrame(
@@ -469,16 +492,30 @@ export class PhoneBridgeApplication {
       })();
     }
 
-    if (url.pathname === "/control" && req.method === "POST") {
+    const historyRoute = url.pathname === "/history/page" || url.pathname === "/history/item";
+    if ((url.pathname === "/control" || historyRoute) && req.method === "POST") {
       return (async () => {
         let body: string;
         try { body = await readControlBody(req); }
         catch (error) {
+          if (historyRoute) return Response.json({ kind: "history-error",
+            code: error instanceof ControlFrameError && error.code === "frame-too-large" ? "frame-too-large" : "invalid-request",
+            error: "invalid history request body" },
+          { status: error instanceof ControlFrameError && error.code === "frame-too-large" ? 413 : 400 });
           return Response.json({ error: error instanceof Error ? error.message : "bad control body" },
             { status: error instanceof ControlFrameError && error.code === "frame-too-large" ? 413 : 400 });
         }
+        if (historyRoute) {
+          const validated = historyRequest(url.pathname, JSON.parse(body));
+          if (!validated.ok) return Response.json({ kind: "history-error", code: "invalid-request", error: validated.err }, { status: 400 });
+          body = JSON.stringify(validated.value);
+          try { encodeControlFrame(body); }
+          catch { return Response.json({ kind: "history-error", code: "frame-too-large", error: "history request exceeds 64 KiB" }, { status: 413 }); }
+        }
+        const historyRead = historyRoute || isPhoneHistoryRead(url.pathname, Buffer.from(body));
         try {
           const reply = await this.#dependencies.forwardControl(body);
+          if (historyRead) encodeControlFrame(reply);
           // Say that the PHONE did this. Controls from every surface arrive on
           // one socket, so when conch "unpaused itself" there was no way to
           // tell a tap on the phone from a click on the Mac from a stray key
@@ -488,7 +525,7 @@ export class PhoneBridgeApplication {
             const parsed = JSON.parse(body);
             const kind = String(parsed?.type ?? parsed?.kind ?? "");
             if (
-              kind && kind !== "inject" && kind !== "phone-speaking"
+              !historyRead && kind && kind !== "inject" && kind !== "phone-speaking"
               && kind !== "phone-device"
             ) {
               this.#dependencies.log(
@@ -500,6 +537,10 @@ export class PhoneBridgeApplication {
             headers: { "content-type": "application/json" },
           });
         } catch (error) {
+          if (historyRead) {
+            return Response.json({ kind: "history-error", code: error instanceof ControlFrameError && error.code === "frame-too-large" ? "response-too-large" : "unavailable",
+              error: "history response unavailable" }, { status: 502 });
+          }
           // Name the control and the target. "phone control failed" alone could
           // not distinguish a lost message from a routine status poll giving
           // up, so a scary line appeared next to sends that had worked while

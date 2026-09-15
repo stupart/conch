@@ -29,3 +29,10 @@ export function recordSessionFor(
     ...((child?.[1] ?? session?.parentSessionId) ? { parentNativeId: child?.[1] ?? session?.parentSessionId } : {}),
   };
 }
+
+/** Only known local window/sidechain aliases need the live inventory; indexed IDs pass through. */
+export function historySessionAlias(ownerDeviceId: string, requested: string, session?: SessionInfo): string {
+  if (requested.startsWith("[") || !session || session.sessionId !== requested) return requested;
+  const record = recordSessionFor(ownerDeviceId, session, { sessionId: requested });
+  return record && record.nativeId !== requested ? record.id : requested;
+}
