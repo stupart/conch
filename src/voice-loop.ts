@@ -1383,8 +1383,17 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // caller must not be told this reached the agent.
       return false;
     }
-    // No `via === "none"` branch: injectText's only "none" is interrupted(),
-    // handled above (pinned in daemon-side-effects.test.ts).
+    // Past interruption, "none" is a failed transport: the words never reached
+    // the session, so nothing may report delivery or re-press its Return.
+    if (via === "none") {
+      publishDictation(text, event.sessionId);
+      log(`delivery to "${event.label}" failed${reason ? ` (${reason})` : ""}`);
+      recordDaemonError("inject", "Could not deliver the prompt. Review the recovered draft before retrying.", event.sessionId);
+      if (!beforeInject || await beforeInject()) {
+        await speak(cfg, "Couldn't deliver that. Your words are in the draft. Review them before trying again.", event.label);
+      }
+      return false;
+    }
     if (beforeCount === null) {
       log(`injected into "${event.label}" via ${via}`); // no transcript to confirm against — trust it
       return true;

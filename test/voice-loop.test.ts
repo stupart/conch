@@ -1154,3 +1154,11 @@ describe("a publication is not the end of a turn", () => {
     expect(rowFor(h).review).toEqual({ summary: "hero v4", at: 5_000 });
   });
 });
+
+test("a failed transport keeps the words as a draft and never presses Return", async () => {
+  const h = harness({ inject: () => ({ via: "none", failed: true, reason: "automation-failed" }) });
+  const before = getLiveState().dictated?.id ?? 0;
+  expect(await h.voice.handle(inject("words that never landed"))).toBe(false);
+  expect(h.keys).toEqual([]);
+  expect(getLiveState().dictated).toEqual({ text: "words that never landed", id: before + 1, sessionId: "s1" });
+});

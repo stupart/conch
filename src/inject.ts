@@ -1,13 +1,14 @@
-import { $ } from "bun";
 import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config } from "./config.ts";
+import { createPasteboard, hasUnreapedUIChild, runUICommand, type Pasteboard } from "./pasteboard.ts";
 
 export type InjectRoute = "tmux" | "osascript-focused" | "clipboard" | "none";
 export interface InjectTextResult {
   via: InjectRoute;
   interrupted?: true;
-  /** Why we fell back to the clipboard — the causes need different fixes. */
+  failed?: true;
+  /** Why delivery failed or used the clipboard fallback. */
   reason?:
     | "keystroke-fallback-off"
     | "window-not-focusable"
@@ -17,11 +18,16 @@ export interface InjectTextResult {
     /** macOS is refusing to let conch drive other apps. Needs a person. */
     | "automation-permission-denied"
     /** Something else came to the front between the raise and the typing. */
-    | "front-window-changed";
+    | "front-window-changed"
+    | "automation-failed"
+    | "clipboard-changed"
+    | "clipboard-unavailable"
+    | "submit-failed";
 }
 
 /** Run an AppleScript (`-e` lines, then `--` argv) and read its stdout, bounded. */
-export type OsaRunner = (lines: string[], argv?: string[]) => Promise<{ text: string; timedOut: boolean }>;
+export interface OsaResult { text: string; timedOut: boolean; exitCode?: number; stderr?: string }
+export type OsaRunner = (lines: string[], argv?: string[]) => Promise<OsaResult>;
 
 export interface InjectTextOptions {
   /** Set false to skip failure-only clipboard fallback; successful paste still uses it. */
@@ -34,9 +40,60 @@ export interface InjectTextOptions {
   ttyForPid?(pid: number): Promise<string>;
   /** Test seam: resolve a tmux route without probing real processes or panes. */
   findTmuxPane?(pid: number): Promise<string | null>;
-  /** Test seam: what is on the clipboard, to give it back after a paste. */
-  readClipboard?(): Promise<string>;
+  sleep?(ms: number): Promise<void>;
+  pasteboard?: Pasteboard;
+  sendTmuxKeys?(pane: string, text: string, literal: boolean): Promise<{ exitCode: number }>;
 }
+
+// Keyboard focus and the pasteboard are global resources. This FIFO is separate
+// from the daemon's audio queue; rejecting one action never poisons later work.
+let uiQueue = Promise.resolve();
+/** Wrap raw UI work only; calling another serialized injector here would nest the lock. */
+export function withUITransaction<T>(work: () => Promise<T>): Promise<T> {
+  const result = uiQueue.then(() => {
+    if (hasUnreapedUIChild()) throw new Error("Previous UI child has not exited; input is suspended");
+    return work();
+  });
+  uiQueue = result.then(() => {}, () => {});
+  return result;
+}
+
+export function injectText(
+  cfg: Config, sessionPid: number | undefined, text: string,
+  beforeInject?: () => boolean | Promise<boolean>, options: InjectTextOptions = {},
+): Promise<InjectTextResult> {
+  return withUITransaction(() => injectTextInTransaction(cfg, sessionPid, text, beforeInject, options));
+}
+
+export function injectKey(
+  cfg: Config, sessionPid: number | undefined, key: "Enter" | "Escape" | "Down",
+  beforeInject?: () => boolean | Promise<boolean>, options: InjectTextOptions = {},
+): Promise<InjectTextResult> {
+  return withUITransaction(() => injectKeyInTransaction(cfg, sessionPid, key, beforeInject, options));
+}
+
+export function revealSessionWindow(sessionPid: number, osa: OsaRunner = runOsa, ttyForPid = ttyOf): Promise<boolean> {
+  return withUITransaction(() => revealSessionWindowInTransaction(sessionPid, osa, ttyForPid));
+}
+
+const failed = (reason: NonNullable<InjectTextResult["reason"]>): InjectTextResult => ({ via: "none", failed: true, reason });
+const osaSucceeded = (result: OsaResult): boolean => !result.timedOut && (result.exitCode ?? 0) === 0
+  && !["front-window-changed", "clipboard-changed"].includes(result.text.trim());
+function osaFailure(result: OsaResult): NonNullable<InjectTextResult["reason"]> {
+  if (result.timedOut) return "system-dialog-blocking";
+  if (/-1743|not authori[sz]ed|Not allowed to send Apple events/i.test(result.stderr ?? "")) return "automation-permission-denied";
+  if (result.text.trim() === "front-window-changed") return "front-window-changed";
+  return result.text.trim() === "clipboard-changed" ? "clipboard-changed" : "automation-failed";
+}
+function safeOsa(run: OsaRunner): OsaRunner {
+  return async (lines, argv) => {
+    try { return await run(lines, argv); }
+    catch { return { text: "", timedOut: false, exitCode: -1 }; }
+  };
+}
+const sendTmuxKeys = (pane: string, text: string, literal: boolean) => runUICommand([
+  "tmux", "send-keys", "-t", pane, ...(literal ? ["-l", "--"] : []), text,
+]);
 
 /**
  * Longer than this, or across lines, words are pasted rather than typed.
@@ -70,7 +127,7 @@ export const INJECT_DEBUG_LOG = process.env.CONCH_INJECT_DEBUG_LOG
  * There is no blind route. A turn with no pid used to be typed into whatever
  * app was frontmost (audit 3c); nothing ever wanted that.
  */
-export async function injectText(
+async function injectTextInTransaction(
   cfg: Config,
   sessionPid: number | undefined,
   text: string,
@@ -103,16 +160,17 @@ export async function injectText(
     } catch {}
   };
   step(`begin pid=${sessionPid ?? "none"} chars=${text.length}`);
-  const copyToClipboard = options.copyToClipboard ?? toClipboard;
-  const readClipboard = options.readClipboard ?? fromClipboard;
-  const osa = options.osa ?? runOsa;
+  const copyToClipboard = options.copyToClipboard ?? writeClipboard;
+  const pasteboard = options.pasteboard ?? createPasteboard();
+  const osa = safeOsa(options.osa ?? runOsa);
   const ttyForPid = options.ttyForPid ?? ttyOf;
+  const sleep = options.sleep ?? Bun.sleep;
   const mayInject = async (): Promise<boolean> => beforeInject ? await beforeInject() : true;
   const interrupted = (): InjectTextResult => ({ via: "none", interrupted: true });
   const clipboard = async (reason: NonNullable<InjectTextResult["reason"]>): Promise<InjectTextResult> => {
     if (!(await mayInject())) return interrupted();
-    if (options.clipboardFallback === false) return { via: "none", reason };
-    await copyToClipboard(text);
+    if (options.clipboardFallback === false) return failed(reason);
+    try { await copyToClipboard(text); } catch { return failed("clipboard-unavailable"); }
     step(`clipboard (${reason})`);
     return { via: "clipboard", reason };
   };
@@ -126,12 +184,13 @@ export async function injectText(
     // transcript starting with "-" isn't read as an option (which both fails
     // AND used to throw, killing the daemon). nothrow + exit check so any
     // send-keys refusal falls through to clipboard instead of crashing.
-    const r = await $`tmux send-keys -t ${pane} -l -- ${text}`.quiet().nothrow();
+    const r = await (options.sendTmuxKeys ?? sendTmuxKeys)(pane, text, true);
     step(`tmux send-keys exit=${r.exitCode}`);
     if (r.exitCode === 0) {
       if (submit) {
         if (!(await mayInject())) return interrupted();
-        await $`tmux send-keys -t ${pane} Enter`.quiet().nothrow();
+        const submitted = await (options.sendTmuxKeys ?? sendTmuxKeys)(pane, "Enter", false);
+        if (submitted.exitCode !== 0) return failed("submit-failed");
       }
       return { via: "tmux" };
     }
@@ -140,152 +199,75 @@ export async function injectText(
   if (!cfg.keystrokeFallback) return clipboard("keystroke-fallback-off");
 
   const tty = await ttyForPid(sessionPid);
-  const focused = tty ? await focusSessionWindow(tty, osa) : false;
-  step(`focusSessionWindow -> ${focused}`);
-  if (!focused) {
-    // We know which session this is for but can't put its window in
-    // front — typing would land somewhere unknowable. Clipboard instead.
-    // "Not focusable" and "a dialog ate the request" look identical from
-    // here but mean completely different things to the person holding the
-    // phone: one is a session conch cannot reach, the other is a popup on
-    // the Mac that will keep blocking every send until it is dismissed.
-    return clipboard(
-      osaLastDenied()
-        ? "automation-permission-denied"
-        : osaLastTimedOut()
-          ? "system-dialog-blocking"
-          : "window-not-focusable",
-    );
+  const focus = tty ? await focusSessionWindow(tty, osa) : null;
+  step(`focusSessionWindow -> ${focus?.text.trim() ?? "none"}`);
+  if (!focus || !osaSucceeded(focus) || focus.text.trim() !== "ok") {
+    return clipboard(focus && !osaSucceeded(focus) ? osaFailure(focus) : "window-not-focusable");
   }
-  await Bun.sleep(300); // let the window raise settle
+  await sleep(300); // let the window raise settle
   if (!(await mayInject())) return interrupted();
   // The raise returned seconds ago in wall-clock terms once a long dictation
   // is queued behind it; a Cmd-Tab, a click or a notification in that gap
   // would have put the rest of the sentence into some other app. Look before
   // typing: the front window's selected tab must be this session's tty.
-  if (!(await targetInFront(tty, osa))) {
+  const front = await osa([FRONT_TTY_SCRIPT]);
+  if (!osaSucceeded(front) || front.text.trim() !== `/dev/${tty}`) {
     step("front window is not the session's — not typing");
-    return clipboard("front-window-changed");
+    return clipboard(!osaSucceeded(front) ? osaFailure(front) : "front-window-changed");
   }
-  let typed: { text: string; timedOut: boolean };
+  let typed: OsaResult;
   if (text.length > PASTE_OVER_CHARS || text.includes("\n")) {
-    // ponytail: gives back plain text only; a picture on the clipboard is replaced by the message.
-    const previous = await readClipboard().catch(() => "");
-    await copyToClipboard(text);
-    typed = await osa(['tell application "System Events" to keystroke "v" using command down']);
-    step(`osascript paste returned (${text.length} chars)`);
-    // Let the terminal take the paste before the clipboard is given back.
-    await Bun.sleep(150);
-    if (previous && previous !== text) await copyToClipboard(previous);
+    try {
+      const lease = await pasteboard.prepare(text);
+      try {
+        // Approval/request validity is checked after every awaited setup step.
+        if (!(await mayInject())) return interrupted();
+        typed = await focusedAction(tty, osa, ['tell application "System Events" to keystroke "v" using command down'], [], lease.changeCount);
+        step(`osascript paste returned (${text.length} chars)`);
+        await sleep(150);
+      } finally {
+        await pasteboard.restore(lease);
+      }
+    } catch {
+      return failed("clipboard-unavailable");
+    }
   } else {
-    typed = await osa(
-      ["on run argv", 'tell application "System Events" to keystroke (item 1 of argv)', "end run"],
-      [text],
-    );
+    if (!(await mayInject())) return interrupted();
+    typed = await focusedAction(tty, osa, ['tell application "System Events" to keystroke (item 1 of argv)'], [text]);
     step("osascript keystroke returned");
   }
-  if (typed.timedOut) {
-    step("osascript keystroke TIMED OUT — something modal is in front");
-    return clipboard("system-dialog-blocking");
-  }
+  if (!osaSucceeded(typed)) return failed(osaFailure(typed));
   if (submit) {
     // Separate, delayed Return: bundling it with the text arrived before the
     // terminal finished ingesting the keystrokes. Scale the settle to the
     // transcript length — a long dictation's keystrokes can still be landing
     // when a fixed 250ms Return fires, so the submit is dropped ("typed but
     // didn't send", observed on long messages). Capped so short prompts stay snappy.
-    await Bun.sleep(250 + Math.min(text.length * 3, 1000));
+    await sleep(250 + Math.min(text.length * 3, 1000));
     // Re-assert focus first: in that gap the frontmost window can drift (a
     // notification, the window losing front), and a bare `key code 36` goes to
     // whatever's in front. Re-focusing makes the Return land where the text went.
     if (!(await mayInject())) return interrupted();
-    await focusSessionWindow(tty, osa);
+    const refocused = await focusSessionWindow(tty, osa);
+    if (!osaSucceeded(refocused) || refocused.text.trim() !== "ok") return failed(osaFailure(refocused));
     if (!(await mayInject())) return interrupted();
-    // The text is already in the right window; a Return into the wrong one is
-    // the only thing left to get wrong. The caller's confirm-by-transcript
-    // loop re-presses through `injectKey`, which looks again.
-    if (await targetInFront(tty, osa)) await osa(['tell application "System Events" to key code 36']);
-    else step("front window changed before Return — not pressing it");
+    const submitted = await focusedAction(tty, osa, ['tell application "System Events" to key code 36']);
+    if (!osaSucceeded(submitted)) return failed(osaFailure(submitted));
   }
   return { via: "osascript-focused" };
 }
 
-/**
- * How long any AppleScript may take before we give up on it.
- *
- * A modal system dialog — a TCC permission prompt, a security agent — freezes
- * every System Events call for as long as it is on screen. Measured on Tyler's
- * Mac while a permission popup was showing: `focusSessionWindow` took 122,891
- * milliseconds and then failed anyway, three sends in a row, with the daemon's
- * whole queue stacked up behind it ("blocked behind inject:conch"). From the
- * phone that looked like conch silently refusing to send.
- *
- * Nothing here is worth two minutes. Focusing a window either works in about a
- * second or something is in the way, and knowing that quickly is what lets the
- * caller say something useful instead of hanging.
- */
-const OSA_TIMEOUT_MS = 4_000;
-
-/** True when the last AppleScript gave up rather than finished. */
-let lastOsaTimedOut = false;
-
-export function osaLastTimedOut(): boolean {
-  return lastOsaTimedOut;
-}
-
-/**
- * True when macOS is refusing to let conch drive other apps at all.
- *
- * This is not a transient failure and no retry touches it: someone has to
- * grant the permission. It became reachable the day the daemon moved inside
- * the Mac app — TCC decides per responsible process, so conch.app was asked
- * fresh for permission it had never needed while launchd was its parent, and
- * the answer that came back was no.
- */
-let lastOsaDenied = false;
-
-export function osaLastDenied(): boolean {
-  return lastOsaDenied;
-}
-
-/** macOS: "Not authorized to send Apple events to <app>". */
-const OSA_NOT_AUTHORIZED = /-1743|not authori[sz]ed|Not allowed to send Apple events/i;
-
-/**
- * The one osascript spawn. Reading the child's stdout is precisely where a
- * blocked System Events call parks: a stack sample of the wedged daemon sat in
- * `__read_nocancel`, which is this read waiting on an osascript that a modal
- * dialog had frozen — so every call races the timeout and kills the loser.
- */
-async function runOsa(lines: string[], argv: string[] = []): Promise<{ text: string; timedOut: boolean }> {
-  const args = [...lines.flatMap((line) => ["-e", line]), ...(argv.length ? ["--", ...argv] : [])];
-  const child = Bun.spawn(["osascript", ...args], { stdout: "pipe", stderr: "pipe" });
-  const read = Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]).then(([text, err]) => {
-    lastOsaDenied = OSA_NOT_AUTHORIZED.test(err);
-    return { text, timedOut: false };
-  });
-  const timeout = Bun.sleep(OSA_TIMEOUT_MS).then(() => ({ text: "", timedOut: true }));
-  const result = await Promise.race([read, timeout]);
-  if (result.timedOut) {
-    lastOsaTimedOut = true;
-    // Kill it, or the stuck osascript outlives the daemon's interest in it and
-    // a long session accumulates one blocked process per attempt.
-    try {
-      child.kill();
-    } catch {}
-    return result;
-  }
-  lastOsaTimedOut = false;
-  return result;
+/** The process deadline covers stdout, stderr, and exit, with per-call errors. */
+async function runOsa(lines: string[], argv: string[] = []): Promise<OsaResult> {
+  return runUICommand(["osascript", ...lines.flatMap((line) => ["-e", line]), ...(argv.length ? ["--", ...argv] : [])]);
 }
 
 /** The controlling tty of a pid (`ttys003`), or "" when it has none. */
 async function ttyOf(pid: number): Promise<string> {
   try {
-    const tty = (await $`ps -o tty= -p ${pid}`.quiet().text()).trim();
+    const result = await runUICommand(["ps", "-o", "tty=", "-p", String(pid)]);
+    if (result.timedOut || result.exitCode !== 0) return "";
+    const tty = result.text.trim();
     return !tty || tty === "??" ? "" : tty;
   } catch {
     return "";
@@ -293,22 +275,22 @@ async function ttyOf(pid: number): Promise<string> {
 }
 
 /** Press a single key in the session — Enter accepts a permission dialog's highlighted option, Down moves to the next one, Escape dismisses it. */
-export async function injectKey(
+async function injectKeyInTransaction(
   cfg: Config,
   sessionPid: number | undefined,
   key: "Enter" | "Escape" | "Down",
   beforeInject?: () => boolean | Promise<boolean>,
-  options: Pick<InjectTextOptions, "osa" | "ttyForPid"> = {},
+  options: InjectTextOptions = {},
 ): Promise<InjectTextResult> {
-  const osa = options.osa ?? runOsa;
+  const osa = safeOsa(options.osa ?? runOsa);
   const ttyForPid = options.ttyForPid ?? ttyOf;
   const mayInject = async (): Promise<boolean> => beforeInject ? await beforeInject() : true;
   const interrupted = (): InjectTextResult => ({ via: "none", interrupted: true });
   if (!sessionPid) return { via: "none" }; // never press keys in an unknown window
-  const pane = await findTmuxPane(sessionPid);
+  const pane = await (options.findTmuxPane ?? findTmuxPane)(sessionPid);
   if (pane) {
     if (!(await mayInject())) return interrupted();
-    const r = await $`tmux send-keys -t ${pane} ${key}`.quiet().nothrow();
+    const r = await (options.sendTmuxKeys ?? sendTmuxKeys)(pane, key, false);
     if (r.exitCode === 0) return { via: "tmux" };
   }
   if (!cfg.keystrokeFallback) {
@@ -316,17 +298,17 @@ export async function injectKey(
     return { via: "none" };
   }
   const tty = await ttyForPid(sessionPid);
-  const focused = tty ? await focusSessionWindow(tty, osa) : false;
-  if (!focused) {
+  const focused = tty ? await focusSessionWindow(tty, osa) : null;
+  if (!focused || !osaSucceeded(focused) || focused.text.trim() !== "ok") {
     if (!(await mayInject())) return interrupted();
-    return { via: "none" };
+    return failed(focused ? osaFailure(focused) : "window-not-focusable");
   }
-  await Bun.sleep(300);
+  await (options.sleep ?? Bun.sleep)(300);
   if (!(await mayInject())) return interrupted();
-  if (!(await targetInFront(tty, osa))) return { via: "none" };
   const keyCode = key === "Enter" ? 36 : key === "Down" ? 125 : 53;
-  await osa([`tell application "System Events" to key code ${keyCode}`]);
-  return { via: "osascript-focused" };
+  const pressed = await focusedAction(tty, osa, [`tell application "System Events" to key code ${keyCode}`]);
+  return osaSucceeded(pressed)
+    ? { via: "osascript-focused" } : failed(osaFailure(pressed));
 }
 
 /**
@@ -341,9 +323,9 @@ export async function injectKey(
  * cue instead of a focus-stealing `activate`. Uses the same Accessibility grant
  * conch already needs for keystroke injection — no new permission.
  */
-export async function revealSessionWindow(sessionPid: number, osa: OsaRunner = runOsa): Promise<boolean> {
+async function revealSessionWindowInTransaction(sessionPid: number, osa: OsaRunner, ttyForPid: (pid: number) => Promise<string>): Promise<boolean> {
   try {
-    const tty = await ttyOf(sessionPid);
+    const tty = await ttyForPid(sessionPid);
     if (!tty) return false;
     const script = `
 tell application "Terminal"
@@ -361,8 +343,8 @@ tell application "Terminal"
   end repeat
 end tell
 return "notfound"`;
-    const { text: out } = await osa([script]);
-    return out.trim() === "ok";
+    const result = await osa([script]);
+    return osaSucceeded(result) && result.text.trim() === "ok";
   } catch {
     return false;
   }
@@ -373,14 +355,14 @@ return "notfound"`;
  * (steals focus) — only for injection, where keystrokes must land in it. The
  * session pid's controlling tty (ps) matches Terminal's per-tab `tty` property.
  */
-async function focusSessionWindow(tty: string, osa: OsaRunner): Promise<boolean> {
+async function focusSessionWindow(tty: string, osa: OsaRunner): Promise<OsaResult> {
   try {
     const script = `
 tell application "Terminal"
-  activate
   repeat with w in windows
     repeat with t in tabs of w
       if tty of t is "/dev/${tty}" then
+        activate
         set index of w to 1
         set selected tab of w to t
         return "ok"
@@ -389,10 +371,9 @@ tell application "Terminal"
   end repeat
 end tell
 return "notfound"`;
-    const { text: out } = await osa([script]);
-    return out.trim() === "ok";
+    return await osa([script]);
   } catch {
-    return false;
+    return { text: "", timedOut: false, exitCode: -1 };
   }
 }
 
@@ -402,38 +383,41 @@ tell application "System Events" to set frontName to name of first application p
 if frontName is not "Terminal" then return "front:" & frontName
 tell application "Terminal" to return tty of selected tab of front window`;
 
-/**
- * Is the session's tab what a keystroke would land in right now? Asked right
- * before every synthesized key: the same tty match that selected the tab,
- * read back from the front window. Anything else — another app in front, a
- * different tab, an unreadable answer — is a no, and no means the clipboard.
- */
-async function targetInFront(tty: string, osa: OsaRunner): Promise<boolean> {
-  try {
-    const { text, timedOut } = await osa([FRONT_TTY_SCRIPT]);
-    return !timedOut && text.trim() === `/dev/${tty}`;
-  } catch {
-    return false;
-  }
+/** Check focus and issue the key in one script, without an inter-process gap. */
+function focusedAction(tty: string, osa: OsaRunner, action: string[], argv: string[] = [], clipboardVersion?: number): Promise<OsaResult> {
+  return osa([
+    ...(clipboardVersion === undefined ? [] : ['use framework "AppKit"', "use scripting additions"]),
+    "on run argv",
+    "-- conch-focus-guard",
+    'tell application "System Events" to set frontName to name of first application process whose frontmost is true',
+    'if frontName is not "Terminal" then return "front-window-changed"',
+    'tell application "Terminal" to set frontTty to tty of selected tab of front window',
+    'if frontTty is not (last item of argv) then return "front-window-changed"',
+    ...(clipboardVersion === undefined ? [] : [
+      "set pasteboard to current application's NSPasteboard's generalPasteboard()",
+      'if (pasteboard\'s changeCount() as integer) is not (item 1 of argv as integer) then return "clipboard-changed"',
+    ]),
+    ...action,
+    'return "ok"',
+    "end run",
+  ], [...argv, ...(clipboardVersion === undefined ? [] : [String(clipboardVersion)]), `/dev/${tty}`]);
 }
 
-/** The clipboard's plain text, or "" when it holds none. */
-async function fromClipboard(): Promise<string> {
-  return (await $`pbpaste`.quiet().nothrow()).text();
+export function toClipboard(text: string): Promise<void> {
+  return withUITransaction(() => writeClipboard(text));
 }
-
-export async function toClipboard(text: string): Promise<void> {
-  const proc = Bun.spawn(["pbcopy"], { stdin: "pipe" });
-  proc.stdin.write(text);
-  await proc.stdin.end();
-  await proc.exited;
+async function writeClipboard(text: string): Promise<void> {
+  const result = await runUICommand(["pbcopy"], text);
+  if (result.timedOut || result.exitCode !== 0) throw new Error("Clipboard write failed");
 }
 
 /** Find the tmux pane whose shell is an ancestor of the session's pid. */
 async function findTmuxPane(sessionPid: number): Promise<string | null> {
   let panes: Array<{ pid: number; id: string }>;
   try {
-    const out = await $`tmux list-panes -a -F "#{pane_pid} #{pane_id}"`.quiet().text();
+    const result = await runUICommand(["tmux", "list-panes", "-a", "-F", "#{pane_pid} #{pane_id}"]);
+    if (result.timedOut || result.exitCode !== 0) return null;
+    const out = result.text;
     panes = out
       .trim()
       .split("\n")
@@ -459,7 +443,9 @@ async function ancestorPids(pid: number): Promise<Set<number>> {
   let current = pid;
   for (let i = 0; i < 20 && current > 1; i++) {
     try {
-      const out = await $`ps -o ppid= -p ${current}`.quiet().text();
+      const result = await runUICommand(["ps", "-o", "ppid=", "-p", String(current)]);
+      if (result.timedOut || result.exitCode !== 0) break;
+      const out = result.text;
       const ppid = Number(out.trim());
       if (!ppid || ppid <= 1 || seen.has(ppid)) break;
       seen.add(ppid);

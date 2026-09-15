@@ -116,8 +116,8 @@ test("the front comes back only from the Terminal conch raised, without touching
   for (const intrusion of ["makeKey", "makeFirstResponder", "focusedRow", "selected"]) {
     expect(helper).not.toContain(intrusion);
   }
-  // Terminal.app is the app the daemon activates to type.
-  expect(read("src/inject.ts")).toContain('tell application "Terminal"\n  activate\n  repeat with w in windows');
+  // Terminal targeting and the input transaction are exercised through fake UI
+  // boundaries in inject-transactions.test.ts, rather than pinning script layout.
 });
 
 test("the daemon hands back an immediate inject's handling instead of dropping it", () => {
