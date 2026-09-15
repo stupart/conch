@@ -940,7 +940,7 @@ describe("previewForPanelSelection — async cursor stale guard", () => {
       render.indexOf("const navSelectedId = theaterNavigation.manualSelectedId"),
     );
     expect(render.indexOf("model.preview = previewForPanelSelection(")).toBeGreaterThan(
-      render.indexOf("commitLatestPanelRender("),
+      render.indexOf("if (current()) {"),
     );
   });
 
