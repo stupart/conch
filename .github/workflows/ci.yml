@@ -29,6 +29,10 @@ jobs:
       # while all 1138 tests passed.
       - name: typecheck
         run: bunx tsc --noEmit
+      # The design system's own tests: springs, overlay geometry and motion, look, text pinning. Without
+      # this step a green check said nothing about any Swift. The Mac app's xcodebuild isn't here yet.
+      - name: design system tests
+        run: swift test --package-path design/ConchDesign
 
   # Staleness has to be visible somewhere, or it is only discovered by a user
   # installing software that does not work. This does not fail the build — being
