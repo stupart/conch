@@ -1,4 +1,6 @@
 import { open } from "node:fs/promises";
+import { transcriptFormatFor } from "./agent-adapter.ts";
+import { readConversationTail } from "./conversation.ts";
 
 /**
  * The whole of the turn in progress, exactly as the Mac dashboard shows it.
@@ -65,8 +67,42 @@ function assistantText(entry: Record<string, unknown>): string {
  */
 export async function currentTurnText(
   transcriptPath: string,
-  maxBytes = DEFAULT_TAIL_BYTES,
+  maxBytes?: number,
 ): Promise<string> {
+  if (transcriptFormatFor(transcriptPath) === "codex") return codexTurnText(transcriptPath, maxBytes);
+  return claudeTurnText(transcriptPath, maxBytes ?? DEFAULT_TAIL_BYTES);
+}
+
+/**
+ * The same projection for a Codex rollout.
+ *
+ * Every Codex record sits inside a `payload` envelope, so the Claude scan below
+ * found no assistant text and the phone fell back to the PREVIOUS completed
+ * answer. Codex goes through the reducer the dashboard already uses, which also
+ * grows the tail past megabyte tool-output lines; this only picks the turn.
+ */
+async function codexTurnText(transcriptPath: string, maxBytes: number | undefined): Promise<string> {
+  try {
+    const conversation = await readConversationTail(
+      transcriptPath,
+      "",
+      "codex",
+      maxBytes === undefined ? {} : { tailBytes: maxBytes },
+    );
+    const collected: string[] = [];
+    for (let index = conversation.order.length - 1; index >= 0; index -= 1) {
+      const item = conversation.items[conversation.order[index]!];
+      if (item?.kind === "user") break; // the reply starts after this
+      const chunk = item?.kind === "assistant" ? item.text.trim() : "";
+      if (chunk) collected.push(chunk);
+    }
+    return collected.reverse().join("\n").trim();
+  } catch {
+    return "";
+  }
+}
+
+async function claudeTurnText(transcriptPath: string, maxBytes: number): Promise<string> {
   let handle;
   try {
     handle = await open(transcriptPath, "r");

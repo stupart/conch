@@ -198,6 +198,17 @@ describe("deciding a Codex turn has ended", () => {
     expect(memory.get("s")).toEqual({ announcedTurnId: "t1" });
   });
 
+  test("a turn already running at first sighting announces when it ends, once", () => {
+    // Seeding the in-progress id as announced made this turn's own completion
+    // look already spoken for, so the first turn conch caught mid-flight was
+    // never heard. Only an already-finished turn stays silent (above).
+    const memory: CodexTurnMemory = new Map();
+    expect(detectCodexTurnEnds(memory, running("t1"))).toEqual([]);
+    expect(detectCodexTurnEnds(memory, running("t1"))).toEqual([]);
+    expect(detectCodexTurnEnds(memory, done("t1")).map((e) => e.text)).toEqual(["All green."]);
+    expect(detectCodexTurnEnds(memory, done("t1"))).toEqual([]);
+  });
+
   test("announces a turn id it has not spoken for", () => {
     const memory: CodexTurnMemory = new Map();
     detectCodexTurnEnds(memory, done("t1"));

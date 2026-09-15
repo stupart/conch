@@ -439,6 +439,11 @@ export type CodexTurnMemory = Map<string, CodexTurnMemoryEntry>;
  * A session seen for the first time is seeded silently. These rollouts are
  * permanent history, so announcing on first sight would make every daemon
  * restart read out a backlog of turns that finished hours ago.
+ *
+ * Only a FINISHED turn is adopted as announced. A busy snapshot's id is the
+ * turn still in progress (from `task_started`); adopting it made that turn's
+ * own completion look already spoken for, so the first turn conch caught
+ * mid-flight never announced.
  */
 export function detectCodexTurnEnds(
   memory: CodexTurnMemory,
@@ -448,9 +453,10 @@ export function detectCodexTurnEnds(
   for (const snapshot of snapshots) {
     const seen = memory.get(snapshot.sessionId);
     const finished = snapshot.status === "idle" && snapshot.turnId !== "";
-    // First sighting adopts whatever is there as already-announced.
+    // First sighting adopts a finished turn as already-announced; a turn still
+    // running is left unannounced so its completion is heard.
     if (seen === undefined) {
-      memory.set(snapshot.sessionId, { announcedTurnId: snapshot.turnId });
+      memory.set(snapshot.sessionId, { announcedTurnId: finished ? snapshot.turnId : "" });
       continue;
     }
     if (finished && snapshot.turnId !== seen.announcedTurnId) {
