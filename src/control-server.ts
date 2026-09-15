@@ -1,5 +1,7 @@
 import { createServer, connect } from "node:net";
-import { chmodSync, existsSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, renameSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { lockSocketPath, type SocketOwnership } from "./socket-ownership.ts";
 import type { TurnEvent } from "./hook.ts";
 import type { PublishedState } from "./panel.ts";
 import type { SessionInfo } from "./sessions.ts";
@@ -706,8 +708,26 @@ export async function anotherDaemonIsListening(
     // daemon's socket is the failure this exists to prevent.
     const timer = setTimeout(() => finish(true), timeoutMs);
     socket.once("connect", () => finish(true));
-    socket.once("error", () => finish(false));
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      finish(error.code !== "ENOENT" && error.code !== "ECONNREFUSED" && error.code !== "ENOTSOCK");
+    });
   });
+}
+
+/** Claim before starting children; the probe also respects older daemons without a lock. */
+export async function acquireControlOwnership(socketPath: string): Promise<SocketOwnership | null> {
+  const ownership = lockSocketPath(socketPath);
+  if (!ownership) return null;
+  try {
+    if (await anotherDaemonIsListening(socketPath)) {
+      ownership.release();
+      return null;
+    }
+    return ownership;
+  } catch (error) {
+    ownership.release();
+    throw error;
+  }
 }
 
 /** Reserved outside the legacy body so reconstructing validators cannot lose routing. */
@@ -902,6 +922,7 @@ export interface ControlServerOptions {
   application: ControlApplication;
   /** How long an `awaitDelivery` inject is held open. Tests shorten it. */
   deliveryWaitMs?: number;
+  ownership?: SocketOwnership;
 }
 
 /**
@@ -930,6 +951,18 @@ function isRuntimeControlCandidate(value: unknown): boolean {
 
 export function createControlServer(options: ControlServerOptions): ControlServer {
   const { socketPath, log, sessions, application } = options;
+  let ownership: SocketOwnership | undefined;
+  let socketIdentity: { dev: number; ino: number } | undefined;
+  let starting: Promise<boolean> | undefined;
+  // Bind privately then rename: Node's close must never unlink a successor's path.
+  const bindPath = join(dirname(socketPath), `.conch-${process.pid}-${crypto.randomUUID().slice(0, 8)}.sock`);
+  const unlinkOwnedSocket = (): void => {
+    try {
+      const current = lstatSync(socketPath);
+      if (socketIdentity && current.dev === socketIdentity.dev && current.ino === socketIdentity.ino) unlinkSync(socketPath);
+    } catch {}
+    socketIdentity = undefined;
+  };
   const server = createServer({ allowHalfOpen: true }, (sock) => {
     let buf = "";
     let handled = false;
@@ -1087,30 +1120,46 @@ export function createControlServer(options: ControlServerOptions): ControlServe
   });
   server.on("error", (e) => log(`socket server error: ${e}`));
 
-  return {
-    async start() {
-      if (server.listening) return true;
-      // Only a connection proves ownership; a leftover socket file proves nothing.
-      if (await anotherDaemonIsListening(socketPath)) return false;
-      if (existsSync(socketPath)) unlinkSync(socketPath); // genuinely stale
+  const start = async (): Promise<boolean> => {
+    ownership = options.ownership?.active ? options.ownership : await acquireControlOwnership(socketPath) ?? undefined;
+    if (!ownership) return false;
+    try {
+      if (ownership.socketPath !== socketPath) throw new Error("socket ownership path mismatch");
+      if (existsSync(socketPath)) unlinkSync(socketPath);
       await new Promise<void>((resolve, reject) => {
         const failed = (error: Error): void => { reject(error); };
         server.once("error", failed);
-        server.listen(socketPath, () => {
+        server.listen(bindPath, () => {
           server.off("error", failed);
-          // The socket accepts mic, speech and settings mutations. Darwin
-          // enforces socket mode on connect(2); keep it private in /tmp.
-          try { chmodSync(socketPath, 0o600); } catch {}
           resolve();
         });
       });
+      chmodSync(bindPath, 0o600);
+      socketIdentity = lstatSync(bindPath);
+      renameSync(bindPath, socketPath);
       return true;
+    } catch (error) {
+      if (server.listening) server.close();
+      unlinkOwnedSocket();
+      ownership.release();
+      ownership = undefined;
+      throw error;
+    }
+  };
+  return {
+    start() {
+      if (starting) return starting;
+      if (server.listening) return Promise.resolve(true);
+      return starting ??= start().finally(() => { starting = undefined; });
     },
-    close() {
-      if (!server.listening) return Promise.resolve();
-      const closed = new Promise<void>((resolve) => server.close(() => resolve()));
-      // Synchronous release also serves the daemon's immediate process.exit path.
-      try { unlinkSync(socketPath); } catch {}
+    async close() {
+      if (starting) await starting.catch(() => {});
+      const closed = server.listening
+        ? new Promise<void>((resolve) => server.close(() => resolve()))
+        : Promise.resolve();
+      unlinkOwnedSocket();
+      ownership?.release();
+      ownership = undefined;
       return closed;
     },
   };

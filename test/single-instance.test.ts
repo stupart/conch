@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createServer } from "node:net";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { anotherDaemonIsListening } from "../src/daemon.ts";
@@ -46,4 +46,18 @@ describe("only one daemon may own the socket", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
+});
+
+
+test("a socket whose access is denied remains occupied", async () => {
+  const path = scratch();
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(path, resolve));
+  try {
+    chmodSync(path, 0);
+    expect(await anotherDaemonIsListening(path)).toBeTrue();
+  } finally {
+    chmodSync(path, 0o600);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
