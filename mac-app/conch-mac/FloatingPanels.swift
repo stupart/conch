@@ -694,6 +694,11 @@ private struct ConversationFogHost: View {
         let fog = panels.text
         fog.send(text)
         draft.wrappedValue = ""
-        Task { if !(await delivery.value) { fog.sendFailed() } }
+        Task {
+            guard !(await delivery.value) else { return }
+            fog.sendFailed()
+            // A reply that didn't go comes back to the line, unless something new was typed meanwhile.
+            if draft.wrappedValue.isEmpty { draft.wrappedValue = text }
+        }
     }
 }

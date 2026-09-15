@@ -450,10 +450,13 @@ test("M3: the overlay's text is the lab's: pinned by the reader alone, words at 
   expect(panels).toContain(".onChange(of: row?.id) { _, _ in panels.text.session() }");
   for (const fake of ["asyncAfter", "Task.sleep", "Timer("]) expect(text).not.toContain(fake);
   expect(components).toContain("if isWorking, lines.last?.fromYou == true { lines.append(.thinking) }");
-  // Sent: shown at once and flown in, the daemon's copy taking its place; dropped if it never arrives.
+  // Sent: shown at once and flown in, the daemon's copy taking its place; dropped if it never arrives,
+  // and then the words come back to the reply line instead of being lost.
   const send = member(panels, "private func send(_ row: SessionRow) {");
   expect(send.indexOf("fog.send(text)")).toBeLessThan(send.indexOf('draft.wrappedValue = ""'));
-  expect(send).toContain("Task { if !(await delivery.value) { fog.sendFailed() } }");
+  expect(send).toContain("guard !(await delivery.value) else { return }");
+  expect(send.indexOf("fog.sendFailed()")).toBeLessThan(send.indexOf("if draft.wrappedValue.isEmpty { draft.wrappedValue = text }"));
+  expect(send).toContain("if draft.wrappedValue.isEmpty { draft.wrappedValue = text }");
   // Reveal: 13 words a second with breaths at punctuation, each fading up out of a 4 pt blur, any backlog in within 3 s.
   expect(text).toContain("public static let longest: Double = 3");
   expect(text).toContain("return 1 / ConchMotion.wordsPerSecond + pause");
