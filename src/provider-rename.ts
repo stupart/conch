@@ -2,6 +2,7 @@ import { adapterFor } from "./agent-adapter.ts";
 import type { Config } from "./config.ts";
 import {
   injectText,
+  type InjectTextOptions,
   type InjectTextResult,
 } from "./inject.ts";
 
@@ -21,9 +22,7 @@ export type ProviderRenameInjector = (
   sessionPid: number | undefined,
   text: string,
   beforeInject: undefined,
-  options: {
-    copyToClipboard(text: string): Promise<void>;
-  },
+  options: Pick<InjectTextOptions, "clipboardFallback">,
 ) => Promise<InjectTextResult>;
 
 /** Claude Code owns a second copy of its label; Codex has no equivalent command. */
@@ -68,7 +67,7 @@ export async function injectProviderCommand(
     target.pid,
     line,
     undefined,
-    { copyToClipboard: async () => {} },
+    { clipboardFallback: false },
   );
   if (result.via === "tmux" || result.via === "osascript-focused") {
     return { kind: "delivered", via: result.via };
