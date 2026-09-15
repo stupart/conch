@@ -77,8 +77,10 @@ https://brew.sh rather than trying to install Homebrew yourself.
   work; naming a different session is refused, because the dashboard attributes
   the artifact to whoever is named and putting words in a sibling's mouth is
   worse than not filing at all. Publishing needs a verified `caller`: when conch
-  cannot tell which session you are (a Codex app-server hosts many threads
-  under one process), it is refused whatever `session` says. `link` must be an
+  cannot tell which session you are, it is refused whatever `session` says. A
+  Codex thread is verified by the thread id Codex sends with each call; an
+  older Codex that sends none, from an app-server hosting many threads under
+  one process, is not. `link` must be an
   http(s) URL or an existing, non-executable file path; a relative path is
   resolved to an absolute path against your cwd before it is sent, so the file
   you checked is the file the apps open. A file is sent to the phone, so it must

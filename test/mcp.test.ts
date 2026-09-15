@@ -1570,6 +1570,7 @@ describe("caller binding: which session is calling, and what that allows", () =>
     const binding = await caller(handlers);
     expect(binding.status).toBe("unverified");
     expect(binding.reason).toContain("Codex app-server, which hosts many threads under one pid");
+    expect(binding.reason).toContain("no thread identity in the request");
 
     const publish = await refused(handlers, "review_to_front", { summary: "mine", session: "thread-1" });
     expect(publish).toStartWith("refused: conch cannot verify which session is calling");
@@ -1579,6 +1580,78 @@ describe("caller binding: which session is calling, and what that allows", () =>
     expect(await refused(handlers, "conch_wake", {}))
       .toContain("conch_wake without `session` means your own session, and conch cannot verify");
     expect(await refused(handlers, "conch_recite", {})).toContain("conch_recite without `session`");
+    expect(h.calls.daemon).toEqual([]);
+  });
+
+  /** A tools/call as a Codex client sends it: the calling thread rides in `_meta`, which the model cannot set. */
+  async function codexCall(
+    handlers: McpToolHandlers,
+    name: McpToolName,
+    args: Record<string, unknown>,
+    turnMetadata: unknown,
+  ) {
+    return dispatchJsonRpc({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name, arguments: args, _meta: { callId: "call_1", "x-codex-turn-metadata": turnMetadata } },
+    }, handlers);
+  }
+  const APP_SERVER = 74676;
+  const desktopThread = (sessionId: string): SessionInfo => ({
+    sessionId,
+    backend: "codex",
+    name: sessionId,
+    cwd: "/work/codex",
+    pid: 0,
+    noTerminal: appServerNoTerminal(APP_SERVER),
+  });
+
+  test("an app-server thread that names itself in Codex's turn metadata is verified, and publishes and wakes as itself", async () => {
+    const { h, handlers } = harness([desktopThread("thread-1"), desktopThread("thread-2")], APP_SERVER);
+    const turn = { session_id: "thread-2", thread_id: "thread-2", turn_id: "turn-9" };
+
+    const state = JSON.parse(toolText(await codexCall(handlers, "conch_sessions", {}, turn)));
+    expect(state.caller).toEqual({ status: "verified", sessionId: "thread-2", label: "thread-2" });
+    expect(rpcResult(await codexCall(handlers, "review_to_front", { summary: "the desktop fix" }, turn)))
+      .not.toMatchObject({ isError: true });
+    await codexCall(handlers, "conch_wake", {}, turn);
+    expect(h.calls.daemon.map((call) => [call.event.type, call.event.sessionId]))
+      .toEqual([["review-published", "thread-2"], ["wake", "thread-2"]]);
+  });
+
+  test("turn metadata sent as a JSON string is read the same way", async () => {
+    const { handlers } = harness([desktopThread("thread-1"), desktopThread("thread-2")], APP_SERVER);
+    const turn = JSON.stringify({ session_id: "thread-1", thread_id: "thread-1" });
+    const state = JSON.parse(toolText(await codexCall(handlers, "conch_sessions", {}, turn)));
+    expect(state.caller).toEqual({ status: "verified", sessionId: "thread-1", label: "thread-1" });
+    // Unreadable metadata is absent, not an error.
+    const garbled = JSON.parse(toolText(await codexCall(handlers, "conch_sessions", {}, "{not json")));
+    expect(garbled.caller.reason).toContain("no thread identity in the request");
+  });
+
+  test("a thread id no live Codex row has stays unverified, even when a Claude row has that id", async () => {
+    const claude: SessionInfo = { sessionId: "thread-9", name: "Claude", cwd: "/work/claude", pid: 4321 };
+    const { h, handlers } = harness([desktopThread("thread-1"), claude], APP_SERVER);
+    const turn = { thread_id: "thread-9" };
+    const state = JSON.parse(toolText(await codexCall(handlers, "conch_sessions", {}, turn)));
+    expect(state.caller).toEqual({
+      status: "unverified",
+      reason: "codex thread thread-9 not found among the live Codex sessions conch knows",
+    });
+    const publish = await codexCall(handlers, "review_to_front", { summary: "forged" }, turn);
+    expect(rpcResult(publish)).toMatchObject({ isError: true });
+    expect(toolText(publish)).toContain("cannot verify");
+    expect(h.calls.daemon).toEqual([]);
+  });
+
+  test("a subagent thread binds only to its own thread, never its parent's", async () => {
+    const { h, handlers } = harness([desktopThread("parent-thread")], APP_SERVER);
+    const turn = { thread_id: "child-thread", parent_thread_id: "parent-thread", subagent_kind: "spawned" };
+    const state = JSON.parse(toolText(await codexCall(handlers, "conch_sessions", {}, turn)));
+    expect(state.caller.status).toBe("unverified");
+    expect(state.caller.reason).toContain("codex thread child-thread not found");
+    expect(rpcResult(await codexCall(handlers, "conch_wake", {}, turn))).toMatchObject({ isError: true });
     expect(h.calls.daemon).toEqual([]);
   });
 

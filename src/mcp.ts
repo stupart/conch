@@ -308,7 +308,8 @@ export const MCP_TOOLS = [
 ] as const satisfies readonly McpToolDefinition[];
 
 export type McpToolName = (typeof MCP_TOOLS)[number]["name"];
-export type McpToolHandler = (argumentsValue: unknown) => Promise<unknown>;
+/** `meta` is the call's `params._meta`, which a Codex client fills with the calling thread. */
+export type McpToolHandler = (argumentsValue: unknown, meta?: unknown) => Promise<unknown>;
 export type McpToolHandlers = Record<McpToolName, McpToolHandler>;
 
 export interface McpRuntimeConfig {
@@ -562,18 +563,31 @@ export type CallerBinding =
 async function callerBinding(
   config: McpRuntimeConfig,
   dependencies: McpDependencies,
+  meta?: unknown,
 ): Promise<CallerBinding> {
   const unverified = (reason: string): CallerBinding => ({ status: "unverified", reason });
   const parentPid = dependencies.parentPid();
-  if (!Number.isSafeInteger(parentPid) || parentPid <= 1) {
+  const threadId = codexCallingThread(meta);
+  const hasParent = Number.isSafeInteger(parentPid) && parentPid > 1;
+  if (!hasParent && threadId === undefined) {
     return unverified("this server has no parent session process");
   }
   const infos = (await dependencies.registrySnapshot(config.claudeDir))?.infos ?? [];
-  if (infos.some((session) => session.noTerminal === appServerNoTerminal(parentPid))) {
-    return unverified(
-      `its parent (pid ${parentPid}) is a Codex app-server, which hosts many threads under one pid,`
-        + " so the pid cannot say which thread is calling",
-    );
+  const appServer = hasParent && infos.some((session) => session.noTerminal === appServerNoTerminal(parentPid));
+  if (threadId !== undefined || appServer) {
+    if (threadId === undefined) {
+      return unverified(
+        `its parent (pid ${parentPid}) is a Codex app-server, which hosts many threads under one pid,`
+          + " and there is no thread identity in the request to say which thread is calling",
+      );
+    }
+    // Only a live Codex row's own thread id binds: a forged id can claim no more
+    // than a session the agent could name anyway, and a subagent never binds to
+    // its parent's thread.
+    const thread = infos.filter((session) => session.backend === "codex" && session.sessionId === threadId);
+    return thread.length === 1
+      ? { status: "verified", session: thread[0]! }
+      : unverified(`codex thread ${threadId} not found among the live Codex sessions conch knows`);
   }
   const byPid = infos.filter((session) => session.pid === parentPid);
   if (byPid.length === 1) return { status: "verified", session: byPid[0]! };
@@ -596,13 +610,35 @@ async function callerBinding(
     : unverified(`its parent (pid ${parentPid}) is not a live session conch knows`);
 }
 
+/**
+ * The thread a Codex client says is calling, or undefined.
+ *
+ * Codex puts its turn metadata on every tools/call as
+ * `_meta["x-codex-turn-metadata"]` (`mcp_tool_call.rs`
+ * `build_mcp_tool_call_request_meta`), with the calling thread's `thread_id`.
+ * The client sets it, not the model. Older builds send none, and it may arrive
+ * as an object or as a JSON string, so anything unreadable is simply absent.
+ */
+function codexCallingThread(meta: unknown): string | undefined {
+  let turn = isRecord(meta) ? meta["x-codex-turn-metadata"] : undefined;
+  if (typeof turn === "string") {
+    try {
+      turn = JSON.parse(turn);
+    } catch {
+      return undefined;
+    }
+  }
+  return isRecord(turn) && typeof turn.thread_id === "string" && turn.thread_id ? turn.thread_id : undefined;
+}
+
 /** Your own session, for a tool whose `session` was omitted; refused when conch can't verify it. */
 async function ownSession(
   tool: string,
   config: McpRuntimeConfig,
   dependencies: McpDependencies,
+  meta: unknown,
 ): Promise<SessionInfo> {
-  const binding = await callerBinding(config, dependencies);
+  const binding = await callerBinding(config, dependencies, meta);
   if (binding.status === "verified") return binding.session;
   throw new ToolInputError(
     `${tool} without \`session\` means your own session, and conch cannot verify which session is`
@@ -622,10 +658,11 @@ async function requiredReviewSession(
   argumentsValue: Readonly<Record<string, unknown>>,
   config: McpRuntimeConfig,
   dependencies: McpDependencies,
+  meta: unknown,
 ): Promise<SessionInfo> {
   const value = argumentsValue.session;
   const named = typeof value === "string" ? value.trim() : "";
-  const binding = await callerBinding(config, dependencies);
+  const binding = await callerBinding(config, dependencies, meta);
   if (binding.status !== "verified") {
     throw new ToolInputError(
       `conch cannot verify which session is calling (${binding.reason}), so it will not attribute`
@@ -696,10 +733,10 @@ export function createMcpToolHandlers(
   let speakingUntil = 0;
 
   return {
-    async conch_sessions(argumentsValue) {
+    async conch_sessions(argumentsValue, meta) {
       const argumentsObject = toolArguments(argumentsValue);
       allowOnly(argumentsObject, []);
-      const binding = await callerBinding(config, dependencies);
+      const binding = await callerBinding(config, dependencies, meta);
       const caller = binding.status === "verified"
         ? {
           status: binding.status,
@@ -725,14 +762,14 @@ export function createMcpToolHandlers(
       };
     },
 
-    async conch_wake(argumentsValue) {
+    async conch_wake(argumentsValue, meta) {
       const argumentsObject = toolArguments(argumentsValue);
       allowOnly(argumentsObject, ["session"]);
       const query = optionalString(argumentsObject, "session");
       // No global "last session" for an agent: omitted means the verified caller.
       const session = query
         ? await resolveSession(query, config, dependencies)
-        : await ownSession("conch_wake", config, dependencies);
+        : await ownSession("conch_wake", config, dependencies, meta);
       const audio = await audioWhere(sessionsPath, dependencies);
       const sent = await sendTurn(config, dependencies, {
         type: "wake",
@@ -750,13 +787,13 @@ export function createMcpToolHandlers(
       return { ...sent, audio };
     },
 
-    async conch_recite(argumentsValue) {
+    async conch_recite(argumentsValue, meta) {
       const argumentsObject = toolArguments(argumentsValue);
       allowOnly(argumentsObject, ["session"]);
       const query = optionalString(argumentsObject, "session");
       const session = query
         ? await resolveSession(query, config, dependencies)
-        : await ownSession("conch_recite", config, dependencies);
+        : await ownSession("conch_recite", config, dependencies, meta);
       const audio = await audioWhere(sessionsPath, dependencies);
       const label = dependencies.sessionLabel(session, session.cwd);
       const transcriptPath = dependencies.findTranscript(
@@ -814,7 +851,7 @@ export function createMcpToolHandlers(
       return sent;
     },
 
-    async conch_mode(argumentsValue) {
+    async conch_mode(argumentsValue, meta) {
       const argumentsObject = toolArguments(argumentsValue);
       allowOnly(argumentsObject, ["action", "session", "scope"]);
       const action = requiredString(argumentsObject, "action");
@@ -844,7 +881,7 @@ export function createMcpToolHandlers(
       // One session, the same scoped event the Mac's per-row control sends:
       // the daemon routes a pause/resume that names a session to
       // setSessionPaused, never to the global flip.
-      const binding = query ? undefined : await callerBinding(config, dependencies);
+      const binding = query ? undefined : await callerBinding(config, dependencies, meta);
       if (binding?.status === "unverified") {
         throw new ToolInputError(
           `${action} needs a session and this server has no calling session it can verify`
@@ -1022,7 +1059,7 @@ export function createMcpToolHandlers(
       };
     },
 
-    async review_to_front(argumentsValue) {
+    async review_to_front(argumentsValue, meta) {
       // Accepted, refused or failed, and each says which. A refusal names its
       // reason and nothing reaches the daemon.
       const { summary, truncatedFrom, link, session } = await (async () => {
@@ -1030,7 +1067,7 @@ export function createMcpToolHandlers(
         allowOnly(argumentsObject, ["summary", "link", "session"]);
         const cleaned = sanitizeReviewSummary(requiredString(argumentsObject, "summary"), Infinity);
         if (!cleaned) throw new ToolInputError("summary must be a non-empty string");
-        const session = await requiredReviewSession(argumentsObject, config, dependencies);
+        const session = await requiredReviewSession(argumentsObject, config, dependencies, meta);
         const rawLink = optionalString(argumentsObject, "link");
         // Absolute by the time it leaves here, resolved against this process's
         // cwd (the session's): the raw relative string reached the Mac app,
@@ -1215,7 +1252,7 @@ export async function dispatchJsonRpc(
             : null;
         }
         try {
-          const value = await handlers[name as McpToolName](argumentsValue);
+          const value = await handlers[name as McpToolName](argumentsValue, message.params._meta);
           return shouldReply
             ? jsonRpcResult(requestId, toolResult(value))
             : null;
