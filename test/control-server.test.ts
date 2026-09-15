@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { connect, type Socket } from "node:net";
-import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { injectTimeoutFor } from "../src/daemon.ts";
+import { injectTimeoutFor, runDaemon } from "../src/daemon.ts";
 import {
   INJECT_DELIVERY_WAIT_MS,
   createControlServer,
+  acquireControlOwnership,
   type ControlApplication,
   type ControlEnvelope,
   type ControlServer,
@@ -516,4 +517,65 @@ describe("control server over a real Unix socket", () => {
     expect(existsSync(f.socketPath)).toBe(true);
     expect(JSON.parse(await f.request({ kind: "get-config" })).kind).toBe("config-error");
   });
+});
+
+
+describe("atomic daemon socket ownership", () => {
+  test("simultaneous starters admit one owner and losing cleanup preserves its socket", async () => {
+    const f = await fixture();
+    await f.server.close();
+    const first = createControlServer(f.options);
+    const second = createControlServer(f.options);
+    f.servers.push(first, second);
+    const results = await Promise.all([first.start(), second.start()]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    await (results[0] ? second : first).close();
+    expect(await f.request({ kind: "app-error", context: "test", error: "synthetic" })).not.toBeUndefined();
+  });
+
+  test("closing an old owner preserves a replacement socket path", async () => {
+    const f = await fixture();
+    renameSync(f.socketPath, join(f.root, "detached.sock"));
+    writeFileSync(f.socketPath, "replacement sentinel");
+    const replacement = statSync(f.socketPath).ino;
+    await f.server.close();
+    expect(existsSync(f.socketPath)).toBe(true);
+    expect(statSync(f.socketPath).ino).toBe(replacement);
+  });
+});
+
+
+test("a competing daemon never initializes child services", async () => {
+  const f = await fixture();
+  let initialized = false;
+  await runDaemon({ socketPath: f.socketPath } as never, async () => { initialized = true; });
+  expect(initialized).toBe(false);
+});
+
+
+test("a supplied ownership token cannot be reused after close to replace a new owner", async () => {
+  const f = await fixture();
+  await f.server.close();
+  const ownership = (await acquireControlOwnership(f.socketPath))!;
+  const first = createControlServer({ ...f.options, ownership });
+  f.servers.push(first);
+  expect(await first.start()).toBe(true);
+  await first.close();
+  const replacement = createControlServer(f.options);
+  f.servers.push(replacement);
+  expect(await replacement.start()).toBe(true);
+  expect(await first.start()).toBe(false);
+});
+
+test("every concurrent start awaits publication of the owned socket", async () => {
+  const f = await fixture();
+  await f.server.close();
+  const ownership = (await acquireControlOwnership(f.socketPath))!;
+  const server = createControlServer({ ...f.options, ownership });
+  f.servers.push(server);
+  const first = server.start();
+  try {
+    expect(await server.start()).toBe(true);
+    expect(existsSync(f.socketPath)).toBe(true);
+  } finally { await first; }
 });

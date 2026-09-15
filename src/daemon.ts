@@ -1,5 +1,6 @@
 import {
   createControlServer,
+  acquireControlOwnership,
   type DeviceCommand,
   type DeviceControlResponse,
   type ConfigController,
@@ -596,7 +597,21 @@ export async function rehydrateLatestTurns(options: {
   return restored;
 }
 
-export async function runDaemon(cfg: Config): Promise<void> {
+export async function runDaemon(cfg: Config, runOwned = runOwnedDaemon): Promise<void> {
+  const ownership = await acquireControlOwnership(cfg.socketPath);
+  if (!ownership) {
+    log(`another conch daemon already owns ${cfg.socketPath} — this one is exiting`);
+    return;
+  }
+  try {
+    await runOwned(cfg, ownership);
+  } catch (error) {
+    ownership.release();
+    throw error;
+  }
+}
+
+async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership.ts").SocketOwnership): Promise<void> {
   prepareLogFile();
   const daemonSettingsPath = settingsPathFor();
   const ownerDeviceId = await loadDeviceId(dirname(daemonSettingsPath), log);
@@ -2167,6 +2182,7 @@ export async function runDaemon(cfg: Config): Promise<void> {
     return exhaustive;
   }
   const controlServer = createControlServer({
+    ownership,
     socketPath: cfg.socketPath,
     ownerDeviceId,
     log,
