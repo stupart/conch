@@ -388,10 +388,14 @@ final class FogTextTests: XCTestCase {
             return "mean \(String(format: "%.2f", times.reduce(0, +) / Double(times.count))) ms, p95 \(String(format: "%.2f", sorted[sorted.count * 95 / 100])) ms, max \(String(format: "%.2f", sorted.last!)) ms"
         }
         print("fog text cost: first layout \(String(format: "%.1f", first)) ms; typing \(summary(typing)); draft replaced \(String(format: "%.1f", replaced)) ms; streaming frames \(summary(frames))")
-        XCTAssertLessThan(first, 2000)
-        XCTAssertLessThan(replaced, 500)
-        XCTAssertLessThan(typing.reduce(0, +) / Double(typing.count), 16)
-        XCTAssertLessThan(frames.reduce(0, +) / Double(frames.count), 16)
+        // A Mac's debug build: first layout about 190 ms, frames about 7 ms. CI's shared virtual Macs ran the same work
+        // up to ten times slower (a 2.2 s first layout, 44 ms typing), so there the budgets only catch a hang, like
+        // the #210 freeze that took seconds per keystroke.
+        let slack = ProcessInfo.processInfo.environment["CI"] == nil ? 1.0 : 10.0
+        XCTAssertLessThan(first, 2000 * slack)
+        XCTAssertLessThan(replaced, 500 * slack)
+        XCTAssertLessThan(typing.reduce(0, +) / Double(typing.count), 16 * slack)
+        XCTAssertLessThan(frames.reduce(0, +) / Double(frames.count), 16 * slack)
     }
 
     // MARK: Helpers
