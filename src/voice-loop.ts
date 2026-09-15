@@ -2638,29 +2638,46 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
    */
   async function permissionLoop(event: TurnEvent, ask: PendingApproval, pauseGeneration: number): Promise<void> {
     const interruptedByPause = (): boolean => pause.interrupted(pauseGeneration);
-    const say = (text: string): Promise<void> => speak(cfg, text, event.label, false, event.sessionId);
+    const transcriptPath = event.transcriptPath;
+    let stale = false;
+    const currentApproval = (allowResolved = false): boolean => {
+      if (stale || shuttingDown || interruptedByPause()) return false;
+      const current = transcriptPath ? pendingApproval(transcriptPath) : null;
+      if ((allowResolved && !current) || (ask.id && current?.id === ask.id
+        && current.name === ask.name && current.summary === ask.summary)) return true;
+      stale = true;
+      log(`permission changed or resolved for "${event.label}" — dropping the old voice answer`);
+      return false;
+    };
+    const stillPending = (): boolean => currentApproval();
+    const say = async (text: string): Promise<void> => {
+      if (stillPending()) await speak(cfg, text, event.label, false, event.sessionId);
+    };
+    if (!stillPending()) return;
     log(`permission from "${event.label}": ${ask.name} — ${ask.summary}`);
     if (cfg.revealOnTurn && event.pid) void raiseWindow(event.pid, "permission");
     await ringBell();
+    if (!stillPending()) return;
     await say(approvalAnnounce(event.label, ask));
-    if (shuttingDown || interruptedByPause() || consumeStopKey()) return;
+    if (!stillPending() || consumeStopKey()) return;
     // The same holds as an announced turn: the ear is elsewhere, or you are typing.
     if (audioLease.isPhone() || !audioHolder.isLocal()) {
       return log(`mic held — ${audioLease.isPhone() ? "the phone" : "the other Mac"} has the ear ("${event.label}")`);
     }
     const idle = cfg.typingGraceSecs > 0 ? await idleSeconds() : null;
+    if (!stillPending()) return;
     if (idle !== null && idle < cfg.typingGraceSecs) {
       return log(`mic held — you're typing (answer "${event.label}" by keyboard)`);
     }
-    let heard = await listenForApproval(event);
-    if (!heard) return;
+    let heard = await listenForApproval(event, stillPending);
+    if (!stillPending() || !heard) return;
     let answer = classifyApprovalAnswer(heard);
     if (!answer) {
       log(`heard: "${heard.join(" ")}" -> unclear, asking once more`);
       await say(APPROVAL_REASK);
-      if (shuttingDown || interruptedByPause()) return;
-      heard = await listenForApproval(event);
-      if (!heard) return;
+      if (!stillPending()) return;
+      heard = await listenForApproval(event, stillPending);
+      if (!stillPending() || !heard) return;
       answer = classifyApprovalAnswer(heard);
     }
     if (!answer) {
@@ -2670,26 +2687,32 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     log(`heard: "${heard.join(" ")}" -> ${answer.kind}`);
     if (answer.kind === "always") {
       await say(confirmAlwaysPrompt(ask));
-      if (shuttingDown || interruptedByPause()) return;
-      const confirmation = await listenForApproval(event);
-      if (!confirmation) return;
+      if (!stillPending()) return;
+      const confirmation = await listenForApproval(event, stillPending);
+      if (!stillPending() || !confirmation) return;
       if (!confirmsAlways(confirmation)) {
         log(`heard: "${confirmation.join(" ")}" -> not confirmed`);
         return void (await say(`Not confirmed. ${APPROVAL_KEYBOARD}`));
       }
     }
-    if (interruptedByPause()) return;
     for (const key of APPROVAL_KEYS[answer.kind]) {
-      const { via, interrupted } = await injectKey(cfg, event.pid, key, () => !interruptedByPause());
+      if (!stillPending()) return;
+      const { via, interrupted } = await injectKey(cfg, event.pid, key, stillPending);
       if (interrupted || interruptedByPause()) return;
       if (via === "none") return void (await say("Could not reach the session's window to answer — do it by hand."));
       log(`sent ${key} via ${via}`);
       await Bun.sleep(150); // let the dialog move before the next key
+      if (key === "Down" && !stillPending()) return;
     }
     if (answer.kind === "instead") {
-      // Escape left the cursor in the prompt; the alternative is the next message.
+      // Our Escape may have resolved this ask. A new ask still cannot receive
+      // the alternative, including one arriving while input routing awaits.
+      const mayTypeAlternative = (): boolean => currentApproval(true);
+      if (!mayTypeAlternative()) return;
       await Bun.sleep(400);
-      const { via } = await injectText(cfg, event.pid, answer.text, () => !interruptedByPause());
+      if (!mayTypeAlternative()) return;
+      const { via, interrupted } = await injectText(cfg, event.pid, answer.text, mayTypeAlternative);
+      if (interrupted || interruptedByPause()) return;
       if (via === "none") return void (await say("Could not type the alternative — do it by hand."));
       if (via === "clipboard") return void (await say("The alternative is on the clipboard — paste it into the session."));
       markInjected(event.sessionId);
@@ -2698,12 +2721,12 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   }
 
   /** One mic window for a permission answer: what was heard, or null when the window closed with nothing to decide (interrupted, spacebar, error, silence). */
-  async function listenForApproval(event: TurnEvent): Promise<string[] | null> {
+  async function listenForApproval(event: TurnEvent, stillPending: () => boolean): Promise<string[] | null> {
     const pauseGeneration = pause.capture();
     const interruptedByPause = (): boolean => pause.interrupted(pauseGeneration);
-    if (shuttingDown) return null;
+    if (shuttingDown || !stillPending()) return null;
     await micCue(cfg, "open");
-    if (shuttingDown || interruptedByPause()) return null;
+    if (shuttingDown || interruptedByPause() || !stillPending()) return null;
     log("listening for yes, always, or no...");
     const session = createDictationSession(
       cfg,
@@ -2727,9 +2750,9 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       session.requestBarrier(barrierReason ?? `permission-${action}`);
     };
 
-    if (shuttingDown) return null;
+    if (shuttingDown || !stillPending()) return null;
     if (!(await reserveNormalMic())) return null;
-    if (interruptedByPause()) {
+    if (interruptedByPause() || !stillPending()) {
       normalMicReserved = false;
       return null;
     }
@@ -2750,6 +2773,14 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       normalMicReserved = false;
     }
     activeDictation = { session, requestExternal, done: permissionDone };
+    // Keyboard resolution may produce no microphone event. Close promptly,
+    // then drain normally; an in-flight transcript cannot revive this ask.
+    const pendingWatch = setInterval(() => {
+      if (!stillPending() && !closing) {
+        closing = true;
+        session.requestBarrier("permission-stale");
+      }
+    }, 120);
     try {
       while (true) {
         const controllerEvent = await session.nextEvent();
@@ -2768,6 +2799,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         if (pauseDisposition.intercepted) {
           if (pauseDisposition.terminal) break;
           continue;
+        }
+        if (!stillPending()) {
+          if (controllerEvent.kind === "barrier") session.acknowledge(controllerEvent);
+          break;
         }
         if (controllerEvent.kind === "transcript") {
           if (controllerEvent.diagnosticId) diagnosticIds.push(controllerEvent.diagnosticId);
@@ -2802,6 +2837,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         break;
       }
     } finally {
+      clearInterval(pendingWatch);
       if (session.state === "running" || session.state === "draining") {
         const ticket = session.requestBarrier("permission-exit");
         let exitBarrierReached = false;
@@ -2831,10 +2867,14 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       emitRecorderTraces(diagnosticIds, { intent: "pause", bufferCountAfterReduction: 0 });
       return null;
     }
+    if (!stillPending()) {
+      emitRecorderTraces(diagnosticIds, { intent: "permission-stale", bufferCountAfterReduction: 0 });
+      return null;
+    }
     if (externalReason) {
       emitRecorderTraces(diagnosticIds, { intent: `permission-${externalReason}`, bufferCountAfterReduction: 0 });
       if (externalReason === "spacebar") consumeStopKey();
-      if (shuttingDown) return null;
+      if (shuttingDown || !stillPending()) return null;
       await micCue(cfg, "close");
       log("⏹ closed the permission mic");
       return null;
