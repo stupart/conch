@@ -23,13 +23,14 @@ import {
 import { transcriptFormatFor } from "./agent-adapter.ts";
 import { injectProviderCommand as providerCommand, isProviderCommandLine } from "./provider-rename.ts";
 import { classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
-import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
+import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark, promptSince } from "./snippet.ts";
 import {
   lastAssistantReply,
   latestAnswerableQuestion,
   readConversationTail,
   withSharedNote,
   type Conversation,
+  type WindowIdentity,
 } from "./conversation.ts";
 import { isWindowKey } from "./window-key.ts";
 import { clipboardFallbackError } from "./app-errors.ts";
@@ -73,6 +74,7 @@ import {
   ManualReplyInterrupt,
   watchManualReplyDuringSpeech,
   type ManualReplyListenGuard,
+  type ReplyCursor,
 } from "./manual-reply.ts";
 import type { PauseController } from "./pause-controller.ts";
 
@@ -438,6 +440,15 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     toClipboard: inject.toClipboard,
   };
   const { createDictationSession, listenGap, armBargeRecorder, killActiveRecorders } = deps.ear ?? listen;
+  // A window of a shared transcript counts only its own branch's prompts (A8).
+  // With no registry entry it gets `{}`, which attributes nothing: unknown.
+  const sharedWindow = (sessionId: string): WindowIdentity | undefined =>
+    isWindowKey(sessionId) ? deps.window(sessionId) ?? {} : undefined;
+  const replyCursor = (event: Pick<TurnEvent, "sessionId" | "transcriptPath" | "mark">): ReplyCursor => ({
+    transcriptPath: event.transcriptPath,
+    mark: event.mark,
+    window: sharedWindow(event.sessionId),
+  });
   // Read cfg.haikuTimeoutSecs at call time — the config socket mutates cfg in
   // place for live settings, so a fresh read here honors `conch set haiku-timeout`
   // without a daemon restart.
@@ -1084,7 +1095,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // Already handled it yourself: if you typed a reply to this session (so the
       // conversation moved on) since this fired, don't read it aloud or nag for
       // input. Covers the live path AND pause-replay (both flow through here).
-      if (audibleTurn && (await userRespondedSince(event.transcriptPath, event.mark))) {
+      if (audibleTurn && (await userRespondedSince(event.transcriptPath, event.mark, sharedWindow(event.sessionId)))) {
         return log(`skipping "${event.label}" — you already responded, conversation moved on`);
       }
       if (interruptedByPause()) return;
@@ -1213,7 +1224,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     if (!cfg.bargeThresholdPct || disabled) {
       const playback = speech.speakCancellable(cfg, text, event.label, speechScope);
       await watchManualReplyDuringSpeech(
-        event,
+        replyCursor(event),
         playback,
         () => cfg.interruptOnManualReply,
       );
@@ -1241,7 +1252,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       }, 120);
       try {
         await watchManualReplyDuringSpeech(
-          event,
+          replyCursor(event),
           speechRun,
           () => cfg.interruptOnManualReply,
         );
@@ -1477,10 +1488,15 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // didn't send"). Watch the transcript for a NEW user prompt; if it doesn't
       // appear, re-press Return (the text is sitting in the input) a couple of times;
       // if it still won't take, drop the words on the clipboard so they survive.
+      // A shared transcript also moves when the OTHER window sends (A8): only a
+      // prompt on this window's branch confirms, and one nobody can attribute
+      // stays unknown.
+      let landed: boolean | "unknown" = false;
       for (let attempt = 0; attempt < 3; attempt++) {
         await (deps.sleep ?? Bun.sleep)(900 + attempt * 600); // give Claude Code time to write the prompt entry
         if (beforeInject && !(await beforeInject())) return false;
-        if ((await transcriptMark(event.transcriptPath!)) > beforeCount) {
+        landed = await promptSince(event.transcriptPath, beforeCount, sharedWindow(event.sessionId));
+        if (landed === true) {
           receiptCode = "transcript-advanced";
           commit();
           log(`injected into "${event.label}" via ${via} — confirmed sent${attempt ? ` (after ${attempt} re-send${attempt > 1 ? "s" : ""})` : ""}`);
@@ -1506,6 +1522,16 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         }
       }
       if (beforeInject && !(await beforeInject())) return false;
+      if (landed === "unknown") {
+        // A prompt did land, but on a branch nothing exact names. It may be
+        // this one, so neither "delivered" nor "didn't send" is true.
+        receiptCode = "delivery-unattributed";
+        publishDictation(text, event.sessionId);
+        log(`inject into "${event.label}" via ${via} unconfirmed — a prompt landed in the shared transcript but its window is unknown`);
+        recordTelemetry("inject", { route: via, confirmed: false, unattributed: true, chars: text.length, latencyMs: Date.now() - injectStartedAt });
+        await speak(cfg, "Couldn't confirm that landed. Another window shares this session. Check it before sending again.", event.label, false, event.sessionId);
+        return false;
+      }
       log(`⚠ inject into "${event.label}" via ${via} NOT confirmed — words placed on clipboard`);
       recordTelemetry("inject", {
         route: via,
@@ -1636,7 +1662,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     if (interruptedByPause() && !announcedCapture) return;
 
     const interruptReadForManualReply = (): Promise<void> => interruptForManualReply(
-      event,
+      replyCursor(event),
       () => cfg.interruptOnManualReply,
     );
 
@@ -1985,7 +2011,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     const dictationDone = new Promise<void>((resolve) => {
       resolveDictationDone = resolve;
     });
-    let manualReplyEvent!: Pick<TurnEvent, "transcriptPath" | "mark">;
+    let manualReplyEvent!: ReplyCursor;
     let manualReplyGuard: ManualReplyListenGuard | null = null;
     let manualReplyWatch: Promise<void> | null = null;
     let manualReplyWatchError: unknown;
@@ -2081,12 +2107,12 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // there. It cannot reject into an unhandled rejection while it waits: a
     // failure degrades to the event's own values, the same shape the paused
     // branch already uses.
-    const manualReplyBaseline: Promise<Pick<TurnEvent, "transcriptPath" | "mark">> =
+    const manualReplyBaseline: Promise<ReplyCursor> =
       interruptedByPause()
-        ? Promise.resolve({ transcriptPath: event.transcriptPath, mark: event.mark })
-        : manualReplyListenBaseline(event).catch((error) => {
+        ? Promise.resolve(replyCursor(event))
+        : manualReplyListenBaseline({ ...replyCursor(event), type: event.type }).catch((error) => {
           log(`transcript baseline failed, replies may not interrupt: ${error}`);
-          return { transcriptPath: event.transcriptPath, mark: event.mark };
+          return replyCursor(event);
         });
     if (interruptedByPause() && !initialDictationCapture) return;
 
@@ -2197,7 +2223,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       const idle = cfg.typingGraceSecs > 0 ? await idleSeconds() : null;
       if (interruptedByPause()) return;
       const activelyTyping = idle !== null && idle < cfg.typingGraceSecs;
-      const responded = activelyTyping ? false : await userRespondedSince(event.transcriptPath, event.mark);
+      const responded = activelyTyping ? false : await userRespondedSince(event.transcriptPath, event.mark, sharedWindow(event.sessionId));
       if (interruptedByPause()) return;
       const gone = await sessionGone(event.sessionId);
       if (interruptedByPause()) return;

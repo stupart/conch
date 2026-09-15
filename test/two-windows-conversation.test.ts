@@ -16,6 +16,9 @@ import {
 import { defaultMcpDependencies } from "../src/mcp.ts";
 import { countCoveredSentences } from "../src/snippet.ts";
 import { registrySnapshot } from "../src/sessions.ts";
+import { appendFileSync } from "node:fs";
+import { createManualReplyListenGuard, ManualReplyInterrupt } from "../src/manual-reply.ts";
+import { promptSince, transcriptMark, userRespondedSince } from "../src/snippet.ts";
 
 /**
  * A8: two windows, one transcript.
@@ -342,5 +345,118 @@ describe("the apps say when a window's conversation is shared", () => {
     expect(stack).toContain("if conversation.shared {");
     expect(stack).toContain('Text("Shared with another window');
     expect(stack.indexOf("if conversation.shared {")).toBeLessThan(stack.indexOf("ForEach(conversation.items)"));
+  });
+});
+
+describe("a reply counts only on its own window's branch (finding 9)", () => {
+  const WINDOW_A = { bridgeSessionId: `session_${BRIDGE_A}` };
+  const WINDOW_B = { bridgeSessionId: `session_${BRIDGE_B}` };
+  // A asked and was answered; B resumed from A's leaf and worked on.
+  const base = () => lines(
+    ...preamble("u1", BRIDGE_A), user("u1", null, "shared question", "10:00", "/Users/t/arch-website"),
+    ...preamble("u1", BRIDGE_A), assistant("a1", "u1", "shared answer", "10:01", "/Users/t/arch-website"),
+    ...preamble("a1", BRIDGE_B), user("u2", "a1", "B asks", "10:05", "/Users/t/arch-swap"),
+    ...preamble("u2", BRIDGE_B), assistant("a2", "u2", "B answer", "10:06", "/Users/t/arch-swap"),
+  );
+  const fromB = () => lines(...preamble("a2", BRIDGE_B), user("u4", "a2", "B asks again", "10:20", "/Users/t/arch-swap"));
+  const fromA = () => lines(...preamble("a1", BRIDGE_A), user("u3", "a1", "A asks", "10:21", "/Users/t/arch-website"));
+
+  async function shared(content = base()) {
+    const root = mkdtempSync(join(tmpdir(), "conch-reply-cursor-"));
+    const path = join(root, "session.jsonl");
+    writeFileSync(path, content.join("\n") + "\n");
+    const mark = await transcriptMark(path);
+    return {
+      path,
+      mark,
+      append: (more: string[]) => appendFileSync(path, more.join("\n") + "\n"),
+      cleanup: () => rmSync(root, { recursive: true, force: true }),
+    };
+  }
+
+  test("the other window's prompt is not this window's reply", async () => {
+    const t = await shared();
+    try {
+      t.append(fromB());
+      expect(await promptSince(t.path, t.mark, WINDOW_A)).toBe(false);
+      expect(await userRespondedSince(t.path, t.mark, WINDOW_A)).toBe(false);
+      expect(await promptSince(t.path, t.mark, WINDOW_B)).toBe(true);
+    } finally { t.cleanup(); }
+  });
+
+  test("this window's own prompt is its reply", async () => {
+    const t = await shared();
+    try {
+      t.append(fromA());
+      expect(await promptSince(t.path, t.mark, WINDOW_A)).toBe(true);
+      expect(await promptSince(t.path, t.mark, WINDOW_B)).toBe(false);
+      // Both windows sent: each sees its own.
+      t.append(fromB());
+      expect(await promptSince(t.path, t.mark, WINDOW_A)).toBe(true);
+      expect(await promptSince(t.path, t.mark, WINDOW_B)).toBe(true);
+    } finally { t.cleanup(); }
+  });
+
+  test("a prompt no exact signal attributes is unknown, never a reply", async () => {
+    // No bridge id in the registry, or none in the file: startedAt would pick
+    // B's new leaf as "the one newer than A", so it is not used.
+    for (const [content, window] of [
+      [base(), { startedAt: ms("09:00") }],
+      [twoWindows(false), { ...WINDOW_A, startedAt: ms("09:00") }],
+    ] as const) {
+      const t = await shared([...content]);
+      try {
+        t.append(lines(...preamble("a4"), user("u9", "a4", "someone asks", "10:30", "/Users/t/arch-swap")));
+        expect(await promptSince(t.path, t.mark, window)).toBe("unknown");
+        expect(await userRespondedSince(t.path, t.mark, window)).toBe(false);
+      } finally { t.cleanup(); }
+    }
+  });
+
+  test("a lone session still counts the whole file", async () => {
+    const t = await shared();
+    try {
+      expect(await promptSince(t.path, t.mark)).toBe(false);
+      t.append(fromB());
+      expect(await promptSince(t.path, t.mark)).toBe(true);
+      expect(await userRespondedSince(t.path, t.mark)).toBe(true);
+    } finally { t.cleanup(); }
+  });
+
+  test("the other window's prompt does not cancel this window's dictation; its own does", async () => {
+    const listen = async (land: () => void) => {
+      const t = await shared();
+      let aborts = 0;
+      let finish!: () => void;
+      const exchange = new Promise<void>((resolve) => (finish = resolve));
+      const guard = createManualReplyListenGuard(
+        { transcriptPath: t.path, mark: t.mark, window: WINDOW_A },
+        { abort: () => void aborts++ },
+        exchange,
+        () => true,
+        () => {},
+        5,
+      );
+      land.call(t);
+      await Bun.sleep(60);
+      return { t, guard, aborts: () => aborts, finish };
+    };
+
+    const other = await listen(function (this: Awaited<ReturnType<typeof shared>>) { this.append(fromB()); });
+    try {
+      expect(other.guard.interrupted).toBe(false);
+      expect(other.aborts()).toBe(0);
+      expect(await other.guard.closeBeforeSubmit()).toBe(true);
+      other.finish();
+      await other.guard.done;
+    } finally { other.t.cleanup(); }
+
+    const own = await listen(function (this: Awaited<ReturnType<typeof shared>>) { this.append(fromA()); });
+    try {
+      expect(own.guard.interrupted).toBe(true);
+      expect(own.aborts()).toBe(1);
+      own.finish();
+      await expect(own.guard.done).rejects.toBeInstanceOf(ManualReplyInterrupt);
+    } finally { own.t.cleanup(); }
   });
 });

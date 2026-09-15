@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "../src/config.ts";
@@ -408,6 +408,68 @@ describe("operation-owned record observations", () => {
  * exchange mid-await. Cut four pinned that as it behaved; these are the
  * flipped pins. Only events that start an exchange reset them now.
  */
+describe("a shared transcript confirms only this window's send (finding 9)", () => {
+  const KEY = "4eb30ede-6c1e-4f5a-9d2b-1f0c2a3b4c5d#39889";
+  const preamble = (bridge: string | undefined, leafUuid: string) => [
+    { type: "last-prompt", leafUuid },
+    ...(bridge ? [{ type: "bridge-session", bridgeSessionId: `cse_${bridge}` }] : []),
+  ];
+  const prompt = (uuid: string, parentUuid: string | null, text: string) =>
+    ({ type: "user", uuid, parentUuid, message: { role: "user", content: text } });
+  const reply = (uuid: string, parentUuid: string) =>
+    ({ type: "assistant", uuid, parentUuid, message: { role: "assistant", content: [{ type: "text", text: "ok" }] } });
+  const windowA = (bridge?: string) => () => ({ sessionId: KEY, status: "idle", ...(bridge ? { bridgeSessionId: `session_${bridge}` } : {}) }) as SessionInfo;
+
+  async function send(options: { sessionId: string; window?: () => SessionInfo; bridges: boolean; lands: "A" | "B" }) {
+    const bridge = (name: string) => (options.bridges ? name : undefined);
+    const path = transcript(...preamble(bridge("A"), "u1"), prompt("u1", null, "shared"), ...preamble(bridge("A"), "u1"), reply("a1", "u1"));
+    const events: RecordObservation[] = [];
+    try {
+      const h = harness({
+        window: options.window,
+        observeRecords: (event) => events.push(event),
+        inject: () => {
+          const landed = options.lands === "A"
+            ? [...preamble(bridge("A"), "a1"), prompt("u3", "a1", "A sends")]
+            : [...preamble(bridge("B"), "a1"), prompt("u2", "a1", "B sends")];
+          appendFileSync(path, landed.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+          return { via: "tmux" };
+        },
+      });
+      const result = await h.voice.handle(inject("hello", { sessionId: options.sessionId, transcriptPath: path }));
+      const last = events.filter(({ kind }) => kind === "delivery").at(-1);
+      return { result, state: last?.state, code: last?.code, said: h.said };
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  }
+
+  test("the other window's prompt does not confirm this window's send", async () => {
+    expect(await send({ sessionId: KEY, window: windowA("A"), bridges: true, lands: "B" }))
+      .toMatchObject({ result: false, state: "unknown", code: "delivery-unconfirmed" });
+  });
+
+  test("this window's own prompt still confirms its send", async () => {
+    expect(await send({ sessionId: KEY, window: windowA("A"), bridges: true, lands: "A" }))
+      .toMatchObject({ result: true, state: "delivered", code: "transcript-advanced" });
+  });
+
+  test("a prompt nothing attributes reports unconfirmed, not delivered and not failed", async () => {
+    for (const scenario of [
+      { window: windowA(), bridges: true },
+      { window: windowA("A"), bridges: false },
+      { window: undefined, bridges: true },
+    ]) {
+      const outcome = await send({ sessionId: KEY, ...scenario, lands: "A" });
+      expect(outcome).toMatchObject({ result: false, state: "unknown", code: "delivery-unattributed" });
+      expect(outcome.said.some((line) => line.includes("didn't send"))).toBe(false);
+    }
+  });
+
+  test("a lone session confirms on any new prompt, as before", async () => {
+    expect(await send({ sessionId: "s1", bridges: true, lands: "B" }))
+      .toMatchObject({ result: true, state: "delivered", code: "transcript-advanced" });
+  });
+});
+
 describe("A14: an immediate interrupt leaves the running exchange's stop and mic alone", () => {
   test("A: a stop followed by an immediate interrupt still stops — the announcement does not play", async () => {
     const registry = deferred<boolean>();
