@@ -53,6 +53,9 @@ struct ConversationStack: View {
             LinkFailureLine(message: $linkFailure)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        // A command, a path or a paragraph can be copied out of the transcript:
+        // on a phone there is no other way to get it into another app.
+        .textSelection(.enabled)
         // A path is a file on the Mac, which the phone cannot open: say so
         // where the tap happened and record it, rather than a tap that does
         // nothing (A13). The phone's one door decides, opens and reports.

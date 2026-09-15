@@ -408,7 +408,8 @@ describe("the phone: the same dead tap, said and recorded", () => {
   test("the deliverable sheet: fetch, text, PDF and page failures say why and are filed; a rendered .md's links take the door", () => {
     const sheet = phone("DeliverableSheet.swift");
     expect(sheet).not.toContain("localFailed");
-    expect(phone("SessionView.swift")).toContain("DeliverableSheet(bridge: bridge, review: review, sessionId: sessionId)");
+    expect(phone("SessionView.swift")).toContain("ReviewSheet(bridge: bridge, talk: talk, sessionId: sessionId)");
+    expect(sheet).toContain("DeliverableSheet(bridge: bridge, review: review, sessionId: sessionId)");
     ordered(
       slice(sheet, "private func fail(_ reason: String) {", "private func unavailableView"),
       'let message = "\\(reason) — \\(review.link ?? "")"',
@@ -425,28 +426,28 @@ describe("the phone: the same dead tap, said and recorded", () => {
       'fail("Couldn\'t fetch this from your Mac: \\(bridge.lastError',
     );
     for (const call of [
-      "BridgedWebView(url: url, onFailure: fail)",
-      "BridgedPDFView(url: url, onFailure: fail)",
+      "BridgedWebView(url: url, page: page, onFailure: fail)",
+      "QuickLookView(url: url, fullScreen: $markingUp, onFailure: fail)",
       "RemoteDocumentView(url: url, renderMarkdown: true, onFailure: fail)",
       "RemoteDocumentView(url: url, renderMarkdown: false, onFailure: fail)",
-      "LocalPageView(url: url, onFailure: fail)",
+      "LocalPageView(url: url, page: page, onFailure: fail)",
     ]) expect(sheet).toContain(call);
     // Text and markdown: the read's own error, not a line that hid it.
     const document = slice(sheet, "private struct RemoteDocumentView", "private struct BridgedWebView");
     expect(document).not.toContain("failed = true");
     ordered(document, "} catch {", "onFailure(error.localizedDescription)");
-    // PDF: PDFKit's nil is said, not left blank.
-    ordered(
-      slice(sheet, "private struct BridgedPDFView", "private final class PageLoadFailure"),
-      "if let document {",
-      "} else {",
-      "onFailure(CocoaError(.fileReadCorruptFile).localizedDescription)",
-    );
-    // A web page and a local page both have a delegate that hears the failure.
+    // A web page and a local page both have a delegate that hears the failure,
+    // and one that opens a link asking for a new window.
     for (const page of [
       slice(sheet, "private struct BridgedWebView", "private struct LocalPageView"),
-      slice(sheet, "private struct LocalPageView", "private struct BridgedPDFView"),
-    ]) ordered(page, "view.navigationDelegate = context.coordinator", "context.coordinator.onFailure = onFailure", "view.load");
+      slice(sheet, "private struct LocalPageView", "private final class PageLoadFailure"),
+    ]) ordered(
+      page,
+      "view.navigationDelegate = context.coordinator",
+      "view.uiDelegate = context.coordinator",
+      "context.coordinator.onFailure = onFailure",
+      "view.load",
+    );
     const delegate = slice(sheet, "private final class PageLoadFailure", "struct LinkFailureLine");
     expect(delegate).toContain("didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {");
     expect(delegate).toContain("didFail navigation: WKNavigation!, withError error: Error) {");
@@ -462,31 +463,24 @@ describe("the phone: the same dead tap, said and recorded", () => {
     expect(sheet).toContain("LinkFailureLine(message: $linkFailure)");
   });
 
-  test("the sheet's image and video say why and are filed as open-deliverable", () => {
+  test("image, PDF and video open in Quick Look, and a file it can't preview says why and is filed", () => {
     const sheet = phone("DeliverableSheet.swift");
-    expect(sheet).toContain("LocalImageView(url: url, onFailure: fail)");
-    expect(sheet).toContain("LocalVideoView(url: url, onFailure: fail)");
-    // Image: ImageIO's nil gets Foundation's reason, through the sheet's `fail`.
-    const image = slice(sheet, "private struct LocalImageView", "private struct LocalVideoView");
-    expect(image).not.toContain('failure = "Couldn\'t load the image from your Mac."');
     ordered(
-      image,
-      "let onFailure: (String) -> Void",
-      "case .unreadable:",
-      'onFailure("Couldn\'t load the image from your Mac: \\(CocoaError(.fileReadCorruptFile).localizedDescription)")',
+      slice(sheet, "case .image, .video, .pdf:", "case .markdown:"),
+      "QuickLookView(url: url, fullScreen: $markingUp, onFailure: fail)",
     );
-    // Video: the player item's failed status is read, and the observation kept alive.
-    expect(sheet).not.toContain("AVPlayer(url: url)");
+    const quickLook = slice(sheet, "private struct QuickLookView", "/// Markdown and text deliverables");
+    // Quick Look draws its own "can't preview" page and reports nothing.
     ordered(
-      slice(sheet, "private struct LocalVideoView", "\n}\n"),
-      "let onFailure: (String) -> Void",
-      "@State private var status: NSKeyValueObservation?",
-      "let item = AVPlayerItem(url: url)",
-      "status = item.observe(\\.status)",
-      "guard item.status == .failed, let error = item.error else { return }",
-      "onFailure(error.localizedDescription)",
-      "player = AVPlayer(playerItem: item)",
+      quickLook,
+      "if !QLPreviewController.canPreview(url as NSURL) {",
+      'onFailure("Quick Look can\'t open this \\(ext) file")',
     );
+    // Full screen is where Share and Markup live; Markup edits the downloaded copy.
+    ordered(quickLook, "let full = QLPreviewController()", "full.delegate = context.coordinator", "controller.present(full, animated: true)");
+    expect(quickLook).toContain(".updateContents");
+    expect(sheet).not.toContain("private struct LocalImageView");
+    expect(sheet).not.toContain("private struct BridgedPDFView");
   });
 
   test("a conversation image that won't download says why on its row and files load-image", () => {

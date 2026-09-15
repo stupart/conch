@@ -5,7 +5,9 @@
 #   ui-snapshot.sh mac <out.png>                The running Mac app draws its own
 #                                               window (`conch shot`; /tmp/*.png only).
 #   ui-snapshot.sh ios <out-dir> [session-id]   A headless simulator renders a fixture:
-#                                               ledger.png, then session.png (its end) and
+#                                               ledger.png, ledger-stale.png (a cold launch with
+#                                               no Mac, drawing what the last launch saved),
+#                                               then session.png (its end) and
 #                                               session-top.png (its start) for the id,
 #                                               and review.png when that row has a review.
 #
@@ -77,6 +79,8 @@ ios)
 
   echo "simulator $udid"
   shoot ledger.png
+  # Its state was saved two seconds into that launch; now no Mac answers.
+  shoot ledger-stale.png -conchFixtureOffline YES
   if [[ -n "$session" ]]; then
     shoot session.png -conchFixtureSession "$session"
     # A session opens at its end; this is the start of the same conversation.

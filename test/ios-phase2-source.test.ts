@@ -73,12 +73,13 @@ describe("iPhone Phase 2 daily controls", () => {
     // gave the most incidental number on screen the most visual weight, on the
     // surface you scan constantly. Tyler: "its a nice to have when u need it
     // feature but not something thats like primary form of data".
-    expect(session).toContain("ContextMeter(usage: context)");
+    // In the session's "…" menu: it took the first line of every conversation.
+    expect(session).toContain('"Context \\(Int((context.proportion * 100).rounded()))% used"');
+    expect(session).not.toContain("ContextMeter(usage: context)");
     expect(ledger).not.toContain("ContextMeter(usage: context, compact: true)");
     expect(ledger).not.toContain("geometry.size.width * usage.proportion");
     // Colour still carries the warning; it just stops shouting otherwise.
-    expect(ledger).toContain("usage.proportion >= 0.80");
-    expect(ledger).toContain("usage.proportion >= 0.95");
+    expect(session).toContain('context.proportion >= 0.80 ? "exclamationmark.triangle"');
 
     // The mark, not the word: the phone spelled out "Claude"/"Codex" in a pill
     // because the iOS catalog had no agent art.
