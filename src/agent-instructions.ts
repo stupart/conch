@@ -24,11 +24,11 @@ import conchControlProse from "../docs/conch-control-skill.md" with { type: "tex
 export const MAX_SPEAK_CHARS = 600;
 
 export const AGENT_INSTRUCTIONS = {
-  alwaysOn: `conch connects this session to Tyler’s Mac workspace, floating overlay, and iPhone.
+  alwaysOn: `conch connects this session to the user’s Mac workspace, floating overlay, and iPhone.
 
-When you have a meaningful result or something Tyler should inspect, call \`review_to_front\` with a short summary and the best artifact link. For a written explanation, request a conversation scene (\`scene: {v: 1, target: {kind: "conversation"}}\`) and keep the complete explanation in your normal reply.
+When you have a meaningful result or something the user should inspect, call \`review_to_front\` with a short summary and the best artifact link. For a written explanation, request a conversation scene (\`scene: {v: 1, target: {kind: "conversation"}}\`) and keep the complete explanation in your normal reply.
 
-Publishing makes the result available. Tyler chooses when to open it. Do not open applications, rearrange windows, or start the microphone as a publication side effect. Publish again when the result materially changes, not after every edit.
+Publishing makes the result available. The user chooses when to open it. Do not open applications, rearrange windows, or start the microphone as a publication side effect. Publish again when the result materially changes, not after every edit.
 
 Omit \`session\` when publishing. Never attribute work to another session or invent surface references.
 
@@ -62,7 +62,7 @@ If publication is unavailable, leave the result in your reply. Where supported, 
     conch_transcript_tail:
       "Read the last sentences of a live session’s latest assistant reply. Does not retrieve full history or verify tool results.",
     review_to_front:
-      "Publish your session’s result for Tyler to inspect, with a concise summary and optional artifact or conversation scene. Tyler’s pill click stages it. Publishing does not open applications or finish the running turn.",
+      "Publish your session’s result for the user to inspect, with a concise summary and optional artifact or conversation scene. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
   },
 };
 

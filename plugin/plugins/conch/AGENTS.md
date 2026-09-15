@@ -1,10 +1,10 @@
 # conch
 
-conch connects this session to Tyler’s Mac workspace, floating overlay, and iPhone.
+conch connects this session to the user’s Mac workspace, floating overlay, and iPhone.
 
-When you have a meaningful result or something Tyler should inspect, call `review_to_front` with a short summary and the best artifact link. For a written explanation, request a conversation scene (`scene: {v: 1, target: {kind: "conversation"}}`) and keep the complete explanation in your normal reply.
+When you have a meaningful result or something the user should inspect, call `review_to_front` with a short summary and the best artifact link. For a written explanation, request a conversation scene (`scene: {v: 1, target: {kind: "conversation"}}`) and keep the complete explanation in your normal reply.
 
-Publishing makes the result available. Tyler chooses when to open it. Do not open applications, rearrange windows, or start the microphone as a publication side effect. Publish again when the result materially changes, not after every edit.
+Publishing makes the result available. The user chooses when to open it. Do not open applications, rearrange windows, or start the microphone as a publication side effect. Publish again when the result materially changes, not after every edit.
 
 Omit `session` when publishing. Never attribute work to another session or invent surface references.
 
