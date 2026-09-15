@@ -15,6 +15,8 @@ function settledProcess(stdout = "", code = 0): SessionLifecycleProcess {
   };
 }
 
+const identityFor = (pid: number) => ({ pid, birth: "1000.000001", birthTimeMs: 1_000_000.001, executable: "/opt/bin/claude", ttyDevice: 7 });
+
 describe("native Terminal session lifecycle", () => {
   test("builds new and resumed agent commands without tmux", () => {
     expect(terminalSessionCommand({ backend: "claude", cwd: "/tmp/a b" }))
@@ -55,6 +57,7 @@ describe("native Terminal session lifecycle", () => {
     let argv: string[] = [];
     const alive = [true, false];
     await closeTerminalSession(4321, {
+      expectedIdentity: identityFor(4321), processIdentity: identityFor,
       ttyForPid: async () => "ttys007",
       pidIsAlive: async () => alive.shift() ?? false,
       sleep: async () => {},
@@ -70,16 +73,18 @@ describe("native Terminal session lifecycle", () => {
 
   test("a helper timeout cancels osascript but never signals the agent pid", async () => {
     let cancelled = false;
-    const never = new Promise<number>(() => {});
+    let observedExit!: (code: number) => void;
+    const exited = new Promise<number>((resolve) => { observedExit = resolve; });
     await expect(closeTerminalSession(777, {
+      expectedIdentity: identityFor(777), processIdentity: identityFor,
       ttyForPid: async () => "ttys009",
       automationTimeoutMs: 1,
       spawn() {
         return {
-          exited: never,
+          exited,
           stdout: null,
           stderr: null,
-          cancel: () => { cancelled = true; },
+          cancel: () => { cancelled = true; observedExit(0); },
         };
       },
     })).rejects.toThrow("automation timed out");
@@ -88,6 +93,7 @@ describe("native Terminal session lifecycle", () => {
 
   test("success is withheld when Ctrl-D does not produce a clean exit", async () => {
     await expect(closeTerminalSession(888, {
+      expectedIdentity: identityFor(888), processIdentity: identityFor,
       ttyForPid: async () => "ttys010",
       pidIsAlive: async () => true,
       sleep: async () => {},

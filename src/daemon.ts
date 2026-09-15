@@ -1,4 +1,5 @@
 import { SessionReconciler } from "./session-reconciler.ts";
+import { bindSessionProcess, readProcessIdentity } from "./process-identity.ts";
 import {
   createControlServer,
   acquireControlOwnership,
@@ -121,7 +122,7 @@ import {
 import { isWindowKey } from "./window-key.ts";
 import { readSessionContextUsage, type SessionContextUsage } from "./context-meter.ts";
 import { appendConchError } from "./app-errors.ts";
-import { attachTerminalSession, closeSession, startTerminalSession } from "./session-lifecycle.ts";
+import { attachTerminalSession, closeSession, refreshSessionForClose, startTerminalSession } from "./session-lifecycle.ts";
 import { SessionStartOverlay } from "./session-start-overlay.ts";
 import { TerminalComposer } from "./terminal-composer.ts";
 import {
@@ -182,7 +183,7 @@ import {
 } from "./status.ts";
 import {
   addressParkedWindow,
-  registrySnapshot,
+  registrySnapshot as readRegistrySnapshot,
   sessionGoneFromSnapshot,
   sessionLabel,
   findTranscript,
@@ -672,6 +673,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   let panelOrder: string[] = [];
   let panelLabels = new Map<string, string>();
   let panelSessions = new Map<string, SessionInfo>();
+  const registrySnapshot = async (claudeDir: string): Promise<Awaited<ReturnType<typeof readRegistrySnapshot>>> => {
+    const snapshot = await readRegistrySnapshot(claudeDir);
+    return snapshot ? { ...snapshot, infos: snapshot.infos.map((session) =>
+      bindSessionProcess(session, panelSessions.get(session.sessionId), readProcessIdentity)) } : null;
+  };
   let numberedSessionRows: NumberedPanelSessionRow[] = [];
   let selectedId: string | null = null;
   let cursorAuto = true;
@@ -1738,13 +1744,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     return true;
   };
   const closeLiveSession = async (sessionId: string): Promise<void> => {
-    let session = panelSessions.get(sessionId);
-    if (!session) {
-      session = (await registrySnapshot(cfg.claudeDir))?.infos.find(
-        (candidate) => candidate.sessionId === sessionId,
-      );
-    }
-    if (!session) throw new Error("session is not live");
+    const session = await refreshSessionForClose(sessionId, panelSessions.get(sessionId), async () =>
+      (await registrySnapshot(cfg.claudeDir))?.infos ?? null);
     if (!session.pid && !session.jobId) {
       if (isMissingCodexPid(session)) {
         reportedMissingCodexPid.add(session.sessionId);

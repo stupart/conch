@@ -1,3 +1,4 @@
+import type { ProcessIdentity } from "./process-identity.ts";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -86,6 +87,8 @@ export interface SessionInfo {
   nameSource?: "user" | "derived";
   cwd?: string;
   pid?: number;
+  /** Daemon-captured process binding; never inferred from PID liveness alone. */
+  processIdentity?: ProcessIdentity;
   /** Claude Code's own live state: "busy" | "idle" | "shell" | "waiting" (authoritative for working-vs-waiting; see `registryToPanel`). */
   status?: string;
   /** epoch-ms the status was last set — compared against a latched panel state to pick the newer truth. */

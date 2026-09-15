@@ -54,7 +54,7 @@ export function writeIdentity(
     startedAt: identity.startedAt ?? Date.now(),
   };
   try {
-    mkdirSync(join(homedir(), ".cache/conch"), { recursive: true });
+    mkdirSync(join(path, ".."), { recursive: true });
     writeFileSync(path, JSON.stringify(record) + "\n");
   } catch {
     // Identity is an aid, never a dependency. A daemon that cannot write it
