@@ -52,7 +52,7 @@ Conch today is an observer and terminal operator, not an agent host:
 - Transcript folding recognizes commands, file changes, reads, searches, web,
   subagents, plans, questions and MCP calls (`src/conversation.ts:303-359`). It
   observes an invocation, not the catalog from which that invocation came.
-- Conch's own MCP server implements nine tools and advertises only the MCP
+- Conch's own MCP server implements eleven tools and advertises only the MCP
   `tools` capability; it does not expose resources or prompts
   (`src/mcp.ts:34-35`, `src/mcp.ts:121-250`, `src/mcp.ts:947-966`).
 - Conch now starts or resumes a terminal session, but the launch contract has
@@ -221,7 +221,7 @@ the plugin can apply to the selected host surface. Let users install, update,
 enable, disable and remove at an explicit scope, inspect the manifest and data
 directory, and copy the exact recovery command. Conch's own plugin should get a
 health check: manifests present, correct version, skill available, MCP declared,
-nine tools advertised, and hooks separately wired where required.
+eleven tools advertised, and hooks separately wired where required.
 
 **Running-session truth.** In Claude, skill text changes are live, but other
 plugin component changes require `/reload-plugins` or restart. Enabling or
@@ -385,7 +385,7 @@ not passive file reading.
 shows a readable server/tool label, arguments summary, completion and result
 (`src/conversation.ts:303-359`, `src/conversation.ts:559-570`). It does not keep
 schemas, descriptions, annotations, tool policy or a never-used catalog. Its own
-server defines nine schemas but exports no catalog into panel state
+server defines eleven schemas but exports no catalog into panel state
 (`src/mcp.ts:115-250`).
 
 **Good UI.** Under each server, show tool name/description, input shape in human

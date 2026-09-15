@@ -5,6 +5,8 @@ import { normalizeClaudeRecord } from "./records-claude.ts";
 import { normalizeCodexRecord } from "./records-codex.ts";
 import { RECORD_MIGRATIONS } from "./records-schema.ts";
 import { recordValue } from "./records-sanitize.ts";
+import { RecordsHistory } from "./records-history.ts";
+import type { HistoryItemRequest, HistoryPageRequest } from "./history.ts";
 import {
   completeRecordLines, inspectRecordSource, recordFingerprint, RECORD_PARSER_VERSION, SOURCE_PROBE_BYTES,
   type RecordSourceRead, type StoredRecordSource,
@@ -33,6 +35,7 @@ const nonempty = (value: unknown): value is string => typeof value === "string" 
 export class RecordStore {
   readonly path: string;
   private readonly db: Database;
+  private readonly history: RecordsHistory;
 
   constructor(options: { configDir: string }) {
     if (!nonempty(options.configDir)) throw new Error("record store requires a config directory");
@@ -66,6 +69,7 @@ export class RecordStore {
       for (const suffix of ["", "-wal", "-shm"]) {
         if (existsSync(this.path + suffix)) chmodSync(this.path + suffix, 0o600);
       }
+      this.history = new RecordsHistory(this.db);
     } catch (error) {
       this.db.close();
       throw error;
@@ -190,6 +194,7 @@ export class RecordStore {
       const framed = completeRecordLines(bytes, plan.from);
       this.ensureSession(session);
       if (plan.change === "rewrite") this.clearProjection(session.id);
+      else if (plan.change === "rotation") this.db.query("UPDATE sessions SET history_epoch=history_epoch+1 WHERE id=?").run(session.id);
       const state = plan.change === "append" || plan.change === "rotation" ? previous!.state : {};
       const offset = plan.from + framed.consumed;
       const checkpoint = Buffer.concat([plan.from ? read.checkpoint : new Uint8Array(), bytes.subarray(0, framed.consumed)])
@@ -235,7 +240,7 @@ export class RecordStore {
     if (existing && (existing.owner_device_id !== session.ownerDeviceId || existing.provider !== session.provider || existing.native_id !== session.nativeId)) {
       throw new Error("session identity cannot change");
     }
-    this.db.query(`INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    this.db.query(`INSERT INTO sessions (id,owner_device_id,provider,native_id,title,cwd,parent_native_id,fork_native_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET title=COALESCE(excluded.title,title), cwd=COALESCE(excluded.cwd,cwd),
       parent_native_id=COALESCE(excluded.parent_native_id,parent_native_id), fork_native_id=COALESCE(excluded.fork_native_id,fork_native_id)`)
       .run(session.id, session.ownerDeviceId, session.provider, session.nativeId, session.title ?? null, session.cwd ?? null, session.parentNativeId ?? null, session.forkNativeId ?? null);
@@ -268,7 +273,7 @@ export class RecordStore {
           turn.startedAt ?? null, turn.endedAt ?? null, turn.status ?? null, json(turn.context));
     }
     for (const [selector, item] of records.items.entries()) {
-      this.db.query(`INSERT INTO items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      this.db.query(`INSERT INTO items (id,session_id,turn_id,native_id,parent_id,kind,role,text,content_json,at,order_key,revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         ON CONFLICT(id) DO UPDATE SET turn_id=COALESCE(excluded.turn_id,turn_id), parent_id=COALESCE(excluded.parent_id,parent_id),
         native_id=COALESCE(excluded.native_id,native_id),
         text=COALESCE(excluded.text,text), content_json=COALESCE(excluded.content_json,content_json), revision=revision+1
@@ -279,7 +284,7 @@ export class RecordStore {
           OR (excluded.parent_id IS NOT NULL AND items.parent_id IS NOT excluded.parent_id)`)
         .run(item.id, session.id, item.turnId ?? null, item.nativeId ?? null, item.parentId ?? null, item.kind,
           item.role ?? null, item.text ?? null, json(item.content), item.at ?? null,
-          `${source.id}:${String(source.generation).padStart(8, "0")}:${String(offset).padStart(16, "0")}:${selector}`);
+          `${source.id}:${String(source.generation).padStart(8, "0")}:${String(offset).padStart(16, "0")}:${String(selector).padStart(8, "0")}`);
       // Keep the original file identity even after the cursor follows a rotated file.
       this.db.query("INSERT OR IGNORE INTO item_sources VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(item.id, source.id, source.path, source.device, source.inode, source.generation, offset, length, selector);
@@ -311,6 +316,7 @@ export class RecordStore {
 
   /** Shared turns/tools can span sources. A rewrite invalidates this session's projection, not its journal. */
   private clearProjection(sessionId: string): void {
+    this.db.query("UPDATE sessions SET history_epoch=history_epoch+1, change_sequence=0 WHERE id=?").run(sessionId);
     this.db.query("DELETE FROM items WHERE session_id = ?").run(sessionId);
     for (const table of ["tool_calls", "responses", "turns"] as const) this.db.query(`DELETE FROM ${table} WHERE session_id = ?`).run(sessionId);
     this.db.query(`UPDATE sources SET generation=generation+1, committed_offset=0, prefix_length=0,
@@ -358,6 +364,14 @@ export class RecordStore {
 
   counts(): RecordCounts {
     return Object.fromEntries(TABLES.map((table) => [table, (this.db.query(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n])) as RecordCounts;
+  }
+
+  historyPage(request: HistoryPageRequest, ownerDeviceId: string) {
+    return this.db.transaction(() => this.history.page(request, ownerDeviceId))();
+  }
+
+  historyItem(request: HistoryItemRequest, ownerDeviceId: string) {
+    return this.db.transaction(() => this.history.item(request, ownerDeviceId))();
   }
 
   close(): void { this.db.close(); }

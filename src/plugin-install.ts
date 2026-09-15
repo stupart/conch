@@ -66,7 +66,7 @@ interface SmokeResult {
   error?: string;
 }
 
-const EXPECTED_MCP_TOOL_COUNT = 9;
+const EXPECTED_MCP_TOOL_COUNT = 11;
 
 /**
  * What every Codex session carries FOREVER.

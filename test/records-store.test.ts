@@ -49,10 +49,10 @@ function batch(bytes: Uint8Array, previous?: StoredRecordSource, overrides: Part
 test("records migrate once, use WAL, and keep the database and sidecars owner-only", () => {
   const store = open();
   store.appendReceipt(receipt);
-  expect(rows(store, "PRAGMA user_version")[0].user_version).toBe(2);
+  expect(rows(store, "PRAGMA user_version")[0].user_version).toBe(RECORD_MIGRATIONS.length);
   expect(rows(store, "PRAGMA journal_mode")[0].journal_mode).toBe("wal");
   expect(rows(store, "SELECT name FROM sqlite_master WHERE type='table'").map((row) => row.name).sort())
-    .toEqual(["sessions", "sources", "turns", "items", "item_sources", "tool_calls", "responses", "receipts"].sort());
+    .toEqual(["sessions", "sources", "turns", "items", "item_sources", "tool_calls", "responses", "receipts", "history_metadata"].sort());
   for (const suffix of ["", "-wal", "-shm"]) expect(statSync(store.path + suffix).mode & 0o777).toBe(0o600);
   expect(statSync(join(store.path, "..")).mode & 0o777).toBe(0o700);
   const reopened = open(join(store.path, "..", ".."));
@@ -69,7 +69,7 @@ test("coverage migration upgrades the foundation without changing its receipt jo
     .run(receipt.id, receipt.sessionId, receipt.actionId, receipt.kind, receipt.state, receipt.observedAt);
   db.close();
   const store = open(dir);
-  expect(rows(store, "PRAGMA user_version")[0].user_version).toBe(2);
+  expect(rows(store, "PRAGMA user_version")[0].user_version).toBe(RECORD_MIGRATIONS.length);
   expect(store.receipts(receipt.actionId)).toEqual([receipt]);
 });
 

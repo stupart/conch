@@ -1,10 +1,14 @@
 import { RecordsClient, type RecordsIngestionOptions, type RecordsPriorityHints } from "./records-client.ts";
 import type { RecordReceipt } from "./records-types.ts";
+import { historyError, historyOff, validateHistoryRequest, validateHistoryResponse,
+  type HistoryItemRequest, type HistoryPageRequest, type HistoryRequest, type HistoryResponse } from "./history.ts";
 
 export interface RecordsRuntimeClient {
   startIngestion(options: RecordsIngestionOptions): Promise<void>;
   prioritize(hints: RecordsPriorityHints): Promise<void>;
   appendReceipt(receipt: RecordReceipt): Promise<boolean>;
+  historyPage(request: HistoryPageRequest, ownerDeviceId: string): Promise<HistoryResponse>;
+  historyItem(request: HistoryItemRequest, ownerDeviceId: string): Promise<HistoryResponse>;
   close(): Promise<void>;
   terminate(): Promise<void>;
 }
@@ -44,6 +48,7 @@ export class RecordsRuntime {
   private receiptFlight?: Promise<void>;
   private activeReceipt?: QueuedReceipt;
   private receipts: QueuedReceipt[] = [];
+  private historyRequests = 0;
   private terminated = new WeakSet<RecordsRuntimeClient>();
   private readonly receiptLimit: number;
   private readonly closeTimeoutMs: number;
@@ -117,6 +122,40 @@ export class RecordsRuntime {
       this.receipts.push({ receipt: safe, resolve });
       this.pumpReceipts();
     });
+  }
+
+  historyPage(request: HistoryPageRequest): Promise<HistoryResponse> {
+    return this.readHistory({ ...request, kind: "history-page" });
+  }
+
+  historyItem(request: HistoryItemRequest): Promise<HistoryResponse> {
+    return this.readHistory({ ...request, kind: "history-item" });
+  }
+
+  private async readHistory(request: HistoryRequest): Promise<HistoryResponse> {
+    if (!this.enabled || this.closed) return historyOff();
+    const parsed = validateHistoryRequest(request);
+    if (!parsed.ok) return historyError("invalid-request", parsed.err);
+    const client = this.client;
+    if (!client || !this.ingesting) return historyError("unavailable", "history worker is unavailable");
+    // Readers cannot grow the worker's RPC queue without bound during a long backfill.
+    if (this.historyRequests >= 8) return historyError("busy", "history has too many pending reads; retry shortly");
+    this.historyRequests++;
+    try {
+      const { kind, ...query } = parsed.value;
+      const response = kind === "history-page"
+        ? await client.historyPage(query as HistoryPageRequest, this.options.ownerDeviceId)
+        : await client.historyItem(query as HistoryItemRequest, this.options.ownerDeviceId);
+      if (!this.enabled || this.closed) return historyOff();
+      if (this.client !== client) return historyError("unavailable", "history worker changed; retry the read");
+      const checked = validateHistoryResponse(response);
+      if (checked.ok && checked.value.kind !== kind && checked.value.kind !== "history-error" && checked.value.kind !== "history-off") {
+        return historyError("unavailable", "history response did not match the request");
+      }
+      return checked.ok ? checked.value : historyError("response-too-large", "history worker returned an invalid or oversized response");
+    } catch {
+      return !this.enabled || this.closed ? historyOff() : historyError("unavailable", "history read failed");
+    } finally { this.historyRequests--; }
   }
 
   private report(message: string): void {

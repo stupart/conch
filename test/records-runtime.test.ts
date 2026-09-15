@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { RecordsRuntime, type RecordsRuntimeClient } from "../src/records-runtime.ts";
 import type { RecordsIngestionOptions, RecordsPriorityHints } from "../src/records-client.ts";
 import type { RecordReceipt } from "../src/records-types.ts";
+import { historyOff } from "../src/history.ts";
 
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -34,6 +35,8 @@ class FakeClient implements RecordsRuntimeClient {
     return this.onReceipt ? this.onReceipt(value) : true;
   }
   async close() { this.events.push("close"); await this.onClose?.(); }
+  async historyPage() { return historyOff(); }
+  async historyItem() { return historyOff(); }
   async terminate() { this.events.push("terminate"); }
 }
 
@@ -47,6 +50,8 @@ describe("records runtime", () => {
       await runtime.setEnabled(false);
       runtime.prioritize(hints("session"));
       expect(await runtime.appendReceipt(receipt("off"))).toBe(false);
+      expect(await runtime.historyPage({ session: "indexed-session" })).toEqual(historyOff());
+      expect(await runtime.historyItem({ session: "indexed-session", item: "item" })).toEqual(historyOff());
       await runtime.close();
       expect(existsSync(configDir)).toBe(false);
     } finally {

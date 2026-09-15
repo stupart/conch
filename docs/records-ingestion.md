@@ -94,7 +94,8 @@ The full test suite and TypeScript check run with temporary config, log and IPC
 paths. Mutation checks sabotage priority, batch bounds, replay, the off gate and
 receipt settlement, then restore the exact source using Python string replacement.
 
-PR 7 supplies paged history and its clients. Atlas, arbitrary-edit hashing, retention
+The [PR 7a API](records-paging.md) supplies paged history; PR 7b adds its app clients.
+Atlas, arbitrary-edit hashing, retention
 policy, attachment transport and new audio completion acknowledgements remain later
 work. The real record store is neither enabled nor used during validation.
 

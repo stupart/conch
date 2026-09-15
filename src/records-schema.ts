@@ -81,4 +81,31 @@ ALTER TABLE sources ADD COLUMN coverage_error TEXT;
 ALTER TABLE sources ADD COLUMN coverage_updated_at REAL NOT NULL DEFAULT 0;
 ALTER TABLE sources ADD COLUMN replay_required INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX sources_session ON sources(session_id, id);
+`, String.raw`
+ALTER TABLE sessions ADD COLUMN history_epoch INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE sessions ADD COLUMN change_sequence INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE items ADD COLUMN created_sequence INTEGER NOT NULL DEFAULT 0;
+UPDATE items SET order_key=rtrim(order_key,'0123456789')||printf('%08d',CAST(substr(order_key,length(rtrim(order_key,'0123456789'))+1) AS INTEGER));
+WITH ranked AS (
+  SELECT id, row_number() OVER (PARTITION BY session_id ORDER BY order_key,id) AS sequence FROM items
+)
+UPDATE items SET created_sequence=(SELECT sequence FROM ranked WHERE ranked.id=items.id);
+UPDATE sessions SET change_sequence=COALESCE((SELECT max(created_sequence) FROM items WHERE session_id=sessions.id),0);
+CREATE INDEX items_session_created ON items(session_id,created_sequence);
+CREATE INDEX items_session_history_order ON items(session_id,COALESCE(at,0),order_key,id);
+CREATE INDEX sessions_owner_native ON sessions(owner_device_id,native_id);
+CREATE INDEX tool_calls_call_item ON tool_calls(session_id,call_item_id);
+CREATE INDEX tool_calls_result_item ON tool_calls(session_id,result_item_id);
+CREATE TABLE history_metadata (key TEXT PRIMARY KEY, value BLOB NOT NULL);
+INSERT INTO history_metadata VALUES ('cursor-key',randomblob(32));
+CREATE TRIGGER items_history_insert AFTER INSERT ON items BEGIN
+  UPDATE sessions SET change_sequence=change_sequence+1 WHERE id=NEW.session_id;
+  UPDATE items SET created_sequence=(SELECT change_sequence FROM sessions WHERE id=NEW.session_id) WHERE id=NEW.id;
+END;
+CREATE TRIGGER items_history_revision AFTER UPDATE OF revision ON items WHEN NEW.revision<>OLD.revision BEGIN
+  UPDATE sessions SET change_sequence=change_sequence+1 WHERE id=NEW.session_id;
+END;
+CREATE TRIGGER tools_history_name AFTER UPDATE OF name ON tool_calls WHEN NEW.name IS NOT OLD.name BEGIN
+  UPDATE sessions SET change_sequence=change_sequence+1 WHERE id=NEW.session_id;
+END;
 `];

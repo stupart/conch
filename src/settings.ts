@@ -1,5 +1,6 @@
 import { connect } from "node:net";
 import { ControlFrameReader, encodeControlFrame } from "./control-framing.ts";
+import { validateHistoryRequest, validateHistoryResponse, type HistoryRequest, type HistoryResponse } from "./history.ts";
 import {
   closeSync,
   existsSync,
@@ -773,6 +774,7 @@ export type SessionControlMessage =
   | { kind: "session-command"; sessionId: string; command: "attach" };
 
 export type RuntimeControlMessage =
+  | HistoryRequest
   | { kind: "resumable"; query?: string; limit?: number }
   | {
     kind: "agent-capabilities";
@@ -893,6 +895,7 @@ export interface PairingOpen {
 }
 
 export type RuntimeControlResponse =
+  | HistoryResponse
   | { kind: "resumable"; sessions: ResumableSession[]; complete: boolean }
   | { kind: "agent-capabilities"; inventory: AgentCapabilitiesRead }
   | {
@@ -973,6 +976,7 @@ export function isControlMessageCandidate(value: unknown): boolean {
     || value.kind === "unset-config"
     || value.kind === "session-command"
     || value.kind === "resumable"
+    || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "agent-capabilities"
     || value.kind === "session-start"
     || value.kind === "session-close"
@@ -1092,6 +1096,7 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
   if (!record(value) || typeof value.kind !== "string") {
     return { ok: false, err: "runtime control message must be a JSON object with a kind" };
   }
+  if (value.kind === "history-page" || value.kind === "history-item") return validateHistoryRequest(value);
   if (value.kind === "resumable") {
     let query: string | undefined;
     if (value.query !== undefined) {
@@ -1306,6 +1311,7 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
   if (value.kind === "session-command") return validateSessionControlMessage(value);
   if (
     value.kind === "resumable"
+    || value.kind === "history-page" || value.kind === "history-item"
     || value.kind === "agent-capabilities"
     || value.kind === "session-start"
     || value.kind === "session-close"
@@ -1332,6 +1338,7 @@ export function validateControlMessage(value: unknown): ParseResult<AnyControlMe
 
 export function validateControlResponse(value: unknown): ParseResult<ControlResponse> {
   if (!record(value) || typeof value.kind !== "string") return { ok: false, err: "invalid control response" };
+  if (["history-page", "history-item", "history-off", "history-error"].includes(value.kind)) return validateHistoryResponse(value);
   if (value.kind === "agent-capabilities") {
     return isAgentCapabilitiesRead(value.inventory)
       ? { ok: true, value: { kind: "agent-capabilities", inventory: value.inventory } }

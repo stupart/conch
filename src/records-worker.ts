@@ -33,6 +33,8 @@ try {
           case "receipts": value = store.receipts(...request.args); break;
           case "reindex": value = store.reindex(...request.args); break;
           case "counts": value = store.counts(); break;
+          case "historyPage": value = store.historyPage(...request.args); break;
+          case "historyItem": value = store.historyItem(...request.args); break;
           case "startIngestion":
             if (indexer) throw new Error("record ingestion already started");
             indexer = new RecordsIndexer(store, request.args[0]);

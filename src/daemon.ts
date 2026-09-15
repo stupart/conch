@@ -1,7 +1,7 @@
 import { SessionReconciler } from "./session-reconciler.ts";
 import { RecordsRuntime } from "./records-runtime.ts";
 import { createRecordOperation, createRecordReceiptObserver, type RecordObserver } from "./records-receipts.ts";
-import { recordSessionFor } from "./records-routing.ts";
+import { historySessionAlias, recordSessionFor } from "./records-routing.ts";
 import type { RecordsPriorityHints } from "./records-indexer.ts";
 import { bindSessionProcess, readProcessIdentity } from "./process-identity.ts";
 import {
@@ -2019,6 +2019,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     isDismissed: (sessionId) => dismissedSessionIds.has(sessionId),
   };
   const runtimeControlDispatchOptions: RuntimeControlDispatchOptions = {
+    historyPage: (message) => records.historyPage({ ...message,
+      session: historySessionAlias(ownerDeviceId, message.session, panelSessions.get(message.session)) }),
+    historyItem: (message) => records.historyItem({ ...message,
+      session: historySessionAlias(ownerDeviceId, message.session, panelSessions.get(message.session)) }),
     listResumable: (message) => readResumableSessionsResult({
       ...(message.query === undefined ? {} : { query: message.query }),
       ...(message.limit === undefined ? {} : { limit: message.limit }),

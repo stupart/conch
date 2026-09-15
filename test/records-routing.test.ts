@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { recordSessionFor } from "../src/records-routing.ts";
+import { historySessionAlias, recordSessionFor } from "../src/records-routing.ts";
 import { recordKey } from "../src/records-types.ts";
 
 test("two window routes for one native session share a record identity", () => {
@@ -22,4 +22,13 @@ test("Claude sidechains use the same parent-scoped identity as discovery", () =>
     transcriptPath: "/fixture/projects/project/parent/subagents/agent-short.jsonl" }, { sessionId: "agent:short" });
   expect(found?.nativeId).toBe("parent/agent-short");
   expect(found?.parentNativeId).toBe("parent");
+});
+
+test("history translates known window aliases without requiring historical sessions to be live", () => {
+  expect(historySessionAlias("device", "native#1", { sessionId: "native#1", agentSessionId: "native", backend: "codex" }))
+    .toBe(recordKey("device", "codex", "native"));
+  expect(historySessionAlias("device", "closed-native")).toBe("closed-native");
+  expect(historySessionAlias("device", "unknown#1")).toBe("unknown#1");
+  const remote = recordKey("remote-device", "claude", "native");
+  expect(historySessionAlias("device", remote, { sessionId: remote, agentSessionId: "native", backend: "claude" })).toBe(remote);
 });
