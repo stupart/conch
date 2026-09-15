@@ -143,7 +143,9 @@ const HOP_BY_HOP_HEADERS = new Set([
   "transfer-encoding",
   "upgrade",
 ]);
-const RESPONSE_CACHE_LIMIT = 4096;
+// Replies one phone session may leave in the retry cache before the Mac rekeys
+// so the phone can retire them (see RelayResponseCache).
+export const RELAY_RESPONSE_CACHE_LIMIT = 4096;
 const CACHED_RESPONSE_MAX_BYTES = 64 * 1024;
 const RELAY_HEADER_MAX_BYTES = 16 * 1024;
 const RELAY_HEADER_MAX_COUNT = 64;
@@ -168,19 +170,17 @@ const RELAY_REORDER_WINDOW = 64;
 // INJECT_DELIVERY_WAIT_MS).
 const RELAY_DELIVERY_HEAD_START_MS = 250;
 
-/** A phone inject that asked to hear when its keystrokes landed. */
-function awaitsDelivery(path: string, body: Uint8Array): boolean {
-  if (path !== "/control") return false;
+/** The /control message a POST carries, if it is one. */
+function controlMessage(path: string, body: Uint8Array): { type?: unknown; kind?: unknown; awaitDelivery?: unknown } | null {
+  if (path !== "/control") return null;
   try {
-    const value = JSON.parse(new TextDecoder().decode(body)) as { type?: unknown; awaitDelivery?: unknown };
-    return value.type === "inject" && value.awaitDelivery === true;
+    const value = JSON.parse(new TextDecoder().decode(body)) as unknown;
+    return value && typeof value === "object" ? value : null;
   } catch {
-    return false;
+    return null;
   }
 }
 const RELAY_MAX_STATE_BYTES = 2 * 1024 * 1024;
-
-class RelayResponseCacheFullError extends Error {}
 
 function parseRequestPayload(opened: OpenedRelayFrame): RelayRequestPayload {
   if (opened.header.kind !== "request") throw new Error("expected relay request");
@@ -285,47 +285,77 @@ class PrioritySender {
   }
 }
 
-export class RelayResponseCache {
-  readonly #completed = new Map<string, CachedRelayResponse>();
-  readonly #inflight = new Map<string, { fingerprint: string; result: Promise<CachedRelayResponse> }>();
+interface RelayCacheEntry {
+  fingerprint: string;
+  /** The latest phone session in which the Mac received this ID. */
+  epoch: number;
+  /** Set once the mutation starts; cleared if it fails so a retry runs it again. */
+  result?: Promise<CachedRelayResponse>;
+}
 
-  get(id: string, fingerprint: string): CachedRelayResponse | null {
-    const cached = this.#completed.get(id);
-    if (!cached) return null;
-    if (cached.fingerprint !== fingerprint) throw new Error("relay request ID collision");
-    return cached;
+/**
+ * Runs each phone mutation once per request ID, and replays its reply when the
+ * phone resends that ID after a lost response.
+ *
+ * Entries retire by session epoch, never by age or count. The phone keeps a
+ * request's ID only while that request is pending, and every new session
+ * re-sends all of its pending requests in the order they were queued, before
+ * anything newer (RelayTransport.swift: establishSession resets pending, then
+ * flushPending walks `order`). The Mac dispatches a session's frames strictly
+ * in sequence. So when the Mac first sees a new ID in session S, any older
+ * request the phone still holds has already arrived in S ahead of it and been
+ * stamped with epoch S; an entry still stamped with an earlier epoch belongs
+ * to a request the phone has finished or dropped and will never send again.
+ * Old ciphertext can't bring one back either: session keys are fresh per
+ * handshake, and within a session the replay window rejects repeats.
+ */
+export class RelayResponseCache {
+  readonly #entries = new Map<string, RelayCacheEntry>();
+  #epoch = 0;
+
+  /** A new phone session: requests received from here on carry this epoch. */
+  beginEpoch(): number {
+    return ++this.#epoch;
   }
 
-  async execute(
-    id: string,
-    fingerprint: string,
+  get size(): number {
+    return this.#entries.size;
+  }
+
+  /**
+   * Record a received mutation. Must run in the order the session delivered
+   * its frames, before the request waits behind earlier mutations.
+   * `overLimit` says this session alone has outgrown the cache.
+   */
+  admit(id: string, fingerprint: string, epoch: number): { entry: RelayCacheEntry; overLimit: boolean } {
+    const known = this.#entries.get(id);
+    if (known) {
+      if (known.fingerprint !== fingerprint) throw new Error("relay request ID collision");
+      known.epoch = Math.max(known.epoch, epoch);
+      return { entry: known, overLimit: false };
+    }
+    for (const [key, entry] of this.#entries) {
+      if (entry.epoch < epoch) this.#entries.delete(key);
+    }
+    const entry: RelayCacheEntry = { fingerprint, epoch };
+    this.#entries.set(id, entry);
+    return { entry, overLimit: this.#entries.size > RELAY_RESPONSE_CACHE_LIMIT };
+  }
+
+  /** Run an admitted mutation at most once; a retry gets the same reply. */
+  execute(
+    entry: RelayCacheEntry,
     operation: () => Promise<CachedRelayResponse>,
   ): Promise<CachedRelayResponse> {
-    const completed = this.get(id, fingerprint);
-    if (completed) return completed;
-    const inflight = this.#inflight.get(id);
-    if (inflight) {
-      if (inflight.fingerprint !== fingerprint) throw new Error("relay request ID collision");
-      return inflight.result;
+    if (!entry.result) {
+      const result = operation();
+      entry.result = result;
+      result.catch(() => {
+        if (entry.result === result) entry.result = undefined;
+      });
     }
-    // Never evict an accepted mutation while this daemon lives: a relay can
-    // delay a response arbitrarily, so TTL/LRU eviction would let the same ID
-    // execute again later. At the hard bound, fail new mutations before their
-    // handler runs; the phone keeps its draft and session state is unchanged.
-    if (this.#completed.size >= RESPONSE_CACHE_LIMIT) {
-      throw new RelayResponseCacheFullError("relay mutation dedupe cache is full");
-    }
-    const result = operation();
-    this.#inflight.set(id, { fingerprint, result });
-    try {
-      const response = await result;
-      this.#completed.set(id, response);
-      return response;
-    } finally {
-      this.#inflight.delete(id);
-    }
+    return entry.result;
   }
-
 }
 
 /** One authenticated E2E session, independent of its WebSocket lifecycle. */
@@ -334,6 +364,7 @@ export class MacRelayPeer {
   readonly #sender = new PrioritySender();
   #cipher: RelaySessionCipher | null = null;
   #generation = 0;
+  #epoch = 0;
   #lastAuthenticatedAt = 0;
   #stateSink: PhoneStateSink | null = null;
   #currentPhoneChallenge: string | null = null;
@@ -502,6 +533,7 @@ export class MacRelayPeer {
       this.#currentPhoneChallenge = challengeId;
       this.#sessionProven = false;
       this.#cipher = RelaySessionCipher.mac(keys);
+      this.#epoch = this.cache.beginEpoch();
       this.#nextPhoneSequence = 0;
       this.#pendingPhoneFrames.clear();
       this.#lastAuthenticatedAt = Date.now();
@@ -577,6 +609,7 @@ export class MacRelayPeer {
 
   async #dispatch(opened: OpenedRelayFrame): Promise<void> {
     const acceptedGeneration = this.#generation;
+    const acceptedEpoch = this.#epoch;
     const payload = parseRequestPayload(opened);
     const body = decodeBase64URL(payload.body);
     const fingerprint = relayRequestFingerprint(
@@ -610,67 +643,59 @@ export class MacRelayPeer {
     });
 
     if (opened.header.method === "POST") {
+      const control = controlMessage(payload.path, body);
+      const run = async (): Promise<CachedRelayResponse> => {
+        const result = invoke();
+        if (result === undefined) throw new Error("mutation returned no response");
+        const response = await result;
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (bytes.byteLength > CACHED_RESPONSE_MAX_BYTES) {
+          // The handler has already run. Never throw this ID back into the
+          // executable pool: a reconnect would run the mutation twice. Cache
+          // a small ambiguous result so the phone retains its draft and the
+          // user decides whether an explicit new request is appropriate.
+          const ambiguous = new Response(JSON.stringify({
+            error: "The Mac processed the request but its reply was too large to confirm safely.",
+          }), {
+            status: 502,
+            headers: { "content-type": "application/json" },
+          });
+          const safeBytes = new Uint8Array(await ambiguous.arrayBuffer());
+          return {
+            fingerprint,
+            frames: this.#logicalResponseFrames(ambiguous, safeBytes),
+          };
+        }
+        const frames = this.#logicalResponseFrames(response, bytes);
+        return { fingerprint, frames };
+      };
+      let execution: Promise<CachedRelayResponse>;
+      if (control?.kind === "phone-device") {
+        // Device telemetry is logged and never acted on, so a resent sample
+        // only repeats a log line. It arrives every five minutes for as long
+        // as the phone is connected and must not spend dedupe slots.
+        execution = this.#mutationChain.then(run);
+      } else {
+        // Admit now, in frame order: an inject racing ahead on its delivery
+        // head start must not let a later request judge it retired.
+        const { entry, overLimit } = this.cache.admit(opened.header.id, fingerprint, acceptedEpoch);
+        if (overLimit) {
+          // Nothing from this session can retire until the next one, so start
+          // it. The request still runs once; the phone resends it under the
+          // new keys and gets this reply from the cache.
+          this.log(`phone relay: ${this.cache.size} replies held for one session — rekeying so the phone can retire them`);
+          this.onProtocolFailure?.();
+        }
+        execution = this.#mutationChain.then(() => this.cache.execute(entry, run));
+      }
       // Authenticated phone frames are admitted in sequence, and mutations also
       // finish in that sequence. This prevents a hostile relay from swapping two
       // controls merely by changing their delivery timing.
-      const execution = this.#mutationChain.then(() => this.cache.execute(
-        opened.header.id,
-        fingerprint,
-        async () => {
-          const result = invoke();
-          if (result === undefined) throw new Error("mutation returned no response");
-          const response = await result;
-          const bytes = new Uint8Array(await response.arrayBuffer());
-          if (bytes.byteLength > CACHED_RESPONSE_MAX_BYTES) {
-            // The handler has already run. Never throw this ID back into the
-            // executable pool: a reconnect would run the mutation twice. Cache
-            // a small ambiguous result so the phone retains its draft and the
-            // user decides whether an explicit new request is appropriate.
-            const ambiguous = new Response(JSON.stringify({
-              error: "The Mac processed the request but its reply was too large to confirm safely.",
-            }), {
-              status: 502,
-              headers: { "content-type": "application/json" },
-            });
-            const safeBytes = new Uint8Array(await ambiguous.arrayBuffer());
-            return {
-              fingerprint,
-              frames: this.#logicalResponseFrames(ambiguous, safeBytes),
-            };
-          }
-          const frames = this.#logicalResponseFrames(response, bytes);
-          return { fingerprint, frames };
-        },
-      ));
-      const next = awaitsDelivery(payload.path, body)
+      const next = control?.type === "inject" && control.awaitDelivery === true
         ? Promise.race([execution, new Promise((resolve) => setTimeout(resolve, RELAY_DELIVERY_HEAD_START_MS))])
         : execution;
       this.#mutationChain = next.then(() => {}, () => {});
-      let cached: CachedRelayResponse;
-      try {
-        cached = await execution;
-      } catch (error) {
-        if (!(error instanceof RelayResponseCacheFullError)) throw error;
-        if (acceptedGeneration !== this.#generation) return;
-        const unavailable = new Response(JSON.stringify({
-          error: "The Mac relay retry cache is full; restart conch before sending again.",
-        }), {
-          status: 503,
-          headers: { "content-type": "application/json" },
-        });
-        const bytes = new Uint8Array(await unavailable.arrayBuffer());
-        for (const frame of this.#logicalResponseFrames(unavailable, bytes)) {
-          await this.#send(
-            frame.kind,
-            opened.header.id,
-            opened.header.method,
-            frame.body,
-            "high",
-            acceptedGeneration,
-          );
-        }
-        return;
-      }
+      const cached = await execution;
       if (acceptedGeneration !== this.#generation) return;
       for (const frame of cached.frames) {
         await this.#send(

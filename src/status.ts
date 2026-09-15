@@ -8,7 +8,6 @@ import {
   appendFileSync,
   chmodSync,
   closeSync,
-  existsSync,
   statSync,
   openSync,
   renameSync,
@@ -1826,21 +1825,15 @@ export function renderPanel(model: PanelModel): void {
   activeRenderer.panel(model);
 }
 
-const MAX_LOG_BYTES = 8 * 1024 * 1024;
+export const MAX_LOG_BYTES = 4 * 1024 * 1024;
 
 /**
- * Own the log file before the first write: it records dictated utterances
- * verbatim ("heard → ..."), so it must be 0600 like every other conch artifact
- * — it was world-readable in /tmp. Also roll it over once at startup so a
- * daemon that runs for weeks cannot grow it without bound. Single-writer, so
- * the rename needs no locking.
+ * Own the log file before the first write: 0600 like every other conch
+ * artifact — it was world-readable in /tmp. It no longer carries dictated
+ * text (voice-loop logs lengths and short classifier previews), but it still
+ * names sessions and what happened to them.
  */
 export function prepareLogFile(): void {
-  try {
-    if (existsSync(LOG_FILE) && statSync(LOG_FILE).size > MAX_LOG_BYTES) {
-      renameSync(LOG_FILE, `${LOG_FILE}.1`);
-    }
-  } catch {}
   try {
     appendFileSync(LOG_FILE, "");
     chmodSync(LOG_FILE, 0o600);
@@ -1851,7 +1844,15 @@ export function prepareLogFile(): void {
  *  Always recorded to LOG_FILE; only shown in the pane when logs are toggled on. */
 export function logAbove(msg: string): void {
   try {
-    appendFileSync(LOG_FILE, msg.replace(ANSI_SGR, "") + "\n");
+    // Roll over while running, not only at startup: a daemon that lives for
+    // weeks grew it without bound. One previous file is kept. Measured on disk
+    // rather than counted here, so a TUI appending to the same file counts too.
+    // ponytail: two writers crossing the limit in the same instant can rename
+    // twice and drop the older file; a lock is not worth it for a diagnostic.
+    if (statSync(LOG_FILE).size > MAX_LOG_BYTES) renameSync(LOG_FILE, `${LOG_FILE}.1`);
+  } catch {}
+  try {
+    appendFileSync(LOG_FILE, msg.replace(ANSI_SGR, "") + "\n", { mode: 0o600 });
   } catch {}
   if (!logsVisible) return; // hidden by default — press `l`, or tail LOG_FILE
   activeRenderer.log(msg);

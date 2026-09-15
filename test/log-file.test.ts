@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
-import { LOG_FILE, STATE_FILE, logAbove, setState } from "../src/status.ts";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { LOG_FILE, MAX_LOG_BYTES, STATE_FILE, logAbove, setState } from "../src/status.ts";
 
 /**
  * The suite must never write into the live daemon's log. A7 was exactly
@@ -30,4 +30,19 @@ test("under test, setState writes to the redirected state file, not the daemon's
     await Bun.sleep(5);
   }
   setState("idle");
+});
+
+// The daemon runs for weeks; rolling over only at startup let the log grow
+// without bound in between (review finding 22).
+test("the log rolls over at its size limit while running, keeping one private old file", () => {
+  rmSync(`${LOG_FILE}.1`, { force: true });
+  const line = "x".repeat(256 * 1024);
+  for (let written = 0; written <= MAX_LOG_BYTES + line.length; written += line.length + 1) logAbove(line);
+  logAbove("after the roll 9c1d");
+  expect(existsSync(`${LOG_FILE}.1`)).toBe(true);
+  expect(statSync(LOG_FILE).size).toBeLessThan(MAX_LOG_BYTES);
+  expect(statSync(LOG_FILE).mode & 0o777).toBe(0o600);
+  expect(readFileSync(LOG_FILE, "utf8")).toContain("after the roll 9c1d");
+  expect(readFileSync(`${LOG_FILE}.1`, "utf8")).not.toContain("after the roll 9c1d");
+  rmSync(`${LOG_FILE}.1`, { force: true });
 });

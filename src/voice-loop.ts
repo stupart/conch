@@ -91,6 +91,18 @@ import type { PauseController } from "./pause-controller.ts";
  * gate asks `capturing()` — the same four-term answer the stop contract uses.
  */
 
+/**
+ * How the log quotes something a person said: enough to see why it was
+ * classified as it was ("stop", "yes", an echo of the reading), never the
+ * prose. Text that is delivered is logged by length alone.
+ */
+const SPOKEN_PREVIEW_CHARS = 24;
+function spokenPreview(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= SPOKEN_PREVIEW_CHARS) return JSON.stringify(flat);
+  return `${JSON.stringify(flat.slice(0, SPOKEN_PREVIEW_CHARS))}… (${flat.length} chars)`;
+}
+
 export type AudioSink = "mac" | "phone";
 
 /** Sink-aware reservation seam, exported so the post-await race stays tested. */
@@ -1262,7 +1274,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           { window: deps.window(event.sessionId) },
         );
         const reply = choiceReplyForConversation(text, conversation);
-        if (reply !== text) log(`matched spoken choice -> ${JSON.stringify(reply)}`);
+        if (reply !== text) log(`matched spoken choice -> ${spokenPreview(reply)}`);
         text = reply;
       } catch {}
     }
@@ -1305,9 +1317,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         emitRecorderTraces(diagnosticIds, { finalSubmittedPayload: text });
       }
       markInjected(event.sessionId);
-      // Record the utterance itself, not just the route — a mis-fire used to be
-      // unrecoverable because only "injected via X" was logged, never the words.
-      log(`heard → ${JSON.stringify(text)}`);
+      // Which session got a dictation and how long it was, never the words: the
+      // log lives for weeks in /tmp. The words are in the session it reached,
+      // and a failed delivery keeps them as the recovered draft.
+      log(`heard → "${event.label}" (${text.length} chars)`);
     };
     const failedDelivery = async (reason?: string): Promise<false> => {
       publishDictation(text, event.sessionId);
@@ -1487,13 +1500,13 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   ): Promise<"stop" | "seed" | "handled" | "keep-reading" | "echo"> {
     const traceIds = diagnosticIds ?? [diagnosticId];
     const intent = classifyReadingGap(text);
-    log(`heard mid-read: "${text}" -> ${intent}`);
+    log(`heard mid-read: ${spokenPreview(text)} -> ${intent}`);
     // Echo guard runs AFTER classification and ONLY for would-be prompts: a
     // command like "stop reading" naturally overlaps a message about reading,
     // and dismissing it as echo was exactly what broke stop (live). Commands
     // are always honored; only long injectable prose can be a real echo.
     if (intent === "prompt" && spokenChunk && wordOverlapRatio(text, spokenChunk) > 0.6) {
-      log(`barge echo guard: mic heard the reading itself ("${text.slice(0, 60)}")`);
+      log(`barge echo guard: mic heard the reading itself (${spokenPreview(text)})`);
       emitRecorderTraces(traceIds, { intent: "echo", bufferCountAfterReduction: 0 });
       return "echo";
     }
@@ -1522,7 +1535,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         // instead of two, and lets you edit what you said before sending it.
         if (event.compose) {
           publishDictation(text, event.sessionId);
-          log(`dictated → composer ${JSON.stringify(text)}`);
+          log(`dictated → composer (${text.length} chars)`);
           return "handled";
         }
         await deliver(event, text, diagnosticIds ?? diagnosticId, beforeInject);
@@ -2340,7 +2353,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
             }
             if (readingIntent === "stop") {
               emitRecorderTrace(controllerEvent.diagnosticId, { intent: "stop", bufferCountAfterReduction: 0 });
-              log(`heard mid-read: "${controllerEvent.text}" -> stop`);
+              log(`heard mid-read: ${spokenPreview(controllerEvent.text)} -> stop`);
               continue; // reading is already stopped; keep the continuous mic open
             }
           }
@@ -2353,7 +2366,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           });
           const trace = effects.find((effect) => effect.type === "trace");
           if (trace?.type === "trace") {
-            log(`heard: "${controllerEvent.text}" -> ${trace.intent}${reducer.snapshot.buffer.length ? " (holding)" : ""}`);
+            log(`heard: ${spokenPreview(controllerEvent.text)} -> ${trace.intent}${reducer.snapshot.buffer.length ? " (holding)" : ""}`);
           }
           if (reducer.snapshot.buffer.length > heldBefore) {
             session.setIdleWindowSecs(cfg.holdSubmitSecs, controllerEvent.finalizedAt);
@@ -2747,7 +2760,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     if (!stillPending() || !heard) return;
     let answer = classifyApprovalAnswer(heard);
     if (!answer) {
-      log(`heard: "${heard.join(" ")}" -> unclear, asking once more`);
+      log(`heard: ${spokenPreview(heard.join(" "))} -> unclear, asking once more`);
       await say(APPROVAL_REASK);
       if (!stillPending()) return;
       heard = await listenForApproval(event, stillPending);
@@ -2755,17 +2768,17 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       answer = classifyApprovalAnswer(heard);
     }
     if (!answer) {
-      log(`heard: "${heard.join(" ")}" -> unclear, leaving "${event.label}" for the keyboard`);
+      log(`heard: ${spokenPreview(heard.join(" "))} -> unclear, leaving "${event.label}" for the keyboard`);
       return void (await say(APPROVAL_KEYBOARD));
     }
-    log(`heard: "${heard.join(" ")}" -> ${answer.kind}`);
+    log(`heard: ${spokenPreview(heard.join(" "))} -> ${answer.kind}`);
     if (answer.kind === "always") {
       await say(confirmAlwaysPrompt(ask));
       if (!stillPending()) return;
       const confirmation = await listenForApproval(event, stillPending);
       if (!stillPending() || !confirmation) return;
       if (!confirmsAlways(confirmation)) {
-        log(`heard: "${confirmation.join(" ")}" -> not confirmed`);
+        log(`heard: ${spokenPreview(confirmation.join(" "))} -> not confirmed`);
         return void (await say(`Not confirmed. ${APPROVAL_KEYBOARD}`));
       }
     }
@@ -2790,7 +2803,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       if (via === "none") return void (await say("Could not type the alternative — do it by hand."));
       if (via === "clipboard") return void (await say("The alternative is on the clipboard — paste it into the session."));
       markInjected(event.sessionId);
-      log(`told "${event.label}" instead: "${answer.text}" via ${via}`);
+      log(`told "${event.label}" instead (${answer.text.length} chars) via ${via}`);
     }
   }
 
