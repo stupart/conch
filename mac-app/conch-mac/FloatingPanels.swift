@@ -746,8 +746,13 @@ private struct ConversationFogHost: View {
     /// text of anything the snapshot cut is fetched.
     private func readWhole(_ row: SessionRow?) {
         guard let row else { return }
-        history.select(session: row.id)
         let conversation = store.state?.conversations?[row.id] ?? store.state?.conversation
+        // The same branch the pane is showing (A8): the overlay reads one window's
+        // history, not both windows' of a transcript they share.
+        history.select(session: row.id, branchTip: HistorySnapshot.branchTip(
+            forSnapshotItems: (conversation?.items ?? []).map(\.id),
+            shared: conversation?.shared ?? false
+        ))
         let cut = (conversation?.items ?? [])
             .filter { ($0.kind == .user || $0.kind == .assistant) && HistorySnapshot.wasCut($0.text, cap: 4_000) }
             .map(\.id)

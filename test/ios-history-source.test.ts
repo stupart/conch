@@ -84,12 +84,37 @@ describe("the iPhone reads recorded history", () => {
   });
 
   test("changing session cancels what is in flight instead of letting it land", () => {
-    const follow = sliceFrom(store, "func follow(session: String, on bridge: BridgeClient)", "/// The newest page");
+    const follow = sliceFrom(store, "func follow(session: String, branchTip: String?, on bridge: BridgeClient)", "/// The newest page");
     expect(follow).toContain("pageTask?.cancel()");
     expect(follow).toContain("for task in bodyTasks.values { task.cancel() }");
-    expect(follow).toContain("paging.select(session: session)");
+    expect(follow).toContain("paging.select(session: session, branchTip: branchTip)");
     // And a late answer is refused by generation even if its task was not cancelled.
     expect(store).toContain("guard let store = self, store.paging.generation == generation");
+  });
+
+  test("each window asks the record for its own branch, and is told when it did not get it", () => {
+    // Two windows of one transcript are ONE indexed session (A8, #170), so a page asked
+    // for without a branch is both windows' messages — prepended above a live window
+    // that is only ever one window's.
+    const page = sliceFrom(store, "struct PhoneHistoryPageRequest", "struct PhoneHistoryItemRequest");
+    expect(page).toContain("try container.encodeIfPresent(branch, forKey: .branch)");
+    expect(store).toContain("branch: paging.branchTip,");
+    // The tip is the newest live row that names a provider message, taken from the
+    // window the Mac already picked for this session.
+    expect(session).toContain("HistorySnapshot.branchTip(");
+    expect(session).toContain("shared: published?.shared ?? false");
+
+    // Captured once, with the session: a tip that moved as messages arrived would be a
+    // different ancestry under an open cursor, and the store answers that with a stale
+    // cursor — which empties the transcript being scrolled and starts it again.
+    expect(store).toContain("func follow(session: String, branchTip: String?, on bridge: BridgeClient)");
+    expect(store).toContain("paging.select(session: session, branchTip: branchTip)");
+
+    // And where the record could not prove the branch, the reader says so rather than
+    // passing the other window's messages off as this one's.
+    expect(store).toContain("branch: coverage?.branch");
+    expect(stack).toContain("sharedBranch: history.paging.sharedBranch");
+    expect(history).toContain("public static let allBranches =");
   });
 
   test("a body is read in chunks, kept only once whole, and released under budget", () => {
@@ -150,7 +175,7 @@ describe("the iPhone reads recorded history", () => {
     expect(session).toContain("@StateObject private var history = HistoryStore()");
     expect(session).toContain("history: history,");
     // Followed on arrival AND on a change of session.
-    expect(session.match(/history\.follow\(session: sessionId, on: bridge\)/g)?.length).toBe(2);
+    expect(session.match(/history\.follow\(session: sessionId, branchTip: branchTip, on: bridge\)/g)?.length).toBe(2);
     // Before the fixture's early return, or the snapshot script photographs the top
     // of a conversation with no history asked for.
     const appear = sliceFrom(session, ".onAppear {\n                // Everything above the live window", "scrollToBottom(scroller, animated: false)");

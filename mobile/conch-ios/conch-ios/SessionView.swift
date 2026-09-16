@@ -67,6 +67,20 @@ struct SessionView: View {
         return published ?? Conversation(sessionId: sessionId)
     }
 
+    /// Which branch of a shared transcript this window is (A8), for the record store to
+    /// read the ancestry above.
+    ///
+    /// The live window is already one window's branch; this hands the same fact to the
+    /// history drawn above it, so the two cannot disagree about whose conversation
+    /// this is.
+    private var branchTip: String? {
+        let published = bridge.state?.conversations[sessionId]
+        return HistorySnapshot.branchTip(
+            forSnapshotItems: published?.items.map(\.id) ?? [],
+            shared: published?.shared ?? false
+        )
+    }
+
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
         // After layout, not during it: scrolling to an anchor SwiftUI has not
         // placed yet silently does nothing.
@@ -252,7 +266,7 @@ struct SessionView: View {
                 // Everything above the live window, for this session. Before the
                 // fixture's early return below: the snapshot script photographs the
                 // TOP of a conversation, which is exactly where history is drawn.
-                history.follow(session: sessionId, on: bridge)
+                history.follow(session: sessionId, branchTip: branchTip, on: bridge)
                 // The reported bug. A ScrollViewReader was already here and its
                 // proxy was never used once — `scroller` appeared exactly at
                 // its own declaration and nowhere else — so opening a session
@@ -277,7 +291,7 @@ struct SessionView: View {
                 // A different session is a different conversation: start at its
                 // end, and re-arm the follow. The recorded reader is told too —
                 // anything still in flight for the old session is refused, not merged.
-                history.follow(session: sessionId, on: bridge)
+                history.follow(session: sessionId, branchTip: branchTip, on: bridge)
                 pinnedToBottom = true
                 scrollToBottom(scroller, animated: false)
             }

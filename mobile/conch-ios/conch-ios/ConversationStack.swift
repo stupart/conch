@@ -119,7 +119,8 @@ struct ConversationStack: View {
             if let note = HistoryNotice.coverage(
                 history.paging.coverage,
                 reachedStart: history.paging.reachedStart,
-                oldest: oldestRecorded
+                oldest: oldestRecorded,
+                sharedBranch: history.paging.sharedBranch
             ) {
                 Text(note)
             }
