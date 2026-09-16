@@ -2,36 +2,47 @@ import AppKit
 import ConchDesign
 import SwiftUI
 
+/// One `Color` per token, resolved for whichever appearance the view is drawn in.
+///
+/// Every palette call site stores and mutates a `Color` — `.opacity(…)`, `.fill(…)`, a colour
+/// held in a struct — so the palette cannot simply become a `ShapeStyle` without touching all
+/// 448 of them. An `NSColor` with a dynamic provider keeps the type and still follows the
+/// system theme.
+private extension ConchColorToken {
+    var dynamic: Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            return NSColor(self.rgba(isDark ? .dark : .light).color)
+        })
+    }
+}
+
+/// The Mac app's colours, now the design system's colours.
+///
+/// This palette was a second source of truth: a fixed dark set of literals, maintained beside
+/// `ConchDesign/Tokens.swift` and drifting from it. Every name below still exists, so no call
+/// site changes, but each one now resolves from a token — which also means the window follows
+/// the system appearance instead of forcing dark, the "Light mode" half of the original brief.
+///
+/// The voice and state colours are deliberately NOT moved yet. Mapping them onto the design
+/// system's own (mic-open from cyan to `listening` orange, "your turn" to ink) rewrites the
+/// colour language Tyler reads the ledger by every day, which is a change to see and react to
+/// rather than one to slip in under a theme change.
 enum ConchPalette {
-    static let bg = Color(
-        red: 0.043,
-        green: 0.051,
-        blue: 0.047
-    )
-    // Selection must outrank hover. It used to measure 1.07:1 against bg while
-    // hover measured 1.17:1, so a hovered row read as MORE selected than the
-    // selected one — and 1.07:1 is below the ~1.2:1 where a surface step is
-    // perceptible at all. Measured now: selection 1.56:1, hover 1.22:1.
-    static let raised = Color(
-        red: 0.186,
-        green: 0.209,
-        blue: 0.198
-    )
-    static let hover = Color(
-        red: 0.122,
-        green: 0.136,
-        blue: 0.130
-    )
-    static let textPrimary = Color(
-        red: 0.91,
-        green: 0.93,
-        blue: 0.91
-    )
-    static let textDim = Color(
-        red: 0.48,
-        green: 0.52,
-        blue: 0.50
-    )
+    static let bg = ConchColor.ground.dynamic
+    /// Chips, capsules and panels that sit above the ground. In light that is plain white
+    /// against the off-white ground; in dark, one step up from it.
+    static let raised = ConchColor.surfaceRaised.dynamic
+    /// Selection must outrank hover — this palette's oldest bug was the two inverted. Both now
+    /// come from measured tokens that step the same way off the ground (design/ConchDesign).
+    static let selection = ConchColor.rowSelected.dynamic
+    static let hover = ConchColor.rowHover.dynamic
+    static let textPrimary = ConchColor.textPrimary.dynamic
+    static let textDim = ConchColor.textSecondary.dynamic
+    static let textFaint = ConchColor.textTertiary.dynamic
+    static let divider = ConchColor.hairline.dynamic
+
+    // Still literals, and still dark-only, until the state language moves as its own change.
     static let accent = Color(
         red: 0.957,
         green: 0.44,
@@ -63,20 +74,10 @@ enum ConchPalette {
         green: 0.60,
         blue: 0.13
     )
-    static let statusNeeds = Color(
-        red: 0.94,
-        green: 0.38,
-        blue: 0.24
-    )
-    static let statusReview = Color(
-        red: 0.98,
-        green: 0.84,
-        blue: 0.32
-    )
-
-    // 0.62 put this at 2.63:1, below AA, while carrying the row age. Now 4.54:1.
-    static let textFaint = textDim.opacity(0.93)
-    static let divider = Color.white.opacity(0.075)
+    /// These two have exact token equivalents whose meaning already matches, and both were
+    /// unreadable on a light ground as literals — the review gold measured 1.3:1 there.
+    static let statusNeeds = ConchColor.attention.dynamic
+    static let statusReview = ConchColor.ready.dynamic
 }
 
 enum ConchTypography {
@@ -1004,7 +1005,7 @@ private struct DashboardRow: View {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(
                         isSelected
-                            ? ConchPalette.raised
+                            ? ConchPalette.selection
                             : isHovered ? ConchPalette.hover : .clear
                     )
 
@@ -2185,7 +2186,7 @@ private struct PerspectiveOption: View {
             .frame(height: 26)
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(isSelected ? ConchPalette.raised : (isHovered ? ConchPalette.hover : .clear))
+                    .fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
             )
             .contentShape(Rectangle())
         }
@@ -3078,7 +3079,7 @@ private struct AllSessionsRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 7)
-                .fill(isSelected ? ConchPalette.raised : .clear)
+                .fill(isSelected ? ConchPalette.selection : .clear)
         )
         .accessibilityElement(children: .contain)
     }

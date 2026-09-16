@@ -228,7 +228,7 @@ private struct ResumeRow: View {
         // NOT the accent — that is orange, and tinting a row with it put a warm
         // brown band across a sheet whose only other colours are the blue of
         // the segmented control and the Start button.
-        if isSelected { return ConchPalette.raised }
+        if isSelected { return ConchPalette.selection }
         return isHovering ? ConchPalette.hover : .clear
     }
 }
