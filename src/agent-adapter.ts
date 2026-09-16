@@ -114,8 +114,12 @@ export interface AgentAdapter {
   ownsTranscriptPath?(path: string): boolean;
   /** Where this agent keeps the transcript for a session id, if it can be found from the id alone. */
   findTranscript(sessionId: string, options: TranscriptLookupOptions): string | undefined;
-  /** Live subagents nested under a session; `[]` where the agent writes none conch can read. */
-  subagentSessions(parent: SessionInfo, transcriptPath: string): SessionInfo[];
+  /**
+   * Live subagents nested under a session; `[]` where the agent writes none
+   * conch can read. May be async: Codex's answer comes from a lock probe, which
+   * must not block the daemon's one thread.
+   */
+  subagentSessions(parent: SessionInfo, transcriptPath: string): SessionInfo[] | Promise<SessionInfo[]>;
   /** Rows can be observed without a process to talk to (read from a database, not a hook). */
   readonly rowsMayLackPid: boolean;
 
@@ -284,8 +288,8 @@ export const codexAdapter: AgentAdapter = {
   // Helpers from Codex's own edge table, live by writer lock (codex-threads.ts).
   // A helper runs inside its parent's process, so it gets no pid of its own:
   // nested, never active, never announced — C4's shape.
-  subagentSessions: (parent, transcriptPath) =>
-    readCodexHelperThreads(parent.sessionId, transcriptPath).map((helper) => ({
+  subagentSessions: async (parent, transcriptPath) =>
+    (await readCodexHelperThreads(parent.sessionId, transcriptPath)).map((helper) => ({
       sessionId: helper.threadId,
       parentSessionId: parent.sessionId,
       backend: "codex" as const,

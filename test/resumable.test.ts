@@ -223,6 +223,32 @@ describe("resumable session discovery", () => {
     expect(limited.complete).toBe(false);
   });
 
+  test("a search that runs out of budget says so rather than claiming all of history", () => {
+    // Resolving a candidate costs a file read, and the loop ran until it had
+    // `limit` matches — so a query that matched nothing opened every transcript
+    // on the machine, on the daemon's one thread.
+    const f = fixture();
+    writeCodex(f.codexHome, [
+      { id: "c1", name: "first", updated_at_ms: 3_000 },
+      { id: "c2", name: "second", updated_at_ms: 2_000 },
+      { id: "c3", name: "third", updated_at_ms: 1_000 },
+    ]);
+    const options = {
+      configDir: join(f.root, "config"),
+      codexHome: f.codexHome,
+      claudeHome: f.claudeHome,
+    };
+
+    const stopped = readResumableSessionsResult({ ...options, searchBudget: 2 });
+    expect(stopped.sessions.map((session) => session.sessionId)).toEqual(["c1", "c2"]);
+    // Not "that is all there is": the caller is told the list is partial.
+    expect(stopped.complete).toBe(false);
+
+    const whole = readResumableSessionsResult(options);
+    expect(whole.sessions.map((session) => session.sessionId)).toEqual(["c1", "c2", "c3"]);
+    expect(whole.complete).toBe(true);
+  });
+
   test("reads only the first 40 Claude records and falls back to the cwd basename", () => {
     const f = fixture();
     writeCodex(f.codexHome, []);

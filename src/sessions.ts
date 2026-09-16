@@ -707,7 +707,7 @@ export async function registrySnapshot(
   // observes those sessions without them participating at all. Hook-fed
   // entries win on conflict: they carry a real pid, so they can be TALKED to,
   // where an observed row can only be seen.
-  const observed = readCodexThreads(options);
+  const observed = await readCodexThreads(options);
   for (const entry of observed.entries) {
     if (liveIds.has(entry.sessionId)) continue;
     liveIds.add(entry.sessionId);
@@ -811,10 +811,10 @@ export function withStartedBy(
  * transcript, which is the same JSONL shape as any session's, so the
  * conversation reader shows it unchanged.
  */
-export function subagentSessions(
+export async function subagentSessions(
   parent: SessionInfo,
   transcriptPath: string | undefined,
-): SessionInfo[] {
+): Promise<SessionInfo[]> {
   if (!transcriptPath || parent.parentSessionId) return [];
   return adapterFor(parent.backend).subagentSessions(parent, transcriptPath);
 }
