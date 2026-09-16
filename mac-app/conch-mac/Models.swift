@@ -4,6 +4,16 @@ struct PublishedState: Decodable, Equatable, Sendable {
     static let knownVersion = 1
 
     let v: Int
+    /// What this daemon can do, versioned per capability and separate from `v`. Absent from a
+    /// daemon older than them: this build must then show an honest latest-deliverable-only
+    /// view rather than presenting its own local guesses as shared truth.
+    let features: Features?
+
+    struct Features: Decodable, Equatable, Sendable {
+        let deliverables: Int?
+        let viewedState: Int?
+    }
+
     let ownerDeviceId: String
     let newerDaemon: Bool
     let ts: TimeInterval
@@ -39,6 +49,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case v
+        case features
         case ownerDeviceId
         case deliveries
         case ts
@@ -70,7 +81,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         dismissedRows: [DismissedSessionRow],
         audioControl: AudioControl = AudioControl(),
         audioOutbox: [AudioOutboxItem] = [],
-        deliveries: [DeliveryOutcome] = []
+        deliveries: [DeliveryOutcome] = [],
+        features: Features? = nil
     ) {
         self.v = v
         self.ownerDeviceId = ownerDeviceId
@@ -88,6 +100,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.audioControl = audioControl
         self.audioOutbox = audioOutbox
         self.deliveries = deliveries
+        self.features = features
     }
 
     init(from decoder: Decoder) throws {
@@ -104,6 +117,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
 
         v = version
         ownerDeviceId = (try? container.decodeIfPresent(String.self, forKey: .ownerDeviceId)) ?? ""
+        features = try? container.decodeIfPresent(Features.self, forKey: .features)
         newerDaemon = version > Self.knownVersion
         rows = Self.decodeLossyArray(
             SessionRow.self,
@@ -752,6 +766,9 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
     /// The identity the daemon minted when it filed this deliverable. Absent from an older
     /// daemon, which is why `ReviewIdentity` still knows how to compute the old key.
     let id: String?
+    /// When this deliverable was looked at, on whichever device looked. Absent means nobody
+    /// has — and absent from an older daemon too, which is what `features` disambiguates.
+    let viewedAt: Double?
     /// What a click on the Ready pill should bring forward (`scene.target.kind`) and the one thing to check there
     /// (`scene.inspect`). Absent from older daemons and from reviews that asked for nothing, which is `auto`.
     let sceneKind: String?
@@ -763,6 +780,7 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         case at
         case scene
         case id
+        case viewedAt
     }
 
     private struct Scene: Decodable {
@@ -777,6 +795,7 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         link = try? container.decodeIfPresent(String.self, forKey: .link)
         at = Self.decodeTimestamp(from: container)
         id = try? container.decodeIfPresent(String.self, forKey: .id)
+        viewedAt = try? container.decodeIfPresent(Double.self, forKey: .viewedAt)
         // A scene this build can't read is no scene: the review itself still decodes.
         let scene = try? container.decodeIfPresent(Scene.self, forKey: .scene)
         sceneKind = scene?.target?.kind
@@ -811,6 +830,9 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     let needsResponse: Bool
     let detail: String?
     let review: ReviewInfo?
+    /// Every deliverable the session still holds, oldest first; `review` is the last of them.
+    /// Empty from a daemon older than many-per-session, where `review` alone is the truth.
+    let reviews: [ReviewInfo]?
     let paused: Bool
     let live: String?
     let active: Bool
@@ -851,6 +873,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case needsResponse
         case detail
         case review
+        case reviews
         case paused
         case live
         case active
@@ -877,6 +900,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         needsResponse: Bool,
         detail: String?,
         review: ReviewInfo?,
+        reviews: [ReviewInfo]? = nil,
         paused: Bool,
         live: String?,
         active: Bool,
@@ -901,6 +925,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.needsResponse = needsResponse
         self.detail = detail
         self.review = review
+        self.reviews = reviews
         self.paused = paused
         self.live = live
         self.active = active
@@ -930,6 +955,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             (try? container.decodeIfPresent(Bool.self, forKey: .needsResponse)) ?? false
         detail = try? container.decodeIfPresent(String.self, forKey: .detail)
         review = try? container.decodeIfPresent(ReviewInfo.self, forKey: .review)
+        reviews = try? container.decodeIfPresent([ReviewInfo].self, forKey: .reviews)
         paused = (try? container.decodeIfPresent(Bool.self, forKey: .paused)) ?? false
         live = try? container.decodeIfPresent(String.self, forKey: .live)
         active = (try? container.decodeIfPresent(Bool.self, forKey: .active)) ?? false
