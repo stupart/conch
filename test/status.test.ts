@@ -31,13 +31,13 @@ import {
 } from "../src/panel.ts";
 
 const ACTIVE_FOOTER_GOLDEN = "\n"
-  + "  \x1b[1m🐚 conch\x1b[0m\n"
+  + "  \x1b[1mconch\x1b[0m\n"
   + "\n"
   + "  \x1b[2m────────────────────────────────────────────────────────────────────────────\x1b[0m\n"
   + "  project-one                \x1b[33m▶ speaking\x1b[0m\n";
 
 const PAUSED_FOOTER_GOLDEN = "\n"
-  + "  \x1b[1m🐚 conch\x1b[0m\n"
+  + "  \x1b[1mconch\x1b[0m\n"
   + "  \x1b[1;35m⏸ MANUAL · holding 2 · no parked cursor: p for auto\x1b[0m\n"
   + "  \x1b[2m────────────────────────────────────────────────────────────────────────────\x1b[0m\n"
   + "\x1b[36m▸\x1b[0m alpha                      \x1b[33m❗ needs a response\x1b[0m \x1b[2m(permission)\x1b[0m\n"

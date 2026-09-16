@@ -212,7 +212,7 @@ export function renderSetupReady(
   // No Codex nudge. It used to lead with "Run `conch install --codex`", which
   // wires hooks that Codex 0.144.1 never executes — the first thing a new
   // person was told to do was the one thing that does not work.
-  const first = "╭─ 🐚 DO THIS FIRST — Type /hooks in any Claude Code session you already have open.";
+  const first = "╭─ DO THIS FIRST — Type /hooks in any Claude Code session you already have open.";
   const pickup = options.codexNeedsInstall
     ? "│ Codex is present; its support is unfinished and stays off (see the README)."
     : "│ Sessions opened from now on pick conch up automatically.";
@@ -268,7 +268,7 @@ export async function runSetup(
     absCli: CLI_ENTRY,
   },
 ): Promise<void> {
-  console.log("🐚 conch setup — getting your machine ready for voice\n");
+  console.log("conch setup — getting your machine ready for voice\n");
 
   // 1. Binaries. sox + tmux come from Homebrew; whisper-cli/-server ship in the
   //    whisper-cpp formula. `say`/`afplay` are macOS built-ins (checked by doctor).
@@ -781,7 +781,7 @@ export async function runInstall(cfg: Config): Promise<void> {
 
 /** Sanity-check every external dependency conch shells out to. */
 export async function runDoctor(cfg: Config): Promise<void> {
-  console.log(`🐚 conch ${CONCH_VERSION}`);
+  console.log(`conch ${CONCH_VERSION}`);
   const checks: Array<[string, () => boolean | Promise<boolean>]> = [
     ["say (TTS)", () => binaryExists("say")],
     ["afplay (bell)", () => binaryExists("afplay")],
