@@ -955,10 +955,16 @@ struct SessionView: View {
         if !talk.hasWords(for: sessionId) {
             guard !pending.isEmpty, !isSending else { return }
             sendingImagesOnly = true
-            Task {
-                _ = await deliver(text: "", pending: pending, label: label)
-                sendingImagesOnly = false
-            }
+            // Through the outbox, like any other message: it gets a bubble, an id its outcome
+            // comes back with, and a late receipt that can still settle it.
+            talk.sendPictures(
+                session: sessionId,
+                body: { await uploadBody(pending) },
+                deliver: { body, opId in
+                    await bridge.inject(sessionId: sessionId, label: label, text: body, opId: opId)
+                },
+                onFinish: { sendingImagesOnly = false }
+            )
             return
         }
         sendWords()
@@ -980,12 +986,14 @@ struct SessionView: View {
     /// Pictures first, because the message references their paths. If one
     /// fails the whole send fails, which keeps the words AND the images —
     /// half a message is worse than none.
-    private func deliver(
-        text: String,
-        opId: String? = nil,
-        pending: [PendingAttachment],
-        label: String
-    ) async -> BridgeClient.InjectOutcome {
+    /// The pictures, uploaded, as the body a picture-only message actually sends. Nil when one
+    /// fails: half a message is worse than none, and the attachments stay for the retry.
+    private func uploadBody(_ pending: [PendingAttachment]) async -> String? {
+        guard let paths = await uploadPaths(pending) else { return nil }
+        return paths.joined(separator: "\n")
+    }
+
+    private func uploadPaths(_ pending: [PendingAttachment]) async -> [String]? {
         var paths: [String] = []
         for attachment in pending {
             guard let path = await bridge.uploadImage(
@@ -993,9 +1001,21 @@ struct SessionView: View {
                 ext: attachment.ext
             ) else {
                 attachError = "Couldn't send the picture — try again."
-                return .failed("Not delivered — the picture didn't upload.")
+                return nil
             }
             paths.append(path)
+        }
+        return paths
+    }
+
+    private func deliver(
+        text: String,
+        opId: String? = nil,
+        pending: [PendingAttachment],
+        label: String
+    ) async -> BridgeClient.InjectOutcome {
+        guard let paths = await uploadPaths(pending) else {
+            return .failed("Not delivered — the picture didn't upload.")
         }
         let body = (paths + [text]).filter { !$0.isEmpty }.joined(separator: "\n")
         let delivered = await bridge.inject(sessionId: sessionId, label: label, text: body, opId: opId)

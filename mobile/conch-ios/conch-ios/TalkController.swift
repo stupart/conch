@@ -293,6 +293,32 @@ final class TalkController: NSObject, ObservableObject {
 
     /// One unconfirmed message per session: its words head this draft, so a
     /// new send carries them again.
+    /// A picture with no words, sent the same way words are.
+    ///
+    /// `send` exists to shepherd a DRAFT and rightly refuses an empty one, so an image-only
+    /// message used to go straight to the bridge — which meant no outbox entry, no bubble, no
+    /// operation id, and therefore nothing for a late receipt to settle. It was the one send
+    /// that could fail invisibly.
+    ///
+    /// The body is not known until the pictures are uploaded (it is their paths), and the
+    /// entry has to carry the text that will actually land or `reconcile` can never retire its
+    /// bubble against the transcript. So the upload happens first, then the entry, then the
+    /// send that quotes its id.
+    func sendPictures(
+        session: String,
+        body: @escaping () async -> String?,
+        deliver: @escaping (String, String) async -> BridgeClient.InjectOutcome,
+        onFinish: @escaping () -> Void = {}
+    ) {
+        switchTarget(to: session)
+        Task { @MainActor [weak self] in
+            defer { onFinish() }
+            guard let self, let text = await body(), !text.isEmpty else { return }
+            let id = self.beginOutgoing(text, session: session)
+            self.settleOutgoing(id, await deliver(text, id))
+        }
+    }
+
     private func beginOutgoing(_ text: String, session: String) -> String {
         outbox.begin(Outgoing(
             session: session,
