@@ -16,6 +16,7 @@ const source = (path: string) => readFileSync(new URL(`../${path}`, import.meta.
 const swift = (file: string) => source(`mac-app/conch-mac/${file}`).replace(/^\s*\/\/.*$/gm, "");
 const app = swift("ConchMacApp.swift");
 const dashboard = swift("DashboardView.swift");
+const notices = swift("Notices.swift");
 
 function at(text: string, marker: string, from = 0): number {
   const index = text.indexOf(marker, from);
@@ -85,7 +86,9 @@ describe("E1: the header lives in the title-bar strip", () => {
     expect(dashboard).toContain("SessionContextMeter(context: context)");
     expect(dashboard).toContain('.help("Session actions")');
     expect(dashboard).toContain('.accessibilityLabel("Actions for \\(row.label)")');
-    expect(body).toContain("if let host = audio.controlledBy {");
-    ordered(body, "DashboardHeader(", "if let host = audio.controlledBy {", "SessionLedger(");
+    // The banners are WorkspaceNotices now. The window's order is still the claim here;
+    // what each banner says is pinned where it is drawn.
+    expect(notices).toContain("if let host = audio.controlledBy {");
+    ordered(body, "DashboardHeader(", "WorkspaceNotices()", "SessionLedger(");
   });
 });

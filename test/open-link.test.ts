@@ -350,7 +350,8 @@ describe("Relaunch says why it didn't, instead of quitting into nothing", () => 
       'operation: "relaunch"',
       'state: ["target": bundle.path]',
     );
-    expect(mac("DashboardView.swift")).toContain(
+    // The stale-build line is one of the notices now.
+    expect(mac("Notices.swift")).toContain(
       'Text(store.relaunchFailure ?? "A newer conch is installed — this window is still running the old one.")',
     );
   });

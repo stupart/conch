@@ -22,6 +22,7 @@
 		A10000000000000000000004 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* ContentView.swift */; };
 		A10000000000000000000005 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* DashboardView.swift */; };
 		A10000000000000000000006A /* Workspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006A /* Workspace.swift */; };
+		A10000000000000000000007D /* Notices.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007D /* Notices.swift */; };
 		A10000000000000000000007A /* Palette.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007A /* Palette.swift */; };
 		A10000000000000000000007B /* TranscriptFallback.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007B /* TranscriptFallback.swift */; };
 		A10000000000000000000007C /* DaemonLogDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007C /* DaemonLogDrawer.swift */; };
@@ -52,6 +53,7 @@
 		A20000000000000000000004 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A20000000000000000000005 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		A20000000000000000000006A /* Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspace.swift; sourceTree = "<group>"; };
+		A20000000000000000000007D /* Notices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Notices.swift; sourceTree = "<group>"; };
 		A20000000000000000000007A /* Palette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Palette.swift; sourceTree = "<group>"; };
 		A20000000000000000000007B /* TranscriptFallback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptFallback.swift; sourceTree = "<group>"; };
 		A20000000000000000000007C /* DaemonLogDrawer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonLogDrawer.swift; sourceTree = "<group>"; };
@@ -116,6 +118,7 @@
 				A20000000000000000000004 /* ContentView.swift */,
 				A20000000000000000000005 /* DashboardView.swift */,
 				A20000000000000000000006A /* Workspace.swift */,
+				A20000000000000000000007D /* Notices.swift */,
 				A20000000000000000000007A /* Palette.swift */,
 				A20000000000000000000007B /* TranscriptFallback.swift */,
 				A20000000000000000000007C /* DaemonLogDrawer.swift */,
@@ -254,6 +257,7 @@
 				A10000000000000000000004 /* ContentView.swift in Sources */,
 				A10000000000000000000005 /* DashboardView.swift in Sources */,
 				A10000000000000000000006A /* Workspace.swift in Sources */,
+				A10000000000000000000007D /* Notices.swift in Sources */,
 				A10000000000000000000007A /* Palette.swift in Sources */,
 				A10000000000000000000007B /* TranscriptFallback.swift in Sources */,
 				A10000000000000000000007C /* DaemonLogDrawer.swift in Sources */,
