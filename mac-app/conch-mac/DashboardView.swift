@@ -1017,11 +1017,12 @@ private struct SessionContextMeter: View {
     let context: SessionContext
 
     private var fill: Color {
-        // A routine session stays quiet. Colour starts carrying urgency only
-        // once context pressure can plausibly change the next decision.
-        if context.fraction >= 0.97 { return ConchPalette.statusNeeds }
-        if context.fraction >= 0.85 { return ConchPalette.statusWaiting }
-        return ConchPalette.statusWorking.opacity(0.66)
+        // Only two bands can reach the screen now that the meter is not drawn below 85%;
+        // the quiet third colour it used to carry went with the rows it used to sit on.
+        // `statusWaiting` is (0.96,0.60,0.13) against the lab's `--listening:#FF9F0A` —
+        // the same orange to the eye, so the escalation at 97% stays as it is rather than
+        // being flattened by a px pass that has no business picking the state colours.
+        context.fraction >= 0.97 ? ConchPalette.statusNeeds : ConchPalette.statusWaiting
     }
 
     private var label: String {
@@ -1037,15 +1038,21 @@ private struct SessionContextMeter: View {
         // gave context pressure the same weight as the session itself, on the
         // one surface you scan constantly. Colour still carries the warning,
         // because that is the part worth interrupting for.
-        Text(label)
-            .font(ConchTypography.font(size: 10.5))
-            .foregroundStyle(context.fraction >= 0.85 ? fill : ConchPalette.textFaint)
-            .monospacedDigit()
-            .fixedSize()
-        .help("Context \(label) tokens · \(Int((context.fraction * 100).rounded()))% full")
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Context \(label) tokens")
-        .accessibilityValue("\(Int((context.fraction * 100).rounded())) percent full")
+        // `.ctxwarn{font-size:12px;color:var(--listening)}`, and §5: "87% context at 85% and
+        // above". Below that it is not drawn at all — which is Tyler's own complaint about it
+        // ("a lot of importance to a not super important piece of data") carried further than
+        // colour alone could.
+        if context.fraction >= 0.85 {
+            Text("\(Int((context.fraction * 100).rounded()))% context")
+                .font(ConchTypography.font(size: 12))
+                .foregroundStyle(fill)
+                .monospacedDigit()
+                .fixedSize()
+                .help("Context \(label) tokens · \(Int((context.fraction * 100).rounded()))% full")
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Context \(label) tokens")
+                .accessibilityValue("\(Int((context.fraction * 100).rounded())) percent full")
+        }
     }
 
     private static func tokens(_ count: Int) -> String {
@@ -1650,7 +1657,11 @@ private struct ConversationPane: View {
 
     private func sessionTitle(_ row: SessionRow) -> some View {
         Text(row.label)
-            .font(ConchTypography.font(size: 12.5, weight: .medium))
+            // `.ttl{font:600 14px;letter-spacing:-.01em}` — it was 12.5 medium, a size the
+            // header's own meta text could match. This is the line that says what you are
+            // looking at, so it outranks everything beside it.
+            .font(ConchTypography.font(size: 14, weight: .semibold))
+            .tracking(-0.14)
             .foregroundStyle(ConchPalette.textPrimary)
             .lineLimit(1)
             .truncationMode(.middle)
@@ -1705,27 +1716,38 @@ private struct ConversationPane: View {
             // does not apply to a group of three where the selected one is filled — you can
             // see where you are without decoding anything, which was the actual point.
             if selectedReview != nil {
-                PerspectiveOption(
-                    label: "Conversation",
-                    symbol: "text.bubble",
-                    isSelected: stage(for: row) == .conversation,
-                    help: "The exchange that produced it (⌘1)",
-                    action: { workspace.show(stage: .conversation, for: row.id) }
+                // `.seg{padding:2px;border-radius:8px;background:var(--fill);gap:1px;margin-right:4px}`.
+                // Three loose buttons read as three unrelated controls; one track with the
+                // selected position filled reads as one control that knows where it is.
+                HStack(spacing: 1) {
+                    PerspectiveOption(
+                        label: "Conversation",
+                        symbol: "text.bubble",
+                        isSelected: stage(for: row) == .conversation,
+                        help: "The exchange that produced it (⌘1)",
+                        action: { workspace.show(stage: .conversation, for: row.id) }
+                    )
+                    PerspectiveOption(
+                        label: "Side by side",
+                        symbol: "rectangle.split.2x1",
+                        isSelected: stage(for: row) == .sideBySide,
+                        help: "The work and the exchange together (⌘2)",
+                        action: { workspace.show(stage: .sideBySide, for: row.id) }
+                    )
+                    PerspectiveOption(
+                        label: "Deliverable",
+                        symbol: "doc.richtext",
+                        isSelected: stage(for: row) == .deliverable,
+                        help: "What the session produced (⌘3)",
+                        action: { workspace.show(stage: .deliverable, for: row.id) }
+                    )
+                }
+                .padding(2)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(ConchPalette.fill)
                 )
-                PerspectiveOption(
-                    label: "Side by side",
-                    symbol: "rectangle.split.2x1",
-                    isSelected: stage(for: row) == .sideBySide,
-                    help: "The work and the exchange together (⌘2)",
-                    action: { workspace.show(stage: .sideBySide, for: row.id) }
-                )
-                PerspectiveOption(
-                    label: "Deliverable",
-                    symbol: "doc.richtext",
-                    isSelected: stage(for: row) == .deliverable,
-                    help: "What the session produced (⌘3)",
-                    action: { workspace.show(stage: .deliverable, for: row.id) }
-                )
+                .padding(.trailing, 4)
             }
 
             // A subagent is not a session: nothing to inspect, no process to
@@ -2022,13 +2044,16 @@ private struct PerspectiveOption: View {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
-                .padding(.horizontal, 7)
-            .frame(height: 26)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
-            )
-            .contentShape(Rectangle())
+                // `.seg button{width:30px;height:24px;border-radius:6px}`, selected on
+                // `--fillSel`. The lab also asks for `box-shadow:var(--shRaised)` here,
+                // but that variable is defined nowhere in the lab and renders nothing —
+                // so the fill alone marks the selected segment, as the prototype shows it.
+                .frame(width: 30, height: 24)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isSelected ? ConchPalette.fillSelected : (isHovered ? ConchPalette.hover : .clear))
+                )
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { isHovered = $0 }
