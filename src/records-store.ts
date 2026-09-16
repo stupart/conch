@@ -111,9 +111,12 @@ export class RecordStore {
         if (previous.sessionId !== session.id || previous.device !== file.device || previous.inode !== file.inode) {
           throw new Error("registered source identity cannot change");
         }
-        if (previous.path !== file.path) this.db.query("UPDATE sources SET path=? WHERE id=?").run(file.path, file.id);
+        if (previous.path !== file.path) {
+          this.db.query("UPDATE sources SET path=?, previous_path=? WHERE id=?").run(file.path, previous.path, file.id);
+        }
         return { ...previous, path: file.path };
       }
+      this.noteReplacement(session.id, file.id, file.path);
       const source: StoredRecordSource = {
         ...file, sessionId: session.id, size: 0, modifiedMs: 0, generation: 1, offset: 0,
         prefixHash: recordFingerprint(new Uint8Array()), prefixLength: 0,
@@ -218,7 +221,10 @@ export class RecordStore {
         malformedLines: plan.change === "append" ? previous!.malformedLines : 0,
       };
       // Provenance has a source FK, but its committed offset advances only after every item is stored.
-      if (!this.source(read.id)) this.writeSource({ ...source, offset: 0, state: {} });
+      if (!this.source(read.id)) {
+        this.noteReplacement(session.id, read.id, read.path);
+        this.writeSource({ ...source, offset: 0, state: {} });
+      }
       let malformedLines = 0;
       for (const line of framed.lines) {
         let entry: unknown;
@@ -255,6 +261,23 @@ export class RecordStore {
       .run(session.id, session.ownerDeviceId, session.provider, session.nativeId, session.title ?? null, session.cwd ?? null, session.parentNativeId ?? null, session.forkNativeId ?? null);
   }
 
+  /**
+   * A path this session has already read, now held by a different file: the transcript was
+   * REPLACED, not appended to. Rename-and-replace is how a provider rotates one, and the
+   * two halves arrive in either order, so the evidence is the path a retired source is at
+   * or came from rather than whichever file discovery reaches first.
+   *
+   * The old file's items stay true and keep their own provenance; what cannot stand is a
+   * reader's cursor, which was issued against a transcript that has been swapped under it.
+   * Advancing the epoch retires every cursor, so history restarts instead of prepending one
+   * file's messages onto another's.
+   */
+  private noteReplacement(sessionId: string, id: string, path: string): void {
+    const replaced = this.db.query(`SELECT 1 AS found FROM sources
+      WHERE session_id=? AND id<>? AND (path=? OR previous_path=?) LIMIT 1`).get(sessionId, id, path, path);
+    if (replaced) this.db.query("UPDATE sessions SET history_epoch=history_epoch+1 WHERE id=?").run(sessionId);
+  }
+
   private writeSource(source: StoredRecordSource): void {
     this.db.query(`INSERT INTO sources (id,session_id,path,device,inode,size,modified_ms,generation,committed_offset,
       prefix_hash,prefix_length,checkpoint_hash,checkpoint_length,parser_version,state_json,malformed_lines)
@@ -282,8 +305,9 @@ export class RecordStore {
           turn.startedAt ?? null, turn.endedAt ?? null, turn.status ?? null, json(turn.context));
     }
     for (const [selector, item] of records.items.entries()) {
-      this.db.query(`INSERT INTO items (id,session_id,turn_id,native_id,parent_id,kind,role,text,content_json,at,order_key,revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      this.db.query(`INSERT INTO items (id,session_id,turn_id,native_id,parent_id,parent_native_id,kind,role,text,content_json,at,order_key,revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         ON CONFLICT(id) DO UPDATE SET turn_id=COALESCE(excluded.turn_id,turn_id), parent_id=COALESCE(excluded.parent_id,parent_id),
+        parent_native_id=COALESCE(excluded.parent_native_id,parent_native_id),
         native_id=COALESCE(excluded.native_id,native_id),
         text=COALESCE(excluded.text,text), content_json=COALESCE(excluded.content_json,content_json), revision=revision+1
         WHERE (excluded.text IS NOT NULL AND items.text IS NOT excluded.text)
@@ -291,7 +315,8 @@ export class RecordStore {
           OR (excluded.native_id IS NOT NULL AND items.native_id IS NOT excluded.native_id)
           OR (excluded.turn_id IS NOT NULL AND items.turn_id IS NOT excluded.turn_id)
           OR (excluded.parent_id IS NOT NULL AND items.parent_id IS NOT excluded.parent_id)`)
-        .run(item.id, session.id, item.turnId ?? null, item.nativeId ?? null, item.parentId ?? null, item.kind,
+        .run(item.id, session.id, item.turnId ?? null, item.nativeId ?? null, item.parentId ?? null,
+          item.parentNativeId ?? null, item.kind,
           item.role ?? null, item.text ?? null, json(item.content), item.at ?? null,
           `${source.id}:${String(source.generation).padStart(8, "0")}:${String(offset).padStart(16, "0")}:${String(selector).padStart(8, "0")}`);
       // Keep the original file identity even after the cursor follows a rotated file.

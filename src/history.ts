@@ -23,6 +23,8 @@ export interface HistoryItemSummary {
   preview: string;
   bodyBytes: number;
   toolName?: string;
+  /** The tool call's own id, for an item a live tool row is keyed by rather than by message. */
+  toolId?: string;
 }
 export interface HistoryCoverage {
   sources: number;
@@ -135,7 +137,7 @@ export function validateHistoryResponse(value: unknown): HistoryParse<HistoryRes
       && ["message", "tool_call", "tool_result", "compaction", "context", "material", "inter_agent"].includes(String(item.kind))
       && (item.role === undefined || ["user", "assistant", "tool", "system"].includes(String(item.role)))
       && (item.at === undefined || (typeof item.at === "number" && Number.isFinite(item.at)))
-      && [item.turnId, item.nativeId, item.parentId, item.toolName].every((field) => field === undefined || typeof field === "string"))) {
+      && [item.turnId, item.nativeId, item.parentId, item.toolName, item.toolId].every((field) => field === undefined || typeof field === "string"))) {
     return { ok: true, value: value as unknown as HistoryPage };
   }
   return invalid("invalid history response");

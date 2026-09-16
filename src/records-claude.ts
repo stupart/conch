@@ -134,10 +134,10 @@ export function normalizeClaudeRecord(value: unknown, context: RecordNormalizerC
     : Array.isArray(message.content) ? message.content : [];
   const parts = rawParts.map(object).filter((part): part is Record<string, unknown> => part !== undefined);
 
-  const append = (id: string, item: Omit<RecordItem, "id" | "nativeId" | "parentId" | "at">): RecordItem => {
+  const append = (id: string, item: Omit<RecordItem, "id" | "nativeId" | "parentId" | "parentNativeId" | "at">): RecordItem => {
     const stored: RecordItem = {
       id,
-      nativeId, parentId, at, ...item,
+      nativeId, parentId, parentNativeId, at, ...item,
     };
     out.items.push(stored);
     return stored;
@@ -183,13 +183,29 @@ export function normalizeClaudeRecord(value: unknown, context: RecordNormalizerC
       });
     }
 
+    // One provider message is ONE item, however many text blocks it was written in, and
+    // its id is the message's own UUID. A block is not a message: caching the first of
+    // four under the message's id shows a paragraph where a page belongs, and a parent
+    // pointing at "the message with this UUID" has nothing to point at when the id it
+    // needs is a block index. Tool calls, results and attachments keep their own ids,
+    // because each of those IS addressed on its own.
+    const visible = rawParts.flatMap((raw) => {
+      const block = object(raw);
+      const text = block?.type === "text" && typeof block.text === "string" ? recordValue(block.text) : undefined;
+      return typeof text === "string" ? [text] : [];
+    });
+    let messageWritten = false;
+
     for (const [blockIndex, rawPart] of rawParts.entries()) {
       const part = object(rawPart);
       if (!part) continue;
       if (part.type === "text" && typeof part.text === "string") {
-        const text = recordValue(part.text);
-        if (typeof text === "string") append(recordKey(rootId, "text", blockIndex), {
-          kind: "message", role: entry.type === "user" ? "user" : "assistant", turnId, text,
+        // Written where its first block is, so the message keeps its place among the
+        // calls and attachments it was interleaved with.
+        if (messageWritten || !visible.length) continue;
+        messageWritten = true;
+        append(rootId, {
+          kind: "message", role: entry.type === "user" ? "user" : "assistant", turnId, text: visible.join("\n"),
         });
       } else if (part.type === "tool_use" && entry.type === "assistant") {
         const callNativeId = string(part.id) ?? physicalRecordKey(context, `call:${blockIndex}`);

@@ -257,3 +257,36 @@ test("a Codex metadata UUID mismatch is reported without attributing content to 
   expect(f.store.sourcePage({})[0]!.source.offset).toBe(0);
   expect(f.store.counts().items).toBe(0);
 });
+
+test("a rename keeps the reader's cursor, and a real rename-and-replace advances the session epoch", async () => {
+  const f = fixture({ reconcileMs: 1 });
+  const path = f.write(id(1), message("first") + message("second"));
+  await until(f.indexer, () => f.store.counts().items === 2);
+  const sessionId = f.store.sourcePage({})[0]!.session.id;
+  const read = () => {
+    const result = f.store.historyPage({ session: sessionId, limit: 1 }, "test-device");
+    if (result.kind !== "history-page") throw Error(JSON.stringify(result));
+    return result;
+  };
+  const held = read();
+  const source = f.store.sourcePage({})[0]!.source;
+
+  // A rename is the same bytes under another name: nothing the reader holds became untrue.
+  renameSync(path, `${path}.1`);
+  await Bun.sleep(2);
+  await until(f.indexer, () => f.store.source(source.id)?.path === `${path}.1`);
+  expect(f.store.source(source.id)?.offset).toBe(source.offset);
+  expect(read().epoch).toBe(held.epoch);
+  expect(f.store.historyPage({ session: sessionId, before: held.previousCursor! }, "test-device"))
+    .toMatchObject({ kind: "history-page" });
+
+  // Rename-and-replace: the live path is a different file now, so a cursor into the old
+  // one must not be able to prepend its items to the new transcript.
+  writeFileSync(path, message("third", "replacement"));
+  await Bun.sleep(2);
+  await until(f.indexer, () => f.store.counts().items === 3);
+  await until(f.indexer, () => read().epoch !== held.epoch);
+  expect(f.store.historyPage({ session: sessionId, before: held.previousCursor! }, "test-device"))
+    .toMatchObject({ code: "stale-cursor" });
+  expect(items(f.store).map((row: any) => row.native_id).sort()).toEqual(["first", "second", "third"]);
+});

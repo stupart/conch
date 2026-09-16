@@ -26,7 +26,7 @@ fewer items to fit the byte budget. Omit optional cursors instead of sending nul
     id: string, kind: string, revision: number, orderKey: string,
     preview: string, bodyBytes: number,
     turnId?: string, nativeId?: string, parentId?: string,
-    role?: string, at?: number, toolName?: string
+    role?: string, at?: number, toolName?: string, toolId?: string
   }>,
   previousCursor: string | null, changeCursor: string, epoch: string,
   coverage: {
@@ -74,7 +74,7 @@ excludes items first indexed after the traversal began, including older backfill
 so appends cannot shift or duplicate the older pages. Existing item revisions may
 still change. Start a fresh traversal to include newly indexed items.
 
-Replay and explicit source rotation advance the session epoch. Item body cursors
+Replay, source rotation and a file replacing another at a path this session has already read all advance the session epoch. Item body cursors
 also bind the item, revision and byte offset. A cursor from another session,
 branch, item or API is refused. Cursor formats are private to the daemon.
 
@@ -86,6 +86,27 @@ Optional `branch` is an indexed Claude item ID at the desired ancestry tip. It
 includes all content blocks for ancestor message UUIDs and excludes siblings.
 Missing, cyclic or more than 2,048 ancestors, and providers without indexed item
 ancestry, return `branch-unavailable`. Omitting it returns all indexed items.
+
+## Identity
+
+One provider message is one item. Its id is that message's own UUID, and the text of
+every visible block it arrived in is that item's body, so opening an item returns the
+whole message rather than its first block. Tool calls, tool results and attachments are
+separate items, because each of those is addressed on its own: a tool item carries the
+message's `nativeId` and its own `toolId`, which is the call id a live tool row is keyed
+by. An id too long to be usable is omitted rather than truncated.
+
+Ancestry is the provider's parent link rather than a record id. A parent indexed after
+its child — another file, a fork's copy, a backfill running backwards — completes that
+child's ancestry as soon as it arrives, with nothing to repair. `branch` still takes an
+indexed item id at the tip.
+
+A transcript can be renamed, rotated or replaced under a reader. A rename keeps the
+source's cursor and the session's epoch: the bytes did not change. A replacement — a
+different file at a path this session has already read, in either discovery order —
+advances the session epoch, retiring every cursor so that no page can join two files'
+history. Either way the retired file's items keep their own path, device, inode and
+generation.
 
 ## Authorization and adapters
 
@@ -149,3 +170,24 @@ anchors; pixel-level scroll preservation remains a PR 7b UI test.
   chunking, relay retries, MCP binding and repository instruction generation.
 - No real transcript smoke run or app build was performed. The running daemon,
   live sessions and real records directory were not used.
+
+## Verified results (2026-09-16, identity and recovery)
+
+- Full `bun test`: 2,248 passed, zero failed; 20,475 assertions across 209 files; exit 0.
+  The unchanged tree was 2,244: the four new cases are the four defects below.
+- `bunx tsc --noEmit`: exit 0. `swift test --package-path design/ConchDesign`: 72 tests,
+  zero failures, exit 0. `xcodebuild` for the Mac app, and for the iPhone app against a
+  generic iOS Simulator destination: both `BUILD SUCCEEDED`, exit 0. CI builds neither app.
+- Every defect failed first on the unchanged code: three items for one three-block message
+  and no tool id to match a live tool row by; ancestry still incomplete after the parent was
+  indexed; a real rename-and-replace leaving the epoch untouched; an exited worker never
+  replaced.
+- `bun scripts/check-records-identity-mutations.ts`: exit 0. Five mutations — blocks back to
+  one item each, the tool id dropped, the provider's parent id not written, the replacement
+  epoch bump disabled, the exited worker held onto — each had baseline exit 0, mutant exit 1
+  and restored exit 0, with each file verified byte-for-byte against its original checksum.
+- The tests use real SQLite, real files under temporary directories, real rotation by
+  rename-and-replace through the indexer, and a real worker thread killed under the runtime.
+  The running daemon, live sessions and the real records directory were not used.
+- Existing stores replay into the new shape on their next read (parser version 2). No manual
+  reindex; as with any replay, a session whose transcript file is gone cannot be rebuilt.

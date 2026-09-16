@@ -47,7 +47,11 @@ Only complete newline-terminated UTF-8 lines advance the cursor. Partial lines
 remain unread, including partial multibyte characters. Malformed complete lines
 advance coverage and increment `malformedLines`; their contents are not retained.
 
-Device/inode replacement starts a new generation and retains earlier segments.
+Device/inode replacement starts a new generation and retains earlier segments. A
+replacement arriving as a NEW source at a path this session has already read is the same
+rotation seen from the other side, in whichever order discovery reaches the two files:
+the session's history epoch advances so held cursors cannot span both, while the retired
+file keeps its own items and provenance.
 Each item source keeps the original path, device/inode, generation, byte offset,
 byte length and selector even after rotation. Paths are hints; the future reader
 must revalidate file identity before using an old pointer.
@@ -67,7 +71,10 @@ tool arguments/results and compaction markers. Native IDs take precedence over
 physical source identities. Provenance and item revisions survive mirrored events;
 repeated identical messages with distinct native IDs remain distinct.
 
-Claude uses UUID/parent links, tool-use IDs and request/message IDs for usage.
+Claude uses UUID/parent links, tool-use IDs and request/message IDs for usage. One
+message is one item under its UUID, carrying every visible block it arrived in; tool
+calls, results and attachments are separate items under their own identities. Items
+record the provider's parent id, so ancestry does not depend on ingestion order.
 Codex keeps native turns, calls, fork metadata and bounded mirror bookkeeping.
 Orphan results remain addressable and can later acquire a call. File operations
 derived from arguments are labelled **attempted**, not verified edits.

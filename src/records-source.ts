@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 import type { RecordObject } from "./records-types.ts";
 
-export const RECORD_PARSER_VERSION = 1;
+// 2: one provider message is one item (its blocks are no longer separate rows), items
+// carry the provider's parent id, and tool identity is explicit. Existing stores replay
+// into that shape on their next read rather than showing two normalizers' output at once.
+export const RECORD_PARSER_VERSION = 2;
 export const SOURCE_PROBE_BYTES = 256;
 
 export interface StoredRecordSource {
