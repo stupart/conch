@@ -378,6 +378,14 @@ final class StateStore: ObservableObject {
     /// window (`claude attach`). Fire and forget, like reveal: the daemon
     /// answers before Terminal opens and records a failure itself. Once the
     /// window attaches, the row routes to it and this button goes away.
+    /// Tell the daemon a deliverable has been looked at, so every surface agrees about it and
+    /// a relaunch does not forget. Fire and forget, like reveal: whoever showed it has already
+    /// greyed it, and the daemon's copy is what makes that survive and reach the phone.
+    func markReviewViewed(sessionId: String, review: String) {
+        let request = ConchSessionCommandRequest(sessionId: sessionId, command: .reviewViewed, review: review)
+        Task { _ = await socketClient.request(request) }
+    }
+
     func openInTerminal(_ row: SessionRow) {
         guard row.attachable else { return }
         let request = ConchSessionCommandRequest(sessionId: row.id, command: .attach)
@@ -875,8 +883,9 @@ final class StateStore: ObservableObject {
         transportErrorSessionIDs.remove(context.id)
 
         switch context.command {
-        case .reveal, .setModel, .attach:
-            // A raise or a typed /model changes no row; there is nothing to reconcile.
+        case .reveal, .setModel, .attach, .reviewViewed:
+            // A raise, a typed /model, or marking a deliverable read changes no row here;
+            // there is nothing to reconcile.
             break
         case .rename:
             guard let canonicalLabel = acknowledgement.label else { return }
@@ -941,7 +950,7 @@ final class StateStore: ObservableObject {
         )
 
         switch context.command {
-        case .rename, .reveal, .setModel, .attach:
+        case .rename, .reveal, .setModel, .attach, .reviewViewed:
             break
         case .dismiss:
             if optimisticDismissals[context.id]?.generation == context.generation {

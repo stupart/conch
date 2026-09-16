@@ -613,8 +613,17 @@ private struct ControlBarHost: View {
 
     /// The review the next click brings forward, by its exact version (`ReviewItem.id`: the session and when its review
     /// was filed), never by a place in the queue.
+    /// What has been looked at: whatever the daemon remembers, on any device, plus whatever
+    /// this window has just handed off. The local half is optimistic — the pill moves on at
+    /// the click and the daemon's answer catches up — and it is the whole story against a
+    /// daemon too old to remember, which is what `features.viewedState` distinguishes.
+    private func seen(in ready: [ReviewItem]) -> Set<ReviewItem.ID> {
+        guard store.state?.features?.viewedState != nil else { return opened }
+        return opened.union(ready.filter { $0.viewedAt != nil }.map(\.id))
+    }
+
     private func next(in ready: [ReviewItem]) -> ReviewItem? {
-        let key = ReviewScene.next(after: lastStaged, in: ready.map { (key: $0.id, at: $0.reviewedAt ?? 0) }, opened: opened)
+        let key = ReviewScene.next(after: lastStaged, in: ready.map { (key: $0.id, at: $0.reviewedAt ?? 0) }, opened: seen(in: ready))
         return ready.first { $0.id == key }
     }
 
@@ -630,7 +639,13 @@ private struct ControlBarHost: View {
             await previous?.value
             guard let row = ConchStatusItem.readyRows(store.state).first(where: { ReviewItem(row: $0)?.id == key }) else { return }
             panels.staged = row.id
-            if await ConchStatusItem.stage(row, store: store) { opened.insert(key) }
+            if await ConchStatusItem.stage(row, store: store) {
+                opened.insert(key)
+                // So the phone, the terminal and the next launch agree with this window.
+                if store.state?.features?.viewedState != nil {
+                    store.markReviewViewed(sessionId: row.id, review: key)
+                }
+            }
         }
     }
 }

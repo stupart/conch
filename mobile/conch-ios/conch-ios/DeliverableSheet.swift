@@ -26,12 +26,26 @@ struct ReviewSheet: View {
         })
     }
 
+    /// What the Mac's daemon remembers being looked at, on any device. Empty against a daemon
+    /// too old to know, where this screen's own `opened` is the whole story.
+    private var viewedKeys: Set<String> {
+        guard bridge.state?.features?.viewedState != nil else { return [] }
+        var keys: Set<String> = []
+        for row in bridge.state?.rows ?? [] {
+            let held = row.reviews ?? row.review.map { [$0] } ?? []
+            for one in held where one.viewedAt != nil {
+                keys.insert(ReviewQueue.key(sessionId: row.id, filedAt: one.at, published: one.id))
+            }
+        }
+        return keys
+    }
+
     private var currentKey: String? {
         row?.review.map { ReviewQueue.key(sessionId: sessionId, filedAt: $0.at, published: $0.id) }
     }
 
     var body: some View {
-        let next = ReviewQueue.next(after: currentKey, in: ready, opened: opened)
+        let next = ReviewQueue.next(after: currentKey, in: ready, opened: opened.union(viewedKeys))
         let more = ready.filter { $0.key != currentKey }.count
         NavigationStack {
             Group {
@@ -63,7 +77,14 @@ struct ReviewSheet: View {
                         HStack {
                             Spacer()
                             Button {
-                                if let currentKey { opened.insert(currentKey) }
+                                if let currentKey {
+                                    // Optimistic: it greys here at the tap, and the daemon's
+                                    // copy is what carries it to the Mac and past a relaunch.
+                                    opened.insert(currentKey)
+                                    if bridge.state?.features?.viewedState != nil {
+                                        Task { _ = await bridge.send(sessionCommand: .reviewViewed, sessionId: sessionId, review: currentKey) }
+                                    }
+                                }
                                 sessionId = next
                             } label: {
                                 HStack(spacing: 6) {
