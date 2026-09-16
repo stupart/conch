@@ -207,6 +207,7 @@ describe("Cut B Swift, by site", () => {
   const models = swift("Models.swift");
   const holder = swift("AudioHolderStore.swift");
   const dashboard = swift("DashboardView.swift");
+  const notices = swift("Notices.swift");
   const composer = swift("ComposerView.swift");
   const app = swift("ConchMacApp.swift");
 
@@ -290,14 +291,16 @@ describe("Cut B Swift, by site", () => {
   });
 
   test("the non-holder dims exactly the composer mic button and the auto/manual control, with the Take it line", () => {
-    expect(dashboard).toContain('Text("Controlled by \\(host) —")');
-    expect(dashboard).toContain('Button("Take it", action: audio.takeIt)');
-    expect(dashboard).toContain('Text("You hold audio · \\(audio.silentHosts.joined(separator: ", ")) is silent")');
+    // The three Cut B banners are drawn by WorkspaceNotices now; the composer and mode
+    // dimming they gate stays in the dashboard, and is still asserted there below.
+    expect(notices).toContain('Text("Controlled by \\(host) —")');
+    expect(notices).toContain('Button("Take it", action: audio.takeIt)');
+    expect(notices).toContain('Text("You hold audio · \\(audio.silentHosts.joined(separator: ", ")) is silent")');
     // Both Macs local: the first transfer needs a Take it somewhere.
-    expect(dashboard).toContain('Text("\\(audio.takeableHosts.joined(separator: ", ")) speaks for itself —")');
-    expect(count(dashboard, 'Button("Take it", action: audio.takeIt)')).toBe(2);
+    expect(notices).toContain('Text("\\(audio.takeableHosts.joined(separator: ", ")) speaks for itself —")');
+    expect(count(notices, 'Button("Take it", action: audio.takeIt)')).toBe(2);
     ordered(
-      dashboard,
+      notices,
       "if let host = audio.controlledBy {",
       'Button("Take it", action: audio.takeIt)',
       "} else if !audio.silentHosts.isEmpty {",
