@@ -41,14 +41,18 @@ describe("Mac", () => {
 
   test("a review notifies once, when it is ready, not whenever it is published", () => {
     const ready = content.indexOf(".onChange(of: readyReviewIDs)");
-    const all = content.indexOf(".onChange(of: reviewIDs)");
     const post = content.indexOf("ReviewNotifications.shared.postOnce(for: review)");
     expect(content).toContain("Set(reviewItems.filter(\\.isReady).map(\\.id))");
     expect(ready).toBeGreaterThan(-1);
-    expect(all).toBeGreaterThan(-1);
     expect(post).toBeGreaterThan(-1);
     expect(post).toBeGreaterThan(ready);
-    expect(post).toBeLessThan(all);
+    // The upper fence used to be `.onChange(of: reviewIDs)` — a block that existed only to
+    // clear the full-window overlay's id, and which went with that overlay (§3 line 234).
+    // Fencing between two markers only ever proved postOnce sat BETWEEN them; asking whether
+    // it sits INSIDE the ready handler is the thing actually worth guarding.
+    const readyBlock = content.slice(ready, content.indexOf("\n        }\n", ready));
+    expect(readyBlock.length).toBeGreaterThan(80);
+    expect(readyBlock).toContain("ReviewNotifications.shared.postOnce(for: review)");
     expect(content.split("postOnce(").length - 1).toBe(1);
   });
 });
