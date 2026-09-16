@@ -837,8 +837,17 @@ struct SessionView: View {
         Task { await bridge.interrupt(sessionId: sessionId, label: label) }
     }
 
-    private func answerQuestion(_ label: String) {
+    /// Answer the question that is on screen — and prove, at the moment of sending, that it
+    /// is still the one being asked.
+    ///
+    /// The row disables itself once a question is no longer active, but that is the VIEW's
+    /// state: a tap already in flight, or a screen that has not caught up, could still send an
+    /// answer to a question the agent had moved on from, and the reply carried nothing that
+    /// said which question it was for. It carries the question's own item id now, and is
+    /// checked against the live conversation by the same rule the row is drawn by.
+    private func answerQuestion(_ label: String, questionID: String) {
         guard !label.isEmpty, !optionReplyInFlight, row?.noTerminal == nil else { return }
+        guard isStillAsking(questionID) else { return }
         optionReplyInFlight = true
         sendFailed = false
         let sessionLabel = row?.label ?? ""
@@ -852,6 +861,15 @@ struct SessionView: View {
             // An option tap has no bubble to correct later, so only a refusal is reported.
             if case .failed = delivered { sendFailed = true }
         }
+    }
+
+    /// Whether the agent is still waiting on this exact question, by the same rule the row
+    /// uses to enable itself: its tool call is still running.
+    private func isStillAsking(_ questionID: String) -> Bool {
+        guard let item = bridge.state?.conversations[sessionId]?.items.first(where: { $0.id == questionID }) else {
+            return false
+        }
+        return item.question != nil && item.tool?.status == "running"
     }
 
     private func closeCleanly() {
