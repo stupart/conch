@@ -157,6 +157,27 @@ describe("the iPhone reads recorded history", () => {
     expect(appear.indexOf("history.follow")).toBeLessThan(appear.indexOf("conchFixtureTop"));
   });
 
+  test("a session whose live window is empty still draws what the record holds", () => {
+    // Recorded history draws INSIDE the conversation stack, so gating that stack on the
+    // daemon's snapshot hid the history along with it: an older session the daemon no
+    // longer publishes a window for showed nothing at all — no recorded messages, no
+    // "Load earlier messages", no state line.
+    const window = sliceFrom(session, "private var liveWindow: Conversation?", "private func scrollToBottom");
+    expect(window).toContain("if let published, !published.items.isEmpty { return published }");
+    expect(window).toContain("guard history.paging.hasAnythingToShow else { return nil }");
+    expect(window).toContain("return published ?? Conversation(sessionId: sessionId)");
+    expect(session).toContain("if let conversation = liveWindow {");
+    // The gate this replaced, which drew the stack for the live window alone.
+    expect(session).not.toContain("!conversation.items.isEmpty {");
+    // An empty window is a real Conversation, through the model's own init.
+    expect(ios("Models.swift")).toContain("init(sessionId: String) { self.sessionId = sessionId }");
+    // Records off, and a record that simply does not hold this session, both keep the
+    // screen the app already draws rather than inventing an emptier one.
+    expect(history).toContain("public var hasAnythingToShow: Bool");
+    expect(history).toContain("guard status != .off else { return false }");
+    expect(history).toContain("return !items.isEmpty || status != .idle || canLoadOlder");
+  });
+
   test("the honest states are different sentences, each with what to do about it", () => {
     const header = sliceFrom(stack, "private var historyHeader: some View", "/// When the record starts");
     expect(header).toContain("case .off:");

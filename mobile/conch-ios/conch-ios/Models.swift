@@ -582,6 +582,11 @@ struct Conversation: Decodable, Equatable, Sendable {
     /// branch is this one's, so this is both — said, rather than guessed (A8).
     var shared = false
     private enum CodingKeys: String, CodingKey { case sessionId, items, truncated, shared }
+
+    /// An empty live window, for a session the daemon publishes none for. Recorded
+    /// history is drawn inside the conversation stack and so needs one to draw in.
+    init(sessionId: String) { self.sessionId = sessionId }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         sessionId = (try? c.decodeIfPresent(String.self, forKey: .sessionId)) ?? ""

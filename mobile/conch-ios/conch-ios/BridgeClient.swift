@@ -1147,7 +1147,12 @@ final class FixtureTransport: BridgeTransport, @unchecked Sendable {
     /// second page has no cursor, so paging terminates instead of spinning.
     private func recordedPage(_ payload: [String: Any]?, partial: Bool) -> [String: Any] {
         let session = payload?["session"] as? String ?? ""
-        let live = fixtureItems(session: session)
+        // A session the daemon no longer publishes a window for still has a record,
+        // and that is the case worth photographing: an empty live window above a full
+        // history. The fixture has no conversation for those sessions, so the recorded
+        // page is built from a short one of its own rather than from nothing.
+        let published = fixtureItems(session: session)
+        let live = published.isEmpty ? Self.recordedOnly : published
         let base = Date().timeIntervalSince1970 * 1_000 - 3_600_000
         let all = live.enumerated().map { index, item -> [String: Any] in
             let kind = (item["kind"] as? String) ?? "assistant"
@@ -1186,6 +1191,13 @@ final class FixtureTransport: BridgeTransport, @unchecked Sendable {
         if !older { page["previousCursor"] = "older" }
         return page
     }
+
+    /// What the record still holds for a session whose live window is empty.
+    private static let recordedOnly: [[String: Any]] = [
+        ["kind": "user", "text": "Walk the relay reconnect paths and tell me which one drops the socket."],
+        ["kind": "tool", "text": "", "tool": ["name": "Grep"]],
+        ["kind": "assistant", "text": "Three of them reconnect; only the backoff path closes the socket first."],
+    ]
 
     private func fixtureItems(session: String) -> [[String: Any]] {
         guard let data = try? Data(contentsOf: url),
