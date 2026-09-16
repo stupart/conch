@@ -69,6 +69,27 @@ describe("the Mac composer belongs to one session", () => {
   const composer = mac("ComposerView.swift");
   const dashboard = mac("DashboardView.swift");
 
+  test("the composer floats at the measure rather than spanning the frame (§3)", () => {
+    // Found by LOOKING at it (conch shot, 2026-09-17): the transcript is set to a 700 pt
+    // column while the composer was twice that and flush to the bottom edge, so the reply and
+    // the thing being replied to did not share a column.
+    expect(composer).toContain(
+      "in: RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)",
+    );
+    // §3 names "floating elevation", so it takes the token. ReviewView hand-rolls a shadow
+    // that matches nothing in the scale; a literal that happens to look right is how the
+    // design system and the app come apart.
+    expect(composer).toContain(".conchElevation(.floating)");
+    expect(composer).toContain(".padding(.bottom, 14)");
+    // THE SAME constant the transcript uses, not a second 700 typed here.
+    expect(composer).toContain(".frame(maxWidth: ConversationTextView.maxMeasure)");
+    expect(mac("ConversationStackView.swift")).toContain("ConversationTextView.maxMeasure");
+    // The hairline went with the bar it separated; a floating card needs no rule above it.
+    expect(composer).not.toContain("Rectangle().fill(ConchPalette.divider).frame(height: 1)");
+    // conchElevation and ConchRadius both come from the design system, and CI builds no app.
+    expect(composer).toContain("import ConchDesign");
+  });
+
   test("text and attachments are persisted together under the session id", () => {
     // Files are part of the message. Persisting only the text still lets a
     // screenshot silently follow the user into another agent's composer.

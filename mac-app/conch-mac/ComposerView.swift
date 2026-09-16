@@ -1,4 +1,5 @@
 import SwiftUI
+import ConchDesign
 import UniformTypeIdentifiers
 
 /// Unsent work belongs to the session it addresses, not to whichever row is
@@ -337,10 +338,23 @@ struct ComposerView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(ConchPalette.raised)
-        .overlay(alignment: .top) {
-            Rectangle().fill(ConchPalette.divider).frame(height: 1)
-        }
+        // §3: the composer floats 14 above the bottom, at the width of the measure, radius 18,
+        // floating elevation.
+        //
+        // It was a full-width bar pinned to the frame with a hairline over it, so the
+        // transcript was set to a 700 pt column while the field you answer it in was twice
+        // that and touching the edge — the reply and the thing being replied to did not share
+        // a column. Same constant as the transcript, so they cannot drift apart.
+        .background(
+            ConchPalette.raised,
+            in: RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)
+        )
+        // The token rather than a hand-rolled shadow: §3 names this elevation, and a literal
+        // that happens to look right is how the design system and the app come apart.
+        .conchElevation(.floating)
+        .frame(maxWidth: ConversationTextView.maxMeasure)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 14)
         // Dropping a screenshot straight onto the window is how anyone actually
         // shares one, so it must work without opening a file picker first.
         .onDrop(of: [.fileURL], isTargeted: $isTargetedForDrop) { providers in
