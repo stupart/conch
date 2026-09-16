@@ -822,7 +822,7 @@ const STATUS_GLYPH: Record<SessionStatus, string> = {
   working: "\x1b[36m● working…\x1b[0m",
 };
 
-const REVIEW_GLYPH = "\x1b[33m⭐ needs review\x1b[0m";
+const REVIEW_GLYPH = "\x1b[32m✓ needs review\x1b[0m";
 
 const LIVE_GLYPH: Partial<Record<PanelConchState, string>> = {
   listening: "\x1b[32m● mic open\x1b[0m",
@@ -1115,7 +1115,7 @@ function reconcilePanelState(
 
 /**
  * Sort order: what needs you first, then waiting, then working. A deliverable is
- * an attribute of a waiting row, so its ⭐ never changes the natural order.
+ * an attribute of a waiting row, so its ✓ never changes the natural order.
  */
 export const STATUS_RANK: Record<SessionStatus, number> = {
   needs: 1,

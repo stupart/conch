@@ -322,10 +322,10 @@ describe("theater status formatting", () => {
     const plain = header.replace(/\x1b\[[0-9;]*m/g, "");
 
     expect(plain).toBe(
-      "  conch · ❗ 2 need you · ○ 4 waiting · ⭐1 to look at · ● 1 working · speaking ‹dayloop›",
+      "  conch · ❗ 2 need you · ○ 4 waiting · ✓1 to look at · ● 1 working · speaking ‹dayloop›",
     );
     expect(header).toContain("\x1b[91m❗\x1b[39m"); // needs is now red — it outranks waiting
-    expect(header).toContain("\x1b[33m⭐\x1b[39m");
+    expect(header).toContain("\x1b[32m✓\x1b[39m");
     expect(header).toContain("\x1b[33m○\x1b[39m"); // waiting is now yellow — a finished turn is sitting on you
     expect(header).toContain("\x1b[36m●\x1b[39m");
     expect(header).not.toContain("\n");
@@ -334,7 +334,7 @@ describe("theater status formatting", () => {
       rows: [rows[2]!],
       live: { state: "idle", label: "", partial: "" },
     })).replace(/\x1b\[[0-9;]*m/g, "");
-    expect(idle).toBe("  conch · ○ 1 waiting · ⭐1 to look at");
+    expect(idle).toBe("  conch · ○ 1 waiting · ✓1 to look at");
     expect(idle).not.toContain("0 ");
     expect(idle).not.toContain("‹");
 
@@ -486,8 +486,8 @@ describe("theater deliverables", () => {
 
     renderer.panel(sampleModel({ panelOpen: false, live: idle, reply: null, rows: [deliverableRow()] }));
     const collapsed = plainFrame(writes.at(-1)!);
-    expect(ledgerLine(writes.at(-1)!)).toContain("⭐ needs review (Hero v3 render · /tmp/hero-v3.png)");
-    expect(collapsed[0]).toContain("⭐1 to look at");
+    expect(ledgerLine(writes.at(-1)!)).toContain("✓ needs review (Hero v3 render · /tmp/hero-v3.png)");
+    expect(collapsed[0]).toContain("✓1 to look at");
 
     renderer.panel(sampleModel({
       panelOpen: true,
@@ -499,7 +499,7 @@ describe("theater deliverables", () => {
     // Header and rule carry no seam; the body starts on the third frame line.
     const pane = plainFrame(writes.at(-1)!).map((line) => (line.split("│")[1] ?? "").trim());
     expect(pane.slice(2, 6)).toEqual([
-      "⭐ Hero v3 render",
+      "✓ Hero v3 render",
       "/tmp/hero-v3.png",
       "",
       "Rendered the hero at 2x.",
@@ -534,14 +534,14 @@ describe("theater deliverables", () => {
       review: { summary: "Hero v4 render", link: "/tmp/hero-v4.png", at: HERO_AT + 1, id: "hero-v4-rev" },
     })]));
     ledger = ledgerLine(writes.at(-1)!);
-    expect(ledger).toContain("⭐ needs review (Hero v4 render · /tmp/hero-v4.png)");
-    expect(plainFrame(writes.at(-1)!)[0]).toContain("⭐1 to look at");
+    expect(ledger).toContain("✓ needs review (Hero v4 render · /tmp/hero-v4.png)");
+    expect(plainFrame(writes.at(-1)!)[0]).toContain("✓1 to look at");
 
     // No link, nothing to hand over — and nothing is consumed.
     renderPanel(frame([deliverableRow({ review: { summary: "Wrote the notes", at: HERO_AT + 2, id: "notes-rev" } })]));
     expect(openTheaterReview("hero")).toBe("no link was published for ‹hero-site›'s review");
     expect(opens).toEqual(["/tmp/hero-v3.png"]);
-    expect(ledgerLine(writes.at(-1)!)).toContain("⭐ needs review (Wrote the notes)");
+    expect(ledgerLine(writes.at(-1)!)).toContain("✓ needs review (Wrote the notes)");
     renderer.shutdown();
 
     // The byte-frozen footer has no deliverable seam.
@@ -571,8 +571,8 @@ describe("theater deliverables", () => {
     expect(plainFrame(writes.at(-1)!)[0]).not.toContain("to look at");
 
     renderPanel(frame([deliverableRow({ at: HERO_AT + 240_000, review: v4 })]));
-    expect(ledgerLine(writes.at(-1)!)).toContain("⭐ needs review (Hero v4 render · /tmp/hero-v4.png)");
-    expect(plainFrame(writes.at(-1)!)[0]).toContain("⭐1 to look at");
+    expect(ledgerLine(writes.at(-1)!)).toContain("✓ needs review (Hero v4 render · /tmp/hero-v4.png)");
+    expect(plainFrame(writes.at(-1)!)[0]).toContain("✓1 to look at");
     renderer.shutdown();
   });
 });
@@ -712,7 +712,7 @@ describe("theater renderer lifecycle", () => {
 
     const frame = writes.at(-1)!;
     expect(frame).toContain("needs a response");
-    expect(frame).toContain("⭐ needs review");
+    expect(frame).toContain("✓ needs review");
     expect(frame).toContain("(PR ready to inspect)");
     expect(frame).not.toContain("│");
     expect(frame).not.toContain("…");
@@ -795,7 +795,7 @@ describe("theater renderer lifecycle", () => {
     expect(review).not.toMatch(/\b2\s+beta/);
     expect(waiting).not.toMatch(/\b3\s+alpha/);
     expect(working).not.toMatch(/\b4\s+delta/);
-    expect(review).toContain("⭐");
+    expect(review).toContain("✓");
     expect(review).toContain("Review the");
     expect(review).toContain("…");
     expect(review).not.toContain("Review the terminal dashboard deliverable");
@@ -805,7 +805,7 @@ describe("theater renderer lifecycle", () => {
     expect(working).toMatch(/2d\s+│/);
     expect(frame).toContain("\x1b[2m2m\x1b[22m");
     expect(plainLines[0]).toContain(
-      "conch · ❗ 1 need you · ○ 2 waiting · ⭐1 to look at · ● 1 working",
+      "conch · ❗ 1 need you · ○ 2 waiting · ✓1 to look at · ● 1 working",
     );
     expect(plainLines[0]).not.toContain("🐚");
     expect(plainLines.every((line) => terminalCellWidth(line) <= 119)).toBe(true);

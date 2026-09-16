@@ -908,7 +908,7 @@ test("dashboardRowsForModel renders the review star and dimmed summary detail", 
   });
 
   const row = dashboardRowsForModel(model)[0]!;
-  expect(row).toContain("\x1b[33m⭐ needs review\x1b[0m");
+  expect(row).toContain("\x1b[32m✓ needs review\x1b[0m");
   expect(row).toContain("\x1b[2m(PR ready to inspect)\x1b[0m");
 });
 
