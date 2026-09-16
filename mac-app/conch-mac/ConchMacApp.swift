@@ -38,7 +38,6 @@ struct ConchMacApp: App {
                     audio.releaseOnQuit()
                 }
                 .frame(minWidth: 640, minHeight: 400)
-                .preferredColorScheme(.dark)
                 .background(WindowBackgroundConfigurator())
                 .onReceive(
                     NotificationCenter.default.publisher(

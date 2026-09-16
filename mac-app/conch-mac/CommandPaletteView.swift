@@ -552,7 +552,7 @@ private struct PaletteRow: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         // The same ladder the session list uses: selection outranks hover.
-        .background(isSelected ? ConchPalette.raised : (isHovering ? ConchPalette.hover : .clear))
+        .background(isSelected ? ConchPalette.selection : (isHovering ? ConchPalette.hover : .clear))
         .onHover { isHovering = $0 }
     }
 }
