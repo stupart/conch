@@ -106,7 +106,7 @@ private struct ReviewSurface: View {
             .animation(.easeOut(duration: 0.16), value: isWebLoading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(ConchPalette.bg)
+        .background(ConchPalette.surface)
     }
 
     private var caption: some View {
@@ -166,7 +166,7 @@ private struct MissingDeliverableView: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(ConchPalette.bg)
+        .background(ConchPalette.surface)
     }
 }
 
@@ -222,19 +222,19 @@ private struct ReviewContent: View {
         case let .image(url):
             DeliverableImageView(url: url, onFailure: { loadFailed(url, $0) })
                 .padding(18)
-                .background(ConchPalette.bg)
+                .background(ConchPalette.surface)
                 .onAppear {
                     isWebLoading = false
                 }
         case let .video(url):
             DeliverableVideoView(url: url, onFailure: { loadFailed(url, $0) })
-                .background(ConchPalette.bg)
+                .background(ConchPalette.surface)
                 .onAppear {
                     isWebLoading = false
                 }
         case let .pdf(url):
             DeliverablePDFView(url: url, onFailure: { loadFailed(url, $0) })
-                .background(ConchPalette.bg)
+                .background(ConchPalette.surface)
                 .onAppear {
                     isWebLoading = false
                 }
@@ -242,13 +242,13 @@ private struct ReviewContent: View {
             DeliverableDocumentView(url: url, renderMarkdown: true, onFailure: { loadFailed(url, $0) }) { link in
                 open(link, cwd: url.deletingLastPathComponent().path)
             }
-                .background(ConchPalette.bg)
+                .background(ConchPalette.surface)
                 .onAppear {
                     isWebLoading = false
                 }
         case let .text(url):
             DeliverableDocumentView(url: url, renderMarkdown: false, onFailure: { loadFailed(url, $0) })
-                .background(ConchPalette.bg)
+                .background(ConchPalette.surface)
                 .onAppear {
                     isWebLoading = false
                 }
@@ -275,7 +275,7 @@ private struct ReviewContent: View {
                 .padding(.top, 4)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(ConchPalette.bg)
+            .background(ConchPalette.surface)
             .onAppear { isWebLoading = false }
         case let .missing(url):
             VStack(spacing: 10) {
@@ -298,7 +298,7 @@ private struct ReviewContent: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(24)
-            .background(ConchPalette.bg)
+            .background(ConchPalette.surface)
             .onAppear {
                 isWebLoading = false
                 // Said above, and filed too (A13), with the path it looked for.
@@ -355,7 +355,7 @@ private struct ReviewContent: View {
                 // it until the load settles. Failure states set isLoading false
                 // too, so this can't strand the pane behind a permanent cover.
                 if isWebLoading, navigationFailure == nil {
-                    ConchPalette.bg
+                    ConchPalette.surface
                         .overlay(
                             VStack(spacing: 10) {
                                 ProgressView().controlSize(.small)
@@ -379,7 +379,7 @@ private struct ReviewContent: View {
                 }
                 }
             }
-            .background(ConchPalette.bg)
+            .background(ConchPalette.surface)
         }
     }
 
@@ -489,7 +489,7 @@ private struct DeliverableFailureView: View {
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(ConchPalette.bg)
+        .background(ConchPalette.surface)
         .accessibilityElement(children: .contain)
     }
 }
@@ -708,7 +708,7 @@ private struct DeliverablePDFView: NSViewRepresentable {
         view.autoScales = true
         view.displayMode = .singlePageContinuous
         view.displaysPageBreaks = true
-        view.backgroundColor = NSColor(ConchPalette.bg)
+        view.backgroundColor = NSColor(ConchPalette.surface)
         return view
     }
 
