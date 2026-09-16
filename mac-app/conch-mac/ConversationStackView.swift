@@ -102,7 +102,7 @@ struct ConversationStackView: View {
                 // screen at once, since every loaded page is laid out. Virtualise when it
                 // can be MEASURED on a Mac with Xcode — guessing is how the bare
                 // background got shipped the first time.
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 22) {
                     historyHeader
                     if conversation.shared {
                         Text("Shared with another window — both windows' messages are shown")
@@ -413,7 +413,7 @@ struct ConversationStackView: View {
                     .textSelection(.enabled)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .background(ConchPalette.raised, in: RoundedRectangle(cornerRadius: 12))
+                    .background(ConchPalette.fill, in: RoundedRectangle(cornerRadius: ConchRadius.large))
             }
         case .assistant:
             VStack(alignment: .leading, spacing: 4) {
