@@ -102,11 +102,13 @@ describe("persistent device identity", () => {
   });
 
   test.each([true, false])("config resolution honours CONCH_CONFIG_DIR (override: %j)", async (override) => {
-    // A child gives settingsPathFor a fresh HOME, including under mutations that
-    // ignore the override. No test may create identity in the real config dir.
+    // A child gives settingsPathFor a fresh home, including under mutations that
+    // ignore the override. CONCH_HOME is the seam conch resolves against — Bun
+    // caches os.homedir() at process start, so HOME alone cannot move it — and it
+    // travels with HOME here. No test may create identity in the real config dir.
     const home = directory();
     const selected = join(home, "custom-config");
-    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, CONCH_HOME: home };
     delete env.CONCH_CONFIG_DIR;
     if (override) env.CONCH_CONFIG_DIR = selected;
     const child = Bun.spawn([process.execPath, "--eval", `

@@ -1,5 +1,5 @@
 import { Worker } from "node:worker_threads";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { join } from "node:path";
 import type { Config } from "./config.ts";
 import type { RecordStore } from "./records-store.ts";
@@ -132,6 +132,6 @@ export async function openRecordsIfEnabled(
   options: { configDir?: string } = {},
 ): Promise<RecordsClient | null> {
   if (!config.recordsEnabled) return null;
-  const configDir = options.configDir ?? process.env.CONCH_CONFIG_DIR ?? join(homedir(), ".config", "conch");
+  const configDir = options.configDir ?? process.env.CONCH_CONFIG_DIR ?? join(conchHome(), ".config", "conch");
   return RecordsClient.open({ configDir });
 }

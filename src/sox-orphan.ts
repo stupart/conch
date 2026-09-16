@@ -1,6 +1,6 @@
 import { readProcessIdentity, sameProcessIdentity, validProcessIdentity, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { join } from "node:path";
 import { processAlive } from "./daemon-identity.ts";
 import type { OrphanReaperDeps } from "./whisper-orphan.ts";
@@ -22,7 +22,7 @@ export interface SoxSpawnRecord {
   identities?: Record<string, ProcessIdentity>;
 }
 
-export const SOX_RECORD_PATH = join(homedir(), ".cache/conch/sox-recorders.json");
+export const SOX_RECORD_PATH = join(conchHome(), ".cache/conch/sox-recorders.json");
 
 export function readSoxRecord(path = SOX_RECORD_PATH): SoxSpawnRecord | null {
   try {

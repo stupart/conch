@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { join } from "node:path";
 import { CONCH_VERSION } from "./version.ts";
 
@@ -29,7 +29,7 @@ export interface DaemonIdentity {
   startedAt: number;
 }
 
-export const IDENTITY_PATH = join(homedir(), ".cache/conch/daemon.json");
+export const IDENTITY_PATH = join(conchHome(), ".cache/conch/daemon.json");
 
 /**
  * `CONCH_STARTED_BY` is set by whoever spawns the daemon. Absent means a person

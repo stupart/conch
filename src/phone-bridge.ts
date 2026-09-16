@@ -5,7 +5,7 @@ import type { UploadChunk, UploadResult } from "./phone-uploads.ts";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 
 /**
  * The phone's transport into conch.
@@ -145,7 +145,7 @@ export function sendPhoneFrame(
   }
 }
 
-export function phoneTokenPath(home: string = homedir()): string {
+export function phoneTokenPath(home: string = conchHome()): string {
   return join(home, ".config", "conch", "phone-token");
 }
 

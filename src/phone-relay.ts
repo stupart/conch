@@ -7,7 +7,7 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { dirname, join } from "node:path";
 import { isPhoneHistoryRead, type PhoneBridgeApplication, type PhoneStateSink } from "./phone-bridge.ts";
 import {
@@ -52,7 +52,7 @@ export interface PhoneRelayDependencies {
   tickMs?: number;
 }
 
-export function relayPairingPath(home: string = homedir()): string {
+export function relayPairingPath(home: string = conchHome()): string {
   return join(home, ".config", "conch", "relay-pairing.json");
 }
 

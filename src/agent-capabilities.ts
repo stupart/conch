@@ -7,7 +7,7 @@ import {
   readdirSync,
   statSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { basename, dirname, join, resolve } from "node:path";
 import { adapterFor, agentAdapters } from "./agent-adapter.ts";
 import { codexThreadDbPaths, openReadOnly } from "./codex-threads.ts";
@@ -505,11 +505,11 @@ export interface AgentCapabilityHomes {
 function homes(options: ReadAgentCapabilitiesOptions): AgentCapabilityHomes {
   const redirected = redirectedConfigDir(options);
   const claudeHome = options.claudeHome
-    ?? (redirected ? null : process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"));
+    ?? (redirected ? null : process.env.CLAUDE_CONFIG_DIR ?? join(conchHome(), ".claude"));
   const codexHome = options.codexHome
-    ?? (redirected ? null : process.env.CODEX_HOME ?? join(homedir(), ".codex"));
+    ?? (redirected ? null : process.env.CODEX_HOME ?? join(conchHome(), ".codex"));
   const agentsHome = options.agentsHome
-    ?? (redirected ? null : join(homedir(), ".agents"));
+    ?? (redirected ? null : join(conchHome(), ".agents"));
   const claudeStatePath = options.claudeStatePath
     ?? (claudeHome ? join(dirname(claudeHome), ".claude.json") : null);
   return { claudeHome, claudeStatePath, codexHome, agentsHome };

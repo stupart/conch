@@ -4,7 +4,7 @@ import {
   readdirSync,
   rmSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { basename, join, resolve } from "node:path";
 import type { Config } from "./config.ts";
 
@@ -299,7 +299,7 @@ export function parseUninstallArgs(args: readonly string[]): UninstallSelection 
 
 export function defaultUninstallPaths(
   cfg: Pick<Config, "claudeDir">,
-  home = homedir(),
+  home = conchHome(),
 ): UninstallPaths {
   return {
     claudeSettings: join(cfg.claudeDir, "settings.json"),

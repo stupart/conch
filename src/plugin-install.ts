@@ -7,7 +7,7 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { dirname, join, resolve } from "node:path";
 import claudeMarketplaceSource from "../plugin/.claude-plugin/marketplace.json" with { type: "text" };
 import agentsMarketplaceSource from "../plugin/.agents/plugins/marketplace.json" with { type: "text" };
@@ -151,7 +151,7 @@ export function buildUninstallCommands(): PluginCommands {
 export function pluginDistDir(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): string {
-  const configDir = env.CONCH_CONFIG_DIR ?? join(homedir(), ".config", "conch");
+  const configDir = env.CONCH_CONFIG_DIR ?? join(conchHome(), ".config", "conch");
   return resolve(configDir, "plugin-dist");
 }
 

@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { join } from "node:path";
 import template from "../docs/help-session/CLAUDE.md" with { type: "text" };
 import { AGENT_INSTRUCTIONS, renderHelpConchSection, type AgentInstructions } from "./agent-instructions.ts";
@@ -17,7 +17,7 @@ export const HELP_SESSION_LABEL = "conch help";
 type Env = Readonly<Record<string, string | undefined>>;
 
 function configDir(env: Env): string {
-  return env.CONCH_CONFIG_DIR ?? join(homedir(), ".config", "conch");
+  return env.CONCH_CONFIG_DIR ?? join(conchHome(), ".config", "conch");
 }
 
 /** Under the config dir, so `CONCH_CONFIG_DIR` moves it with everything else. */

@@ -1,5 +1,5 @@
 import { existsSync, closeSync, openSync, readSync, readdirSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { basename, join } from "node:path";
 import { adapterFor, agentAdapters, type SessionBackend } from "./agent-adapter.ts";
 import { readClaudeTitle } from "./claude-title.ts";
@@ -88,7 +88,7 @@ function redirectedConfigDir(options: ReadResumableSessionsOptions): string | un
 export function claudeHomeDir(options: ReadResumableSessionsOptions = {}): string | null {
   if (options.claudeHome !== undefined) return options.claudeHome;
   if (redirectedConfigDir(options)) return null;
-  return process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+  return process.env.CLAUDE_CONFIG_DIR ?? join(conchHome(), ".claude");
 }
 
 function normalizedLimit(limit: number | undefined): number {

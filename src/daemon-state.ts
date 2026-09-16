@@ -1,5 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { join } from "node:path";
 
 /**
@@ -14,7 +14,7 @@ import { join } from "node:path";
  *
  * It is one boolean in one file. Both sides read it from here now.
  */
-const STATE_FILE = join(homedir(), ".config/conch/state.json");
+const STATE_FILE = join(conchHome(), ".config/conch/state.json");
 
 export interface DaemonState {
   paused: boolean;
@@ -42,7 +42,7 @@ export function readState(): DaemonState {
 
 export function writeState(state: DaemonState): void {
   try {
-    mkdirSync(join(homedir(), ".config/conch"), { recursive: true });
+    mkdirSync(join(conchHome(), ".config/conch"), { recursive: true });
     writeFileSync(STATE_FILE, JSON.stringify(state) + "\n");
   } catch {}
 }

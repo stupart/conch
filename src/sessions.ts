@@ -1,5 +1,5 @@
 import type { ProcessIdentity } from "./process-identity.ts";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { dirname, join } from "node:path";
 import {
   closeSync,
@@ -26,7 +26,7 @@ import { liveTranscriptPath, readClaudeTitles, readContinuedIn } from "./claude-
 import { parseWindowKey, processParentTable, windowKey, windowPidFromAncestry } from "./window-key.ts";
 import { HELP_SESSION_LABEL, helpSessionDir } from "./help-session.ts";
 
-const LABELS_FILE = join(homedir(), ".config/conch/labels.json");
+const LABELS_FILE = join(conchHome(), ".config/conch/labels.json");
 const MAX_SESSION_LABEL_LENGTH = 40;
 const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
 
@@ -542,7 +542,7 @@ export function renameSessionLabel(
  */
 export function claudeFolderTrusted(
   cwd: string,
-  configPath = join(homedir(), ".claude.json"),
+  configPath = join(conchHome(), ".claude.json"),
 ): boolean | null {
   try {
     const parsed: unknown = JSON.parse(readFileSync(configPath, "utf8"));

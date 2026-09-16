@@ -76,7 +76,7 @@ import {
   type AudioControl,
   type AudioOutboxItem,
 } from "./audio-holder.ts";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
 import {
@@ -2037,11 +2037,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     controller: {
       start: async (request) => {
         await startTerminalSession(request);
-        log(`started fresh ${request.backend} session in ${request.cwd ?? homedir()}`);
+        log(`started fresh ${request.backend} session in ${request.cwd ?? conchHome()}`);
         void renderSessionPanel();
       },
     },
-    defaultCwd: homedir(),
+    defaultCwd: conchHome(),
     // Read at open, so the toggle starts from the setting as it is now.
     bypassDefault: () => cfg.bypassPermissions,
     onOpen: () => settingsPause.open(),
