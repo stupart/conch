@@ -22,6 +22,9 @@
 		A10000000000000000000004 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* ContentView.swift */; };
 		A10000000000000000000005 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* DashboardView.swift */; };
 		A10000000000000000000006A /* Workspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006A /* Workspace.swift */; };
+		A10000000000000000000007A /* Palette.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007A /* Palette.swift */; };
+		A10000000000000000000007B /* TranscriptFallback.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007B /* TranscriptFallback.swift */; };
+		A10000000000000000000007C /* DaemonLogDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007C /* DaemonLogDrawer.swift */; };
 		A10000000000000000000090 /* PairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000090 /* PairingView.swift */; };
 		A10000000000000000000006 /* ReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* ReviewView.swift */; };
 		A10000000000000000000007 /* WebView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* WebView.swift */; };
@@ -49,6 +52,9 @@
 		A20000000000000000000004 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A20000000000000000000005 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		A20000000000000000000006A /* Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspace.swift; sourceTree = "<group>"; };
+		A20000000000000000000007A /* Palette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Palette.swift; sourceTree = "<group>"; };
+		A20000000000000000000007B /* TranscriptFallback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptFallback.swift; sourceTree = "<group>"; };
+		A20000000000000000000007C /* DaemonLogDrawer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonLogDrawer.swift; sourceTree = "<group>"; };
 		A20000000000000000000090 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
 		A20000000000000000000006 /* ReviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReviewView.swift; sourceTree = "<group>"; };
 		A20000000000000000000007 /* WebView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebView.swift; sourceTree = "<group>"; };
@@ -110,6 +116,9 @@
 				A20000000000000000000004 /* ContentView.swift */,
 				A20000000000000000000005 /* DashboardView.swift */,
 				A20000000000000000000006A /* Workspace.swift */,
+				A20000000000000000000007A /* Palette.swift */,
+				A20000000000000000000007B /* TranscriptFallback.swift */,
+				A20000000000000000000007C /* DaemonLogDrawer.swift */,
 				A20000000000000000000090 /* PairingView.swift */,
 				A200000000000000000000952 /* RemoteMacViews.swift */,
 				A200000000000000000000951 /* RemoteMacStore.swift */,
@@ -245,6 +254,9 @@
 				A10000000000000000000004 /* ContentView.swift in Sources */,
 				A10000000000000000000005 /* DashboardView.swift in Sources */,
 				A10000000000000000000006A /* Workspace.swift in Sources */,
+				A10000000000000000000007A /* Palette.swift in Sources */,
+				A10000000000000000000007B /* TranscriptFallback.swift in Sources */,
+				A10000000000000000000007C /* DaemonLogDrawer.swift in Sources */,
 				A10000000000000000000090 /* PairingView.swift in Sources */,
 				A100000000000000000000952 /* RemoteMacViews.swift in Sources */,
 				A100000000000000000000951 /* RemoteMacStore.swift in Sources */,

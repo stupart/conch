@@ -148,7 +148,7 @@ describe("Mac conversation links keep the native clickable path", () => {
   });
 
   test("the fallback AppKit renderer preserves rich selectable attributed text", () => {
-    const dashboard = mac("DashboardView.swift");
+    const dashboard = mac("TranscriptFallback.swift");
     expect(dashboard).toContain("NSAttributedString(AttributedString(parsed[run.range]))");
     expect(dashboard).toContain("textView.isSelectable = true");
     expect(dashboard).toContain("textView.isRichText = true");

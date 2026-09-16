@@ -202,7 +202,9 @@ describe("every open site in the Mac app goes through the one door that reports 
 
   test("the fallback AppKit conversation renderer has a delegate too, and the failure shows under it", () => {
     const dashboard = mac("DashboardView.swift");
-    const renderer = dashboard.slice(dashboard.indexOf("private struct ConversationTextView"));
+    // The fallback renderer moved to its own file; the pane that hosts it did not.
+    const fallback = mac("TranscriptFallback.swift");
+    const renderer = fallback.slice(fallback.indexOf("struct ConversationTextView"));
     expect(renderer).toContain("func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool");
     expect(renderer).toContain("textView.delegate = context.coordinator");
     expect(renderer).toContain("context.coordinator.onOpenLink = onOpenLink");
