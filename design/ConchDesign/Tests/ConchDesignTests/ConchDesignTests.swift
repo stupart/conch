@@ -189,6 +189,30 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertEqual(ReviewScene.choose(link: nil, fileExists: there, appWindowOpen: false, revealable: false), .app)
     }
 
+    /// A review can ask for its scene (v1): auto is the order above, link the same said explicitly, conversation conch's
+    /// window even with a link, terminal the terminal else conch's window.
+    func testTheSceneAReviewAsksForDecidesWhatTheClickBringsForward() {
+        let page = URL(string: "https://example.com/pull/1")!
+        let there: (String) -> Bool = { _ in true }
+        // auto, which is also no kind at all: today's order.
+        XCTAssertEqual(ReviewScene.choose(kind: .auto, link: page, fileExists: there, appWindowOpen: true, revealable: true), .open(page))
+        XCTAssertEqual(ReviewScene.choose(link: page, fileExists: there, appWindowOpen: true, revealable: true), .open(page))
+        XCTAssertEqual(ReviewScene.choose(kind: .auto, link: nil, fileExists: there, appWindowOpen: false, revealable: true), .terminal)
+        // link: the link; once its open has failed and there is no link left, the rest of the order.
+        XCTAssertEqual(ReviewScene.choose(kind: .link, link: page, fileExists: there, appWindowOpen: true, revealable: true), .open(page))
+        XCTAssertEqual(ReviewScene.choose(kind: .link, link: nil, fileExists: there, appWindowOpen: true, revealable: true), .app)
+        XCTAssertEqual(ReviewScene.choose(kind: .link, link: nil, fileExists: there, appWindowOpen: false, revealable: true), .terminal)
+        // conversation: conch's window even with a link, open or not.
+        XCTAssertEqual(ReviewScene.choose(kind: .conversation, link: page, fileExists: there, appWindowOpen: false, revealable: true), .app)
+        XCTAssertEqual(ReviewScene.choose(kind: .conversation, link: page, fileExists: there, appWindowOpen: true, revealable: true), .app)
+        // terminal: the terminal even with a link and an open window; conch's window when it can't be revealed.
+        XCTAssertEqual(ReviewScene.choose(kind: .terminal, link: page, fileExists: there, appWindowOpen: true, revealable: true), .terminal)
+        XCTAssertEqual(ReviewScene.choose(kind: .terminal, link: page, fileExists: there, appWindowOpen: true, revealable: false), .app)
+        // A kind this build doesn't know reads as auto.
+        XCTAssertEqual(ReviewScene.Kind(rawValue: "conversation"), .conversation)
+        XCTAssertEqual(ReviewScene.Kind(rawValue: "simulator") ?? .auto, .auto)
+    }
+
     /// "Ready for you · 2 sessions": oldest filed first, ties in a fixed order, the unopened before the opened, round and round.
     func testEachClickShowsTheNextReadyReview() {
         let ready: [(key: String, at: Double)] = [("c@3", 3), ("b@1", 1), ("a@1", 1)]

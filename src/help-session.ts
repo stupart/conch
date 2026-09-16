@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import template from "../docs/help-session/CLAUDE.md" with { type: "text" };
+import { AGENT_INSTRUCTIONS, renderHelpConchSection, type AgentInstructions } from "./agent-instructions.ts";
 
 /**
  * The help session: Claude Code in a folder conch owns, with a CLAUDE.md conch
@@ -24,9 +25,9 @@ export function helpSessionDir(env: Env = process.env): string {
   return join(configDir(env), "help");
 }
 
-/** The template with this Mac's paths filled in; what the file must contain. */
-export function renderHelpSessionClaudeMd(env: Env = process.env): string {
-  return template.replaceAll("{{CONFIG_DIR}}", configDir(env));
+/** The template with this Mac's paths and the shared conch section filled in; what the file must contain. */
+export function renderHelpSessionClaudeMd(env: Env = process.env, text: AgentInstructions = AGENT_INSTRUCTIONS): string {
+  return template.replaceAll("{{CONFIG_DIR}}", configDir(env)).replace("{{CONCH_SECTION}}", renderHelpConchSection(text));
 }
 
 /**

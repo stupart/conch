@@ -242,6 +242,11 @@ describe("validateSocketTurnEvent", () => {
     expect(validateSocketTurnEvent(event)).toEqual({ ok: true, value: event });
     const publication: TurnEvent = { ...event, type: "review-published" };
     expect(validateSocketTurnEvent(publication)).toEqual({ ok: true, value: publication });
+    const staged: TurnEvent = {
+      ...publication,
+      review: { summary: "ready", scene: { v: 1, target: { kind: "conversation" }, inspect: "the copy" } },
+    };
+    expect(validateSocketTurnEvent(staged)).toEqual({ ok: true, value: staged });
   });
 
   test("rejects unknown, incomplete, and wrong-shaped JSON before dispatch", () => {
@@ -260,6 +265,9 @@ describe("validateSocketTurnEvent", () => {
       { type: "turn-end", sessionId: "session-a", label: "alpha", announce: "", backgroundWork: false },
       { type: "turn-end", sessionId: "session-a", label: "alpha", announce: "", review: { summary: 42 } },
       { type: "review-published", sessionId: "session-a", label: "alpha", announce: "" },
+      // The tool's scene check, at the socket too: a link scene with no link, an inspect past the cap.
+      { type: "review-published", sessionId: "session-a", label: "alpha", announce: "", review: { summary: "ready", scene: { v: 1, target: { kind: "link" } } } },
+      { type: "review-published", sessionId: "session-a", label: "alpha", announce: "", review: { summary: "ready", link: "https://example.com", scene: { v: 1, target: { kind: "auto" }, inspect: "x".repeat(201) } } },
     ];
 
     for (const value of invalid) expect(validateSocketTurnEvent(value).ok).toBeFalse();

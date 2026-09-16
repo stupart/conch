@@ -528,6 +528,14 @@ struct SessionRowView: View {
                         .lineLimit(2)
                 }
 
+                // What the agent asked you to check there, when it said (scene.inspect).
+                if let inspect = row.review?.inspect {
+                    Text(inspect)
+                        .font(Type.caption)
+                        .foregroundStyle(Palette.textFaint)
+                        .lineLimit(1)
+                }
+
                 // Deliberately NOT here. A bar plus a percentage under every
                 // row made the most incidental number on screen the most
                 // visually loud thing in the list, competing with the labels

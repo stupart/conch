@@ -1,6 +1,6 @@
 ---
 name: conch-control
-description: Put finished work in front of the user when a turn produces something to look at (a page, a diff, a screenshot, a built app), and see or steer their other Claude Code and Codex sessions. Use when you have made something viewable, or when asked what the other sessions are doing.
+description: Publish a meaningful result for the user to inspect with review_to_front, and see or steer their other Claude Code and Codex sessions when asked. Use when you have a result worth inspecting, or when asked what the other sessions are doing.
 ---
 
 # conch control
@@ -13,13 +13,26 @@ ambiguous, that is the thing to optimise for.
 
 **You are in one of two roles, and you can be in both in one session.**
 
-- **You are a worker.** You are one of the sessions conch is watching. Your
-  finished turns are announced aloud to the user right now. When your work
-  produces something to LOOK at, put it in front of them with
-  `review_to_front` — see below, it is the most valuable thing here.
+- **You are a worker.** You are one of the sessions conch is watching. When
+  you have a meaningful result or something the user should inspect, publish it
+  with `review_to_front` — see *Publishing results* below.
 - **You are also the fleet's control panel**, when asked. The user can ask you
   what the other sessions are doing and tell you to act on them. Then: pull real
   state first, do the one thing asked, and stop.
+
+## Publishing results
+
+conch connects this session to the user’s Mac workspace, floating overlay, and iPhone.
+
+When you have a meaningful result or something the user should inspect, call `review_to_front` with a short summary and the best artifact link. For a written explanation, request a conversation scene (`scene: {v: 1, target: {kind: "conversation"}}`) and keep the complete explanation in your normal reply.
+
+Publishing makes the result available. The user chooses when to open it. Do not open applications, rearrange windows, or start the microphone as a publication side effect. Publish again when the result materially changes, not after every edit.
+
+Omit `session` when publishing. Never attribute work to another session or invent surface references.
+
+For user-requested session, audio, or settings control, load the `conch-control` skill, inspect current IDs with `conch_sessions`, and perform the requested action. Respect manual mode and report refusals.
+
+If publication is unavailable, leave the result in your reply. Where supported, use one final `conch:review <summary> | <link>` line; do not retry under another session’s identity.
 
 ## If the conch tools aren't there
 
@@ -44,19 +57,19 @@ https://brew.sh rather than trying to install Homebrew yourself.
 
 ## What you can do
 - **See everything** — `conch_sessions` returns every live session: its id, label, what it's doing (working / waiting / needs-you / has-work-to-review), whether it is in manual mode, and its last spoken line. Its `caller` says whether conch verified which session YOU are (`verified`, with your id), or `unverified` with the reason. Lead with this when the user asks what's happening.
-- **Bring one forward** — `conch_recite {session}` reads a session's latest reply aloud again; `conch_wake {session}` reopens the mic pointed at it so the user can talk to it. `session` is an id or a label — prefer the id from `conch_sessions`. A name that fits more than one session is refused with the candidates; a partial name that fits one resolves, and the result names the session it reached. Omit `session` for your own session, which works only when your `caller` is verified. The result's `audio` line says where that went: this Mac, the phone when it holds the audio, or refused because this Mac has yielded its audio to another Mac (see below). Waking a sibling while the phone holds the audio opens the PHONE's mic at a session the user is not looking at, so say which session you woke.
-- **Speak** — `conch_speak {text}` says something aloud in conch's voice, up to 600 characters and one at a time. Use it to confirm an action or read a short answer, not to narrate — your reply is announced anyway.
+- **Hear or answer one, at the user's request** — `conch_recite {session}` reads a session's latest reply aloud again; `conch_wake {session}` reopens the mic pointed at it so the user can talk to it. Both are audio: neither opens its workspace or stages a scene. `session` is an id or a label — prefer the id from `conch_sessions`. A name that fits more than one session is refused with the candidates; a partial name that fits one resolves, and the result names the session it reached. Omit `session` for your own session, which works only when your `caller` is verified. The result's `audio` line says where that went: this Mac, the phone when it holds the audio, or refused because this Mac has yielded its audio to another Mac (see below). Waking a sibling while the phone holds the audio opens the PHONE's mic at a session the user is not looking at, so say which session you woke.
+- **Speak** — `conch_speak {text}` says something aloud in conch's voice, up to 600 characters and one at a time. Use it to confirm an action or read a short answer the user asked for; do not repeat your reply or narrate progress.
 - **Answer from a transcript** — `conch_transcript_tail {session}` gives you the tail of a session's last reply, with the id and label of the session it read, so you can answer "did the tests pass?" without switching to it.
-- **Put the artifact you are working on where the user looks** —
-  `review_to_front {summary, link?}`.
+- **Publish a result for the user to inspect** —
+  `review_to_front {summary, link?, scene?}`. *Publishing results* above says
+  when; this is how.
 
-  **What the user sees.** conch's apps show a session as a conversation with an
-  ARTIFACT PANE beside it. The pane holds one artifact per session, it renders
-  the thing rather than printing its path, and it stays until you send another.
-  An empty pane is a session whose work is invisible from a phone.
+  **What the user sees.** conch files the result on your session in the Mac app
+  and on the iPhone, and the Mac's Ready pill lights. Nothing opens until the
+  user clicks the pill, which brings the scene forward. A newer publication from
+  your session replaces the older one.
 
-  **What to send.** Whatever this turn produced that has to be LOOKED at, and
-  send it again as it changes rather than only when it is finished:
+  **What to link.** The best single artifact for the result:
 
   - a site or page → the URL (`http://localhost:3000/pricing`)
   - a design or render → the image (`/tmp/hero-v3.png`)
@@ -64,14 +77,21 @@ https://brew.sh rather than trying to install Homebrew yourself.
   - a change → a rendered diff or the file you changed
   - a build, a chart, a recording → the artifact itself
 
-  Always send one when you want the user to review something. If the turn
-  produced only prose, don't — your reply is already spoken aloud.
+  **The scene.** Optional: `scene: {v: 1, target: {kind}, inspect?}`.
 
-  Do not weigh whether it is good enough or finished enough. Those are
-  judgement calls under uncertainty and they resolve to "stay silent", which is
-  the wrong answer: a user away from their desk cannot discover what you made,
-  so unsurfaced work is invisible work. Sending again later replaces what is
-  there; that is the intended way to use it.
+  - `kind: "auto"`, the same as no scene: the link, else conch's window on your
+    session if it is open, else your terminal, else conch's window.
+  - `kind: "link"`: the link, falling through only if it fails to open. It
+    needs a `link`.
+  - `kind: "conversation"`: conch's window on your session, even when there is
+    a link. Use it for a written explanation, and keep the complete explanation
+    in your reply.
+  - `kind: "terminal"`: your terminal, else conch's window.
+  - `inspect`: one short line, at most 200 characters, naming what to check
+    ("Check that Save stays reachable at phone width"). The pill's tooltip and
+    the iPhone show it.
+  - `target.ref` is reserved for surface references conch will issue later and
+    is not accepted yet.
 
   `session` is optional and defaults to you. A session may only surface its own
   work; naming a different session is refused, because the dashboard attributes
@@ -110,6 +130,7 @@ Do not retry the same call; do the alternative, or tell the user in one line.
 - `review_to_front` naming **another session's** artifact — omit `session`; you may only surface your own work.
 - `review_to_front` from a caller conch **cannot verify** — leave the result in your reply, or use the `conch:review` line.
 - `review_to_front` with a link that is not an http(s) URL or an existing, **non-executable** regular file — a directory, a missing file, a script, a `file://` or `javascript:` URL — or a file **outside your cwd and the temp folder**, hidden, or a key or certificate.
+- `review_to_front` with a **scene** that is not `v: 1`, has an unknown kind or field, asks for `kind: "link"` with no link, has an `inspect` that is empty or over 200 characters, or carries `target.ref` — the refusal says which; fix the scene or omit it.
 - A `session` name that **matches several sessions** — the refusal lists them by id and label; pass the id.
 - `conch_wake` / `conch_recite` **without `session`** when your caller is unverified — pass the session's id.
 - `conch_config` setting or unsetting a key that is **not on the list** above — the refusal names the `conch set <key> <value>` (or `conch unset <key>`) command the user can run themselves.

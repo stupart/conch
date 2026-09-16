@@ -11,111 +11,6 @@ import { CONCH_VERSION } from "./version.ts";
 
 const SERVICE_LABEL = "com.conch.daemon";
 
-const REVIEW_INSTRUCTIONS_BEGIN = "<!-- conch:begin -->";
-const REVIEW_INSTRUCTIONS_END = "<!-- conch:end -->";
-
-/** The small, user-removable contract installed into each agent's global instructions. */
-export const REVIEW_INSTRUCTIONS_BLOCK = `${REVIEW_INSTRUCTIONS_BEGIN}
-## Conch review handoff
-
-When a deliverable is DONE, self-critiqued, and ready for the user's final look, **call the \`review_to_front\` tool** with a one-line spoken summary and, when there is one, a link or file path to the thing itself. Conch renders it — a page, an image, a PDF, a video, a document — rather than showing the path.
-
-If that tool is not available, fall back to ending your final reply with its own line:
-\`conch:review <one-line spoken summary> | <link-or-path>\`
-
-Use this only as a final approval gate—not for routine "I finished" messages or every iteration. Conch already announces finished turns.
-${REVIEW_INSTRUCTIONS_END}`;
-
-const REVIEW_INSTRUCTIONS_PATTERN =
-  /<!-- conch:begin -->[\s\S]*?<!-- conch:end -->/g;
-
-/**
- * Replace conch's managed block without disturbing any user-authored text.
- * Extra complete blocks are removed so this also heals an older duplicated install.
- */
-export function spliceReviewInstructions(existing: string): string {
-  const beginCount = existing.split(REVIEW_INSTRUCTIONS_BEGIN).length - 1;
-  const endCount = existing.split(REVIEW_INSTRUCTIONS_END).length - 1;
-  const matches = [...existing.matchAll(REVIEW_INSTRUCTIONS_PATTERN)];
-  if (beginCount !== matches.length || endCount !== matches.length) {
-    throw new Error("managed conch markers are incomplete or out of order");
-  }
-
-  if (matches.length > 0) {
-    let replaced = false;
-    return existing.replace(REVIEW_INSTRUCTIONS_PATTERN, () => {
-      if (replaced) return "";
-      replaced = true;
-      return REVIEW_INSTRUCTIONS_BLOCK;
-    });
-  }
-
-  if (!existing) return `${REVIEW_INSTRUCTIONS_BLOCK}\n`;
-  const separator = existing.endsWith("\n\n")
-    ? ""
-    : existing.endsWith("\n")
-      ? "\n"
-      : "\n\n";
-  return `${existing}${separator}${REVIEW_INSTRUCTIONS_BLOCK}\n`;
-}
-
-export type ReviewInstructionsInstallResult =
-  | "created"
-  | "updated"
-  | "unchanged"
-  | "skipped";
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-/** Safely install one global instruction block and report the outcome for this file. */
-export async function installReviewInstructions(
-  instructionsPath: string,
-  fileLabel: "CLAUDE.md" | "AGENTS.md",
-): Promise<ReviewInstructionsInstallResult> {
-  const existed = existsSync(instructionsPath);
-  let existing = "";
-  if (existed) {
-    try {
-      existing = await Bun.file(instructionsPath).text();
-    } catch (error) {
-      console.warn(
-        `${fileLabel}: warning — could not read ${instructionsPath}; conch review contract skipped (${errorMessage(error)})`,
-      );
-      return "skipped";
-    }
-  }
-
-  let updated: string;
-  try {
-    updated = spliceReviewInstructions(existing);
-  } catch (error) {
-    console.warn(
-      `${fileLabel}: warning — could not safely update ${instructionsPath}; conch review contract skipped (${errorMessage(error)})`,
-    );
-    return "skipped";
-  }
-
-  if (updated === existing) {
-    console.log(
-      `${fileLabel}: conch review contract already wired, skipping -> ${instructionsPath}`,
-    );
-    return "unchanged";
-  }
-
-  mkdirSync(dirname(instructionsPath), { recursive: true });
-  if (existed) {
-    const backup = `${instructionsPath}.conch-backup-${Date.now()}`;
-    await Bun.write(backup, existing);
-    console.log(`backed up ${fileLabel} to ${backup}`);
-  }
-  await Bun.write(instructionsPath, updated);
-  const result = existed ? "updated" : "created";
-  console.log(`${fileLabel}: conch review contract ${result} -> ${instructionsPath}`);
-  return result;
-}
-
 // The two models conch downloads on a fresh machine. Both live under
 // ~/.cache/conch/models (where config.ts probes as its second candidate), so an
 // install with no seashell checkout resolves them automatically.
@@ -451,10 +346,10 @@ export async function runSetup(
   // managed review-contract block into the user's GLOBAL instruction files,
   // which meant installing a voice tool silently edited the prompt of every
   // session on the machine, and every wording change needed a reinstall to
-  // take. The contract now ships entirely inside the plugin — see
-  // `docs/conch-control-skill.md`, which becomes both the plugin's AGENTS.md
-  // and its conch-control skill — so it arrives and updates with the thing it
-  // describes, and uninstalling actually removes it.
+  // take. The contract now ships entirely inside the plugin, rendered from
+  // `src/agent-instructions.ts` into its AGENTS.md, its conch-control skill,
+  // the help session and the tool descriptions, so it arrives and updates with
+  // the thing it describes, and uninstalling actually removes it.
   const codexDir = join(homedir(), ".codex");
   // Capture this before the install runs: setup must not make every
   // Claude-only machine look like an existing Codex install.

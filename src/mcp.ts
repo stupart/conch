@@ -30,8 +30,13 @@ import {
   type ControlResult,
   type SettingKey,
 } from "./settings.ts";
+import { AGENT_INSTRUCTIONS, MAX_SPEAK_CHARS, type AgentInstructions } from "./agent-instructions.ts";
 import {
   checkReviewLink,
+  checkReviewScene,
+  REVIEW_INSPECT_MAX,
+  REVIEW_SCENE_KINDS,
+  type ReviewScene,
   REVIEW_SUMMARY_MAX,
   sanitizeReviewSummary,
   splitSentences,
@@ -64,6 +69,7 @@ type PublishedLiveState =
 export interface ReviewRequest {
   summary: string;
   link?: string;
+  scene?: ReviewScene;
   at: number;
 }
 
@@ -133,8 +139,7 @@ export const AGENT_TUNABLE_SETTINGS = [
   "whisper-idle-unload",
 ] as const satisfies readonly SettingKey[];
 
-/** A `conch_speak` is a confirmation, not a narration; longer is refused, never cut. */
-export const MAX_SPEAK_CHARS = 600;
+export { MAX_SPEAK_CHARS };
 
 interface JsonSchema {
   type?: string | readonly string[];
@@ -159,195 +164,229 @@ export interface McpToolDefinition {
   inputSchema: JsonSchema;
 }
 
-export const MCP_TOOLS = [
-  {
-    name: "conch_sessions",
-    description: "Read live session state and IDs, and `caller`: whether conch verified which session you are. This is not complete conversation history.",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      additionalProperties: false,
+/** The nine tools. Descriptions come from the one instruction source, `agent-instructions.ts`. */
+export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
+  return [
+    {
+      name: "conch_sessions",
+      description: text.tools.conch_sessions,
+      inputSchema: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
     },
-  },
-  {
-    name: "conch_wake",
-    description: "At the user’s request, open the microphone addressed to a session. Defaults to your verified session. Does not stage a scene.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        session: {
-          type: "string",
-          minLength: 1,
-          description: "Live session id or label. Omit for your own verified session; a name that matches several sessions is refused.",
+    {
+      name: "conch_wake",
+      description: text.tools.conch_wake,
+      inputSchema: {
+        type: "object",
+        properties: {
+          session: {
+            type: "string",
+            minLength: 1,
+            description: "Live session id or label. Omit for your own verified session; a name that matches several sessions is refused.",
+          },
         },
+        additionalProperties: false,
       },
-      additionalProperties: false,
     },
-  },
-  {
-    name: "conch_recite",
-    description: "At the user’s request, read a session’s latest assistant reply aloud. Defaults to your verified session. Does not open its workspace.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        session: {
-          type: "string",
-          minLength: 1,
-          description: "Live session id or label. Omit for your own verified session; a name that matches several sessions is refused.",
+    {
+      name: "conch_recite",
+      description: text.tools.conch_recite,
+      inputSchema: {
+        type: "object",
+        properties: {
+          session: {
+            type: "string",
+            minLength: 1,
+            description: "Live session id or label. Omit for your own verified session; a name that matches several sessions is refused.",
+          },
         },
+        additionalProperties: false,
       },
-      additionalProperties: false,
     },
-  },
-  {
-    name: "conch_speak",
-    description: `Speak up to ${MAX_SPEAK_CHARS} characters aloud through the running conch daemon. Longer text is refused, not cut; a second call while one is still being spoken is refused.`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        text: { type: "string", minLength: 1, maxLength: MAX_SPEAK_CHARS },
-        voice: {
-          type: "string",
-          minLength: 1,
-          description: "Optional explicit Kokoro voice.",
+    {
+      name: "conch_speak",
+      description: text.tools.conch_speak,
+      inputSchema: {
+        type: "object",
+        properties: {
+          text: { type: "string", minLength: 1, maxLength: MAX_SPEAK_CHARS },
+          voice: {
+            type: "string",
+            minLength: 1,
+            description: "Optional explicit Kokoro voice.",
+          },
         },
+        required: ["text"],
+        additionalProperties: false,
       },
-      required: ["text"],
-      additionalProperties: false,
     },
-  },
-  {
-    name: "conch_mode",
-    description: "Switch a session between auto and manual. Auto reads finished turns aloud and opens the mic on its own; manual does neither, while everything else keeps working and the user reads instead. `pause` means manual and `resume` means auto. Without `session` or `scope` this switches only YOUR session; every session at once needs `scope: \"all\"` explicitly.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        action: {
-          type: "string",
-          enum: ["pause", "resume"],
+    {
+      name: "conch_mode",
+      description: text.tools.conch_mode,
+      inputSchema: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            enum: ["pause", "resume"],
+            description: "`pause` is manual: nothing is read aloud and the mic never opens on its own, while everything else keeps working. `resume` is auto.",
+          },
+          session: {
+            type: "string",
+            minLength: 1,
+            description: "Live session id or name to switch instead of your own.",
+          },
+          scope: {
+            type: "string",
+            enum: ["all"],
+            description: "\"all\" switches every session — the whole daemon. Only when the user asked for that.",
+          },
         },
-        session: {
-          type: "string",
-          minLength: 1,
-          description: "Live session id or name to switch instead of your own.",
+        required: ["action"],
+        // `scope` with `session` is refused by the handler, not the schema: conditional keywords aren't
+        // reliably accepted in a tool's input_schema, and a rejected schema would hide every conch tool.
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "conch_rename",
+      description: text.tools.conch_rename,
+      inputSchema: {
+        type: "object",
+        properties: {
+          session: { type: "string", minLength: 1 },
+          label: { type: "string", minLength: 1 },
         },
-        scope: {
-          type: "string",
-          enum: ["all"],
-          description: "\"all\" switches every session — the whole daemon. Only when the user asked for that.",
+        required: ["session", "label"],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "conch_config",
+      description: text.tools.conch_config,
+      inputSchema: {
+        type: "object",
+        properties: {
+          key: {
+            type: "string",
+            minLength: 1,
+            description: `Any setting can be read. Only ${AGENT_TUNABLE_SETTINGS.join(", ")} can be set or unset; any other key is refused with the \`conch set\` command the user can run themselves.`,
+          },
+          value: {
+            anyOf: [
+              { type: "string" },
+              { type: "number" },
+              { type: "boolean" },
+            ],
+          },
+          unset: { type: "boolean", default: false },
         },
+        // A change names its key, and a value never comes with `unset: true`: the handler refuses both,
+        // for the same reason as conch_mode.
+        additionalProperties: false,
       },
-      required: ["action"],
-      // `scope` with `session` is refused by the handler, not the schema: conditional keywords aren't
-      // reliably accepted in a tool's input_schema, and a rejected schema would hide every conch tool.
-      additionalProperties: false,
     },
-  },
-  {
-    name: "conch_rename",
-    description: "Persist the user-requested display label for a session. Prefer its ID; ambiguous names are refused.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        session: { type: "string", minLength: 1 },
-        label: { type: "string", minLength: 1 },
-      },
-      required: ["session", "label"],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: "conch_config",
-    description: `Get any conch daemon setting; set or unset only ${AGENT_TUNABLE_SETTINGS.join(", ")}. Changing any other key is refused with the \`conch set\` command the user can run themselves.`,
-    inputSchema: {
-      type: "object",
-      properties: {
-        key: { type: "string", minLength: 1 },
-        value: {
-          anyOf: [
-            { type: "string" },
-            { type: "number" },
-            { type: "boolean" },
-          ],
+    {
+      name: "conch_transcript_tail",
+      description: text.tools.conch_transcript_tail,
+      inputSchema: {
+        type: "object",
+        properties: {
+          session: { type: "string", minLength: 1 },
+          sentences: {
+            type: "integer",
+            minimum: 1,
+            default: 3,
+          },
         },
-        unset: { type: "boolean", default: false },
+        required: ["session"],
+        additionalProperties: false,
       },
-      // A change names its key, and a value never comes with `unset: true`: the handler refuses both,
-      // for the same reason as conch_mode.
-      additionalProperties: false,
     },
-  },
-  {
-    name: "conch_transcript_tail",
-    description: "Return the last sentences from a live session's latest assistant response.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        session: { type: "string", minLength: 1 },
-        sentences: {
-          type: "integer",
-          minimum: 1,
-          default: 3,
+    {
+      name: "review_to_front",
+      description: text.tools.review_to_front,
+      inputSchema: {
+        type: "object",
+        properties: {
+          summary: { type: "string", minLength: 1 },
+          link: { type: "string", minLength: 1 },
+          session: {
+            type: "string",
+            minLength: 1,
+            description: "Optional. Defaults to YOUR session. A session may only surface its own work; naming another session is refused.",
+          },
+          scene: {
+            type: "object",
+            description: "Optional. What the pill click brings forward, v1. auto (the same as no scene): the link, else conch's window, else the terminal. link: the link; needs `link`. conversation: conch's window on your session, even with a link. terminal: your terminal, else conch's window. `target.ref` is reserved for conch-issued surface references and not accepted yet.",
+            properties: {
+              v: { type: "integer", enum: [1] },
+              target: {
+                type: "object",
+                properties: {
+                  kind: { type: "string", enum: REVIEW_SCENE_KINDS },
+                },
+                required: ["kind"],
+                additionalProperties: false,
+              },
+              inspect: {
+                type: "string",
+                minLength: 1,
+                maxLength: REVIEW_INSPECT_MAX,
+                description: "One short line naming what to check, e.g. \"Check that Save stays reachable at phone width\".",
+              },
+            },
+            required: ["v", "target"],
+            additionalProperties: false,
+          },
         },
+        // `kind: "link"` without `link` is refused by the handler, for the same reason as conch_mode.
+        required: ["summary"],
+        additionalProperties: false,
       },
-      required: ["session"],
-      additionalProperties: false,
     },
-  },
-  {
-    name: "review_to_front",
-    description: "Publish your session’s result for Tyler to inspect, with a concise summary and optional artifact or conversation scene. Tyler’s pill click stages it. Publishing does not open applications or finish the running turn.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        summary: { type: "string", minLength: 1 },
-        link: { type: "string", minLength: 1 },
-        session: {
-          type: "string",
-          minLength: 1,
-          description: "Optional. Defaults to YOUR session. A session may only surface its own work; naming another session is refused.",
+    {
+      name: "conch_history",
+      description: text.tools.conch_history,
+      inputSchema: {
+        type: "object",
+        properties: {
+          session: { type: "string", minLength: 1, maxLength: HISTORY_ID_MAX_BYTES,
+            description: "Recorded session ID or exact live session ID. Use self only for your verified caller. Labels are not IDs." },
+          branch: { type: "string", minLength: 1, maxLength: HISTORY_ID_MAX_BYTES,
+            description: "Optional recorded Claude item ID whose ancestry to read. Omit for all indexed items; keep it unchanged while following a page cursor." },
+          before: { type: "string", minLength: 1, maxLength: HISTORY_CURSOR_MAX_BYTES,
+            description: "Opaque previousCursor from an earlier page for this session and branch." },
+          limit: { type: "integer", minimum: 1, maximum: HISTORY_MAX_LIMIT, default: HISTORY_DEFAULT_LIMIT },
         },
+        required: ["session"],
+        additionalProperties: false,
       },
-      required: ["summary"],
-      additionalProperties: false,
     },
-  },
-  {
-    name: "conch_history",
-    description: "Read a page of recorded session history, including coverage and continuation cursors.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        session: { type: "string", minLength: 1, maxLength: HISTORY_ID_MAX_BYTES,
-          description: "Recorded session ID or exact live session ID. Use self only for your verified caller. Labels are not IDs." },
-        branch: { type: "string", minLength: 1, maxLength: HISTORY_ID_MAX_BYTES,
-          description: "Optional recorded Claude item ID whose ancestry to read. Omit for all indexed items; keep it unchanged while following a page cursor." },
-        before: { type: "string", minLength: 1, maxLength: HISTORY_CURSOR_MAX_BYTES,
-          description: "Opaque previousCursor from an earlier page for this session and branch." },
-        limit: { type: "integer", minimum: 1, maximum: HISTORY_MAX_LIMIT, default: HISTORY_DEFAULT_LIMIT },
+    {
+      name: "conch_item",
+      description: text.tools.conch_item,
+      inputSchema: {
+        type: "object",
+        properties: {
+          session: { type: "string", minLength: 1, maxLength: HISTORY_ID_MAX_BYTES,
+            description: "Recorded session ID or exact live session ID. Use self only for your verified caller. Labels are not IDs." },
+          item: { type: "string", minLength: 1, maxLength: HISTORY_ID_MAX_BYTES,
+            description: "Item ID returned by conch_history." },
+          bodyCursor: { type: "string", minLength: 1, maxLength: HISTORY_CURSOR_MAX_BYTES,
+            description: "Opaque nextBodyCursor returned for this item. Omit to begin reading." },
+        },
+        required: ["session", "item"],
+        additionalProperties: false,
       },
-      required: ["session"],
-      additionalProperties: false,
     },
-  },
-  {
-    name: "conch_item",
-    description: "Read the full recorded content of an item in bounded chunks.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        session: { type: "string", minLength: 1, maxLength: HISTORY_ID_MAX_BYTES,
-          description: "Recorded session ID or exact live session ID. Use self only for your verified caller. Labels are not IDs." },
-        item: { type: "string", minLength: 1, maxLength: HISTORY_ID_MAX_BYTES,
-          description: "Item ID returned by conch_history." },
-        bodyCursor: { type: "string", minLength: 1, maxLength: HISTORY_CURSOR_MAX_BYTES,
-          description: "Opaque nextBodyCursor returned for this item. Omit to begin reading." },
-      },
-      required: ["session", "item"],
-      additionalProperties: false,
-    },
-  },
-] as const satisfies readonly McpToolDefinition[];
+  ] as const satisfies readonly McpToolDefinition[];
+}
+
+export const MCP_TOOLS = buildMcpTools();
 
 export type McpToolName = (typeof MCP_TOOLS)[number]["name"];
 /** `meta` is the call's `params._meta`, which a Codex client fills with the calling thread. */
@@ -900,7 +939,7 @@ export function createMcpToolHandlers(
         throw new ToolInputError(
           `text is ${text.length} characters and conch_speak reads at most `
             + `${MAX_SPEAK_CHARS} — it is not cut for you. Say the short version and `
-            + "leave the rest in your reply, which is announced anyway.",
+            + "leave the rest in your reply.",
         );
       }
       if (dependencies.now() < speakingUntil) {
@@ -1137,11 +1176,15 @@ export function createMcpToolHandlers(
     async review_to_front(argumentsValue, meta) {
       // Accepted, refused or failed, and each says which. A refusal names its
       // reason and nothing reaches the daemon.
-      const { summary, truncatedFrom, link, session } = await (async () => {
+      const { summary, truncatedFrom, link, scene, session } = await (async () => {
         const argumentsObject = toolArguments(argumentsValue);
-        allowOnly(argumentsObject, ["summary", "link", "session"]);
+        allowOnly(argumentsObject, ["summary", "link", "session", "scene"]);
         const cleaned = sanitizeReviewSummary(requiredString(argumentsObject, "summary"), Infinity);
         if (!cleaned) throw new ToolInputError("summary must be a non-empty string");
+        const scene = Object.hasOwn(argumentsObject, "scene")
+          ? checkReviewScene(argumentsObject.scene, Object.hasOwn(argumentsObject, "link"))
+          : undefined;
+        if (scene && !scene.ok) throw new ToolInputError(scene.reason);
         const session = await requiredReviewSession(argumentsObject, config, dependencies, meta);
         const rawLink = optionalString(argumentsObject, "link");
         // Absolute by the time it leaves here, resolved against this process's
@@ -1153,6 +1196,7 @@ export function createMcpToolHandlers(
           summary: cleaned.slice(0, REVIEW_SUMMARY_MAX),
           truncatedFrom: cleaned.length > REVIEW_SUMMARY_MAX ? cleaned.length : undefined,
           link: checked?.link,
+          scene: scene?.scene,
           session,
         };
       })().catch((error) => {
@@ -1174,7 +1218,7 @@ export function createMcpToolHandlers(
             ? { transcriptPath, mark: await dependencies.transcriptMark(transcriptPath) }
             : {}),
           eventAt: dependencies.now(),
-          review: { summary, ...(link ? { link } : {}) },
+          review: { summary, ...(link ? { link } : {}), ...(scene ? { scene } : {}) },
         });
       })().catch((error) => {
         throw new Error(`failed: ${errorMessage(error)}`);
@@ -1186,6 +1230,7 @@ export function createMcpToolHandlers(
         label,
         summary,
         ...(link ? { link } : {}),
+        ...(scene ? { scene } : {}),
         ...(truncatedFrom === undefined
           ? {}
           : { summaryTruncated: { from: truncatedFrom, to: REVIEW_SUMMARY_MAX } }),

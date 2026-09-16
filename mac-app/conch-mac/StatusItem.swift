@@ -203,14 +203,16 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     }
 
     /// A click on the Ready pill (FloatingPanels): what this session's review is about, brought forward, in
-    /// `ReviewScene`'s order. A scene that fails falls through to the next, down to conch's window on the session. True
-    /// once it was handed off; nothing is raised later.
+    /// `ReviewScene`'s order for the scene the review asked for (none is auto). A scene that fails falls through to the
+    /// next, down to conch's window on the session. True once it was handed off; nothing is raised later.
     static func stage(_ row: SessionRow, store: StateStore) async -> Bool {
         let window = ReviewNotifications.shared.reviewWindow
+        let kind = ReviewScene.Kind(rawValue: row.review?.sceneKind ?? "") ?? .auto
         var link = ReviewItem(row: row)?.link.map { LinkTarget.url(for: $0, cwd: row.cwd) }
         var revealable = row.revealable
         while true {
             switch ReviewScene.choose(
+                kind: kind,
                 link: link,
                 fileExists: { FileManager.default.fileExists(atPath: $0) },
                 appWindowOpen: window.map { $0.isVisible && !$0.isMiniaturized } ?? false,

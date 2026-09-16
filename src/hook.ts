@@ -10,6 +10,7 @@ import {
   looksLikeAwaitingReply,
   transcriptMark,
   parsePublishableReview,
+  type ReviewScene,
 } from "./snippet.ts";
 import { currentTurnText } from "./transcript-turn.ts";
 import { findHookWindow, sessionLabel, isEngageable } from "./sessions.ts";
@@ -45,7 +46,7 @@ export interface TurnEvent {
   /** This working state came from a Stop reclassified for live background work. */
   backgroundWork?: true;
   /** Set when the final reply carried a conch:review marker, and always on `review-published`. */
-  review?: { summary: string; link?: string };
+  review?: { summary: string; link?: string; scene?: ReviewScene };
   /**
    * The tool a permission dialog is waiting on (B5). Attached by the daemon
    * at handle time from the transcript, never by the hook: the dialog may

@@ -2,6 +2,7 @@ import { sessionLabel, type SessionInfo } from "./sessions.ts";
 import type { PublishedConversation } from "./conversation.ts";
 import type { SessionContextUsage } from "./context-meter.ts";
 import type { AudioControl, AudioOutboxItem } from "./audio-holder.ts";
+import type { ReviewScene } from "./snippet.ts";
 
 export type PanelConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
 
@@ -72,7 +73,7 @@ export interface PanelRowModel {
   /** `opened` exists only on the terminal renderer's own copy, set once `o` has
    * handed the link to macOS — its equivalent of the Mac app's seen set. The
    * publisher copies summary/link/at explicitly, so it never reaches the wire. */
-  review?: { summary: string; link?: string; at: number; opened?: boolean };
+  review?: { summary: string; link?: string; scene?: ReviewScene; at: number; opened?: boolean };
   paused: boolean;
   muted: boolean;
   liveGlyph: PanelConchState | null;
@@ -268,7 +269,7 @@ export interface PublishedSessionRow {
   snippet?: string;
   /** A finished deliverable attached to this waiting row. Carries the link so
    * external consumers can render it, not just the summary. */
-  review?: { summary: string; link?: string; at?: number };
+  review?: { summary: string; link?: string; scene?: ReviewScene; at?: number };
 }
 
 export interface PublishedState {
@@ -493,6 +494,8 @@ export function buildPublishedState(
             review: {
               summary: row.review.summary,
               ...(row.review.link ? { link: row.review.link } : {}),
+              // What the pill brings forward and what to check there, as published.
+              ...(row.review.scene ? { scene: row.review.scene } : {}),
               // Latch time — external viewers need it to pick the NEWEST review
               // when more than one is pending, instead of guessing.
               ...(row.review.at !== undefined ? { at: row.review.at } : {}),
@@ -796,6 +799,7 @@ export function latestLatchedState(
 export interface SessionReview {
   summary: string;
   link?: string;
+  scene?: ReviewScene;
   /** Epoch-ms the deliverable was filed; its identity until a newer one replaces it. */
   at: number;
 }

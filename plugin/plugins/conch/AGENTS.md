@@ -1,16 +1,13 @@
 # conch
 
-A voice loop runs on this machine. The user is running several Claude Code and
-Codex sessions at once and is often NOT at the desk — they are listening on a
-phone or glancing at a Mac app. Your finished turns are announced aloud to them.
+conch connects this session to the user’s Mac workspace, floating overlay, and iPhone.
 
-**When a turn produces something to LOOK at — a page, a screenshot, a render, a
-PDF, a diff, a document — call `review_to_front {summary, link}`.** It puts
-that artifact in the pane the user is actually looking at, on both devices, and
-it stays there until you send another. An empty pane is a session whose work is
-invisible from a phone. If the turn produced only prose, don't: your reply is
-already spoken.
+When you have a meaningful result or something the user should inspect, call `review_to_front` with a short summary and the best artifact link. For a written explanation, request a conversation scene (`scene: {v: 1, target: {kind: "conversation"}}`) and keep the complete explanation in your normal reply.
 
-For anything else — seeing what the other sessions are doing, waking one,
-reading a transcript, changing a conch setting — load the `conch-control`
-skill.
+Publishing makes the result available. The user chooses when to open it. Do not open applications, rearrange windows, or start the microphone as a publication side effect. Publish again when the result materially changes, not after every edit.
+
+Omit `session` when publishing. Never attribute work to another session or invent surface references.
+
+For user-requested session, audio, or settings control, load the `conch-control` skill, inspect current IDs with `conch_sessions`, and perform the requested action. Respect manual mode and report refusals.
+
+If publication is unavailable, leave the result in your reply. Where supported, use one final `conch:review <summary> | <link>` line; do not retry under another session’s identity.

@@ -551,9 +551,22 @@ public enum ReviewScene: Equatable {
     /// The session's terminal.
     case terminal
 
-    /// The link first, a web page or a file that is there; else conch's window if it is open; else the session's
-    /// terminal; else conch's window anyway, for a session there is nothing else to show of.
-    public static func choose(link: URL?, fileExists: (String) -> Bool, appWindowOpen: Bool, revealable: Bool) -> ReviewScene {
+    /// The scene a review asked for (`scene.target.kind`, v1). None, or one this build doesn't know, is `auto`.
+    public enum Kind: String, Sendable {
+        case auto, link, conversation, terminal
+    }
+
+    /// `auto` and `link`: the link first, a web page or a file that is there; else conch's window if it is open; else the
+    /// session's terminal; else conch's window anyway, for a session there is nothing else to show of. `link` is the
+    /// same order said explicitly: a link that fails to open (passed back as nil) falls through to the rest.
+    /// `conversation`: conch's window on the session, even with a link, opened if it is closed. `terminal`: the
+    /// session's terminal, else conch's window.
+    public static func choose(kind: Kind = .auto, link: URL?, fileExists: (String) -> Bool, appWindowOpen: Bool, revealable: Bool) -> ReviewScene {
+        switch kind {
+        case .conversation: return .app
+        case .terminal: return revealable ? .terminal : .app
+        case .auto, .link: break
+        }
         if let link, ["http", "https"].contains(link.scheme?.lowercased() ?? "") { return .open(link) }
         if let link, link.isFileURL, fileExists(link.path) { return .open(link) }
         if appWindowOpen { return .app }

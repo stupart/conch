@@ -500,7 +500,7 @@ describe("MCP tool discovery", () => {
       conch_rename: ["session", "label"],
       conch_config: ["key", "value", "unset"],
       conch_transcript_tail: ["session", "sentences"],
-      review_to_front: ["summary", "link", "session"],
+      review_to_front: ["summary", "link", "session", "scene"],
       conch_history: ["session", "branch", "before", "limit"],
       conch_item: ["session", "item", "bodyCursor"],
     };
@@ -563,7 +563,7 @@ describe("schemas state what the handlers enforce", () => {
 
   test("review_to_front describes publishing, not opening or finishing", () => {
     expect(MCP_TOOLS.find((tool) => tool.name === "review_to_front")!.description).toBe(
-      "Publish your session’s result for Tyler to inspect, with a concise summary and optional artifact or conversation scene. Tyler’s pill click stages it. Publishing does not open applications or finish the running turn.",
+      "Publish your session’s result for the user to inspect, with a concise summary and optional artifact or conversation scene. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
     );
   });
 });
@@ -1409,11 +1409,14 @@ describe("C5: what conch refuses an agent, and what it still allows", () => {
     return (thrown as Error).message;
   }
 
-  test("config: every allowlisted key is real, and the description names them instead of 'curated'", () => {
+  test("config: every allowlisted key is real, and the key's description names them instead of 'curated'", () => {
     for (const key of AGENT_TUNABLE_SETTINGS) expect(SETTING_KEYS).toContain(key);
-    const description = MCP_TOOLS.find((tool) => tool.name === "conch_config")!.description;
+    // The tool description is the shared source's short one; the allowlist rides on `key`, in the same definition.
+    const tool = MCP_TOOLS.find((candidate) => candidate.name === "conch_config")!;
+    const description = (tool.inputSchema.properties.key as { description: string }).description;
     for (const key of AGENT_TUNABLE_SETTINGS) expect(description).toContain(key);
     expect(description).not.toContain("curated");
+    expect(tool.description).not.toContain("curated");
     // The security and topology keys the review named are out, by name.
     for (const key of ["bypass-permissions", "phone", "phone-relay-url", "meeting-autopause", "keystroke-fallback"]) {
       expect(AGENT_TUNABLE_SETTINGS as readonly string[]).not.toContain(key);
@@ -1843,5 +1846,72 @@ describe("caller binding: which session is calling, and what that allows", () =>
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * Scene v1 (round 3): what the pill click should bring forward and what to
+ * check there. Absent is auto, today's precedence. The handler refuses what the
+ * schema cannot say with keywords every client accepts.
+ */
+describe("review_to_front's scene", () => {
+  const link = "https://example.com/settings";
+  const publish = async (args: Record<string, unknown>) => {
+    const h = fakeHarness({ parentPid: 4321 });
+    const handlers = createMcpToolHandlers({ claudeDir: "/virtual/claude", socketPath: "/virtual/conch.sock" }, h.dependencies);
+    const response = await callTool(handlers, "review_to_front", { summary: "the settings page", ...args });
+    return { h, response };
+  };
+
+  test("a scene rides on the publication and comes back in the result", async () => {
+    const scene = { v: 1, target: { kind: "conversation" }, inspect: "Check that Save stays reachable" } as const;
+    const { h, response } = await publish({ link, scene });
+    expect(h.calls.daemon[0]?.event.review).toEqual({ summary: "the settings page", link, scene });
+    expect(JSON.parse(toolText(response))).toMatchObject({ outcome: "accepted", scene });
+  });
+
+  test("no scene publishes none, which the apps read as auto", async () => {
+    const { h, response } = await publish({ link });
+    expect(h.calls.daemon[0]?.event.review).toEqual({ summary: "the settings page", link });
+    expect(JSON.parse(toolText(response))).not.toHaveProperty("scene");
+  });
+
+  test("an inspect of exactly the maximum is accepted, trimmed", async () => {
+    const inspect = "x".repeat(200);
+    const { h } = await publish({ scene: { v: 1, target: { kind: "auto" }, inspect: `  ${inspect}  ` } });
+    expect(h.calls.daemon[0]?.event.review?.scene).toEqual({ v: 1, target: { kind: "auto" }, inspect });
+  });
+
+  test("each malformed scene is refused, says why, and publishes nothing", async () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ scene: { v: 1, target: { kind: "link" } } }, 'scene target.kind "link" needs a link to open'],
+      [{ link, scene: { v: 1, target: { kind: "auto" }, inspect: "x".repeat(201) } }, "scene inspect is 201 characters; at most 200"],
+      [{ link, scene: { v: 1, target: { kind: "auto" }, inspect: "   " } }, "scene inspect must be a non-empty string"],
+      [{ link, scene: { v: 1, target: { kind: "link", ref: "tab-7" } } }, "scene target.ref is not accepted yet"],
+      [{ link, scene: { v: 2, target: { kind: "auto" } } }, "scene v must be 1"],
+      [{ link, scene: { v: 1, target: { kind: "simulator" } } }, "scene target.kind must be one of auto, link, conversation, terminal"],
+      [{ link, scene: { v: 1, target: { kind: "auto" }, viewport: { width: 390 } } }, 'scene has unknown field "viewport"'],
+      [{ link, scene: { v: 1 } }, "scene target must be an object with a kind"],
+      [{ link, scene: "conversation" }, "scene must be an object"],
+    ];
+    for (const [args, reason] of cases) {
+      const { h, response } = await publish(args);
+      expect(rpcResult(response)).toMatchObject({ isError: true });
+      expect(toolText(response)).toStartWith(`refused: ${reason}`);
+      expect(h.calls.daemon).toEqual([]);
+    }
+  });
+
+  test("the schema says what it can with keywords every client accepts, and reserves ref", () => {
+    const tool = MCP_TOOLS.find((candidate) => candidate.name === "review_to_front")!;
+    const scene = (tool.inputSchema.properties as Record<string, any>).scene;
+    expect(scene).toMatchObject({ type: "object", required: ["v", "target"], additionalProperties: false });
+    expect(scene.properties.v).toEqual({ type: "integer", enum: [1] });
+    expect(scene.properties.target).toMatchObject({ required: ["kind"], additionalProperties: false });
+    expect(scene.properties.target.properties.kind.enum).toEqual(["auto", "link", "conversation", "terminal"]);
+    expect(scene.properties.target.properties).not.toHaveProperty("ref");
+    expect(scene.properties.inspect).toMatchObject({ type: "string", minLength: 1, maxLength: 200 });
+    expect(scene.description).toContain("`target.ref` is reserved");
+    expect(scene.description).toContain("not accepted");
   });
 });

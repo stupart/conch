@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import type { TurnEvent } from "./hook.ts";
 import type { PanelSessionState, SessionReview } from "./panel.ts";
 import { writeSettingsFileAtomic } from "./settings.ts";
+import { checkReviewScene } from "./snippet.ts";
 
 /** The saved-deliverables file stops growing here: newest reviews first, older ones dropped. */
 export const MAX_REVIEWS_BYTES = 256_000;
@@ -133,18 +134,25 @@ export class SessionLedger {
     }
     if (!saved || typeof saved !== "object" || Array.isArray(saved)) return;
     for (const [sessionId, entry] of Object.entries(saved)) {
-      const { label, review } = (entry ?? {}) as { label?: unknown; review?: { summary?: unknown; link?: unknown; at?: unknown } };
+      const { label, review } = (entry ?? {}) as { label?: unknown; review?: { summary?: unknown; link?: unknown; scene?: unknown; at?: unknown } };
       if (
         !sessionId || this.sessionStates.has(sessionId) || typeof label !== "string"
         || typeof review?.summary !== "string" || typeof review.at !== "number" || !Number.isFinite(review.at)
         || (review.link !== undefined && typeof review.link !== "string")
       ) continue;
+      // A scene this conch can't read is dropped; the review is still the review.
+      const scene = review.scene === undefined ? undefined : checkReviewScene(review.scene, Boolean(review.link));
       // ponytail: `waiting` shows only on a row nothing gives a status (no registry status, no hook yet); persist status if that bites.
       this.sessionStates.set(sessionId, {
         label,
         status: "waiting",
         at: 0,
-        review: { summary: review.summary, ...(review.link ? { link: review.link } : {}), at: review.at },
+        review: {
+          summary: review.summary,
+          ...(review.link ? { link: review.link } : {}),
+          ...(scene?.ok ? { scene: scene.scene } : {}),
+          at: review.at,
+        },
       });
     }
   }
@@ -158,7 +166,15 @@ export class SessionLedger {
     const kept: Record<string, { label: string; review: SessionReview }> = {};
     let bytes = 5; // "{\n", "\n}" and the trailing newline
     for (const [sessionId, { label, review }] of newestFirst) {
-      const entry = { label, review: { summary: review.summary, ...(review.link ? { link: review.link } : {}), at: review.at } };
+      const entry = {
+        label,
+        review: {
+          summary: review.summary,
+          ...(review.link ? { link: review.link } : {}),
+          ...(review.scene ? { scene: review.scene } : {}),
+          at: review.at,
+        },
+      };
       // Its pretty-printed lines at depth one, plus the ",\n" joining it.
       bytes += Buffer.byteLength(JSON.stringify({ [sessionId]: entry }, null, 2)) - 2;
       if (bytes > MAX_REVIEWS_BYTES) break;

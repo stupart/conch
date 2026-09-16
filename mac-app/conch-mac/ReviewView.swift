@@ -10,6 +10,8 @@ struct ReviewItem: Identifiable, Equatable {
     let summary: String
     let link: String?
     let reviewedAt: TimeInterval?
+    /// The one thing the agent asked you to check there (`scene.inspect`), for the Ready pill's tooltip.
+    let inspect: String?
     /// Waiting to be looked at: the deliverable stays on a working row, but a
     /// session that went back to work is not waiting on you.
     let isReady: Bool
@@ -25,6 +27,7 @@ struct ReviewItem: Identifiable, Equatable {
         let link = review.link?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         self.link = link.isEmpty ? nil : link
         reviewedAt = review.at
+        inspect = review.inspect
         isReady = row.status != .working
         // `at` is the FILING time: the daemon carries it unchanged through
         // every later event, so this id only moves when a newer deliverable
