@@ -1,4 +1,5 @@
 import { RecordsClient, type RecordsIngestionOptions, type RecordsPriorityHints } from "./records-client.ts";
+import type { StoredPromptCursor } from "./records-store.ts";
 import type { RecordReceipt } from "./records-types.ts";
 import { historyError, historyOff, validateHistoryRequest, validateHistoryResponse,
   type HistoryItemRequest, type HistoryPageRequest, type HistoryRequest, type HistoryResponse } from "./history.ts";
@@ -7,6 +8,7 @@ export interface RecordsRuntimeClient {
   startIngestion(options: RecordsIngestionOptions): Promise<void>;
   prioritize(hints: RecordsPriorityHints): Promise<void>;
   appendReceipt(receipt: RecordReceipt): Promise<boolean>;
+  putPromptCursor(cursor: StoredPromptCursor): Promise<void>;
   historyPage(request: HistoryPageRequest, ownerDeviceId: string): Promise<HistoryResponse>;
   historyItem(request: HistoryItemRequest, ownerDeviceId: string): Promise<HistoryResponse>;
   close(): Promise<void>;
@@ -46,6 +48,7 @@ export class RecordsRuntime {
   private hintsSent = -1;
   private hintFlight?: Promise<void>;
   private receiptFlight?: Promise<void>;
+  private cursorFlight?: Promise<void>;
   private activeReceipt?: QueuedReceipt;
   private receipts: QueuedReceipt[] = [];
   private historyRequests = 0;
@@ -122,6 +125,23 @@ export class RecordsRuntime {
       this.receipts.push({ receipt: safe, resolve });
       this.pumpReceipts();
     });
+  }
+
+  /**
+   * Commit a prompt-count cursor for the next hook process.
+   *
+   * Fire-and-forget and single-flight: this is a cache in front of a scan, so a
+   * cursor dropped because a write is already in the air, or because indexing
+   * is not running, costs the next hook bytes and nothing else. It never queues
+   * and never makes a caller wait.
+   */
+  putPromptCursor(cursor: StoredPromptCursor): void {
+    const client = this.client;
+    if (!this.enabled || this.closed || !this.ingesting || !client || this.cursorFlight) return;
+    const flight = client.putPromptCursor(cursor)
+      .catch(() => { this.report("prompt cursor could not be stored"); })
+      .finally(() => { if (this.cursorFlight === flight) this.cursorFlight = undefined; });
+    this.cursorFlight = flight;
   }
 
   historyPage(request: HistoryPageRequest): Promise<HistoryResponse> {

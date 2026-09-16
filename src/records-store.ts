@@ -18,6 +18,15 @@ export interface RecordIngest { session: RecordSession; source: RecordSourceRead
 export interface RecordIngestResult { source: StoredRecordSource; lines: number; malformedLines: number; change: string }
 export type RecordCounts = { [K in "sessions" | "sources" | "turns" | "items" | "item_sources" | "tool_calls" | "responses" | "receipts"]: number };
 export type RecordCoverageStatus = "queued" | "indexing" | "complete" | "partial" | "missing" | "error" | "oversized";
+export interface PromptCursorKey { device: string; inode: string }
+export interface StoredPromptCursor extends PromptCursorKey {
+  /** Byte offset of a line boundary the count reached. */
+  offset: number;
+  count: number;
+  prefixHash: string;
+  checkpointHash: string;
+  updatedAt: number;
+}
 export interface RecordSourceEntry {
   source: StoredRecordSource;
   session: RecordSession;
@@ -360,6 +369,36 @@ export class RecordStore {
       ...(row.attempt_id === null ? {} : { attemptId: row.attempt_id }), ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
       ...(row.item_id === null ? {} : { itemId: row.item_id }), ...(row.details_json === null ? {} : { details: JSON.parse(row.details_json) }),
     }));
+  }
+
+  /** The prompt-count cursor committed for one transcript file, if any. */
+  promptCursor(key: PromptCursorKey): StoredPromptCursor | undefined {
+    const row = this.db.query("SELECT * FROM prompt_cursors WHERE device=? AND inode=?")
+      .get(key.device, key.inode) as any;
+    return row ? {
+      device: row.device, inode: row.inode, offset: row.committed_offset, count: row.prompt_count,
+      prefixHash: row.prefix_hash, checkpointHash: row.checkpoint_hash, updatedAt: row.updated_at,
+    } : undefined;
+  }
+
+  /**
+   * Commit a prompt-count cursor.
+   *
+   * ponytail: last write wins. Two daemons counting the same file can only
+   * disagree about how FAR a cursor reaches — an older one costs bytes on the
+   * next hook, never a wrong count, because every reader revalidates the
+   * probes and recounts everything after the offset.
+   */
+  putPromptCursor(cursor: StoredPromptCursor): void {
+    if (![cursor.device, cursor.inode].every(nonempty)
+      || ![cursor.offset, cursor.count].every((value) => Number.isSafeInteger(value) && value >= 0)
+      || ![cursor.prefixHash, cursor.checkpointHash].every((hash) => /^[0-9a-f]{64}$/.test(hash))
+      || !Number.isFinite(cursor.updatedAt)) throw new Error("invalid prompt cursor");
+    this.db.query(`INSERT INTO prompt_cursors (device,inode,committed_offset,prompt_count,prefix_hash,checkpoint_hash,updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(device,inode) DO UPDATE SET committed_offset=excluded.committed_offset, prompt_count=excluded.prompt_count,
+      prefix_hash=excluded.prefix_hash, checkpoint_hash=excluded.checkpoint_hash, updated_at=excluded.updated_at`)
+      .run(cursor.device, cursor.inode, cursor.offset, cursor.count, cursor.prefixHash, cursor.checkpointHash, cursor.updatedAt);
   }
 
   counts(): RecordCounts {

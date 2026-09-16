@@ -33,6 +33,7 @@ try {
           case "receipts": value = store.receipts(...request.args); break;
           case "reindex": value = store.reindex(...request.args); break;
           case "counts": value = store.counts(); break;
+          case "putPromptCursor": value = store.putPromptCursor(...request.args); break;
           case "historyPage": value = store.historyPage(...request.args); break;
           case "historyItem": value = store.historyItem(...request.args); break;
           case "startIngestion":

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { RecordsRuntime, type RecordsRuntimeClient } from "../src/records-runtime.ts";
 import type { RecordsIngestionOptions, RecordsPriorityHints } from "../src/records-client.ts";
 import type { RecordReceipt } from "../src/records-types.ts";
+import type { StoredPromptCursor } from "../src/records-store.ts";
 import { historyOff } from "../src/history.ts";
 
 function deferred<T>() {
@@ -29,6 +30,13 @@ class FakeClient implements RecordsRuntimeClient {
   onStart?: () => Promise<void>;
   async startIngestion(options: RecordsIngestionOptions) { this.events.push("start"); this.starts.push(options); await this.onStart?.(); }
   async prioritize(value: RecordsPriorityHints) { this.hints.push(value); await this.onHint?.(value); }
+  cursors: StoredPromptCursor[] = [];
+  onCursor?: (cursor: StoredPromptCursor) => Promise<void>;
+  async putPromptCursor(value: StoredPromptCursor) {
+    this.events.push(`cursor:${value.offset}`);
+    this.cursors.push(value);
+    await this.onCursor?.(value);
+  }
   async appendReceipt(value: RecordReceipt) {
     this.events.push(`receipt:${value.id}`);
     this.receipts.push(value);
