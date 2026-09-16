@@ -21,6 +21,7 @@ const dashboard = read("mac-app/conch-mac/DashboardView.swift");
 const adapter = read("mac-app/conch-mac/Workspace.swift");
 const stack = read("mac-app/conch-mac/ConversationStackView.swift");
 const panels = read("mac-app/conch-mac/FloatingPanels.swift");
+const app = read("mac-app/conch-mac/ConchMacApp.swift");
 const project = read("mac-app/conch-mac.xcodeproj/project.pbxproj");
 /** The conversation pane only: the rest of the file is the ledger and the header. */
 const pane = dashboard.slice(dashboard.indexOf("private struct ConversationPane: View {"));
@@ -41,7 +42,7 @@ describe("one owner", () => {
 
   /** A missing `import ConchDesign` has slipped through twice; CI builds neither app. */
   test("every file that reads the model imports the design system", () => {
-    for (const source of [content, dashboard, adapter, stack, panels]) {
+    for (const source of [content, dashboard, adapter, stack, panels, app]) {
       expect(source).toContain("import ConchDesign");
     }
     expect(project).toContain("/* Workspace.swift in Sources */ = {isa = PBXBuildFile;");
@@ -119,16 +120,19 @@ describe("new work does not replace what you are reading", () => {
     expect(pane).not.toMatch(/showsConversation\s*=/);
     expect(stack).toContain("ArtifactPreview(artifact: artifact, onOpen: onOpenArtifact)");
 
-    // The only three ways the page moves, and every one of them is a press.
-    const changes = pane.match(/workspace\.show\(conversation: (true|false), for: row\.id\)/g) ?? [];
-    expect(changes).toHaveLength(3);
-    expect(pane).toContain('action: { workspace.show(conversation: false, for: row.id) }');
-    expect(pane).toContain('action: { workspace.show(conversation: true, for: row.id) }');
-    expect(pane).toContain("onOpenArtifact: { workspace.show(conversation: false, for: row.id) }");
+    // The only four ways the page moves, and every one of them is a press: the three pages
+    // in the perspective bar, and opening the artifact from its inline preview. One door
+    // (`show(stage:)`), because a page that can be set two ways can be set two ways at once.
+    const changes = pane.match(/workspace\.show\(stage: \.\w+, for: row\.id\)/g) ?? [];
+    expect(changes).toHaveLength(4);
+    expect(pane).toContain('action: { workspace.show(stage: .conversation, for: row.id) }');
+    expect(pane).toContain('action: { workspace.show(stage: .sideBySide, for: row.id) }');
+    expect(pane).toContain('action: { workspace.show(stage: .deliverable, for: row.id) }');
+    expect(pane).toContain("onOpenArtifact: { workspace.show(stage: .deliverable, for: row.id) }");
   });
 
   test("the page is per session, so switching away and back returns to it", () => {
-    expect(pane).toContain("workspace.presentation(for: row?.id).showsConversation");
+    expect(pane).toContain("workspace.presentation(for: row?.id).stage");
     expect(pane).toContain("private func perspectiveBar(for row: SessionRow) -> some View {");
 
     // The strip of deliverables asks the same shared rule, and keeps no pick of its own: the
@@ -144,5 +148,34 @@ describe("new work does not replace what you are reading", () => {
     expect(pane).toContain("isUnviewed ? ConchPalette.textPrimary : ConchPalette.textDim");
     expect(pane).toContain("isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear)");
     expect(pane).toContain("if item.viewedAt == nil, state?.features?.viewedState != nil {");
+  });
+
+  test("side by side draws one conversation, at half the stage, not a second copy of it", () => {
+    expect(pane).toContain("if stage(for: reviewRow) == .sideBySide {");
+    // ONE rendering of the exchange, called from both pages. The deliverable page used to
+    // keep a bounded strip of the old single-reply document standing in for "both"; two
+    // renderings of one conversation is how they drift apart, so that strip is gone.
+    expect(pane).toContain("private func conversationBody(for row: SessionRow?) -> some View {");
+    expect(pane.match(/conversationBody\(for: /g) ?? []).toHaveLength(2);
+    expect(pane).not.toContain("minHeight: 96, idealHeight: 150, maxHeight: 190");
+
+    const at = pane.indexOf("if stage(for: reviewRow) == .sideBySide {");
+    const split = pane.slice(at, pane.indexOf("} else {", at));
+    expect(split.length).toBeGreaterThan(200);
+    expect(split).toContain("conversationBody(for: reviewRow)");
+    expect(split).toContain("InlineReviewView(");
+    // Half each: two equal claims on the width, rather than a measured fraction.
+    expect(split.match(/\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)/g) ?? []).toHaveLength(2);
+  });
+
+  test("the three pages have keys, and two of them wait for something to show", () => {
+    expect(app).toContain('.keyboardShortcut("1", modifiers: .command)');
+    expect(app).toContain('.keyboardShortcut("2", modifiers: .command)');
+    expect(app).toContain('.keyboardShortcut("3", modifiers: .command)');
+    expect(app).toContain("NotificationCenter.default.post(name: .setStage, object: StageMode.sideBySide)");
+    expect(pane).toContain("guard let mode = note.object as? StageMode, let row = focusedRow else { return }");
+    // With nothing filed there is nothing to put beside or in front of the conversation, so
+    // those two keys do nothing rather than handing someone an empty stage.
+    expect(pane).toContain("guard mode == .conversation || selectedReview != nil else { return }");
   });
 });

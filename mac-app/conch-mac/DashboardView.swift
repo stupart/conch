@@ -5,6 +5,10 @@ import SwiftUI
 extension Notification.Name {
     /// ⌘B, from the menu — posted like the palette's, so the shortcut works whatever has focus.
     static let toggleSidebar = Notification.Name("com.conch.mac.toggle-sidebar")
+
+    /// ⌘1 ⌘2 ⌘3 (§3), carrying the StageMode as its object. Posted from the menu for the
+    /// same reason ⌘B is: the shortcut has to work whatever holds focus.
+    static let setStage = Notification.Name("com.conch.mac.set-stage")
 }
 
 struct DashboardActions {
@@ -1333,8 +1337,8 @@ private struct ConversationPane: View {
     /// back to the conversation, which takes someone off the deliverable they were
     /// inspecting; new work must not replace what you are reading. It still arrives as a
     /// preview inline in the conversation, which is how it asks to be looked at.
-    private func showsConversation(for row: SessionRow?) -> Bool {
-        workspace.presentation(for: row?.id).showsConversation
+    private func stage(for row: SessionRow?) -> StageMode {
+        workspace.presentation(for: row?.id).stage
     }
 
     /// What the mic is doing FOR THIS ROW, by identity.
@@ -1472,7 +1476,7 @@ private struct ConversationPane: View {
 
     var body: some View {
         Group {
-            if let selectedReview, let reviewRow = focusedRow, !showsConversation(for: reviewRow) {
+            if let selectedReview, let reviewRow = focusedRow, stage(for: reviewRow) != .conversation {
                 VStack(spacing: 0) {
                     sessionBar(for: reviewRow)
 
@@ -1494,26 +1498,31 @@ private struct ConversationPane: View {
                             .frame(height: 1)
                     }
 
-                    InlineReviewView(
-                        item: selectedReview,
-                        onExpand: { onExpandReview(reviewRow) }
-                    )
+                    if stage(for: reviewRow) == .sideBySide {
+                        // 50% each (§3). Equal .infinity widths rather than a GeometryReader
+                        // fraction: the split is the point, not a measurement.
+                        HStack(spacing: 0) {
+                            conversationBody(for: reviewRow)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                    if isFocusedSessionLive {
-                        Rectangle()
-                            .fill(ConchPalette.divider)
-                            .frame(height: 1)
+                            Rectangle()
+                                .fill(ConchPalette.divider)
+                                .frame(width: 1)
 
-                        ConversationTextView(
-                            attributedText: document.text,
-                            scrollTarget: document.scrollTarget,
-                            contentID: document.contentID
+                            InlineReviewView(
+                                item: selectedReview,
+                                onExpand: { onExpandReview(reviewRow) }
+                            )
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                    } else {
+                        InlineReviewView(
+                            item: selectedReview,
+                            onExpand: { onExpandReview(reviewRow) }
                         )
-                        .textSelection(.enabled)
-                        .frame(minHeight: 96, idealHeight: 150, maxHeight: 190)
-                    }
 
-                    Spacer(minLength: 0)
+                        Spacer(minLength: 0)
+                    }
 
                     composer(for: reviewRow)
                 }
@@ -1539,68 +1548,7 @@ private struct ConversationPane: View {
                             .frame(height: 1)
                     }
 
-                    // The stack when the daemon has one FOR THIS SESSION, and
-                    // the old single-reply document otherwise. The session check
-                    // is not paranoia: the daemon publishes one conversation at
-                    // a time, so without it, focusing a second session would
-                    // show it the first one's messages under its own name.
-                    // Look up THIS row's conversation. The daemon publishes
-                    // one per visible session precisely so the app never has to
-                    // agree with it about which session is "showing" — the
-                    // terminal dashboard holds its own cursor, and every attempt
-                    // to reconcile them left the stack silently falling back.
-                    if let row = focusedRow,
-                       let conversation = state?.conversations?[row.id] ?? state?.conversation,
-                       !conversation.items.isEmpty,
-                       conversation.sessionId == row.id {
-                        ConversationStackView(
-                            conversation: conversation,
-                            history: store.history,
-                            onAnswer: { label in
-                                store.send(
-                                    .inject(
-                                        sessionId: row.id,
-                                        label: row.label,
-                                        text: label
-                                    )
-                                )
-                            },
-                            artifact: row.review,
-                            cwd: row.cwd,
-                            onOpenArtifact: { workspace.show(conversation: false, for: row.id) },
-                            onFreeform: { composerFocusRequest += 1 },
-                            onOpenSubagent: { agent in
-                                // Its live row when the daemon lists one, else
-                                // a row built from the block — the same pane
-                                // either way, and the parent's row is the way
-                                // back (C4).
-                                if let target = state?.rows.first(where: { $0.id == agent.id })
-                                    ?? subagentRow(id: agent.id) {
-                                    onSelectSession(target)
-                                }
-                            },
-                            noTerminal: row.noTerminal,
-                            onOpenInTerminal: row.attachable ? { store.openInTerminal(row) } : nil
-                        )
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        ConversationTextView(
-                            attributedText: document.text,
-                            scrollTarget: document.scrollTarget,
-                            contentID: document.contentID,
-                            onOpenLink: { link in
-                                fallbackLinkFailure = nil
-                                store.openLink(link, cwd: focusedRow?.cwd, rowId: focusedRow?.id) {
-                                    fallbackLinkFailure = $0
-                                }
-                            }
-                        )
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .overlay(alignment: .bottom) {
-                            LinkFailureLine(message: $fallbackLinkFailure)
-                        }
-                    }
+                    conversationBody(for: focusedRow)
 
                     // Typing belongs where you are reading. Putting the composer
                     // here rather than in a separate panel means the reply you
@@ -1613,6 +1561,14 @@ private struct ConversationPane: View {
             }
         }
         .background(ConchPalette.bg)
+        .onReceive(NotificationCenter.default.publisher(for: .setStage)) { note in
+            // Only where there is somewhere to go: with no deliverable filed, two of the
+            // three pages are a promise the pane cannot keep — the same reason the
+            // perspective bar draws nothing until there is one.
+            guard let mode = note.object as? StageMode, let row = focusedRow else { return }
+            guard mode == .conversation || selectedReview != nil else { return }
+            workspace.show(stage: mode, for: row.id)
+        }
         .task(id: TranscriptWatchID(row: watchesTranscriptForRow)) {
             await transcriptContent.monitor(row: watchesTranscriptForRow)
         }
@@ -1783,22 +1739,101 @@ private struct ConversationPane: View {
         .padding(.vertical, 5)
     }
 
-    private func perspectiveBar(for row: SessionRow) -> some View {
-        let shows = showsConversation(for: row)
-        return HStack(spacing: 2) {
-            PerspectiveOption(
-                label: "Deliverable",
-                symbol: "doc.richtext",
-                isSelected: !shows,
-                help: "What the session produced",
-                action: { workspace.show(conversation: false, for: row.id) }
+    /// The exchange itself, drawn the same way wherever it appears.
+    ///
+    /// Side by side shows this and the deliverable at once (§3), so it cannot be a second,
+    /// smaller rendering of the conversation — two renderings of one exchange is how they
+    /// drift apart. The deliverable page used to keep exactly that: a bounded strip of the
+    /// old single-reply document, which side by side now replaces properly.
+    @ViewBuilder
+    private func conversationBody(for row: SessionRow?) -> some View {
+        // The stack when the daemon has one FOR THIS SESSION, and
+        // the old single-reply document otherwise. The session check
+        // is not paranoia: the daemon publishes one conversation at
+        // a time, so without it, focusing a second session would
+        // show it the first one's messages under its own name.
+        // Look up THIS row's conversation. The daemon publishes
+        // one per visible session precisely so the app never has to
+        // agree with it about which session is "showing" — the
+        // terminal dashboard holds its own cursor, and every attempt
+        // to reconcile them left the stack silently falling back.
+        if let row,
+           let conversation = state?.conversations?[row.id] ?? state?.conversation,
+           !conversation.items.isEmpty,
+           conversation.sessionId == row.id {
+            ConversationStackView(
+                conversation: conversation,
+                history: store.history,
+                onAnswer: { label in
+                    store.send(
+                        .inject(
+                            sessionId: row.id,
+                            label: row.label,
+                            text: label
+                        )
+                    )
+                },
+                artifact: row.review,
+                cwd: row.cwd,
+                onOpenArtifact: { workspace.show(stage: .deliverable, for: row.id) },
+                onFreeform: { composerFocusRequest += 1 },
+                onOpenSubagent: { agent in
+                    // Its live row when the daemon lists one, else
+                    // a row built from the block — the same pane
+                    // either way, and the parent's row is the way
+                    // back (C4).
+                    if let target = state?.rows.first(where: { $0.id == agent.id })
+                        ?? subagentRow(id: agent.id) {
+                        onSelectSession(target)
+                    }
+                },
+                noTerminal: row.noTerminal,
+                onOpenInTerminal: row.attachable ? { store.openInTerminal(row) } : nil
             )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ConversationTextView(
+                attributedText: document.text,
+                scrollTarget: document.scrollTarget,
+                contentID: document.contentID,
+                onOpenLink: { link in
+                    fallbackLinkFailure = nil
+                    store.openLink(link, cwd: focusedRow?.cwd, rowId: focusedRow?.id) {
+                        fallbackLinkFailure = $0
+                    }
+                }
+            )
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .bottom) {
+                LinkFailureLine(message: $fallbackLinkFailure)
+            }
+        }
+    }
+
+    private func perspectiveBar(for row: SessionRow) -> some View {
+        let mode = stage(for: row)
+        return HStack(spacing: 2) {
             PerspectiveOption(
                 label: "Conversation",
                 symbol: "text.bubble",
-                isSelected: shows,
-                help: "The exchange that produced it",
-                action: { workspace.show(conversation: true, for: row.id) }
+                isSelected: mode == .conversation,
+                help: "The exchange that produced it (⌘1)",
+                action: { workspace.show(stage: .conversation, for: row.id) }
+            )
+            PerspectiveOption(
+                label: "Side by side",
+                symbol: "rectangle.split.2x1",
+                isSelected: mode == .sideBySide,
+                help: "The work and the exchange together (⌘2)",
+                action: { workspace.show(stage: .sideBySide, for: row.id) }
+            )
+            PerspectiveOption(
+                label: "Deliverable",
+                symbol: "doc.richtext",
+                isSelected: mode == .deliverable,
+                help: "What the session produced (⌘3)",
+                action: { workspace.show(stage: .deliverable, for: row.id) }
             )
             Spacer(minLength: 0)
         }

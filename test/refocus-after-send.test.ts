@@ -70,7 +70,10 @@ test("a Mac-app send takes the front back only after the daemon says delivery fi
   // which fills the composer) and palette type lines all take this door.
   const dashboard = read("mac-app/conch-mac/DashboardView.swift");
   expect(dashboard).toContain("store.send(.inject(sessionId: row.id, label: row.label, text: text))");
-  expect(dashboard).toContain("onAnswer: { label in\n                                store.send(\n                                    .inject(");
+  // Whitespace-normalised on purpose: this guard is about the door an answer takes, not how
+  // deeply the call happens to be nested. Lifting the conversation into its own view re-indented
+  // it by 12 and broke this while the routing it checks was never touched.
+  expect(dashboard.replace(/\s+/g, " ")).toContain("onAnswer: { label in store.send( .inject(");
   expect(read("mac-app/conch-mac/CommandPaletteView.swift")).toContain("store.send(.inject(\n");
 });
 

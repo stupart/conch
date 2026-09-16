@@ -225,8 +225,8 @@ public final class WorkspaceModel: ObservableObject {
 
     /// Both perspectives, one door. Called only from an explicit choice — the perspective
     /// control, or opening the artifact from its inline preview.
-    public func show(conversation: Bool, for id: String?) {
-        update(id) { $0.stage = conversation ? .conversation : .deliverable }
+    public func show(stage: StageMode, for id: String?) {
+        update(id) { $0.stage = stage }
     }
 
     /// Pick one of the deliverables a session holds. Only an explicit choice moves this: a
