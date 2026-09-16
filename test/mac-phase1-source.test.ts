@@ -212,6 +212,26 @@ describe("Mac conversation links keep the native clickable path", () => {
 
 describe("§3's anatomy, where the app had drifted from it", () => {
   const dashboard = mac("DashboardView.swift");
+  const stack = mac("ConversationStackView.swift");
+
+  test("consecutive tool steps fold, and the rows that demand action never do", () => {
+    // §3: consecutive steps fold into one quiet line that opens to the steps on a hairline
+    // guide. The rule itself is tested by swift test; this pins the WIRING.
+    expect(stack).toContain("ToolFolding.runs(");
+    expect(stack).toContain("Text(run.summary)");
+    // A question is the one row on screen a person must act on — the session is blocked on
+    // it. A plan is the answer to "what is it doing". Neither may be hidden behind a summary.
+    expect(stack).toContain("if let asked = item.question, !asked.options.isEmpty { return false }");
+    expect(stack).toContain("if let plan = item.plan, !plan.isEmpty { return false }");
+    // Both loops fold, so recorded history reads the same as the live window.
+    expect(stack).toContain("foldedRow(for: item, in: recordedRows, folds: recordedFolds)");
+    expect(stack).toContain("foldedRow(for: item, in: conversation.items, folds: liveFolds)");
+    // The run reuses the per-session expand state rather than inventing a second one.
+    expect(stack).toContain("toggleExpanded(run.id)");
+    expect(stack).not.toMatch(/@State private var expandedRuns/);
+    // One guide down the opened steps, not a hairline per step.
+    expect(stack).toContain("Rectangle().fill(ConchPalette.divider).frame(width: 1)");
+  });
 
   test("the header is 52 tall, not a toolbar's 36", () => {
     // Nothing pinned this before, which is how it sat at 36 through a spec that says 52.

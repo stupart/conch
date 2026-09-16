@@ -28,6 +28,26 @@ public struct ToolRun: Equatable, Sendable, Identifiable {
 
     public var count: Int { itemIDs.count }
 
+    /// The line §3 puts in place of the run: "Worked 1m 50s · 5 steps".
+    ///
+    /// Without a duration it is only the count. The count is always true; a line that says
+    /// nothing about time beats one that invents it, and a run is never fewer than two steps
+    /// so the plural always reads.
+    public var summary: String {
+        let steps = "\(count) steps"
+        guard let seconds, seconds >= 1 else { return steps }
+        return "Worked \(Self.elapsed(seconds)) · \(steps)"
+    }
+
+    /// Coarse on purpose: nobody reads a transcript to learn something took 1m 50.4s.
+    static func elapsed(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        let hours = total / 3600, minutes = (total % 3600) / 60, rest = total % 60
+        if hours > 0 { return minutes > 0 ? "\(hours)h \(minutes)m" : "\(hours)h" }
+        if minutes > 0 { return rest > 0 ? "\(minutes)m \(rest)s" : "\(minutes)m" }
+        return "\(rest)s"
+    }
+
     public init(itemIDs: [String], seconds: Double?) {
         self.itemIDs = itemIDs
         self.seconds = seconds

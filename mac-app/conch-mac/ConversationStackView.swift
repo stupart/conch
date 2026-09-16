@@ -78,6 +78,79 @@ struct ConversationStackView: View {
 
     private static let bottomAnchor = "conversation-bottom"
 
+    /// Which rows fold (§3): the generic tool line, and a file change.
+    ///
+    /// Never a question — the session is BLOCKED on it, and hiding the one row a person must
+    /// act on behind a summary would be a bug whatever any list says. Never a plan either:
+    /// that is the answer to "what is it doing", and the row below already argues it should
+    /// render as itself rather than as something you must think to open.
+    private func foldable(_ item: ConversationItem) -> Bool {
+        guard item.kind == .tool else { return false }
+        if let asked = item.question, !asked.options.isEmpty { return false }
+        if let plan = item.plan, !plan.isEmpty { return false }
+        return true
+    }
+
+    private struct FoldIndex {
+        var heads: [String: ToolRun] = [:]
+        /// Every step after the first, pointing at the run that draws it.
+        var memberOf: [String: String] = [:]
+    }
+
+    /// ponytail: computed per list, so a run straddling the history/live seam draws as two
+    /// folds. Merging the two lists would mean restructuring the scroll anchoring that history
+    /// paging depends on, which is a great deal of risk for a seam.
+    private func folds(in items: [ConversationItem]) -> FoldIndex {
+        var index = FoldIndex()
+        for run in ToolFolding.runs(for: items.map { (id: $0.id, isTool: foldable($0), at: $0.at) }) {
+            index.heads[run.id] = run
+            for member in run.itemIDs.dropFirst() { index.memberOf[member] = run.id }
+        }
+        return index
+    }
+
+    /// One row, or the whole run it starts. A step that is not the first draws nothing: its
+    /// run draws it, so the steps share one guide instead of one hairline each.
+    @ViewBuilder
+    private func foldedRow(for item: ConversationItem, in items: [ConversationItem], folds: FoldIndex) -> some View {
+        if let run = folds.heads[item.id] {
+            let open = isExpanded(run.id)
+            VStack(alignment: .leading, spacing: 8) {
+                Button { toggleExpanded(run.id) } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: open ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 8))
+                            .foregroundStyle(ConchPalette.textFaint)
+                        Text(run.summary)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(ConchPalette.textDim)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(open ? "Hide these steps" : "Show these steps")
+
+                if open {
+                    let members = Set(run.itemIDs)
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(items.filter { members.contains($0.id) }) { step in
+                            row(for: step)
+                        }
+                    }
+                    .padding(.leading, 10)
+                    .overlay(alignment: .leading) {
+                        Rectangle().fill(ConchPalette.divider).frame(width: 1)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else if folds.memberOf[item.id] != nil {
+            EmptyView()
+        } else {
+            row(for: item)
+        }
+    }
+
     private func isExpanded(_ itemID: String) -> Bool {
         workspace.isToolExpanded(itemID, for: conversation.sessionId)
     }
@@ -103,6 +176,8 @@ struct ConversationStackView: View {
                 // can be MEASURED on a Mac with Xcode — guessing is how the bare
                 // background got shipped the first time.
                 VStack(alignment: .leading, spacing: 22) {
+                    let recordedFolds = folds(in: recordedRows)
+                    let liveFolds = folds(in: conversation.items)
                     historyHeader
                     if conversation.shared {
                         Text("Shared with another window — both windows' messages are shown")
@@ -114,10 +189,10 @@ struct ConversationStackView: View {
                     // What the record store holds above the live window, drawn by the
                     // same renderers: a recorded message is still a message.
                     ForEach(recordedRows) { item in
-                        row(for: item).id(item.id)
+                        foldedRow(for: item, in: recordedRows, folds: recordedFolds).id(item.id)
                     }
                     ForEach(conversation.items) { item in
-                        row(for: item).id(item.id)
+                        foldedRow(for: item, in: conversation.items, folds: liveFolds).id(item.id)
                     }
                     // A zero-height anchor rather than scrolling to the last
                     // item: the last item GROWS while it streams, and scrolling
