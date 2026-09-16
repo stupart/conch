@@ -506,7 +506,7 @@ private struct SessionLedger: View {
                                             )
                                             // Folder-style: a subagent sits under its parent (C4),
                                             // a started session under its starter (C15).
-                                            .padding(.leading, row.parentSessionId == nil && row.startedBySessionId == nil ? 0 : 18)
+                                            .padding(.leading, row.parentSessionId == nil && row.startedBySessionId == nil ? 0 : 30)
                                             .id(row.id)
                                         }
                                     }
@@ -687,6 +687,11 @@ private struct FolderHeader: View {
 }
 
 private struct DashboardRow: View {
+    /// `.row{height:var(--rowH)}` with `--rowH:30px`. The row is ONE line — mark, label,
+    /// agent, summary, age, glyph — and carried 42, which is a line and a half of air. At
+    /// a sidebar's usual height that is nine sessions you could not see.
+    static let rowHeight: CGFloat = 30
+
     let row: SessionRow
     let now: Date
     let isSelected: Bool
@@ -754,7 +759,7 @@ private struct DashboardRow: View {
                 .help(row.label)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 42)
+        .frame(maxWidth: .infinity, minHeight: Self.rowHeight)
         .background {
             ZStack {
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
@@ -805,7 +810,7 @@ private struct DashboardRow: View {
     }
 
     private var rowContent: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 8) {
             // Full brand cyan means "your mic is open". The rail was painting it
             // on speaking and transcribing rows too — a bigger patch of it than
             // the glyph — so it contradicted the very invariant the glyph sets.
@@ -962,8 +967,8 @@ private struct DashboardRow: View {
             DashboardStatusGlyph(visual: LedgerVisual(row: row))
                 .frame(width: 16)
         }
-        .padding(.trailing, 10)
-        .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+        .padding(.trailing, 4)
+        .frame(maxWidth: .infinity, minHeight: Self.rowHeight, alignment: .leading)
         .contentShape(Rectangle())
     }
 
@@ -1140,7 +1145,7 @@ private struct DismissedDashboardRow: View {
             }
         }
         .padding(.horizontal, 10)
-        .frame(maxWidth: .infinity, minHeight: 34)
+        .frame(maxWidth: .infinity, minHeight: DashboardRow.rowHeight)
         .foregroundStyle(ConchPalette.textDim)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)

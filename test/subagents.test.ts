@@ -354,7 +354,7 @@ describe("the daemon and the Mac app wire it up", () => {
 
   test("the dashboard indents a subagent, never types into it, and offers the way back", () => {
     const dashboard = read("mac-app/conch-mac/DashboardView.swift");
-    expect(dashboard).toContain(".padding(.leading, row.parentSessionId == nil && row.startedBySessionId == nil ? 0 : 18)");
+    expect(dashboard).toContain(".padding(.leading, row.parentSessionId == nil && row.startedBySessionId == nil ? 0 : 30)");
     expect(dashboard).toContain("if let row = focusedRow, row.parentSessionId == nil {\n                        composer(for: row)");
     expect(dashboard).toContain('.help("Back to \\(parent.label)")');
     // Which session the voice is on is decided by identity, in the design system, and a
