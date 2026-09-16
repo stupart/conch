@@ -60,6 +60,32 @@ final class ToolFoldingTests: XCTestCase {
         XCTAssertEqual(ToolRun(itemIDs: ["a", "b"], seconds: 0.4).summary, "2 steps")
     }
 
+    /// The bug the shipped fold showed: two adjacent steps four hours apart, because the
+    /// session sat waiting on a person, rendered as "Worked 4h 40m".
+    func testAnIdleGapMeansNoDurationRatherThanAnOverclaim() {
+        let idle = ToolFolding.runs(for: [
+            item("t1", true, 1_000), item("t2", true, 1_000 + 4 * 3_600),
+        ])
+        XCTAssertEqual(idle.first?.count, 2, "the run still folds — only its duration is unsafe")
+        XCTAssertNil(idle.first?.seconds)
+        XCTAssertEqual(idle.first?.summary, "2 steps")
+    }
+
+    /// A slow step is still work: the ceiling is generous so a long build keeps its time.
+    func testALongButPlausibleStepKeepsItsDuration() {
+        let runs = ToolFolding.runs(for: [
+            item("t1", true, 1_000), item("t2", true, 1_500), item("t3", true, 1_900),
+        ])
+        XCTAssertEqual(runs.first?.seconds, 900)
+    }
+
+    /// One unstamped step in the middle means the gaps cannot be checked at all.
+    func testAHoleInTheStampsMeansNoDuration() {
+        XCTAssertNil(ToolFolding.runs(for: [
+            item("t1", true, 1_000), item("t2", true), item("t3", true, 1_060),
+        ]).first?.seconds)
+    }
+
     /// Clocks step backwards (a rebuilt transcript, a corrected timestamp); a negative
     /// duration would render as "Worked -3s".
     func testTimeGoingBackwardsYieldsNoDuration() {
