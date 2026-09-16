@@ -71,7 +71,7 @@ describe("E1: the header lives in the title-bar strip", () => {
     expect(controls).toContain('help: "Settings — connect a phone, and everything else"');
     expect(controls).toContain('help: isLogDrawerOpen ? "Hide logs" : "Show logs"');
     expect(controls).toContain('help: "Keyboard shortcuts"');
-    expect(controls).toContain(".frame(width: 26, height: 26)");
+    expect(controls).toContain(".frame(width: 28, height: 28)");
     expect(controls).toContain(".accessibilityLabel(help)");
     ordered(controls, "ModeToggle(", 'symbol: "gearshape"', 'symbol: "text.alignleft"', 'symbol: "questionmark"');
     // The wordmark and the status line stay in the strip with them.
