@@ -26,13 +26,13 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertFalse(SessionPresentation(stage: .deliverable).showsConversation)
     }
 
-    /// The existing door keeps working, so every reader and guard can move later, not now.
-    func testTheConversationToggleStillMapsOntoTheStage() {
+    /// One door, so a page cannot be set two ways that could disagree.
+    func testOneDoorMovesTheStage() {
         let model = WorkspaceModel()
-        model.show(conversation: false, for: "a")
+        model.show(stage: .deliverable, for: "a")
         XCTAssertEqual(model.presentation(for: "a").stage, .deliverable)
         XCTAssertFalse(model.presentation(for: "a").showsConversation)
-        model.show(conversation: true, for: "a")
+        model.show(stage: .conversation, for: "a")
         XCTAssertEqual(model.presentation(for: "a").stage, .conversation)
         XCTAssertTrue(model.presentation(for: "a").showsConversation)
     }
@@ -174,7 +174,7 @@ final class WorkspaceTests: XCTestCase {
 
     func testEachSessionKeepsItsOwnPageAcrossSwitches() {
         let model = WorkspaceModel()
-        model.show(conversation: false, for: "a")
+        model.show(stage: .deliverable, for: "a")
         model.toggleTool("tool-1", for: "a")
 
         model.viewing = "b"
@@ -191,7 +191,7 @@ final class WorkspaceTests: XCTestCase {
     /// Nothing but an explicit choice moves this now — an arriving artifact is not a choice.
     func testANewArtifactDoesNotChangeTheChosenView() {
         let model = WorkspaceModel()
-        model.show(conversation: false, for: "a")
+        model.show(stage: .deliverable, for: "a")
 
         // Everything an arriving artifact does to this model: nothing. The session republishes,
         // the reader stays on the page they opened.
@@ -200,7 +200,7 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertFalse(model.presentation(for: "a").showsConversation)
 
         // And the way back is the control, which does move it.
-        model.show(conversation: true, for: "a")
+        model.show(stage: .conversation, for: "a")
         XCTAssertTrue(model.presentation(for: "a").showsConversation)
     }
 

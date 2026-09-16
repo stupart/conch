@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ConchDesign
 import ServiceManagement
 import UserNotifications
 
@@ -80,6 +81,21 @@ struct ConchMacApp: App {
                     NotificationCenter.default.post(name: .toggleSidebar, object: nil)
                 }
                 .keyboardShortcut("b", modifiers: .command)
+                Divider()
+                // ⌘1-3 (§3). The pane ignores the two that need a deliverable when there
+                // is none, so these stay enabled rather than flickering with the session.
+                Button("Conversation") {
+                    NotificationCenter.default.post(name: .setStage, object: StageMode.conversation)
+                }
+                .keyboardShortcut("1", modifiers: .command)
+                Button("Side by Side") {
+                    NotificationCenter.default.post(name: .setStage, object: StageMode.sideBySide)
+                }
+                .keyboardShortcut("2", modifiers: .command)
+                Button("Deliverable") {
+                    NotificationCenter.default.post(name: .setStage, object: StageMode.deliverable)
+                }
+                .keyboardShortcut("3", modifiers: .command)
             }
             CommandGroup(after: .help) {
                 Button("Keyboard Shortcuts") {
