@@ -1210,7 +1210,7 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
     }
 
     init(row: SessionRow) {
-        // The deliverable stays on a working row, but the star means "waiting
+        // The deliverable stays on a working row, but the mark means "waiting
         // for you to look", which a working session is not.
         if (row.review != nil && row.status != .working) || row.status == .review {
             self = .review
@@ -1256,7 +1256,11 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             // states were filled discs — urgency rising as ink fell.
             return "exclamationmark.circle.fill"
         case .review:
-            return "star.fill"
+            // A CHECK, not a star. The lab draws this mark as `ic('check')` on
+            // `--ready` (line 895) and §5 calls it "`ready` green circle with
+            // ✓"; the star was the app's own invention, and it read as
+            // "favourite" on the one surface scanned most.
+            return "checkmark.circle.fill"
         case .manual:
             return "pause.fill"
         case .speaking:

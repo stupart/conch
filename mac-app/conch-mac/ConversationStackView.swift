@@ -524,7 +524,10 @@ struct ConversationStackView: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .review:
-            Label(item.text, systemImage: "star.fill")
+            // The lab's review mark is a CHECK on the ready green (line 895:
+            // `badge review` + `ic('check')`), never a star — and §5's state
+            // language says the same: "`ready` green circle with ✓".
+            Label(item.text, systemImage: "checkmark.circle.fill")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(ConchPalette.statusReview)
         case .material:
@@ -1354,53 +1357,46 @@ private struct ArtifactPreview: View {
 
     var body: some View {
         Button(action: onOpen) {
-            VStack(alignment: .leading, spacing: 10) {
-            // The artifact itself, first, at a height that fits a conversation.
-            // An icon and a filename told you a deliverable EXISTED; this shows
-            // what it is. Tyler, side by side with the card: "preview the
-            // actual artifact in conch instead of this random card UI".
+            VStack(alignment: .leading, spacing: 8) {
+            // The work itself, and as little else as possible. Tyler: "just
+            // like an image or preview of the work with little or no text …
+            // aspect ratio can change to fit deliverable better".
+            //
+            // What went: an uppercase "DELIVERABLE" eyebrow in the review
+            // colour, the file path, an expand arrow, and a tinted ring around
+            // the whole thing. None of that is in the lab — `.dc` is a plain
+            // `inset 0 0 0 1px var(--hair2)` hairline holding a picture and one
+            // line of words — and four labels around a thumbnail is the "random
+            // card UI" this card already replaced once.
             //
             // Not the Deliverable pane's renderers: those are NSScrollViews,
             // and a scroller inside the conversation's scroller captures the
             // wheel. A bounded, clipped render of the head is enough to
             // recognise the thing; the gesture below still opens it whole.
             inlinePreview
-            HStack(alignment: .top, spacing: 11) {
+            HStack(alignment: .center, spacing: 10) {
                 if inlinePreviewKind == nil { thumbnail }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Deliverable")
-                        .font(ConchTypography.font(size: 9.5, weight: .medium))
-                        .foregroundStyle(ConchPalette.statusReview)
-                        .textCase(.uppercase)
-                        .tracking(0.6)
-                    Text(artifact.summary)
-                        .font(ConchTypography.font(size: 12.5))
-                        .foregroundStyle(ConchPalette.textPrimary)
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let link = artifact.link, !link.isEmpty {
-                        Text(shortLink(link))
-                            .font(ConchTypography.font(size: 10.5))
-                            .foregroundStyle(ConchPalette.textFaint)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                }
-                Spacer(minLength: 8)
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(ConchPalette.textFaint)
+                // The summary is the one line of text that stays: without it a
+                // picture of a website is a picture of a website, and the card
+                // never says which one this session filed.
+                Text(artifact.summary)
+                    .font(ConchTypography.font(size: 12.5))
+                    .foregroundStyle(ConchPalette.textDim)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
             }
             }
-            .padding(12)
+            .padding(8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(isHovering ? ConchPalette.hover : ConchPalette.raised)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(isHovering ? ConchPalette.hover : Color.clear)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(ConchPalette.statusReview.opacity(0.35), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(ConchPalette.hairlineStrong, lineWidth: 1)
             )
             .contentShape(Rectangle())
         }
@@ -1454,11 +1450,16 @@ private struct ArtifactPreview: View {
         switch inlinePreviewKind {
         case .image:
             if let image = localImage {
+                // The deliverable's OWN aspect ratio, not a letterboxed 260 pt
+                // slot: a wide screenshot and a tall phone capture are
+                // different shapes, and forcing both into one box wasted half
+                // the card on empty space for one of them. Capped generously so
+                // a very tall capture still cannot run away with the scroller.
                 Image(nsImage: image)
                     .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: .infinity, maxHeight: 260, alignment: .leading)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .aspectRatio(image.size.width / max(image.size.height, 1), contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: 420)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         case .document:
             if let head = documentHead {
@@ -1503,7 +1504,10 @@ private struct ArtifactPreview: View {
     }
 
     private var symbol: String {
-        guard let link = artifact.link, !link.isEmpty else { return "star.fill" }
+        // The lab uses `star` for exactly one type — `none`, "No link" — and a
+        // glyph for every real one. A star on every deliverable said "special"
+        // where the type should have said "website" or "document".
+        guard let link = artifact.link, !link.isEmpty else { return "questionmark.circle" }
         if link.hasPrefix("http") { return "globe" }
         switch (link as NSString).pathExtension.lowercased() {
         case "pdf": return "doc.richtext"

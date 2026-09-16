@@ -43,6 +43,9 @@ enum ConchPalette {
     static let textDim = ConchColor.textSecondary.dynamic
     static let textFaint = ConchColor.textTertiary.dynamic
     static let divider = ConchColor.hairline.dynamic
+    /// The lab's `--hair2` (`rgba(0,0,0,.1)`), a step up from `divider`'s `--hair`. It is what
+    /// `.dc` draws around the inline deliverable: `box-shadow:inset 0 0 0 1px var(--hair2)`.
+    static let hairlineStrong = ConchColor.hairlineStrong.dynamic
     /// The stage's own panel (§3) — the lab's `--surface`, #FFFFFF in light. Distinct from
     /// `raised`, which is a step above the ground in dark.
     static let surface = ConchColor.surface.dynamic

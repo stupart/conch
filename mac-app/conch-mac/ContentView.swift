@@ -873,7 +873,7 @@ private struct KeyboardShortcutsSheet: View {
 
             // The entire ledger language is coloured glyphs, and this was the
             // only help surface — documenting keys and speech but never saying
-            // what a gold star or a cyan mic actually means.
+            // what a green check or a cyan mic actually means.
             LedgerLegendSection()
 
             Text("The conch plugin adds these tools inside Claude Code and Codex: /plugin marketplace add Blueprint-Studio-AI/claude-code-marketplace")
@@ -907,7 +907,7 @@ private struct LedgerLegendSection: View {
         Entry(symbol: "mic.fill", color: ConchPalette.statusMicOpen, meaning: "Mic open — it is hearing you"),
         Entry(symbol: "circle.inset.filled", color: ConchPalette.statusWaiting, meaning: "Finished — waiting on you"),
         Entry(symbol: "exclamationmark.circle.fill", color: ConchPalette.statusNeeds, meaning: "Blocked — needs an answer"),
-        Entry(symbol: "star.fill", color: ConchPalette.statusReview, meaning: "Has work for you to look at"),
+        Entry(symbol: "checkmark.circle.fill", color: ConchPalette.statusReview, meaning: "Has work for you to look at"),
         Entry(symbol: "pause.fill", color: ConchPalette.textDim, meaning: "Manual — turns held for later"),
         Entry(symbol: "record.circle.fill", color: ConchPalette.statusMicOpen, meaning: "Recording your reply"),
         Entry(symbol: "play.fill", color: ConchPalette.statusWorking, meaning: "Reading a reply aloud"),
