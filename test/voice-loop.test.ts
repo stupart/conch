@@ -198,6 +198,7 @@ function harness(options: Options = {}) {
   const errors: unknown[][] = [];
   const texts: string[] = [];
   const keys: string[] = [];
+  const keyPids: Array<number | undefined> = [];
   const commands: string[] = [];
   const gone: string[] = [];
   const sessions: FakeSession[] = [];
@@ -234,10 +235,11 @@ function harness(options: Options = {}) {
         if (beforeInject && !(await beforeInject())) return { via: "none", interrupted: true };
         return options.inject?.(text) ?? { via: "tmux" };
       },
-      injectKey: async (_cfg, _pid, key, beforeInject) => {
+      injectKey: async (_cfg, pid, key, beforeInject) => {
         await options.beforeKey?.(key);
         if (beforeInject && !(await beforeInject())) return { via: "none", interrupted: true };
         keys.push(key);
+        keyPids.push(pid);
         order.push(`key:${key}`);
         return options.key?.(key) ?? { via: "tmux" };
       },
@@ -266,7 +268,7 @@ function harness(options: Options = {}) {
   voice = createVoiceLoop(deps);
   return {
     voice, cfg, ledger, lease, holder, speech, said, playing, cues, cueExits, violations, order,
-    logs, presented, latch, errors, texts, keys, commands, gone, sessions, hooks,
+    logs, presented, latch, errors, texts, keys, keyPids, commands, gone, sessions, hooks,
     barges: () => barges,
   };
 }
@@ -1597,6 +1599,7 @@ function continuousAudio() {
   const captures: Array<{ finish(text: string, bytes?: number): void; stopReasons: string[] }> = [];
   const pending = new Map<string, Promise<void>>();
   const contents = new Map<string, string>();
+  const failures = new Map<string, string>();
   const windows: number[] = [];
   let started = 0;
   const controller = new DictationController({
@@ -1620,7 +1623,8 @@ function continuousAudio() {
     },
     transcriber: { async transcribe(_pcm, capture) {
       await pending.get(capture.rawPath);
-      return { text: contents.get(capture.rawPath) ?? "tail" };
+      const failure = failures.get(capture.rawPath);
+      return failure ? { text: "", error: failure } : { text: contents.get(capture.rawPath) ?? "tail" };
     } },
     deleteRaw() {},
     clock: { setTimeout: () => 1, clearTimeout() {} },
@@ -1638,7 +1642,7 @@ function continuousAudio() {
     setIdleWindowSecs(seconds) { windows.push(seconds); },
     abort: async () => { controller.requestBarrier("abort"); },
   };
-  return { session, captures, contents, pending, windows, starts: () => started };
+  return { session, captures, contents, failures, pending, windows, starts: () => started };
 }
 
 function startSyntheticGap(
@@ -1908,5 +1912,211 @@ describe("FIX8 continuous handoff and truthful delivery", () => {
     expect(h.ledger.injectedAt.has("s1")).toBe(false);
     expect(getLiveState().dictated?.text).toBe("recover this");
     expect(h.said.join(" ")).not.toContain("clipboard");
+  });
+});
+
+/**
+ * Finding 4 (A8): two windows, one transcript, a permission dialog open in
+ * each. The newest unresolved tool in the FILE belongs to whichever window
+ * asked last — so only a window's own branch may be announced to it or
+ * answered with its keys, and an ask nothing attributes is left alone.
+ */
+describe("a shared transcript answers only this window's permission (finding 4)", () => {
+  const SESSION = "4eb30ede-6c1e-4f5a-9d2b-1f0c2a3b4c5d";
+  const KEY_A = `${SESSION}#39889`;
+  const KEY_B = `${SESSION}#21210`;
+  const preamble = (bridge: string | undefined, leafUuid: string) => [
+    { type: "last-prompt", leafUuid },
+    ...(bridge ? [{ type: "bridge-session", bridgeSessionId: `cse_${bridge}` }] : []),
+  ];
+  const prompt = (uuid: string, parentUuid: string | null, text: string) =>
+    ({ type: "user", uuid, parentUuid, message: { role: "user", content: text } });
+  const reply = (uuid: string, parentUuid: string, ...content: unknown[]) =>
+    ({ type: "assistant", uuid, parentUuid, message: { role: "assistant", content } });
+  const tool = (id: string, command: string) => ({ type: "tool_use", id, name: "Bash", input: { command } });
+  const ASK_A = { name: "Bash", summary: "git push origin main" };
+  const ASK_B = { name: "Bash", summary: "rm -rf build" };
+  /** A asks first; B's dialog is written last, so the file's newest is B's. */
+  const shared = (bridges = true) => {
+    const bridge = (name: string) => (bridges ? name : undefined);
+    return transcript(
+      ...preamble(bridge("A"), "u1"), prompt("u1", null, "shared"),
+      ...preamble(bridge("A"), "u1"), reply("a1", "u1", { type: "text", text: "ok" }),
+      ...preamble(bridge("A"), "a1"), prompt("u2", "a1", "push it"),
+      ...preamble(bridge("A"), "u2"), reply("a2", "u2", tool("tu_A", "git push origin main")),
+      ...preamble(bridge("B"), "a1"), prompt("u3", "a1", "clean it"),
+      ...preamble(bridge("B"), "u3"), reply("a3", "u3", tool("tu_B", "rm -rf build")),
+    );
+  };
+  const registry = (key: string, bridge?: string) => () =>
+    ({ sessionId: key, status: "idle", ...(bridge ? { bridgeSessionId: `session_${bridge}` } : {}) }) as SessionInfo;
+
+  test("each window hears its own branch's ask and answers it in its own window", async () => {
+    for (const window of [
+      { key: KEY_A, bridge: "A", pid: 39889, ask: ASK_A },
+      { key: KEY_B, bridge: "B", pid: 21210, ask: ASK_B },
+    ]) {
+      const path = shared();
+      const h = harness({ heard: [["yes"]], window: registry(window.key, window.bridge) });
+      try {
+        const event = accepted(h, permission(path, { sessionId: window.key, pid: window.pid }));
+        await h.voice.handle(event);
+        expect(event.approval).toMatchObject(window.ask);
+        expect(h.said[0]).toBe(approvalAnnounce("alpha", window.ask));
+        expect(h.ledger.sessionStates.get(window.key)?.detail).toBe(approvalDetail(window.ask));
+        expect(h.keys).toEqual(["Enter"]);
+        expect(h.keyPids).toEqual([window.pid]);
+      } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+    }
+  });
+
+  test("the other window's newer ask cannot capture this window's answer", async () => {
+    const path = shared();
+    // B opens a second dialog while A is being answered. Revalidation that
+    // reads the file's tail finds B and drops A's yes on the floor.
+    const h = harness({ heard: [["yes"]], window: registry(KEY_A, "A"), beforeKey: () => {
+      appendFileSync(path, [
+        ...preamble("B", "a3"), prompt("u4", "a3", "and the dist too"),
+        ...preamble("B", "u4"), reply("a4", "u4", tool("tu_B2", "rm -rf dist")),
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    } });
+    try {
+      await h.voice.handle(accepted(h, permission(path, { sessionId: KEY_A, pid: 39889 })));
+      expect(h.keys).toEqual(["Enter"]);
+      expect(h.keyPids).toEqual([39889]);
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+
+  test("an ask nothing can attribute is left for the keyboard", async () => {
+    for (const window of [registry(KEY_A), undefined]) {
+      const path = shared();
+      const h = harness({ heard: [["yes"]], window });
+      try {
+        const event = accepted(h, permission(path, { sessionId: KEY_A, pid: 39889 }));
+        await h.voice.handle(event);
+        expect(event.approval).toBeUndefined();
+        expect(h.said).toEqual([]);
+        expect(h.sessions).toEqual([]);
+        expect(h.keys).toEqual([]);
+        expect(h.ledger.sessionStates.get(KEY_A)?.detail).toBe("needs an answer");
+      } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+    }
+  });
+});
+
+/**
+ * Finding 3: one settlement for an incomplete dictation, wherever it happened.
+ * A gap can return good text AND an error (listen.ts collects both); nothing
+ * that hit an error may be submitted, and what was captured is recovered.
+ */
+describe("one settlement for an incomplete dictation (finding 3)", () => {
+  const readingTurn = () => transcript(assistant({ type: "text", text: "First sentence. Second sentence." }));
+  const INCOMPLETE = "Dictation was incomplete. Your recovered words are in the draft. Review them or retry before sending.";
+
+  /** The first capture fails in transcription while its successor's good words land: both come back. */
+  function failingGap(audio: ReturnType<typeof continuousAudio>, after?: () => void) {
+    let calls = 0;
+    return async (
+      cfg: Config,
+      seconds: number,
+      options: Parameters<NonNullable<VoiceLoopDeps["ear"]>["listenGap"]>[2],
+    ): Promise<ListenResult> => {
+      if (++calls > 1) return { text: "" };
+      const blocked = deferred();
+      audio.pending.set("fake-1", blocked.promise);
+      audio.failures.set("fake-1", "synthetic transcription failure");
+      const result = collectContinuousResult({ ...cfg, listenWindowSecs: seconds }, options?.hooks ?? {}, undefined, {
+        ...options, sessionFactory: () => audio.session,
+      });
+      audio.captures[0]!.finish("lost fragment");
+      await waitFor("the gap successor", () => audio.captures.length > 1);
+      audio.captures[1]!.finish("but keep the comments");
+      blocked.resolve();
+      const settled = await result;
+      after?.();
+      return settled;
+    };
+  }
+
+  test("a gap that returns text and an error recovers the draft and submits nothing", async () => {
+    const path = readingTurn();
+    const audio = continuousAudio();
+    const h = harness({ cfg: { readFull: true, holdSubmit: false }, window: busy, gap: failingGap(audio) });
+    const before = getLiveState().dictated?.id ?? 0;
+    try {
+      await h.voice.handle(accepted(h, turnEnd({ announce: "", transcriptPath: path })));
+      expect(h.texts).toEqual([]);
+      expect(getLiveState().dictated).toEqual({ text: "but keep the comments", id: before + 1, sessionId: "s1" });
+      expect(h.said.at(-1)).toBe(INCOMPLETE);
+      expect(h.errors.some((entry) => String(entry[1]).includes("incomplete"))).toBe(true);
+      expect(h.violations).toEqual([]);
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+
+  test("an external spacebar cannot submit that fragment either", async () => {
+    const path = readingTurn();
+    const audio = continuousAudio();
+    let h!: Harness;
+    h = harness({ cfg: { readFull: true, holdSubmit: false }, window: busy,
+      gap: failingGap(audio, () => h.voice.stop("spacebar")) });
+    const before = getLiveState().dictated?.id ?? 0;
+    try {
+      await h.voice.handle(accepted(h, turnEnd({ announce: "", transcriptPath: path })));
+      expect(h.texts).toEqual([]);
+      expect(getLiveState().dictated).toEqual({ text: "but keep the comments", id: before + 1, sessionId: "s1" });
+      expect(h.said.at(-1)).toBe(INCOMPLETE);
+      expect(h.violations).toEqual([]);
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+
+  test("a short tail captured just before the handoff still reaches the prompt", async () => {
+    const path = readingTurn();
+    const audio = continuousAudio();
+    let h!: Harness;
+    h = harness({ cfg: { readFull: true, holdSubmit: false }, window: busy,
+      gap: async (cfg, seconds, options) => {
+        const result = collectContinuousResult({ ...cfg, listenWindowSecs: seconds }, options?.hooks ?? {}, undefined, {
+          ...options, sessionFactory: () => audio.session,
+        });
+        h.voice.stop("spacebar"); // space while the capture is still under the minimum
+        return result;
+      },
+    });
+    try {
+      await h.voice.handle(accepted(h, turnEnd({ announce: "", transcriptPath: path })));
+      expect(audio.captures[0]!.stopReasons).toEqual(["gap-spacebar"]);
+      expect(h.texts).toEqual(["tail"]);
+      expect(h.violations).toEqual([]);
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+});
+
+/** Finding 15: an alternative prompt settles like every other delivery. */
+describe("an alternative prompt recovers its draft (finding 15)", () => {
+  test("staged, not submitted: the words go back to the draft and nothing is bookkept as sent", async () => {
+    const path = pendingBash();
+    const h = harness({ heard: [["no, use main instead"]], cfg: { autoSubmit: false } });
+    const before = getLiveState().dictated?.id ?? 0;
+    try {
+      await h.voice.handle(accepted(h, permission(path)));
+      expect(h.keys).toEqual(["Escape"]);
+      expect(h.texts).toEqual(["use main instead"]);
+      expect(h.ledger.injectedAt.has("s1")).toBe(false);
+      expect(getLiveState().dictated).toEqual({ text: "use main instead", id: before + 1, sessionId: "s1" });
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+
+  test("a failed transport recovers the draft instead of reporting the alternative told", async () => {
+    const path = pendingBash();
+    const h = harness({
+      heard: [["no, use main instead"]],
+      inject: () => ({ via: "tmux", failed: true, reason: "front-window-changed" } as unknown as InjectTextResult),
+    });
+    try {
+      await h.voice.handle(accepted(h, permission(path)));
+      expect(h.ledger.injectedAt.has("s1")).toBe(false);
+      expect(getLiveState().dictated?.text).toBe("use main instead");
+      expect(h.said.at(-1)).toBe("Couldn't deliver that. Your words are in the draft. Review them before trying again.");
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
   });
 });

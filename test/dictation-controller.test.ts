@@ -258,6 +258,9 @@ test("barrier-first race gates rearm before stop and finalizes exactly once", as
 test("short captures rescue abrupt user tails but drop natural and timeout tails", async () => {
   const cases = [
     { label: "real spacebar", cause: "dictation-spacebar", expectedKind: "transcript" },
+    // The same key pressed during a read gap: the barrier is named for the gap,
+    // and a short tail spoken just before it is still the user's words.
+    { label: "gap spacebar", cause: "gap-spacebar", expectedKind: "transcript" },
     { label: "mock user stop", cause: "abort", expectedKind: "transcript" },
     { label: "natural end", cause: undefined, expectedKind: "short" },
     { label: "real timeout", cause: "timeout", expectedKind: "short" },

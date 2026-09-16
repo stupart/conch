@@ -1,6 +1,8 @@
 import { basename } from "node:path";
 import { classifyApproval } from "./commands.ts";
 import { visitLinesNewestFirst } from "./agent-activity.ts";
+import { windowBranch } from "./snippet.ts";
+import type { WindowIdentity } from "./conversation.ts";
 
 /**
  * Voice approvals (B5): what a permission prompt is asking, and what a spoken
@@ -70,8 +72,19 @@ export function pendingApprovalFromLines(linesNewestFirst: Iterable<string>): Pe
   return null;
 }
 
-/** Read the tail of a Claude Code transcript for the prompt currently waiting. Never throws. */
-export function pendingApproval(transcriptPath: string): PendingApproval | null {
+/**
+ * Read the tail of a Claude Code transcript for the prompt currently waiting.
+ * Never throws.
+ *
+ * Two windows of one session write one transcript (A8), so the file's newest
+ * unresolved tool can be the OTHER window's dialog — and the same read decides
+ * both what is announced and, every time it is re-read, whether the answer is
+ * still for that ask. Pass the window's registry identity and only its own
+ * branch is read. When nothing names the branch the ask is refused rather than
+ * guessed at: a dialog left for the keyboard costs a keypress, one answered by
+ * the wrong window's Enter costs whatever that window was asking about.
+ */
+export function pendingApproval(transcriptPath: string, window?: WindowIdentity): PendingApproval | null {
   const lines: string[] = [];
   try {
     visitLinesNewestFirst(transcriptPath, () => true, (line) => {
@@ -82,7 +95,9 @@ export function pendingApproval(transcriptPath: string): PendingApproval | null 
   } catch {
     return null;
   }
-  return pendingApprovalFromLines(lines);
+  if (!window) return pendingApprovalFromLines(lines);
+  const branch = windowBranch([...lines].reverse(), window);
+  return branch.shared ? null : pendingApprovalFromLines([...branch.lines].reverse());
 }
 
 const SUMMARY_MAX = 120;
