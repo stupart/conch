@@ -1,12 +1,18 @@
 name: ci
 
+# 2026-09-17: GitHub Actions credits ran out, so this no longer runs on push or
+# pull_request — nothing in the cloud checks a commit any more. The gate is
+# scripts/ci-local.sh: it runs every step below plus the Mac and iOS builds,
+# which this file never had, and scripts/install-hooks.sh makes pre-push run it.
+# Kept as workflow_dispatch rather than deleted so the jobs can still be run by
+# hand when there are credits again, and so the old triggers are a two-line
+# restore (`push: branches: [main]` and `pull_request:` under `on:`).
+#
 # There was no CI. That is how a red main got merged on 2026-08-31: the suite
 # was piped into `tail`, the exit code went unread, and nothing downstream
 # disagreed. A human reading output is not a gate.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
