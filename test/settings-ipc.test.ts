@@ -172,6 +172,56 @@ describe("settings control IPC", () => {
     expect(validateControlMessage(null).ok).toBe(false);
   });
 
+  test("review-viewed reaches the controller with the identity intact, and is honest where it is unsupported", () => {
+    const marked: Array<{ sessionId: string; review: string }> = [];
+    const base: SessionActionsController = {
+      voiceCandidates: () => [],
+      effectiveVoice: () => "",
+      previewVoice: () => {},
+      setVoice: () => {},
+      resetVoice: () => {},
+      isPrioritized: () => false,
+      setPrioritized: () => {},
+      rename: () => {},
+      dismiss: () => {},
+      close: async () => {},
+      restore: () => {},
+    };
+    const target = { sessionId: "session-a", label: "Alpha" };
+    const optionsFor = (controller: SessionActionsController): SessionCommandDispatchOptions => ({
+      controller,
+      pause: { open() {}, close() {} },
+      targetForSessionId: () => target,
+    });
+    const message = {
+      kind: "session-command",
+      sessionId: "session-a",
+      command: "review-viewed",
+      review: '["s",1,"abc"]',
+    };
+
+    const supported = dispatchSessionControlMessage(message, optionsFor({
+      ...base,
+      markReviewViewed: (actual, review) => {
+        marked.push({ sessionId: actual.sessionId, review });
+        return true;
+      },
+    }));
+    // The identity has to survive the trip: which deliverable was read is the whole point.
+    expect(marked).toEqual([{ sessionId: "session-a", review: '["s",1,"abc"]' }]);
+    expect(supported).toEqual({
+      kind: "session-ack",
+      sessionId: "session-a",
+      command: "review-viewed",
+      label: "Alpha",
+      changed: true,
+    });
+
+    // A controller without it — the overlay's — answers honestly instead of throwing.
+    expect(dispatchSessionControlMessage(message, optionsFor(base)))
+      .toMatchObject({ kind: "session-ack", command: "review-viewed", changed: false });
+  });
+
   test("hostile session-command frames within the transport limit receive session-error replies", async () => {
     const controller: SessionActionsController = {
       voiceCandidates: () => [],

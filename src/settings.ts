@@ -775,6 +775,9 @@ export type ConfigControlMessage =
   | { kind: "get-config" }
   | { kind: "unset-config"; key: SettingKey };
 
+/** A minted deliverable identity is a JSON triple; this is far above what one can be. */
+const MAX_REVIEW_ID_LENGTH = 512;
+
 export const SESSION_COMMANDS = [
   "rename",
   "set-voice",
@@ -785,6 +788,7 @@ export const SESSION_COMMANDS = [
   "reveal",
   "set-model",
   "attach",
+  "review-viewed",
 ] as const;
 
 export type SessionCommand = typeof SESSION_COMMANDS[number];
@@ -802,7 +806,13 @@ export type SessionControlMessage =
   /** Type `/model <model>` into the session's own prompt; the agent handles it natively (B2). */
   | { kind: "session-command"; sessionId: string; command: "set-model"; model: string; awaitDelivery?: true }
   /** Open a Claude Code background job in a new Terminal window (`claude attach <jobId>`). */
-  | { kind: "session-command"; sessionId: string; command: "attach" };
+  | { kind: "session-command"; sessionId: string; command: "attach" }
+  /**
+   * Mark one deliverable as looked at. Carries the identity the daemon minted when it filed
+   * it, not a position or a time: the row may hold several, and which one was read is the
+   * whole point.
+   */
+  | { kind: "session-command"; sessionId: string; command: "review-viewed"; review: string };
 
 export type RuntimeControlMessage =
   | HistoryRequest
@@ -1105,6 +1115,11 @@ export function validateSessionControlMessage(value: unknown): ParseResult<Sessi
       if (model.value.startsWith("-")) return { ok: false, err: "set-model: model cannot start with -" };
       if (/\s/.test(model.value)) return { ok: false, err: "set-model: model cannot contain whitespace" };
       return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: "set-model", model: model.value, ...delivery } };
+    }
+    case "review-viewed": {
+      const review = boundedPrintable(value.review, "review-viewed: review", MAX_REVIEW_ID_LENGTH);
+      if (!review.ok) return review;
+      return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: "review-viewed", review: review.value } };
     }
     case "reset-voice":
     case "dismiss":
