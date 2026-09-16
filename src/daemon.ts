@@ -13,6 +13,7 @@ import {
   type SessionCommandDispatchOptions,
   type RuntimeControlDispatchOptions,
   type SocketTurnEventCallbacks,
+  type SocketTurnOutcome,
   enrichTargetedAudioCommand,
   dispatchSocketTurnEvent,
   applySessionCommand,
@@ -1062,7 +1063,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       );
   }
 
-  function enqueue(incoming: TurnEvent): void | Promise<boolean | "staged" | void> {
+  function enqueue(incoming: TurnEvent): void | Promise<SocketTurnOutcome> {
     if (shuttingDown) return;
     const event = incoming;
     warmTranscript(event.transcriptPath);
@@ -1779,7 +1780,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     );
   }
 
-  async function handle(event: TurnEvent): Promise<boolean | "staged" | void> {
+  async function handle(event: TurnEvent): Promise<SocketTurnOutcome> {
     // Wait for the voice engine only when this event will SPEAK.
     //
     // `drain` used to await it before touching the queue, which meant nothing

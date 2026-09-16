@@ -30,7 +30,7 @@ test("a Mac-app send takes the front back only after the daemon says delivery fi
   const written = write.indexOf("guard write(payload, to: descriptor, deadline: deadline) == .complete else {");
   const readsReply = write.indexOf("let outcome = readReplyLine(");
   const done = write.indexOf('reply["kind"] as? String == "inject-done" else { return }');
-  const calls = write.indexOf("await whenDelivered()");
+  const calls = write.indexOf("await whenDelivered?()");
   expect(written).toBeGreaterThan(-1);
   expect(readsReply).toBeGreaterThan(written);
   expect(done).toBeGreaterThan(readsReply);
@@ -53,7 +53,18 @@ test("a Mac-app send takes the front back only after the daemon says delivery fi
   expect(handBack.indexOf('front.bundleIdentifier == "com.apple.Terminal",')).toBeLessThan(
     handBack.indexOf("NSRunningApplication(processIdentifier: pid)?.activate()"),
   );
-  expect(send).toContain("let delivered = await socketClient.send(event, whenDelivered: whenDelivered)");
+  expect(send).toContain("let delivered = await socketClient.send(event, whenDelivered: whenDelivered, whenNotDelivered: whenNotDelivered)");
+
+  // A send that doesn't land says WHY, on the row it was sent to, in the sentence the
+  // phone shows (ConchSendFailure) — the Mac used to file the failure to errors.jsonl
+  // and show the person nothing. Staged text is not a failure and says nothing.
+  expect(write).toContain('if reply["delivered"] as? Bool != true, reply["staged"] as? Bool != true {');
+  expect(write).toContain("whenNotDelivered?(ConchSendFailure.sentence(");
+  expect(write).toContain('reason: reply["reason"] as? String,');
+  expect(write).toContain('onClipboard: reply["onClipboard"] as? Bool ?? false');
+  expect(send).toContain("let failedSessionID = event.type == .inject ? event.sessionId : nil");
+  expect(send).toContain("if let failedSessionID { rowMessages[failedSessionID] = nil }");
+  expect(send).toContain("Task { @MainActor in self?.rowMessages[id] = sentence }");
 
   // Composer, question options (incl. multi-select and "Something else…",
   // which fills the composer) and palette type lines all take this door.

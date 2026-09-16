@@ -25,6 +25,23 @@ export interface InjectTextResult {
     | "submit-failed";
 }
 
+/**
+ * A delivery that did not land, as the caller waiting on it is told.
+ *
+ * The reasons above were known here and nowhere else: the daemon spoke them aloud on the
+ * Mac and told the phone only "failed". A dialog open on Tyler's Mac ate three sends from
+ * his phone on 2026-09-16 and nothing he could see said so. This is how the cause leaves
+ * the Mac — an `InjectTextResult["reason"]`, or a delivery-level code from the voice loop
+ * (`delivery-unconfirmed`, `delivery-unattributed`, `transport-error`), whichever named
+ * the failure. Absent when conch cannot name one; the apps then say only "Not delivered".
+ */
+export interface SendFailure {
+  delivered: false;
+  reason?: string;
+  /** The text is on the Mac's clipboard, so it is a paste away rather than lost. */
+  onClipboard?: true;
+}
+
 /** Run an AppleScript (`-e` lines, then `--` argv) and read its stdout, bounded. */
 export interface OsaResult { text: string; timedOut: boolean; exitCode?: number; stderr?: string }
 export type OsaRunner = (lines: string[], argv?: string[]) => Promise<OsaResult>;

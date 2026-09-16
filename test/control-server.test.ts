@@ -466,6 +466,28 @@ describe("control server over a real Unix socket", () => {
     }
   });
 
+  /**
+   * "Failed" alone is unusable from another room. On 2026-09-16 a dialog was open on
+   * Tyler's Mac, every AppleScript call was blocked, and three sends from his phone
+   * died with nothing on screen saying so. The cause the daemon already knew now
+   * rides the answer, with whether the words survived on the Mac's clipboard.
+   */
+  test("inject-done carries why a send didn't land, and whether the words are on the clipboard", async () => {
+    const f = await fixture({
+      application: { turn: () => Promise.resolve({ delivered: false, reason: "system-dialog-blocking", onClipboard: true }) },
+    });
+    expect(JSON.parse(await f.request({ ...inject, awaitDelivery: true }))).toEqual({
+      kind: "inject-done", delivered: false, reason: "system-dialog-blocking", onClipboard: true,
+    });
+
+    // A failure conch cannot name says only that it did not land: an invented cause
+    // sends someone to fix the wrong thing.
+    const unnamed = await fixture({ application: { turn: () => Promise.resolve({ delivered: false }) } });
+    expect(JSON.parse(await unnamed.request({ ...inject, awaitDelivery: true }))).toEqual({
+      kind: "inject-done", delivered: false,
+    });
+  });
+
   // Bounded: a delivery still running past the wait is answered as taken, not
   // left to the phone bridge's forward timeout, which would read as a failure.
   test("a delivery still running at the bound is answered inject-accepted", async () => {

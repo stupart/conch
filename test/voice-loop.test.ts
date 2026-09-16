@@ -324,15 +324,22 @@ describe("operation-owned record observations", () => {
   });
 
   test("staging, known transport failure and thrown transport remain distinct receipts", async () => {
-    const scenarios: Array<{ options: Options; result: boolean | "staged"; state: RecordObservation["state"]; code: string }> = [
+    // The code the receipt keeps IS the reason the sender is told, so the journal and
+    // the sentence on the phone can never disagree about the same send.
+    const scenarios: Array<{
+      options: Options;
+      result: boolean | "staged" | { delivered: false; reason: string };
+      state: RecordObservation["state"];
+      code: string;
+    }> = [
       { options: { cfg: { autoSubmit: false } }, result: "staged", state: "staged", code: "staged-not-submitted" },
-      { options: { inject: () => ({ via: "none", failed: true, reason: "automation-failed" }) }, result: false, state: "failed", code: "automation-failed" },
-      { options: { inject: () => { throw Error("synthetic uncertainty"); } }, result: false, state: "unknown", code: "transport-error" },
+      { options: { inject: () => ({ via: "none", failed: true, reason: "automation-failed" }) }, result: { delivered: false, reason: "automation-failed" }, state: "failed", code: "automation-failed" },
+      { options: { inject: () => { throw Error("synthetic uncertainty"); } }, result: { delivered: false, reason: "transport-error" }, state: "unknown", code: "transport-error" },
     ];
     for (const scenario of scenarios) {
       const events: RecordObservation[] = [];
       const h = harness({ ...scenario.options, observeRecords: (event) => events.push(event) });
-      expect(await h.voice.handle(inject("test"))).toBe(scenario.result);
+      expect(await h.voice.handle(inject("test"))).toEqual(scenario.result);
       const delivery = events.filter(({ kind }) => kind === "delivery");
       expect(delivery.map(({ state }) => state)).toEqual(["accepted", scenario.state]);
       expect(delivery.at(-1)?.code).toBe(scenario.code);
@@ -345,7 +352,8 @@ describe("operation-owned record observations", () => {
       for (const busyNow of [true, false]) {
         const events: RecordObservation[] = [];
         const h = harness({ window: busyNow ? busy : undefined, observeRecords: (event) => events.push(event) });
-        expect(await h.voice.handle(inject("next", { transcriptPath: path }))).toBe(busyNow);
+        expect(await h.voice.handle(inject("next", { transcriptPath: path })))
+          .toEqual(busyNow ? true : { delivered: false, reason: "delivery-unconfirmed", onClipboard: true });
         const delivery = events.filter(({ kind }) => kind === "delivery");
         expect(delivery.map(({ state }) => state)).toEqual(["accepted", busyNow ? "delivered" : "unknown"]);
         expect(delivery.at(-1)?.code).toBe(busyNow ? "provider-input-queued" : "delivery-unconfirmed");
@@ -362,7 +370,8 @@ describe("operation-owned record observations", () => {
       ] as const) {
         const events: RecordObservation[] = [];
         const h = harness({ key: () => retry, observeRecords: (event) => events.push(event) });
-        expect(await h.voice.handle(inject("possibly submitted", { transcriptPath: path }))).toBe(false);
+        expect(await h.voice.handle(inject("possibly submitted", { transcriptPath: path })))
+          .toEqual({ delivered: false, reason: "reason" in retry ? retry.reason : "delivery-failed" });
         expect(h.texts).toEqual(["possibly submitted"]);
         expect(h.keys).toEqual(["Enter"]);
         const delivery = events.filter(({ kind }) => kind === "delivery");
@@ -444,7 +453,11 @@ describe("a shared transcript confirms only this window's send (finding 9)", () 
 
   test("the other window's prompt does not confirm this window's send", async () => {
     expect(await send({ sessionId: KEY, window: windowA("A"), bridges: true, lands: "B" }))
-      .toMatchObject({ result: false, state: "unknown", code: "delivery-unconfirmed" });
+      .toMatchObject({
+        result: { delivered: false, reason: "delivery-unconfirmed", onClipboard: true },
+        state: "unknown",
+        code: "delivery-unconfirmed",
+      });
   });
 
   test("this window's own prompt still confirms its send", async () => {
@@ -459,7 +472,12 @@ describe("a shared transcript confirms only this window's send (finding 9)", () 
       { window: undefined, bridges: true },
     ]) {
       const outcome = await send({ sessionId: KEY, ...scenario, lands: "A" });
-      expect(outcome).toMatchObject({ result: false, state: "unknown", code: "delivery-unattributed" });
+      // Nothing about the clipboard here: these words were not put on one.
+      expect(outcome).toMatchObject({
+        result: { delivered: false, reason: "delivery-unattributed" },
+        state: "unknown",
+        code: "delivery-unattributed",
+      });
       expect(outcome.said.some((line) => line.includes("didn't send"))).toBe(false);
     }
   });
@@ -596,11 +614,34 @@ describe("an inject says whether it landed", () => {
   // "delivered" or "not delivered" instead of guessing from the ack.
   test("true only when the words reached the session", async () => {
     expect(await harness().voice.handle(inject("typed into a pane"))).toBe(true);
-    expect(await harness({ inject: () => ({ via: "clipboard" }) }).voice.handle(inject("on the clipboard"))).toBe(false);
-    expect(await harness({ inject: () => ({ via: "none", interrupted: true }) }).voice.handle(inject("cut off"))).toBe(false);
+    // Not just "no": what stopped it, and whether the words survived on the Mac's
+    // clipboard — the phone shows that as a sentence instead of a shrug.
+    expect(await harness({ inject: () => ({ via: "clipboard" }) }).voice.handle(inject("on the clipboard")))
+      .toEqual({ delivered: false, reason: "clipboard-fallback", onClipboard: true });
+    expect(await harness({ inject: () => ({ via: "none", interrupted: true }) }).voice.handle(inject("cut off")))
+      .toEqual({ delivered: false, reason: "delivery-interrupted" });
     expect(await harness().voice.handle(inject("/model opus"))).toBe(true);
     const unroutable = harness({ command: () => ({ kind: "unroutable", reason: "session has no routable pid" }) });
     expect(await unroutable.voice.handle(inject("/compact"))).toBe(false);
+  });
+
+  /**
+   * The send that started this: 2026-09-16, three messages from the phone, a modal dialog
+   * open on the Mac swallowing every AppleScript call. conch fell back to the clipboard,
+   * refused to claim delivery, said why out loud on the Mac — and told the phone "failed".
+   * Tyler, in another room, had no way to learn that a popup was eating his messages.
+   */
+  test("a dialog blocking the Mac says so, and says where the words are", async () => {
+    const events: RecordObservation[] = [];
+    const h = harness({
+      inject: () => ({ via: "clipboard", reason: "system-dialog-blocking" }),
+      observeRecords: (event) => events.push(event),
+    });
+    expect(await h.voice.handle(inject("the message that never arrived")))
+      .toEqual({ delivered: false, reason: "system-dialog-blocking", onClipboard: true });
+    expect(events.filter(({ kind }) => kind === "delivery").at(-1)?.code).toBe("system-dialog-blocking");
+    // The daemon log names it too — it used to read "phone inject into … failed" and stop there.
+    expect(h.logs).toContain('phone inject into "alpha" failed (system-dialog-blocking)');
   });
 });
 
@@ -1299,7 +1340,7 @@ describe("the daemon's wiring of the loop", () => {
   });
 
   test("the daemon's dispatcher waits for the voice engine only for events that speak, then hands everything to the loop", () => {
-    const at = daemon.indexOf("  async function handle(event: TurnEvent): Promise<boolean | \"staged\" | void> {");
+    const at = daemon.indexOf("  async function handle(event: TurnEvent): Promise<SocketTurnOutcome> {");
     expect(at).toBeGreaterThan(-1);
     const end = daemon.indexOf("\n  }\n", at);
     const handle = daemon.slice(at, end);
@@ -1533,7 +1574,7 @@ describe("a publication is not the end of a turn", () => {
 test("a failed transport keeps the words as a draft and never presses Return", async () => {
   const h = harness({ inject: () => ({ via: "none", failed: true, reason: "automation-failed" }) });
   const before = getLiveState().dictated?.id ?? 0;
-  expect(await h.voice.handle(inject("words that never landed"))).toBe(false);
+  expect(await h.voice.handle(inject("words that never landed"))).toEqual({ delivered: false, reason: "automation-failed" });
   expect(h.keys).toEqual([]);
   expect(getLiveState().dictated).toEqual({ text: "words that never landed", id: before + 1, sessionId: "s1" });
 });
@@ -1842,7 +1883,7 @@ describe("FIX8 continuous handoff and truthful delivery", () => {
   test("a rejected input transaction recovers the addressed draft and returns failure", async () => {
     const h = harness({ inject: () => { throw new Error("synthetic input suspended"); } });
     const result = await h.voice.handle(inject("recover after rejection"));
-    expect(result).toBe(false);
+    expect(result).toEqual({ delivered: false, reason: "transport-error" });
     expect(h.ledger.injectedAt.has("s1")).toBe(false);
     expect(getLiveState().dictated).toMatchObject({ text: "recover after rejection", sessionId: "s1" });
     expect(h.keys).toEqual([]);
@@ -1851,7 +1892,7 @@ describe("FIX8 continuous handoff and truthful delivery", () => {
   test("failed transport returns recoverable draft without marking submission", async () => {
     const h = harness({ inject: () => ({ via: "none", failed: true, reason: "automation-failed" } as unknown as InjectTextResult) });
     const result = await h.voice.handle(inject("recover this"));
-    expect(result).toBe(false);
+    expect(result).toEqual({ delivered: false, reason: "automation-failed" });
     expect(h.ledger.injectedAt.has("s1")).toBe(false);
     expect(getLiveState().dictated?.text).toBe("recover this");
     expect(h.said.join(" ")).not.toContain("clipboard");

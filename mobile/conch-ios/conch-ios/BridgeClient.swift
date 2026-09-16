@@ -324,7 +324,7 @@ final class BridgeClient: ObservableObject {
     }
 
     private func deliveryOutcome(_ body: Data?) async -> InjectOutcome {
-        guard let body else { return .failed("The phone couldn't encode that message.") }
+        guard let body else { return .failed("Not delivered — the phone couldn't encode that message.") }
         let response: BridgeResponse
         do {
             // Past the Mac's own 20 s bound, with room for the relay's round trip.
@@ -333,7 +333,7 @@ final class BridgeClient: ObservableObject {
                 within: .seconds(40)
             )
         } catch {
-            return .failed(error.localizedDescription)
+            return .failed("Not delivered — \(error.localizedDescription)")
         }
         return InjectOutcome.decode(status: response.status, body: response.body)
     }

@@ -158,6 +158,17 @@ final class StateStore: ObservableObject {
             whenDelivered = nil
         }
 
+        // A send that doesn't land says why, on the row it was sent to, in the same
+        // sentence the phone shows. Cleared at the press so an old cause never sits
+        // under a new message.
+        let failedSessionID = event.type == .inject ? event.sessionId : nil
+        if let failedSessionID { rowMessages[failedSessionID] = nil }
+        let whenNotDelivered: (@Sendable (String) -> Void)? = failedSessionID.map { id in
+            { [weak self] sentence in
+                Task { @MainActor in self?.rowMessages[id] = sentence }
+            }
+        }
+
         let task = Task { @MainActor [weak self] in
             // Bounded, because this chain used to be unlimited.
             //
@@ -176,7 +187,7 @@ final class StateStore: ObservableObject {
             // previous delivery is NOT cancelled; it finishes on its own.
             await Self.awaitDelivery(previousDelivery, within: .milliseconds(250))
             guard !Task.isCancelled else { return false }
-            let delivered = await socketClient.send(event, whenDelivered: whenDelivered)
+            let delivered = await socketClient.send(event, whenDelivered: whenDelivered, whenNotDelivered: whenNotDelivered)
             if let self, !delivered {
                 if controlSequence == sequence {
                     forceLivenessProbe()

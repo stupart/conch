@@ -1,35 +1,137 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
-test("the production Swift receipt parser preserves drafts unless an explicit submission receipt arrives", async () => {
-  const root = mkdtempSync(join(tmpdir(), "conch-receipt-swift-"));
+const root = join(import.meta.dir, "..");
+
+/**
+ * What the phone actually says when a send doesn't land, for every reason the Mac can name.
+ *
+ * On 2026-09-16 a modal dialog was open on Tyler's Mac, so every AppleScript call conch made
+ * was swallowed. Three messages from his phone fell back to the Mac's clipboard and the phone
+ * showed a bare failure: no cause, and no hint that his words were sitting on a machine he was
+ * nowhere near. The daemon knew exactly why the whole time.
+ *
+ * The sentences live in ConchDesign (`ConchSendFailure`) so the Mac app shows the same ones.
+ * This is the table pinned against the daemon's own reasons, end to end from the wire.
+ */
+const SENTENCES: Record<string, string> = {
+  "system-dialog-blocking": "Not delivered — a dialog is open on your Mac and it's blocking conch. Dismiss it and send again.",
+  "automation-permission-denied": "Not delivered — macOS is blocking conch from controlling Terminal. Turn conch on under Privacy & Security → Automation.",
+  "window-not-focusable": "Not delivered — couldn't reach that session's window.",
+  "clipboard-fallback": "Not delivered — couldn't reach that session's window.",
+  "session-not-routable": "Not delivered — conch can't tell which window that session is in.",
+  "front-window-changed": "Not delivered — another window came to the front on your Mac, so conch stopped typing.",
+  "keystroke-fallback-off": "Not delivered — conch is set not to type into windows, and that session isn't in a tmux pane.",
+  "clipboard-changed": "Not delivered — something else copied on your Mac mid-send, so conch stopped.",
+  "clipboard-unavailable": "Not delivered — conch couldn't use the Mac's clipboard.",
+  "automation-failed": "Not delivered — the Mac wouldn't let conch type into that session.",
+  "delivery-failed": "Not delivered — the Mac wouldn't let conch type into that session.",
+  "transport-error": "Not delivered — the Mac wouldn't let conch type into that session.",
+  "submit-failed": "Not delivered — the words went in but the Return didn't.",
+  "submit-error": "Not delivered — the words went in but the Return didn't.",
+  "delivery-unconfirmed": "Not delivered — conch typed it but the session never took it.",
+  "delivery-unattributed": "Not delivered — another window shares this session, so conch can't tell whether it landed.",
+  "delivery-interrupted": "Not delivered — the send was stopped before it went in.",
+};
+
+/** Every reason `injectText` itself can report, read from the daemon's own source. */
+function injectReasons(): string[] {
+  const source = readFileSync(join(root, "src/inject.ts"), "utf8");
+  const start = source.indexOf("  reason?:");
+  expect(start).toBeGreaterThan(-1);
+  const union = source.slice(start, source.indexOf(";", start));
+  return [...union.matchAll(/"([a-z][a-z-]+)"/g)].map((match) => match[1]!);
+}
+
+/** A Swift string literal. None of these carry `\(`, so JSON escaping is exactly Swift's. */
+const swift = (value: string): string => JSON.stringify(value);
+const receiptJSON = (reply: Record<string, unknown>): string => swift(JSON.stringify(reply));
+
+/**
+ * The table cannot quietly fall behind the daemon. A new reason in `src/inject.ts` with no
+ * sentence here would reach the phone as "Not delivered" — honest, but a wasted fact.
+ */
+test("every reason the daemon can name has a sentence for the phone", () => {
+  const reasons = injectReasons();
+  expect(reasons).toContain("system-dialog-blocking");
+  expect(reasons).toContain("automation-permission-denied");
+  expect(reasons.length).toBeGreaterThanOrEqual(10);
+  for (const reason of reasons) {
+    expect(SENTENCES[reason], `src/inject.ts can report "${reason}" and no sentence says so`).toBeTruthy();
+  }
+});
+
+test("the Swift receipt parser turns the Mac's reason into the sentence, and keeps the draft", async () => {
+  // The app's own mapping, not a copy of it: the sentences are compiled out of ConchDesign,
+  // the same library the Mac app links.
+  const design = join(root, "design/ConchDesign");
+  const built = Bun.spawnSync(["swift", "build", "--package-path", design], { stdout: "pipe", stderr: "pipe" });
+  expect(built.exitCode, built.stderr.toString()).toBe(0);
+  const modules = Bun.spawnSync(["find", join(design, ".build"), "-name", "ConchDesign.swiftmodule"], { stdout: "pipe" })
+    .stdout.toString().trim().split("\n").filter(Boolean)
+    .map((path) => dirname(path))
+    .find((directory) => existsSync(join(directory, "libConchDesign.a")));
+  expect(modules, "no built ConchDesign module to link against").toBeTruthy();
+
+  const root_ = mkdtempSync(join(tmpdir(), "conch-receipt-swift-"));
   try {
-    const harness = join(root, "main.swift"), binary = join(root, "receipt-tests");
+    const harness = join(root_, "main.swift"), binary = join(root_, "receipt-tests");
+    const undelivered = Object.entries(SENTENCES).map(([reason, sentence]) =>
+      `precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false, reason })}) == .failed(${swift(sentence)}), ${swift(reason)})`
+    );
+    // Neither confirmed nor refused: every one of these keeps the words in the draft.
+    const unconfirmed = ["", "{}", "null", "oops",
+      JSON.stringify({ kind: "ack" }),
+      JSON.stringify({ kind: "inject-done" }),
+      JSON.stringify({ kind: "inject-done", delivered: 1 }),
+      JSON.stringify({ kind: "inject-done", delivered: true, staged: true }),
+      JSON.stringify({ kind: "inject-done", delivered: false, reason: "system-dialog-blocking" }),
+      JSON.stringify({ kind: "inject-done", delivered: false, reason: "not-a-reason-conch-knows" }),
+    ].map(swift).join(", ");
+
     writeFileSync(harness, `import Foundation
 func receipt(_ text: String) -> InjectReceipt { InjectReceipt.decode(status: 200, body: Data(text.utf8)) }
-for text in ["", "{}", "null", "oops", "{\\"kind\\":\\"ack\\"}", "{\\"kind\\":\\"inject-done\\"}", "{\\"kind\\":\\"inject-done\\",\\"delivered\\":1}", "{\\"kind\\":\\"inject-done\\",\\"delivered\\":true,\\"staged\\":true}"] {
+
+${undelivered.join("\n")}
+
+// Where the words ended up is part of the answer: on the Mac's clipboard they are a paste
+// away, and saying so is the difference between a lost message and a recoverable one.
+precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false, reason: "window-not-focusable", onClipboard: true })})
+  == .failed(${swift("Not delivered — couldn't reach that session's window. Your words are on the Mac's clipboard.")}))
+precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false, onClipboard: true })})
+  == .failed(${swift("Not delivered. Your words are on the Mac's clipboard.")}))
+
+// A cause conch is not sure of is never invented — an unknown reason, and no reason at all,
+// say the same thing and nothing more.
+precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false, reason: "delivery-fell-over" })}) == .failed("Not delivered."))
+precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false })}) == .failed("Not delivered."))
+
+// The draft survives anything short of an explicit submission receipt.
+for text in [${unconfirmed}] {
   let outcome = receipt(text)
-  precondition(!outcome.reachedMac)
-  precondition(outcome.remainingDraft("fixture words plus new words", sent: "fixture words") == "fixture words plus new words")
+  precondition(!outcome.reachedMac, text)
+  precondition(outcome.remainingDraft("fixture words plus new words", sent: "fixture words") == "fixture words plus new words", text)
 }
-precondition(receipt("{\\"kind\\":\\"inject-done\\",\\"delivered\\":true}") == .delivered)
-precondition(receipt("{\\"kind\\":\\"inject-accepted\\"}") == .accepted)
-let staged = receipt("{\\"kind\\":\\"inject-done\\",\\"delivered\\":false,\\"staged\\":true}")
+precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: true })}) == .delivered)
+precondition(receipt(${receiptJSON({ kind: "inject-accepted" })}) == .accepted)
+let staged = receipt(${receiptJSON({ kind: "inject-done", delivered: false, staged: true })})
 precondition(staged == .staged && !staged.reachedMac)
 precondition(staged.remainingDraft("fixture words", sent: "fixture words") == "fixture words")
 precondition(InjectReceipt.delivered.remainingDraft("fixture words plus new words", sent: "fixture words") == "plus new words")
 precondition(InjectReceipt.delivered.remainingDraft("edited while waiting", sent: "fixture words") == "edited while waiting")
-precondition(!receipt("{\\"kind\\":\\"inject-done\\",\\"delivered\\":false}").reachedMac)
 precondition(!InjectReceipt.decode(status: 502, body: Data()).reachedMac)
 print("receipt and draft assertions passed")
 `);
-    const compiler = Bun.spawn(["swiftc", join(import.meta.dir, "../mobile/conch-ios/conch-ios/InjectReceipt.swift"), harness, "-o", binary], { stdout: "pipe", stderr: "pipe" });
+    const compiler = Bun.spawn([
+      "swiftc", join(root, "mobile/conch-ios/conch-ios/InjectReceipt.swift"), harness,
+      "-I", modules!, "-L", modules!, "-lConchDesign", "-o", binary,
+    ], { stdout: "pipe", stderr: "pipe" });
     const diagnostics = await new Response(compiler.stderr).text();
     expect(await compiler.exited, diagnostics).toBe(0);
     const run = Bun.spawn([binary], { stdout: "pipe", stderr: "pipe" });
     expect(await run.exited, await new Response(run.stderr).text()).toBe(0);
     expect(await new Response(run.stdout).text()).toContain("receipt and draft assertions passed");
-  } finally { rmSync(root, { recursive: true, force: true }); }
-}, 30_000);
+  } finally { rmSync(root_, { recursive: true, force: true }); }
+}, 300_000);

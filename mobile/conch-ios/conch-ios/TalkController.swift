@@ -987,7 +987,7 @@ final class TalkController: NSObject, ObservableObject {
         let text = "Ship it once the tests pass, and update the changelog."
         let fixtureState: Outgoing.State = switch state {
         case "sending": .sending
-        case "failed": .failed("The request timed out.")
+        case "failed": .failed("Not delivered — the request timed out.")
         default: .delivered
         }
         if !fixtureState.isConfirmed { committed = text }

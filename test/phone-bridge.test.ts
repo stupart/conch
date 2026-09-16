@@ -198,6 +198,19 @@ describe("control forwarding", () => {
     expect(await res.json()).toEqual({ echoed: "get-config" });
   });
 
+  // The phone turns the reason into a sentence, so the bridge must hand back what the
+  // daemon said and not a summary of it.
+  test("a delivery failure reaches the phone with its reason intact", async () => {
+    const receipt = { kind: "inject-done", delivered: false, reason: "system-dialog-blocking", onClipboard: true };
+    const b = startBridge({ forwardControl: async () => JSON.stringify(receipt) });
+    const res = await fetch(`http://127.0.0.1:${b.port}/control`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ type: "inject", sessionId: "s1", label: "alpha", announce: "hello", awaitDelivery: true }),
+    });
+    expect(await res.json()).toEqual(receipt);
+  });
+
   test("a dead daemon is a 502, not a hang or a crash", async () => {
     const b = startBridge({
       forwardControl: async () => { throw new Error("no socket"); },

@@ -194,7 +194,9 @@ describe("a message shows what became of it", () => {
     ]);
     const bubble = between(session, "private struct YourTurnBubble: View {", "\nprivate struct ReviewCard");
     for (const marker of ['Text("Sending…")', 'Label("Delivered", systemImage: "checkmark")', 'Text("Sent")',
-      'Text("Not delivered — \\(reason)")', 'Button("Retry", action: onRetry)']) {
+      // The whole sentence comes from the receipt (ConchSendFailure), including the
+      // "Not delivered" it opens with, so an unnamed cause is not dressed up as one.
+      'Text(reason)', 'Button("Retry", action: onRetry)']) {
       expect(bubble).toContain(marker);
     }
     // Retry is the ordinary send: an unconfirmed message's words head the draft.
