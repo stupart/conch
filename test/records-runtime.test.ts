@@ -328,9 +328,18 @@ describe("records runtime", () => {
       // The worker thread dies under the runtime: a crash, an OOM, a terminate.
       await (opened[0]! as unknown as { worker: Worker }).worker.terminate();
       expect(await runtime.historyPage({ session: "absent" })).toMatchObject({ code: "unavailable" });
-      for (let attempt = 0; attempt < 100 && opened.length < 2; attempt++) await Bun.sleep(5);
+      // Wait for the REPLACEMENT to answer, not merely to exist: on a loaded runner the
+      // new worker is constructed well before it serves, and a fixed budget made this flaky.
+      let replaced: unknown = { code: "unavailable" };
+      for (let attempt = 0; attempt < 600; attempt++) {
+        if (opened.length >= 2) {
+          replaced = await runtime.historyPage({ session: "absent" });
+          if ((replaced as { code?: string }).code === "session-not-found") break;
+        }
+        await Bun.sleep(25);
+      }
       expect(opened).toHaveLength(2);
-      expect(await runtime.historyPage({ session: "absent" })).toMatchObject({ code: "session-not-found" });
+      expect(replaced).toMatchObject({ code: "session-not-found" });
       expect(await runtime.appendReceipt(receipt("after-recovery"))).toBe(true);
     } finally {
       await runtime.close();
