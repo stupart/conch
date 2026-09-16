@@ -984,10 +984,15 @@ struct SessionView: View {
         // The WORDS follow the strict rule — only proof lets them go — and that is handled by
         // the outbox. The pictures are already uploaded to the Mac, so only a known failure
         // keeps them here for the retry that re-sends them.
-        if case .failed = delivered {
+        switch delivered {
+        case .failed:
             // Words say this on their own bubble; pictures alone have nowhere else.
             if text.isEmpty { sendFailed = true }
-        } else {
+        case .unknown:
+            // Uncertainty keeps them too. Clearing the pictures here would make the retry
+            // send words without them, for a message that may never have arrived.
+            break
+        default:
             attachments = []
         }
         return delivered
@@ -1058,7 +1063,7 @@ private struct YourTurnBubble: View {
         .frame(maxWidth: .infinity, alignment: .trailing)
         .transition(.opacity)
         .contextMenu {
-            if case .failed = message.state {
+            if message.state.isTerminal == false || message.state == .staged {
                 Button("Try again", systemImage: "arrow.clockwise", action: onRetry)
                 Button("Discard", systemImage: "trash", role: .destructive, action: onDiscard)
             }
@@ -1086,6 +1091,20 @@ private struct YourTurnBubble: View {
             Text("Staged — not submitted")
                 .font(Type.caption)
                 .foregroundStyle(Palette.needs)
+        // Not a failure and not a confirmation: conch could not tell. It says so, keeps the
+        // words, and stays open to the answer the Mac publishes afterwards.
+        case let .unknown(reason):
+            HStack(spacing: 10) {
+                Text(reason)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.waiting)
+                    .multilineTextAlignment(.trailing)
+                Button("Retry", action: onRetry)
+                    .font(Type.caption.weight(.semibold))
+                    .foregroundStyle(Palette.micOpen)
+                    .buttonStyle(.plain)
+            }
+            .accessibilityHint("Long press to discard it")
         case let .failed(reason):
             HStack(spacing: 10) {
                 Text(reason)

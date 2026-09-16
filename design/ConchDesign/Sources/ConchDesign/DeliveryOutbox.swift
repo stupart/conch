@@ -16,10 +16,24 @@ public enum ConchDeliveryState: Equatable, Codable, Sendable {
     case staged
     /// It did not arrive, in the daemon's own words (`ConchSendFailure.sentence`).
     case failed(String)
+    /// Sent, and the answer never reached this device: a timeout, a dropped link, a relay that
+    /// could not say. This is NOT a rejection — the Mac may well have typed it — and treating
+    /// it as one is how a message that landed ended up showing as failed for good, with its
+    /// words stuck in the draft. Not terminal, so the daemon's authoritative outcome still
+    /// lands when it arrives, however late.
+    case unknown(String)
 
     /// Settled. A terminal state is final — a late answer can never un-confirm a message,
-    /// nor quietly upgrade one that already failed.
-    public var isTerminal: Bool { self != .sent }
+    /// nor quietly upgrade one the daemon actually refused.
+    ///
+    /// `unknown` is deliberately NOT terminal: nothing has been settled, and the whole point
+    /// is that the real answer is still coming.
+    public var isTerminal: Bool {
+        switch self {
+        case .sent, .unknown: false
+        case .confirmed, .staged, .failed: true
+        }
+    }
 
     /// Only proof lets the words go. Everything else keeps them where they can be recovered.
     public var clearsDraft: Bool { self == .confirmed }
