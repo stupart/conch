@@ -157,6 +157,15 @@ describe("Mac conversation links keep the native clickable path", () => {
     expect(stack).not.toMatch(/padding\(\.vertical, 14\)\s*\.frame\(maxWidth: \.infinity, alignment: \.leading\)/);
   });
 
+  test("the transcript reads at the spec's body size, not the caption size around it", () => {
+    // workspace-v1 §3: "readingBody 15/23". Both rows that are actually READ — your turn and
+    // the agent's — were set at 13, the same size as the tool rows and captions around them.
+    // Counted rather than forbidden: 13 is still right for the chrome in this file.
+    const stack = mac("ConversationStackView.swift");
+    expect(stack.match(/\.font\(ConchType\.readingBody\)/g)?.length).toBe(2);
+    expect(stack.match(/\.lineSpacing\(ConchType\.readingLineSpacing\)/g)?.length).toBe(2);
+  });
+
   test("the fallback AppKit renderer preserves rich selectable attributed text", () => {
     const dashboard = mac("TranscriptFallback.swift");
     expect(dashboard).toContain("NSAttributedString(AttributedString(parsed[run.range]))");
