@@ -1481,12 +1481,6 @@ private struct ConversationPane: View {
                         .fill(ConchPalette.divider)
                         .frame(height: 1)
 
-                    perspectiveBar(for: reviewRow)
-
-                    Rectangle()
-                        .fill(ConchPalette.divider)
-                        .frame(height: 1)
-
                     if deliverables.count > 1 {
                         deliverableTabs(for: reviewRow)
 
@@ -1529,18 +1523,6 @@ private struct ConversationPane: View {
                 VStack(spacing: 0) {
                     if let row = focusedRow {
                         sessionBar(for: row)
-
-                        Rectangle()
-                            .fill(ConchPalette.divider)
-                            .frame(height: 1)
-                    }
-
-                    // Only when there is a deliverable to swap back to. With
-                    // nothing on the other side the control is a promise the
-                    // pane can't keep, and the pane already reads fine as
-                    // plain conversation without a mode label.
-                    if selectedReview != nil, let row = focusedRow {
-                        perspectiveBar(for: row)
 
                         Rectangle()
                             .fill(ConchPalette.divider)
@@ -1671,6 +1653,38 @@ private struct ConversationPane: View {
                     .fixedSize(horizontal: true, vertical: false)
             }
 
+            // The view switch, and only when there is a deliverable (§3). With nothing on
+            // the other side the control is a promise the header cannot keep.
+            //
+            // Icons alone here, where the bar below could afford words: three labelled
+            // segments measure about 316 pt, over 40% of this header at the default window
+            // width, and the title is what the header is for. The old lone-control worry
+            // does not apply to a group of three where the selected one is filled — you can
+            // see where you are without decoding anything, which was the actual point.
+            if selectedReview != nil {
+                PerspectiveOption(
+                    label: "Conversation",
+                    symbol: "text.bubble",
+                    isSelected: stage(for: row) == .conversation,
+                    help: "The exchange that produced it (⌘1)",
+                    action: { workspace.show(stage: .conversation, for: row.id) }
+                )
+                PerspectiveOption(
+                    label: "Side by side",
+                    symbol: "rectangle.split.2x1",
+                    isSelected: stage(for: row) == .sideBySide,
+                    help: "The work and the exchange together (⌘2)",
+                    action: { workspace.show(stage: .sideBySide, for: row.id) }
+                )
+                PerspectiveOption(
+                    label: "Deliverable",
+                    symbol: "doc.richtext",
+                    isSelected: stage(for: row) == .deliverable,
+                    help: "What the session produced (⌘3)",
+                    action: { workspace.show(stage: .deliverable, for: row.id) }
+                )
+            }
+
             // A subagent is not a session: nothing to inspect, no process to
             // close (C4).
             if row.parentSessionId == nil {
@@ -1705,12 +1719,6 @@ private struct ConversationPane: View {
         .background(ConchPalette.bg)
     }
 
-    /// Two labelled segments rather than one button naming the destination.
-    /// Lone controls in this app keep getting read as their opposite (the
-    /// counterclockwise arrow as undo, the dim speaker as idle); a pair shows
-    /// where you are AND where you can go without decoding anything, which is
-    /// also what makes this read as two perspectives on one session rather
-    /// than navigation away from it — same pane, same composer underneath.
     /// One tab per deliverable the session holds, oldest first, so a new one arrives on the
     /// right and what you have already reviewed stays where you left it. Drawn only when there
     /// is more than one: with a single deliverable this pane is exactly what it always was.
@@ -1808,36 +1816,6 @@ private struct ConversationPane: View {
                 LinkFailureLine(message: $fallbackLinkFailure)
             }
         }
-    }
-
-    private func perspectiveBar(for row: SessionRow) -> some View {
-        let mode = stage(for: row)
-        return HStack(spacing: 2) {
-            PerspectiveOption(
-                label: "Conversation",
-                symbol: "text.bubble",
-                isSelected: mode == .conversation,
-                help: "The exchange that produced it (⌘1)",
-                action: { workspace.show(stage: .conversation, for: row.id) }
-            )
-            PerspectiveOption(
-                label: "Side by side",
-                symbol: "rectangle.split.2x1",
-                isSelected: mode == .sideBySide,
-                help: "The work and the exchange together (⌘2)",
-                action: { workspace.show(stage: .sideBySide, for: row.id) }
-            )
-            PerspectiveOption(
-                label: "Deliverable",
-                symbol: "doc.richtext",
-                isSelected: mode == .deliverable,
-                help: "What the session produced (⌘3)",
-                action: { workspace.show(stage: .deliverable, for: row.id) }
-            )
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
     }
 
     /// The composer, wherever you are.
@@ -1993,14 +1971,10 @@ private struct PerspectiveOption: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 5) {
-                Image(systemName: symbol)
-                    .font(.system(size: 11, weight: .medium))
-                Text(label)
-                    .font(ConchTypography.font(size: 11, weight: .medium))
-            }
-            .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
-            .padding(.horizontal, 8)
+            Image(systemName: symbol)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
+                .padding(.horizontal, 7)
             .frame(height: 26)
             .background(
                 RoundedRectangle(cornerRadius: 6)

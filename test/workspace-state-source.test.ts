@@ -134,7 +134,20 @@ describe("new work does not replace what you are reading", () => {
 
   test("the page is per session, so switching away and back returns to it", () => {
     expect(pane).toContain("workspace.presentation(for: row?.id).stage");
-    expect(pane).toContain("private func perspectiveBar(for row: SessionRow) -> some View {");
+    // §3 line 198: the switch lives in the HEADER now, not in a bar of its own under it.
+    expect(pane).not.toContain("perspectiveBar");
+    const header = pane.slice(
+      pane.indexOf("private func sessionBar(for row: SessionRow) -> some View {"),
+      pane.indexOf("private func deliverableTabs("),
+    );
+    expect(header.length).toBeGreaterThan(500);
+    expect(header.match(/PerspectiveOption\(/g) ?? []).toHaveLength(3);
+    // Only when there is something to switch to — the header must not offer a page that
+    // would be empty.
+    expect(header).toContain("if selectedReview != nil {");
+    // Icons alone up here: three labelled segments take over 40% of the header at the
+    // default window width, and the title is what the header is for.
+    expect(pane).not.toContain("Text(label)");
 
     // The strip of deliverables asks the same shared rule, and keeps no pick of its own: the
     // pane drifted once already by keeping chains, which is what this whole file is about.
