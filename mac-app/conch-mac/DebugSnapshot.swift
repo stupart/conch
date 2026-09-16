@@ -91,7 +91,16 @@ enum DebugSnapshot {
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
             return fail("bitmapImageRepForCachingDisplay returned nil")
         }
-        view.cacheDisplay(in: view.bounds, to: rep)
+        // Draw in the WINDOW'S appearance, not whatever the drawing context happens to be.
+        //
+        // The palette is dynamic colours — `NSColor(name: nil) { appearance in … }` — which
+        // resolve against the CURRENT DRAWING appearance. An offscreen `cacheDisplay` does not
+        // inherit the window's, so on a light system every snapshot came back DARK: a whole
+        // night of "verified by eye" was judged in a theme the user never sees. A screenshot
+        // tool that lies is worse than no screenshot tool, because it is believed.
+        window.effectiveAppearance.performAsCurrentDrawingAppearance {
+            view.cacheDisplay(in: view.bounds, to: rep)
+        }
         guard let png = rep.representation(using: .png, properties: [:]) else {
             return fail("png representation returned nil")
         }
