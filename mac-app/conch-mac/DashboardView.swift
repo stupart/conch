@@ -616,7 +616,7 @@ private struct FolderHeader: View {
                     .opacity(hovering || isCollapsed ? 1 : 0.35)
                     .frame(width: 10)
                 Text(name)
-                    .font(ConchTypography.font(size: 11, weight: .medium))
+                    .font(ConchTypography.font(size: 12, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 4)
@@ -626,7 +626,8 @@ private struct FolderHeader: View {
                         .monospacedDigit()
                 }
             }
-            .foregroundStyle(ConchPalette.textDim)
+            // §3: textTertiary. A folder name is a place, not a thing to read.
+            .foregroundStyle(ConchPalette.textFaint)
             .padding(.horizontal, 6)
             .padding(.top, 8)
             .padding(.bottom, 2)
@@ -711,19 +712,19 @@ private struct DashboardRow: View {
         .frame(maxWidth: .infinity, minHeight: 42)
         .background {
             ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(
                         isSelected
                             ? ConchPalette.selection
                             : isHovered ? ConchPalette.hover : .clear
                     )
 
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(ConchPalette.raised)
                     .opacity(reviewPulseOpacity)
             }
         }
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         // Double-click renames, because renaming a thing by double-clicking its
         // name is what every file list has taught. It was reachable only from
         // the context menu, which means it was reachable only by someone who
@@ -792,7 +793,14 @@ private struct DashboardRow: View {
                     }
             } else {
                 Text(row.label)
-                    .font(ConchTypography.font(size: 13.5, weight: .medium))
+                    // §3: 13 pt, and semibold when the row wants you. The sidebar's job is to
+                    // show which sessions need a person without being read word by word.
+                    // Same predicate the status mark already uses, rather than a third opinion
+                    // about what "wants you" means.
+                    .font(ConchTypography.font(
+                        size: 13,
+                        weight: row.status == .waiting || row.status == .needs ? .semibold : .medium
+                    ))
                     .foregroundStyle(ConchPalette.textPrimary)
                     .lineLimit(1)
                     // Sibling sessions share a prefix far more often than a

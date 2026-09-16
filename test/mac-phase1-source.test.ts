@@ -233,6 +233,30 @@ describe("§3's anatomy, where the app had drifted from it", () => {
     expect(stack).toContain("Rectangle().fill(ConchPalette.divider).frame(width: 1)");
   });
 
+  test("the sidebar is the anatomy §3 describes", () => {
+    // Nothing pinned ANY sidebar geometry before this, which is how it drifted unnoticed —
+    // the same shape as the header sitting at a toolbar's 36 through a spec saying 52.
+    const row = dashboard.slice(
+      dashboard.indexOf("private struct DashboardRow: View {"),
+      dashboard.indexOf("private func pulseForReview()"),
+    );
+    expect(row.length).toBeGreaterThan(1_000);
+    expect(row.match(/RoundedRectangle\(cornerRadius: 7, style: \.continuous\)/g) ?? []).toHaveLength(3);
+    expect(row).not.toContain("cornerRadius: 8");
+    // 13 pt, semibold when the row wants a person, by the SAME predicate the status mark uses.
+    expect(row).toContain("weight: row.status == .waiting || row.status == .needs ? .semibold : .medium");
+    expect(dashboard).toContain("let wantsUser = row.status == .waiting || row.status == .needs");
+
+    const folder = dashboard.slice(
+      dashboard.indexOf("private struct FolderHeader: View {"),
+      dashboard.indexOf("private struct DashboardRow: View {"),
+    );
+    expect(folder.length).toBeGreaterThan(400);
+    expect(folder).toContain("ConchTypography.font(size: 12, weight: .medium)");
+    expect(folder).toContain("ConchPalette.textFaint");
+    expect(folder).not.toContain("ConchPalette.textDim");
+  });
+
   test("the header is 52 tall, not a toolbar's 36", () => {
     // Nothing pinned this before, which is how it sat at 36 through a spec that says 52.
     const header = dashboard.slice(
