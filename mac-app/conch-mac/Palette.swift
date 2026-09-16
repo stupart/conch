@@ -46,6 +46,10 @@ enum ConchPalette {
     /// The lab's `--hair2` (`rgba(0,0,0,.1)`), a step up from `divider`'s `--hair`. It is what
     /// `.dc` draws around the inline deliverable: `box-shadow:inset 0 0 0 1px var(--hair2)`.
     static let hairlineStrong = ConchColor.hairlineStrong.dynamic
+    /// The drop target's ring — the lab's `.cbox.drop{box-shadow:0 0 0 2px #0A84FF,...}`.
+    /// macOS's own drop blue, hard-coded in the prototype rather than following the system
+    /// accent, because a drop target that changes colour per person is not a signal.
+    static let dropTarget = Color(red: 0.039, green: 0.518, blue: 1)
     /// The stage's own panel (§3) — the lab's `--surface`, #FFFFFF in light. Distinct from
     /// `raised`, which is a step above the ground in dark.
     static let surface = ConchColor.surface.dynamic

@@ -385,6 +385,17 @@ struct ComposerView: View {
             RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)
                 .strokeBorder(ConchPalette.divider, lineWidth: 0.5)
         )
+        // `.cbox.drop{box-shadow:0 0 0 2px #0A84FF,var(--shFloat)}` — 2 pt, the system drop
+        // blue, on the CARD. It was a 1.5 pt cyan rect at radius 8, drawn after the card's
+        // own 16 pt padding, so it floated off the edge at the wrong corner radius and in the
+        // colour this app uses for the microphone. Tyler: "process was kinda weird, and idk
+        // if it worked or not" — a drop target has one job, which is to say "here".
+        .overlay {
+            if isTargetedForDrop {
+                RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)
+                    .strokeBorder(ConchPalette.dropTarget, lineWidth: 2)
+            }
+        }
         // The token rather than a hand-rolled shadow: §3 names this elevation, and a literal
         // that happens to look right is how the design system and the app come apart.
         .conchElevation(.floating)
@@ -402,13 +413,6 @@ struct ComposerView: View {
             // on a question, today. Ignore the initial value so opening a
             // session does not steal focus from whatever you were reading.
             fieldFocused = true
-        }
-        .overlay {
-            if isTargetedForDrop {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(ConchPalette.brandCyan, lineWidth: 1.5)
-                    .padding(4)
-            }
         }
     }
 
@@ -691,6 +695,9 @@ private struct AttachmentStrip: View {
     let onRemove: (URL) -> Void
 
     var body: some View {
+        // `#cAtt{display:flex;gap:6px;padding:6px 6px 2px}`. The strip was capped at
+        // `maxHeight: 48` around tiles the lab draws 52 tall, so every attachment was
+        // clipped by its own container.
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 ForEach(attachments, id: \.self) { url in
@@ -698,7 +705,9 @@ private struct AttachmentStrip: View {
                 }
             }
         }
-        .frame(maxHeight: 48)
+        .padding(.top, 6)
+        .padding(.horizontal, 6)
+        .padding(.bottom, 2)
     }
 }
 
@@ -711,46 +720,63 @@ private struct AttachmentPreview: View {
     @ViewBuilder
     var body: some View {
         if let image {
+            // `.att{height:52px;border-radius:9px;box-shadow:inset 0 0 0 .5px var(--hair2)}`
+            // and `.att.img{width:68px}`. It was 54x44 at radius 6 — a different shape from
+            // the lab's in both dimensions, which is what made a row of them look crooked.
             ZStack(alignment: .topTrailing) {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: 54, height: 44)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .frame(width: 68, height: 52)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(ConchPalette.divider, lineWidth: 0.5)
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .strokeBorder(ConchPalette.hairlineStrong, lineWidth: 0.5)
                     }
 
                 removeButton
-                    .padding(3)
+                    .padding(4)
             }
             .help(url.lastPathComponent)
         } else {
-            HStack(spacing: 5) {
+            // `.att.fl{height:52px;gap:8px;padding:0 30px 0 10px;background:var(--fill);
+            // font-size:12.5px;max-width:220px}` — the same 52 as an image tile, so a file
+            // and a picture sit on one line rather than two different heights.
+            HStack(spacing: 8) {
                 Image(systemName: "paperclip")
-                    .font(.system(size: 9.5))
+                    .font(.system(size: 11))
                 Text(url.lastPathComponent)
-                    .font(ConchTypography.font(size: 11))
+                    .font(ConchTypography.font(size: 12.5))
                     .lineLimit(1)
-                removeButton
+                    .truncationMode(.middle)
             }
             .foregroundStyle(ConchPalette.textDim)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            .padding(.leading, 10)
+            .padding(.trailing, 30)
+            .frame(height: 52)
+            .frame(maxWidth: 220)
             .background(
-                RoundedRectangle(cornerRadius: 6).fill(ConchPalette.hover)
+                RoundedRectangle(cornerRadius: 9, style: .continuous).fill(ConchPalette.fill)
             )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(ConchPalette.hairlineStrong, lineWidth: 0.5)
+            )
+            .overlay(alignment: .trailing) { removeButton.padding(.trailing, 4) }
             .help(url.path)
         }
     }
 
+    /// `.att .x{width:18px;height:18px;border-radius:50%;background:rgba(29,29,31,.62);
+    /// color:#fff}` — it was 14x14 on the window ground at 88%, which on a pale screenshot
+    /// was a grey dot on a grey picture.
     private var removeButton: some View {
         Button(action: onRemove) {
             Image(systemName: "xmark")
-                .font(.system(size: 8, weight: .bold))
-                .frame(width: 14, height: 14)
-                .background(Circle().fill(ConchPalette.bg.opacity(0.88)))
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 18, height: 18)
+                .background(Circle().fill(Color(red: 0.114, green: 0.114, blue: 0.122).opacity(0.62)))
         }
         .buttonStyle(.plain)
         .help("Remove \(url.lastPathComponent)")

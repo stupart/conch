@@ -401,6 +401,12 @@ private struct SessionLedger: View {
     }
 
     @State private var collapsedFolders: Set<String> = []
+    /// Dismissed sessions start folded away, as the lab starts them (`showDismissed: false`).
+    @State private var showsDismissed = false
+
+    /// …except while an Undo is being offered: that button lives ON the dismissed row, so
+    /// folding the group the instant you dismiss would take the undo with it.
+    private var showsDismissedRows: Bool { showsDismissed || undoDismissal != nil }
 
     /// The rows grouped by the folder they run in. A folder the reader collapsed keeps its
     /// rows out of the list entirely, which is why the count moves onto its header.
@@ -507,17 +513,36 @@ private struct SessionLedger: View {
                                 }
 
                                 if !state.dismissedRows.isEmpty {
-                                    DismissedRowsDivider()
+                                    // Dismissing a session is asking for it to be GONE. The app
+                                    // kept every dismissed row on screen under a DISMISSED
+                                    // divider, so dismissing moved a row down and greyed it
+                                    // rather than removing it from the list.
+                                    //
+                                    // The lab folds them away and offers them back: a group
+                                    // header with a reveal (line 998), `showDismissed: false` to
+                                    // begin with. The same `FolderHeader` the folders use,
+                                    // because this is the same gesture — a group you can fold —
+                                    // and a second collapse mechanism is how two lists that
+                                    // behave alike start behaving differently.
+                                    FolderHeader(
+                                        name: "Dismissed",
+                                        count: state.dismissedRows.count,
+                                        isCollapsed: !showsDismissedRows,
+                                        onToggle: { showsDismissed.toggle() }
+                                    )
+                                    .id("dismissed-header")
 
-                                    ForEach(state.dismissedRows, id: \.id) { row in
-                                        DismissedDashboardRow(
-                                            row: row,
-                                            rowMessage: rowMessages[row.id],
-                                            showsUndo: undoDismissal?.id == row.id,
-                                            onUndo: actions.onUndoDismiss,
-                                            onRestore: { actions.onRestore(row) }
-                                        )
-                                        .id("dismissed:\(row.id)")
+                                    if showsDismissedRows {
+                                        ForEach(state.dismissedRows, id: \.id) { row in
+                                            DismissedDashboardRow(
+                                                row: row,
+                                                rowMessage: rowMessages[row.id],
+                                                showsUndo: undoDismissal?.id == row.id,
+                                                onUndo: actions.onUndoDismiss,
+                                                onRestore: { actions.onRestore(row) }
+                                            )
+                                            .id("dismissed:\(row.id)")
+                                        }
                                     }
                                 }
                                 RemoteMacGroups(onSelect: onSelectRemote)
@@ -1068,28 +1093,6 @@ private struct SessionContextMeter: View {
     }
 }
 
-private struct DismissedRowsDivider: View {
-    var body: some View {
-        HStack(spacing: 8) {
-            Rectangle()
-                .fill(ConchPalette.divider)
-                .frame(height: 1)
-
-            Text("DISMISSED")
-                .font(ConchTypography.font(size: 9.5, weight: .medium))
-                .tracking(1.1)
-                .foregroundStyle(ConchPalette.textFaint)
-
-            Rectangle()
-                .fill(ConchPalette.divider)
-                .frame(height: 1)
-        }
-        .padding(.horizontal, 7)
-        .padding(.top, 7)
-        .padding(.bottom, 3)
-        .accessibilityHidden(true)
-    }
-}
 
 private struct DismissedDashboardRow: View {
     let row: DismissedSessionRow
