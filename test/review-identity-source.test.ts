@@ -23,8 +23,12 @@ describe("Mac", () => {
     expect(review).toContain("isReady = row.status != .working");
   });
 
-  test("the pane returns to the conversation only on a new deliverable identity", () => {
-    expect(dashboard).toContain(".onChange(of: selectedReview?.id)");
+  // A new deliverable no longer moves the pane at all — it would take someone off the one
+  // they are inspecting. It arrives as a preview inline in the conversation, and only a press
+  // changes the page (workspace-state-source.test.ts). What still keys on the identity is the
+  // row's pulse: the row asking to be looked at, where nobody is reading anything.
+  test("a new deliverable pulses its row without taking the pane from the reader", () => {
+    expect(dashboard).not.toContain(".onChange(of: selectedReview?.id)");
     expect(dashboard).toContain(".onChange(of: reviewIdentity)");
   });
 

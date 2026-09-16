@@ -714,14 +714,10 @@ private struct ConversationFogHost: View {
     }
 
     /// The session the Ready pill staged, else the one the voice is on, else the daemon's active or selected one, else
-    /// the first. Never a subagent.
+    /// the first. Never a subagent. The chain is the window's own (ConchDesign/Workspace.swift): the overlay pins a
+    /// different session from the dashboard, but it must not resolve it by a different rule.
     static func session(_ state: PublishedState?, staged: SessionRow.ID? = nil) -> SessionRow? {
-        let rows = state?.rows.filter { $0.parentSessionId == nil } ?? []
-        return rows.first { $0.id == staged }
-            ?? rows.first { LiveState.isExchangeActive($0.live ?? "") }
-            ?? rows.first(where: \.active)
-            ?? rows.first(where: \.navSelected)
-            ?? rows.first
+        state?.row(WorkspaceFocus.viewed(in: Workspace(state), pinned: staged))
     }
 
     /// What was said, both ways. Tools, thinking and materials stay in the dashboard.
@@ -758,9 +754,9 @@ private struct ConversationFogHost: View {
         history.loadFullBodies(forSnapshotItems: cut)
     }
 
-    /// The live voice state when it is this session's, as DashboardView's voiceState(for:) reads it.
+    /// The live voice state when it is this session's, by identity — the rule the dashboard's composer reads too.
     private func voice(for row: SessionRow) -> String {
-        guard let state = store.state, state.live.label.isEmpty || state.live.label == row.label else { return "" }
+        guard let state = store.state, WorkspaceFocus.isAddressed(row.id, in: Workspace(state)) else { return "" }
         return state.live.state
     }
 
