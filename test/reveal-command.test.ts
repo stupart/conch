@@ -116,7 +116,10 @@ test("the Mac shows a no-terminal row's reason and offers no send, stop or close
 test("the iPhone shows a no-terminal row's reason and offers no send, stop or end on it", () => {
   const models = read("mobile/conch-ios/conch-ios/Models.swift");
   expect(models).toContain("var noTerminal: String?");
-  expect(models).toContain("case id, label, status, backend, context, detail, at, live, paused, review, noTerminal, attachable");
+  // Anchored to the Row key list but not to its full contents: this test is about
+  // noTerminal, and a key added beside it cannot affect whether noTerminal decodes — which
+  // the next assertion pins directly.
+  expect(models).toMatch(/case id, label, status,[^\n]*\bnoTerminal\b[^\n]*attachable/);
   expect(models).toContain("noTerminal = try? c.decodeIfPresent(String.self, forKey: .noTerminal)");
   expect(read("mobile/conch-ios/conch-ios/LedgerView.swift"))
     .toContain("row.review?.summary ?? row.detail ?? row.noTerminal");

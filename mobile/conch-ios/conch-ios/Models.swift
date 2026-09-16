@@ -20,6 +20,13 @@ struct PublishedState: Decodable, Equatable {
     /// outcome reaches a phone whose request was answered and closed twenty seconds before
     /// the delivery actually finished.
     var deliveries: [Delivery] = []
+    /// What the Mac's daemon can do; absent from one older than these capabilities.
+    var features: Features?
+
+    struct Features: Decodable, Equatable {
+        var deliverables: Int?
+        var viewedState: Int?
+    }
 
     struct Delivery: Decodable, Equatable {
         var opId = ""
@@ -149,6 +156,8 @@ struct PublishedState: Decodable, Equatable {
         var live: String?
         var paused = false
         var review: Review?
+        /// Every deliverable the session still holds, oldest first; `review` is the last.
+        var reviews: [Review]?
         /// Why this row has no terminal to type into or close: a closed Codex
         /// thread, or one an app-server hosts. Older daemons never send it.
         var noTerminal: String?
@@ -171,11 +180,13 @@ struct PublishedState: Decodable, Equatable {
             var at: Double?
             /// The identity the daemon minted at filing; absent from an older daemon.
             var id: String?
+            /// When it was looked at, on whichever device looked; absent means nobody has.
+            var viewedAt: Double?
             /// The one thing the agent asked you to check (`scene.inspect`). A build from before scenes never asks
             /// for the key, and a keyed container ignores keys it isn't asked for, so it decodes the review unchanged.
             var inspect: String?
 
-            private enum CodingKeys: String, CodingKey { case summary, link, at, scene, id }
+            private enum CodingKeys: String, CodingKey { case summary, link, at, scene, id, viewedAt }
             private struct Scene: Decodable { var inspect: String? }
 
             init(from decoder: Decoder) throws {
@@ -184,13 +195,14 @@ struct PublishedState: Decodable, Equatable {
                 link = try? c.decodeIfPresent(String.self, forKey: .link)
                 at = try? c.decodeIfPresent(Double.self, forKey: .at)
                 id = try? c.decodeIfPresent(String.self, forKey: .id)
+                viewedAt = try? c.decodeIfPresent(Double.self, forKey: .viewedAt)
                 // A scene this build can't read is no scene, never a review that fails.
                 inspect = (try? c.decodeIfPresent(Scene.self, forKey: .scene))?.inspect
             }
         }
 
         private enum CodingKeys: String, CodingKey {
-            case id, label, status, backend, context, detail, at, live, paused, review, noTerminal, attachable
+            case id, label, status, backend, context, detail, at, live, paused, review, reviews, noTerminal, attachable
             case cwd, parentSessionId, startedBySessionId
         }
 
@@ -208,6 +220,7 @@ struct PublishedState: Decodable, Equatable {
             live = try? c.decodeIfPresent(String.self, forKey: .live)
             paused = (try? c.decodeIfPresent(Bool.self, forKey: .paused)) ?? false
             review = try? c.decodeIfPresent(Review.self, forKey: .review)
+            reviews = try? c.decodeIfPresent([Review].self, forKey: .reviews)
             noTerminal = try? c.decodeIfPresent(String.self, forKey: .noTerminal)
             attachable = (try? c.decodeIfPresent(Bool.self, forKey: .attachable)) ?? false
             cwd = try? c.decodeIfPresent(String.self, forKey: .cwd)
