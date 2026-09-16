@@ -201,7 +201,7 @@ struct ConversationStack: View {
     @ViewBuilder
     private func fullBodyStatus(for item: ConversationItem) -> some View {
         let native = HistorySnapshot.nativeId(forSnapshotItem: item.id)
-        let recorded = history.paging.items.first { $0.nativeId == native }
+        let recorded = history.paging.items.first { $0.answers(snapshotNativeId: native) }
         switch recorded.flatMap({ history.body(for: $0.id) })?.status {
         case .some(.loading):
             HStack(spacing: 6) {

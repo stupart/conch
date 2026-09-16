@@ -140,6 +140,15 @@ Keep the existing snapshot preview caps. Build full history as a separate reader
   visible item ID and its pixel offset, then restore that anchor after layout.
 - Merge refreshed items by ID/revision. Cancel or discard responses for a former
   session, branch or reader generation. Do not mix pages from different epochs.
+- A reader's caches belong to the epoch its pages came from: when a stale epoch restarts
+  the reader, the held bodies, the reads in flight and the full-text cache behind cut live
+  rows are dropped with the pages. Inside one epoch, an item returning at a newer revision
+  retires the body held for it, which is read again where a row was showing it.
+- Paging goes backwards only, so a message written since the last read is in no page held.
+  Re-read the NEWEST page (no cursor) and merge it after what is held, rather than
+  searching the held items for something that cannot be there.
+- Match a live row to a recorded item by the id that row is keyed by: `toolId` for a tool
+  row, `nativeId` otherwise. They are different ids and a tool row has both.
 - On stale cursors, refresh and restore the anchor if it still exists. Restart a
   stale body read and discard its old chunks; do not concatenate revisions.
 - Show off, incomplete/replaying coverage and recoverable errors distinctly from
@@ -191,3 +200,17 @@ anchors; pixel-level scroll preservation remains a PR 7b UI test.
   The running daemon, live sessions and the real records directory were not used.
 - Existing stores replay into the new shape on their next read (parser version 2). No manual
   reindex; as with any replay, a session whose transcript file is gone cannot be rebuilt.
+
+## Verified results (2026-09-16, the readers' cache contract)
+
+- Full `bun test`: 2,250 passed, zero failed; 20,510 assertions across 209 files; exit 0.
+- `bunx tsc --noEmit`: exit 0. `swift test --package-path design/ConchDesign`: 77 tests,
+  zero failures, exit 0 — the cache decisions themselves (`HistoryCache.stale`,
+  `apply(newest:)`, `answers(snapshotNativeId:)`) are executed there, not string-matched.
+- `xcodebuild` for the Mac app, and for the iPhone app against a generic iOS Simulator
+  destination: both `BUILD SUCCEEDED`, exit 0. CI builds neither app.
+- `bun scripts/check-records-ui-mutations.ts`: exit 0. Five mutations — an older revision
+  treated as still true, the newest page replacing rather than merging, a tool row no
+  longer matched by its call id, the Mac keeping bodies a page has revised, and the phone
+  waiting on a body no page it holds will name — each had baseline exit 0, mutant exit 1
+  and restored exit 0, with every file verified byte-for-byte against its checksum.

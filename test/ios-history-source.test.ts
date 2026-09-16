@@ -86,7 +86,7 @@ describe("the iPhone reads recorded history", () => {
   test("changing session cancels what is in flight instead of letting it land", () => {
     const follow = sliceFrom(store, "func follow(session: String, on bridge: BridgeClient)", "/// The newest page");
     expect(follow).toContain("pageTask?.cancel()");
-    expect(follow).toContain("for task in bodyTasks.values { task.cancel() }");
+    expect(follow).toContain("resetEpochCaches()");
     expect(follow).toContain("paging.select(session: session)");
     // And a late answer is refused by generation even if its task was not cancelled.
     expect(store).toContain("guard let store = self, store.paging.generation == generation");
@@ -109,6 +109,27 @@ describe("the iPhone reads recorded history", () => {
     expect(keep).toContain("HistoryBudget.release(held, keepingUnder: HistoryBudget.phoneBodyBytes)");
     expect(keep).toContain("bodies[released] = nil");
     expect(keep).toContain("fullBodies[native] = nil");
+  });
+
+  test("the epoch owns the caches, and a revised item retires the body held for it", () => {
+    // The DECISIONS are ConchDesign's and `swift test` executes them (HistoryCache.stale,
+    // apply(newest:), answers(snapshotNativeId:)). What is pinned here is that this store
+    // uses them, which no Swift test can see without building the app — and CI never does.
+    const receive = sliceFrom(store, "private func receive(", "/// Hold a finished body");
+    expect(receive).toContain("if newest { paging.apply(newest: page, generation: generation) }");
+    expect(receive).toContain("resetEpochCaches()");
+    expect(receive).toContain("retire(HistoryCache.stale(bodies, against: page.items))");
+    const reset = sliceFrom(store, "private func resetEpochCaches()", "/// Let go of the bodies");
+    for (const cleared of ["for task in bodyTasks.values { task.cancel() }", "bodies = [:]", "fullBodies = [:]", "bodyOrder = []", "bodyNative = [:]", "wantedBodies = []"]) {
+      expect(reset).toContain(cleared);
+    }
+    // A body wanted by a row that is in no page held is fetched, not waited for forever.
+    expect(store).toContain("private func loadNewest()");
+    expect(store).toContain("if paging.items.isEmpty { loadOlder() } else { loadNewest() }");
+    // And a tool row finds its call, which is not the message the call was written in.
+    expect(store).toContain("let toolId: String?");
+    expect(store).toContain("toolId: $0.toolId,");
+    expect(store).toContain("wantedBodies.first(where: item.answers(snapshotNativeId:))");
   });
 
   test("the phone holds a bounded number of rows, and says so when it stops", () => {

@@ -13,9 +13,10 @@ final class HistoryTests: XCTestCase {
         revision: Int = 1,
         preview: String = "",
         bodyBytes: Int = 0,
-        nativeId: String? = nil
+        nativeId: String? = nil,
+        toolId: String? = nil
     ) -> HistoryItem {
-        HistoryItem(id: id, nativeId: nativeId, at: at, revision: revision, preview: preview, bodyBytes: bodyBytes)
+        HistoryItem(id: id, nativeId: nativeId, toolId: toolId, at: at, revision: revision, preview: preview, bodyBytes: bodyBytes)
     }
 
     private func page(_ ids: [String], previousCursor: String?, epoch: String = "1") -> HistoryPage {
@@ -302,6 +303,88 @@ final class HistoryTests: XCTestCase {
         // The one being read is never released, however large: releasing it would
         // empty the row that asked for it.
         XCTAssertEqual(HistoryBudget.release([(id: "only", bytes: 9_000_000)], keepingUnder: 2_000_000), [])
+    }
+
+
+    // MARK: - Identity a live row can be matched by
+
+    func testAToolRowFindsItsRecordedCallByTheCallIdRatherThanItsMessage() {
+        let call = item("r1", nativeId: "message-uuid", toolId: "call_7")
+        // The snapshot's `tool:call_7`, undecorated.
+        XCTAssertTrue(call.answers(snapshotNativeId: "call_7"))
+        // And the message it was written in still answers for the message.
+        XCTAssertTrue(call.answers(snapshotNativeId: "message-uuid"))
+        XCTAssertFalse(call.answers(snapshotNativeId: "call_8"))
+
+        // A live tool row is not drawn twice: once from the record and once live.
+        let recorded = [item("r1", at: 10, nativeId: "m1", toolId: "call_7"), item("r2", at: 20, nativeId: "m2")]
+        XCTAssertEqual(HistorySnapshot.older(recorded, thanSnapshot: ["call_7"]).map(\.id), [])
+    }
+
+    // MARK: - The newest page
+
+    func testTheNewestPageArrivesWithoutLosingTheOlderPagesHeld() {
+        var paging = HistoryPaging()
+        paging.select(session: "a")
+        paging.apply(page: page(["3", "4"], previousCursor: "older"), generation: paging.beginLoad())
+        paging.apply(page: page(["1", "2"], previousCursor: "older-still"), generation: paging.beginLoad(anchor: "3"))
+        XCTAssertEqual(paging.items.map(\.id), ["1", "2", "3", "4"])
+
+        // A message written since that read is in no held page, so the reader asks for the
+        // newest page again — and must not lose the four pages it scrolled back through.
+        let arrived = HistoryPage(
+            items: [item("4", revision: 2, preview: "finished"), item("5")],
+            previousCursor: "a-fresh-traversal-cursor",
+            epoch: "1"
+        )
+        paging.apply(newest: arrived, generation: paging.beginLoad())
+
+        XCTAssertEqual(paging.items.map(\.id), ["1", "2", "3", "4", "5"], "newer items belong after, in order")
+        XCTAssertEqual(paging.items.first(where: { $0.id == "4" })?.revision, 2, "and a revised item is taken at its newer revision")
+        XCTAssertEqual(paging.previousCursor, "older-still", "the cursor still points before the OLDEST item held")
+        XCTAssertEqual(paging.status, .idle)
+    }
+
+    func testANewestPageFromAnotherEpochStartsAgainRatherThanMixingGenerations() {
+        var paging = HistoryPaging()
+        paging.select(session: "a")
+        paging.apply(page: page(["3", "4"], previousCursor: "older", epoch: "1"), generation: paging.beginLoad())
+
+        paging.apply(newest: page(["9"], previousCursor: nil, epoch: "2"), generation: paging.beginLoad())
+
+        XCTAssertTrue(paging.items.isEmpty, "two epochs' items cannot be joined into one list")
+        XCTAssertNil(paging.epoch)
+        XCTAssertNil(paging.previousCursor)
+    }
+
+    func testTheFirstReadOfASessionCanBeANewestPage() {
+        var paging = HistoryPaging()
+        paging.select(session: "a")
+        paging.apply(newest: page(["1", "2"], previousCursor: "older"), generation: paging.beginLoad())
+
+        XCTAssertEqual(paging.items.map(\.id), ["1", "2"])
+        XCTAssertEqual(paging.previousCursor, "older", "with nothing held, the newest page IS the traversal")
+        XCTAssertTrue(paging.canLoadOlder)
+    }
+
+    // MARK: - Bodies a page has made untrue
+
+    func testABodyIsRetiredWhenItsItemComesBackAtANewerRevision() {
+        var opened = HistoryBody()
+        opened.begin()
+        opened.apply(chunk: "the tool was still running", revision: 1, next: nil)
+        var unread = HistoryBody()
+        unread.begin()
+
+        let held = ["done": opened, "waiting": unread]
+        let page = [
+            item("done", revision: 2),
+            item("untouched", revision: 1),
+        ]
+
+        XCTAssertEqual(HistoryCache.stale(held, against: page), ["done"], "the text held for it describes a version that is gone")
+        XCTAssertEqual(HistoryCache.stale(held, against: [item("done", revision: 1)]), [], "the same revision is the same body")
+        XCTAssertEqual(HistoryCache.stale(held, against: [item("waiting", revision: 3)]), [], "a read that has not answered yet holds nothing to retire")
     }
 
 }

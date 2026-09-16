@@ -63,6 +63,7 @@ struct PhoneHistoryReply: Decodable, Sendable {
         let role: String?
         let nativeId: String?
         let toolName: String?
+        let toolId: String?
         let at: Double?
         let revision: Int?
         let preview: String?
@@ -100,6 +101,7 @@ struct PhoneHistoryReply: Decodable, Sendable {
                     role: $0.role,
                     nativeId: $0.nativeId,
                     toolName: $0.toolName,
+                    toolId: $0.toolId,
                     at: $0.at,
                     revision: $0.revision ?? 1,
                     preview: $0.preview ?? "",
@@ -179,13 +181,7 @@ final class HistoryStore: ObservableObject {
         guard session != paging.session else { return }
         pageTask?.cancel()
         pageTask = nil
-        for task in bodyTasks.values { task.cancel() }
-        bodyTasks = [:]
-        bodies = [:]
-        fullBodies = [:]
-        bodyOrder = []
-        bodyNative = [:]
-        wantedBodies = []
+        resetEpochCaches()
         paging.select(session: session)
         // One read answers "is any of this recorded" — including the honest "records
         // are off" — rather than leaving that to a button nobody presses.
@@ -215,26 +211,89 @@ final class HistoryStore: ObservableObject {
         loadOlder(anchor: paging.anchor)
     }
 
-    private func receive(_ outcome: BridgeClient.HistoryOutcome, generation: Int) {
+    /// The newest page again, keeping the older pages already held.
+    ///
+    /// The store pages BACKWARDS only, so a message written since the last read is in no
+    /// page the reader holds: looking for it among those items finds nothing however many
+    /// times it is asked, and the row waiting to be expanded waits forever. This is the
+    /// only read that can see the end of the transcript again.
+    private func loadNewest() {
+        guard !paging.session.isEmpty, paging.status != .loading, let bridge else { return }
+        let generation = paging.beginLoad(anchor: paging.anchor)
+        let request = PhoneHistoryPageRequest(session: paging.session, limit: Self.pageLimit)
+        pageTask?.cancel()
+        pageTask = Task { @MainActor [weak self] in
+            let outcome = await bridge.readHistory(path: "/history/page", request: request)
+            guard !Task.isCancelled, let self else { return }
+            self.receive(outcome, generation: generation, newest: true)
+        }
+    }
+
+    /// Everything the index generation owned, let go of together.
+    ///
+    /// Pages, bodies and the reads in flight for them are all true of ONE epoch. Throwing
+    /// away the pages while keeping the bodies is what let a message read before a replay
+    /// be drawn under a row from after it — the reader looked consistent and was quoting a
+    /// transcript that no longer exists.
+    private func resetEpochCaches() {
+        for task in bodyTasks.values { task.cancel() }
+        bodyTasks = [:]
+        bodies = [:]
+        fullBodies = [:]
+        bodyOrder = []
+        bodyNative = [:]
+        wantedBodies = []
+    }
+
+    /// Let go of the bodies a page has just made untrue, and ask for them again where a
+    /// live row was showing one: a revised message should REPLACE what is on screen, not
+    /// leave the old text standing and not blank the row that was reading it.
+    private func retire(_ items: [String]) {
+        for item in items {
+            bodyTasks[item]?.cancel()
+            bodyTasks[item] = nil
+            bodies[item] = nil
+            bodyOrder.removeAll { $0 == item }
+            if let native = bodyNative[item] {
+                fullBodies[native] = nil
+                wantedBodies.insert(native)
+            }
+            bodyNative[item] = nil
+        }
+    }
+
+    private func receive(_ outcome: BridgeClient.HistoryOutcome, generation: Int, newest: Bool = false) {
         guard case let .reply(data) = outcome,
               let reply = try? JSONDecoder().decode(PhoneHistoryReply.self, from: data) else {
             let reason: String = if case let .unreachable(message) = outcome { message } else { "History couldn't be read." }
             paging.apply(failure: .message(reason), generation: generation)
             return
         }
+        let restarted = paging.generation
         if let page = reply.page {
-            let restarted = paging.generation
-            paging.apply(page: page, generation: generation)
+            if newest { paging.apply(newest: page, generation: generation) }
+            else { paging.apply(page: page, generation: generation) }
             // The page belonged to an epoch that has gone: the reader restarted itself
-            // and now holds no cursor, so reading again cannot be stale a second time.
-            if paging.generation != restarted { loadOlder(anchor: paging.anchor) }
+            // and now holds no cursor, so reading again cannot be stale a second time —
+            // and every body it held was read out of the transcript that went away.
+            if paging.generation != restarted {
+                resetEpochCaches()
+                loadOlder(anchor: paging.anchor)
+                return
+            }
+            retire(HistoryCache.stale(bodies, against: page.items))
             drainWantedBodies()
+            // Whatever this page did not name is not in the record under that id; the row
+            // keeps its own text rather than waiting on a read nothing will answer.
+            if newest { wantedBodies = [] }
             return
         }
         let failure = reply.failure ?? .message("History couldn't be read.")
-        let restarted = paging.generation
         paging.apply(failure: failure, generation: generation)
-        if paging.generation != restarted { loadOlder(anchor: paging.anchor) }
+        if paging.generation != restarted {
+            resetEpochCaches()
+            loadOlder(anchor: paging.anchor)
+        }
     }
 
     // MARK: - Bodies
@@ -332,13 +391,17 @@ final class HistoryStore: ObservableObject {
         wantedBodies.formUnion(wanted)
         // A page is what names these items: the snapshot knows the provider's id, and
         // only the record store knows the id its bodies are addressed by.
-        if paging.items.isEmpty { loadOlder() } else { drainWantedBodies() }
+        drainWantedBodies()
+        guard !wantedBodies.isEmpty else { return }
+        if paging.items.isEmpty { loadOlder() } else { loadNewest() }
     }
 
     private func drainWantedBodies() {
         guard !wantedBodies.isEmpty else { return }
         for item in paging.items {
-            guard let nativeId = item.nativeId, wantedBodies.contains(nativeId), item.hasFullBody else { continue }
+            // By the id the live row is keyed by: a tool row carries its CALL id, which is
+            // not the UUID of the message the call was written in.
+            guard let nativeId = wantedBodies.first(where: item.answers(snapshotNativeId:)), item.hasFullBody else { continue }
             wantedBodies.remove(nativeId)
             loadBody(item: item.id, nativeId: nativeId)
         }
