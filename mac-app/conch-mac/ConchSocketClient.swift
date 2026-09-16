@@ -28,6 +28,12 @@ struct ConchDaemonEvent: Encodable, Sendable {
     /// Answer only once the keystrokes are done (`inject-done`), so the app
     /// can take the front back from the Terminal window conch raised to type.
     let awaitDelivery: Bool?
+    /// This send's own id, echoed back with whatever it finally becomes.
+    ///
+    /// The answer on the socket can be `inject-accepted` — taken, still delivering — and the
+    /// request then closes. Whatever it settles as is published against this id instead, which
+    /// is the only way a failure arriving after that close can still reach the row that sent it.
+    let opId: String?
 
     init(
         type: Kind,
@@ -36,7 +42,8 @@ struct ConchDaemonEvent: Encodable, Sendable {
         announce: String? = nil,
         origin: String? = nil,
         compose: Bool? = nil,
-        awaitDelivery: Bool? = nil
+        awaitDelivery: Bool? = nil,
+        opId: String? = nil
     ) {
         self.type = type
         self.sessionId = sessionId
@@ -45,6 +52,8 @@ struct ConchDaemonEvent: Encodable, Sendable {
         self.origin = origin
         self.compose = compose
         self.awaitDelivery = awaitDelivery
+        // Named here rather than at every call site, so no send can be built without one.
+        self.opId = opId ?? (type == .inject ? UUID().uuidString : nil)
     }
 
     /// Type into a session. The daemon puts `announce` into the session's

@@ -43,6 +43,15 @@ export interface TurnEvent {
   voice?: string;
   /** Epoch-ms when the hook observed this event, before any async processing. */
   eventAt?: number;
+  /**
+   * The SENDER's own id for this delivery, echoed back with whatever becomes of it.
+   *
+   * `inject-accepted` means the daemon took the words, not that they landed, and the
+   * request that carried them is closed long before the truth is known. A client that
+   * holds the words holds this id too, so a terminal outcome — minutes later, after a
+   * reconnect, after a relaunch — can still be matched to the message it belongs to.
+   */
+  opId?: string;
   /** This working state came from a Stop reclassified for live background work. */
   backgroundWork?: true;
   /** Set when the final reply carried a conch:review marker, and always on `review-published`. */

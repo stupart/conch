@@ -110,21 +110,29 @@ precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false })}) 
 // The draft survives anything short of an explicit submission receipt.
 for text in [${unconfirmed}] {
   let outcome = receipt(text)
-  precondition(!outcome.reachedMac, text)
+  precondition(!outcome.confirmed, text)
   precondition(outcome.remainingDraft("fixture words plus new words", sent: "fixture words") == "fixture words plus new words", text)
 }
+// Accepted is NOT sent. The daemon answers it after twenty seconds with the delivery still
+// running, so the words have to stay exactly where an unsent word lives until something
+// PROVES they landed. Clearing them here is the lie Tyler hit: a message that never arrived,
+// reported as delivered, with the draft already gone.
+precondition(InjectReceipt.accepted.remainingDraft("fixture words plus new words", sent: "fixture words")
+  == "fixture words plus new words")
+precondition(!InjectReceipt.accepted.confirmed)
 precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: true })}) == .delivered)
 precondition(receipt(${receiptJSON({ kind: "inject-accepted" })}) == .accepted)
 let staged = receipt(${receiptJSON({ kind: "inject-done", delivered: false, staged: true })})
-precondition(staged == .staged && !staged.reachedMac)
+precondition(staged == .staged && !staged.confirmed)
 precondition(staged.remainingDraft("fixture words", sent: "fixture words") == "fixture words")
 precondition(InjectReceipt.delivered.remainingDraft("fixture words plus new words", sent: "fixture words") == "plus new words")
 precondition(InjectReceipt.delivered.remainingDraft("edited while waiting", sent: "fixture words") == "edited while waiting")
-precondition(!InjectReceipt.decode(status: 502, body: Data()).reachedMac)
+precondition(!InjectReceipt.decode(status: 502, body: Data()).confirmed)
 print("receipt and draft assertions passed")
 `);
     const compiler = Bun.spawn([
-      "swiftc", join(root, "design/ConchDesign/Sources/ConchDesign/SendFailure.swift"), receipt, harness, "-o", binary,
+      "swiftc", join(root, "design/ConchDesign/Sources/ConchDesign/SendFailure.swift"),
+      join(root, "design/ConchDesign/Sources/ConchDesign/DeliveryOutbox.swift"), receipt, harness, "-o", binary,
     ], { stdout: "pipe", stderr: "pipe" });
     const diagnostics = await new Response(compiler.stderr).text();
     expect(await compiler.exited, diagnostics).toBe(0);

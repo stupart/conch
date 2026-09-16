@@ -195,6 +195,10 @@ struct ConchApp: App {
         // Open and foregrounded: the phone has the voice and the ear. Closed or
         // backgrounded: the Mac takes them straight back. No button to get
         // wrong, and no state to leave stranded on the wrong device.
+        // What became of messages this phone sent, as the Mac learns it. It comes this way
+        // because the request that carried the words was answered and closed long before the
+        // Mac knew — which is precisely how a failed send used to reach nobody at all.
+        created.onDeliveries = { [weak talk] deliveries in talk?.apply(deliveries) }
         created.onConnected = { [weak created] in
             guard let created else { return }
             Task { await created.claimAudio(true) }

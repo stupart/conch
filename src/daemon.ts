@@ -215,6 +215,7 @@ import {
   refreshPublishedConversationState,
   type NumberedPanelSessionRow,
   type PanelModel,
+  type PublishedDelivery,
   type PublishedState,
 } from "./panel.ts";
 import { TheaterNavigation } from "./theater-navigation.ts";
@@ -552,6 +553,10 @@ export function injectTimeoutFor(line: string): number {
   return 4_000;
 }
 
+/** How many recent delivery outcomes stay published, and for how long. */
+const DELIVERY_MEMORY_COUNT = 32;
+const DELIVERY_MEMORY_MS = 10 * 60_000;
+
 export function buildDaemonPublishedState(
   ownerDeviceId: string,
   cfg: Config,
@@ -566,6 +571,8 @@ export function buildDaemonPublishedState(
   sessionContexts?: ReadonlyMap<string, SessionContextUsage>,
   /** C9b Cut B: the holder record and the outbox, published on every complete document. */
   audio?: { control: AudioControl; outbox: AudioOutboxItem[] },
+  /** Recent terminal delivery outcomes, so a client still holding words can resolve them. */
+  deliveries?: readonly PublishedDelivery[],
 ): PublishedState {
   return buildPublishedState(
     ownerDeviceId,
@@ -581,6 +588,7 @@ export function buildDaemonPublishedState(
       prioritizedSessionIds,
       contextForSessionId: (sessionId) => sessionContexts?.get(sessionId),
       ...(audio ? { audio } : {}),
+      ...(deliveries?.length ? { deliveries } : {}),
     },
   );
 }
@@ -1443,6 +1451,30 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     phoneApplication?.publish();
   });
 
+  /**
+   * What recently became of sends that named themselves, published so a client can resolve
+   * one it is still holding — the phone's outbox after a reconnect or a relaunch, and the
+   * Mac's row message for a failure that arrived too late for its own socket.
+   *
+   * ponytail: memory only, bounded by count and age. A daemon restart forgets outcomes still
+   * in flight, and a client left waiting goes on showing that send as unresolved — which is
+   * the honest answer, since nothing survived that could prove otherwise. Persist it here if
+   * restarts ever have to answer for deliveries made before them.
+   */
+  const recentDeliveries: PublishedDelivery[] = [];
+  function rememberDelivery(delivery: PublishedDelivery): void {
+    const cutoff = delivery.at - DELIVERY_MEMORY_MS;
+    const kept = recentDeliveries.filter((seen) => seen.opId !== delivery.opId && seen.at > cutoff);
+    kept.push(delivery);
+    recentDeliveries.splice(0, recentDeliveries.length, ...kept.slice(-DELIVERY_MEMORY_COUNT));
+    // Patched onto the last complete snapshot rather than waiting for a full re-render:
+    // someone is looking at a message that says "Sent" and nothing else is due to move.
+    if (lastPublishedPanelState) {
+      lastPublishedPanelState = { ...lastPublishedPanelState, ts: Date.now(), deliveries: [...recentDeliveries] };
+      publishedStateWriter.request();
+    }
+  }
+
   /** Publish progress against the last reconciled ledger without another registry scan. */
   function publishLiveConversationState(): void {
     if (!lastPublishedPanelState) return;
@@ -1709,6 +1741,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         ),
         sessionContexts,
         { control: audioHolder.record, outbox: audioOutbox.items },
+        recentDeliveries,
       );
       publishedStateWriter.request();
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);
@@ -2376,6 +2409,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       turn: (event) => dispatchSocketTurnEvent(event, socketTurnCallbacks),
       device: deviceCommand,
     },
+    onDelivery: rememberDelivery,
   });
 
   let shutdownStarted = false;

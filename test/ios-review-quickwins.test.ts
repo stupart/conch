@@ -274,7 +274,7 @@ describe("the review screen replies through the composer's own path", () => {
     expect(bar).toContain("get: { talk.draft(for: sessionId) },");
     expect(bar).toContain("set: { talk.setDraft($0, for: sessionId) }");
     expect(bar).toMatch(
-      /talk\.send\(session: sessionId\) \{ text in\s*await bridge\.inject\(sessionId: sessionId, label: label, text: text\)\s*\}/,
+      /talk\.send\(session: sessionId\) \{ text, opId in\s*await bridge\.inject\(sessionId: sessionId, label: label, text: text, opId: opId\)\s*\}/,
     );
     // Sent, Delivered and Not delivered with Retry: the conversation's own bubble.
     expect(bar).toContain("talk.outgoing.last(where: { $0.session == sessionId })");

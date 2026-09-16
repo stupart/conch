@@ -1,3 +1,4 @@
+import ConchDesign
 import AppKit
 import Combine
 import Foundation
@@ -51,6 +52,9 @@ final class StateStore: ObservableObject {
     let history: HistoryStore
     let overlayHistory: HistoryStore
     private var sourceState: PublishedState?
+    /// The newest delivery outcome already accounted for. `nil` until the first snapshot, so
+    /// opening the app never replays a failure from before it was running.
+    private var lastDeliveryAt: TimeInterval?
     private var pollingTask: Task<Void, Never>?
     private var deliveryTask: Task<Bool, Never>?
     private var probeTask: Task<Void, Never>?
@@ -1027,6 +1031,7 @@ final class StateStore: ObservableObject {
         let previousTimestamp = sourceState?.ts
         let timestampAdvanced = previousTimestamp == nil || snapshot.ts > (previousTimestamp ?? 0)
         sourceState = snapshot
+        applyDeliveryOutcomes(snapshot.deliveries)
         reconcilePresentationOverlays(with: snapshot)
         rebuildPresentedState()
         updateNewerDaemonWarning()
@@ -1036,6 +1041,26 @@ final class StateStore: ObservableObject {
             markAlive(at: now, resetsBaseline: false)
         } else {
             refreshLivenessPresentation(at: now)
+        }
+    }
+
+    /// Say why a send didn't land, even when the answer came too late for its own socket.
+    ///
+    /// `whenNotDelivered` only ever fires while the request is open, and the daemon closes it
+    /// after twenty seconds with the delivery still running. A failure after that reached
+    /// nobody: the row went quiet and the message looked sent. The outcome is published
+    /// instead, and this puts the same sentence on the same row it would have said at once.
+    private func applyDeliveryOutcomes(_ deliveries: [PublishedState.DeliveryOutcome]) {
+        let newest = deliveries.map(\.at).max()
+        defer { lastDeliveryAt = max(lastDeliveryAt ?? 0, newest ?? 0) }
+        guard let seen = lastDeliveryAt else { return }
+        for outcome in deliveries where outcome.at > seen {
+            // Staged text is not a failure: it is placed and waiting for a Return.
+            guard !outcome.delivered, outcome.staged != true else { continue }
+            rowMessages[outcome.sessionId] = ConchSendFailure.sentence(
+                reason: outcome.reason,
+                onClipboard: outcome.onClipboard ?? false
+            )
         }
     }
 
@@ -1136,7 +1161,8 @@ final class StateStore: ObservableObject {
             dismissed: sourceState.dismissed,
             dismissedRows: dismissedRows,
             audioControl: sourceState.audioControl,
-            audioOutbox: sourceState.audioOutbox
+            audioOutbox: sourceState.audioOutbox,
+            deliveries: sourceState.deliveries
         )
         if state?.hasSamePresentation(as: next) != true {
             state = next

@@ -53,6 +53,7 @@ async function fixture(overrides: {
   stale?: boolean;
   persistentIdentity?: boolean;
   deliveryWaitMs?: number;
+  onDelivery?: ControlServerOptions["onDelivery"];
 } = {}) {
   // A short /tmp path also fits Darwin's sockaddr_un limit.
   const root = mkdtempSync("/tmp/conch-control-");
@@ -95,6 +96,7 @@ async function fixture(overrides: {
     ownerDeviceId: overrides.persistentIdentity ? await loadDeviceId(root) : "this-mac",
     log: (line) => logs.push(line), sessions, application,
     ...(overrides.deliveryWaitMs === undefined ? {} : { deliveryWaitMs: overrides.deliveryWaitMs }),
+    ...(overrides.onDelivery === undefined ? {} : { onDelivery: overrides.onDelivery }),
   };
   if (overrides.stale) writeFileSync(socketPath, "leftover");
   const server = createControlServer(options);
@@ -498,6 +500,61 @@ describe("control server over a real Unix socket", () => {
     } finally {
       delivery.resolve(true);
     }
+  });
+
+  /**
+   * The defect Tyler hit: `inject-accepted` closed the request and the phone called it
+   * "Sent". A failure twenty-one seconds later had nowhere to go, so a message that never
+   * landed sat on his screen looking delivered. Acceptance is not an outcome — the
+   * TERMINAL one has to reach the client that is still holding the words, even though
+   * the request it arrived on is long closed.
+   */
+  test("a send that fails after the accepted answer still reports its terminal outcome", async () => {
+    const delivery = deferred<boolean | { delivered: false; reason: string }>();
+    const settled: unknown[] = [];
+    const f = await fixture({
+      deliveryWaitMs: 40,
+      application: { turn: () => delivery.promise },
+      onDelivery: (entry) => void settled.push(entry),
+    });
+    const opId = "11111111-2222-3333-4444-555555555555";
+    expect(JSON.parse(await f.request({ ...inject, awaitDelivery: true, opId })))
+      .toEqual({ kind: "inject-accepted", opId });
+    expect(settled).toEqual([]);
+
+    delivery.resolve({ delivered: false, reason: "system-dialog-blocking" });
+    await within(Promise.resolve(delivery.promise));
+    await Bun.sleep(5);
+    expect(settled).toEqual([{
+      opId, sessionId: "local-key", at: expect.any(Number),
+      kind: "inject-done", delivered: false, reason: "system-dialog-blocking",
+    }]);
+  });
+
+  test("a delivery that settles inside the bound reports the same outcome once", async () => {
+    const settled: unknown[] = [];
+    const f = await fixture({
+      application: { turn: () => Promise.resolve(true) },
+      onDelivery: (entry) => void settled.push(entry),
+    });
+    const opId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    expect(JSON.parse(await f.request({ ...inject, awaitDelivery: true, opId })))
+      .toEqual({ kind: "inject-done", delivered: true, opId });
+    await Bun.sleep(5);
+    expect(settled).toEqual([{ opId, sessionId: "local-key", at: expect.any(Number), kind: "inject-done", delivered: true }]);
+  });
+
+  // No operation id, nothing to correlate: hooks and the CLI keep the old wire exactly.
+  test("a send without an operation id publishes no delivery", async () => {
+    const settled: unknown[] = [];
+    const f = await fixture({
+      application: { turn: () => Promise.resolve(true) },
+      onDelivery: (entry) => void settled.push(entry),
+    });
+    expect(JSON.parse(await f.request({ ...inject, awaitDelivery: true })))
+      .toEqual({ kind: "inject-done", delivered: true });
+    await Bun.sleep(5);
+    expect(settled).toEqual([]);
   });
 
   test("the bound sits under the phone bridge's inject forward budget", () => {

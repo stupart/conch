@@ -116,6 +116,7 @@ final class BridgeClient: ObservableObject {
                     TalkController.learnSessionNames(names)
                 }
                 self.state = decoded
+                if !decoded.deliveries.isEmpty { self.onDeliveries?(decoded.deliveries) }
             }
         }
         transport.onConnectionChange = { [weak self] connected, error in
@@ -290,6 +291,12 @@ final class BridgeClient: ObservableObject {
     /// Mac was asleep.
     @Published private(set) var hasEverConnected = false
 
+    /// Told what became of sends this phone is still holding, as the Mac publishes them.
+    ///
+    /// On the state channel rather than through a view: a phone that is not looking at that
+    /// session — or not looking at anything — still has to resolve what it is holding.
+    var onDeliveries: (([PublishedState.Delivery]) -> Void)?
+
     /// Retry now instead of waiting out the backoff — for when you know the
     /// Mac just came back and don't want to stare at a spinner.
     func reconnectNow() {
@@ -301,8 +308,11 @@ final class BridgeClient: ObservableObject {
     typealias InjectOutcome = InjectReceipt
 
     /// Deliver words into a session, and hear whether they landed.
-    func inject(sessionId: String, label: String, text: String) async -> InjectOutcome {
-        let body = try? JSONSerialization.data(withJSONObject: [
+    /// `opId` is this send's own id. The Mac echoes it back with whatever the delivery finally
+    /// becomes — including an outcome reached after this request was answered and closed —
+    /// so the words can be held until something actually proves they landed.
+    func inject(sessionId: String, label: String, text: String, opId: String? = nil) async -> InjectOutcome {
+        var payload: [String: Any] = [
             "type": "inject",
             "sessionId": sessionId,
             "label": label,
@@ -310,7 +320,9 @@ final class BridgeClient: ObservableObject {
             "eventAt": Date().timeIntervalSince1970 * 1000,
             // Keep the draft until the Mac returns an explicit delivery receipt.
             "awaitDelivery": true,
-        ] as [String: Any])
+        ]
+        if let opId { payload["opId"] = opId }
+        let body = try? JSONSerialization.data(withJSONObject: payload)
         let outcome = await deliveryOutcome(body)
         if case let .failed(reason) = outcome {
             lastError = reason
