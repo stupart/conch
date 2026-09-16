@@ -55,7 +55,8 @@ function fixture() {
     async rows(states: Map<string, PanelSessionState> = new Map(), now?: number) {
       const snap = (await registrySnapshot(claudeDir, options))!;
       const live = snap.infos.filter((s) => s.backend !== "codex");
-      const nested = live.flatMap((s) => subagentSessions(s, s.transcriptPath ?? findTranscript(claudeDir, s.sessionId, options)));
+      const nested = (await Promise.all(live.map((s) =>
+        subagentSessions(s, s.transcriptPath ?? findTranscript(claudeDir, s.sessionId, options))))).flat();
       return buildPanelRows({
         sessions: [...live, ...nested],
         sessionStates: states,

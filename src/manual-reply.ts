@@ -1,6 +1,13 @@
 import type { TurnEvent } from "./hook.ts";
 import type { CancellableSpeech } from "./speech-manager.ts";
+import type { WindowIdentity } from "./conversation.ts";
 import { transcriptMark, userRespondedSince } from "./snippet.ts";
+
+/**
+ * Where a turn's replies are counted from. `window` is set for one window of
+ * a shared transcript, so that only its own branch's prompts count (A8).
+ */
+export type ReplyCursor = Pick<TurnEvent, "transcriptPath" | "mark"> & { window?: WindowIdentity };
 
 /** Dedicated control-flow signal: a text reply ends the active read/listen exchange. */
 export class ManualReplyInterrupt extends Error {
@@ -11,12 +18,12 @@ export class ManualReplyInterrupt extends Error {
 }
 
 async function manualReplyNow(
-  event: Pick<TurnEvent, "transcriptPath" | "mark">,
+  event: ReplyCursor,
   enabled: () => boolean,
 ): Promise<boolean> {
   if (!enabled()) return false;
   try {
-    return (await userRespondedSince(event.transcriptPath, event.mark)) && enabled();
+    return (await userRespondedSince(event.transcriptPath, event.mark, event.window)) && enabled();
   } catch {
     return false; // transcript reads fail safe
   }
@@ -24,7 +31,7 @@ async function manualReplyNow(
 
 /** Close the no-playback boundaries between announcement, gaps, and chunks. */
 export async function interruptForManualReply(
-  event: Pick<TurnEvent, "transcriptPath" | "mark">,
+  event: ReplyCursor,
   enabled: () => boolean,
 ): Promise<void> {
   if (await manualReplyNow(event, enabled)) throw new ManualReplyInterrupt();
@@ -37,7 +44,7 @@ export async function interruptForManualReply(
  * speech. Unchanged polls reuse the transcript reader's parsed count.
  */
 export async function watchManualReplyDuringSpeech(
-  event: Pick<TurnEvent, "transcriptPath" | "mark">,
+  event: ReplyCursor,
   playback: CancellableSpeech,
   enabled: () => boolean,
   pollMs = 120,
@@ -98,11 +105,11 @@ export interface ManualReplyListenGuard {
 
 /** Explicit wakes start a fresh transcript baseline; automatic turns keep their hook-time mark. */
 export async function manualReplyListenBaseline(
-  event: Pick<TurnEvent, "type" | "transcriptPath" | "mark">,
-): Promise<Pick<TurnEvent, "transcriptPath" | "mark">> {
+  event: ReplyCursor & Pick<TurnEvent, "type">,
+): Promise<ReplyCursor> {
   return event.type === "wake" && event.transcriptPath
-    ? { transcriptPath: event.transcriptPath, mark: await transcriptMark(event.transcriptPath) }
-    : { transcriptPath: event.transcriptPath, mark: event.mark };
+    ? { transcriptPath: event.transcriptPath, mark: await transcriptMark(event.transcriptPath), window: event.window }
+    : { transcriptPath: event.transcriptPath, mark: event.mark, window: event.window };
 }
 
 /**
@@ -112,7 +119,7 @@ export async function manualReplyListenBaseline(
  * settles. closeBeforeSubmit owns the final serialized check and cutoff.
  */
 export function createManualReplyListenGuard(
-  event: Pick<TurnEvent, "transcriptPath" | "mark">,
+  event: ReplyCursor,
   session: AbortableListen,
   exchangeDone: Promise<void>,
   enabled: () => boolean,
@@ -206,7 +213,7 @@ export function createManualReplyListenGuard(
 }
 
 export function watchManualReplyDuringListen(
-  event: Pick<TurnEvent, "transcriptPath" | "mark">,
+  event: ReplyCursor,
   session: AbortableListen,
   done: Promise<void>,
   enabled: () => boolean,

@@ -3,6 +3,7 @@
 import { open as openFile, realpath, stat, type FileHandle } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, resolve } from "node:path";
+import { selectWindowBranch, type WindowIdentity } from "./conversation.ts";
 
 const BARE_URL = /(?:<)?\bhttps?:\/\/[^\s<>"'`]+(?:>)?/gi;
 const FILESYSTEM_PATH = /(^|[\s([{'":=])((?:(?:~?|\.\.?)\/|[A-Za-z0-9_.-]+\/)[^\s)\]}>,"'`]+)/g;
@@ -843,9 +844,72 @@ export async function transcriptMark(transcriptPath: string): Promise<number> {
 export async function userRespondedSince(
   transcriptPath: string | undefined,
   mark: number | undefined,
+  window?: WindowIdentity,
 ): Promise<boolean> {
+  // Unknown is not a reply: another window's prompt must not cancel this one.
+  return (await promptSince(transcriptPath, mark, window)) === true;
+}
+
+/**
+ * Did a prompt land in this conversation since `mark`?
+ *
+ * `mark` counts the whole file. That is exact for a lone session, but two
+ * windows of one id write one transcript (A8), so the other window's prompt
+ * moves the count too. Pass `window` for a window key and the new prompts are
+ * attributed to branches. The answer is "unknown" when nothing exact says
+ * whose they are.
+ */
+export async function promptSince(
+  transcriptPath: string | undefined,
+  mark: number | undefined,
+  window?: WindowIdentity,
+): Promise<boolean | "unknown"> {
   if (!transcriptPath || mark == null) return false;
-  return (await readerForPath(transcriptPath).countUserPrompts(transcriptPath)) > mark;
+  const count = await readerForPath(transcriptPath).countUserPrompts(transcriptPath);
+  if (count <= mark) return false;
+  if (!window || isCodexTranscriptPath(transcriptPath)) return true;
+  return windowPromptSince(transcriptPath, count - mark, window);
+}
+
+const ATTRIBUTION_TAIL_BYTES = 512 * 1024;
+const MAX_ATTRIBUTION_TAIL_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Whether any of the file's last `fresh` prompts is on this window's branch.
+ *
+ * Only the bridge-session signal decides. The `startedAt` fallback picks the
+ * one leaf newer than the window, and when only the other window is typing,
+ * that leaf is the other window's prompt.
+ */
+async function windowPromptSince(
+  transcriptPath: string,
+  fresh: number,
+  window: WindowIdentity,
+): Promise<boolean | "unknown"> {
+  const file = Bun.file(transcriptPath);
+  for (let tailBytes = ATTRIBUTION_TAIL_BYTES; ; tailBytes *= 2) {
+    const start = Math.max(0, file.size - tailBytes);
+    let lines = (await file.slice(start).text()).split("\n");
+    if (start > 0) lines = lines.slice(1);
+    const prompts = lines.filter((line) => {
+      try {
+        const entry = JSON.parse(line);
+        return entry?.type === "user" && isRealUserPrompt(entry);
+      } catch {
+        return false;
+      }
+    }).slice(-fresh);
+    if (prompts.length < fresh && start > 0 && tailBytes < MAX_ATTRIBUTION_TAIL_BYTES) continue;
+    const branch = selectWindowBranch(lines, { bridgeSessionId: window.bridgeSessionId });
+    if (branch.shared) return "unknown";
+    const mine = new Set(branch.lines);
+    // A record with no uuid is on no chain, so the branch filter passes it
+    // through. That says nothing about whose prompt it was.
+    if (prompts.some((line) => mine.has(line) && typeof JSON.parse(line).uuid === "string")) return true;
+    return prompts.length < fresh || prompts.some((line) => typeof JSON.parse(line).uuid !== "string")
+      ? "unknown"
+      : false;
+  }
 }
 
 /**

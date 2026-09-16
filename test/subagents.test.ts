@@ -129,13 +129,13 @@ describe("what the sidechain and the parent transcript say about subagents", () 
     expect(sessionHasLiveBackgroundWork(f.transcript)).toBe(true);
   });
 
-  test("a live agent becomes a row nested under its parent, and only a Claude session can have one", () => {
+  test("a live agent becomes a row nested under its parent, and only a Claude session can have one", async () => {
     const f = fixture();
     sidechain(f, "aaa1", { description: "Fix the flaky test" });
     writeParent(f, ...launch("aaa1", "Fix the flaky test"));
     const parent: SessionInfo = { sessionId: SESSION, name: "conch", cwd: "/work", backend: "claude", pid: 42 };
 
-    const nested = subagentSessions(parent, f.transcript);
+    const nested = await subagentSessions(parent, f.transcript);
     expect(nested).toHaveLength(1);
     expect(nested[0]).toMatchObject({
       sessionId: subagentRowId("aaa1"),
@@ -149,9 +149,9 @@ describe("what the sidechain and the parent transcript say about subagents", () 
     // No pid: nothing can be injected into, revealed or closed.
     expect(nested[0]!.pid).toBeUndefined();
 
-    expect(subagentSessions({ ...parent, backend: "codex" }, f.transcript)).toEqual([]);
-    expect(subagentSessions(nested[0]!, f.transcript)).toEqual([]);
-    expect(subagentSessions(parent, undefined)).toEqual([]);
+    expect(await subagentSessions({ ...parent, backend: "codex" }, f.transcript)).toEqual([]);
+    expect(await subagentSessions(nested[0]!, f.transcript)).toEqual([]);
+    expect(await subagentSessions(parent, undefined)).toEqual([]);
   });
 });
 

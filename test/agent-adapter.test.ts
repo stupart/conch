@@ -137,7 +137,7 @@ describe("a third backend is one row", () => {
       expect(transcriptFormatFor("/fable/f-1.fable.jsonl")).toBe("claude");
       expect(findTranscript("/nonexistent/claude", "f-1", { configDir: "/nonexistent/conch" }))
         .toBe("/fable/f-1.fable.jsonl");
-      expect(subagentSessions({ sessionId: "f-1", backend }, "/fable/f-1.fable.jsonl")).toEqual([]);
+      expect(await subagentSessions({ sessionId: "f-1", backend }, "/fable/f-1.fable.jsonl")).toEqual([]);
       expect(shouldReportMissingCodexPid({ sessionId: "f-1", backend }, new Set())).toBe(true);
 
       // The resume picker lists the row's history beside the others'.

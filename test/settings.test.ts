@@ -58,6 +58,9 @@ const expected = {
   "phone": ["phoneEnabled", "CONCH_PHONE", "live", false],
   "phone-port": ["phonePort", "CONCH_PHONE_PORT", "live", 8674],
   "phone-relay-url": ["phoneRelayURL", "CONCH_PHONE_RELAY_URL", "live", ""],
+  // Ships AUTO: the plaintext LAN bridge closes itself once an encrypted relay
+  // is configured (review finding 20). `on` is the old always-listen.
+  "phone-lan": ["phoneLan", "CONCH_PHONE_LAN", "live", "auto"],
   "read-full": ["readFull", "CONCH_READ_FULL", "live", true],
   "interrupt-on-manual-reply": ["interruptOnManualReply", "CONCH_INTERRUPT_ON_MANUAL_REPLY", "live", true],
   "handoff-order": ["handoffOrder", "CONCH_HANDOFF_ORDER", "live", "oldest"],
@@ -78,10 +81,10 @@ const expected = {
 } as const;
 
 describe("settings registry", () => {
-  test("contains exactly the 28 curated, default-bearing knobs", () => {
+  test("contains exactly the 29 curated, default-bearing knobs", () => {
     const keys = [...SETTING_REGISTRY.keys()];
     expect(keys.sort()).toEqual(Object.keys(expected).sort());
-    expect(SETTING_DESCRIPTORS).toHaveLength(28);
+    expect(SETTING_DESCRIPTORS).toHaveLength(29);
     for (const [key, [field, env, apply, defaultValue]] of Object.entries(expected)) {
       const descriptor = SETTING_REGISTRY.get(key);
       expect(descriptor).toMatchObject({ field, env, apply, default: defaultValue });
