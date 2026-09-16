@@ -80,6 +80,8 @@ struct ConversationStackView: View {
     /// explicit Submit button sends it. Keying by tool row keeps two questions
     /// in the retained transcript from sharing checkmarks.
     @State private var multiSelections: [String: Set<String>] = [:]
+    /// `.qo:hover` — which option the pointer is on, so an option can be transparent at rest.
+    @State private var hoveredOption: String?
     @State private var scrollRequestGeneration = 0
 
     private static let bottomAnchor = "conversation-bottom"
@@ -599,16 +601,21 @@ struct ConversationStackView: View {
         questionID: String,
         answerable: Bool
     ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             if !asked.header.isEmpty {
+                // `.qh{font:600 12px;color:var(--attention)}` — it was 11 semibold.
                 Text(asked.header)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(ConchTypography.font(size: 12, weight: .semibold))
                     .foregroundStyle(ConchPalette.statusNeeds)
             }
+            // `.qq{font:500 15px/1.45}`. This was set at 13 — SMALLER than the transcript
+            // around it, for the one thing on screen that is blocking a session on you.
             Text(AttributedString.conchMarkdown(asked.question))
-                .font(.system(size: 13))
+                .font(ConchTypography.font(size: 15, weight: .medium))
+                .lineSpacing(15 * 0.45)
                 .foregroundStyle(ConchPalette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, 2)
 
             ForEach(Array(asked.options.enumerated()), id: \.offset) { _, option in
                 let selected = multiSelections[questionID]?.contains(option.label) == true
@@ -714,11 +721,21 @@ struct ConversationStackView: View {
                 .accessibilityHint("Sends all selected options to the session")
             }
         }
-        .padding(12)
+        // `.qb{border-radius:14px;box-shadow:inset 0 0 0 1px var(--hair2);
+        // padding:14px 10px 8px 16px}` — asymmetric, and a NEUTRAL hairline.
+        //
+        // The card was uniform 12 at radius 10, ringed in the attention colour. The colour
+        // said "answer me" a second time, louder than the header that already says it, and
+        // on a settled question it still glowed at 0.18. Live-versus-settled is carried by
+        // the options, which already dim to 0.58 when the question can no longer be answered.
+        .padding(.top, 14)
+        .padding(.trailing, 10)
+        .padding(.bottom, 8)
+        .padding(.leading, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(ConchPalette.statusNeeds.opacity(answerable ? 0.45 : 0.18), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(ConchPalette.hairlineStrong, lineWidth: 1)
         )
     }
 
@@ -727,31 +744,44 @@ struct ConversationStackView: View {
         multiSelect: Bool,
         selected: Bool
     ) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
+        // `.qo{gap:12px;align-items:flex-start;padding:8px 10px;border-radius:9px}`,
+        // `.qo b{font:500 14px/20px}`, `.qo small{font-size:12.5px;color:var(--text2)}`.
+        //
+        // Every option carried a permanent `raised` fill, so three choices read as three
+        // stacked cards inside a card. In the lab an option is a ROW: transparent until the
+        // pointer is on it, filled only when it is the one you picked.
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
             Image(systemName: multiSelect && selected ? "checkmark.square.fill" : (multiSelect ? "square" : "circle"))
                 .font(.system(size: 10.5))
                 .foregroundStyle(selected ? ConchPalette.statusNeeds : ConchPalette.textDim)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(option.label)
-                    .font(.system(size: 12.5, weight: .medium))
+                    .font(ConchTypography.font(size: 14, weight: .medium))
                     .foregroundStyle(ConchPalette.textPrimary)
                 if let description = option.description, !description.isEmpty {
                     Text(description)
-                        .font(.system(size: 11))
+                        .font(ConchTypography.font(size: 12.5))
                         .foregroundStyle(ConchPalette.textDim)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
+        // `--hover` and `--sel`, through the app's own measured tokens rather than the lab's
+        // raw 3.5%/6.5%: RowStateTokenTests records that those fail perceptibility here —
+        // hover once read as MORE selected than selected.
         .background(
-            RoundedRectangle(cornerRadius: 9)
-                .fill(selected ? ConchPalette.statusNeeds.opacity(0.10) : ConchPalette.raised)
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(selected ? ConchPalette.selection : (hoveredOption == option.label ? ConchPalette.hover : .clear))
         )
         .contentShape(Rectangle())
+        .onHover { inside in
+            if inside { hoveredOption = option.label }
+            else if hoveredOption == option.label { hoveredOption = nil }
+        }
     }
 
     private func toggleSelection(_ label: String, for questionID: String) {
