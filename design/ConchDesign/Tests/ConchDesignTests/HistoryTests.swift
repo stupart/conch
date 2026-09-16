@@ -120,6 +120,41 @@ final class HistoryTests: XCTestCase {
         XCTAssertEqual(merged.first?.revision, 4, "the store's newer revision of an item wins over the older page's")
     }
 
+    // MARK: - Whether there is anything above the live window at all
+
+    func testASessionWithAnEmptyLiveWindowStillHasItsRecordToShow() {
+        // The phone gates the conversation stack on this, and recorded history is drawn
+        // inside that stack — so a reader holding a transcript, or reading one, or
+        // failing to, has to say so. Answering "nothing" here is a session that draws
+        // as a blank screen with no explanation on it.
+        var paging = HistoryPaging()
+        paging.select(session: "a")
+        XCTAssertTrue(paging.hasAnythingToShow, "nothing has been read yet: the record may hold the whole session")
+
+        paging.beginLoad()
+        XCTAssertTrue(paging.hasAnythingToShow, "\"Loading earlier messages…\" is an answer")
+
+        paging.apply(page: page(["1", "2"], previousCursor: nil), generation: paging.generation)
+        XCTAssertTrue(paging.hasAnythingToShow, "recorded messages, with no live window under them")
+
+        paging.apply(failure: .message("History is busy."), generation: paging.beginLoad(anchor: "1"))
+        XCTAssertTrue(paging.hasAnythingToShow, "a failed read is said out loud, with its retry")
+    }
+
+    func testNothingRecordedAndNothingRecordingLeaveTheScreenAsItWas() {
+        var paging = HistoryPaging()
+        paging.select(session: "a")
+        // The store answered, and this session is not in it.
+        paging.apply(page: page([], previousCursor: nil), generation: paging.beginLoad())
+        XCTAssertFalse(paging.canLoadOlder)
+        XCTAssertFalse(paging.hasAnythingToShow, "an empty stack would replace the screen with less than it said before")
+
+        // And an off record store is the app's existing empty screen, not a new one.
+        paging.apply(failure: .off, generation: paging.beginLoad())
+        XCTAssertEqual(paging.status, .off)
+        XCTAssertFalse(paging.hasAnythingToShow)
+    }
+
     // MARK: - Coverage
 
     func testCoverageSaysHowFarBackTheRecordActuallyGoes() {

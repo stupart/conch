@@ -48,6 +48,24 @@ struct SessionView: View {
         bridge.state?.conversations[sessionId]?.items ?? []
     }
 
+    /// The conversation to draw, or nil when there is no conversation to draw.
+    ///
+    /// The daemon's live window when it publishes one with anything in it, and an
+    /// EMPTY window of this session when it does not but the record holds the session
+    /// anyway. Recorded history is drawn INSIDE the stack below, so gating the stack on
+    /// the live window hid the history too: an older session the daemon no longer
+    /// publishes a window for — which, with 224 recorded transcripts, is most of them —
+    /// drew nothing at all. Not its recorded messages, not "Load earlier messages", not
+    /// even the line saying why.
+    private var liveWindow: Conversation? {
+        let published = bridge.state?.conversations[sessionId]
+        if let published, !published.items.isEmpty { return published }
+        // Nothing recorded, or nothing recording: the screen below is the one that has
+        // always been drawn for a session with no messages, and it stays that way.
+        guard history.paging.hasAnythingToShow else { return nil }
+        return published ?? Conversation(sessionId: sessionId)
+    }
+
     private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
         // After layout, not during it: scrolling to an anchor SwiftUI has not
         // placed yet silently does nothing.
@@ -162,8 +180,7 @@ struct SessionView: View {
                     // phone: their content never arrives as `reply`, because
                     // that carries only the last turn conch spoke, and conch
                     // does not speak for a session it merely observes.
-                    if let conversation = bridge.state?.conversations[sessionId],
-                       !conversation.items.isEmpty {
+                    if let conversation = liveWindow {
                         ConversationStack(
                             bridge: bridge,
                             history: history,

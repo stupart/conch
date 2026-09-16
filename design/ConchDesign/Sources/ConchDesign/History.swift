@@ -184,6 +184,24 @@ public struct HistoryPaging: Equatable, Sendable {
     /// The whole session is on screen: the store has been read back to its first item.
     public var reachedStart: Bool { epoch != nil && previousCursor == nil }
 
+    /// Whether anything belongs above the live window: recorded messages, or the one
+    /// honest sentence about why there are none.
+    ///
+    /// It is the view's gate, and it lives here because getting it wrong is invisible:
+    /// recorded history is drawn INSIDE the conversation stack, so a phone that drew
+    /// the stack only when the daemon's snapshot had items showed a session with an
+    /// empty live window and a full record as nothing at all — no messages, no "Load
+    /// earlier messages", no state line.
+    ///
+    /// `.off` is deliberately not something to show. Nothing is being recorded, so
+    /// there is nothing above the window, and whatever the app already draws for a
+    /// session with no messages says that better than an empty stack would. Neither is
+    /// a record that answered and does not hold this session: same screen, same reason.
+    public var hasAnythingToShow: Bool {
+        guard status != .off else { return false }
+        return !items.isEmpty || status != .idle || canLoadOlder
+    }
+
     /// A different session is a different reader. Nothing in flight for the old one may land here.
     public mutating func select(session: String) {
         guard session != self.session else { return }
