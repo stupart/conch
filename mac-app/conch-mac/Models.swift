@@ -21,10 +21,26 @@ struct PublishedState: Decodable, Equatable, Sendable {
     let audioControl: AudioControl
     /// What a yielded daemon could not say itself. Presentation-irrelevant: forwarded, never drawn.
     let audioOutbox: [AudioOutboxItem]
+    /// What recently became of sends, against the ids they went out with. The only way an
+    /// outcome reached after `inject-accepted` closed the request can still be shown.
+    let deliveries: [DeliveryOutcome]
+
+    struct DeliveryOutcome: Decodable, Equatable, Sendable {
+        let opId: String
+        let sessionId: String
+        /// Epoch-ms the Mac observed this outcome.
+        let at: TimeInterval
+        let delivered: Bool
+        let staged: Bool?
+        /// The daemon's own code for what stopped it, turned into a sentence by ConchSendFailure.
+        let reason: String?
+        let onClipboard: Bool?
+    }
 
     private enum CodingKeys: String, CodingKey {
         case v
         case ownerDeviceId
+        case deliveries
         case ts
         case mode
         case live
@@ -53,7 +69,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
         dismissed: [String],
         dismissedRows: [DismissedSessionRow],
         audioControl: AudioControl = AudioControl(),
-        audioOutbox: [AudioOutboxItem] = []
+        audioOutbox: [AudioOutboxItem] = [],
+        deliveries: [DeliveryOutcome] = []
     ) {
         self.v = v
         self.ownerDeviceId = ownerDeviceId
@@ -70,6 +87,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         self.dismissedRows = dismissedRows
         self.audioControl = audioControl
         self.audioOutbox = audioOutbox
+        self.deliveries = deliveries
     }
 
     init(from decoder: Decoder) throws {
@@ -107,6 +125,7 @@ struct PublishedState: Decodable, Equatable, Sendable {
         )
         audioControl = (try? container.decodeIfPresent(AudioControl.self, forKey: .audioControl)) ?? AudioControl()
         audioOutbox = Self.decodeLossyArray(AudioOutboxItem.self, from: container, forKey: .audioOutbox)
+        deliveries = Self.decodeLossyArray(DeliveryOutcome.self, from: container, forKey: .deliveries)
     }
 
     private static func decodeLossyArray<Element: Decodable>(

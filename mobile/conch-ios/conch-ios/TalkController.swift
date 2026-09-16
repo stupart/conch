@@ -1,5 +1,9 @@
+import ConchDesign
 import AVFoundation
 import Speech
+
+/// Where the outbox is kept between launches.
+private let conchOutboxKey = "conch.outbox"
 
 /// Thread-safe handoff between AVAudioEngine's render callback and MainActor.
 ///
@@ -165,25 +169,19 @@ final class TalkController: NSObject, ObservableObject {
     /// them, and the conversation shows them as a bubble instead. Tyler: a sent
     /// message "dissapears and then u have to wait a long time for it to show
     /// up", with nothing saying whether it went.
-    struct Outgoing: Identifiable, Equatable {
-        enum State: Equatable {
-            case sending, delivered, accepted, staged
-            case failed(String)
+    /// The shared type, so the phone and the Mac cannot disagree about what "sent" means.
+    typealias Outgoing = ConchOutboxEntry
 
-            var isConfirmed: Bool { self == .delivered || self == .accepted }
-        }
-
-        let id = UUID()
-        let session: String
-        let text: String
-        var state: State
-        let sentAt = Date()
-        /// The session's user messages when this was sent, so the transcript's
-        /// copy is told apart from an older line with the same words.
-        let earlierUserItems: Set<String>
+    /// Sends this phone has not accounted for yet — kept across launches.
+    ///
+    /// An outcome can arrive long after the request that carried the words was answered and
+    /// closed: twenty seconds later, after a reconnect, or after the app was killed and
+    /// reopened. The outbox is what is still here to receive it. Nothing in it retries by
+    /// itself; an unresolved send stays visible and says so.
+    @Published private(set) var outbox = ConchOutbox.decode(UserDefaults.standard.data(forKey: conchOutboxKey)) {
+        didSet { UserDefaults.standard.set(outbox.encoded(), forKey: conchOutboxKey) }
     }
-
-    @Published private(set) var outgoing: [Outgoing] = []
+    var outgoing: [Outgoing] { outbox.entries }
     /// Each session's user messages at the last look (`reconcile`).
     private var seenUserItems: [String: Set<String>] = [:]
     /// Unsent words for every OTHER session.
@@ -216,7 +214,7 @@ final class TalkController: NSObject, ObservableObject {
 
     /// The words of `session`'s unconfirmed send, when `stored` still starts with them.
     private func unconfirmed(_ session: String, in stored: String) -> String? {
-        guard let text = outgoing.last(where: { $0.session == session && !$0.state.isConfirmed })?.text,
+        guard let text = outbox.unsettled(for: session)?.text,
               stored.drop(while: \.isWhitespace).hasPrefix(text) else { return nil }
         return text
     }
@@ -249,7 +247,7 @@ final class TalkController: NSObject, ObservableObject {
     /// Clearing follows the same rule either way: only what was ACKNOWLEDGED is
     /// removed, and only the exact prefix that was sent, so anything typed or
     /// heard during the round trip survives.
-    func send(session: String, deliver: @escaping (String) async -> BridgeClient.InjectOutcome) {
+    func send(session: String, deliver: @escaping (String, String) async -> BridgeClient.InjectOutcome) {
         if phase == .sending { return }
         if phase == .listening, session == targetSessionId {
             finish(deliver: deliver)
@@ -262,9 +260,9 @@ final class TalkController: NSObject, ObservableObject {
         let message = beginOutgoing(text, session: session)
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let delivered = await deliver(text)
+            let delivered = await deliver(text, message)
             self.settleOutgoing(message, delivered)
-            if delivered.reachedMac {
+            if delivered.confirmed {
                 self.committed = delivered.remainingDraft(self.committed, sent: text)
             }
             self.phase = .idle
@@ -295,25 +293,32 @@ final class TalkController: NSObject, ObservableObject {
 
     /// One unconfirmed message per session: its words head this draft, so a
     /// new send carries them again.
-    private func beginOutgoing(_ text: String, session: String) -> UUID {
-        outgoing.removeAll { $0.session == session && !$0.state.isConfirmed }
-        let message = Outgoing(
+    private func beginOutgoing(_ text: String, session: String) -> String {
+        outbox.begin(Outgoing(
             session: session,
             text: text,
-            state: .sending,
             earlierUserItems: seenUserItems[session] ?? []
-        )
-        outgoing.append(message)
-        return message.id
+        )).id
     }
 
-    private func settleOutgoing(_ id: UUID, _ outcome: BridgeClient.InjectOutcome) {
-        guard let index = outgoing.firstIndex(where: { $0.id == id }) else { return }
-        switch outcome {
-        case .delivered: outgoing[index].state = .delivered
-        case .accepted: outgoing[index].state = .accepted
-        case .staged: outgoing[index].state = .staged
-        case let .failed(reason): outgoing[index].state = .failed(reason)
+    /// Accepted settles to `.sent`, which is where the message already was: the Mac has the
+    /// words and is still working, so it goes on waiting for the answer that follows.
+    private func settleOutgoing(_ id: String, _ outcome: BridgeClient.InjectOutcome) {
+        outbox.settle(id, outcome.deliveryState)
+    }
+
+    /// Outcomes the Mac published for sends this phone is still holding.
+    ///
+    /// This is the path that did not exist: the request carrying the words is answered and
+    /// closed after twenty seconds, and the truth turns up afterwards. It arrives on the
+    /// state channel instead, matched by the id that went out with the send.
+    func apply(_ deliveries: [PublishedState.Delivery]) {
+        for delivery in deliveries where !delivery.opId.isEmpty {
+            guard let entry = outbox.entries.first(where: { $0.id == delivery.opId }),
+                  !entry.state.isTerminal else { continue }
+            outbox.settle(delivery.opId, delivery.receipt.deliveryState)
+            // Proven at last, so now — and only now — the words may leave the draft.
+            if delivery.receipt.confirmed { dropFromDraft(entry) }
         }
     }
 
@@ -327,24 +332,26 @@ final class TalkController: NSObject, ObservableObject {
     func reconcile(session: String, items: [ConversationItem]) {
         let users = items.filter { $0.kind == "user" }
         seenUserItems[session] = Set(users.map(\.id))
-        for message in outgoing where message.session == session && message.state != .sending {
+        for message in outbox.entries(for: session) {
             guard users.contains(where: {
                 !message.earlierUserItems.contains($0.id) && Self.sameMessage($0.text, message.text)
             }) else { continue }
-            if !message.state.isConfirmed { dropFromDraft(message) }
-            outgoing.removeAll { $0.id == message.id }
+            // Your words in the transcript are the strongest evidence there is — stronger
+            // than a receipt that said it failed, and enough on their own to let them go.
+            if !message.state.clearsDraft { dropFromDraft(message) }
+            outbox.remove(message.id)
         }
         // ponytail: a confirmed bubble the transcript never shows (no published
         // conversation, or words the agent rewrote) goes after ten minutes; match
         // on something sturdier than the text if that proves common.
-        outgoing.removeAll { $0.state.isConfirmed && $0.sentAt.timeIntervalSinceNow < -600 }
+        outbox.prune(confirmedBefore: Date().addingTimeInterval(-600))
     }
 
     /// Throw away a message that did not arrive, on purpose.
-    func discardOutgoing(_ id: UUID) {
+    func discardOutgoing(_ id: String) {
         guard let message = outgoing.first(where: { $0.id == id }) else { return }
-        if !message.state.isConfirmed { dropFromDraft(message) }
-        outgoing.removeAll { $0.id == id }
+        if !message.state.clearsDraft { dropFromDraft(message) }
+        outbox.remove(id)
     }
 
     private func dropFromDraft(_ message: Outgoing) {
@@ -378,7 +385,9 @@ final class TalkController: NSObject, ObservableObject {
     /// explicit is the whole distinction — the bug was words vanishing
     /// without anyone asking.
     func discard(session: String) {
-        outgoing.removeAll { $0.session == session && !$0.state.isConfirmed }
+        for message in outbox.entries(for: session) where !message.state.clearsDraft {
+            outbox.remove(message.id)
+        }
         if session == targetSessionId {
             if phase == .listening || starting { cancel() }
             partial = ""
@@ -468,7 +477,7 @@ final class TalkController: NSObject, ObservableObject {
     private var finalizationContinuation: CheckedContinuation<Void, Never>?
     private var finalizationTimeout: Task<Void, Never>?
 
-    func toggle(session: String, deliver: @escaping (String) async -> BridgeClient.InjectOutcome) {
+    func toggle(session: String, deliver: @escaping (String, String) async -> BridgeClient.InjectOutcome) {
         if phase == .sending { return }
         // Send ONLY into the session the words were spoken to. `deliver` comes
         // from whichever screen is on top, so a tap here while another session
@@ -797,7 +806,7 @@ final class TalkController: NSObject, ObservableObject {
         startRecognition(on: recognizer, request: next, generation: generation)
     }
 
-    private func finish(deliver: @escaping (String) async -> BridgeClient.InjectOutcome) {
+    private func finish(deliver: @escaping (String, String) async -> BridgeClient.InjectOutcome) {
         guard phase == .listening else { return }
         phase = .sending
         Task { @MainActor [weak self] in
@@ -854,11 +863,11 @@ final class TalkController: NSObject, ObservableObject {
                 self.failure = "Recognition cut out at the end — sending what it caught."
             }
             let message = self.beginOutgoing(text, session: self.targetSessionId ?? "")
-            let delivered = await deliver(text)
+            let delivered = await deliver(text, message)
             self.settleOutgoing(message, delivered)
             // Keep failed text intact; a subsequent Talk starts only after the
             // user has had a chance to copy/retry it from the visible bubble.
-            if delivered.reachedMac {
+            if delivered.confirmed {
                 // Clear exactly what was acknowledged, never the whole buffer.
                 // Assigning empty after an await deletes anything that arrived
                 // during it — words that were never sent to anyone.
@@ -973,7 +982,7 @@ final class TalkController: NSObject, ObservableObject {
     /// For the snapshot script, with no microphone and no Mac (needs
     /// `-conchFixtureSession`): `-conchFixtureHearing <words>` with
     /// `-conchFixtureTyped <words>` is the composer mid-dictation, and
-    /// `-conchFixtureOutgoing sending|failed|delivered` a message in that state.
+    /// `-conchFixtureOutgoing sent|failed|delivered` a message in that state.
     func showFixture() {
         let defaults = UserDefaults.standard
         guard let session = defaults.string(forKey: "conchFixtureSession") else { return }
@@ -985,13 +994,15 @@ final class TalkController: NSObject, ObservableObject {
         }
         guard let state = defaults.string(forKey: "conchFixtureOutgoing") else { return }
         let text = "Ship it once the tests pass, and update the changelog."
-        let fixtureState: Outgoing.State = switch state {
-        case "sending": .sending
-        case "failed": .failed("Not delivered — the request timed out.")
-        default: .delivered
+        let fixtureState: ConchDeliveryState = switch state {
+        case "sending", "sent": .sent
+        case "failed": .failed(ConchSendFailure.sentence(reason: "system-dialog-blocking"))
+        default: .confirmed
         }
-        if !fixtureState.isConfirmed { committed = text }
-        outgoing = [Outgoing(session: session, text: text, state: fixtureState, earlierUserItems: [])]
+        // Assigned either way: drafts and the outbox both survive a launch now, so a previous
+        // shot's words would otherwise sit in the next one's composer.
+        committed = fixtureState.clearsDraft ? "" : text
+        outbox = ConchOutbox(entries: [Outgoing(session: session, text: text, state: fixtureState, earlierUserItems: [])])
     }
     #endif
 

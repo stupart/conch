@@ -39,6 +39,7 @@ const bridge = ios("BridgeClient.swift");
 const relay = ios("RelayTransport.swift");
 const lan = ios("DirectHTTPTransport.swift");
 const talk = ios("TalkController.swift");
+const receipt = ios("InjectReceipt.swift");
 const session = ios("SessionView.swift");
 const ledger = ios("LedgerView.swift");
 const settings = ios("SettingsView.swift");
@@ -137,8 +138,8 @@ describe("a message shows what became of it", () => {
   });
 
   test("the phone requests delivery and delegates to the behavior-tested receipt parser", () => {
-    const inject = between(bridge, "func inject(sessionId: String, label: String, text: String) async -> InjectOutcome {", "\n    }\n");
-    inOrder(inject, ['"type": "inject",', '"awaitDelivery": true,', "await deliveryOutcome(body)"]);
+    const inject = between(bridge, "func inject(sessionId: String, label: String, text: String, opId: String? = nil) async -> InjectOutcome {", "\n    }\n");
+    inOrder(inject, ['"type": "inject",', '"awaitDelivery": true,', 'payload["opId"] = opId', "await deliveryOutcome(body)"]);
     const outcome = between(bridge, "private func deliveryOutcome(", "\n    }\n");
     expect(outcome).toContain("InjectOutcome.decode(status: response.status, body: response.body)");
     expect(outcome).not.toContain("return .accepted");
@@ -151,32 +152,58 @@ describe("a message shows what became of it", () => {
     ] as const) {
       inOrder(between(talk, start, end), [
         "beginOutgoing(text, session:",
-        "let delivered = await deliver(text)",
+        // The send carries its own id out, so the outcome can find it on the way back.
+        "let delivered = await deliver(text, message)",
         "settleOutgoing(message, delivered)",
-        "if delivered.reachedMac {",
+        // Only PROOF clears the draft. Acceptance is not proof and never was.
+        "if delivered.confirmed {",
       ]);
     }
   });
 
   test("a message's words stay in the persisted draft until confirmed; the field only stops showing them", () => {
     const begin = between(talk, "private func beginOutgoing(", "\n    }\n");
-    expect(begin).toContain("outgoing.append(message)");
+    expect(begin).toContain("outbox.begin(");
     expect(begin).not.toContain("committed");
     expect(begin).not.toContain("parked");
     const draft = between(talk, "func draft(for session: String) -> String {", "\n    }\n");
     expect(draft).toContain("unconfirmed(session, in: stored)");
     const unconfirmed = between(talk, "private func unconfirmed(", "\n    }\n");
-    expect(unconfirmed).toContain("!$0.state.isConfirmed");
-    expect(talk).toContain("var isConfirmed: Bool { self == .delivered || self == .accepted }");
+    expect(unconfirmed).toContain("outbox.unsettled(for: session)");
+    // The rule that broke: accepted counted as confirmed, so the words were cleared for a
+    // delivery still running. Only a delivered receipt lets them go now.
+    expect(receipt).toContain("var confirmed: Bool { self == .delivered }");
+    expect(receipt).not.toContain("self == .delivered || self == .accepted");
+  });
+
+  /**
+   * The outcome outlives the request. `inject-accepted` is answered twenty seconds in and the
+   * socket closes; whatever the send becomes is published against its id, and the phone — which
+   * may have reconnected, or been killed and reopened since — matches it there.
+   */
+  test("a send that settles after its request closed is resolved from the published state", () => {
+    const apply = between(talk, "func apply(_ deliveries: [PublishedState.Delivery]) {", "\n    }\n");
+    inOrder(apply, [
+      "outbox.entries.first(where: { $0.id == delivery.opId })",
+      "!entry.state.isTerminal",
+      "outbox.settle(delivery.opId, delivery.receipt.deliveryState)",
+      "if delivery.receipt.confirmed { dropFromDraft(entry) }",
+    ]);
+    // It arrives on the state channel, not through a view: a phone that is not looking at
+    // that session still has to resolve what it is holding.
+    expect(bridge).toContain("if !decoded.deliveries.isEmpty { self.onDeliveries?(decoded.deliveries) }");
+    expect(app).toContain("created.onDeliveries = { [weak talk] deliveries in talk?.apply(deliveries) }");
+    // And it survives the app dying mid-flight.
+    expect(talk).toContain("ConchOutbox.decode(UserDefaults.standard.data(forKey: conchOutboxKey))");
+    expect(talk).toContain("didSet { UserDefaults.standard.set(outbox.encoded(), forKey: conchOutboxKey) }");
   });
 
   test("the transcript's own copy replaces the bubble instead of duplicating it", () => {
     const reconcile = between(talk, "func reconcile(session: String, items: [ConversationItem]) {", "\n    }\n");
     inOrder(reconcile, [
       "seenUserItems[session] = Set(users.map(\\.id))",
-      "message.state != .sending",
       "!message.earlierUserItems.contains($0.id) && Self.sameMessage($0.text, message.text)",
-      "outgoing.removeAll { $0.id == message.id }",
+      "outbox.remove(message.id)",
     ]);
     const begin = between(talk, "private func beginOutgoing(", "\n    }\n");
     expect(begin).toContain("earlierUserItems: seenUserItems[session] ?? []");
@@ -193,14 +220,18 @@ describe("a message shows what became of it", () => {
       "onDiscard: { talk.discardOutgoing(message.id) }",
     ]);
     const bubble = between(session, "private struct YourTurnBubble: View {", "\nprivate struct ReviewCard");
-    for (const marker of ['Text("Sending…")', 'Label("Delivered", systemImage: "checkmark")', 'Text("Sent")',
+    // Sent the moment you send it, a quiet mark once it is proven, and the reason if it
+    // never arrived. "Sent" is deliberately the same word in both of the first two: Tyler
+    // asked for "a confirmed icon but still show as sent", so nothing jumps when it lands.
+    for (const marker of ['case .sent:', 'Text("Sent")', 'case .confirmed:',
+      'Label("Sent", systemImage: "checkmark")',
       // The whole sentence comes from the receipt (ConchSendFailure), including the
       // "Not delivered" it opens with, so an unnamed cause is not dressed up as one.
       'Text(reason)', 'Button("Retry", action: onRetry)']) {
       expect(bubble).toContain(marker);
     }
     // Retry is the ordinary send: an unconfirmed message's words head the draft.
-    expect(between(session, "private func sendWords() {", "\n    }\n")).toContain("talk.send(session: sessionId) { text in");
+    expect(between(session, "private func sendWords() {", "\n    }\n")).toContain("talk.send(session: sessionId) { text, opId in");
   });
 });
 

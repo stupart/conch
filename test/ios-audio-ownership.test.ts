@@ -72,7 +72,7 @@ describe("only one side of the phone owns the audio route", () => {
     const talk = app("TalkController.swift");
     const clears = [...talk.matchAll(/^\s*(?:self\.)?committed = ""$/gm)]
       .map((m) => m.index ?? 0);
-    const send = talk.lastIndexOf("let delivered = await deliver(text)");
+    const send = talk.lastIndexOf("let delivered = await deliver(text, message)");
     const discard = talk.indexOf("func discard(session: String)");
     expect(send).toBeGreaterThan(-1);
     expect(discard).toBeGreaterThan(-1);
@@ -171,7 +171,7 @@ describe("only one side of the phone owns the audio route", () => {
     // generation guard below belongs to the one that tears down a capture.
     const finish = talk.indexOf("private func finish(deliver:");
     expect(finish).toBeGreaterThan(-1);
-    const send = talk.indexOf("let delivered = await deliver(text)", finish);
+    const send = talk.indexOf("let delivered = await deliver(text, message)", finish);
     const after = talk.slice(send);
     expect(after).toContain("delivered.remainingDraft(self.committed, sent: text)");
     // Belt and braces: the capture's callbacks go inert before that await.
@@ -202,7 +202,7 @@ describe("only one side of the phone owns the audio route", () => {
     const talk = app("TalkController.swift");
     expect(talk).not.toMatch(/guard self\.finalizationSucceeded else \{[\s\S]*?return\n            \}/);
     const guardEmpty = talk.indexOf("guard !text.isEmpty else {");
-    const deliver = talk.indexOf("let delivered = await deliver(text)");
+    const deliver = talk.indexOf("let delivered = await deliver(text, message)");
     expect(guardEmpty).toBeGreaterThan(-1);
     expect(deliver).toBeGreaterThan(guardEmpty);
   });

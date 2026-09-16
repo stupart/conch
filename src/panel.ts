@@ -272,6 +272,30 @@ export interface PublishedSessionRow {
   review?: { summary: string; link?: string; scene?: ReviewScene; at?: number };
 }
 
+/**
+ * What became of one send, against the id its sender gave it.
+ *
+ * `inject-accepted` closes the request with the delivery still running, so the answer that
+ * matters is usually known only after nothing is listening. Publishing it here is how a
+ * terminal outcome reaches a client that has already hung up, reconnected, or been
+ * relaunched: it reads the snapshot it gets anyway and matches on `opId`.
+ *
+ * The fields after `at` are exactly the socket answer's (`injectDeliveryReceipt`), so the
+ * late outcome and the immediate one cannot describe the same send differently.
+ */
+export interface PublishedDelivery {
+  opId: string;
+  sessionId: string;
+  /** Epoch-ms the outcome was observed. */
+  at: number;
+  kind: "inject-done";
+  delivered: boolean;
+  staged?: true;
+  reason?: string;
+  onClipboard?: true;
+  error?: string;
+}
+
 export interface PublishedState {
   v: 1;
   /** Stable identity of the daemon installation that owns every local session key. */
@@ -297,6 +321,8 @@ export interface PublishedState {
   preview?: PanelReplyModel & { truncated?: boolean };
   /** The showing session's conversation, windowed and capped for the wire. */
   conversation?: PublishedConversation;
+  /** Recent terminal delivery outcomes, so an accepted send can still be resolved. */
+  deliveries?: PublishedDelivery[];
   /**
    * Every visible session's conversation, keyed by id.
    *
@@ -442,6 +468,8 @@ export function buildPublishedState(
     prioritizedSessionIds?: ReadonlySet<string>;
     contextForSessionId?(sessionId: string): SessionContextUsage | undefined;
     audio?: { control: AudioControl; outbox: AudioOutboxItem[] };
+    /** Terminal delivery outcomes recent enough for a client to still be waiting on one. */
+    deliveries?: readonly PublishedDelivery[];
   } = {},
 ): PublishedState {
   return {
@@ -449,6 +477,7 @@ export function buildPublishedState(
     ownerDeviceId,
     ts: now,
     ...(options.audio ? { audioControl: options.audio.control, audioOutbox: options.audio.outbox } : {}),
+    ...(options.deliveries?.length ? { deliveries: [...options.deliveries] } : {}),
     mode: { ...model.mode },
     live: publishedLiveState(model.live),
     ...(model.reply ? { reply: publishedReply(model.reply) } : {}),

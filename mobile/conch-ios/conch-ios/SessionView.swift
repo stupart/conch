@@ -1,3 +1,4 @@
+import ConchDesign
 import SwiftUI
 import PhotosUI
 
@@ -834,7 +835,8 @@ struct SessionView: View {
                 text: label
             )
             optionReplyInFlight = false
-            if !delivered.reachedMac { sendFailed = true }
+            // An option tap has no bubble to correct later, so only a refusal is reported.
+            if case .failed = delivered { sendFailed = true }
         }
     }
 
@@ -938,8 +940,8 @@ struct SessionView: View {
         sendFailed = false
         let label = row?.label ?? ""
         let pending = attachments
-        talk.send(session: sessionId) { text in
-            await deliver(text: text, pending: pending, label: label)
+        talk.send(session: sessionId) { text, opId in
+            await deliver(text: text, opId: opId, pending: pending, label: label)
         }
     }
 
@@ -948,6 +950,7 @@ struct SessionView: View {
     /// half a message is worse than none.
     private func deliver(
         text: String,
+        opId: String? = nil,
         pending: [PendingAttachment],
         label: String
     ) async -> BridgeClient.InjectOutcome {
@@ -963,12 +966,15 @@ struct SessionView: View {
             paths.append(path)
         }
         let body = (paths + [text]).filter { !$0.isEmpty }.joined(separator: "\n")
-        let delivered = await bridge.inject(sessionId: sessionId, label: label, text: body)
-        if delivered.reachedMac {
-            attachments = []
-        } else if text.isEmpty {
+        let delivered = await bridge.inject(sessionId: sessionId, label: label, text: body, opId: opId)
+        // The WORDS follow the strict rule — only proof lets them go — and that is handled by
+        // the outbox. The pictures are already uploaded to the Mac, so only a known failure
+        // keeps them here for the retry that re-sends them.
+        if case .failed = delivered {
             // Words say this on their own bubble; pictures alone have nowhere else.
-            sendFailed = true
+            if text.isEmpty { sendFailed = true }
+        } else {
+            attachments = []
         }
         return delivered
     }
@@ -1032,7 +1038,6 @@ private struct YourTurnBubble: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(Palette.raised, in: RoundedRectangle(cornerRadius: 14))
-                    .opacity(message.state == .sending ? 0.6 : 1)
             }
             status
         }
@@ -1049,18 +1054,20 @@ private struct YourTurnBubble: View {
     @ViewBuilder
     private var status: some View {
         switch message.state {
-        case .sending:
-            Text("Sending…")
-                .font(Type.caption)
-                .foregroundStyle(Palette.textFaint)
-        case .delivered:
-            Label("Delivered", systemImage: "checkmark")
-                .font(Type.caption)
-                .foregroundStyle(Palette.textFaint)
-        case .accepted:
+        // Optimistic, immediate, and honest: it says the action went through, never that
+        // anything has been delivered. A send stays here for as long as the Mac is still
+        // working on it — which can be well past the twenty seconds it takes to answer.
+        case .sent:
             Text("Sent")
                 .font(Type.caption)
                 .foregroundStyle(Palette.textFaint)
+        // The quiet mark: still "Sent", now with proof next to it. Tyler asked for exactly
+        // this — "a confirmed icon but still show as sent", so nothing jumps when it lands.
+        case .confirmed:
+            Label("Sent", systemImage: "checkmark")
+                .font(Type.caption)
+                .foregroundStyle(Palette.textFaint)
+                .accessibilityLabel("Sent, and confirmed by your Mac")
         case .staged:
             Text("Staged — not submitted")
                 .font(Type.caption)
@@ -1190,8 +1197,8 @@ struct ReviewReplyBar: View {
     /// An empty draft is refused by the controller itself.
     private func send() {
         let label = row?.label ?? ""
-        talk.send(session: sessionId) { text in
-            await bridge.inject(sessionId: sessionId, label: label, text: text)
+        talk.send(session: sessionId) { text, opId in
+            await bridge.inject(sessionId: sessionId, label: label, text: text, opId: opId)
         }
     }
 }

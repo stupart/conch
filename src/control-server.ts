@@ -7,7 +7,7 @@ import { lockSocketPath, type SocketOwnership } from "./socket-ownership.ts";
 import type { TurnEvent } from "./hook.ts";
 import type { SendFailure } from "./inject.ts";
 import { checkReviewScene } from "./snippet.ts";
-import type { PublishedState } from "./panel.ts";
+import type { PublishedDelivery, PublishedState } from "./panel.ts";
 import type { SessionInfo } from "./sessions.ts";
 import type { InstantAudioCommand } from "./instant-controls.ts";
 import {
@@ -576,6 +576,12 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
   if (value.awaitDelivery !== undefined && value.awaitDelivery !== true) {
     return { ok: false, err: "awaitDelivery must be true when present" };
   }
+  // Bounded and plain, because this id is echoed into published state, which every client
+  // this Mac serves can read. A send may carry one; hooks and the CLI never do.
+  if (value.opId !== undefined
+    && (typeof value.opId !== "string" || !/^[A-Za-z0-9._-]{1,64}$/.test(value.opId))) {
+    return { ok: false, err: "opId must be 1-64 characters of letters, digits, dot, dash or underscore" };
+  }
 
   return {
     ok: true,
@@ -649,6 +655,35 @@ export type SocketTurnOutcome = boolean | "staged" | SendFailure | void;
  */
 export function isSendFailure(value: unknown): value is SendFailure {
   return typeof value === "object" && value !== null && (value as SendFailure).delivered === false;
+}
+
+/**
+ * The delivery answer, from whatever `voice.handle` returned.
+ *
+ * One mapping, used for the reply on the socket AND for the outcome published later against
+ * the sender's `opId`, so a message can never be described two ways. A failure carries its
+ * cause out to the client, which turns it into a sentence (ConchSendFailure); unnamed stays
+ * unnamed, since an invented cause sends someone to fix the wrong thing.
+ */
+export function injectDeliveryReceipt(outcome: unknown): {
+  kind: "inject-done";
+  delivered: boolean;
+  staged?: true;
+  reason?: string;
+  onClipboard?: true;
+  error?: string;
+} {
+  if (outcome === "staged") return { kind: "inject-done", delivered: false, staged: true };
+  if (typeof outcome === "boolean") return { kind: "inject-done", delivered: outcome };
+  if (isSendFailure(outcome)) {
+    return {
+      kind: "inject-done",
+      delivered: false,
+      ...(outcome.reason ? { reason: outcome.reason } : {}),
+      ...(outcome.onClipboard ? { onClipboard: true as const } : {}),
+    };
+  }
+  return { kind: "inject-done", delivered: false, error: "delivery outcome is unknown" };
 }
 
 export interface SocketTurnEventCallbacks {
@@ -957,6 +992,11 @@ export interface ControlServerOptions {
   application: ControlApplication;
   /** How long an `awaitDelivery` inject is held open. Tests shorten it. */
   deliveryWaitMs?: number;
+  /**
+   * Told what became of a send that carried an `opId`, including one that settles after its
+   * request was answered and closed. The daemon publishes it; nothing retries on its own.
+   */
+  onDelivery?(delivery: PublishedDelivery): void;
   ownership?: SocketOwnership;
 }
 
@@ -1145,22 +1185,31 @@ export function createControlServer(options: ControlServerOptions): ControlServe
                 } finally {
                   clearTimeout(timer);
                 }
-                // A failure carries its cause out to the client, which turns it into a
-                // sentence (ConchSendFailure). Unnamed stays unnamed: the phone then
-                // says only "Not delivered" rather than inventing a reason.
-                response = outcome === stillRunning
-                  ? { kind: "inject-accepted" }
-                  : outcome === "staged"
-                    ? { kind: "inject-done", delivered: false, staged: true }
-                    : typeof outcome === "boolean"
-                      ? { kind: "inject-done", delivered: outcome }
-                      : isSendFailure(outcome)
-                        ? {
-                          kind: "inject-done", delivered: false,
-                          ...(outcome.reason ? { reason: outcome.reason } : {}),
-                          ...(outcome.onClipboard ? { onClipboard: true as const } : {}),
-                        }
-                        : { kind: "inject-done", delivered: false, error: "delivery outcome is unknown" };
+                // `inject-accepted` says the words were TAKEN. It has never meant they
+                // landed, and the request closes here with the delivery still running — so
+                // on 2026-09-16 three sends that failed afterwards had no way to say so, and
+                // the phone showed them as sent. Whatever this settles as is now published
+                // against the sender's own id (daemon.ts), which reaches a client long
+                // after nothing is listening on this socket.
+                const opId = turn.value.opId;
+                const deliverySessionId = turn.value.sessionId;
+                const settle = (settled: unknown): void => {
+                  if (!opId) return;
+                  options.onDelivery?.({
+                    opId,
+                    sessionId: deliverySessionId,
+                    at: Date.now(),
+                    ...injectDeliveryReceipt(settled),
+                  });
+                };
+                if (outcome === stillRunning) {
+                  // Not awaited: the answer goes out now and the truth follows it.
+                  void Promise.resolve(work).then(settle, () => settle(undefined));
+                  response = { kind: "inject-accepted", ...(opId ? { opId } : {}) };
+                } else {
+                  settle(outcome);
+                  response = { ...injectDeliveryReceipt(outcome), ...(opId ? { opId } : {}) };
+                }
               }
             }
           }

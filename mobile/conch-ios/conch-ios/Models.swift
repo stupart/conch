@@ -16,6 +16,28 @@ struct PublishedState: Decodable, Equatable {
     var reply: Reply?
     /// Keyed by session id — the phone looks up whichever session it is showing.
     var conversations: [String: Conversation] = [:]
+    /// What became of recent sends, against the ids their senders gave them. This is how an
+    /// outcome reaches a phone whose request was answered and closed twenty seconds before
+    /// the delivery actually finished.
+    var deliveries: [Delivery] = []
+
+    struct Delivery: Decodable, Equatable {
+        var opId = ""
+        var sessionId = ""
+        var at: Double = 0
+        var receipt: InjectReceipt = .accepted
+
+        private enum CodingKeys: String, CodingKey { case opId, sessionId, at }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            opId = (try? c.decodeIfPresent(String.self, forKey: .opId)) ?? ""
+            sessionId = (try? c.decodeIfPresent(String.self, forKey: .sessionId)) ?? ""
+            at = (try? c.decodeIfPresent(Double.self, forKey: .at)) ?? 0
+            // The same fields the socket answer carries, read by the same rules.
+            receipt = InjectReceipt.decode(try InjectReceipt.Wire(from: decoder))
+        }
+    }
 
     struct Mode: Decodable, Equatable {
         var paused = false
@@ -206,7 +228,7 @@ struct PublishedState: Decodable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case v, ts, mode, live, rows, dismissed, dismissedRows, reply, conversations
-        case ownerDeviceId
+        case ownerDeviceId, deliveries
     }
 
     init() {}
@@ -255,6 +277,19 @@ struct PublishedState: Decodable, Equatable {
         dismissedRows = decodedDismissed
         reply = try? c.decodeIfPresent(Reply.self, forKey: .reply)
         conversations = (try? c.decodeIfPresent([String: Conversation].self, forKey: .conversations)) ?? [:]
+        // Element by element: one malformed outcome must not cost the others, which are the
+        // only thing that can resolve a message someone is still holding.
+        if var deliveriesContainer = try? c.nestedUnkeyedContainer(forKey: .deliveries) {
+            var decoded: [Delivery] = []
+            while !deliveriesContainer.isAtEnd {
+                if let entry = try? deliveriesContainer.decode(Delivery.self) {
+                    decoded.append(entry)
+                    continue
+                }
+                _ = try? deliveriesContainer.decode(AnyIgnored.self)
+            }
+            deliveries = decoded
+        }
     }
 }
 

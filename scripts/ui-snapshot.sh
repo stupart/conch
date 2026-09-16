@@ -12,7 +12,9 @@
 #                                               review.png when that row has a review, and
 #                                               history-*.png: the recorded history above the
 #                                               live window as it loads, lands, covers only
-#                                               part of the session, is off, and fails.
+#                                               part of the session, is off, and fails, and
+#                                               delivery-*.png: a message you sent, as it is
+#                                               sent, confirmed, and not delivered.
 #
 # ios builds a Debug simulator app into build/ios-sim.noindex, boots a SHUT-DOWN
 # iPhone 17-class simulator with `simctl boot` (never the Simulator app), renders
@@ -88,6 +90,12 @@ ios)
     shoot session.png -conchFixtureSession "$session"
     # A session opens at its end; this is the start of the same conversation.
     shoot session-top.png -conchFixtureSession "$session" -conchFixtureTop YES
+    # A message you sent, in each state it can be in: sent (optimistic, the Mac still
+    # working), confirmed (proven, the quiet mark) and not delivered (the reason, with the
+    # words recoverable). Photographed at the end of the conversation, where a send lands.
+    for state in sent confirmed failed; do
+      shoot "delivery-$state.png" -conchFixtureSession "$session" -conchFixtureOutgoing "$state"
+    done
     # Recorded history is drawn above the live window, so every one of its states is
     # photographed at the TOP of the conversation, where the reader would meet it.
     for state in loaded partial loading off error; do

@@ -1348,7 +1348,15 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     beforeInject?: () => boolean | Promise<boolean>,
     failure?: inject.SendFailure,
   ): Promise<boolean | "staged"> {
-    const receipt = createRecordOperation(deps.observeRecords, recordScope(event.sessionId, event.transcriptPath), "delivery", text.length);
+    // The journal's identity for this delivery IS the sender's operation id, when it named
+    // one: the durable receipt (#240) and the outcome the phone acts on then describe one
+    // send, rather than two records nothing can line up afterwards.
+    const receipt = createRecordOperation(
+      deps.observeRecords,
+      { ...recordScope(event.sessionId, event.transcriptPath), ...(event.opId ? { actionId: event.opId } : {}) },
+      "delivery",
+      text.length,
+    );
     receipt.emit("accepted", "delivery-accepted");
     let receiptCode = "delivery-unconfirmed";
     let uncertain = false;
@@ -1525,6 +1533,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           });
           return true;
         }
+        // A prompt DID land and nothing can say whose it is. Re-pressing Return here types
+        // into a session that may already have taken these words — so the keys stop at once
+        // and the uncertainty is reported below, rather than acted on.
+        if (landed === "unknown") break;
         if (attempt < 2) {
           log(`not confirmed yet — re-pressing Return (try ${attempt + 1})`);
           let retry: inject.InjectTextResult;

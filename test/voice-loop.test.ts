@@ -447,7 +447,7 @@ describe("a shared transcript confirms only this window's send (finding 9)", () 
       });
       const result = await h.voice.handle(inject("hello", { sessionId: options.sessionId, transcriptPath: path }));
       const last = events.filter(({ kind }) => kind === "delivery").at(-1);
-      return { result, state: last?.state, code: last?.code, said: h.said };
+      return { result, state: last?.state, code: last?.code, said: h.said, keys: h.keys };
     } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
   }
 
@@ -480,6 +480,18 @@ describe("a shared transcript confirms only this window's send (finding 9)", () 
       });
       expect(outcome.said.some((line) => line.includes("didn't send"))).toBe(false);
     }
+  });
+
+  /**
+   * Rank 7's tail. An unattributable prompt is not a failure to retry: a prompt DID land,
+   * and conch cannot tell whose it is. Pressing Return again types into a session that may
+   * already have taken the words — so the keys stop the moment attribution comes back
+   * unknown, and conch reports the uncertainty instead of acting on it.
+   */
+  test("an unattributable prompt stops the keys at once instead of re-pressing Return", async () => {
+    const outcome = await send({ sessionId: KEY, window: windowA(), bridges: true, lands: "A" });
+    expect(outcome.code).toBe("delivery-unattributed");
+    expect(outcome.keys).toEqual([]);
   });
 
   test("a lone session confirms on any new prompt, as before", async () => {
