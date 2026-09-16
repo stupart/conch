@@ -47,6 +47,19 @@ final class ToolFoldingTests: XCTestCase {
         XCTAssertNil(ToolFolding.runs(for: [item("t1", true, 1_000), item("t2", true)]).first?.seconds)
     }
 
+    func testTheSummaryIsTheLine3SaysItIs() {
+        XCTAssertEqual(ToolRun(itemIDs: ["a", "b", "c"], seconds: 110).summary, "Worked 1m 50s · 3 steps")
+        XCTAssertEqual(ToolRun(itemIDs: ["a", "b"], seconds: 9).summary, "Worked 9s · 2 steps")
+        XCTAssertEqual(ToolRun(itemIDs: ["a", "b"], seconds: 120).summary, "Worked 2m · 2 steps")
+        XCTAssertEqual(ToolRun(itemIDs: ["a", "b"], seconds: 3_720).summary, "Worked 1h 2m · 2 steps")
+    }
+
+    /// No duration, and anything under a second, says only what is certainly true.
+    func testWithoutATimeTheLineIsJustTheCount() {
+        XCTAssertEqual(ToolRun(itemIDs: ["a", "b"], seconds: nil).summary, "2 steps")
+        XCTAssertEqual(ToolRun(itemIDs: ["a", "b"], seconds: 0.4).summary, "2 steps")
+    }
+
     /// Clocks step backwards (a rebuilt transcript, a corrected timestamp); a negative
     /// duration would render as "Worked -3s".
     func testTimeGoingBackwardsYieldsNoDuration() {
