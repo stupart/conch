@@ -540,6 +540,12 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     /// Unknown kinds render as plain text rather than vanishing.
     var kind = "assistant"
     var text = ""
+    /// When the daemon saw this item, in epoch milliseconds.
+    ///
+    /// Only used to join the live window to the recorded one: a Codex snapshot row
+    /// is keyed by a hash of its own text, which no recorded id can equal, so time
+    /// is the only thing the two have in common (`HistorySnapshot.older`).
+    var at: Double?
     var tool: Tool?
     /// Present when this item IS a plan, so the stack renders a checklist.
     var plan: [PlanStep]?
@@ -551,7 +557,7 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     var material: Material?
 
     private enum CodingKeys: String, CodingKey {
-        case id, rev, kind, text, tool, plan, change, question, material
+        case id, rev, kind, text, at, tool, plan, change, question, material
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -559,6 +565,7 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         rev = (try? c.decodeIfPresent(Int.self, forKey: .rev)) ?? 0
         kind = (try? c.decodeIfPresent(String.self, forKey: .kind)) ?? "assistant"
         text = (try? c.decodeIfPresent(String.self, forKey: .text)) ?? ""
+        at = try? c.decodeIfPresent(Double.self, forKey: .at)
         tool = try? c.decodeIfPresent(Tool.self, forKey: .tool)
         plan = try? c.decodeIfPresent([PlanStep].self, forKey: .plan)
         change = try? c.decodeIfPresent(FileChange.self, forKey: .change)

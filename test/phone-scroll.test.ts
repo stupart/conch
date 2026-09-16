@@ -31,8 +31,12 @@ test("a new reply does not yank you out of history", () => {
 });
 
 test("switching sessions re-arms the follow", () => {
-  // A different session is a different conversation: start at its end.
+  // A different session is a different conversation: start at its end, and point
+  // the recorded reader at it too — anything still in flight for the old session
+  // is refused rather than merged into this one's transcript.
   const onSwitch = session.slice(session.indexOf(".onChange(of: sessionId)"));
-  expect(onSwitch.slice(0, 300)).toContain("pinnedToBottom = true");
-  expect(onSwitch.slice(0, 300)).toContain("scrollToBottom(scroller, animated: false)");
+  const block = onSwitch.slice(0, 600);
+  expect(block).toContain("history.follow(session: sessionId, on: bridge)");
+  expect(block).toContain("pinnedToBottom = true");
+  expect(block).toContain("scrollToBottom(scroller, animated: false)");
 });
