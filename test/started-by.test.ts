@@ -253,7 +253,13 @@ describe("the theater, the Mac sidebar and the wire agree", () => {
   test("the sidebar indents a started session under its starter, names the starter, and keeps the agent badge", () => {
     const dashboard = read("mac-app/conch-mac/DashboardView.swift");
     expect(dashboard).toContain(".padding(.leading, row.parentSessionId == nil && row.startedBySessionId == nil ? 0 : 18)");
-    expect(dashboard).toContain("startedByLabel: row.startedBySessionId.flatMap { id in\n                                            state.rows.first(where: { $0.id == id })?.label");
+    // Whitespace-normalised on purpose: this asserts the sidebar LOOKS UP the starter's
+    // CURRENT label, not which column the lookup sits in. The literal it replaces baked in
+    // 44 spaces of indentation and broke the moment the rows moved under a folder header —
+    // a test failing on a change that could not affect what it is testing.
+    expect(dashboard.replace(/\s+/g, " ")).toContain(
+      "startedByLabel: row.startedBySessionId.flatMap { id in state.rows.first(where: { $0.id == id })?.label",
+    );
 
     const row = dashboard.indexOf("private struct DashboardRow: View {");
     expect(row).toBeGreaterThan(-1);
