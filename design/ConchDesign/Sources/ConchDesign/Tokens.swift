@@ -85,6 +85,27 @@ public enum ConchColor {
     /// The selected segment on a fill track. Translucent in dark, so it is always lighter than the track.
     public static let fillSelected = ConchColorToken("fillSelected", .init(0xFFFFFF), .init(0xFFFFFF, alpha: 0.16))
 
+    /// A list row under the cursor, and the row that is selected.
+    ///
+    /// Both step the SAME way — darker in light, lighter in dark — so selection always outranks
+    /// hover instead of the two competing from opposite sides of the ground. The Mac palette
+    /// they replace learned this the hard way: hover once read as more selected than selection.
+    ///
+    /// Measured, not judged. That palette's note puts the floor where a surface step is
+    /// perceptible at all at ~1.2:1, and workspace-v1 §7's proposed 3.5% / 6.5% lands at 1.08
+    /// and 1.15 in light — a selected row fainter than the dark one it replaces (1.56).
+    public static let rowHover = ConchColorToken("rowHover", .init(0x000000, alpha: 0.07), .init(0xFFFFFF, alpha: 0.08))
+    public static let rowSelected = ConchColorToken("rowSelected", .init(0x000000, alpha: 0.12), .init(0xFFFFFF, alpha: 0.16))
+
+    /// What needs YOU: a question waiting on you, daemon trouble, a destructive action. Tokens
+    /// had no session-state colour at all, and the Mac app carried its own.
+    ///
+    /// §7 proposed #E5533D and flagged it as a guess. It measures 3.30 on the light ground —
+    /// under AA, for a colour that carries text — so the light value is darkened until it
+    /// clears 4.5 on both the ground and the white stage. The dark value measured 6.42 and
+    /// stands.
+    public static let attention = ConchColorToken("attention", .init(0xCA321B), .init(0xFF6A55))
+
     // Text: every level is at least 4.5:1 on every ground above (ConchDesignTests pins it).
     public static let textPrimary = ConchColorToken("textPrimary", .init(0x1D1D1F), .init(0xF2F1EF))
     public static let textSecondary = ConchColorToken("textSecondary", .init(0x5C5C61), .init(0xAEAEB2))
@@ -124,7 +145,8 @@ public enum ConchColor {
 
     public static let grounds = [ground, surface, surfaceRaised, fog]
     public static let text = [textPrimary, textSecondary, textTertiary]
-    public static let all = grounds + [glass, fill, fillSelected] + text + [hairline, hairlineStrong, accent, onAccent]
+    public static let all = grounds + [glass, fill, fillSelected, rowHover, rowSelected] + text
+        + [hairline, hairlineStrong, accent, onAccent, attention]
         + [speaking, listening, quiet, ready, listeningRing, onVoice, idleGlow] + overlay
     public static let overlay = [overlayText, overlayTextSecondary, overlayTextPending, overlayPlaceholder, overlayFill,
                                  overlayFillStrong, overlayGlass, overlayGlassStrong, overlayGlassIcon, overlayLine]
