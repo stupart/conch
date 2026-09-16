@@ -1,7 +1,13 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { existsSync } from "node:fs";
-import { DEFAULT_CONCH_CONFIG_DIR, loadSettingResolutions, settingsPathFor, type HandoffOrder } from "./settings.ts";
+import {
+  DEFAULT_CONCH_CONFIG_DIR,
+  loadSettingResolutions,
+  settingsPathFor,
+  type HandoffOrder,
+  type PhoneLanMode,
+} from "./settings.ts";
 
 const HOME = homedir();
 
@@ -106,6 +112,8 @@ export interface Config {
   phonePort: number;
   /** Deployed Cloudflare Worker URL; empty keeps the unchanged LAN transport only. */
   phoneRelayURL: string;
+  /** Does the plaintext LAN bridge listen? `auto` closes it once a relay is set. */
+  phoneLan: PhoneLanMode;
   /** Reveal a session's window (raise-without-focus-steal) when conch starts talking to it. */
   revealOnTurn: boolean;
   /** suppress a window raise if keys/mouse were touched within this many seconds (0 = always raise) */
@@ -209,6 +217,7 @@ export function loadConfig(options: LoadConfigOptions = {}): Config {
     phoneEnabled: settings["phone"].value as boolean,
     phonePort: settings["phone-port"].value as number,
     phoneRelayURL: settings["phone-relay-url"].value as string,
+    phoneLan: settings["phone-lan"].value as PhoneLanMode,
     revealOnTurn: settings["reveal-on-turn"].value as boolean,
     revealTypingGraceSecs: settings["reveal-typing-grace"].value as number,
     workingMic: settings["working-mic"].value as boolean,

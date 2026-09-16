@@ -41,6 +41,7 @@ export const SETTING_KEYS = [
   "phone",
   "phone-port",
   "phone-relay-url",
+  "phone-lan",
   "read-full",
   "interrupt-on-manual-reply",
   "handoff-order",
@@ -73,6 +74,7 @@ export type SettingField =
   | "phoneEnabled"
   | "phonePort"
   | "phoneRelayURL"
+  | "phoneLan"
   | "readFull"
   | "interruptOnManualReply"
   | "handoffOrder"
@@ -88,6 +90,7 @@ export type SettingField =
   | "sayRate"
   | "whisperIdleUnloadMins";
 export type HandoffOrder = "newest" | "oldest" | "urgency";
+export type PhoneLanMode = "auto" | "on" | "off";
 export type SettingValue = number | boolean | string;
 export type SettingApply = "live" | "hook";
 export type SettingSource = "env" | "file" | "default";
@@ -133,6 +136,16 @@ function parseHandoffOrder(raw: unknown): ParseResult<HandoffOrder> {
     }
   }
   return { ok: false, err: "expected newest, oldest, or urgency" };
+}
+
+function parsePhoneLan(raw: unknown): ParseResult<PhoneLanMode> {
+  if (typeof raw === "string") {
+    const normalized = raw.trim().toLowerCase();
+    if (normalized === "auto" || normalized === "on" || normalized === "off") {
+      return { ok: true, value: normalized };
+    }
+  }
+  return { ok: false, err: "expected auto, on, or off" };
 }
 
 function parseRelayURL(raw: unknown): ParseResult<string> {
@@ -338,6 +351,24 @@ export const SETTING_DESCRIPTORS = [
     bounds: null,
     apply: "live",
     help: "deployed relay Worker URL; empty disables internet relay while LAN pairing stays available",
+  },
+  {
+    key: "phone-lan",
+    field: "phoneLan",
+    env: "CONCH_PHONE_LAN",
+    kind: "enum",
+    // The LAN bridge is plaintext HTTP on 0.0.0.0:8674 — exposure on every
+    // network the Mac joins, coffee-shop Wi-Fi included. Turning on the
+    // encrypted relay used to leave it listening anyway (review finding 20).
+    // `auto` keeps it only for the setup that has nothing else: no relay
+    // configured. `on` is the old always-listen behaviour, and it is what
+    // pairing a phone over Wi-Fi needs. `off` never listens.
+    default: "auto",
+    parse: parsePhoneLan,
+    bounds: null,
+    choices: ["auto", "on", "off"],
+    apply: "live",
+    help: "plaintext Wi-Fi bridge: auto (closed once phone-relay-url is set), on, off — Wi-Fi pairing needs on",
   },
   {
     key: "read-full",
@@ -885,6 +916,8 @@ export interface PairingOpen {
   code: string;
   expiresAt: number;
   port: number;
+  /** Is the plaintext LAN bridge listening? Absent from daemons before `phone-lan`. */
+  lan?: boolean;
   relay?: {
     version: 1;
     endpoint: string;
@@ -1461,6 +1494,9 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
     if (!Number.isSafeInteger(value.port) || (value.port as number) <= 0 || (value.port as number) > 65535) {
       return { ok: false, err: "invalid pairing port" };
     }
+    if (value.lan !== undefined && typeof value.lan !== "boolean") {
+      return { ok: false, err: "invalid pairing lan flag" };
+    }
     let relay: PairingOpen["relay"];
     if (value.relay !== undefined) {
       const r = value.relay;
@@ -1486,6 +1522,9 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
         code: value.code,
         expiresAt: value.expiresAt as number,
         port: value.port as number,
+        // A daemon older than `phone-lan` answered `open-pairing` only while
+        // its LAN bridge was up, so a missing flag means listening.
+        lan: value.lan === undefined ? true : value.lan as boolean,
         ...(relay === undefined ? {} : { relay }),
       },
     };

@@ -259,6 +259,7 @@ import {
   type ConfigControlMessage,
   type ConfigControlResponse,
   type ConfigSnapshot,
+  type PhoneLanMode,
   type SettingKey,
   type SettingResolution,
   type SettingValue,
@@ -425,6 +426,27 @@ export class AudioSinkLease {
     this.#sink = "mac";
     return true;
   }
+}
+
+/**
+ * Should the plaintext LAN bridge be listening?
+ *
+ * Turning on the encrypted relay used to leave the `0.0.0.0` HTTP server
+ * listening beside it (daemon review finding 20): two ways in, one of them
+ * plaintext on every network the Mac joins, when the phone only ever uses one.
+ * `auto` keeps the LAN bridge for the setup that has no alternative — no relay
+ * configured — and closes it the moment the relay can carry the phone instead.
+ * `on` is the old always-listen behaviour, and it is what pairing a phone over
+ * Wi-Fi needs. `off` never listens.
+ */
+export function phoneLanWanted(
+  phoneEnabled: boolean,
+  mode: PhoneLanMode,
+  relayURL: string,
+): boolean {
+  if (!phoneEnabled || mode === "off") return false;
+  if (mode === "on") return true;
+  return relayURL.trim() === "";
 }
 
 /** Stop a disabled or wrong-port bridge before any replacement is created. */
@@ -1219,10 +1241,44 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   let phoneRelay: PhoneRelayHandle | null = null;
   let activeRelayEndpoint = "";
   let activeRelayPairing: RelayPairing | null = null;
+  let lastPhoneSummary = "";
+  /**
+   * Which phone transports are actually live, in one line.
+   *
+   * The LAN server announces its own "listening" line when it starts, so
+   * before `phone-lan` the only way to know the relay was carrying the phone
+   * ALONE was a log line that never appeared. Logged on change, which covers
+   * startup and every live setting change.
+   */
+  function logPhoneTransports(): void {
+    const lan = phoneBridge ? `phone bridge listening on 0.0.0.0:${phoneBridge.port}` : "";
+    const summary = !cfg.phoneEnabled
+      ? "off"
+      : lan && phoneRelay
+        ? `${lan} + relay (encrypted)`
+        : phoneRelay
+          ? `relay only (encrypted) — LAN closed by phone-lan=${cfg.phoneLan}`
+          : lan
+            ? `${lan} only (plaintext)`
+            : `nothing listening — phone-lan=${cfg.phoneLan} and no relay URL`;
+    if (summary === lastPhoneSummary) return;
+    lastPhoneSummary = summary;
+    log(`phone: ${summary}`);
+  }
+
   function syncPhoneBridge(): void {
+    applyPhoneTransports();
+    logPhoneTransports();
+  }
+
+  function applyPhoneTransports(): void {
     const wanted = cfg.phoneEnabled;
+    // `auto` decides the LAN bridge from the relay URL, so the relay endpoint
+    // has to be resolved before the bridge, not after it as it used to be.
+    const relayEndpoint = wanted ? cfg.phoneRelayURL.trim() : "";
+    const lanWanted = phoneLanWanted(wanted, cfg.phoneLan, relayEndpoint);
     const previousBridge = phoneBridge;
-    phoneBridge = retainMatchingPhoneBridge(phoneBridge, wanted, cfg.phonePort);
+    phoneBridge = retainMatchingPhoneBridge(phoneBridge, lanWanted, cfg.phonePort);
     if (!wanted) {
       phoneRelay?.stop();
       phoneRelay = null;
@@ -1292,7 +1348,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         { token: ensurePhoneToken() },
       );
     }
-    if (!phoneBridge) {
+    if (!phoneBridge && lanWanted) {
       try {
         phoneBridge = createPhoneBridgeServer(
           phoneApplication,
@@ -1304,7 +1360,6 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       }
     }
 
-    const relayEndpoint = cfg.phoneRelayURL.trim();
     if (phoneRelay && relayEndpoint !== activeRelayEndpoint) {
       phoneRelay.stop();
       phoneRelay = null;
@@ -1764,7 +1819,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     settingsPath: daemonSettingsPath,
     onLiveChange: (key, value) => {
       if (key === "meeting-autopause") meetingMic?.setEnabled(value === true);
-      if (key === "phone" || key === "phone-port" || key === "phone-relay-url") syncPhoneBridge();
+      if (key === "phone" || key === "phone-port" || key === "phone-relay-url" || key === "phone-lan") syncPhoneBridge();
       if (key === "whisper-idle-unload") whisperSupervisor?.armIdleUnload(); // re-arm with the new window (cfg is already updated)
       if (key === "records" && recordsMayStart && !shuttingDown) {
         void records.setEnabled(value === true);
@@ -2246,7 +2301,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     if (message.kind === "open-pairing") {
       let response: DeviceControlResponse;
       syncPhoneBridge();
-      if (!phoneBridge) {
+      if (!phoneApplication) {
         response = {
           kind: "session-error",
           // Shown verbatim in the app's pairing tab and by `conch pair`, so
@@ -2255,13 +2310,18 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         };
       } else {
         const code = mintPairingCode();
-        phoneBridge.offerPairingCode(code);
+        // The pairing window belongs to the application both transports share,
+        // so a relay-only daemon still opens one — and the code stays good if
+        // `phone-lan` opens the LAN bridge while the window is still running.
+        phoneApplication.offerPairingCode(code);
         log("pairing window open (2 min)");
         response = {
           kind: "pairing-open",
           code: code.code,
           expiresAt: code.expiresAt,
-          port: phoneBridge.port,
+          port: phoneBridge?.port ?? cfg.phonePort,
+          // A typed host and code only reach a Mac whose LAN bridge listens.
+          lan: phoneBridge !== null,
           ...(activeRelayPairing ? { relay: activeRelayPairing } : {}),
         };
       }

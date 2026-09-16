@@ -776,6 +776,7 @@ switch (command) {
       ? (opened.response as unknown as {
         code?: string;
         port?: number;
+        lan?: boolean;
         relay?: import("./phone-relay.ts").RelayPairing;
       })
       : null;
@@ -789,15 +790,29 @@ switch (command) {
       .flat()
       .filter((iface) => iface && iface.family === "IPv4" && !iface.internal)
       .map((iface) => iface!.address);
+    // The typed host and code only mean something while the plaintext LAN
+    // bridge is listening. Printing them next to a closed port is how you
+    // spend ten minutes retyping a code at a Mac that was never going to
+    // answer, so say what is actually open instead.
+    const lanClosed = window.lan === false;
     console.log("");
-    console.log("  Open conch on your iPhone and enter:");
-    console.log("");
-    for (const address of lan) console.log(`    Host   ${address}:${port}`);
-    if (!lan.length) console.log("    Host   (no Wi-Fi address found — is Wi-Fi on?)");
-    console.log(`    Code   ${window.code}`);
-    console.log("");
-    console.log("  The code works once, for two minutes. Run `conch pair` again");
-    console.log("  for a fresh one.");
+    if (lanClosed) {
+      console.log("  Wi-Fi pairing is closed: `phone-lan` is keeping the plaintext");
+      console.log("  LAN bridge shut. To pair over Wi-Fi, run:");
+      console.log("");
+      console.log("    conch set phone-lan on");
+      console.log("");
+      console.log("  Then run `conch pair` again.");
+    } else {
+      console.log("  Open conch on your iPhone and enter:");
+      console.log("");
+      for (const address of lan) console.log(`    Host   ${address}:${port}`);
+      if (!lan.length) console.log("    Host   (no Wi-Fi address found — is Wi-Fi on?)");
+      console.log(`    Code   ${window.code}`);
+      console.log("");
+      console.log("  The code works once, for two minutes. Run `conch pair` again");
+      console.log("  for a fresh one.");
+    }
     if (window.relay) {
       const { relayPairingCode } = await import("./phone-relay.ts");
       const qrcode = await import("qrcode-terminal");
@@ -812,6 +827,11 @@ switch (command) {
       console.log("  will not silently fall back to the LAN transport.");
     } else {
       console.log("");
+      if (lanClosed) {
+        console.log("  No phone transport is live: the LAN bridge is closed and no");
+        console.log("  relay is configured, so nothing can reach this Mac.");
+        console.log("");
+      }
       console.log("  Internet relay is not configured. After deploying relay/, run:");
       console.log("    conch set phone-relay-url https://<worker>.workers.dev");
       console.log("    conch pair");
