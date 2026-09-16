@@ -90,6 +90,82 @@ describe("the Mac composer belongs to one session", () => {
     expect(composer).toContain("import ConchDesign");
   });
 
+  test("the composer is the lab's composer, value for value", () => {
+    // Every number here is read off workspace-lab.html, which is what Tyler compares against.
+    // Nothing pinned any of them before, which is exactly how the composer drifted from it.
+
+    // .cbox{border-radius:18px;padding:6px;background:var(--surface);box-shadow:<hairline>,<drop>}
+    expect(composer).toContain(".padding(6)");
+    expect(composer).toContain("ConchPalette.surface,");
+    expect(composer).toContain("in: RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)");
+    expect(composer).toContain(".strokeBorder(ConchPalette.divider, lineWidth: 0.5)");
+    expect(composer).toContain(".conchElevation(.floating)");
+    // …and NO inner box. §3: the stage has one card and no others.
+    expect(composer).not.toContain("RoundedRectangle(cornerRadius: 8).fill(ConchPalette.bg)");
+
+    // #ta{font:var(--read)/22px; padding:8px 10px 4px; max-height:8 lines}
+    expect(composer).toContain(".font(ConchType.readingBody)");
+    expect(composer).toContain("static let lineHeight: CGFloat = 22");
+    expect(composer).toContain("Self.lineHeight * 8");
+    expect(composer).toContain("static let fieldInsetTop: CGFloat = 8");
+    expect(composer).toContain("static let fieldInsetBottom: CGFloat = 4");
+    expect(composer).toContain("static let fieldInsetX: CGFloat = 10");
+
+    // .cbar{gap:4px;height:34px;padding-left:2px}
+    expect(composer).toContain("HStack(alignment: .center, spacing: 4) {");
+    expect(composer).toContain(".frame(height: 34)");
+    expect(composer).toContain(".padding(.leading, 2)");
+
+    // .mic and .send are both 30, where the plain .ib buttons stay 28.
+    expect(composer.match(/\.frame\(width: 30, height: 30\)/g) ?? []).toHaveLength(2);
+    expect(composer).toContain(".frame(width: 28, height: 28)");
+    // .mic{background:var(--fill)} at rest. The VOICE colours are deliberately untouched —
+    // Palette.swift says that language moves as its own change, to be seen and reacted to.
+    expect(composer).toContain("default: return ConchPalette.fill");
+    expect(composer).toContain('case "listening", "recording": return ConchPalette.brandCyan');
+
+    // .send{background:var(--accent);color:var(--onAccent)} — near-black ink, not brand cyan,
+    // which is reserved for "your microphone is open".
+    expect(composer).toContain("canSend ? ConchPalette.ink : ConchPalette.fill");
+    expect(composer).toContain("canSend ? ConchPalette.onInk : ConchPalette.textFaint");
+
+    // .cap{font:500 12px} and .dest{gap:5px;font-size:12px;color:var(--text3);margin-left:8px}
+    expect(composer).toContain("ConchTypography.font(size: 12, weight: .medium)");
+    expect(composer).toContain("AgentBadge(backend: backend)");
+    // The chip itself: mark, then label, at .dest's gap/size/colour/indent.
+    const at = composer.indexOf("HStack(spacing: 5) {");
+    expect(at).toBeGreaterThan(-1);
+    const dest = composer.slice(at, composer.indexOf(".layoutPriority(-1)", at));
+    expect(dest.length).toBeGreaterThan(120);
+    expect(dest).toContain("AgentBadge(backend: backend)");
+    expect(dest).toContain("Text(sessionLabel)");
+    expect(dest).toContain("ConchTypography.font(size: 12)");
+    expect(dest).toContain(".foregroundStyle(ConchPalette.textFaint)");
+    expect(dest).toContain(".padding(.leading, 8)");
+
+    // The tokens the send button needs, exposed without repurposing the legacy orange accent.
+    // The lab's bar order: + · mic · cap · dest · <sp> · recite · send. Recite sat BEFORE the
+    // spacer, which parks the speaker against the destination instead of beside send. Nothing
+    // pinned the order, which is how it drifted.
+    const iDest = composer.indexOf("AgentBadge(backend: backend)");
+    const iSpacer = composer.indexOf("Spacer(minLength: 8)");
+    const iRecite = composer.indexOf("Button(action: onRecite)");
+    const iSend = composer.indexOf("Button(action: send)");
+    for (const at of [iDest, iSpacer, iRecite, iSend]) expect(at).toBeGreaterThan(-1);
+    expect(iDest).toBeLessThan(iSpacer);
+    expect(iSpacer).toBeLessThan(iRecite);
+    expect(iRecite).toBeLessThan(iSend);
+
+    // `.cbar` sits directly under `#ta` inside `.cbox`: no stack gap between them.
+    expect(composer).toContain("VStack(alignment: .leading, spacing: 0) {");
+    expect(composer).not.toContain("VStack(alignment: .leading, spacing: 8) {");
+
+    const palette = mac("Palette.swift");
+    expect(palette).toContain("static let ink = ConchColor.accent.dynamic");
+    expect(palette).toContain("static let onInk = ConchColor.onAccent.dynamic");
+    expect(palette).toContain("static let surface = ConchColor.surface.dynamic");
+  });
+
   test("text and attachments are persisted together under the session id", () => {
     // Files are part of the message. Persisting only the text still lets a
     // screenshot silently follow the user into another agent's composer.

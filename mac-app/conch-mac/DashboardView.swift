@@ -946,7 +946,8 @@ private struct DashboardRow: View {
     }
 }
 
-private struct AgentBadge: View {
+/// Internal, not file-private: the composer's destination chip draws one too.
+struct AgentBadge: View {
     let backend: String?
 
     private var label: String {
@@ -1851,6 +1852,7 @@ private struct ConversationPane: View {
         ComposerView(
             sessionID: row.id,
             sessionLabel: row.label,
+            backend: row.backend,
             draft: composerDrafts.textBinding(for: row.id),
             attachments: composerDrafts.attachmentsBinding(for: row.id),
             dictation: dictation(for: row),

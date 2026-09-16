@@ -43,6 +43,14 @@ enum ConchPalette {
     static let textDim = ConchColor.textSecondary.dynamic
     static let textFaint = ConchColor.textTertiary.dynamic
     static let divider = ConchColor.hairline.dynamic
+    /// The stage's own panel (§3) — the lab's `--surface`, #FFFFFF in light. Distinct from
+    /// `raised`, which is a step above the ground in dark.
+    static let surface = ConchColor.surface.dynamic
+    /// The design system's accent: near-black ink, the lab's `--accent:#1D1D1F`. Deliberately
+    /// NOT the `accent` below, which is the orange of the old state language and moves as its
+    /// own change.
+    static let ink = ConchColor.accent.dynamic
+    static let onInk = ConchColor.onAccent.dynamic
 
     // Still literals, and still dark-only, until the state language moves as its own change.
     static let accent = Color(
