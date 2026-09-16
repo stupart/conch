@@ -8,7 +8,8 @@ function appKit(initial: PasteboardLease["items"]) {
   let count = 0;
   const wrap = (js: string) => ({ js });
   const array = (values: any[]) => ({ count: values.length, objectAtIndex: (i: number) => values[i] });
-  const data = (encoded: string) => ({ length: Buffer.from(encoded, "base64").length, base64EncodedStringWithOptions: () => wrap(encoded) });
+  // isNil(), because an ObjC nil is truthy across the JXA bridge and `!data` never caught one.
+  const data = (encoded: string) => ({ length: Buffer.from(encoded, "base64").length, isNil: () => false, base64EncodedStringWithOptions: () => wrap(encoded) });
   const item = (saved: Record<string, string> = {}) => ({
     saved: { ...saved },
     get types() { return array(Object.keys(this.saved).map(wrap)); },

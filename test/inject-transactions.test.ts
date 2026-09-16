@@ -207,6 +207,25 @@ describe("UI injection transactions", () => {
     expect(ui.items()).toEqual(textItems("new user copy"));
   });
 
+  test("a broken pasteboard helper still delivers, without preserving the clipboard", async () => {
+    const ui = fakeUI();
+    // The regression: prepare() threw for every clipboard with three or more
+    // representations, and the send was abandoned with clipboard-unavailable.
+    const result = await injectText(cfg, 1, "first\nsecond", undefined, {
+      ...ui.options(1),
+      pasteboard: {
+        prepare: async () => { throw new Error("Pasteboard helper failed"); },
+        restore: async () => { throw new Error("Pasteboard helper failed"); },
+      },
+    });
+    // Delivered, and said to be delivered — the words reached the session.
+    expect(result).toEqual({ via: "osascript-focused" });
+    expect(ui.actions).toEqual(["focus:1", "paste:1:first\nsecond", "focus:1", "key:1"]);
+    // The courtesy that was dropped: the sent text is left on the clipboard,
+    // and conch never pretends the original was put back.
+    expect(ui.items()).toEqual(textItems("first\nsecond"));
+  });
+
   test("a failed tmux Return never reports submitted delivery", async () => {
     const ui = fakeUI();
     const result = await injectText(cfg, 1, "words", undefined, {

@@ -89,29 +89,35 @@ ObjC.import('AppKit');
 function run(argv) {
   var raw = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;
   var input = JSON.parse($.NSString.alloc.initWithDataEncoding(raw, $.NSUTF8StringEncoding).js);
-  var board = $.NSPasteboard.generalPasteboard;
+  // Every count, length and changeCount below crosses the ObjC bridge as a STRING.
+  // Number() at each read: '+' on a raw one CONCATENATES ("0" + "3883" + "35" + "24"
+  // read as 38 million bytes and refused every ordinary clipboard), and "0" is truthy.
+  // A named board is a private one, so tests never touch the general pasteboard.
+  var board = input.board ? $.NSPasteboard.pasteboardWithName($(input.board)) : $.NSPasteboard.generalPasteboard;
   function decode(items) {
     var restored = $.NSMutableArray.alloc.init;
     items.forEach(function(saved) {
       var item = $.NSPasteboardItem.alloc.init;
       Object.keys(saved).forEach(function(type) {
         var data = $.NSData.alloc.initWithBase64EncodedStringOptions($(saved[type]), 0);
-        if (!data || !item.setDataForType(data, $(type))) throw new Error('Invalid pasteboard data');
+        if (!data || data.isNil() || !item.setDataForType(data, $(type))) throw new Error('Invalid pasteboard data');
       });
       restored.addObject(item);
     });
     return restored;
   }
   if (argv[0] === 'prepare') {
-    var count = board.changeCount, items = [], bytes = 0;
+    var count = Number(board.changeCount), items = [], bytes = 0;
     var source = board.pasteboardItems;
-    for (var i = 0; source && i < source.count; i++) {
+    var sourceCount = source ? Number(source.count) : 0;
+    for (var i = 0; i < sourceCount; i++) {
       var item = source.objectAtIndex(i), saved = {}, types = item.types;
-      for (var j = 0; j < types.count; j++) {
+      var typeCount = Number(types.count);
+      for (var j = 0; j < typeCount; j++) {
         var type = types.objectAtIndex(j), data = item.dataForType(type);
-        if (!data) throw new Error('Unreadable pasteboard representation');
-        bytes += data.length;
-        if (bytes > 16 * 1024 * 1024) throw new Error('Pasteboard too large to preserve');
+        if (!data || data.isNil()) throw new Error('Unreadable pasteboard representation');
+        bytes += Number(data.length);
+        if (!(bytes <= 16 * 1024 * 1024)) throw new Error('Pasteboard too large to preserve');
         var encoded = data.base64EncodedStringWithOptions(0).js;
         if (typeof encoded !== 'string') throw new Error('Unreadable pasteboard data');
         saved[type.js] = encoded;
@@ -121,26 +127,26 @@ function run(argv) {
     var replacement = $.NSPasteboardItem.alloc.init;
     if (!replacement.setStringForType($(input.text), $.NSPasteboardTypeString)) throw new Error('Cannot set paste text');
     var original = decode(items);
-    if (count !== board.changeCount) throw new Error('Pasteboard changed during capture');
+    if (count !== Number(board.changeCount)) throw new Error('Pasteboard changed during capture');
     board.clearContents;
     if (!board.writeObjects($.NSArray.arrayWithObject(replacement))) {
       board.clearContents;
-      if (original.count) board.writeObjects(original);
+      if (Number(original.count)) board.writeObjects(original);
       throw new Error('Cannot write pasteboard');
     }
-    return JSON.stringify({ changeCount: board.changeCount, items: items });
+    return JSON.stringify({ changeCount: Number(board.changeCount), items: items });
   }
   if (argv[0] !== 'restore') throw new Error('Unknown pasteboard operation');
   var restored = decode(input.items);
-  if (board.changeCount !== input.changeCount) return 'false';
+  if (Number(board.changeCount) !== Number(input.changeCount)) return 'false';
   board.clearContents;
-  if (restored.count && !board.writeObjects(restored)) throw new Error('Cannot restore pasteboard');
+  if (Number(restored.count) && !board.writeObjects(restored)) throw new Error('Cannot restore pasteboard');
   return 'true';
 }`;
 
-export function createPasteboard(run: typeof runUICommand = runUICommand): Pasteboard {
+export function createPasteboard(run: typeof runUICommand = runUICommand, board?: string): Pasteboard {
   async function call<T>(operation: string, input: object = {}): Promise<T> {
-    const result = await run(["osascript", "-l", "JavaScript", "-e", PASTEBOARD_SCRIPT, "--", operation], JSON.stringify(input));
+    const result = await run(["osascript", "-l", "JavaScript", "-e", PASTEBOARD_SCRIPT, "--", operation], JSON.stringify({ ...input, board }));
     if (result.timedOut || result.exitCode !== 0) throw new Error("Pasteboard helper failed");
     return JSON.parse(result.text) as T;
   }
