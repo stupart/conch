@@ -47,9 +47,7 @@ enum ConchPalette {
     /// `raised`, which is a step above the ground in dark.
     static let surface = ConchColor.surface.dynamic
     /// The selected segment on a `fill` track — the lab's `--fillSel`, plain white in light.
-    /// `.seg button.on` asks for `box-shadow:var(--shRaised)` too, but that variable is not
-    /// defined anywhere in the lab, so the selected segment carries NO shadow: the fill alone
-    /// is what marks it.
+    /// `.seg button.on` puts `--shRaised` over it as well: see `ConchElevation.raised`.
     static let fillSelected = ConchColor.fillSelected.dynamic
     /// The design system's accent: near-black ink, the lab's `--accent:#1D1D1F`. Deliberately
     /// NOT the `accent` below, which is the orange of the old state language and moves as its

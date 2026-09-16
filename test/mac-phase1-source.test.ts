@@ -423,9 +423,10 @@ describe("§3's anatomy, where the app had drifted from it", () => {
     expect(pane).toContain("RoundedRectangle(cornerRadius: ConchRadius.medium, style: .continuous)");
     expect(pane).toContain(".strokeBorder(ConchPalette.divider, lineWidth: 0.5)");
     expect(pane).toContain(".padding(8)");
-    // `--shPanel` is a whisper: .raised is radius 1.5 / y 1. `.floating` (14 / 10) is the
-    // COMPOSER's shadow — the composer floats, the stage merely sits.
-    expect(pane).toContain(".conchElevation(.raised)");
+    // `--shPanel` is a whisper, and now its own level: radius 1.5 / y 1 at 4% in light, and
+    // on dark the ring alone. `.floating` (14 / 10) is the COMPOSER's shadow — the composer
+    // floats, the stage merely sits.
+    expect(pane).toContain(".conchElevation(.panel)");
     expect(pane).not.toContain(".conchElevation(.floating)");
 
     // The sidebar's 1 pt rule is gone: `#stage` has no left border, and the panel's own edge

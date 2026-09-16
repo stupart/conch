@@ -243,19 +243,28 @@ public enum ConchRadius {
     public static let scale = [small, medium, large, panel]
 }
 
+/// The lab's four shadows in SwiftUI's terms. CSS blur is twice SwiftUI's shadow radius, so
+/// `0 1px 2px` is radius 1 at y 1; every value below is `workspace-lab.html`'s own, light and
+/// dark, rather than one derived from the other.
 public enum ConchElevation: String, CaseIterable, Sendable {
     /// On the ground.
     case flat
-    /// A selected segment, a key.
+    /// The stage's own panel — `--shPanel`, a whisper in light that vanishes on dark.
+    case panel
+    /// A selected segment, a key — `--shRaised`.
     case raised
-    /// The control bar and other glass.
+    /// The control bar and other glass — `--shFloat`.
     case floating
-    /// A panel over other apps.
+    /// A panel over other apps — `--shOver`.
     case overlay
 
-    var radius: CGFloat { [0, 1.5, 14, 24][index] }
-    var y: CGFloat { [0, 1, 10, 18][index] }
-    var opacity: Double { [0, 0.1, 0.22, 0.26][index] }
+    var radius: CGFloat { [0, 1.5, 1, 14, 32][index] }
+    var y: CGFloat { [0, 1, 1, 10, 24][index] }
+    var opacity: Double { [0, 0.04, 0.14, 0.24, 0.32][index] }
+    /// The lab's dark block, not a rule applied to the light value: the panel keeps its ring
+    /// and drops its shadow outright, and the three that remain go heavier than any blanket
+    /// factor would guess (`--shFloat` is .24 light and .7 dark).
+    var darkOpacity: Double { [0, 0, 0.4, 0.7, 0.75][index] }
     private var index: Int { Self.allCases.firstIndex(of: self)! }
 }
 
@@ -264,9 +273,11 @@ private struct ElevationModifier: ViewModifier {
     @Environment(\.colorScheme) private var scheme
 
     func body(content: Content) -> some View {
-        // Dark grounds swallow a shadow, so it doubles there.
+        // Each level carries the lab's own dark value. "Dark grounds swallow a shadow, so it
+        // doubles there" was wrong in both directions: `--shPanel` has NO drop on dark, and
+        // the three that keep one go far past doubling.
         content.shadow(
-            color: .black.opacity(scheme == .dark ? min(0.6, level.opacity * 2) : level.opacity),
+            color: .black.opacity(scheme == .dark ? level.darkOpacity : level.opacity),
             radius: level.radius,
             y: level.y
         )

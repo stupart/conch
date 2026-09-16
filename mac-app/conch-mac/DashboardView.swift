@@ -109,8 +109,9 @@ struct DashboardView: View {
                     // 1 pt rule is gone with it: the panel's own edge is the separation, and
                     // `#stage` has no left border.
                     //
-                    // The drop comes from `.raised` (radius 1.5, y 1) rather than `.floating`
-                    // (radius 14, y 10) — the composer floats, the stage merely sits. No
+                    // `--shPanel` has its own level now: radius 1.5 / y 1 at 4% in light, and
+                    // on dark the ring ALONE — the lab drops the panel's shadow there, which
+                    // `.raised` (a selected segment's shadow) never could express. No
                     // ConchElevation case carries a ring, so it is drawn explicitly, the same
                     // way the composer does it.
                     ConversationPane(
@@ -124,7 +125,7 @@ struct DashboardView: View {
                         RoundedRectangle(cornerRadius: ConchRadius.medium, style: .continuous)
                             .strokeBorder(ConchPalette.divider, lineWidth: 0.5)
                     )
-                    .conchElevation(.raised)
+                    .conchElevation(.panel)
                     .padding(8)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2044,15 +2045,33 @@ private struct PerspectiveOption: View {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
-                // `.seg button{width:30px;height:24px;border-radius:6px}`, selected on
-                // `--fillSel`. The lab also asks for `box-shadow:var(--shRaised)` here,
-                // but that variable is defined nowhere in the lab and renders nothing —
-                // so the fill alone marks the selected segment, as the prototype shows it.
+                // `.seg button{width:30px;height:24px;border-radius:6px}` and
+                // `.seg button.on{background:var(--fillSel);box-shadow:var(--shRaised)}`.
+                //
+                // `--shRaised` IS defined (lab line 17, and line 20 for dark); an earlier
+                // grep looked for it at the start of a line and missed it in the minified
+                // `:root`, so this control shipped flat. The ring is drawn at the call site
+                // because no ConchElevation case carries one — the same split the composer
+                // uses, and the same shape ConchDesign's own segmented thumb uses.
+                //
+                // The hover fill is the app's own: the lab gives `.seg button` no `:hover`
+                // rule at all. Kept, because these are buttons and everything else in this
+                // header answers the pointer — but it is not a value from the prototype.
                 .frame(width: 30, height: 24)
-                .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(isSelected ? ConchPalette.fillSelected : (isHovered ? ConchPalette.hover : .clear))
-                )
+                .background {
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(ConchPalette.fillSelected)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .strokeBorder(ConchPalette.divider, lineWidth: 0.5)
+                            )
+                            .conchElevation(.raised)
+                    } else if isHovered {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(ConchPalette.hover)
+                    }
+                }
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

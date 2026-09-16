@@ -80,15 +80,25 @@ describe("the header carries the lab's anatomy", () => {
     expect(track).toContain(".padding(.trailing, 4)");
   });
 
-  // `.seg button{width:30px;height:24px;border-radius:6px}`, selected on `--fillSel`.
-  test("the selected segment is marked by its fill, and nothing else", () => {
+  // `.seg button{width:30px;height:24px;border-radius:6px}` and
+  // `.seg button.on{background:var(--fillSel);box-shadow:var(--shRaised)}`.
+  //
+  // This guard previously asserted the OPPOSITE — that the segment carries no elevation —
+  // on a reading that called `--shRaised` undefined. It is defined (lab lines 17 and 20);
+  // the grep behind that claim searched for it at the start of a line and the lab's `:root`
+  // is minified onto one. The assertion is inverted rather than deleted, so the mistake
+  // cannot come back quietly.
+  test("the selected segment carries the lab's fill, ring and drop", () => {
     expect(segment).toContain(".frame(width: 30, height: 24)");
     expect(segment).toContain("RoundedRectangle(cornerRadius: 6, style: .continuous)");
-    expect(segment).toContain("isSelected ? ConchPalette.fillSelected : (isHovered ? ConchPalette.hover : .clear)");
-    // `.seg button.on` also asks for `box-shadow:var(--shRaised)` — a variable defined
-    // nowhere in the lab, which therefore renders nothing. The fill is the whole mark.
-    expect(segment).not.toContain("conchElevation");
-    expect(segment).not.toContain(".shadow(");
+    expect(segment).toContain(".fill(ConchPalette.fillSelected)");
+    expect(segment).toContain(".strokeBorder(ConchPalette.divider, lineWidth: 0.5)");
+    expect(segment).toContain(".conchElevation(.raised)");
+    // Only the selected one: an unselected segment on a hover fill must stay flat. The
+    // hover itself is the app's, not the lab's — `.seg button` has no `:hover` rule there —
+    // so it is asserted to keep it a decision rather than a drift.
+    expect(segment).toContain(".fill(ConchPalette.hover)");
+    expect(segment.match(/conchElevation/g) ?? []).toHaveLength(1);
     // It sizes itself now; the old padding would fight the fixed frame.
     expect(segment).not.toContain(".padding(.horizontal, 7)");
     expect(segment).not.toContain(".frame(height: 26)");
