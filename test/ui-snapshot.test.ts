@@ -109,3 +109,23 @@ describe("ui-snapshot.sh", () => {
     expect(code).not.toContain("screencapture");
   });
 });
+
+describe("conch shot photographs what is actually on screen", () => {
+  const snapshot = read("mac-app/conch-mac/DebugSnapshot.swift");
+
+  test("the window's own appearance is adopted while drawing", () => {
+    // The palette is dynamic colours — `NSColor(name: nil) { appearance in … }` — which resolve
+    // against the CURRENT DRAWING appearance. An offscreen `cacheDisplay` does not inherit the
+    // window's, so on a light system every snapshot came back DARK, and a night of "verified by
+    // eye" was judged in a theme the user never sees. A screenshot tool that lies is worse than
+    // none, because it is believed.
+    expect(snapshot).toContain("window.effectiveAppearance.performAsCurrentDrawingAppearance {");
+    // And the draw must happen INSIDE it: a wrapper that does not contain the call is decoration.
+    const at = snapshot.indexOf("window.effectiveAppearance.performAsCurrentDrawingAppearance {");
+    const inside = snapshot.slice(at, snapshot.indexOf("\n        }", at));
+    expect(inside.length).toBeGreaterThan(40);
+    expect(inside).toContain("view.cacheDisplay(in: view.bounds, to: rep)");
+    // Exactly one draw, so a second one cannot creep in outside the appearance.
+    expect(snapshot.match(/cacheDisplay\(/g) ?? []).toHaveLength(1);
+  });
+});
