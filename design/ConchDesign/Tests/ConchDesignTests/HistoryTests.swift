@@ -294,6 +294,83 @@ final class HistoryTests: XCTestCase {
         XCTAssertTrue(paging.canLoadOlder)
     }
 
+    // MARK: - Which branch of a shared transcript this reader is reading
+
+    func testTheBranchTipIsTheNewestRowTheRecordCanBeAskedAbout() {
+        let newest = "8add9ebe-1c2d-4e3f-9a0b-1f0c2a3b4c5d"
+        let older = "4f4f0943-1c2d-4e3f-9a0b-1f0c2a3b4c5d"
+        // A thinking block and a material carry their message's UUID: they ARE that message.
+        XCTAssertEqual(HistorySnapshot.branchTip(forSnapshotItems: [older, "\(newest):thinking"], shared: false), newest)
+        XCTAssertEqual(HistorySnapshot.branchTip(forSnapshotItems: [older, "\(newest):material:2"], shared: false), newest)
+        // A tool row is keyed by its CALL id, which names no message to walk from.
+        XCTAssertEqual(HistorySnapshot.branchTip(forSnapshotItems: [newest, "tool:call_7"], shared: false), newest)
+        // Codex keys a row by a hash of its own text; a record with no uuid, by position.
+        XCTAssertNil(HistorySnapshot.branchTip(forSnapshotItems: ["assistant:1a2b3c", "user:4"], shared: false))
+        // The daemon could not tell which branch the PANE is, so neither can this.
+        XCTAssertNil(HistorySnapshot.branchTip(forSnapshotItems: [newest], shared: true))
+        XCTAssertNil(HistorySnapshot.branchTip(forSnapshotItems: [], shared: false))
+    }
+
+    func testTheTipIsCapturedOncePerSessionSoArrivingMessagesCannotMoveIt() {
+        var paging = HistoryPaging()
+        paging.select(session: "a", branchTip: "tip-1")
+        XCTAssertEqual(paging.branchTip, "tip-1")
+        paging.apply(page: page(["1", "2"], previousCursor: "older"), generation: paging.beginLoad())
+
+        // The session says something, and the view points the reader at it again with a
+        // newer tip. Taking that tip is a different ancestry under an open cursor: the
+        // store answers stale, and the transcript being read empties and starts again.
+        paging.select(session: "a", branchTip: "tip-2")
+        XCTAssertEqual(paging.branchTip, "tip-1")
+        XCTAssertEqual(paging.items.map(\.id), ["1", "2"], "and nothing on screen was thrown away to take it")
+
+        // A stale epoch is not a different window: same branch, read again.
+        paging.restart()
+        XCTAssertEqual(paging.branchTip, "tip-1")
+
+        // A different session is a different window, with a tip of its own.
+        paging.select(session: "b", branchTip: "tip-3")
+        XCTAssertEqual(paging.branchTip, "tip-3")
+    }
+
+    func testAskingForOneBranchAndBeingGivenEveryBranchIsSaidOutLoud() {
+        let complete = ["complete": 1]
+        let every = HistoryCoverage(sources: 1, statuses: complete, indexedBytes: 100, observedBytes: 100, branch: "all")
+        let mine = HistoryCoverage(sources: 1, statuses: complete, indexedBytes: 100, observedBytes: 100, branch: "ancestry")
+        // `<session>#<pid>`: one window of a session that has more than one.
+        func reader(tip: String?, coverage: HistoryCoverage, session: String = "abc#39889") -> HistoryPaging {
+            var paging = HistoryPaging()
+            paging.select(session: session, branchTip: tip)
+            paging.apply(page: HistoryPage(items: [], previousCursor: nil, epoch: "1", coverage: coverage),
+                         generation: paging.beginLoad())
+            return paging
+        }
+
+        XCTAssertFalse(reader(tip: "tip", coverage: mine).sharedBranch, "the tip was proven: this is one window's history")
+        XCTAssertNil(HistoryNotice.coverage(mine, reachedStart: true, oldest: "3 May", sharedBranch: false))
+
+        XCTAssertTrue(reader(tip: "tip", coverage: every).sharedBranch)
+        XCTAssertEqual(
+            HistoryNotice.coverage(every, reachedStart: true, oldest: "3 May", sharedBranch: true),
+            HistoryNotice.allBranches
+        )
+        // Whose messages these are outranks how completely they were recorded: "still
+        // reading" stops being true a moment later, and this does not.
+        let indexing = HistoryCoverage(sources: 1, statuses: ["indexing": 1], indexedBytes: 1, observedBytes: 100, branch: "all")
+        XCTAssertEqual(HistoryNotice.coverage(indexing, reachedStart: false, sharedBranch: true), HistoryNotice.allBranches)
+
+        // A reader that never claimed a branch has not had a proof fail — a Codex
+        // session, or one with no live pane to take a tip from, reads as it always has.
+        XCTAssertFalse(reader(tip: nil, coverage: every).sharedBranch)
+        // Neither has one whose daemon is too old to say which branch it read.
+        XCTAssertFalse(reader(tip: "tip", coverage: HistoryCoverage()).sharedBranch)
+        // And a session with one window has no other window to be confused with. The
+        // record runs a little behind the pane, so an unproven tip is ordinary there —
+        // saying "this might be someone else's" about it would be noise on every
+        // session, which is how an honest note stops being read at all.
+        XCTAssertFalse(reader(tip: "tip", coverage: every, session: "abc").sharedBranch)
+    }
+
     func testTheOldestOpenedBodiesAreReleasedFirst() {
         let held = [(id: "a", bytes: 900_000), (id: "b", bytes: 900_000), (id: "c", bytes: 900_000)]
         XCTAssertEqual(HistoryBudget.release(held, keepingUnder: 2_000_000), ["a"])

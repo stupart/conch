@@ -20,15 +20,20 @@ import Foundation
 /// cursor" — and the difference between those two is a whole transcript.
 struct ConchHistoryPageRequest: Encodable, Sendable {
     let session: String
+    /// The tip of this window's branch: which of a shared transcript's conversations
+    /// this reader is reading (A8). Omitted when nothing proves one, and the record
+    /// then answers with every branch and says that is what it did.
+    var branch: String?
     var before: String?
     var limit: Int?
 
-    private enum CodingKeys: String, CodingKey { case kind, session, before, limit }
+    private enum CodingKeys: String, CodingKey { case kind, session, branch, before, limit }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode("history-page", forKey: .kind)
         try container.encode(session, forKey: .session)
+        try container.encodeIfPresent(branch, forKey: .branch)
         try container.encodeIfPresent(before, forKey: .before)
         try container.encodeIfPresent(limit, forKey: .limit)
     }
@@ -71,6 +76,9 @@ struct ConchHistoryReply: Decodable, Sendable {
         let replayRequired: Bool?
         let indexedBytes: Int?
         let observedBytes: Int?
+        /// "ancestry" when this window's branch was proven, "all" when every branch was
+        /// read. Absent from a daemon too old to say.
+        let branch: String?
     }
 
     let kind: String
@@ -109,7 +117,8 @@ struct ConchHistoryReply: Decodable, Sendable {
                 statuses: coverage?.statuses ?? [:],
                 replayRequired: coverage?.replayRequired ?? false,
                 indexedBytes: coverage?.indexedBytes ?? 0,
-                observedBytes: coverage?.observedBytes ?? 0
+                observedBytes: coverage?.observedBytes ?? 0,
+                branch: coverage?.branch
             )
         )
     }
@@ -164,7 +173,12 @@ final class HistoryStore: ObservableObject {
 
     /// Follow the transcript. A different session is a different reader: everything in
     /// flight for the old one is cancelled and refused rather than merged.
-    func select(session: String?) {
+    ///
+    /// `branchTip` says which branch of a shared transcript this window is (A8). It is
+    /// captured here, once, and carried by every page this session reads — re-reading it
+    /// as messages arrive would change the ancestry under an open cursor and restart the
+    /// transcript someone is scrolling.
+    func select(session: String?, branchTip: String?) {
         let next = session ?? ""
         guard next != paging.session else { return }
         pageTask?.cancel()
@@ -174,7 +188,7 @@ final class HistoryStore: ObservableObject {
         bodies = [:]
         fullBodies = [:]
         wantedBodies = []
-        paging.select(session: next)
+        paging.select(session: next, branchTip: branchTip)
     }
 
     /// The newest page, or the one before the oldest item held. `anchor` is the item the
@@ -182,7 +196,12 @@ final class HistoryStore: ObservableObject {
     func loadOlder(anchor: String? = nil) {
         guard !paging.session.isEmpty, paging.canLoadOlder else { return }
         let generation = paging.beginLoad(anchor: anchor)
-        let request = ConchHistoryPageRequest(session: paging.session, before: paging.previousCursor, limit: Self.pageLimit)
+        let request = ConchHistoryPageRequest(
+            session: paging.session,
+            branch: paging.branchTip,
+            before: paging.previousCursor,
+            limit: Self.pageLimit
+        )
         let client = self.client
         pageTask?.cancel()
         pageTask = Task { @MainActor [weak self] in

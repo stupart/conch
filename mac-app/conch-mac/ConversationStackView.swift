@@ -171,7 +171,7 @@ struct ConversationStackView: View {
                 // A different session is a different conversation: start at its
                 // end, and re-arm the follow. The recorded reader is told too —
                 // anything still in flight for the old session is refused, not merged.
-                history.select(session: conversation.sessionId)
+                history.select(session: conversation.sessionId, branchTip: branchTip)
                 loadOlder()
                 pinnedToBottom = true
                 multiSelections = [:]
@@ -179,7 +179,7 @@ struct ConversationStackView: View {
                 requestBottomScroll(using: proxy)
             }
             .onAppear {
-                history.select(session: conversation.sessionId)
+                history.select(session: conversation.sessionId, branchTip: branchTip)
                 // One read answers "is any of this recorded" — including the honest
                 // "records are off" — rather than leaving that to a button nobody presses.
                 loadOlder()
@@ -233,7 +233,8 @@ struct ConversationStackView: View {
             if let note = HistoryNotice.coverage(
                 history.paging.coverage,
                 reachedStart: history.paging.reachedStart,
-                oldest: oldestRecorded
+                oldest: oldestRecorded,
+                sharedBranch: history.paging.sharedBranch
             ) {
                 Text(note)
             }
@@ -267,6 +268,15 @@ struct ConversationStackView: View {
             let whole = body?.isComplete == true ? body?.text : nil
             return ConversationItem(recorded: recorded, text: whole ?? recorded.preview)
         }
+    }
+
+    /// Which branch of a shared transcript this window is (A8), for the record store to
+    /// read the ancestry above.
+    ///
+    /// The pane below is already this window's branch; this hands the same fact to the
+    /// history above it, so the two cannot disagree about whose conversation this is.
+    private var branchTip: String? {
+        HistorySnapshot.branchTip(forSnapshotItems: conversation.items.map(\.id), shared: conversation.shared)
     }
 
     /// Ask for the page before the oldest row on screen, remembering where the reader is.

@@ -357,7 +357,7 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
           session: { type: "string", minLength: 1, maxLength: HISTORY_ID_MAX_BYTES,
             description: "Recorded session ID or exact live session ID. Use self only for your verified caller. Labels are not IDs." },
           branch: { type: "string", minLength: 1, maxLength: HISTORY_ID_MAX_BYTES,
-            description: "Optional recorded Claude item ID whose ancestry to read. Omit for all indexed items; keep it unchanged while following a page cursor." },
+            description: "Optional ancestry tip whose branch to read: a recorded Claude item ID, or that message's own provider UUID. Omit for all indexed items; keep it unchanged while following a page cursor. A tip that cannot be proven reads every branch and reports coverage.branch as all." },
           before: { type: "string", minLength: 1, maxLength: HISTORY_CURSOR_MAX_BYTES,
             description: "Opaque previousCursor from an earlier page for this session and branch." },
           limit: { type: "integer", minimum: 1, maximum: HISTORY_MAX_LIMIT, default: HISTORY_DEFAULT_LIMIT },

@@ -82,10 +82,19 @@ branch, item or API is refused. Cursor formats are private to the daemon.
 Compare it with a fresh page to detect changes; it is not a delta cursor and cannot
 be passed as `before`. Delta/watch reads are deferred.
 
-Optional `branch` is an indexed Claude item ID at the desired ancestry tip. It
-includes all content blocks for ancestor message UUIDs and excludes siblings.
-Missing, cyclic or more than 2,048 ancestors, and providers without indexed item
-ancestry, return `branch-unavailable`. Omitting it returns all indexed items.
+Optional `branch` is the desired ancestry TIP: an indexed Claude item ID, or that
+message's own provider UUID, which is what a live row carries. It includes all content
+blocks for ancestor message UUIDs and excludes siblings. The ancestry is resolved at the
+traversal's insertion fence, so every page of one traversal reads the branch that
+traversal was opened against, and a message arriving mid-read cannot restart it.
+
+A tip that cannot be proven — not indexed yet, a parent that never arrived, a cycle,
+more than 20,000 ancestors, or a provider without indexed item ancestry — returns all
+indexed items rather than an error, and says so: `coverage.branch` is `"ancestry"` only
+when the tip was proven and `"all"` otherwise, so a reader can tell someone that what is
+above their conversation is every branch of it. Omitting `branch` also returns all
+indexed items. `history.page` therefore no longer returns `branch-unavailable`; the code
+remains for readers talking to an older daemon that still sends it.
 
 ## Identity
 
@@ -98,8 +107,8 @@ by. An id too long to be usable is omitted rather than truncated.
 
 Ancestry is the provider's parent link rather than a record id. A parent indexed after
 its child — another file, a fork's copy, a backfill running backwards — completes that
-child's ancestry as soon as it arrives, with nothing to repair. `branch` still takes an
-indexed item id at the tip.
+child's ancestry as soon as it arrives, with nothing to repair. `branch` takes either id
+at the tip: the record's own, or the provider's.
 
 A transcript can be renamed, rotated or replaced under a reader. A rename keeps the
 source's cursor and the session's epoch: the bytes did not change. A replacement — a

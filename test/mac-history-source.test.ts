@@ -59,12 +59,42 @@ describe("the Mac app reads recorded history", () => {
   });
 
   test("changing session cancels what is in flight instead of letting it land", () => {
-    const select = sliceFrom(store, "func select(session: String?)", "/// The newest page");
+    const select = sliceFrom(store, "func select(session: String?, branchTip: String?)", "/// The newest page");
     expect(select).toContain("pageTask?.cancel()");
     expect(select).toContain("for task in bodyTasks.values { task.cancel() }");
-    expect(select).toContain("paging.select(session: next)");
+    expect(select).toContain("paging.select(session: next, branchTip: branchTip)");
     // And a late answer is refused by generation even if its task was not cancelled.
     expect(store).toContain("guard let store = self, store.paging.generation == generation");
+  });
+
+  test("each window asks the record for its own branch, and is told when it did not get it", () => {
+    // Two windows of one transcript are ONE indexed session (A8, #170), so a page asked
+    // for without a branch is both windows' messages — prepended above a pane that is
+    // only ever one window's.
+    const page = sliceFrom(store, "struct ConchHistoryPageRequest", "struct ConchHistoryItemRequest");
+    expect(page).toContain("try container.encodeIfPresent(branch, forKey: .branch)");
+    expect(store).toContain("branch: paging.branchTip,");
+    // The tip is the newest live row that names a provider message, taken from the pane
+    // the daemon already picked for this window.
+    expect(conversation).toContain("HistorySnapshot.branchTip(forSnapshotItems: conversation.items");
+    expect(conversation.match(/history\.select\(session: conversation\.sessionId, branchTip: branchTip\)/g)?.length).toBe(2);
+    expect(panels).toContain("forSnapshotItems: (conversation?.items ?? []).map");
+
+    // Captured once, with the session: a tip that moved as messages arrived would be a
+    // different ancestry under an open cursor, and the store answers that with a stale
+    // cursor — which empties the transcript being scrolled and starts it again.
+    expect(store).toContain("func select(session: String?, branchTip: String?)");
+    expect(store).toContain("paging.select(session: next, branchTip: branchTip)");
+
+    // And where the record could not prove the branch, the reader says so rather than
+    // passing another window's messages off as this one's.
+    expect(store).toContain("branch: coverage?.branch");
+    expect(conversation).toContain("sharedBranch: history.paging.sharedBranch");
+    expect(history).toContain("public var sharedBranch: Bool");
+    // Only a session keyed per window (`<session>#<pid>`) has another window's messages
+    // to show by mistake; the record runs behind the pane, so on a lone session an
+    // unproven tip is ordinary and says nothing worth saying.
+    expect(history).toContain("branchTip != nil && coverage?.branch == \"all\" && session.contains(\"#\")");
   });
 
   test("a body is read in chunks and only kept once it is whole", () => {
@@ -147,7 +177,7 @@ describe("the Mac app reads recorded history", () => {
     const turns = sliceFrom(panels, "static func turns(", "/// Full screen is where");
     expect(turns).toContain("whole[HistorySnapshot.nativeId(forSnapshotItem: $0.id)] ?? $0.text");
     const whole = sliceFrom(panels, "private func readWhole(", "/// The live voice state");
-    expect(whole).toContain("history.select(session: row.id)");
+    expect(whole).toContain("history.select(session: row.id, branchTip: HistorySnapshot.branchTip(");
     expect(whole).toContain("HistorySnapshot.wasCut($0.text, cap: 4_000)");
     expect(whole).toContain("history.loadFullBodies(forSnapshotItems: cut)");
     expect(panels).toContain(".onChange(of: panels.isFullScreen) { _, full in if full { readWhole(row) } }");

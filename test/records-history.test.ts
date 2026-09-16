@@ -206,7 +206,7 @@ test("structured-only item bodies retain tool metadata and body cursors cannot c
   expect(store.historyPage({ session: session.id, before: cursor }, owner)).toMatchObject({ code: "invalid-cursor" });
 });
 
-test("Claude ancestry includes all UUID blocks, excludes siblings and refuses missing/cyclic/Codex ancestry", () => {
+test("Claude ancestry includes all UUID blocks, excludes siblings, and reads every branch when a tip is unprovable", () => {
   const store = open();
   ingest(store, [user("root", "root"), { type: "assistant", uuid: "answer", parentUuid: "root", message: {
     role: "assistant", content: [{ type: "text", text: "part one" }, { type: "text", text: "part two" }],
@@ -218,25 +218,56 @@ test("Claude ancestry includes all UUID blocks, excludes siblings and refuses mi
   expect(branch.coverage.branch).toBe("ancestry");
   const cursor = page(store, { session: session.id, branch: tip, limit: 1 }).previousCursor!;
   expect(store.historyPage({ session: session.id, before: cursor }, owner)).toMatchObject({ code: "invalid-cursor" });
-  expect(store.historyPage({ session: session.id, branch: "missing" }, owner)).toMatchObject({ code: "branch-unavailable" });
+  // The provider's own id for that message is a tip too: it is the id a live row holds.
+  const nativeTip = all.items.find((entry) => entry.preview === "a")!.nativeId!;
+  expect(page(store, { session: session.id, branch: nativeTip }).items.map((entry) => entry.preview).sort())
+    .toEqual(["a", "part one\npart two", "root"]);
+  // A tip that proves nothing reads every branch and says so, rather than emptying a
+  // reader over an id the index has not caught up with.
+  const missing = page(store, { session: session.id, branch: "missing" });
+  expect(missing.items.map((entry) => entry.preview).sort()).toEqual(["a", "b", "part one\npart two", "root"]);
+  expect(missing.coverage.branch).toBe("all");
   const body = item(store, tip);
   expect(body.encoding).toBe("text");
   const db = new Database(store.path);
   db.query("UPDATE items SET parent_native_id=native_id WHERE id=?").run(tip); db.close();
-  expect(store.historyPage({ session: session.id, branch: tip }, owner)).toMatchObject({ code: "branch-unavailable" });
-  ingest(store, [], { ...session, id: "codex", nativeId: "codex", provider: "codex" });
-  expect(store.historyPage({ session: "codex", branch: tip }, owner)).toMatchObject({ code: "branch-unavailable" });
+  expect(page(store, { session: session.id, branch: tip }).coverage.branch).toBe("all");
 });
 
-test("missing parents and ancestry beyond the metadata traversal budget are refused", () => {
+test("a Codex session has no indexed ancestry, so a tip changes nothing about what it reads", () => {
+  const store = open();
+  const codex = { ...session, id: "codex", nativeId: "codex-native", provider: "codex" as const };
+  const spoke = (role: string, text: string, at: number) => ({ type: "response_item", timestamp: new Date(at).toISOString(),
+    payload: { type: "message", role, content: [{ type: role === "user" ? "input_text" : "output_text", text }] } });
+  ingest(store, [spoke("user", "codex question", 1000), spoke("assistant", "codex answer", 2000)], codex, "codex-source");
+  const plain = page(store, { session: "codex" });
+  expect(plain.items.map((entry) => entry.preview)).toEqual(["codex question", "codex answer"]);
+  // Codex rollouts carry no parent link to walk, so asking for a branch is answered the
+  // way it always has been: everything, reported as everything.
+  const tipped = page(store, { session: "codex", branch: plain.items[1]!.id });
+  expect(tipped.items).toEqual(plain.items);
+  expect(tipped.coverage).toEqual(plain.coverage);
+  expect(tipped.coverage.branch).toBe("all");
+});
+
+test("a real session's depth is followed, and a parent that never arrived reads every branch", () => {
   const store = open();
   const entries = Array.from({ length: 2050 }, (_, i) => user(`node-${i}`, `node ${i}`, i + 1, i ? `node-${i - 1}` : null));
   ingest(store, entries);
   const tip = page(store, { session: session.id, limit: 1 }).items[0]!.id;
-  expect(store.historyPage({ session: session.id, branch: tip }, owner)).toMatchObject({ code: "branch-unavailable" });
+  // A shared session is thousands of records deep — #170's was 2,813 — so a traversal
+  // budget a real session trips would hand back every branch in exactly the place two
+  // windows need telling apart.
+  const deep = page(store, { session: session.id, branch: tip, limit: 3 });
+  expect(deep.items.map((entry) => entry.preview)).toEqual(["node 2047", "node 2048", "node 2049"]);
+  expect(deep.coverage.branch).toBe("ancestry");
   ingest(store, [user("orphan", "orphan", 5000, "not-indexed")], session, "orphan-source");
   const orphan = page(store, { session: session.id, limit: 1 }).items[0]!.id;
-  expect(store.historyPage({ session: session.id, branch: orphan }, owner)).toMatchObject({ code: "branch-unavailable" });
+  const unprovable = page(store, { session: session.id, branch: orphan });
+  expect(unprovable.coverage.branch).toBe("all");
+  // Every branch: the orphan AND the chain it is not attached to, not the orphan alone.
+  expect(unprovable.items.map((entry) => entry.preview)).toContain("orphan");
+  expect(unprovable.items.map((entry) => entry.preview)).toContain("node 2049");
 });
 
 test("metadata pages honor the actual byte budget and preserve every anchor", () => {
@@ -311,7 +342,8 @@ test("ancestry heals when a parent is indexed after its child, and a fork keeps 
   ingest(store, [{ type: "assistant", uuid: "child", parentUuid: "parent", timestamp: new Date(3000).toISOString(),
     message: { role: "assistant", content: "child" } }], session, "b-source");
   const tip = page(store).items.find((entry) => entry.nativeId === "child")!.id;
-  expect(store.historyPage({ session: session.id, branch: tip }, owner)).toMatchObject({ code: "branch-unavailable" });
+  // Nothing above it is indexed yet, so this tip proves nothing: every branch, said so.
+  expect(page(store, { session: session.id, branch: tip }).coverage.branch).toBe("all");
   // The parent arrives later, from another file. Nothing re-reads the child's line.
   ingest(store, [user("parent", "parent", 1000)], session, "a-source");
   expect(page(store, { session: session.id, branch: tip }).items.map((entry) => entry.preview)).toEqual(["parent", "child"]);

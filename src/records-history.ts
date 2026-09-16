@@ -13,7 +13,14 @@ type PageCursor = Scope & { kind: "page"; fence: number; at: number; order: stri
 type BodyCursor = Scope & { kind: "body"; item: string; revision: number; offset: number };
 type Cursor = PageCursor | BodyCursor;
 type Branch = { fingerprint: string | null; nativeIds: string[] };
-const MAX_ANCESTORS = 2048;
+// A guard against a cycle or an absurd file, not a working limit: a real shared session
+// is thousands of records deep (#170's was 2,813), and a ceiling a real session trips
+// would hand back "every branch" exactly where two windows need telling apart.
+//
+// ponytail: the walk is one indexed lookup per ancestor — ~40 ms at 12,000, the largest
+// session in this store, and only on an explicit page read. Materialise the chain per
+// traversal if a page read is ever measured slow.
+const MAX_ANCESTORS = 20_000;
 const PREVIEW_CHARACTERS = 240;
 const BODY_READ_BYTES = 24 * 1024;
 const utf8 = new TextDecoder("utf-8", { fatal: true });
@@ -104,31 +111,44 @@ export class RecordsHistory {
   /**
    * The ancestry above one item, walked by the PROVIDER's parent ids.
    *
-   * The tip is a record item id because that is what a reader holds; every hop after it
-   * follows `parent_native_id`, which is the id the transcript itself wrote. That is what
-   * makes ancestry independent of ingestion order: a parent read after its child, out of
-   * another file or a fork's copy, resolves as soon as it is indexed, where a record id
-   * chosen before the parent existed could only ever dangle.
+   * The tip is whichever id the reader holds: the record's own item id, or the
+   * provider's id for that message — which is what an app carries, because the live row
+   * it takes its tip from IS the provider's message. Every hop after it follows
+   * `parent_native_id`, the id the transcript itself wrote. That is what makes ancestry
+   * independent of ingestion order: a parent read after its child, out of another file
+   * or a fork's copy, resolves as soon as it is indexed, where a record id chosen before
+   * the parent existed could only ever dangle.
+   *
+   * Walked at the traversal's insertion FENCE, so the ancestry a cursor was opened
+   * against is the ancestry every later page of it reads. Without that, a message
+   * landing while someone scrolls re-fingerprints the branch and the reader restarts
+   * under them.
+   *
+   * A tip that cannot be PROVEN — not indexed yet, a parent that never arrived, a cycle,
+   * a provider with no indexed ancestry — reads every branch rather than failing, and
+   * `coverage.branch` stays "all" so the reader can say so instead of passing another
+   * window's messages off as this one's. Refusing would empty a transcript someone is
+   * reading because their tip is one message ahead of the index.
    */
-  private branch(session: Session, tip?: string): Branch | HistoryError {
-    if (!tip) return { fingerprint: null, nativeIds: [] };
-    if (session.provider !== "claude") return historyError("branch-unavailable", "this provider has no indexed item ancestry");
-    const ancestor = this.db.query("SELECT native_id,parent_native_id FROM items WHERE session_id=? AND native_id=? ORDER BY order_key,id LIMIT 1");
+  private branch(session: Session, tip: string | undefined, fence: number): Branch {
+    const allBranches = (): Branch => ({ fingerprint: null, nativeIds: [] });
+    if (!tip || session.provider !== "claude") return allBranches();
+    const ancestor = this.db.query(`SELECT native_id,parent_native_id FROM items
+      WHERE session_id=? AND native_id=? AND created_sequence<=? ORDER BY order_key,id LIMIT 1`);
+    const byItemId = this.db.query("SELECT native_id,parent_native_id FROM items WHERE session_id=? AND id=? AND created_sequence<=?")
+      .get(session.id, tip, fence) as { native_id: string | null; parent_native_id: string | null } | null;
+    let row = byItemId ?? (ancestor.get(session.id, tip, fence) as typeof byItemId);
     const nativeIds = new Set<string>();
     const chain: Array<[string, string | null]> = [];
-    let row = this.db.query("SELECT native_id,parent_native_id FROM items WHERE session_id=? AND id=?")
-      .get(session.id, tip) as { native_id: string | null; parent_native_id: string | null } | null;
     while (row?.native_id) {
-      if (nativeIds.has(row.native_id) || nativeIds.size >= MAX_ANCESTORS) {
-        return historyError("branch-unavailable", "indexed ancestry is cyclic or exceeds its traversal limit");
-      }
+      if (nativeIds.has(row.native_id) || nativeIds.size >= MAX_ANCESTORS) return allBranches();
       nativeIds.add(row.native_id);
       chain.push([row.native_id, row.parent_native_id]);
       if (row.parent_native_id === null) break;
-      row = ancestor.get(session.id, row.parent_native_id) as typeof row;
-      if (!row) return historyError("branch-unavailable", "indexed ancestry is incomplete");
+      row = ancestor.get(session.id, row.parent_native_id, fence) as typeof byItemId;
+      if (!row) return allBranches();
     }
-    if (!nativeIds.size) return historyError("branch-unavailable", "indexed ancestry is incomplete");
+    if (!nativeIds.size) return allBranches();
     return { fingerprint: createHash("sha256").update(JSON.stringify(chain)).digest("base64url"), nativeIds: [...nativeIds] };
   }
 
@@ -163,13 +183,14 @@ export class RecordsHistory {
     const decoded = request.before ? this.decode(request.before, this.scope(session, request.branch, null), "page", false) : undefined;
     if (decoded && "error" in decoded) return decoded;
     const cursor = decoded as PageCursor | undefined;
-    const ancestry = this.branch(session, request.branch);
-    if ("kind" in ancestry) return ancestry;
+    // Before the ancestry, because the ancestry is read AT this fence: one traversal,
+    // one branch, however much arrives while someone is reading it.
+    const fence = cursor?.fence ?? session.change_sequence;
+    const ancestry = this.branch(session, request.branch, fence);
     const scope = this.scope(session, request.branch, ancestry.fingerprint);
     if (cursor && cursor.ancestry !== ancestry.fingerprint) return {
       ...historyError("stale-cursor", "indexed ancestry changed; request a fresh page"), epoch: scope.epoch,
     };
-    const fence = cursor?.fence ?? session.change_sequence;
     const parameters: Array<string | number> = [session.id, fence];
     let where = "i.session_id=? AND i.created_sequence<=?";
     if (ancestry.nativeIds.length) {
@@ -184,7 +205,9 @@ export class RecordsHistory {
     const rows = this.db.query(`SELECT ${META} FROM items i WHERE ${where}
       ORDER BY COALESCE(i.at,0) DESC,i.order_key DESC,i.id DESC LIMIT ?`).all(...parameters, limit + 1) as any[];
     const count = Math.min(limit, rows.length);
-    const coverage = this.coverage(session.id, !!request.branch);
+    // What was actually read, never what was asked for: a fallback reporting "ancestry"
+    // would be this defect with a label on it.
+    const coverage = this.coverage(session.id, ancestry.nativeIds.length > 0);
     const changeCursor = "hc1." + createHmac("sha256", this.key).update(JSON.stringify([scope, session.change_sequence, coverage])).digest("base64url");
     const base = { kind: "history-page" as const, session: session.id, changeCursor,
       coverage, epoch: scope.epoch };

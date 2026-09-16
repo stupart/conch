@@ -64,19 +64,27 @@ public struct HistoryCoverage: Equatable, Sendable {
     public let replayRequired: Bool
     public let indexedBytes: Int
     public let observedBytes: Int
+    /// Which branch these items are: `"ancestry"` when the reader's tip was proven,
+    /// `"all"` when every branch of the transcript was read.
+    ///
+    /// Nil from a daemon too old to say, which is not a claim either way — and so never
+    /// the grounds for telling someone their history is somebody else's.
+    public let branch: String?
 
     public init(
         sources: Int = 0,
         statuses: [String: Int] = [:],
         replayRequired: Bool = false,
         indexedBytes: Int = 0,
-        observedBytes: Int = 0
+        observedBytes: Int = 0,
+        branch: String? = nil
     ) {
         self.sources = sources
         self.statuses = statuses
         self.replayRequired = replayRequired
         self.indexedBytes = indexedBytes
         self.observedBytes = observedBytes
+        self.branch = branch
     }
 
     /// Every source read to its end, and nothing waiting to be read again.
@@ -144,6 +152,11 @@ public struct HistoryPaging: Equatable, Sendable {
     /// back under the eye once older messages have been added above it.
     public private(set) var anchor: String?
     public private(set) var generation: Int
+    /// The tip of THIS window's branch, sent with every page so the record answers with
+    /// one window's history rather than both (A8, #170).
+    ///
+    /// Captured when the session is selected and never again — see `select`.
+    public private(set) var branchTip: String?
     /// The most recorded items this reader will hold, or nil for no ceiling.
     ///
     /// The Mac has no ceiling: it lays out a whole session and has the memory to.
@@ -166,6 +179,7 @@ public struct HistoryPaging: Equatable, Sendable {
         status = .idle
         anchor = nil
         generation = 0
+        branchTip = nil
     }
 
     /// Holding as much as this reader will. Not the same as having reached the start:
@@ -203,12 +217,40 @@ public struct HistoryPaging: Equatable, Sendable {
     }
 
     /// A different session is a different reader. Nothing in flight for the old one may land here.
-    public mutating func select(session: String) {
+    ///
+    /// `branchTip` is captured HERE and nowhere else: the newest row of the live pane at
+    /// the moment this session was selected. That pane is already this window's branch —
+    /// the daemon picked it from the transcript's own signals — so its newest message is
+    /// a tip the record can walk the ancestry above.
+    ///
+    /// Once, because a tip that moved would be a different ancestry under an open cursor:
+    /// the store would answer `stale-cursor`, and the transcript someone is scrolling
+    /// would empty and start again every time the session said something.
+    public mutating func select(session: String, branchTip: String? = nil) {
         guard session != self.session else { return }
         let next = HistoryPaging(session: session, itemCap: itemCap)
         let generation = self.generation + 1
         self = next
         self.generation = generation
+        self.branchTip = branchTip
+    }
+
+    /// Every branch of a shared transcript is what is above the live conversation: this
+    /// reader asked for its own and the record could not prove which that is.
+    ///
+    /// Three things have to be true, and the third is why this is not noise. The record
+    /// is always a little behind the pane — the tip can be a message the indexer has not
+    /// reached yet — so an unproven tip is ordinary and momentary, and on a session with
+    /// ONE window every branch is that window's anyway. Only a session conch is keying
+    /// per window has another window's messages to show by mistake, and the daemon says
+    /// which those are in the id itself: `<session>#<pid>` while an id is shared, the
+    /// plain id when it is not (`src/window-key.ts`).
+    ///
+    /// A missing tip is not a failed proof either — it is a reader that never claimed a
+    /// branch (a Codex session, or one with no live pane to take a tip from), and those
+    /// read exactly as they always have.
+    public var sharedBranch: Bool {
+        branchTip != nil && coverage?.branch == "all" && session.contains("#")
     }
 
     /// Begin a load, remembering where the reader is looking. The returned generation tags the request.
@@ -255,7 +297,8 @@ public struct HistoryPaging: Equatable, Sendable {
         }
     }
 
-    /// Drop everything bound to the old index generation, keep the anchor, and refuse what is in flight.
+    /// Drop everything bound to the old index generation, keep the anchor and the tip,
+    /// and refuse what is in flight. The epoch moved; which window this is did not.
     public mutating func restart() {
         items = []
         epoch = nil
@@ -350,11 +393,30 @@ public enum HistoryNotice {
     /// further back, and the machine with the memory to read it is named.
     public static let cap = "That's as far back as this phone will hold — the rest of this session is on your Mac."
 
+    /// Everything above the live conversation belongs to more than one window, because
+    /// the record could not prove which branch is this one's.
+    ///
+    /// The pane says this about ITSELF when the daemon cannot choose; this says it about
+    /// the messages above it, which are chosen somewhere else and can be every branch
+    /// while the pane is exactly one.
+    public static let allBranches =
+        "Earlier messages are from every branch of this transcript — conch couldn't tell which is this window's."
+
     /// What to say above the oldest message on screen, or nil when there is nothing worth saying.
     ///
     /// `oldest` is already written out by the caller: a date in the reader's own locale
     /// belongs to the view, and a note that reads differently in Tokyo is not a note a test can hold.
-    public static func coverage(_ coverage: HistoryCoverage?, reachedStart: Bool, oldest: String? = nil) -> String? {
+    ///
+    /// Whose messages these are outranks how completely they were recorded: "still
+    /// reading" is a sentence that stops being true a moment later, and "these may be
+    /// another window's" does not.
+    public static func coverage(
+        _ coverage: HistoryCoverage?,
+        reachedStart: Bool,
+        oldest: String? = nil,
+        sharedBranch: Bool = false
+    ) -> String? {
+        if sharedBranch { return allBranches }
         guard let coverage else { return nil }
         if coverage.isIndexing { return "Still reading this session's history — earlier messages may appear." }
         if coverage.isComplete { return nil }
@@ -388,6 +450,26 @@ public enum HistorySnapshot {
             value = String(value[..<range.lowerBound])
         }
         return value
+    }
+
+    /// The tip of this window's branch: the newest live row carrying a provider message id.
+    ///
+    /// The pane is already one window's branch (A8) — and where the daemon could not
+    /// tell which branch that is, it says `shared`, and neither can this: no tip, so
+    /// history reads every branch, which is what the pane beneath it is showing anyway.
+    ///
+    /// Only a message UUID will do. A tool row is keyed by its CALL id, a Codex row by a
+    /// hash of its own text, and a row from a record with no uuid by its position in the
+    /// conversation. None of those names a message whose ancestry can be walked, and
+    /// sending one would ask the store to prove something it cannot — which reads back
+    /// as "this is every branch" on a session that has only ever had one.
+    public static func branchTip(forSnapshotItems ids: [String], shared: Bool) -> String? {
+        guard !shared else { return nil }
+        for id in ids.reversed() {
+            let native = nativeId(forSnapshotItem: id)
+            if UUID(uuidString: native) != nil { return native }
+        }
+        return nil
     }
 
     /// Whether the snapshot cut this text to fit the wire.

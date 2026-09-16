@@ -24,15 +24,20 @@ import Foundation
 /// cursor" — and the difference between those two is a whole transcript.
 struct PhoneHistoryPageRequest: Encodable, Sendable {
     let session: String
+    /// The tip of this window's branch: which of a shared transcript's conversations
+    /// this reader is reading (A8). Omitted when nothing proves one, and the record
+    /// then answers with every branch and says that is what it did.
+    var branch: String?
     var before: String?
     var limit: Int?
 
-    private enum CodingKeys: String, CodingKey { case kind, session, before, limit }
+    private enum CodingKeys: String, CodingKey { case kind, session, branch, before, limit }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode("history-page", forKey: .kind)
         try container.encode(session, forKey: .session)
+        try container.encodeIfPresent(branch, forKey: .branch)
         try container.encodeIfPresent(before, forKey: .before)
         try container.encodeIfPresent(limit, forKey: .limit)
     }
@@ -75,6 +80,9 @@ struct PhoneHistoryReply: Decodable, Sendable {
         let replayRequired: Bool?
         let indexedBytes: Int?
         let observedBytes: Int?
+        /// "ancestry" when this window's branch was proven, "all" when every branch was
+        /// read. Absent from a Mac too old to say.
+        let branch: String?
     }
 
     let kind: String
@@ -113,7 +121,8 @@ struct PhoneHistoryReply: Decodable, Sendable {
                 statuses: coverage?.statuses ?? [:],
                 replayRequired: coverage?.replayRequired ?? false,
                 indexedBytes: coverage?.indexedBytes ?? 0,
-                observedBytes: coverage?.observedBytes ?? 0
+                observedBytes: coverage?.observedBytes ?? 0,
+                branch: coverage?.branch
             )
         )
     }
@@ -174,7 +183,12 @@ final class HistoryStore: ObservableObject {
 
     /// Follow a session. A different one is a different reader: everything in flight
     /// for the old session is cancelled and refused rather than merged into this one.
-    func follow(session: String, on bridge: BridgeClient) {
+    ///
+    /// `branchTip` says which branch of a shared transcript this window is (A8). It is
+    /// captured here, once, and carried by every page this session reads — re-reading it
+    /// as messages arrive would change the ancestry under an open cursor and restart the
+    /// transcript someone is scrolling.
+    func follow(session: String, branchTip: String?, on bridge: BridgeClient) {
         self.bridge = bridge
         guard session != paging.session else { return }
         pageTask?.cancel()
@@ -186,7 +200,7 @@ final class HistoryStore: ObservableObject {
         bodyOrder = []
         bodyNative = [:]
         wantedBodies = []
-        paging.select(session: session)
+        paging.select(session: session, branchTip: branchTip)
         // One read answers "is any of this recorded" — including the honest "records
         // are off" — rather than leaving that to a button nobody presses.
         loadOlder()
@@ -199,6 +213,7 @@ final class HistoryStore: ObservableObject {
         let generation = paging.beginLoad(anchor: anchor)
         let request = PhoneHistoryPageRequest(
             session: paging.session,
+            branch: paging.branchTip,
             before: paging.previousCursor,
             limit: Self.pageLimit
         )

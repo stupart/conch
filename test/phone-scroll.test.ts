@@ -36,7 +36,7 @@ test("switching sessions re-arms the follow", () => {
   // is refused rather than merged into this one's transcript.
   const onSwitch = session.slice(session.indexOf(".onChange(of: sessionId)"));
   const block = onSwitch.slice(0, 600);
-  expect(block).toContain("history.follow(session: sessionId, on: bridge)");
+  expect(block).toContain("history.follow(session: sessionId, branchTip: branchTip, on: bridge)");
   expect(block).toContain("pinnedToBottom = true");
   expect(block).toContain("scrollToBottom(scroller, animated: false)");
 });
