@@ -217,4 +217,56 @@ final class HistoryTests: XCTestCase {
             ["r1"]
         )
     }
+
+    // MARK: - What a phone will hold
+
+    func testAPhoneStopsPagingOnceItHoldsAllItWill() {
+        var paging = HistoryPaging(session: "a", itemCap: 4)
+        paging.apply(page: page(["3", "4"], previousCursor: "older"), generation: paging.beginLoad())
+        XCTAssertFalse(paging.isAtCap)
+        XCTAssertTrue(paging.canLoadOlder)
+
+        paging.apply(page: page(["1", "2"], previousCursor: "older-still"), generation: paging.beginLoad(anchor: "3"))
+
+        XCTAssertEqual(paging.items.map(\.id), ["1", "2", "3", "4"], "nothing is dropped; the reader stops asking")
+        XCTAssertTrue(paging.isAtCap)
+        XCTAssertFalse(paging.canLoadOlder, "the record goes further back, but this phone is full")
+        XCTAssertFalse(paging.reachedStart, "which is NOT the same as having reached the start of the session")
+        // And the reader is told where the rest of it is.
+        XCTAssertTrue(HistoryNotice.cap.contains("Mac"))
+    }
+
+    func testTheCeilingTravelsWithTheReaderAndIsNotInTheWayAfterARestart() {
+        var paging = HistoryPaging(session: "a", itemCap: 2)
+        paging.select(session: "b")
+        XCTAssertEqual(paging.itemCap, 2, "a different session is still the same phone")
+
+        paging.apply(page: page(["1", "2"], previousCursor: "older"), generation: paging.beginLoad())
+        XCTAssertTrue(paging.isAtCap)
+
+        // A stale epoch drops everything bound to it; the ceiling must not then read as full.
+        paging.restart()
+        XCTAssertEqual(paging.itemCap, 2)
+        XCTAssertFalse(paging.isAtCap)
+        XCTAssertTrue(paging.canLoadOlder)
+    }
+
+    func testTheMacKeepsReadingPastAnyCeiling() {
+        var paging = HistoryPaging(session: "a")
+        paging.apply(page: page(["1", "2", "3"], previousCursor: "older"), generation: paging.beginLoad())
+        XCTAssertNil(paging.itemCap)
+        XCTAssertFalse(paging.isAtCap, "no ceiling means no ceiling, however many pages arrive")
+        XCTAssertTrue(paging.canLoadOlder)
+    }
+
+    func testTheOldestOpenedBodiesAreReleasedFirst() {
+        let held = [(id: "a", bytes: 900_000), (id: "b", bytes: 900_000), (id: "c", bytes: 900_000)]
+        XCTAssertEqual(HistoryBudget.release(held, keepingUnder: 2_000_000), ["a"])
+        XCTAssertEqual(HistoryBudget.release(held, keepingUnder: 1_000_000), ["a", "b"])
+        XCTAssertEqual(HistoryBudget.release(held, keepingUnder: 5_000_000), [], "under budget releases nothing")
+        // The one being read is never released, however large: releasing it would
+        // empty the row that asked for it.
+        XCTAssertEqual(HistoryBudget.release([(id: "only", bytes: 9_000_000)], keepingUnder: 2_000_000), [])
+    }
+
 }

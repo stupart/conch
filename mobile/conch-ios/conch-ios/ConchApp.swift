@@ -173,7 +173,14 @@ struct ConchApp: App {
             UserDefaults.standard.bool(forKey: "conchFixtureOffline")
                 ? SilentTransport() as BridgeTransport
                 // `-conchFixtureRejected YES`: this Mac no longer knows this phone.
-                : FixtureTransport(url: $0, rejected: UserDefaults.standard.bool(forKey: "conchFixtureRejected"))
+                : FixtureTransport(
+                    url: $0,
+                    rejected: UserDefaults.standard.bool(forKey: "conchFixtureRejected"),
+                    // `-conchFixtureHistory loaded|partial|loading|off|error`: what a
+                    // recorded-history read answers, so the snapshot script can
+                    // photograph each state the reader has to draw.
+                    history: UserDefaults.standard.string(forKey: "conchFixtureHistory")
+                )
         }
         let created = BridgeClient(pairing: pairing, transport: LastStateTransport(fixture ?? Self.transport(for: pairing)))
         #else

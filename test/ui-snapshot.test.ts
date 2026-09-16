@@ -42,6 +42,9 @@ describe("phone fixture mode", () => {
     expect(all).toContain('UserDefaults.standard.string(forKey: "conchFixtureSession")');
     expect(all).toContain('UserDefaults.standard.bool(forKey: "conchFixtureTop")');
     expect(all).toContain('UserDefaults.standard.bool(forKey: "conchFixtureReview")');
+    // And which answer a recorded-history read gives, so the states above the live
+    // window — loaded, partial, loading, off, failed — can each be photographed.
+    expect(all).toContain('UserDefaults.standard.string(forKey: "conchFixtureHistory")');
   });
 
   test("the fixture reaches the UI through the app's own decoder, and deliverables are copies", () => {

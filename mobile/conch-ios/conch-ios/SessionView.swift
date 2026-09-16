@@ -28,6 +28,10 @@ struct SessionView: View {
     /// own visibility, which is how iOS answers what NSScrollView answers on
     /// the Mac.
     @State private var pinnedToBottom = true
+    /// This session's recorded history: everything above the live window, and the
+    /// whole text behind anything the snapshot cut. Owned here because it follows
+    /// whichever session is on screen, and one reader cannot hold two sessions' pages.
+    @StateObject private var history = HistoryStore()
 
     private static let bottomAnchor = "conversation-bottom"
 
@@ -162,6 +166,7 @@ struct SessionView: View {
                        !conversation.items.isEmpty {
                         ConversationStack(
                             bridge: bridge,
+                            history: history,
                             conversation: conversation,
                             optionReplyInFlight: optionReplyInFlight || isSending,
                             onSelectOption: answerQuestion,
@@ -226,6 +231,10 @@ struct SessionView: View {
                 .padding(.bottom, 12)
             }
             .onAppear {
+                // Everything above the live window, for this session. Before the
+                // fixture's early return below: the snapshot script photographs the
+                // TOP of a conversation, which is exactly where history is drawn.
+                history.follow(session: sessionId, on: bridge)
                 // The reported bug. A ScrollViewReader was already here and its
                 // proxy was never used once — `scroller` appeared exactly at
                 // its own declaration and nowhere else — so opening a session
@@ -248,9 +257,28 @@ struct SessionView: View {
             }
             .onChange(of: sessionId) { _, _ in
                 // A different session is a different conversation: start at its
-                // end, and re-arm the follow.
+                // end, and re-arm the follow. The recorded reader is told too —
+                // anything still in flight for the old session is refused, not merged.
+                history.follow(session: sessionId, on: bridge)
                 pinnedToBottom = true
                 scrollToBottom(scroller, animated: false)
+            }
+            // Older messages land ABOVE what you are reading and push it down. Putting
+            // the row you were on back under the eye is the whole difference between
+            // history arriving and the transcript jumping while you read it.
+            .onChange(of: history.paging.items.count) { previous, next in
+                // The FIRST page is not a prepend. It lands under a conversation
+                // sitting at its end, and scrolling to it would throw the reader to
+                // the top of a session they just opened.
+                guard previous > 0, next > previous, let anchor = history.paging.anchor else { return }
+                Task { @MainActor in
+                    // After layout: the rows are only there to scroll to once they
+                    // have been measured.
+                    await Task.yield()
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) { scroller.scrollTo(anchor, anchor: .top) }
+                }
             }
             // Focus used to be a trap: once the cursor entered the field there
             // was no way out short of sending or discarding, and the keyboard

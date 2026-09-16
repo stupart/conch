@@ -144,9 +144,21 @@ public struct HistoryPaging: Equatable, Sendable {
     /// back under the eye once older messages have been added above it.
     public private(set) var anchor: String?
     public private(set) var generation: Int
+    /// The most recorded items this reader will hold, or nil for no ceiling.
+    ///
+    /// The Mac has no ceiling: it lays out a whole session and has the memory to.
+    /// A phone does not — the largest session in this record store is twelve
+    /// thousand items, and every page held is laid out as well as retained. So the
+    /// phone stops asking rather than dropping: the store pages BACKWARDS only
+    /// (`docs/records-paging.md` has no forward cursor), so anything released to
+    /// make room could not be fetched again when the reader scrolled back down,
+    /// and a transcript with a hole torn in the middle of it is worse than one
+    /// that says plainly where it stops.
+    public private(set) var itemCap: Int?
 
-    public init(session: String = "") {
+    public init(session: String = "", itemCap: Int? = nil) {
         self.session = session
+        self.itemCap = itemCap
         epoch = nil
         items = []
         previousCursor = nil
@@ -156,9 +168,16 @@ public struct HistoryPaging: Equatable, Sendable {
         generation = 0
     }
 
+    /// Holding as much as this reader will. Not the same as having reached the start:
+    /// the record goes further back, and the Mac can read it.
+    public var isAtCap: Bool {
+        guard let itemCap else { return false }
+        return items.count >= itemCap
+    }
+
     /// Older messages exist and can be asked for. The first load is the one with no cursor yet.
     public var canLoadOlder: Bool {
-        guard status != .loading, status != .off else { return false }
+        guard status != .loading, status != .off, !isAtCap else { return false }
         return epoch == nil || previousCursor != nil
     }
 
@@ -168,7 +187,7 @@ public struct HistoryPaging: Equatable, Sendable {
     /// A different session is a different reader. Nothing in flight for the old one may land here.
     public mutating func select(session: String) {
         guard session != self.session else { return }
-        let next = HistoryPaging(session: session)
+        let next = HistoryPaging(session: session, itemCap: itemCap)
         let generation = self.generation + 1
         self = next
         self.generation = generation
@@ -309,6 +328,10 @@ public enum HistoryNotice {
     /// The record store is off. The only honest thing to show, with the one command that changes it.
     public static let off = "History isn't recorded for this session. Turn it on with: conch set records true"
 
+    /// The phone is holding as much of this session as it will. The record goes
+    /// further back, and the machine with the memory to read it is named.
+    public static let cap = "That's as far back as this phone will hold — the rest of this session is on your Mac."
+
     /// What to say above the oldest message on screen, or nil when there is nothing worth saying.
     ///
     /// `oldest` is already written out by the caller: a date in the reader's own locale
@@ -377,5 +400,33 @@ extension HistorySnapshot {
             if let oldest, let at = candidate.at, at >= oldest { return false }
             return true
         })
+    }
+}
+
+// MARK: - What a phone will hold
+
+/// The other half of the phone's memory ceiling: opened message bodies.
+///
+/// `HistoryPaging` bounds the ROWS, whose previews are 240 characters each. A
+/// body is unbounded — a tool result can be megabytes — so a reader who opens
+/// twenty of them has retained something no row count describes. Releasing one
+/// costs a request, not a message: it is read again on demand.
+public enum HistoryBudget {
+    /// What one phone holds in opened bodies at a time.
+    public static let phoneBodyBytes = 2 * 1024 * 1024
+
+    /// Which bodies to let go of, least recently read first, until what is kept fits.
+    ///
+    /// The most recently read is never released: it is the one being looked at, and
+    /// releasing it would empty the row that asked for it. One body larger than the
+    /// whole budget is therefore kept.
+    public static func release(_ sizes: [(id: String, bytes: Int)], keepingUnder limit: Int) -> [String] {
+        var total = sizes.reduce(0) { $0 + $1.bytes }
+        var released: [String] = []
+        for entry in sizes.dropLast() where total > limit {
+            released.append(entry.id)
+            total -= entry.bytes
+        }
+        return released
     }
 }

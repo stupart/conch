@@ -818,6 +818,42 @@ final class BridgeClient: ObservableObject {
         return markdown
     }
 
+    /// What a history read came back with.
+    enum HistoryOutcome {
+        /// The Mac answered. The body is the daemon's own JSON — a page, a body
+        /// chunk, the off reply, or an error — which the reader decodes.
+        case reply(Data)
+        /// Nothing came back to decode.
+        case unreachable(String)
+    }
+
+    /// One recorded-history read (`docs/records-paging.md`), over the phone's own
+    /// authenticated routes.
+    ///
+    /// The SAME path every other command takes: LAN or relay is the pairing's
+    /// business, not this call's. The daemon answers a refused read with a JSON
+    /// `history-error` under a non-200 status, so the body is decoded whenever
+    /// there is one — only an empty answer is "couldn't reach your Mac".
+    func readHistory(path: String, request: some Encodable) async -> HistoryOutcome {
+        guard let body = try? JSONEncoder().encode(request) else {
+            return .unreachable("The phone couldn't encode that history request.")
+        }
+        do {
+            // Longer than a LAN read needs and shorter than a stuck one: a history
+            // read is a SQLite query behind a worker, plus a relay round trip.
+            let response = try await perform(
+                authorizedRequest(method: "POST", path: path, body: body),
+                within: .seconds(15)
+            )
+            guard !response.body.isEmpty else {
+                return .unreachable("Your Mac didn't answer that history read.")
+            }
+            return .reply(response.body)
+        } catch {
+            return .unreachable(error.localizedDescription)
+        }
+    }
+
     /// Materialize a currently-scoped local deliverable for either transport.
     /// Relay files are decrypted chunk-by-chunk to a temporary file; LAN files
     /// use URLSession's disk-backed download path. Neither is assembled in RAM.
@@ -1005,10 +1041,15 @@ final class FixtureTransport: BridgeTransport, @unchecked Sendable {
     private let url: URL
     /// The Mac refused this phone, through the same signal a LAN 401 raises.
     private let rejected: Bool
+    /// What a recorded-history read should answer, or nil to answer nothing at all.
+    /// Handed in rather than read here: this file holds the pairing secret, and
+    /// nothing in it may touch defaults storage.
+    private let history: String?
 
-    init(url: URL, rejected: Bool = false) {
+    init(url: URL, rejected: Bool = false, history: String? = nil) {
         self.url = url
         self.rejected = rejected
+        self.history = history
     }
 
     func start() {
@@ -1027,10 +1068,132 @@ final class FixtureTransport: BridgeTransport, @unchecked Sendable {
     func stop() {}
     func reconnectNow() { start() }
 
-    // ponytail: every command answers 404. A fixture is read-only, and a
-    // missing /reply leaves the fixture's own conversation as the truth.
+    // ponytail: every command that is not a history read answers 404. A fixture
+    // is read-only, and a missing /reply leaves the fixture's own conversation as
+    // the truth.
+    //
+    // History is the exception because its states are the thing being
+    // photographed: `-conchFixtureHistory loaded|partial|loading|off|error`
+    // answers a recorded-history read the way a daemon in that state would.
     func request(_ request: BridgeRequest) async throws -> BridgeResponse {
-        BridgeResponse(status: 404, headers: [], body: Data())
+        guard request.path.hasPrefix("/history/") else {
+            return BridgeResponse(status: 404, headers: [], body: Data())
+        }
+        // No history state asked for: this session has nothing recorded above its live
+        // window, which is a complete answer and not a failure. Saying it as an empty
+        // page is what keeps every other fixture shot looking the way it always has —
+        // an unanswered read would put "your Mac didn't answer" over all of them.
+        guard let mode = history else {
+            let payload = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any]
+            if request.path == "/history/item" {
+                return Self.answer(["kind": "history-error", "code": "item-not-found",
+                                    "error": "That message isn't in the record."])
+            }
+            return Self.answer([
+                "kind": "history-page",
+                "session": payload?["session"] as? String ?? "",
+                "items": [],
+                "changeCursor": "change",
+                "epoch": "fixture-epoch",
+                "coverage": ["sources": 1, "statuses": ["complete": 1], "replayRequired": false,
+                             "indexedBytes": 0, "observedBytes": 0, "branch": "all", "order": "timestamp-source"],
+            ])
+        }
+        switch mode {
+        case "off":
+            return Self.answer(["kind": "history-off", "error": "history is off"])
+        case "error":
+            return Self.answer([
+                "kind": "history-error",
+                "code": "unavailable",
+                "error": "conch's record store isn't running.",
+            ])
+        case "loading":
+            // Never answers, so the reader stays in its loading state for the camera.
+            try await Task.sleep(for: .seconds(600))
+            return BridgeResponse(status: 404, headers: [], body: Data())
+        default:
+            break
+        }
+        let payload = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any]
+        if request.path == "/history/item" {
+            return Self.answer(Self.recordedBody(payload))
+        }
+        return Self.answer(recordedPage(payload, partial: mode == "partial"))
+    }
+
+    private static func answer(_ payload: [String: Any]) -> BridgeResponse {
+        BridgeResponse(
+            status: 200,
+            headers: [["content-type", "application/json"]],
+            body: (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+        )
+    }
+
+    /// A body read back in two chunks, so the chunked reader is exercised rather
+    /// than mimicked.
+    private static func recordedBody(_ payload: [String: Any]?) -> [String: Any] {
+        let item = payload?["item"] as? String ?? ""
+        guard payload?["bodyCursor"] is String else {
+            return ["kind": "history-item", "item": item, "revision": 1, "encoding": "text",
+                    "content": "The whole of this recorded message, ", "nextBodyCursor": "1"]
+        }
+        return ["kind": "history-item", "item": item, "revision": 1, "encoding": "text",
+                "content": "read back from the record store in two chunks."]
+    }
+
+    /// Two real pages of recorded items, built from the fixture's own conversation
+    /// so the rows above the live window read like the session they belong to. The
+    /// second page has no cursor, so paging terminates instead of spinning.
+    private func recordedPage(_ payload: [String: Any]?, partial: Bool) -> [String: Any] {
+        let session = payload?["session"] as? String ?? ""
+        let live = fixtureItems(session: session)
+        let base = Date().timeIntervalSince1970 * 1_000 - 3_600_000
+        let all = live.enumerated().map { index, item -> [String: Any] in
+            let kind = (item["kind"] as? String) ?? "assistant"
+            let text = (item["text"] as? String) ?? ""
+            let preview = String(text.prefix(240))
+            return [
+                "id": "rec-\(index)",
+                "kind": kind == "tool" ? "tool_call" : "message",
+                "role": kind == "user" ? "user" : "assistant",
+                "nativeId": "rec-native-\(index)",
+                "toolName": ((item["tool"] as? [String: Any])?["name"] as? String) ?? "tool",
+                "at": base + Double(index) * 1_000,
+                "revision": 1,
+                "orderKey": "\(index)",
+                "preview": preview.isEmpty ? "An earlier message in this session." : preview,
+                // More behind the preview than the preview shows, so a row can
+                // offer the rest of itself.
+                "bodyBytes": max(preview.utf8.count + 64, text.utf8.count),
+            ]
+        }
+        let half = max(1, all.count / 2)
+        let older = (payload?["before"] as? String) != nil
+        let items = older ? Array(all.prefix(half)) : Array(all.suffix(from: min(half, all.count)))
+        var page: [String: Any] = [
+            "kind": "history-page",
+            "session": session,
+            "items": items,
+            "changeCursor": "change",
+            "epoch": "fixture-epoch",
+            "coverage": partial
+                ? ["sources": 2, "statuses": ["complete": 1, "partial": 1], "replayRequired": false,
+                   "indexedBytes": 400, "observedBytes": 1_000, "branch": "all", "order": "timestamp-source"]
+                : ["sources": 1, "statuses": ["complete": 1], "replayRequired": false,
+                   "indexedBytes": 1_000, "observedBytes": 1_000, "branch": "all", "order": "timestamp-source"],
+        ]
+        if !older { page["previousCursor"] = "older" }
+        return page
+    }
+
+    private func fixtureItems(session: String) -> [[String: Any]] {
+        guard let data = try? Data(contentsOf: url),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let conversations = root["conversations"] as? [String: Any],
+              let conversation = conversations[session] as? [String: Any],
+              let items = conversation["items"] as? [[String: Any]] else { return [] }
+        return items
     }
 
     /// A COPY: the deliverable sheet deletes whatever file it is handed.

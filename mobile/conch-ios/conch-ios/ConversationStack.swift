@@ -1,3 +1,4 @@
+import ConchDesign
 import SwiftUI
 
 /// A session's conversation on the phone: your messages, replies and tool calls
@@ -8,6 +9,8 @@ import SwiftUI
 /// a scroll view inside a scroll view fights both.
 struct ConversationStack: View {
     @ObservedObject var bridge: BridgeClient
+    /// Everything older than the live window, and the whole text behind anything it cut.
+    @ObservedObject var history: HistoryStore
     let conversation: Conversation
     let optionReplyInFlight: Bool
     let onSelectOption: (String) -> Void
@@ -35,17 +38,23 @@ struct ConversationStack: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if conversation.truncated {
-                Text("Earlier messages not shown")
-                    .font(Type.caption)
-                    .foregroundStyle(Palette.textFaint)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            }
+            // Reaching the top is the request for the page before it — the same
+            // zero-height marker the end of the conversation already uses to answer
+            // "are we there right now?", pointed the other way.
+            Color.clear
+                .frame(height: 1)
+                .onAppear { loadOlder() }
+            historyHeader
             if conversation.shared {
                 Text("Shared with another window — both windows' messages are shown")
                     .font(Type.caption)
                     .foregroundStyle(Palette.textFaint)
                     .frame(maxWidth: .infinity, alignment: .center)
+            }
+            // What the record store holds above the live window: a recorded message
+            // is still a message, so it goes through the same row renderers.
+            ForEach(recordedRows) { item in
+                row(item).id(item.id)
             }
             ForEach(conversation.items) { item in
                 row(item).id(item.id)
@@ -66,6 +75,159 @@ struct ConversationStack: View {
         })
         .onChange(of: conversation.sessionId) { _, _ in linkFailure = nil }
     }
+
+    /// What the reader is told about everything above the live window: that older
+    /// messages can be asked for, that they are coming, that only part of the session
+    /// was recorded, that a read failed — or that nothing is being recorded at all.
+    ///
+    /// Each of those is a different answer to "why does this conversation start here",
+    /// and an empty conversation is another. They must not all read as the same shrug.
+    @ViewBuilder
+    private var historyHeader: some View {
+        VStack(spacing: 6) {
+            switch history.paging.status {
+            case .off:
+                // Not an error, and not an empty session: nothing is being recorded,
+                // and there is exactly one thing to do about it.
+                Text(HistoryNotice.off)
+            case .loading:
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading earlier messages…")
+                }
+            case let .failed(message):
+                VStack(spacing: 4) {
+                    Text(message)
+                    Button("Retry") { history.retry() }
+                        .font(Type.caption.weight(.semibold))
+                        .foregroundStyle(Palette.micOpen)
+                        .buttonStyle(.plain)
+                }
+            case .idle:
+                if history.paging.canLoadOlder {
+                    Button("Load earlier messages") { loadOlder() }
+                        .font(Type.caption.weight(.semibold))
+                        .foregroundStyle(Palette.micOpen)
+                        .buttonStyle(.plain)
+                } else if history.paging.isAtCap {
+                    // Held as much as this phone will. The record goes further back.
+                    Text(HistoryNotice.cap)
+                } else if conversation.truncated, history.paging.items.isEmpty {
+                    Text("Earlier messages not shown")
+                }
+            }
+            if let note = HistoryNotice.coverage(
+                history.paging.coverage,
+                reachedStart: history.paging.reachedStart,
+                oldest: oldestRecorded
+            ) {
+                Text(note)
+            }
+        }
+        .font(Type.caption)
+        .foregroundStyle(Palette.textFaint)
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    /// When the record starts, in the reader's own locale — the view's job, not the
+    /// state machine's, which would otherwise hold a string that reads differently in
+    /// every timezone it is tested from.
+    private var oldestRecorded: String? {
+        guard let at = history.paging.items.first?.at else { return nil }
+        return Date(timeIntervalSince1970: at / 1_000)
+            .formatted(date: .abbreviated, time: .shortened)
+    }
+
+    /// The recorded rows that belong above the live window.
+    private var recordedRows: [ConversationItem] {
+        // Undecorated, because the snapshot and the record name the same message
+        // differently: `tool:call_7` here is `call_7` there.
+        let live = Set(conversation.items.map { HistorySnapshot.nativeId(forSnapshotItem: $0.id) })
+        return HistorySnapshot.older(
+            history.paging.items,
+            thanSnapshot: live,
+            startingAt: conversation.items.first?.at
+        ).compactMap { recorded in
+            let body = history.body(for: recorded.id)
+            let whole = body?.isComplete == true ? body?.text : nil
+            return ConversationItem(recorded: recorded, text: whole ?? recorded.preview)
+        }
+    }
+
+    /// Ask for the page before the oldest row on screen, remembering where the reader
+    /// is so the view can put that row back under the eye afterwards.
+    private func loadOlder() {
+        guard history.paging.canLoadOlder else { return }
+        history.loadOlder(anchor: recordedRows.first?.id ?? conversation.items.first?.id)
+    }
+
+    /// The row's text: the record store's whole version when it has been read, else the
+    /// snapshot's — which for a long message is its tail rather than all of it.
+    private func text(of item: ConversationItem) -> String {
+        history.fullText(forSnapshotItem: item.id) ?? item.text
+    }
+
+    /// Whether the snapshot cut this row, and so whether the store has more of it.
+    private func wasCut(_ item: ConversationItem) -> Bool {
+        if let result = item.tool?.result { return HistorySnapshot.wasCut(result, cap: Self.toolResultCap) }
+        return HistorySnapshot.wasCut(item.text, cap: Self.messageCap)
+    }
+
+    private func loadFullBody(of item: ConversationItem) {
+        guard wasCut(item), history.fullText(forSnapshotItem: item.id) == nil else { return }
+        history.loadFullBodies(forSnapshotItems: [item.id])
+    }
+
+    /// A cut message ends in an offer to read the rest of it.
+    @ViewBuilder
+    private func cutTail(_ item: ConversationItem) -> some View {
+        if wasCut(item), history.fullText(forSnapshotItem: item.id) == nil {
+            if expandedToolIDs.contains(item.id) {
+                fullBodyStatus(for: item)
+            } else {
+                Button("Show the rest") {
+                    expandedToolIDs.insert(item.id)
+                    loadFullBody(of: item)
+                }
+                .font(Type.caption.weight(.semibold))
+                .foregroundStyle(Palette.micOpen)
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    /// How a body read is going, under the row waiting for it.
+    @ViewBuilder
+    private func fullBodyStatus(for item: ConversationItem) -> some View {
+        let native = HistorySnapshot.nativeId(forSnapshotItem: item.id)
+        let recorded = history.paging.items.first { $0.nativeId == native }
+        switch recorded.flatMap({ history.body(for: $0.id) })?.status {
+        case .some(.loading):
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Loading the rest…")
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textFaint)
+            }
+        case let .some(.failed(message)):
+            VStack(alignment: .leading, spacing: 4) {
+                Text(message)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textFaint)
+                Button("Retry") { history.loadFullBodies(forSnapshotItems: [item.id]) }
+                    .font(Type.caption.weight(.semibold))
+                    .foregroundStyle(Palette.micOpen)
+                    .buttonStyle(.plain)
+            }
+        default:
+            EmptyView()
+        }
+    }
+
+    /// The daemon's own caps, as `publishedConversation` applies them.
+    private static let messageCap = 4_000
+    private static let toolResultCap = 400
 
     @ViewBuilder
     private func row(_ item: ConversationItem) -> some View {
@@ -111,18 +273,28 @@ struct ConversationStack: View {
         case "material":
             MaterialRow(bridge: bridge, material: item.material, fallback: item.text, sessionId: conversation.sessionId)
         default:
-            MarkdownView(text: item.text)
-                .foregroundStyle(Palette.textPrimary)
+            VStack(alignment: .leading, spacing: 4) {
+                MarkdownView(text: text(of: item))
+                    .foregroundStyle(Palette.textPrimary)
+                cutTail(item)
+            }
         }
     }
 
     private func toolRow(_ item: ConversationItem) -> some View {
         let expanded = expandedToolIDs.contains(item.id)
-        let result = item.tool?.result ?? ""
+        // The record store's whole output once it has been read; until then the
+        // snapshot's first 400 characters of it.
+        let result = history.fullText(forSnapshotItem: item.id) ?? item.tool?.result ?? ""
         return VStack(alignment: .leading, spacing: 6) {
             Button {
                 guard !result.isEmpty else { return }
-                if expanded { expandedToolIDs.remove(item.id) } else { expandedToolIDs.insert(item.id) }
+                if expanded {
+                    expandedToolIDs.remove(item.id)
+                } else {
+                    expandedToolIDs.insert(item.id)
+                    loadFullBody(of: item)
+                }
             } label: {
                 HStack(spacing: 8) {
                     // The dot carried status; the glyph carries what KIND of
@@ -156,6 +328,7 @@ struct ConversationStack: View {
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Palette.raised, in: RoundedRectangle(cornerRadius: 10))
+                fullBodyStatus(for: item)
             }
         }
     }

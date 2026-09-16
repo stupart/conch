@@ -9,7 +9,10 @@
 #                                               no Mac, drawing what the last launch saved),
 #                                               then session.png (its end) and
 #                                               session-top.png (its start) for the id,
-#                                               and review.png when that row has a review.
+#                                               review.png when that row has a review, and
+#                                               history-*.png: the recorded history above the
+#                                               live window as it loads, lands, covers only
+#                                               part of the session, is off, and fails.
 #
 # ios builds a Debug simulator app into build/ios-sim.noindex, boots a SHUT-DOWN
 # iPhone 17-class simulator with `simctl boot` (never the Simulator app), renders
@@ -85,6 +88,12 @@ ios)
     shoot session.png -conchFixtureSession "$session"
     # A session opens at its end; this is the start of the same conversation.
     shoot session-top.png -conchFixtureSession "$session" -conchFixtureTop YES
+    # Recorded history is drawn above the live window, so every one of its states is
+    # photographed at the TOP of the conversation, where the reader would meet it.
+    for state in loaded partial loading off error; do
+      shoot "history-$state.png" -conchFixtureSession "$session" -conchFixtureTop YES \
+        -conchFixtureHistory "$state"
+    done
     if jq -e --arg id "$session" '.rows[] | select(.id == $id) | .review' "$prepared" >/dev/null; then
       shoot review.png -conchFixtureSession "$session" -conchFixtureReview YES
     fi
