@@ -7,6 +7,8 @@ enum InjectReceipt: Equatable {
     case accepted
     case staged
     case failed(String)
+    /// No answer reached this phone. Not a refusal — the Mac may have typed it perfectly well.
+    case unknown(String)
 
     /// PROVEN delivered — the only answer that lets the words go.
     ///
@@ -23,6 +25,7 @@ enum InjectReceipt: Equatable {
         case .accepted: .sent
         case .staged: .staged
         case let .failed(reason): .failed(reason)
+        case let .unknown(reason): .unknown(reason)
         }
     }
 
@@ -40,9 +43,11 @@ enum InjectReceipt: Equatable {
     }
 
     static func decode(status: Int, body: Data) -> InjectReceipt {
-        guard status == 200 else { return .failed("Not delivered — the Mac returned HTTP \(status).") }
+        // Neither of these is the Mac REFUSING: a relay hiccup and an unreadable answer both
+        // mean this phone could not hear, and the delivery may have gone through.
+        guard status == 200 else { return .unknown("Not confirmed — your Mac answered with HTTP \(status). Your words are kept.") }
         guard let reply = try? JSONDecoder().decode(Wire.self, from: body) else {
-            return .failed("Not delivered — the Mac didn't send a valid receipt. Your draft is kept.")
+            return .unknown("Not confirmed — your Mac didn't send a readable receipt. Your words are kept.")
         }
         return decode(reply)
     }
@@ -63,7 +68,7 @@ enum InjectReceipt: Equatable {
         }
         if reply.kind == "inject-accepted", reply.delivered == nil, reply.staged == nil { return .accepted }
         if let error = reply.error { return .failed("Not delivered — \(error)") }
-        return .failed("Not delivered — the Mac didn't confirm this message. Your draft is kept.")
+        return .unknown("Not confirmed — your Mac didn't say what happened. Your words are kept.")
     }
 
     /// A delayed receipt must preserve edits and additional dictation made while waiting.

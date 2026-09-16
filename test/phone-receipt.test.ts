@@ -128,6 +128,19 @@ precondition(staged.remainingDraft("fixture words", sent: "fixture words") == "f
 precondition(InjectReceipt.delivered.remainingDraft("fixture words plus new words", sent: "fixture words") == "plus new words")
 precondition(InjectReceipt.delivered.remainingDraft("edited while waiting", sent: "fixture words") == "edited while waiting")
 precondition(!InjectReceipt.decode(status: 502, body: Data()).confirmed)
+
+// Not hearing is NOT a refusal. A relay hiccup, an unreadable answer, or no answer at all
+// leaves the send open, so the receipt the daemon publishes afterwards can still settle it.
+// Treating these as failure is what made a message that landed show as failed for good.
+precondition(InjectReceipt.decode(status: 502, body: Data()).deliveryState.isTerminal == false)
+precondition(receipt("oops").deliveryState.isTerminal == false)
+precondition(!receipt("oops").deliveryState.clearsDraft)
+precondition(receipt(${receiptJSON({ kind: "ack" })}).deliveryState.isTerminal == false)
+
+// A rejection the Mac actually named stays final: nothing may quietly upgrade it.
+precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false, reason: "system-dialog-blocking" })}).deliveryState.isTerminal)
+precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: true })}).deliveryState.isTerminal)
+
 print("receipt and draft assertions passed")
 `);
     const compiler = Bun.spawn([
@@ -141,3 +154,20 @@ print("receipt and draft assertions passed")
     expect(await new Response(run.stdout).text()).toContain("receipt and draft assertions passed");
   } finally { rmSync(root_, { recursive: true, force: true }); }
 }, 300_000);
+
+/**
+ * The seam Codex found: a phone request that never comes back says nothing about whether the
+ * Mac typed the message. Classifying that as failure made it terminal, and a terminal entry
+ * refuses the authoritative outcome that arrives later — so a message that landed sat there
+ * failed, with its words stuck in the draft.
+ */
+test("a send whose answer never arrived stays open, and keeps its pictures", () => {
+  const bridge = readFileSync(join(root, "mobile/conch-ios/conch-ios/BridgeClient.swift"), "utf8");
+  expect(bridge).toContain('return .unknown("Not confirmed — \\(error.localizedDescription) Your words are kept.")');
+  expect(bridge).not.toContain('return .failed("Not delivered — \\(error.localizedDescription)")');
+
+  // Uncertainty must keep the attachments too: clearing them would make the retry send the
+  // words without the pictures, for a message that may never have arrived.
+  const session = readFileSync(join(root, "mobile/conch-ios/conch-ios/SessionView.swift"), "utf8");
+  expect(session).toMatch(/case \.unknown:[\s\S]{0,200}?break/);
+});

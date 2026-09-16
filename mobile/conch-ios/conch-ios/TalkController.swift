@@ -997,6 +997,7 @@ final class TalkController: NSObject, ObservableObject {
         let fixtureState: ConchDeliveryState = switch state {
         case "sending", "sent": .sent
         case "failed": .failed(ConchSendFailure.sentence(reason: "system-dialog-blocking"))
+        case "unknown": .unknown("Not confirmed — your Mac didn't say what happened. Your words are kept.")
         default: .confirmed
         }
         // Assigned either way: drafts and the outbox both survive a launch now, so a previous

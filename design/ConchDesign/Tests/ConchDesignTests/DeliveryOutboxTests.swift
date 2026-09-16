@@ -38,6 +38,33 @@ final class DeliveryOutboxTests: XCTestCase {
         XCTAssertFalse(settled?.state.clearsDraft ?? true)
     }
 
+    /// The bug this state exists for: the phone's request timed out, so it never heard the
+    /// answer — and the Mac had typed the message perfectly well. Classifying that as failure
+    /// made it permanent, because a terminal state refuses every later outcome.
+    func testAnUnheardAnswerIsResolvedByTheRealOneWhenItArrives() {
+        var outbox = ConchOutbox()
+        outbox.begin(sent())
+        outbox.settle("op-1", .unknown("Not confirmed — the phone lost the connection before your Mac answered."))
+        let waiting = outbox.unsettled(for: "s1")
+        XCTAssertEqual(waiting?.state, .unknown("Not confirmed — the phone lost the connection before your Mac answered."))
+        XCTAssertFalse(waiting?.state.isTerminal ?? true, "nothing was settled, so the answer can still land")
+        XCTAssertFalse(waiting?.state.clearsDraft ?? true, "the words stay until something proves they arrived")
+
+        // The daemon's receipt turns up on the state channel, seconds or a relaunch later.
+        outbox.settle("op-1", .confirmed)
+        XCTAssertEqual(outbox.entries.map(\.state), [.confirmed])
+    }
+
+    /// The other direction, and just as important: not hearing is not a refusal, but a refusal
+    /// that arrives afterwards is still the truth.
+    func testAnUnheardAnswerCanAlsoResolveToAFailure() {
+        var outbox = ConchOutbox()
+        outbox.begin(sent())
+        outbox.settle("op-1", .unknown("Not confirmed — no answer reached this phone."))
+        outbox.settle("op-1", .failed("Not delivered — a dialog is open on your Mac and it's blocking conch."))
+        XCTAssertEqual(outbox.entries.map(\.state), [.failed("Not delivered — a dialog is open on your Mac and it's blocking conch.")])
+    }
+
     /// A confirmed delivery confirms once and stays confirmed. A duplicate answer, or a late
     /// contradicting one, cannot move it — nothing may un-confirm a message a person watched
     /// land, and nothing may quietly upgrade one that failed.

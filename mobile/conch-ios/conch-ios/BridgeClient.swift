@@ -345,7 +345,9 @@ final class BridgeClient: ObservableObject {
                 within: .seconds(40)
             )
         } catch {
-            return .failed("Not delivered — \(error.localizedDescription)")
+            // The request never came back. That says nothing about whether the Mac typed it,
+            // so it must stay open to the receipt the daemon publishes afterwards.
+            return .unknown("Not confirmed — \(error.localizedDescription) Your words are kept.")
         }
         return InjectOutcome.decode(status: response.status, body: response.body)
     }
