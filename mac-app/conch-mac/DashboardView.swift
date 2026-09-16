@@ -363,14 +363,26 @@ private struct HeaderButton: View {
 
     var body: some View {
         Button(action: action) {
+            // `.ib{width:28px;height:28px;border-radius:7px;color:var(--text2)}`, with three
+            // states the lab keeps apart and this button had collapsed into one:
+            //
+            //   `.ib:hover{background:var(--hover);color:var(--text)}`
+            //   `.ib.on{background:var(--sel);color:var(--text)}`
+            //
+            // Hover and selected painted the SAME fill, so a pressed-on control (logs open)
+            // was indistinguishable from the one the pointer happened to be over.
+            //
+            // The radius is a literal, not `ConchRadius.small`: that token is 6, the lab asks
+            // for 7 here, and redefining a shared token to fix one button would move every
+            // other surface that leans on it.
             Image(systemName: symbol)
                 .font(.system(size: 11, weight: .medium))
-                .frame(width: 26, height: 26)
+                .frame(width: 28, height: 28)
                 .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(isSelected || isHovered ? ConchPalette.hover : .clear)
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
                 )
-                .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
+                .foregroundStyle(isSelected || isHovered ? ConchPalette.textPrimary : ConchPalette.textDim)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -1365,6 +1377,8 @@ private struct ConversationPane: View {
     @StateObject private var transcriptContent = TranscriptContentModel()
     /// Shared with the conversation fog (M3): one draft per session wherever it is typed.
     @ObservedObject private var composerDrafts = ComposerDraftStore.shared
+    /// `.ib:hover` for the session-actions menu, which a `Menu` label does not get for free.
+    @State private var isHoveringActions = false
     @State private var sessionPendingClose: SessionRow?
     /// Bumped when a question's "Something else…" row is pressed, so the
     /// composer takes the cursor.
@@ -1778,15 +1792,23 @@ private struct ConversationPane: View {
                     // `claude stop` for a background job, which needs none.
                     .disabled(row.noTerminal != nil && !row.attachable)
                 } label: {
+                    // The same `.ib` as the controls opposite it: 28 square at radius 7. It
+                    // was 28x26 — two points shorter than its siblings — and the only icon
+                    // button in the header that never answered the pointer at all.
                     Image(systemName: "ellipsis")
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(ConchPalette.textDim)
-                        .frame(width: 28, height: 26)
+                        .foregroundStyle(isHoveringActions ? ConchPalette.textPrimary : ConchPalette.textDim)
+                        .frame(width: 28, height: 28)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(isHoveringActions ? ConchPalette.hover : .clear)
+                        )
                         .contentShape(Rectangle())
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
+                .onHover { isHoveringActions = $0 }
                 .help("Session actions")
                 .accessibilityLabel("Actions for \(row.label)")
             }
