@@ -404,7 +404,11 @@ struct ConversationStackView: View {
             HStack {
                 Spacer(minLength: 48)
                 Text(AttributedString.conchMarkdown(item.text))
-                    .font(.system(size: 13))
+                    // workspace-v1 §3: the transcript reads at 15/23, not at the 13 the tool
+                    // rows and captions around it use. This is the one thing on screen that is
+                    // actually READ rather than scanned.
+                    .font(ConchType.readingBody)
+                    .lineSpacing(ConchType.readingLineSpacing)
                     .foregroundStyle(ConchPalette.textPrimary)
                     .textSelection(.enabled)
                     .padding(.horizontal, 12)
@@ -414,7 +418,8 @@ struct ConversationStackView: View {
         case .assistant:
             VStack(alignment: .leading, spacing: 4) {
                 Text(AttributedString.conchMarkdown(text(of: item)))
-                    .font(.system(size: 13))
+                    .font(ConchType.readingBody)
+                    .lineSpacing(ConchType.readingLineSpacing)
                     .foregroundStyle(ConchPalette.textPrimary)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
