@@ -7,6 +7,7 @@ import type { CodexSessionEntry } from "../src/codex-sessions.ts";
 import { buildPanelModel, buildPanelRows, buildPublishedState } from "../src/panel.ts";
 import { registrySnapshot, sessionLabel, subagentSessions, type SessionInfo } from "../src/sessions.ts";
 import {
+  codexThreadDbPaths,
   codexThreadLabel,
   codexThreadStatus,
   detectCodexTurnEnds,
@@ -16,6 +17,7 @@ import {
   readCodexRolloutTail,
   readCodexThreads,
   readCodexTurnSnapshots,
+  readCodexTurnStatuses,
   type CodexTurnMemory,
 } from "../src/codex-threads.ts";
 
@@ -58,7 +60,7 @@ function codexHome(
 const NOW = 1_786_000_000_000;
 
 describe("observing Codex sessions without touching them", () => {
-  test("reports interactive threads with their live turn status", () => {
+  test("reports interactive threads with their live turn status", async () => {
     const home = codexHome(
       [
         { id: "a", name: "asset generator", updated_at_ms: NOW - 1000, source: "cli" },
@@ -73,7 +75,7 @@ describe("observing Codex sessions without touching them", () => {
       ],
     );
     try {
-      const read = readCodexThreads({ codexHome: home, now: NOW });
+      const read = await readCodexThreads({ codexHome: home, now: NOW });
       expect(read.available).toBe(true);
       expect(read.complete).toBe(true);
       expect(read.entries.map((e) => [(e as any).name, e.status])).toEqual([
@@ -85,7 +87,7 @@ describe("observing Codex sessions without touching them", () => {
     }
   });
 
-  test("excludes one-shot `exec` runs, which are scripts and not sessions", () => {
+  test("excludes one-shot `exec` runs, which are scripts and not sessions", async () => {
     // Measured on the real machine: 354 exec rows against 9 cli and 45 vscode,
     // because every `codex exec` leaves a permanent row — including the probes
     // used to build this feature. Nobody is sitting in one waiting to be
@@ -95,14 +97,14 @@ describe("observing Codex sessions without touching them", () => {
       { id: "script", name: "some automation", updated_at_ms: NOW, source: "exec" },
     ]);
     try {
-      expect(readCodexThreads({ codexHome: home, now: NOW }).entries.map((e) => e.sessionId))
+      expect((await readCodexThreads({ codexHome: home, now: NOW })).entries.map((e) => e.sessionId))
         .toEqual(["real"]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("excludes subagents, matching how Claude sessions are already listed", () => {
+  test("excludes subagents, matching how Claude sessions are already listed", async () => {
     // Codex records a spawned subagent with a JSON `source` naming its parent,
     // and auto-nicknames it (Averroes, Nash, Sartre on Tyler's machine). conch
     // lists top-level sessions, not the agents they spawn.
@@ -116,14 +118,14 @@ describe("observing Codex sessions without touching them", () => {
       },
     ]);
     try {
-      expect(readCodexThreads({ codexHome: home, now: NOW }).entries.map((e) => e.sessionId))
+      expect((await readCodexThreads({ codexHome: home, now: NOW })).entries.map((e) => e.sessionId))
         .toEqual(["parent"]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("drops threads outside the liveness window", () => {
+  test("drops threads outside the liveness window", async () => {
     // These rows are permanent history, unlike Claude's per-pid files which
     // vanish with the process. Without a window the ledger fills with every
     // conversation ever held.
@@ -132,35 +134,35 @@ describe("observing Codex sessions without touching them", () => {
       { id: "ancient", name: "last week", updated_at_ms: NOW - 7 * 86_400_000, source: "cli" },
     ]);
     try {
-      expect(readCodexThreads({ codexHome: home, now: NOW }).entries.map((e) => e.sessionId))
+      expect((await readCodexThreads({ codexHome: home, now: NOW })).entries.map((e) => e.sessionId))
         .toEqual(["fresh"]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("never reads the real ~/.codex when conch's state is redirected", () => {
+  test("never reads the real ~/.codex when conch's state is redirected", async () => {
     // A registry test running in a temp directory silently read the developer's
     // ACTUAL Codex sessions and asserted against whatever they were doing —
     // which is how this was caught: five unrelated tests began failing when two
     // live threads appeared in a snapshot built from an empty directory.
-    expect(readCodexThreads({ configDir: "/tmp/nowhere", now: NOW }))
+    expect(await readCodexThreads({ configDir: "/tmp/nowhere", now: NOW }))
       .toEqual({ entries: [], complete: true, available: false });
 
     const previous = process.env.CONCH_CONFIG_DIR;
     process.env.CONCH_CONFIG_DIR = "/tmp/nowhere";
     try {
-      expect(readCodexThreads({ now: NOW }).available).toBe(false);
+      expect((await readCodexThreads({ now: NOW })).available).toBe(false);
     } finally {
       if (previous === undefined) delete process.env.CONCH_CONFIG_DIR;
       else process.env.CONCH_CONFIG_DIR = previous;
     }
   });
 
-  test("a machine with no Codex is known-empty, not an incomplete read", () => {
+  test("a machine with no Codex is known-empty, not an incomplete read", async () => {
     // complete=false makes liveness logic treat sessions as possibly-gone. A
     // machine that simply has no Codex must not look like a failed read.
-    expect(readCodexThreads({ codexHome: "/tmp/definitely-not-codex", now: NOW }))
+    expect(await readCodexThreads({ codexHome: "/tmp/definitely-not-codex", now: NOW }))
       .toEqual({ entries: [], complete: true, available: false });
   });
 
@@ -287,7 +289,7 @@ describe("reading a turn out of a real rollout file", () => {
     payload: { type: "reasoning", text: `thinking ${n}`.padEnd(200, "x") },
   });
 
-  test("the whole chain: a finished rollout becomes exactly one announcement", () => {
+  test("the whole chain: a finished rollout becomes exactly one announcement", async () => {
     const home = mkdtempSync(join(tmpdir(), "conch-codex-home-"));
     try {
       const path = rollout(home, "t1", [noise(1), complete("turn-1", "First reply.")]);
@@ -305,19 +307,19 @@ describe("reading a turn out of a real rollout file", () => {
       const opts = { codexHome: home, now: NOW };
 
       // Poll 1 seeds on the turn that was already finished.
-      expect(detectCodexTurnEnds(memory, readCodexTurnSnapshots(opts))).toEqual([]);
+      expect(detectCodexTurnEnds(memory, await readCodexTurnSnapshots(opts))).toEqual([]);
 
       // A new turn starts: still quiet.
       appendFileSync(path, JSON.stringify(started("turn-2")) + "\n");
-      expect(detectCodexTurnEnds(memory, readCodexTurnSnapshots(opts))).toEqual([]);
+      expect(detectCodexTurnEnds(memory, await readCodexTurnSnapshots(opts))).toEqual([]);
 
       // …and completes: announce, once, in the agent's own words.
       appendFileSync(path, JSON.stringify(complete("turn-2", "Second reply. Details after.")) + "\n");
-      const ended = detectCodexTurnEnds(memory, readCodexTurnSnapshots(opts));
+      const ended = detectCodexTurnEnds(memory, await readCodexTurnSnapshots(opts));
       expect(ended).toHaveLength(1);
       expect(ended[0]!.label).toBe("asset generator");
       expect(ended[0]!.text).toBe("Second reply. Details after.");
-      expect(detectCodexTurnEnds(memory, readCodexTurnSnapshots(opts))).toEqual([]);
+      expect(detectCodexTurnEnds(memory, await readCodexTurnSnapshots(opts))).toEqual([]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -424,7 +426,7 @@ describe("an open Codex thread stays listed however idle", () => {
     return home;
   }
 
-  test("a long-idle thread Codex still has open is listed", () => {
+  test("a long-idle thread Codex still has open is listed", async () => {
     const home = homeWith(
       [{ id: "open", name: "asset generator", updated_at_ms: NOW - 12 * 3_600_000 }],
       ["open"],
@@ -434,30 +436,30 @@ describe("an open Codex thread stays listed however idle", () => {
       // is what a crashed or rebooted Codex leaves behind, and that is not an
       // open thread.
       expect(
-        readCodexThreads({
+        (await readCodexThreads({
           codexHome: home,
           now: NOW,
           lockProbe: (paths) => paths.join("\n"),
-        }).entries.map((e) => e.sessionId),
+        })).entries.map((e) => e.sessionId),
       ).toEqual(["open"]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("a long-idle thread with no lock is gone", () => {
+  test("a long-idle thread with no lock is gone", async () => {
     const home = homeWith(
       [{ id: "closed", name: "yesterday", updated_at_ms: NOW - 12 * 3_600_000 }],
       [],
     );
     try {
-      expect(readCodexThreads({ codexHome: home, now: NOW }).entries).toEqual([]);
+      expect((await readCodexThreads({ codexHome: home, now: NOW })).entries).toEqual([]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("a one-shot command that opened a thread is not listed", () => {
+  test("a one-shot command that opened a thread is not listed", async () => {
     // `codex mcp login mobbin` — Tyler re-authenticating an MCP server — opened
     // a thread, did its job and exited, and conch listed it as a session for
     // eight hours. The row records the truth: no user event, no tokens.
@@ -469,13 +471,13 @@ describe("an open Codex thread stays listed however idle", () => {
       [],
     );
     try {
-      expect(readCodexThreads({ codexHome: home, now: NOW }).entries).toEqual([]);
+      expect((await readCodexThreads({ codexHome: home, now: NOW })).entries).toEqual([]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("a real session with no tokens yet is listed while it holds its lock", () => {
+  test("a real session with no tokens yet is listed while it holds its lock", async () => {
     // A session that genuinely just started also has no user event yet. The
     // lock is what separates the two, so the live check must win.
     const home = homeWith(
@@ -486,16 +488,16 @@ describe("an open Codex thread stays listed however idle", () => {
       ["fresh"],
     );
     try {
-      const entries = readCodexThreads({
+      const entries = (await readCodexThreads({
         codexHome: home, now: NOW, lockProbe: (paths) => paths.join("\n"),
-      }).entries;
+      })).entries;
       expect(entries.map((e) => e.sessionId)).toEqual(["fresh"]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("a thread inside the recency window but older than boot is gone", () => {
+  test("a thread inside the recency window but older than boot is gone", async () => {
     // Tyler's six rows for one session. After a reboot the whole 8h window is
     // full of threads that died with the machine: recent by timestamp, and
     // impossible by physics.
@@ -506,18 +508,18 @@ describe("an open Codex thread stays listed however idle", () => {
     );
     try {
       expect(
-        readCodexThreads({
+        (await readCodexThreads({
           codexHome: home,
           now: NOW,
           bootedAt: NOW - 600_000, // booted ten minutes ago
-        }).entries,
+        })).entries,
       ).toEqual([]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("a thread written since boot is still listed", () => {
+  test("a thread written since boot is still listed", async () => {
     const NOW = 1_700_000_000_000;
     const home = homeWith(
       [{ id: "since-boot", name: "this session", updated_at_ms: NOW - 60_000 }],
@@ -525,34 +527,34 @@ describe("an open Codex thread stays listed however idle", () => {
     );
     try {
       expect(
-        readCodexThreads({
+        (await readCodexThreads({
           codexHome: home,
           now: NOW,
           bootedAt: NOW - 600_000,
-        }).entries.map((e) => e.sessionId),
+        })).entries.map((e) => e.sessionId),
       ).toEqual(["since-boot"]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("recency still lists a thread whose lock was never written", () => {
+  test("recency still lists a thread whose lock was never written", async () => {
     const home = homeWith([{ id: "fresh", name: "just now", updated_at_ms: NOW - 60_000 }], []);
     try {
-      expect(readCodexThreads({ codexHome: home, now: NOW }).entries.map((e) => e.sessionId))
+      expect((await readCodexThreads({ codexHome: home, now: NOW })).entries.map((e) => e.sessionId))
         .toEqual(["fresh"]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("the coordination lock is not a thread", () => {
+  test("the coordination lock is not a thread", async () => {
     // ~/.codex/thread-writer-locks holds a `.coordination.lock` alongside the
     // per-thread ones; treating it as a thread id would list a phantom row.
     const home = homeWith([{ id: "x", name: "x", updated_at_ms: NOW }], []);
     try {
       writeFileSync(join(home, "thread-writer-locks", ".coordination.lock"), "");
-      expect(readCodexOpenThreadIds(home)).toEqual(new Map());
+      expect(await readCodexOpenThreadIds(home)).toEqual(new Map());
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -679,25 +681,25 @@ describe("where keystrokes for a Codex thread may go: its lock's holder", () => 
   // 2383, a `codex resume` TUI on ttys001, held its own thread's lock; pid
   // 74676, the ChatGPT app's `codex … app-server`, tty `??`, held a Desktop
   // thread's.
-  const rows = (home: string, table: ReturnType<typeof processTable>, now = NOW) =>
-    readCodexThreads({ codexHome: home, now, ...table }).entries as CodexRow[];
+  const rows = async (home: string, table: ReturnType<typeof processTable>, now = NOW) =>
+    (await readCodexThreads({ codexHome: home, now, ...table })).entries as CodexRow[];
 
-  test("a thread no process holds is closed: pid 0, and the row says so", () => {
+  test("a thread no process holds is closed: pid 0, and the row says so", async () => {
     // A lock FILE with no holder is what a reboot leaves behind; still closed.
     const home = realCodexHome({ threads: [{ id: "t1", name: "yesterday" }], locks: ["t1"] });
     try {
-      const [row] = rows(home, processTable(home, []));
+      const [row] = await rows(home, processTable(home, []));
       expect(row).toMatchObject({ sessionId: "t1", pid: 0, noTerminal: "closed: no Codex process has this thread open" });
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("a thread its terminal session holds is typed into through that session's pid", () => {
+  test("a thread its terminal session holds is typed into through that session's pid", async () => {
     const home = realCodexHome({ threads: [{ id: "t1", name: "Clone Blueprint Studio" }], locks: ["t1"] });
     try {
       const table = processTable(home, [{ pid: 2383, args: "codex resume t1 -c model=gpt-6-astra", holds: ["t1"] }]);
-      const [row] = rows(home, table);
+      const [row] = await rows(home, table);
       expect(row).toMatchObject({ sessionId: "t1", pid: 2383 });
       expect(row!.noTerminal).toBeUndefined();
     } finally {
@@ -705,7 +707,7 @@ describe("where keystrokes for a Codex thread may go: its lock's holder", () => 
     }
   });
 
-  test("a thread an app-server hosts has no pid to type at or raise, and the row says why", () => {
+  test("a thread an app-server hosts has no pid to type at or raise, and the row says why", async () => {
     const home = realCodexHome({
       threads: [
         { id: "desktop", name: "Desktop thread" },
@@ -726,7 +728,7 @@ describe("where keystrokes for a Codex thread may go: its lock's holder", () => 
         // A prompt that merely names it is still a terminal session.
         { pid: 2383, args: "codex fix the app-server bug", holds: ["tui"] },
       ]);
-      const byId = new Map(rows(home, table).map((row) => [row.sessionId, row]));
+      const byId = new Map((await rows(home, table)).map((row) => [row.sessionId, row]));
       expect(byId.get("desktop")).toMatchObject({
         pid: 0,
         noTerminal: "hosted by codex app-server (pid 74676), which has no terminal to type into",
@@ -739,24 +741,24 @@ describe("where keystrokes for a Codex thread may go: its lock's holder", () => 
     }
   });
 
-  test("a holder that appears after one read is there on the very next", () => {
+  test("a holder that appears after one read is there on the very next", async () => {
     // The per-thread lookup this replaced cached a miss for 30 s, so a thread
     // opened just after a poll stayed pid-less until the entry expired.
     const home = realCodexHome({ threads: [{ id: "t1", name: "just opened" }], locks: ["t1"] });
     try {
-      expect(rows(home, processTable(home, []))[0]).toMatchObject({ pid: 0 });
+      expect((await rows(home, processTable(home, [])))[0]).toMatchObject({ pid: 0 });
       const opened = processTable(home, [{ pid: 2383, args: "codex resume t1", holds: ["t1"] }]);
-      expect(rows(home, opened, NOW + 1_000)[0]).toMatchObject({ pid: 2383 });
+      expect((await rows(home, opened, NOW + 1_000))[0]).toMatchObject({ pid: 2383 });
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("a held lock whose holder lsof could not name is a miss, not a closed thread", () => {
+  test("a held lock whose holder lsof could not name is a miss, not a closed thread", async () => {
     // lsof failing outright falls back to "every lock file is held", with no pid known.
     const home = realCodexHome({ threads: [{ id: "t1", name: "unknown holder" }], locks: ["t1"] });
     try {
-      const [row] = readCodexThreads({ codexHome: home, now: NOW, lockProbe: () => null }).entries as CodexRow[];
+      const [row] = (await readCodexThreads({ codexHome: home, now: NOW, lockProbe: () => null })).entries as CodexRow[];
       expect(row).toMatchObject({ sessionId: "t1", pid: 0 });
       expect(row!.noTerminal).toBeUndefined();
     } finally {
@@ -796,11 +798,11 @@ describe("where keystrokes for a Codex thread may go: its lock's holder", () => 
 });
 
 describe("a Codex thread is named as Codex names it", () => {
-  const names = (home: string) =>
-    Object.fromEntries((readCodexThreads({ codexHome: home, now: NOW }).entries as CodexRow[])
+  const names = async (home: string) =>
+    Object.fromEntries(((await readCodexThreads({ codexHome: home, now: NOW })).entries as CodexRow[])
       .map((row) => [row.sessionId, row.name]));
 
-  test("a legacy thread's name is its newest session_index.jsonl line", () => {
+  test("a legacy thread's name is its newest session_index.jsonl line", async () => {
     const home = realCodexHome({
       threads: [{ id: "legacy", history_mode: "legacy", name: null, title: "the first prompt" }],
       index: [
@@ -812,13 +814,13 @@ describe("a Codex thread is named as Codex names it", () => {
       ],
     });
     try {
-      expect(names(home)).toEqual({ legacy: "Blueprint" });
+      expect(await names(home)).toEqual({ legacy: "Blueprint" });
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("a paginated thread's is threads.name, and a cleared one gets no old name back from the index", () => {
+  test("a paginated thread's is threads.name, and a cleared one gets no old name back from the index", async () => {
     // All 36 threads on this machine are paginated; for the 8 named ones,
     // threads.name and the index agree.
     const home = realCodexHome({
@@ -832,7 +834,7 @@ describe("a Codex thread is named as Codex names it", () => {
       ],
     });
     try {
-      expect(names(home)).toEqual({ named: "Clone Blueprint Studio monorepo", cleared: "the first prompt" });
+      expect(await names(home)).toEqual({ named: "Clone Blueprint Studio monorepo", cleared: "the first prompt" });
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -878,11 +880,11 @@ describe("Codex helpers nest under their parent", () => {
     locks: ["parent", "bohr", "zeno", "goodall"],
   });
 
-  test("a helper whose lock is held is listed; a finished one, and another parent's, are not", () => {
+  test("a helper whose lock is held is listed; a finished one, and another parent's, are not", async () => {
     const home = family();
     try {
       const table = processTable(home, [{ pid: 2383, args: "codex resume parent", holds: ["parent", "bohr", "goodall"] }]);
-      expect(readCodexHelperThreads("parent", rollout(home, "parent"), { ...table, now: NOW })).toEqual([{
+      expect(await readCodexHelperThreads("parent", rollout(home, "parent"), { ...table, now: NOW })).toEqual([{
         threadId: "bohr",
         name: "Bohr",
         cwd: "/work/api",
@@ -891,24 +893,24 @@ describe("Codex helpers nest under their parent", () => {
         transcriptPath: rollout(home, "bohr"),
       }]);
       // Helpers are never top-level sessions, so never announced.
-      expect(readCodexThreads({ codexHome: home, now: NOW, ...table }).entries.map((e) => e.sessionId))
+      expect((await readCodexThreads({ codexHome: home, now: NOW, ...table })).entries.map((e) => e.sessionId))
         .toEqual(["parent"]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
 
-  test("a parent whose rollout is not under a Codex home has no helpers to read", () => {
-    expect(readCodexHelperThreads("parent", "/r/rollout-x.jsonl")).toEqual([]);
+  test("a parent whose rollout is not under a Codex home has no helpers to read", async () => {
+    expect(await readCodexHelperThreads("parent", "/r/rollout-x.jsonl")).toEqual([]);
   });
 
-  test("through the Codex adapter row, with a lock this process really holds: nested, no pid, never active", () => {
+  test("through the Codex adapter row, with a lock this process really holds: nested, no pid, never active", async () => {
     const home = family();
     // Holding bohr's lock open here makes the real `lsof` find a holder.
     const fd = openSync(join(home, "thread-writer-locks", "bohr.lock"), "r");
     try {
       const parent: SessionInfo = { sessionId: "parent", backend: "codex", name: "Clone Blueprint Studio", cwd: "/work", pid: 2383 };
-      const helpers = subagentSessions(parent, rollout(home, "parent"));
+      const helpers = await subagentSessions(parent, rollout(home, "parent"));
       expect(helpers).toEqual([{
         sessionId: "bohr",
         parentSessionId: "parent",
@@ -938,7 +940,7 @@ describe("Codex helpers nest under their parent", () => {
   });
 });
 
-test("a lock file nobody holds is not an open thread", () => {
+test("a lock file nobody holds is not an open thread", async () => {
   // A reboot is not a clean exit, so Codex's lock files outlive the processes
   // that held them. Presence alone reported sessions that died with the machine.
   const home = mkdtempSync(join(tmpdir(), "conch-locks-"));
@@ -949,20 +951,20 @@ test("a lock file nobody holds is not an open thread", () => {
   writeFileSync(stale, "");
 
   // Probe reports only the first path as open.
-  const ids = readCodexOpenThreadIds(home, () => `n${held}\n`);
+  const ids = await readCodexOpenThreadIds(home, () => `n${held}\n`);
   expect([...ids.keys()]).toEqual(["alive"]);
 
   rmSync(home, { recursive: true, force: true });
 });
 
-test("an unusable probe falls back to presence rather than emptying the ledger", () => {
+test("an unusable probe falls back to presence rather than emptying the ledger", async () => {
   // Hiding a live session is worse than showing a dead one.
   const home = mkdtempSync(join(tmpdir(), "conch-locks-"));
   mkdirSync(join(home, "thread-writer-locks"), { recursive: true });
   writeFileSync(join(home, "thread-writer-locks", "a.lock"), "");
   writeFileSync(join(home, "thread-writer-locks", "b.lock"), "");
 
-  const ids = readCodexOpenThreadIds(home, () => null);
+  const ids = await readCodexOpenThreadIds(home, () => null);
   expect([...ids.keys()].sort()).toEqual(["a", "b"]);
 
   rmSync(home, { recursive: true, force: true });
@@ -973,4 +975,129 @@ test("a newline in a title does not break the row it renders in", () => {
   // with a real newline, which a one-line row cannot render.
   expect(codexThreadLabel({ title: "codex mcp login\n  mobbin" }))
     .toBe("codex mcp login mobbin");
+});
+
+/**
+ * Discovery used to run its `lsof` and `ps` through `Bun.spawnSync`, and the
+ * daemon has ONE thread: while a probe ran, an injection someone was waiting
+ * on, a phone publication and the voice loop could not run at all — not queued
+ * behind it, unable to run. These fix that, and fix nothing about what
+ * discovery finds.
+ */
+describe("discovery runs without freezing the daemon's one thread", () => {
+  /** A probe that can be held open across ticks, the way a slow `lsof` is. */
+  function gate() {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    return { held, release: () => release() };
+  }
+  /** One turn of the macrotask queue — where the daemon's timer-driven work waits. */
+  const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  test("work queued behind discovery runs while its probe is still outstanding", async () => {
+    const home = realCodexHome({ threads: [{ id: "t1", name: "live thread" }], locks: ["t1"] });
+    try {
+      const probe = gate();
+      const order: string[] = [];
+      const read = readCodexThreads({
+        codexHome: home,
+        now: NOW,
+        lockProbe: async (paths) => {
+          order.push("probe-started");
+          await probe.held;
+          return paths.join("\n");
+        },
+      });
+      let settled = false;
+      void read.then(() => { settled = true; });
+      // What the daemon has waiting on its own timers while discovery runs.
+      setTimeout(() => order.push("injection"), 0);
+      setTimeout(() => order.push("publication"), 0);
+
+      // Two turns of the loop, not a stopwatch: both ran while the probe was
+      // still out. Inside `spawnSync` neither could have run at all.
+      await tick();
+      await tick();
+      expect(order).toEqual(["probe-started", "injection", "publication"]);
+      // …and they ran DURING discovery, not after it: the pass is still waiting
+      // on its probe. A synchronous probe cannot produce this ordering.
+      expect(settled).toBe(false);
+
+      probe.release();
+      expect((await read).entries.map((e) => e.sessionId)).toEqual(["t1"]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("overlapping requests coalesce into one pass", async () => {
+    const home = realCodexHome({ threads: [{ id: "t1", name: "one" }], locks: ["t1"] });
+    try {
+      const probe = gate();
+      let probes = 0;
+      const options = {
+        codexHome: home,
+        now: NOW,
+        lockProbe: async (paths: string[]) => { probes += 1; await probe.held; return paths.join("\n"); },
+      };
+      // The panel refresh and the turn poller, landing together.
+      const first = readCodexThreads(options);
+      const second = readCodexThreads(options);
+      expect(second).toBe(first);
+      probe.release();
+      const [a, b] = await Promise.all([first, second]);
+      expect(probes).toBe(1);
+      expect(a).toBe(b);
+      expect(a.entries.map((e) => e.sessionId)).toEqual(["t1"]);
+
+      // A request after the pass has finished is a fresh read, not a cache.
+      await readCodexThreads(options);
+      expect(probes).toBe(2);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("turn status is asked only about the threads in hand", async () => {
+    // The global form ran a correlated MAX() over every turn Codex has ever
+    // recorded to answer for the handful of rows a listing shows.
+    const home = realCodexHome({
+      threads: [{ id: "listed", name: "listed" }, { id: "elsewhere", name: "not in this listing" }],
+      turns: [["listed", 1, "inProgress"], ["elsewhere", 1, "inProgress"]],
+    });
+    try {
+      const { history } = codexThreadDbPaths(home);
+      expect([...readCodexTurnStatuses(history, ["listed"])]).toEqual([["listed", "inProgress"]]);
+      expect(readCodexTurnStatuses(history, [])).toEqual(new Map());
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("the same machine state still produces the same rows", async () => {
+    // Statuses here can only come from `thread_turns`: the open thread was last
+    // written twelve hours ago, so recency alone would call it idle.
+    const home = realCodexHome({
+      threads: [
+        { id: "open", name: "asset generator", updated_at_ms: NOW - 12 * 3_600_000 },
+        { id: "recent", name: "humain", updated_at_ms: NOW - 60_000 },
+        { id: "gone", name: "last week", updated_at_ms: NOW - 7 * 86_400_000 },
+      ],
+      turns: [["open", 1, "completed"], ["open", 2, "inProgress"], ["recent", 1, "completed"]],
+      locks: ["open"],
+    });
+    try {
+      const table = processTable(home, [{ pid: 2383, args: "codex resume open", holds: ["open"] }]);
+      const read = await readCodexThreads({ codexHome: home, now: NOW, ...table });
+      expect(read.complete).toBe(true);
+      expect(read.available).toBe(true);
+      expect((read.entries as CodexRow[]).map((row) => [row.sessionId, row.name, row.status, row.pid]))
+        .toEqual([
+          ["recent", "humain", "idle", 0],
+          ["open", "asset generator", "busy", 2383],
+        ]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });

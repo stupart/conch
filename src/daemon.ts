@@ -1425,9 +1425,14 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // Live background subagents, nested under their parents (C4). Rows and
     // conversations only: `live` stays the set of sessions conch can address,
     // so nothing below can wake, inject into, announce for or latch one.
-    const nested = live.flatMap((session) =>
-      subagentSessions(session, session.transcriptPath ?? findTranscript(cfg.claudeDir, session.sessionId))
-    );
+    // Awaited one session at a time, deliberately: a Codex parent's helpers come
+    // from a lock probe, and this keeps the requested preview id captured after
+    // every await in this function (panel.test.ts pins that ordering) while
+    // bounding how many probes are outstanding at once.
+    const nested: SessionInfo[] = [];
+    for (const session of live) {
+      nested.push(...await subagentSessions(session, session.transcriptPath ?? findTranscript(cfg.claudeDir, session.sessionId)));
+    }
     const visible = [...live, ...nested];
     const liveState = getLiveState(); // what conch is doing right now, if anything
     const orderedRows = buildPanelRows({
@@ -2509,10 +2514,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // message of a turn rather than the last text it happens to see, and routes
   // on the filename, so Codex and Claude produce the same shape of summary.
   const codexTurnMemory: CodexTurnMemory = new Map();
-  const codexTimer = setInterval(() => {
+  const codexTimer = setInterval(() => void (async () => {
     let ended: ReturnType<typeof detectCodexTurnEnds>;
     try {
-      ended = detectCodexTurnEnds(codexTurnMemory, readCodexTurnSnapshots());
+      ended = detectCodexTurnEnds(codexTurnMemory, await readCodexTurnSnapshots());
     } catch (error) {
       return log(`codex watch failed: ${error}`);
     }
@@ -2536,7 +2541,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         });
       })();
     }
-  }, 5_000);
+  })(), 5_000);
   codexTimer.unref?.();
 
   // Warm Whisper independently after the socket and signal path are live.

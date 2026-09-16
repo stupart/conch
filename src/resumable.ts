@@ -23,6 +23,8 @@ export interface ResumableSession {
 export interface ReadResumableSessionsOptions {
   /** Maximum rows returned after query filtering. Defaults to 200. */
   limit?: number;
+  /** Maximum candidates opened before the search gives up. Defaults to 400. */
+  searchBudget?: number;
   /** Case-insensitive substring match over label and cwd. */
   query?: string;
   /** Conch state redirection. Suppresses both real-home defaults. */
@@ -40,6 +42,20 @@ export interface ResumableSessionsRead {
 }
 
 const DEFAULT_LIMIT = 200;
+/**
+ * How many candidates one search will open before it stops looking.
+ *
+ * Resolving a Claude candidate costs a file read, and the loop ran until it had
+ * `limit` matches — so a query matching nothing opened every transcript on the
+ * machine, one after another, on the daemon's single thread. A person scrolling
+ * the restore list wants the newest matches, which are at the front of a
+ * newest-first sort; the tail of history is what this declines to read.
+ *
+ * Stopping early is reported the way a partial read always has been, with
+ * `complete: false`, so the caller is never told a truncated list is the whole
+ * of history.
+ */
+const DEFAULT_SEARCH_BUDGET = 400;
 const CLAUDE_HEAD_LINES = 40;
 const CLAUDE_HEAD_BYTES = 256 * 1024;
 
@@ -329,8 +345,9 @@ export function readResumableSessionsResult(
 
   let complete = reads.every((read) => read.complete);
   const sessions: ResumableSession[] = [];
+  const budget = Math.max(0, Math.floor(options.searchBudget ?? DEFAULT_SEARCH_BUDGET));
   let index = 0;
-  for (; index < candidates.length && sessions.length < limit; index += 1) {
+  for (; index < candidates.length && index < budget && sessions.length < limit; index += 1) {
     const candidate = candidates[index]!;
     const head = adapterFor(candidate.backend).resolveResumable(candidate);
     if (!head.complete) complete = false;

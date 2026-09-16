@@ -60,9 +60,9 @@ export interface CodexThreadsOptions {
    * then `n<path>` for each file that process has open. Injectable so tests
    * can hold one.
    */
-  lockProbe?: (paths: string[]) => string | null;
+  lockProbe?: (paths: string[]) => string | null | Promise<string | null>;
   /** Each pid's command line, to name a lock's holder. Injectable: a test's fake process table. */
-  processArgs?: (pids: number[]) => ReadonlyMap<number, string> | null;
+  processArgs?: (pids: number[]) => ReadonlyMap<number, string> | null | Promise<ReadonlyMap<number, string> | null>;
 }
 
 /**
@@ -244,10 +244,10 @@ const ACTIVE_WITHIN_MS = 20_000;
  * The cost is that a crashed Codex leaves a stale lock and one dead row until it
  * next opens that thread, which is a far better failure than hiding live work.
  */
-export function readCodexOpenThreadIds(
+export async function readCodexOpenThreadIds(
   codexHome: string,
-  probe: ((paths: string[]) => string | null) | undefined = probeHeldLocks,
-): Map<string, number> {
+  probe: CodexThreadsOptions["lockProbe"] = probeHeldLocks,
+): Promise<Map<string, number>> {
   const dir = join(codexHome, "thread-writer-locks");
   let names: string[];
   try {
@@ -267,7 +267,7 @@ export function readCodexOpenThreadIds(
   //
   // One `lsof` for every lock at once, not one per file: this runs on the
   // render path, and the count is small but the cost is not.
-  const held = (probe ?? probeHeldLocks)(names.map((name) => join(dir, name)));
+  const held = await (probe ?? probeHeldLocks)(names.map((name) => join(dir, name)));
   if (held === null) {
     // The probe itself failed — lsof missing, or something unexpected. Fall
     // back to the old assumption rather than silently emptying the ledger:
@@ -290,19 +290,51 @@ export function readCodexOpenThreadIds(
   );
 }
 
-/** `lsof -F pn` over the lock paths some process currently holds open, or null if unknown. */
-function probeHeldLocks(paths: string[]): string | null {
+/** How long a discovery probe may run before discovery gives up on it. */
+const PROBE_TIMEOUT_MS = 2_000;
+
+/**
+ * One external probe, off the thread and on a leash.
+ *
+ * These ran through `Bun.spawnSync`, and Bun runs the daemon on ONE thread: for
+ * as long as `lsof` or `ps` took, voice, injection and publication were frozen —
+ * not waiting their turn, unable to run at all. Awaiting the child hands the
+ * loop back instead.
+ *
+ * The timeout is the other half. A probe blocked on a wedged mount would
+ * otherwise hold the discovery pass open forever, and every caller here already
+ * knows how to read "no answer": a null lock probe falls back to presence, a
+ * null process table leaves holders unnamed. Slow is reported as unknown, which
+ * is true, rather than waited on.
+ *
+ * `ok` lists the exit codes that are answers rather than failures — `lsof`
+ * exits 1 for "none of these are open", which is a result.
+ */
+async function probeCommand(argv: string[], ok: readonly number[]): Promise<string | null> {
   try {
-    const child = Bun.spawnSync(["lsof", "-F", "pn", "--", ...paths], {
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    // Exit 1 means "none of these are open", which is an answer, not a failure.
-    if (child.exitCode !== 0 && child.exitCode !== 1) return null;
-    return new TextDecoder().decode(child.stdout);
+    const child = Bun.spawn(argv, { stdout: "pipe", stderr: "ignore" });
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch { /* already gone; the exit observation below still settles */ }
+    }, PROBE_TIMEOUT_MS);
+    try {
+      const text = await new Response(child.stdout).text();
+      // A killed child exits on a signal, so its code is never in `ok`: a
+      // timed-out probe reports unknown by the same path a failed one does.
+      return ok.includes(await child.exited) ? text : null;
+    } finally {
+      clearTimeout(timer);
+    }
   } catch {
     return null;
   }
+}
+
+/** `lsof -F pn` over the lock paths some process currently holds open, or null if unknown. */
+function probeHeldLocks(paths: string[]): Promise<string | null> {
+  // Exit 1 means "none of these are open", which is an answer, not a failure.
+  return probeCommand(["lsof", "-F", "pn", "--", ...paths], [0, 1]);
 }
 
 /**
@@ -365,21 +397,17 @@ export function appServerNoTerminal(pid: number): string {
 const APP_SERVER_ARGS = /\sapp-server(?=\s+-|\s+daemon\b|\s*$)/;
 
 /** Each pid's command line from one `ps`, or null when `ps` cannot run. */
-function readProcessArgs(pids: number[]): Map<number, string> | null {
-  try {
-    const out = Bun.spawnSync(["ps", "-o", "pid=,args=", "-p", pids.join(",")], {
-      stdout: "pipe",
-      stderr: "ignore",
-    });
-    const table = new Map<number, string>();
-    for (const line of new TextDecoder().decode(out.stdout).split("\n")) {
-      const match = /^\s*(\d+)\s+(.*)$/.exec(line);
-      if (match) table.set(Number(match[1]), match[2]!);
-    }
-    return table;
-  } catch {
-    return null;
+async function readProcessArgs(pids: number[]): Promise<Map<number, string> | null> {
+  // `ps -p` exits 1 when none of the pids are alive any more, which is an
+  // answer — the same empty table the synchronous form produced.
+  const out = await probeCommand(["ps", "-o", "pid=,args=", "-p", pids.join(",")], [0, 1]);
+  if (out === null) return null;
+  const table = new Map<number, string>();
+  for (const line of out.split("\n")) {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (match) table.set(Number(match[1]), match[2]!);
   }
+  return table;
 }
 
 /**
@@ -575,10 +603,10 @@ export function readCodexRolloutTail(
 }
 
 /** Every observable Codex thread's rollout tail, for turn-end detection. */
-export function readCodexTurnSnapshots(
+export async function readCodexTurnSnapshots(
   options: CodexThreadsOptions = {},
-): CodexTurnSnapshot[] {
-  const read = readCodexThreads(options);
+): Promise<CodexTurnSnapshot[]> {
+  const read = await readCodexThreads(options);
   if (!read.available) return [];
   const snapshots: CodexTurnSnapshot[] = [];
   for (const entry of read.entries) {
@@ -615,26 +643,37 @@ export function codexHomeDir(options: CodexThreadsOptions = {}): string | null {
 }
 
 /**
- * Each thread's latest turn status from `thread_turns`; empty when that
+ * The latest turn status for exactly the threads asked about; empty when that
  * database cannot be read, because a thread with no known turn is still a
  * real session worth showing — losing this must never cost the thread list.
+ *
+ * Scoped to the candidates, never the whole table. A listing shows at most
+ * `CODEX_ROW_LIMIT` rows, and this ran a correlated MAX() across every turn
+ * Codex has ever recorded to answer for those six — on the daemon's one
+ * thread, every twenty seconds. The answer for a listed thread is identical
+ * either way; only the work is different.
  */
-function readCodexTurnStatuses(history: string): Map<string, string> {
+export function readCodexTurnStatuses(
+  history: string,
+  threadIds: readonly string[],
+): Map<string, string> {
   const status = new Map<string, string>();
-  if (!existsSync(history)) return status;
+  if (!threadIds.length || !existsSync(history)) return status;
   try {
     const hist = openReadOnly(history);
     try {
+      const placeholders = threadIds.map(() => "?").join(",");
       for (
         const row of hist
           .query(
             `SELECT thread_id, status
                FROM thread_turns t
-              WHERE rollout_ordinal = (
+              WHERE thread_id IN (${placeholders})
+                AND rollout_ordinal = (
                       SELECT MAX(rollout_ordinal) FROM thread_turns
                        WHERE thread_id = t.thread_id)`,
           )
-          .all() as Array<Record<string, any>>
+          .all(...(threadIds as string[])) as Array<Record<string, any>>
       ) {
         status.set(String(row.thread_id), String(row.status));
       }
@@ -717,11 +756,11 @@ export interface CodexHelperThread {
  * ponytail: direct children only. No helper on this machine has spawned its
  * own (0 of 19 edges start at a helper); walk the edges if one ever does.
  */
-export function readCodexHelperThreads(
+export async function readCodexHelperThreads(
   parentThreadId: string,
   parentRolloutPath: string,
   options: Pick<CodexThreadsOptions, "lockProbe" | "now"> = {},
-): CodexHelperThread[] {
+): Promise<CodexHelperThread[]> {
   const at = parentRolloutPath.lastIndexOf("/sessions/");
   if (at <= 0) return [];
   const codexHome = parentRolloutPath.slice(0, at);
@@ -746,10 +785,10 @@ export function readCodexHelperThreads(
     db?.close();
   }
   if (!children.length) return [];
-  const holders = readCodexOpenThreadIds(codexHome, options.lockProbe);
+  const holders = await readCodexOpenThreadIds(codexHome, options.lockProbe);
   const live = children.filter((row) => holders.has(String(row.id)));
   if (!live.length) return [];
-  const status = readCodexTurnStatuses(history);
+  const status = readCodexTurnStatuses(history, live.map((row) => String(row.id)));
   const index = readCodexSessionIndex(codexHome);
   const now = options.now ?? Date.now();
   return live.map((row) => {
@@ -765,11 +804,41 @@ export function readCodexHelperThreads(
   });
 }
 
+/**
+ * The discovery pass in flight for a Codex home, shared by everyone who asks
+ * while it runs.
+ *
+ * A pass is a point-in-time read of the same files, so two callers landing
+ * inside one want the same answer — and before this the panel refresh, the
+ * turn poller and any control-server lookup could each have their own `lsof`
+ * and `ps` outstanding against the same locks. This is the rule the session
+ * reconciler already applies to the registry read (one at a time, later askers
+ * share it), applied to the probes, rather than a second scheduler.
+ *
+ * ponytail: keyed by home alone, so a caller with a different clock or probe
+ * that overlaps a running pass is answered by that pass. Nothing in the daemon
+ * passes either, and tests await one call before making the next; key on the
+ * options too if a caller ever needs its own.
+ */
+const codexThreadsInFlight = new Map<string, Promise<CodexSessionRegistryRead>>();
+
 export function readCodexThreads(
   options: CodexThreadsOptions = {},
-): CodexSessionRegistryRead {
+): Promise<CodexSessionRegistryRead> {
   const codexHome = codexHomeDir(options);
-  if (!codexHome) return { entries: [], complete: true, available: false };
+  if (!codexHome) return Promise.resolve({ entries: [], complete: true, available: false });
+  const running = codexThreadsInFlight.get(codexHome);
+  if (running) return running;
+  const pass = codexThreadsPass(codexHome, options)
+    .finally(() => codexThreadsInFlight.delete(codexHome));
+  codexThreadsInFlight.set(codexHome, pass);
+  return pass;
+}
+
+async function codexThreadsPass(
+  codexHome: string,
+  options: CodexThreadsOptions,
+): Promise<CodexSessionRegistryRead> {
   const { state, history } = codexThreadDbPaths(codexHome);
   // A machine with no Codex at all is known-empty, not an error — the same
   // distinction the Claude side draws between ENOENT and an unreadable dir.
@@ -795,7 +864,7 @@ export function readCodexThreads(
     db = openReadOnly(state);
     // An open thread is live no matter how long ago it was last touched; the
     // window only has to catch threads Codex has since closed.
-    const holders = readCodexOpenThreadIds(codexHome, options.lockProbe);
+    const holders = await readCodexOpenThreadIds(codexHome, options.lockProbe);
     const threads = db
       .query(
         // `source` separates a session from a script. On this machine: 354
@@ -821,11 +890,6 @@ export function readCodexThreads(
     db.close();
     db = undefined;
 
-    // Turn status lives in the OTHER database. Its absence is survivable: a
-    // thread with no known turn is still a real session worth showing, just
-    // without a confident busy/idle, so default to idle rather than drop it.
-    const status = readCodexTurnStatuses(history);
-
     const listed = threads
       .filter((row) => {
         // A thread nobody spoke in is not a session.
@@ -850,10 +914,15 @@ export function readCodexThreads(
         return live || Number(row.updated_at_ms ?? 0) >= cutoff;
       })
       .slice(0, CODEX_ROW_LIMIT);
+    // Turn status lives in the OTHER database, and is asked only about the rows
+    // this listing will show. Its absence is survivable: a thread with no known
+    // turn is still a real session worth showing, just without a confident
+    // busy/idle, so default to idle rather than drop it.
+    const status = readCodexTurnStatuses(history, listed.map((row) => String(row.id)));
     // One `ps` for every holder at once, and only when a listed thread has one.
     const holderPids = [...new Set(listed.map((row) => holders.get(String(row.id)) ?? 0))]
       .filter((pid) => pid > 0);
-    const args = holderPids.length ? (options.processArgs ?? readProcessArgs)(holderPids) : null;
+    const args = holderPids.length ? await (options.processArgs ?? readProcessArgs)(holderPids) : null;
     const index = readCodexSessionIndex(codexHome);
     const entries = listed.map((row) => {
       const holder = holders.get(String(row.id));
