@@ -13,7 +13,7 @@ struct ConversationStack: View {
     @ObservedObject var history: HistoryStore
     let conversation: Conversation
     let optionReplyInFlight: Bool
-    let onSelectOption: (String) -> Void
+    let onSelectOption: (String, String) -> Void
     /// Take me to the text field — I want to answer in my own words.
     ///
     /// Claude Code's own question UI always offers an "Other" row and conch
@@ -448,7 +448,7 @@ struct ConversationStack: View {
                     if asked.multiSelect {
                         toggleSelection(option.label, for: questionID)
                     } else {
-                        onSelectOption(option.label)
+                        onSelectOption(option.label, questionID)
                     }
                 } label: {
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -543,7 +543,7 @@ struct ConversationStack: View {
             if asked.multiSelect && isActive {
                 let selected = selectedLabels(for: asked, questionID: questionID)
                 Button {
-                    onSelectOption(selected.joined(separator: ", "))
+                    onSelectOption(selected.joined(separator: ", "), questionID)
                 } label: {
                     Text(selected.isEmpty ? "Submit selections" : "Submit \(selected.count) selected")
                         .font(Type.caption.weight(.semibold))

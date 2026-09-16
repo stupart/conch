@@ -59,7 +59,7 @@ test("the phone question card goes dead on a row with no terminal and says why",
   expect(row).toContain(".disabled(!isActive || optionReplyInFlight || option.label.isEmpty || noTerminal != nil)");
   const reason = row.indexOf("if isActive, let noTerminal {");
   const freeform = row.indexOf("Button(action: onFreeform) {");
-  const submit = row.indexOf("onSelectOption(selected.joined(separator: \", \"))");
+  const submit = row.indexOf("onSelectOption(selected.joined(separator: \", \"), questionID)");
   expect(reason).toBeGreaterThan(-1);
   expect(freeform).toBeGreaterThan(reason);
   expect(submit).toBeGreaterThan(freeform);
