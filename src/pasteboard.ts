@@ -144,10 +144,30 @@ function run(argv) {
   return 'true';
 }`;
 
+/**
+ * A refusal the helper made on purpose, told apart from a helper that broke.
+ *
+ * The program declines a clipboard it could not put back afterwards — a promised or otherwise
+ * unreadable representation, more than 16 MiB — and one that moved under it mid-capture. Those
+ * are exactly the clipboards conch must leave alone, so they must never become "copy over it
+ * and paste anyway" (#248 made every failure here do that). Anything else — a timeout, a JXA
+ * that fell over — is a broken helper, and delivering the words still matters more than the
+ * courtesy of preserving what was there.
+ */
+export function pasteboardRefusal(error: unknown): "clipboard-unpreservable" | "clipboard-changed" | undefined {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  if (message.includes("Pasteboard changed during capture")) return "clipboard-changed";
+  return /Unreadable pasteboard|Pasteboard too large to preserve/.test(message) ? "clipboard-unpreservable" : undefined;
+}
+
 export function createPasteboard(run: typeof runUICommand = runUICommand, board?: string): Pasteboard {
   async function call<T>(operation: string, input: object = {}): Promise<T> {
     const result = await run(["osascript", "-l", "JavaScript", "-e", PASTEBOARD_SCRIPT, "--", operation], JSON.stringify({ ...input, board }));
-    if (result.timedOut || result.exitCode !== 0) throw new Error("Pasteboard helper failed");
+    // The refusal travels with the failure: a helper that broke and a helper that declined
+    // a clipboard on purpose are the same exit code, and only its own words tell them apart.
+    if (result.timedOut || result.exitCode !== 0) {
+      throw new Error(`Pasteboard helper failed: ${result.stderr.trim() || result.text.trim() || "no output"}`);
+    }
     return JSON.parse(result.text) as T;
   }
   return {

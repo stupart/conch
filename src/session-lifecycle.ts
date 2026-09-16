@@ -1,4 +1,4 @@
-import { withUITransaction } from "./inject.ts";
+import { focusedAction, focusSessionWindow, withUITransaction, type OsaRunner } from "./inject.ts";
 import { runUICommand } from "./pasteboard.ts";
 import { processMatchesProvider, readProcessIdentity, sameProcessIdentity, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
 import { conchHome } from "./home.ts";
@@ -264,7 +264,18 @@ async function boundedExit(
 }
 
 /** UI work shares the injector's child-exit seal as well as its transaction queue. */
+/** A helper that timed out or failed is an error here, never a silent "not found". */
+function checkedTerminalResult<T extends { text: string; stderr?: string; exitCode?: number; timedOut: boolean }>(result: T): T {
+  if (result.timedOut) throw new Error("Terminal automation timed out");
+  if ((result.exitCode ?? 0) !== 0) throw new Error((result.stderr ?? "").trim() || `Terminal returned ${result.exitCode}`);
+  return result;
+}
+
 async function runTerminalAutomation(argv: string[], dependencies: SessionLifecycleDependencies) {
+  return checkedTerminalResult(await runTerminalUI(argv, dependencies));
+}
+
+async function runTerminalUI(argv: string[], dependencies: SessionLifecycleDependencies) {
   const result = await runUICommand(argv, undefined, {
     timeoutMs: dependencies.automationTimeoutMs,
     spawn: dependencies.spawn && ((args) => {
@@ -277,8 +288,6 @@ async function runTerminalAutomation(argv: string[], dependencies: SessionLifecy
       };
     }),
   });
-  if (result.timedOut) throw new Error("Terminal automation timed out");
-  if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `Terminal returned ${result.exitCode}`);
   return result;
 }
 
@@ -394,28 +403,26 @@ async function closeTerminalSessionInTransaction(
   if (!tty || tty === "??") throw new Error("session is not attached to a Terminal tty");
 
   verify();
-  const { text: stdout } = await runTerminalAutomation([
-    "osascript",
-    "-e", "on run argv",
-    "-e", 'tell application "Terminal"',
-    "-e", "repeat with w in windows",
-    "-e", "repeat with t in tabs of w",
-    "-e", 'if (tty of t) is ("/dev/" & (item 1 of argv)) then',
-    "-e", "set selected tab of w to t",
-    "-e", "set index of w to 1",
-    "-e", "activate",
-    "-e", 'tell application "System Events" to keystroke "d" using control down',
-    "-e", 'return "ok"',
-    "-e", "end if",
-    "-e", "end repeat",
-    "-e", "end repeat",
-    "-e", "end tell",
-    "-e", 'return "notfound"',
-    "-e", "end run",
-    "--",
-    tty,
-  ], dependencies);
-  if (stdout.trim() !== "ok") throw new Error("session Terminal tab was not found");
+  // The injector's own primitive, for the same reason it exists there: raising a window and
+  // typing into it are two moments, and the UI queue only holds conch's own actions apart. A
+  // Cmd-Tab in between used to send a global Ctrl-D into whatever had come forward. The guard
+  // re-reads the frontmost app and the front tab's tty inside the script that presses the key.
+  const osa: OsaRunner = (lines, argv = []) => runTerminalUI(
+    ["osascript", ...lines.flatMap((line) => ["-e", line]), ...(argv.length ? ["--", ...argv] : [])],
+    dependencies,
+  );
+  const focused = checkedTerminalResult(await focusSessionWindow(tty, osa));
+  if (focused.text.trim() !== "ok") throw new Error("session Terminal tab was not found");
+  await (dependencies.sleep ?? Bun.sleep)(300); // let the raise settle, as injection does
+  verify();
+  const closed = checkedTerminalResult(await focusedAction(
+    tty, osa, ['tell application "System Events" to keystroke "d" using control down'],
+  ));
+  if (closed.text.trim() !== "ok") {
+    throw new Error(closed.text.trim() === "front-window-changed"
+      ? "another window came to the front on the Mac; Ctrl-D was not sent"
+      : "session Terminal tab was not found");
+  }
   await waitForExit(pid, dependencies, "session did not exit cleanly after Ctrl-D");
 }
 

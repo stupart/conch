@@ -64,6 +64,10 @@ function fakeUI(initial: Items = textItems("original")) {
       if (script.includes("if frontTty is not") && front !== `/dev/tty${pid}`) {
         return { text: "front-window-changed", timedOut: false, exitCode: 0 };
       }
+      // The version conch takes for itself after writing the clipboard (the degraded paste).
+      if (script.includes("changeCount") && !script.includes("conch-focus-guard")) {
+        return { text: String(changeCount), timedOut: false, exitCode: 0 };
+      }
       if (script.includes("pasteboard\'s changeCount") && Number(argv[0]) !== changeCount) {
         return { text: "clipboard-changed", timedOut: false, exitCode: 0 };
       }

@@ -42,6 +42,9 @@ public enum ConchSendFailure {
             "something else copied on your Mac mid-send, so conch stopped."
         case "clipboard-unavailable":
             "conch couldn't use the Mac's clipboard."
+        // conch refused to touch a clipboard it could not put back — the refusal is the feature.
+        case "clipboard-unpreservable":
+            "something on your Mac's clipboard can't be put back, so conch left it alone. Copy something else and send again."
         case "automation-failed", "delivery-failed", "transport-error":
             "the Mac wouldn't let conch type into that session."
         case "submit-failed", "submit-error":

@@ -49,7 +49,8 @@ final class SendFailureTests: XCTestCase {
         let reasons = [
             "keystroke-fallback-off", "window-not-focusable", "session-not-routable",
             "system-dialog-blocking", "automation-permission-denied", "front-window-changed",
-            "automation-failed", "clipboard-changed", "clipboard-unavailable", "submit-failed",
+            "automation-failed", "clipboard-changed", "clipboard-unavailable", "clipboard-unpreservable",
+            "submit-failed",
             "clipboard-fallback", "delivery-failed", "transport-error", "submit-error",
             "delivery-unconfirmed", "delivery-unattributed", "delivery-interrupted",
         ]
