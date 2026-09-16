@@ -132,7 +132,7 @@ struct DashboardView: View {
             // The dashboard owns this state, so it takes the message itself rather than
             // threading another closure down through the window.
             .onReceive(NotificationCenter.default.publisher(for: .toggleSidebar)) { _ in
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                withAnimation(ConchMotion.morph.animation(reduceMotion: reduceMotion)) {
                     sidebarCollapsed.toggle()
                 }
             }
@@ -1315,6 +1315,7 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
 }
 
 private struct ConversationPane: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let state: PublishedState?
     let onSelectSession: (SessionRow) -> Void
 
@@ -1558,6 +1559,10 @@ private struct ConversationPane: View {
                 }
             }
         }
+        // §4: the stage's pages are a big view changing shape, so they move on `morph`
+        // (bounce 0.12, response 0.46). They did not move at all before — the deliverable
+        // replaced the conversation between one frame and the next.
+        .animation(ConchMotion.morph.animation(reduceMotion: reduceMotion), value: stage(for: focusedRow))
         .background(ConchPalette.bg)
         .onReceive(NotificationCenter.default.publisher(for: .setStage)) { note in
             // Only where there is somewhere to go: with no deliverable filed, two of the

@@ -353,6 +353,33 @@ describe("§3's anatomy, where the app had drifted from it", () => {
     expect(folder).not.toContain("ConchPalette.textDim");
   });
 
+  test("the workspace moves on §4's springs, not on hand-rolled easings", () => {
+    // §4 names exactly what moves and with which spring. ConchMotion already held the right
+    // values (morph 0.12/0.46, pop 0.34/0.36) — the workspace just never used them, animating
+    // with .easeOut(duration: 0.18) instead. The overlay has used them properly for months
+    // (control-bar-source.test.ts), so this is the same convention, finally applied here.
+    expect(dashboard).toContain("withAnimation(ConchMotion.morph.animation(reduceMotion: reduceMotion))");
+    // The stage's pages are a big view changing shape: morph. They did not move at all before.
+    expect(dashboard).toContain(
+      ".animation(ConchMotion.morph.animation(reduceMotion: reduceMotion), value: stage(for: focusedRow))",
+    );
+    // Reduce Motion DROPS THE BOUNCE and keeps the timing (§4). Passing nil killed the
+    // animation outright, which is a different promise.
+    expect(dashboard).not.toContain("withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18))");
+
+    // Switching sessions: the transcript fades in over 0.12 s, and never slides — moving a
+    // reading surface is the thing Tyler called distracting on the feed lab.
+    expect(stack).toContain("@State private var switchFade: Double = 1");
+    // Declarative, never an imperative animation block: this file forbids those in the
+    // transcript, because one that restarts on every streamed token never settles the
+    // viewport. The fade rides .animation(_:value:) instead, so it cannot touch the scroll
+    // path — and the guard above (no imperative block anywhere here) still stands.
+    expect(stack).toContain(".animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: switchFade)");
+    expect(stack).toContain("Task { @MainActor in switchFade = 1 }");
+    expect(stack).toContain(".opacity(switchFade)");
+    expect(stack).not.toContain(".transition(.slide)");
+  });
+
   test("the header's hairline waits for the transcript to scroll (§3)", () => {
     // "A hairline appears under the header only once the transcript scrolls or a pane opens."
     // Nothing pinned it, and it was drawn unconditionally.
