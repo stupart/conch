@@ -593,7 +593,8 @@ private struct ControlBarHost: View {
                 set: { store.send($0 == .talk ? .global(.resume) : .global(.pause)) }
             ),
             onTap: stageNext,
-            help: next(in: ready).map { "Show \($0.label) · \(ready.count) ready" } ?? ""
+            // What the agent asked you to check, when it said; else how many are waiting.
+            help: next(in: ready).map { "Show \($0.label) · \($0.inspect ?? "\(ready.count) ready")" } ?? ""
         )
         // A small gap under the menu bar, and room below for the glass's dropped shadow.
         .padding(.top, ConchSpace.x3)

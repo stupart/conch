@@ -49,6 +49,16 @@ struct ReviewSheet: View {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 6) {
+                    // What the agent asked you to check, when it said (scene.inspect).
+                    if let inspect = row?.review?.inspect {
+                        Label(inspect, systemImage: "eye")
+                            .font(Type.caption)
+                            .foregroundStyle(Palette.textDim)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .accessibilityLabel("Check: \(inspect)")
+                    }
                     if let next {
                         HStack {
                             Spacer()

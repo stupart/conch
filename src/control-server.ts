@@ -5,6 +5,7 @@ import { chmodSync, existsSync, lstatSync, renameSync, unlinkSync } from "node:f
 import { dirname, join } from "node:path";
 import { lockSocketPath, type SocketOwnership } from "./socket-ownership.ts";
 import type { TurnEvent } from "./hook.ts";
+import { checkReviewScene } from "./snippet.ts";
 import type { PublishedState } from "./panel.ts";
 import type { SessionInfo } from "./sessions.ts";
 import type { InstantAudioCommand } from "./instant-controls.ts";
@@ -535,6 +536,10 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
     }
     if (value.review.link !== undefined && typeof value.review.link !== "string") {
       return { ok: false, err: "review link must be a string" };
+    }
+    if (value.review.scene !== undefined) {
+      const scene = checkReviewScene(value.review.scene, value.review.link !== undefined);
+      if (!scene.ok) return { ok: false, err: `review ${scene.reason}` };
     }
   }
   if (type === "review-published" && value.review === undefined) {

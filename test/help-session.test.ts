@@ -63,7 +63,8 @@ describe("help session CLAUDE.md", () => {
   // The doc is prose about code that moves. Every name it uses is checked
   // against the source it describes, the way the plugin docs are regenerated
   // and diffed: rename a command, a tool or a file and this fails.
-  const doc = read("docs/help-session/CLAUDE.md");
+  // Rendered, so the conch section generated from agent-instructions.ts is checked too.
+  const doc = renderHelpSessionClaudeMd({ CONCH_CONFIG_DIR: "{{CONFIG_DIR}}" });
   const cli = read("src/cli.ts");
   const mcp = read("src/mcp.ts");
 

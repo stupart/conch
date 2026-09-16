@@ -517,7 +517,9 @@ test("the Ready pill's label, and only it, is a button, and only while Ready, sa
   expect(bar).toContain(".buttonStyle(PillPress())");
   expect(bar.slice(button, otherwise)).toContain(".help(help)");
   expect(components).toContain(".animation(ConchMotion.pop.animation(reduceMotion: reduceMotion), value: configuration.isPressed)");
-  expect(panels).toContain('help: next(in: ready).map { "Show \\($0.label) · \\(ready.count) ready" } ?? ""');
+  // What to check there when the agent said (scene.inspect), else how many are ready.
+  expect(panels).toContain('help: next(in: ready).map { "Show \\($0.label) · \\($0.inspect ?? "\\(ready.count) ready")" } ?? ""');
+  expect(read("mac-app/conch-mac/ReviewView.swift")).toContain("inspect = review.inspect");
   // The panel feeds SwiftUI the pointer while conch is in the background, as the fog's own view does.
   expect(member(panels, "override func updateTrackingAreas() {\n        super.updateTrackingAreas()\n        guard !trackingAreas")).toContain(
     "options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect], owner: self",
@@ -527,8 +529,11 @@ test("the Ready pill's label, and only it, is a button, and only while Ready, sa
 });
 
 test("the pill's scene: the link, else conch's window if open, else the terminal, else conch, falling through on failure", () => {
-  const choose = member(components, "public static func choose(link: URL?, fileExists: (String) -> Bool, appWindowOpen: Bool, revealable: Bool) -> ReviewScene {");
+  const choose = member(components, "public static func choose(kind: Kind = .auto, link: URL?, fileExists: (String) -> Bool, appWindowOpen: Bool, revealable: Bool) -> ReviewScene {");
   const order = [
+    "case .conversation: return .app",
+    "case .terminal: return revealable ? .terminal : .app",
+    "case .auto, .link: break",
     'if let link, ["http", "https"].contains(link.scheme?.lowercased() ?? "") { return .open(link) }',
     "if let link, link.isFileURL, fileExists(link.path) { return .open(link) }",
     "if appWindowOpen { return .app }",
@@ -541,6 +546,9 @@ test("the pill's scene: the link, else conch's window if open, else the terminal
   const stage = member(item, "static func stage(_ row: SessionRow, store: StateStore) async -> Bool {");
   // The review's own trimmed link, resolved against the session's folder the way the dashboard resolves it.
   expect(stage).toContain("var link = ReviewItem(row: row)?.link.map { LinkTarget.url(for: $0, cwd: row.cwd) }");
+  // The scene the review asked for; none, or one this build doesn't know, is auto.
+  expect(stage).toContain('let kind = ReviewScene.Kind(rawValue: row.review?.sceneKind ?? "") ?? .auto');
+  expect(stage).toContain("switch ReviewScene.choose(\n                kind: kind,\n                link: link,");
   expect(stage).toContain("fileExists: { FileManager.default.fileExists(atPath: $0) },");
   expect(stage).toContain("appWindowOpen: window.map { $0.isVisible && !$0.isMiniaturized } ?? false,");
   // Each scene on its existing path, handed off only when it says so, else the next scene.
