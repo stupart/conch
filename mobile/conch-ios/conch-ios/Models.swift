@@ -155,6 +155,15 @@ struct PublishedState: Decodable, Equatable {
         /// A Claude Code background job no window is attached to: it can be
         /// opened in Terminal on the Mac. Older daemons never send it.
         var attachable = false
+        /// The folder this session runs in. The daemon has always sent it and the
+        /// Mac has always read it; the phone simply never asked, so its list could
+        /// not say which project a row belonged to.
+        var cwd: String?
+        /// The session this one runs inside (C4), or the one that started it (C15).
+        /// Present on the wire since both landed; decoding it is what lets the phone
+        /// nest a subagent under its parent instead of listing it as a peer.
+        var parentSessionId: String?
+        var startedBySessionId: String?
 
         struct Review: Decodable, Equatable {
             var summary = ""
@@ -179,6 +188,7 @@ struct PublishedState: Decodable, Equatable {
 
         private enum CodingKeys: String, CodingKey {
             case id, label, status, backend, context, detail, at, live, paused, review, noTerminal, attachable
+            case cwd, parentSessionId, startedBySessionId
         }
 
         init() {}
@@ -197,6 +207,9 @@ struct PublishedState: Decodable, Equatable {
             review = try? c.decodeIfPresent(Review.self, forKey: .review)
             noTerminal = try? c.decodeIfPresent(String.self, forKey: .noTerminal)
             attachable = (try? c.decodeIfPresent(Bool.self, forKey: .attachable)) ?? false
+            cwd = try? c.decodeIfPresent(String.self, forKey: .cwd)
+            parentSessionId = try? c.decodeIfPresent(String.self, forKey: .parentSessionId)
+            startedBySessionId = try? c.decodeIfPresent(String.self, forKey: .startedBySessionId)
         }
     }
 

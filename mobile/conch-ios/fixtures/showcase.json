@@ -723,7 +723,7 @@
       "backend": "claude",
       "status": "waiting",
       "at": 1759998970000,
-      "cwd": "/Users/you/Projects/conch",
+      "cwd": "/Users/you/Projects/fieldnote-site",
       "review": {
         "summary": "The phone palette, for comparison with ConchDesign",
         "link": "mobile/conch-ios/conch-ios/Theme.swift",
@@ -741,7 +741,7 @@
       "backend": "claude",
       "status": "waiting",
       "at": 1759999170000,
-      "cwd": "/Users/you/Projects/conch",
+      "cwd": "/Users/you/Projects/fieldnote-site",
       "review": {
         "summary": "Header: status moves under the title",
         "link": "mobile/conch-ios/fixtures/deliverables/header-fix.diff",
@@ -759,7 +759,7 @@
       "backend": "claude",
       "status": "waiting",
       "at": 1759999370000,
-      "cwd": "/Users/you/Projects/conch",
+      "cwd": "/Users/you/Projects/fieldnote-site",
       "review": {
         "summary": "Build logs, zipped",
         "link": "mobile/conch-ios/fixtures/deliverables/build-logs.zip",
@@ -777,8 +777,8 @@
       "backend": "claude",
       "status": "needs",
       "at": 1759999700000,
-      "cwd": "/Users/you/Projects/conch",
-      "detail": "permission: Bash — rm -rf build/ios-sim.noindex"
+      "cwd": "/Users/you/Projects/fieldnote-site",
+      "detail": "permission: Bash \u2014 rm -rf build/ios-sim.noindex"
     }
   ],
   "dismissed": [
