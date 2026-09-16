@@ -155,6 +155,8 @@ final class ComposerDraftStore: ObservableObject {
 struct ComposerView: View {
     let sessionID: String
     let sessionLabel: String
+    /// Which agent this is going to, for the destination chip.
+    var backend: String? = nil
     @Binding var draft: String
     @Binding var attachments: [URL]
     /// What conch is hearing right now, so dictation appears where you would
@@ -199,7 +201,9 @@ struct ComposerView: View {
     @FocusState private var fieldFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        // No gap: `#ta` carries its own 4 of bottom padding and `.cbar` its own 34 height,
+        // so a stack spacing here is height the lab does not have.
+        VStack(alignment: .leading, spacing: 0) {
             if !attachments.isEmpty {
                 AttachmentStrip(attachments: attachments) { url in
                     attachments.removeAll { $0 == url }
@@ -216,7 +220,7 @@ struct ComposerView: View {
             // the full width instead of the gap between two button clusters.
             composerField
 
-            HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .center, spacing: 4) {
                 Button(action: chooseFiles) {
                     Image(systemName: "plus")
                         .font(.system(size: 13, weight: .medium))
@@ -235,7 +239,9 @@ struct ComposerView: View {
                 Button(action: onTalk) {
                     Image(systemName: micSymbol)
                         .font(.system(size: 12, weight: .medium))
-                        .frame(width: 28, height: 28)
+                        // `.mic` is 30 in the lab, where the plain icon buttons are 28: the one
+                        // control always worth hitting is a little larger than its neighbours.
+                        .frame(width: 30, height: 30)
                         .background(Circle().fill(micBackground))
                         .foregroundStyle(micForeground)
                         // Armed and waiting: the fixed pulse. Hearing you: the
@@ -260,11 +266,39 @@ struct ComposerView: View {
 
                 if let micCaption {
                     Text(micCaption)
-                        .font(ConchTypography.font(size: 10.5, weight: .medium))
+                        .font(ConchTypography.font(size: 12, weight: .medium))
                         .foregroundStyle(micCaptionColor)
                         .transition(.opacity)
                         .fixedSize()
                 }
+
+                // `.dest` — where this message is going. The brief asked for it, and so did the
+                // Codex review: "show the destination beside the composer". A composer with no
+                // destination is how a sentence meant for one agent goes to another.
+                HStack(spacing: 5) {
+                    AgentBadge(backend: backend)
+                    Text(sessionLabel)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .font(ConchTypography.font(size: 12))
+                .foregroundStyle(ConchPalette.textFaint)
+                .padding(.leading, 8)
+                .layoutPriority(-1)
+
+                if noTerminal != nil, let onOpenInTerminal {
+                    Button(action: onOpenInTerminal) {
+                        Label("Open in Terminal", systemImage: "terminal")
+                            .font(ConchTypography.font(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(ConchPalette.brandCyan)
+                    .help("Open this session in a new Terminal window")
+                    .accessibilityLabel("Open \(sessionLabel) in Terminal")
+                    .fixedSize()
+                }
+
+                Spacer(minLength: 8)
 
                 // Read that back to me.
                 //
@@ -288,20 +322,6 @@ struct ComposerView: View {
                 .help("Read the last reply again")
                 .accessibilityLabel("Read the last reply again")
 
-                if noTerminal != nil, let onOpenInTerminal {
-                    Button(action: onOpenInTerminal) {
-                        Label("Open in Terminal", systemImage: "terminal")
-                            .font(ConchTypography.font(size: 11, weight: .medium))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(ConchPalette.brandCyan)
-                    .help("Open this session in a new Terminal window")
-                    .accessibilityLabel("Open \(sessionLabel) in Terminal")
-                    .fixedSize()
-                }
-
-                Spacer(minLength: 8)
-
                 // Send becomes Stop while a turn is running. One control in
                 // one place: the button you reach for is always the one that
                 // acts on the turn in front of you, and a stray Return cannot
@@ -321,13 +341,18 @@ struct ComposerView: View {
                 Button(action: send) {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 13, weight: .semibold))
-                        .frame(width: 28, height: 28)
+                        // `.send` is 30 like the mic, not 28 like the icon buttons.
+                        .frame(width: 30, height: 30)
+                        // `.send` in the lab is the accent — near-black ink — not the brand
+                        // cyan. Cyan at full strength is reserved for "your microphone is open",
+                        // which is the one state with the highest cost of being wrong about, and
+                        // a send button wearing it competes with that.
                         .background(
                             Circle().fill(
-                                canSend ? ConchPalette.brandCyan : ConchPalette.hover
+                                canSend ? ConchPalette.ink : ConchPalette.fill
                             )
                         )
-                        .foregroundStyle(canSend ? Color.black : ConchPalette.textDim)
+                        .foregroundStyle(canSend ? ConchPalette.onInk : ConchPalette.textFaint)
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSend)
@@ -335,9 +360,14 @@ struct ComposerView: View {
                 .help(noTerminal ?? "Send to \(sessionLabel)")
                 }
             }
+            // `.cbar`: a fixed 34 tall with 2 of leading padding, so the row keeps its height
+            // whether or not a caption or destination is showing.
+            .frame(height: 34)
+            .padding(.leading, 2)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        // .cbox in the lab: 6 all round. This was 14/8, which with the inner box that
+        // just went is where the composer's dead height came from.
+        .padding(6)
         // §3: the composer floats 14 above the bottom, at the width of the measure, radius 18,
         // floating elevation.
         //
@@ -346,8 +376,14 @@ struct ComposerView: View {
         // that and touching the edge — the reply and the thing being replied to did not share
         // a column. Same constant as the transcript, so they cannot drift apart.
         .background(
-            ConchPalette.raised,
+            ConchPalette.surface,
             in: RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)
+        )
+        // `--shFloat` is two shadows: a 0.5 px hairline ring AND the soft drop. §3 names the
+        // hairline explicitly; conchElevation carries only the drop, so the ring is drawn here.
+        .overlay(
+            RoundedRectangle(cornerRadius: ConchRadius.large, style: .continuous)
+                .strokeBorder(ConchPalette.divider, lineWidth: 0.5)
         )
         // The token rather than a hand-rolled shadow: §3 names this elevation, and a literal
         // that happens to look right is how the design system and the app come apart.
@@ -407,7 +443,9 @@ struct ComposerView: View {
                     .onChange(of: draft) { previous, current in
                         if previous.isEmpty, !current.isEmpty { onDraftStarted() }
                     }
-                    .font(ConchTypography.font(size: 12.5))
+                    // The lab's `#ta` uses the READING font — the composer answers the
+                    // transcript, so it is set at the same size rather than a size smaller.
+                    .font(ConchType.readingBody)
                     .foregroundStyle(ConchPalette.textPrimary)
                     .scrollContentBackground(.hidden)
                     .focused($fieldFocused)
@@ -424,24 +462,26 @@ struct ComposerView: View {
                         send()
                         return .handled
                     }
-                    .padding(.vertical, Self.fieldInsetY)
+                    .padding(.top, Self.fieldInsetTop)
+                    .padding(.bottom, Self.fieldInsetBottom)
                     .padding(.horizontal, Self.fieldInsetX)
                     .background(ComposerPasteBridge { urls in attach(urls) })
 
                 if draft.isEmpty {
                     Text(noTerminal ?? "Message \(sessionLabel)")
-                        .font(ConchTypography.font(size: 12.5))
+                        .font(ConchType.readingBody)
                         .foregroundStyle(ConchPalette.textDim)
                         .frame(height: fieldHeight, alignment: .leading)
-                        .padding(.vertical, Self.fieldInsetY)
+                        .padding(.top, Self.fieldInsetTop)
+                    .padding(.bottom, Self.fieldInsetBottom)
                         .padding(.horizontal, Self.fieldInsetX)
                         .allowsHitTesting(false)
                 }
             }
         }
-        .background(
-            RoundedRectangle(cornerRadius: 8).fill(ConchPalette.bg)
-        )
+        // No inner box: §3 says the stage has one card and no others, and the lab draws the
+        // placeholder straight onto the composer. A field-shaped rectangle inside a
+        // composer-shaped rectangle reads as two controls and costs ~20 pt of height.
         .background(
             GeometryReader { proxy in
                 Color.clear.onAppear { fieldWidth = proxy.size.width - Self.fieldInsetX * 2 }
@@ -467,8 +507,8 @@ struct ComposerView: View {
         switch voiceState {
         case "listening", "recording": return ConchPalette.brandCyan
         case "transcribing": return ConchPalette.statusWorking
-        case "speaking": return ConchPalette.hover
-        default: return ConchPalette.hover
+        case "speaking": return ConchPalette.fill
+        default: return ConchPalette.fill
         }
     }
 
@@ -519,8 +559,11 @@ struct ComposerView: View {
     /// One shared inset, applied identically to the editor and the placeholder
     /// so a line of text sits in exactly the same place whether or not you have
     /// started typing.
-    static let fieldInsetY: CGFloat = 6
-    static let fieldInsetX: CGFloat = 8
+    /// `#ta{padding:8px 10px 4px}` — asymmetric, so the caret sits off the card's top edge
+    /// without leaving a gap above the bar.
+    static let fieldInsetTop: CGFloat = 8
+    static let fieldInsetBottom: CGFloat = 4
+    static let fieldInsetX: CGFloat = 10
 
     /// One line until the text genuinely needs two, then up to six.
     ///
@@ -543,10 +586,11 @@ struct ComposerView: View {
         // all and the caret would sit below the box you can see.
         let trailing = draft.hasSuffix("\n") ? Self.lineHeight : 0
         let measured = ceil(bounds.height) + trailing
-        return min(Self.lineHeight * 6, max(Self.lineHeight, measured))
+        return min(Self.lineHeight * 8, max(Self.lineHeight, measured))
     }
 
-    private static let lineHeight: CGFloat = 16
+    /// The lab's `#ta` sets `22px` line height on the reading font.
+    private static let lineHeight: CGFloat = 22
 
     /// Paths first, then the words.
     ///
