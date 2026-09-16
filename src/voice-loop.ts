@@ -50,7 +50,7 @@ import { findSessionBySpokenName, findTranscript, sessionLabel, type SessionInfo
 import { eventTimestamp, type SessionLedger } from "./session-ledger.ts";
 import type { EventQueue } from "./event-queue.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
-import { carriedReview, latestLatchedState, type SessionStatus } from "./panel.ts";
+import { carriedReview, carriedReviews, latestLatchedState, type SessionStatus } from "./panel.ts";
 import { gateTurnForControls } from "./instant-controls.ts";
 import {
   emitRecorderTrace,
@@ -699,17 +699,16 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // A review is stamped with the time it was FILED, here, once. Later latches
     // carry that exact record forward, so its identity never moves until a
     // newer review replaces it.
-    const carried = carriedReview(
-      prior,
-      status,
-      review ? { ...review, at, id: reviewIdentity(sessionId, { ...review, at }) } : undefined,
-    );
+    const minted = review ? { ...review, at, id: reviewIdentity(sessionId, { ...review, at }) } : undefined;
+    const carried = carriedReview(prior, status, minted);
+    const held = carriedReviews(prior?.reviews, minted);
     const incoming = {
       label,
       status,
       detail: detail ?? carried?.summary,
       at,
       ...(carried ? { review: carried } : {}),
+      ...(held?.length ? { reviews: held } : {}),
       ...(backgroundWork ? { backgroundWork: true as const } : {}),
     };
     if (latestLatchedState(prior, incoming) !== incoming) return false;
@@ -744,7 +743,13 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     if (prior?.review && prior.review.at > review.at) return;
     // No latch yet: the oldest-truth latch a restored review gets
     // (`restoreReviews`), so the registry or the next hook decides status.
-    sessionStates.set(sessionId, prior ? { ...prior, review } : { label, status: "waiting", at: 0, review });
+    const held = carriedReviews(prior?.reviews, review);
+    sessionStates.set(
+      sessionId,
+      prior
+        ? { ...prior, review, ...(held?.length ? { reviews: held } : {}) }
+        : { label, status: "waiting", at: 0, review, ...(held?.length ? { reviews: held } : {}) },
+    );
     ledger.saveReviews();
     emitRecordObservation(deps.observeRecords, reviewPublicationObservation(recordScope(sessionId, event.transcriptPath), review));
     void renderSessionPanel();

@@ -74,6 +74,8 @@ export interface PanelRowModel {
    * handed the link to macOS — its equivalent of the Mac app's seen set. The
    * publisher copies summary/link/at explicitly, so it never reaches the wire. */
   review?: { summary: string; link?: string; scene?: ReviewScene; at: number; id: string; opened?: boolean };
+  /** Every deliverable the session holds, oldest first; `review` is the last of them. */
+  reviews?: SessionReview[];
   paused: boolean;
   muted: boolean;
   liveGlyph: PanelConchState | null;
@@ -278,6 +280,12 @@ export interface PublishedSessionRow {
      * reader still falls back to recomputing its own key. */
     id?: string;
   };
+  /**
+   * Every deliverable the session is still holding, oldest first, the last of which is
+   * `review`. Absent from an older daemon; an app that wants them all and finds none reads
+   * `review` alone, which is exactly what it does today.
+   */
+  reviews?: Array<{ summary: string; link?: string; scene?: ReviewScene; at?: number; id?: string }>;
 }
 
 /**
@@ -542,6 +550,19 @@ export function buildPublishedState(
             },
           }
           : {}),
+        // Beside `review`, never instead of it: an older app keeps reading the newest one and
+        // behaves exactly as it does now.
+        ...(row.reviews?.length
+          ? {
+            reviews: row.reviews.map((held) => ({
+              summary: held.summary,
+              ...(held.link ? { link: held.link } : {}),
+              ...(held.scene ? { scene: held.scene } : {}),
+              ...(held.at !== undefined ? { at: held.at } : {}),
+              ...(held.id ? { id: held.id } : {}),
+            })),
+          }
+          : {}),
       };
     }),
     dismissed: [...dismissed],
@@ -555,7 +576,10 @@ export function buildPublishedState(
 export interface PanelSessionState extends LatchedState {
   label: string;
   detail?: string;
+  /** The NEWEST deliverable. Everything that shows one still reads this. */
   review?: SessionReview;
+  /** Every deliverable this session is still holding, oldest first. */
+  reviews?: SessionReview[];
 }
 
 export interface BuildPanelModelOptions {
@@ -601,6 +625,7 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
       // registry said `needs`), then hidden while `working`. Neither status
       // makes a deliverable stale; only a newer one does (`carriedReview`).
       const review = latched?.review ? { ...latched.review } : undefined;
+      const reviews = latched?.reviews?.map((held) => ({ ...held }));
       // A subagent is never the active session: it is part of its parent's
       // turn, and the announcement that follows belongs to the parent.
       const active = !session.parentSessionId && session.sessionId === options.activeSessionId;
@@ -621,6 +646,7 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
             ? { detail: review.summary }
             : {}),
         ...(review ? { review } : {}),
+        ...(reviews?.length ? { reviews } : {}),
         paused: options.pausedSessionIds.has(session.sessionId),
         // Kept on the v1 wire until every installed viewer has moved past it.
         // No runtime mode may make this true again.
@@ -879,6 +905,40 @@ export function reviewReady(row: { status: SessionStatus | null; review?: unknow
  * the session, so it survives until the session starts a new turn — which is
  * also the only status the panel refuses to draw a review row in.
  */
+/**
+ * How many deliverables one session keeps.
+ *
+ * Measured, not guessed. Eight sessions each publishing this many — with a scene and a long
+ * link on every one — is 34.6 KB, 53% of the 64 KiB control frame, which leaves room for
+ * everything else a row carries. Eight each would be 67%, twelve 97%.
+ *
+ * The oldest fall off. `review` is always the newest, so nothing that reads one deliverable
+ * is affected by this at all.
+ */
+export const MAX_SESSION_REVIEWS = 6;
+
+/**
+ * Every deliverable a session is still holding, oldest first.
+ *
+ * `carriedReview` answers "which ONE", and is unchanged — the row, the star and the pill all
+ * still mean the newest. This answers "which ones", which is what a panel of tabs needs and
+ * what the model could not say before: `incoming ?? prior?.review` kept exactly one, so a
+ * session that filed three deliverables had destroyed two of them.
+ *
+ * Identity decides what is a second deliverable, not arrival: republishing the same one is
+ * the same one. That is why #268 had to land first.
+ */
+export function carriedReviews(
+  prior: readonly SessionReview[] | undefined,
+  incoming: SessionReview | undefined,
+): SessionReview[] | undefined {
+  const kept = prior ?? [];
+  if (!incoming) return kept.length ? [...kept] : undefined;
+  const others = kept.filter((review) => review.id !== incoming.id);
+  const next = [...others, incoming].sort((a, b) => a.at - b.at);
+  return next.slice(Math.max(0, next.length - MAX_SESSION_REVIEWS));
+}
+
 export function carriedReview(
   prior: { review?: SessionReview } | undefined,
   _status: SessionStatus,
