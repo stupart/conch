@@ -67,6 +67,10 @@ struct ConversationStackView: View {
     /// Sticks to the bottom only when already there, so reading history is not
     /// yanked away by an arriving message.
     @State private var pinnedToBottom = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// §4: a switched-to transcript fades in over 0.12 s, and never slides — moving a reading
+    /// surface is exactly what Tyler called distracting on the feed lab.
+    @State private var switchFade: Double = 1
     /// Which tool rows are open — kept per session by the workspace model, so leaving a
     /// session and coming back finds the rows you opened still open (ConchDesign/Workspace.swift).
     @EnvironmentObject private var workspace: WorkspaceModel
@@ -223,6 +227,8 @@ struct ConversationStackView: View {
                 // Centred in whatever the window leaves: the column stays put when the
                 // sidebar opens and closes, rather than sliding under the eye.
                 .frame(maxWidth: .infinity, alignment: .center)
+                .opacity(switchFade)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: switchFade)
             }
             .background(ConchPalette.bg)
             .overlay(alignment: .bottom) {
@@ -260,6 +266,12 @@ struct ConversationStackView: View {
                 multiSelections = [:]
                 linkFailure = nil
                 requestBottomScroll(using: proxy)
+                // Declarative, never an imperative animation block: mac-phase1-source forbids
+                // those here, because one that restarts on every streamed token never settles
+                // the viewport. The fade rides an .animation(_:value:) modifier instead, so it
+                // cannot touch the scroll path at all.
+                switchFade = 0
+                Task { @MainActor in switchFade = 1 }
             }
             .onAppear {
                 history.select(session: conversation.sessionId, branchTip: branchTip)
