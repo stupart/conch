@@ -10,7 +10,6 @@ struct ContentView: View {
     /// (ConchDesign/Workspace.swift). The window used to hold a selection of its own while the
     /// pane applied fallbacks of its own, and the two drifted.
     @StateObject private var workspace = WorkspaceModel()
-    @State private var expandedReviewID: ReviewItem.ID?
     @State private var remoteSelection: RemoteSessionID?
     @State private var renamingSessionID: SessionRow.ID?
     @State private var renameDraft = ""
@@ -49,15 +48,6 @@ struct ContentView: View {
         .map(\.item)
     }
 
-    private var expandedReview: ReviewItem? {
-        guard let expandedReviewID else { return nil }
-        return reviewItems.first { $0.id == expandedReviewID }
-    }
-
-    private var reviewIDs: Set<ReviewItem.ID> {
-        Set(reviewItems.map(\.id))
-    }
-
     /// Only a deliverable waiting to be looked at announces itself. One filed
     /// mid-turn is announced when the turn ends, once: postOnce keeps a seen set.
     private var readyReviewIDs: Set<ReviewItem.ID> {
@@ -90,7 +80,6 @@ struct ContentView: View {
                 actions: DashboardActions(
                     onStartSession: { isShowingSessionStart = true },
                     onSelectSession: selectSession,
-                    onExpandReview: expandReview,
                     onBeginRename: beginRename,
                     onCommitRename: commitRename,
                     onCancelRename: cancelRename,
@@ -110,24 +99,12 @@ struct ContentView: View {
                     onReleaseSelection: releaseSelection
                 )
             )
-            // Review arrival never changes dashboard interactivity. Only an
-            // explicit full-window expansion isolates focus from covered controls.
-            .allowsHitTesting(expandedReview == nil)
-            .accessibilityHidden(expandedReview != nil)
-
-            if let expandedReview {
-                ExpandedReviewView(
-                    item: expandedReview,
-                    onCollapse: { expandedReviewID = nil }
-                )
-                .zIndex(1)
-            }
         }
         .background(ConchPalette.bg)
         .environmentObject(workspace)
         .background(
             DashboardInputMonitor(
-                isEnabled: expandedReview == nil && remoteSelection == nil && !isShowingKeyboardShortcuts && !isShowingCommandPalette,
+                isEnabled: remoteSelection == nil && !isShowingKeyboardShortcuts && !isShowingCommandPalette,
                 onKey: handleDashboardKey
             )
         )
@@ -181,17 +158,6 @@ struct ContentView: View {
                 ReviewNotifications.shared.postOnce(for: review)
             }
         }
-        .onChange(of: reviewIDs) { _, currentIDs in
-            if let expandedReviewID, !currentIDs.contains(expandedReviewID) {
-                self.expandedReviewID = nil
-            }
-        }
-    }
-
-    private func expandReview(_ row: SessionRow) {
-        guard let item = ReviewItem(row: row) else { return }
-        workspace.viewing = row.id
-        expandedReviewID = item.id
     }
 
     private func selectSession(_ row: SessionRow) {
@@ -315,6 +281,13 @@ struct ContentView: View {
     private func releaseSelection() {
         if renamingSessionID != nil {
             cancelRename()
+            return
+        }
+        // Esc steps back before it lets go (§3 line 234). On the deliverable or side by side
+        // there is a page behind you; releasing the session there would answer a smaller
+        // question by throwing away the bigger one.
+        if let id = workspace.viewing, workspace.presentation(for: id).stage != .conversation {
+            workspace.show(stage: .conversation, for: id)
             return
         }
         workspace.viewing = nil

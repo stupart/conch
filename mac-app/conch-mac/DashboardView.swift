@@ -14,7 +14,6 @@ extension Notification.Name {
 struct DashboardActions {
     let onStartSession: () -> Void
     let onSelectSession: (SessionRow) -> Void
-    let onExpandReview: (SessionRow) -> Void
     let onBeginRename: (SessionRow) -> Void
     let onCommitRename: (SessionRow) -> Void
     let onCancelRename: () -> Void
@@ -105,7 +104,6 @@ struct DashboardView: View {
 
                     ConversationPane(
                         state: state,
-                        onExpandReview: actions.onExpandReview,
                         onSelectSession: actions.onSelectSession
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1309,7 +1307,6 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
 
 private struct ConversationPane: View {
     let state: PublishedState?
-    let onExpandReview: (SessionRow) -> Void
     let onSelectSession: (SessionRow) -> Void
 
     @EnvironmentObject private var store: StateStore
@@ -1511,14 +1508,16 @@ private struct ConversationPane: View {
 
                             InlineReviewView(
                                 item: selectedReview,
-                                onExpand: { onExpandReview(reviewRow) }
+                                stage: stage(for: reviewRow),
+                                onShow: { workspace.show(stage: $0, for: reviewRow.id) }
                             )
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
                     } else {
                         InlineReviewView(
                             item: selectedReview,
-                            onExpand: { onExpandReview(reviewRow) }
+                            stage: stage(for: reviewRow),
+                            onShow: { workspace.show(stage: $0, for: reviewRow.id) }
                         )
 
                         Spacer(minLength: 0)

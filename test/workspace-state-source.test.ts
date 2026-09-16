@@ -22,6 +22,7 @@ const adapter = read("mac-app/conch-mac/Workspace.swift");
 const stack = read("mac-app/conch-mac/ConversationStackView.swift");
 const panels = read("mac-app/conch-mac/FloatingPanels.swift");
 const app = read("mac-app/conch-mac/ConchMacApp.swift");
+const review = read("mac-app/conch-mac/ReviewView.swift");
 const project = read("mac-app/conch-mac.xcodeproj/project.pbxproj");
 /** The conversation pane only: the rest of the file is the ledger and the header. */
 const pane = dashboard.slice(dashboard.indexOf("private struct ConversationPane: View {"));
@@ -166,6 +167,36 @@ describe("new work does not replace what you are reading", () => {
     expect(split).toContain("InlineReviewView(");
     // Half each: two equal claims on the width, rather than a measured fraction.
     expect(split.match(/\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)/g) ?? []).toHaveLength(2);
+  });
+
+  test("the work fills the stage one way, and Esc steps back off it", () => {
+    // §3 line 234: the expanded full-window review is MERGED into Deliverable (⌘3). It was a
+    // whole second mechanism for the same job — an overlay in ContentView's ZStack, with its
+    // own id state, its own Esc, and the dashboard switched off underneath it.
+    expect(review).not.toContain("struct ExpandedReviewView");
+    expect(content).not.toContain("ExpandedReviewView");
+    expect(content).not.toContain("expandedReviewID");
+    // The dashboard is never switched off now, because nothing covers it.
+    expect(content).not.toContain("allowsHitTesting");
+
+    // Esc steps back to the conversation before it releases the session: on the deliverable
+    // there is a page behind you, and letting go of the session instead answers a smaller
+    // question by throwing away the bigger one. Renaming still wins over both.
+    expect(content).toContain("if let id = workspace.viewing, workspace.presentation(for: id).stage != .conversation {");
+    expect(content).toContain("workspace.show(stage: .conversation, for: id)");
+    const esc = content.slice(
+      content.indexOf("private func releaseSelection() {"),
+      content.indexOf("private func showKeyboardShortcuts()"),
+    );
+    expect(esc.length).toBeGreaterThan(200);
+    expect(esc.indexOf("cancelRename()")).toBeLessThan(esc.indexOf("workspace.show(stage: .conversation"));
+
+    // Fill or side, from the deliverable's own 44 pt header (§3) — one control that knows
+    // which page it is on, rather than two views that each only do one thing.
+    expect(review).toContain('stage == .deliverable ? "rectangle.split.2x1" : "arrow.up.left.and.arrow.down.right"');
+    expect(review).toContain("onShow(stage == .deliverable ? .sideBySide : .deliverable)");
+    // The shortcut parameter had exactly one non-nil caller, and it was the view now gone.
+    expect(review).not.toContain("actionShortcut");
   });
 
   test("the three pages have keys, and two of them wait for something to show", () => {

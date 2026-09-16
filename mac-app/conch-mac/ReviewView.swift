@@ -48,40 +48,20 @@ struct ReviewItem: Identifiable, Equatable {
 
 struct InlineReviewView: View {
     let item: ReviewItem
-    let onExpand: () -> Void
+    let stage: StageMode
+    let onShow: (StageMode) -> Void
 
     @State private var isWebLoading = false
 
     var body: some View {
         ReviewSurface(
             item: item,
-            actionSymbol: "arrow.up.left.and.arrow.down.right",
-            actionHelp: "Expand deliverable",
-            actionAccessibilityLabel: "Expand deliverable full window",
-            action: item.link == nil ? nil : onExpand,
-            actionShortcut: nil,
+            actionSymbol: stage == .deliverable ? "rectangle.split.2x1" : "arrow.up.left.and.arrow.down.right",
+            actionHelp: stage == .deliverable ? "Side by side (⌘2)" : "Fill the stage (⌘3)",
+            actionAccessibilityLabel: stage == .deliverable ? "Show side by side" : "Fill the stage with the deliverable",
+            action: item.link == nil ? nil : { onShow(stage == .deliverable ? .sideBySide : .deliverable) },
             isWebLoading: $isWebLoading
         )
-    }
-}
-
-struct ExpandedReviewView: View {
-    let item: ReviewItem
-    let onCollapse: () -> Void
-
-    @State private var isWebLoading = false
-
-    var body: some View {
-        ReviewSurface(
-            item: item,
-            actionSymbol: "arrow.down.right.and.arrow.up.left",
-            actionHelp: "Collapse deliverable (Esc)",
-            actionAccessibilityLabel: "Collapse deliverable",
-            action: onCollapse,
-            actionShortcut: .cancelAction,
-            isWebLoading: $isWebLoading
-        )
-        .background(ConchPalette.bg)
     }
 }
 
@@ -91,7 +71,6 @@ private struct ReviewSurface: View {
     let actionHelp: String
     let actionAccessibilityLabel: String
     let action: (() -> Void)?
-    let actionShortcut: KeyboardShortcut?
     @Binding var isWebLoading: Bool
 
     var body: some View {
@@ -162,7 +141,6 @@ private struct ReviewSurface: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(ReviewPressButtonStyle())
-                .keyboardShortcut(actionShortcut)
                 .help(actionHelp)
                 .accessibilityLabel(actionAccessibilityLabel)
             }
