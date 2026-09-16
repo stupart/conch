@@ -680,6 +680,13 @@ private struct SessionLedger: View {
                 ($0.id, $0.cwd, $0.parentSessionId ?? $0.startedBySessionId)
             }
         )
+        .map { folder in
+            // A session started in the home folder headed the list with the account name —
+            // "tylerstupart" — which reads like a project and is not one. Seen on the live
+            // window, not in any test: every fixture uses a project path.
+            guard folder.id == NSHomeDirectory() else { return folder }
+            return SessionFolder(id: folder.id, name: "Home", sessionIDs: folder.sessionIDs)
+        }
     }
 
     private func rows(in folder: SessionFolder) -> [SessionRow] {
