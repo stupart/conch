@@ -24,7 +24,11 @@ struct ReviewItem: Identifiable, Equatable {
         guard let review = row.review else {
             return nil
         }
+        self.init(row: row, review: review)
+    }
 
+    /// One of the several a session may hold, rather than only its newest.
+    init(row: SessionRow, review: ReviewInfo) {
         rowID = row.id
         label = row.label
         summary = review.summary

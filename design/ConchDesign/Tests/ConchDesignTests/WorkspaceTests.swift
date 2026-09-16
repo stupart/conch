@@ -12,6 +12,35 @@ final class WorkspaceTests: XCTestCase {
         Workspace(sessions: sessions, voiceIsActive: voice)
     }
 
+    // MARK: - Which deliverable a session is showing
+
+    func testTheNewestIsShownUntilSomebodyPicks() {
+        XCTAssertEqual(SessionPresentation.shown(in: ["a", "b", "c"], picked: nil), "c")
+        XCTAssertEqual(SessionPresentation.shown(in: ["a"], picked: nil), "a")
+        XCTAssertNil(SessionPresentation.shown(in: [], picked: nil))
+    }
+
+    func testAPickWinsWhileItIsStillHeld() {
+        XCTAssertEqual(SessionPresentation.shown(in: ["a", "b", "c"], picked: "a"), "a")
+    }
+
+    /// The per-session cap drops the oldest, and a session can move on. Neither should leave
+    /// the reader looking at an empty pane where a deliverable used to be.
+    func testAPickThatFellOffTheEndIsNoPick() {
+        XCTAssertEqual(SessionPresentation.shown(in: ["b", "c"], picked: "a"), "c")
+        XCTAssertNil(SessionPresentation.shown(in: [], picked: "a"))
+    }
+
+    func testPickingIsRememberedPerSessionAndOnlyMovesWhenAsked() {
+        let model = WorkspaceModel()
+        model.select(deliverable: "a", for: "session-1")
+        XCTAssertEqual(model.presentation(for: "session-1").selectedDeliverable, "a")
+        // Another session is untouched: a tab picked in one is not a tab picked in all.
+        XCTAssertNil(model.presentation(for: "session-2").selectedDeliverable)
+        model.select(deliverable: nil, for: "session-1")
+        XCTAssertNil(model.presentation(for: "session-1").selectedDeliverable)
+    }
+
     // MARK: - Target resolution and its fallbacks
 
     func testThePickWinsOverEveryFallback() {

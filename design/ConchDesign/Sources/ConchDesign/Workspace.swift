@@ -134,10 +134,30 @@ public struct SessionPresentation: Equatable, Sendable {
     public var showsConversation = true
     /// The tool rows opened in this session's transcript.
     public var expandedToolIDs: Set<String> = []
+    /// Which of the deliverables this session holds the reader picked, by the identity the
+    /// daemon minted when it filed it. Nil means the newest — which is what every surface
+    /// meant back when a session could only hold one.
+    public var selectedDeliverable: String?
 
-    public init(showsConversation: Bool = true, expandedToolIDs: Set<String> = []) {
+    public init(
+        showsConversation: Bool = true,
+        expandedToolIDs: Set<String> = [],
+        selectedDeliverable: String? = nil
+    ) {
         self.showsConversation = showsConversation
         self.expandedToolIDs = expandedToolIDs
+        self.selectedDeliverable = selectedDeliverable
+    }
+
+    /// Which deliverable a session is SHOWING, given the ones it holds and the reader's pick.
+    ///
+    /// `held` is oldest first, as the daemon keeps them. The pick wins while it is still held;
+    /// otherwise the newest does. A pick that has fallen off the end — the per-session cap, or
+    /// a session that moved on — is no pick at all, rather than an empty pane where a
+    /// deliverable used to be.
+    public static func shown(in held: [String], picked: String?) -> String? {
+        if let picked, held.contains(picked) { return picked }
+        return held.last
     }
 }
 
@@ -186,6 +206,13 @@ public final class WorkspaceModel: ObservableObject {
     /// control, or opening the artifact from its inline preview.
     public func show(conversation: Bool, for id: String?) {
         update(id) { $0.showsConversation = conversation }
+    }
+
+    /// Pick one of the deliverables a session holds. Only an explicit choice moves this: a
+    /// newly filed deliverable must not take the tab from someone reading one, the same rule
+    /// the page already follows.
+    public func select(deliverable: String?, for id: String?) {
+        update(id) { $0.selectedDeliverable = deliverable }
     }
 
     public func toggleTool(_ toolID: String, for id: String?) {
