@@ -2,6 +2,11 @@ import AppKit
 import ConchDesign
 import SwiftUI
 
+extension Notification.Name {
+    /// ⌘B, from the menu — posted like the palette's, so the shortcut works whatever has focus.
+    static let toggleSidebar = Notification.Name("com.conch.mac.toggle-sidebar")
+}
+
 struct DashboardActions {
     let onStartSession: () -> Void
     let onSelectSession: (SessionRow) -> Void
@@ -29,6 +34,9 @@ struct DashboardActions {
 
 struct DashboardView: View {
     let onSelectRemote: (RemoteSessionID) -> Void
+    /// Put away and brought back with ⌘B, and remembered: a window that reopens with the
+    /// sidebar back after you deliberately closed it is a window arguing with you.
+    @AppStorage("conch.sidebarCollapsed") private var sidebarCollapsed = false
     @EnvironmentObject private var store: StateStore
     @EnvironmentObject private var daemon: DaemonHost
     @EnvironmentObject private var audio: AudioHolderStore
@@ -67,6 +75,7 @@ struct DashboardView: View {
                 WorkspaceNotices()
 
                 HStack(spacing: 0) {
+                    if !sidebarCollapsed {
                     SessionLedger(
                         onSelectRemote: onSelectRemote,
                         state: state,
@@ -77,7 +86,7 @@ struct DashboardView: View {
                         undoDismissal: store.undoDismissal,
                         actions: actions
                     )
-                    .frame(width: ledgerWidth(for: proxy.size.width))
+                    .frame(width: sidebarWidth)
                     .opacity(store.isLedgerFrozen ? 0.82 : 1)
                     .grayscale(store.isLedgerFrozen ? 1 : 0)
                     .animation(
@@ -88,6 +97,7 @@ struct DashboardView: View {
                     Rectangle()
                         .fill(ConchPalette.divider)
                         .frame(width: 1)
+                    }
 
                     ConversationPane(
                         state: state,
@@ -117,15 +127,22 @@ struct DashboardView: View {
             // inset on purpose — a reader that ignores the strip reports its
             // height as 0, and the header needs the number.
             .ignoresSafeArea(.container, edges: .top)
+            // The dashboard owns this state, so it takes the message itself rather than
+            // threading another closure down through the window.
+            .onReceive(NotificationCenter.default.publisher(for: .toggleSidebar)) { _ in
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                    sidebarCollapsed.toggle()
+                }
+            }
         }
         .background(ConchPalette.bg)
         .font(ConchTypography.font(size: 12.5))
         .tracking(-0.3)
     }
 
-    private func ledgerWidth(for totalWidth: CGFloat) -> CGFloat {
-        min(380, max(280, totalWidth * 0.30))
-    }
+    /// Fixed, at the spec's 264 (workspace-v1 §3). It used to scale with the window —
+    /// min 280, max 380, 30% — so the stage's measure moved every time the window did.
+    private var sidebarWidth: CGFloat { 264 }
 }
 
 private struct DashboardHeader: View {

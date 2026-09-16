@@ -76,6 +76,10 @@ struct ConchMacApp: App {
                     )
                 }
                 .keyboardShortcut("k", modifiers: .command)
+                Button("Toggle Sidebar") {
+                    NotificationCenter.default.post(name: .toggleSidebar, object: nil)
+                }
+                .keyboardShortcut("b", modifiers: .command)
             }
             CommandGroup(after: .help) {
                 Button("Keyboard Shortcuts") {

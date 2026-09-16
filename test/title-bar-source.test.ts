@@ -34,7 +34,7 @@ function ordered(text: string, ...markers: string[]): void {
 }
 
 describe("E1: the header lives in the title-bar strip", () => {
-  const body = section(dashboard, "struct DashboardView: View {", "private func ledgerWidth(");
+  const body = section(dashboard, "struct DashboardView: View {", "private var sidebarWidth");
   const header = section(dashboard, "private struct DashboardHeader: View {", "private struct HeaderControls: View {");
 
   test("the window's title bar is hidden and the dashboard's stack extends under it", () => {
@@ -90,5 +90,16 @@ describe("E1: the header lives in the title-bar strip", () => {
     // what each banner says is pinned where it is drawn.
     expect(notices).toContain("if let host = audio.controlledBy {");
     ordered(body, "DashboardHeader(", "WorkspaceNotices()", "SessionLedger(");
+
+    // The sidebar is a fixed width and can be put away with ⌘B, which the window remembers.
+    // It used to scale with the window (min 280, max 380, 30%), so the stage's measure moved
+    // every time the window did.
+    expect(dashboard).toContain("private var sidebarWidth: CGFloat { 264 }");
+    expect(body).toContain("if !sidebarCollapsed {");
+    expect(dashboard).toContain('@AppStorage("conch.sidebarCollapsed")');
+    expect(dashboard).toContain(".onReceive(NotificationCenter.default.publisher(for: .toggleSidebar))");
+    // A menu item, like ⌘K, so the shortcut works whatever has focus.
+    expect(app).toContain('.keyboardShortcut("b", modifiers: .command)');
+    expect(app).toContain("NotificationCenter.default.post(name: .toggleSidebar, object: nil)");
   });
 });
