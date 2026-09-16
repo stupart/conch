@@ -358,7 +358,7 @@ function wrapPlainText(text: string, width: number): Array<{ text: string; start
 // so it reads as attention (yellow), not as inert green. "needs" is blocking
 // and outranks it (red). "working" is the only genuinely restful state.
 const THEATER_STATUS_ICON: Record<string, string> = {
-  review: "\x1b[33m⭐\x1b[39m",
+  review: "\x1b[32m✓\x1b[39m",
   needs: "\x1b[91m❗\x1b[39m",
   waiting: "\x1b[33m○\x1b[39m",
   working: "\x1b[36m●\x1b[39m",
@@ -443,7 +443,7 @@ function rowState(row: PanelRowModel): string {
 
 function fullStatus(row: PanelRowModel): string {
   if (row.muted || row.paused) return "\x1b[2m⏸ manual\x1b[22m";
-  if (reviewReady(row) && !row.review?.opened) return "\x1b[33m⭐ needs review\x1b[39m";
+  if (reviewReady(row) && !row.review?.opened) return "\x1b[32m✓ needs review\x1b[39m";
   switch (row.status) {
     case "needs": return "\x1b[33m❗ needs a response\x1b[39m";
     case "waiting": return "\x1b[32m○ waiting for you\x1b[39m";
@@ -777,7 +777,7 @@ function theaterContentLines(
     // terminal cannot render the artifact, so the link itself is the preview.
     const review = selectedRow.review;
     const artifact = review
-      ? [`⭐ ${review.summary}`, ...(review.link ? [review.link] : []), ""]
+      ? [`✓ ${review.summary}`, ...(review.link ? [review.link] : []), ""]
       : [];
     const doc = [
       ...artifact.flatMap((line) => line ? wrapPlainText(line, width) : [{ text: "" }]),
