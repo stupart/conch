@@ -11,6 +11,9 @@ import {
   dashboardPanelLines,
   dashboardRowsForModel,
   carriedReview,
+  carriedReviews,
+  MAX_SESSION_REVIEWS,
+  type SessionReview,
   latestLatchedState,
   panelReplyText,
   numberPanelSessionRows,
@@ -156,6 +159,33 @@ describe("buildPanelModel — renderer seam", () => {
 });
 
 describe("buildPublishedState — external session snapshot", () => {
+  test("a session holding several deliverables publishes them all, with the newest as `review`", () => {
+    const held = [
+      { summary: "first", link: "/tmp/a.png", at: 1_000, id: "h-1" },
+      { summary: "second", at: 2_000, id: "h-2" },
+      { summary: "third", link: "https://example.test/pr/3", at: 3_000, id: "h-3" },
+    ];
+    const model = buildPanelModel({
+      sessions: [{ sessionId: "holds", name: "Holds", status: "idle", statusUpdatedAt: 10 }],
+      sessionStates: new Map([
+        ["holds", { label: "Holds", status: "waiting" as const, at: 3_000, review: held[2]!, reviews: held }],
+      ]),
+      pausedSessionIds: new Set(),
+      live: { state: "idle", label: "", partial: "" },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+      now: 3_000,
+    });
+    const row = buildPublishedState("test-device", model, new Map(), new Set(), 3_000).rows[0]!;
+
+    // An older app reads this one and behaves exactly as it does today.
+    expect(row.review).toMatchObject({ summary: "third", id: "h-3" });
+    // A newer one gets the whole set, oldest first, which is what a panel of tabs needs.
+    expect(row.reviews?.map((one) => one.id)).toEqual(["h-1", "h-2", "h-3"]);
+    expect(row.reviews?.[0]).toEqual({ summary: "first", link: "/tmp/a.png", at: 1_000, id: "h-1" });
+  });
+
   test("maps semantic rows, snippets, dismissed ids, and version metadata", () => {
     const model = buildPanelModel({
       sessions: [
@@ -1030,6 +1060,35 @@ describe("a review outlives the turn that produced it", () => {
     // destroyed the artifact you were replying about, and contradicted what
     // conch tells agents: it stays until you send another.
     expect(carriedReview(latched, "working", undefined)).toEqual(review);
+  });
+
+  test("every deliverable is kept, oldest first, and republishing one is not a second", () => {
+    const first = { summary: "first", at: 1, id: "a" };
+    const second = { summary: "second", at: 2, id: "b" };
+    expect(carriedReviews(undefined, first)).toEqual([first]);
+    expect(carriedReviews([first], second)).toEqual([first, second]);
+    // The same deliverable arriving again is the same deliverable.
+    expect(carriedReviews([first, second], { ...second })).toEqual([first, second]);
+    // A routine event carries them all forward untouched.
+    expect(carriedReviews([first, second], undefined)).toEqual([first, second]);
+    expect(carriedReviews(undefined, undefined)).toBeUndefined();
+  });
+
+  test("an older deliverable arriving late sorts into place rather than onto the end", () => {
+    const late = { summary: "late", at: 1, id: "late" };
+    const already = { summary: "already", at: 5, id: "already" };
+    expect(carriedReviews([already], late)).toEqual([late, already]);
+  });
+
+  test("a session keeps only the newest MAX_SESSION_REVIEWS, dropping the oldest", () => {
+    let kept: SessionReview[] | undefined;
+    for (let i = 0; i < MAX_SESSION_REVIEWS + 3; i++) {
+      kept = carriedReviews(kept, { summary: `r${i}`, at: i, id: `r${i}` });
+    }
+    expect(kept).toHaveLength(MAX_SESSION_REVIEWS);
+    expect(kept?.map((review) => review.id)).toEqual(
+      Array.from({ length: MAX_SESSION_REVIEWS }, (_, i) => `r${i + 3}`),
+    );
   });
 
   test("a newer review replaces the old one rather than being ignored", () => {

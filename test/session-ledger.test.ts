@@ -150,7 +150,9 @@ describe("saved deliverables", () => {
     const after = restored(path);
     expect([...after.sessionStates.keys()]).toEqual(["live"]);
     expect(after.sessionStates.get("live")).toEqual({
-      label: "live", status: "waiting", at: 0, review: { summary: "live ready", at: 1_000, id: "live-rev" },
+      label: "live", status: "waiting", at: 0,
+      review: { summary: "live ready", at: 1_000, id: "live-rev" },
+      reviews: [{ summary: "live ready", at: 1_000, id: "live-rev" }],
     });
   }));
 
@@ -175,6 +177,7 @@ describe("saved deliverables", () => {
     expect(restored(path).sessionStates.get("a")?.review).toEqual({ summary: "a ready", scene, at: 1_000, id: "a-rev" });
     const saved = JSON.parse(readFileSync(path, "utf8"));
     saved.a.review.scene = { v: 9 };
+    saved.a.reviews[0].scene = { v: 9 };
     writeFileSync(path, JSON.stringify(saved));
     expect(restored(path).sessionStates.get("a")?.review).toEqual({ summary: "a ready", at: 1_000, id: "a-rev" });
   }));
@@ -186,12 +189,38 @@ describe("saved deliverables", () => {
     ledger.saveReviews();
     const saved = JSON.parse(readFileSync(path, "utf8"));
     saved.b.review.at = "yesterday";
+    saved.b.reviews[0].at = "yesterday";
     writeFileSync(path, JSON.stringify(saved));
     const fresh = new SessionLedger(path);
     fresh.sessionStates.set("a", { label: "a", status: "working", at: 5_000 });
     fresh.restoreReviews();
     expect(fresh.sessionStates.get("a")).toEqual({ label: "a", status: "working", at: 5_000 });
     expect(fresh.sessionStates.has("b")).toBe(false);
+  }));
+
+  test("every deliverable a session holds survives the restart, newest last", () => withFile((path) => {
+    const ledger = new SessionLedger(path);
+    const held = [
+      { summary: "first", at: 1_000, id: "a-1" },
+      { summary: "second", at: 2_000, id: "a-2" },
+      { summary: "third", at: 3_000, id: "a-3" },
+    ];
+    ledger.sessionStates.set("a", { label: "a", status: "waiting", at: 3_000, review: held[2]!, reviews: held });
+    ledger.saveReviews();
+
+    const after = restored(path).sessionStates.get("a");
+    expect(after?.reviews).toEqual(held);
+    // Everything that shows ONE deliverable still gets the newest.
+    expect(after?.review).toEqual(held[2]);
+  }));
+
+  test("a file written before a session could hold more than one restores as the single deliverable it was", () => withFile((path) => {
+    writeFileSync(path, JSON.stringify({
+      a: { label: "a", review: { summary: "a ready", at: 1_000, id: "a-rev" } },
+    }));
+    const after = restored(path).sessionStates.get("a");
+    expect(after?.review).toEqual({ summary: "a ready", at: 1_000, id: "a-rev" });
+    expect(after?.reviews).toEqual([{ summary: "a ready", at: 1_000, id: "a-rev" }]);
   }));
 
   test("the daemon restores from conch's state location, which the suite redirects", () => {
