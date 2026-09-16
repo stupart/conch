@@ -488,7 +488,10 @@ struct ConversationTextView: NSViewRepresentable {
     }
 
     /// ~75 characters at the 16pt body size.
-    static let maxMeasure: CGFloat = 580
+    /// The reading measure, shared by both of this app's transcript renderers (workspace-v1
+    /// §3: "a 700 pt measure, centred"). A line that runs the full width of a wide window is
+    /// a line the eye loses its place in on the way back.
+    static let maxMeasure: CGFloat = 700
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }

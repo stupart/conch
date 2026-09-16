@@ -132,7 +132,9 @@ struct ConversationStackView: View {
                 }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 14)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                // The same measure the AppKit fallback uses, so the two renderers do not
+                // disagree about how wide a line of this conversation is.
+                .frame(maxWidth: ConversationTextView.maxMeasure, alignment: .leading)
                 .background(
                     ConversationScrollObserver(
                         onUserScroll: { isAtBottom in pinnedToBottom = isAtBottom },
@@ -140,6 +142,9 @@ struct ConversationStackView: View {
                         anchor: scrollAnchor
                     )
                 )
+                // Centred in whatever the window leaves: the column stays put when the
+                // sidebar opens and closes, rather than sliding under the eye.
+                .frame(maxWidth: .infinity, alignment: .center)
             }
             .background(ConchPalette.bg)
             .overlay(alignment: .bottom) {
