@@ -149,7 +149,7 @@ describe("close on a background job", () => {
       },
     });
     expect(argv[0]).toBe("osascript");
-    expect(argv.at(-1)).toBe("ttys007");
+    expect(argv.at(-1)).toBe("/dev/ttys007");
     await expect(closeSession({ pid: 0, noTerminal: "closed: no Codex process has this thread open" }))
       .rejects.toThrow("closed: no Codex process has this thread open");
   });

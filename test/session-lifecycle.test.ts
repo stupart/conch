@@ -67,7 +67,10 @@ describe("native Terminal session lifecycle", () => {
       },
     });
     expect(argv.join(" ")).toContain('keystroke "d" using control down');
-    expect(argv.at(-1)).toBe("ttys007");
+    // The tty travels as the guard's own argument now: the script checks the front window is
+    // still this session's before the key, instead of trusting the raise it just asked for.
+    expect(argv.at(-1)).toBe("/dev/ttys007");
+    expect(argv.join(" ")).toContain("conch-focus-guard");
     expect(argv.join(" ")).not.toMatch(/kill|SIG|tmux/);
   });
 
@@ -100,5 +103,32 @@ describe("native Terminal session lifecycle", () => {
       exitPollAttempts: 2,
       spawn: () => settledProcess("ok\n"),
     })).rejects.toThrow("did not exit cleanly");
+  });
+
+  /**
+   * Close types Ctrl-D into a window it has just raised. The UI transaction queue holds off
+   * conch's own actions, not the user's: a Cmd-Tab in the gap between the raise and the key
+   * puts an end-of-file into whatever came forward. The injector already refuses that — its
+   * guarded action re-reads the frontmost app and the front tab's tty inside the same script
+   * as the keystroke — and Close now asks the same question before ending anything.
+   */
+  test("close refuses to send Ctrl-D once another window is in front", async () => {
+    const scripts: string[] = [];
+    await expect(closeTerminalSession(5150, {
+      expectedIdentity: identityFor(5150), processIdentity: identityFor,
+      ttyForPid: async () => "ttys011",
+      pidIsAlive: async () => false,
+      sleep: async () => {},
+      spawn(args) {
+        const script = args.join(" ");
+        scripts.push(script);
+        return settledProcess(script.includes("conch-focus-guard") ? "front-window-changed\n" : "ok\n");
+      },
+    })).rejects.toThrow("another window came to the front");
+    // Every Ctrl-D conch can send is inside a script that checks the front window first.
+    expect(scripts.some((script) => script.includes('keystroke "d"'))).toBe(true);
+    for (const script of scripts.filter((s) => s.includes('keystroke "d"'))) {
+      expect(script).toContain("conch-focus-guard");
+    }
   });
 });

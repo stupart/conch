@@ -1,7 +1,7 @@
 import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config } from "./config.ts";
-import { createPasteboard, hasUnreapedUIChild, runUICommand, type Pasteboard, type PasteboardLease } from "./pasteboard.ts";
+import { createPasteboard, hasUnreapedUIChild, pasteboardRefusal, runUICommand, type Pasteboard, type PasteboardLease } from "./pasteboard.ts";
 
 export type InjectRoute = "tmux" | "osascript-focused" | "clipboard" | "none";
 export interface InjectTextResult {
@@ -22,6 +22,8 @@ export interface InjectTextResult {
     | "automation-failed"
     | "clipboard-changed"
     | "clipboard-unavailable"
+    /** The clipboard holds something conch could not put back, so it left it alone. */
+    | "clipboard-unpreservable"
     | "submit-failed";
 }
 
@@ -123,6 +125,23 @@ const sendTmuxKeys = (pane: string, text: string, literal: boolean) => runUIComm
 export const PASTE_OVER_CHARS = 280;
 
 const PASTE_KEYSTROKE = 'tell application "System Events" to keystroke "v" using command down';
+
+/**
+ * The general pasteboard's version, read straight after conch writes its own text onto it.
+ *
+ * The paste script compares it at the instant it presses Cmd-V, so a copy landing in between —
+ * the user's, in the seconds conch spends raising a window — stops the paste instead of
+ * submitting their clipboard into the session.
+ *
+ * ponytail: the sliver between pbcopy exiting and this read is unguarded; closing it needs the
+ * whole text back out of the board to compare, and the race that bites is the long one.
+ */
+const CLIPBOARD_VERSION_SCRIPT = [
+  'use framework "AppKit"',
+  "use scripting additions",
+  "set pasteboard to current application's NSPasteboard's generalPasteboard()",
+  "return (pasteboard's changeCount()) as integer",
+];
 
 /**
  * Where the step log goes. Beside the daemon log, so a suite that redirects
@@ -242,7 +261,12 @@ async function injectTextInTransaction(
     // clipboard-unavailable and NOTHING was sent — every paste-length send failed while a
     // normal Chrome copy sat on the board. So a failure here drops the capture, not the send.
     let lease: PasteboardLease | undefined;
-    try { lease = await pasteboard.prepare(text); } catch { lease = undefined; }
+    let refused: NonNullable<InjectTextResult["reason"]> | undefined;
+    try { lease = await pasteboard.prepare(text); } catch (error) { refused = pasteboardRefusal(error); }
+    // A refusal is not a broken helper. The helper declines a clipboard it cannot put back, and
+    // copying over that one anyway is the single outcome it exists to prevent. It says so
+    // instead; the words go back to the draft, where they were already going.
+    if (refused) return failed(refused);
     if (lease) {
       try {
         // Approval/request validity is checked after every awaited setup step.
@@ -257,9 +281,15 @@ async function injectTextInTransaction(
     } else {
       if (!(await mayInject())) return interrupted();
       try { await copyToClipboard(text); } catch { return failed("clipboard-unavailable"); }
-      // No changeCount to compare against: the capture never happened, so the guard that
-      // refuses a paste after someone else copies cannot run on this path.
-      typed = await focusedAction(tty, osa, [PASTE_KEYSTROKE]);
+      // The capture never happened, but ownership still has to be proven. Take the board's
+      // version right after writing and the paste refuses if anything moved it: without this,
+      // a copy made while the window was being raised was what got submitted.
+      const version = await osa(CLIPBOARD_VERSION_SCRIPT);
+      step(`clipboard version -> ${version.text.trim() || "none"}`);
+      if (!osaSucceeded(version) || !/^\d+$/.test(version.text.trim())) return failed("clipboard-unavailable");
+      // Every await is a place the send can be cancelled or superseded, here as on the guarded path.
+      if (!(await mayInject())) return interrupted();
+      typed = await focusedAction(tty, osa, [PASTE_KEYSTROKE], [], Number(version.text.trim()));
       step(`osascript paste returned, clipboard NOT preserved (${text.length} chars)`);
       await sleep(150);
     }
@@ -387,7 +417,7 @@ return "notfound"`;
  * (steals focus) — only for injection, where keystrokes must land in it. The
  * session pid's controlling tty (ps) matches Terminal's per-tab `tty` property.
  */
-async function focusSessionWindow(tty: string, osa: OsaRunner): Promise<OsaResult> {
+export async function focusSessionWindow(tty: string, osa: OsaRunner): Promise<OsaResult> {
   try {
     const script = `
 tell application "Terminal"
@@ -416,7 +446,7 @@ if frontName is not "Terminal" then return "front:" & frontName
 tell application "Terminal" to return tty of selected tab of front window`;
 
 /** Check focus and issue the key in one script, without an inter-process gap. */
-function focusedAction(tty: string, osa: OsaRunner, action: string[], argv: string[] = [], clipboardVersion?: number): Promise<OsaResult> {
+export function focusedAction(tty: string, osa: OsaRunner, action: string[], argv: string[] = [], clipboardVersion?: number): Promise<OsaResult> {
   return osa([
     ...(clipboardVersion === undefined ? [] : ['use framework "AppKit"', "use scripting additions"]),
     "on run argv",

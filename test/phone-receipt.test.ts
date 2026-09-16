@@ -26,6 +26,7 @@ const SENTENCES: Record<string, string> = {
   "keystroke-fallback-off": "Not delivered — conch is set not to type into windows, and that session isn't in a tmux pane.",
   "clipboard-changed": "Not delivered — something else copied on your Mac mid-send, so conch stopped.",
   "clipboard-unavailable": "Not delivered — conch couldn't use the Mac's clipboard.",
+  "clipboard-unpreservable": "Not delivered — something on your Mac's clipboard can't be put back, so conch left it alone. Copy something else and send again.",
   "automation-failed": "Not delivered — the Mac wouldn't let conch type into that session.",
   "delivery-failed": "Not delivered — the Mac wouldn't let conch type into that session.",
   "transport-error": "Not delivered — the Mac wouldn't let conch type into that session.",
