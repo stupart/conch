@@ -482,6 +482,7 @@ final class BridgeClient: ObservableObject {
         case dismiss
         case restore
         case attach
+        case reviewViewed = "review-viewed"
     }
 
     enum AgentBackend: String, CaseIterable, Identifiable {
@@ -699,13 +700,13 @@ final class BridgeClient: ObservableObject {
     /// command contract. The enum keeps arbitrary commands off this convenience
     /// path, and the echoed id/action prevents a mismatched response from being
     /// mistaken for confirmation.
-    func send(sessionCommand command: SessionCommand, sessionId: String) async -> Bool {
+    func send(sessionCommand command: SessionCommand, sessionId: String, review: String? = nil) async -> Bool {
         guard !sessionId.isEmpty,
               let reply = await postControlRaw([
                   "kind": "session-command",
                   "sessionId": sessionId,
                   "command": command.rawValue,
-              ]) else {
+              ].merging(review.map { ["review": $0] } ?? [:]) { current, _ in current }) else {
             lastError = "Couldn't reach your Mac."
             _ = await reportAppError(
                 operation: "session-\(command.rawValue)",

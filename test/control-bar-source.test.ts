@@ -583,8 +583,13 @@ test("the pill takes the exact review version at the click, runs clicks in order
   const stage = member(panels, "private func stageNext() {");
   expect(stage).toContain("guard let key = next(in: Self.ready(store.state))?.id else { return }");
   expect(member(panels, "private func next(in ready: [ReviewItem]) -> ReviewItem? {")).toContain(
-    "ReviewScene.next(after: lastStaged, in: ready.map { (key: $0.id, at: $0.reviewedAt ?? 0) }, opened: opened)",
+    "ReviewScene.next(after: lastStaged, in: ready.map { (key: $0.id, at: $0.reviewedAt ?? 0) }, opened: seen(in: ready))",
   );
+  // What has been looked at is the daemon's record unioned with this window's optimistic set,
+  // and against a daemon too old to remember it is that local set alone.
+  const seen = member(panels, "private func seen(in ready: [ReviewItem]) -> Set<ReviewItem.ID> {");
+  expect(seen).toContain("guard store.state?.features?.viewedState != nil else { return opened }");
+  expect(seen).toContain("opened.union(ready.filter { $0.viewedAt != nil }");
   // ReviewItem.id is the version: what the daemon minted at filing, or the key that stood
   // in for it before there was one.
   expect(read("mac-app/conch-mac/ReviewView.swift"))
@@ -596,7 +601,10 @@ test("the pill takes the exact review version at the click, runs clicks in order
     "await previous?.value",
     "guard let row = ConchStatusItem.readyRows(store.state).first(where: { ReviewItem(row: $0)?.id == key }) else { return }",
     "panels.staged = row.id",
-    "if await ConchStatusItem.stage(row, store: store) { opened.insert(key) }",
+    "if await ConchStatusItem.stage(row, store: store) {",
+    "opened.insert(key)",
+    // Only once handed off, and only then told to the daemon, so every other surface agrees.
+    "store.markReviewViewed(sessionId: row.id, review: key)",
   ].map((line) => stage.indexOf(line));
   expect(steps.every((at) => at > -1)).toBe(true);
   expect([...steps].sort((a, b) => a - b)).toEqual(steps);

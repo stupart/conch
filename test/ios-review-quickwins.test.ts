@@ -117,10 +117,15 @@ describe("Next walks the ready reviews by the Mac pill's rule", () => {
     expect(sheet).toContain("import ConchDesign");
     expect(sheet).toContain("ReviewScene.next(after: current, in: ready.map { (key: $0.key, at: $0.at) }, opened: seen)");
     const body = between(sheet, "struct ReviewSheet: View {", "enum ReviewQueue {");
-    expect(body).toContain("let next = ReviewQueue.next(after: currentKey, in: ready, opened: opened)");
+    expect(body).toContain("let next = ReviewQueue.next(after: currentKey, in: ready, opened: opened.union(viewedKeys))");
+    // The phone reads the same record the Mac writes, and falls back to its own set alone
+    // when the daemon is too old to have one.
+    expect(sheet).toContain("guard bridge.state?.features?.viewedState != nil else { return [] }");
     expect(body).toContain("let more = ready.filter { $0.key != currentKey }.count");
     expect(body).toContain('Text("\\(more) more")');
-    expect(body).toMatch(/if let currentKey \{ opened\.insert\(currentKey\) \}\s*sessionId = next/);
+    // Marked opened, then moved on — the order is the claim, not whether it is one line.
+    expect(body).toMatch(/if let currentKey \{[\s\S]*?opened\.insert\(currentKey\)[\s\S]*?\}\s*sessionId = next/);
+    expect(body).toContain("bridge.send(sessionCommand: .reviewViewed, sessionId: sessionId, review: currentKey)");
     // A different review is a fresh viewer, not the last one's download.
     expect(body).toContain(".id(currentKey)");
     expect(session).toContain("ReviewSheet(bridge: bridge, talk: talk, sessionId: sessionId)");

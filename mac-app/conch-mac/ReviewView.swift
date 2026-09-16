@@ -16,6 +16,9 @@ struct ReviewItem: Identifiable, Equatable {
     /// Waiting to be looked at: the deliverable stays on a working row, but a
     /// session that went back to work is not waiting on you.
     let isReady: Bool
+    /// When it was looked at, as the daemon remembers it — on any device. Nil means nobody
+    /// has, or that this daemon is too old to know (`features.viewedState`).
+    let viewedAt: Double?
 
     init?(row: SessionRow) {
         guard let review = row.review else {
@@ -30,6 +33,7 @@ struct ReviewItem: Identifiable, Equatable {
         reviewedAt = review.at
         inspect = review.inspect
         isReady = row.status != .working
+        viewedAt = review.viewedAt
         // The identity the daemon minted when it filed this deliverable, which it carries
         // unchanged through every later event — so this id moves only when a NEWER deliverable
         // replaces this one. Everything keyed on it (the pane, the row pulse, the
