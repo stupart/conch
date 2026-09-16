@@ -239,7 +239,7 @@ final class FloatingPanels: ObservableObject {
         fog.acceptsMouseMovedEvents = true
         fog.contentView = container
         lookHost = LookHostingView(rootView: FogLookHost(store: store, panels: self))
-        words = FirstClickHostingView(rootView: ConversationFogHost(store: store, panels: self))
+        words = FirstClickHostingView(rootView: ConversationFogHost(store: store, panels: self, history: store.overlayHistory))
         for view in [blur, lookHost, words] {
             view.frame = container.bounds
             view.autoresizingMask = [.width, .height]
@@ -656,12 +656,15 @@ private struct FogLookHost: View {
 private struct ConversationFogHost: View {
     @ObservedObject var store: StateStore
     @ObservedObject var panels: FloatingPanels
+    /// The overlay's own reader: it follows the staged session, which is not necessarily
+    /// the one the dashboard is showing.
+    @ObservedObject var history: HistoryStore
     @ObservedObject private var drafts = ComposerDraftStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let row = Self.session(store.state, staged: panels.staged)
-        let turns = row.map { Self.turns(store.state, $0) } ?? []
+        let turns = row.map { Self.turns(store.state, $0, whole: history.fullBodies) } ?? []
         Group {
             if panels.isCollapsed {
                 FogHandle(corner: panels.corner, hovering: panels.hovering) { panels.toggleCollapsed() }
@@ -702,6 +705,10 @@ private struct ConversationFogHost: View {
         }
         // Words come in as the daemon sends them; another session starts from its newest line, its reply whole.
         .onChange(of: row?.id) { _, _ in panels.text.session() }
+        // Its own modifier rather than a line inside that one: what the fog does with a
+        // new session's words is a separate thing from reading that session whole.
+        .onChange(of: row?.id) { _, _ in if panels.isFullScreen { readWhole(row) } }
+        .onChange(of: panels.isFullScreen) { _, full in if full { readWhole(row) } }
         .onChange(of: turns, initial: true) { _, turns in panels.text.update(turns: turns, now: ProcessInfo.processInfo.systemUptime) }
     }
 
@@ -717,12 +724,37 @@ private struct ConversationFogHost: View {
     }
 
     /// What was said, both ways. Tools, thinking and materials stay in the dashboard.
-    static func turns(_ state: PublishedState?, _ row: SessionRow) -> [ConversationTurn] {
+    /// `whole` is what the record store says the message actually was, by provider id.
+    /// The snapshot keeps only the last 4,000 characters of a long one, so enlarging the
+    /// overlay without this enlarged the cut rather than showing the message.
+    static func turns(
+        _ state: PublishedState?,
+        _ row: SessionRow,
+        whole: [String: String] = [:]
+    ) -> [ConversationTurn] {
         guard let conversation = state?.conversations?[row.id] ?? state?.conversation,
               conversation.sessionId == row.id else { return [] }
         return conversation.items
             .filter { ($0.kind == .user || $0.kind == .assistant) && !$0.text.isEmpty }
-            .map { ConversationTurn(id: $0.id, fromYou: $0.kind == .user, text: $0.text) }
+            .map {
+                ConversationTurn(
+                    id: $0.id,
+                    fromYou: $0.kind == .user,
+                    text: whole[HistorySnapshot.nativeId(forSnapshotItem: $0.id)] ?? $0.text
+                )
+            }
+    }
+
+    /// Full screen is where someone READS rather than glances, so it is where the whole
+    /// text of anything the snapshot cut is fetched.
+    private func readWhole(_ row: SessionRow?) {
+        guard let row else { return }
+        history.select(session: row.id)
+        let conversation = store.state?.conversations?[row.id] ?? store.state?.conversation
+        let cut = (conversation?.items ?? [])
+            .filter { ($0.kind == .user || $0.kind == .assistant) && HistorySnapshot.wasCut($0.text, cap: 4_000) }
+            .map(\.id)
+        history.loadFullBodies(forSnapshotItems: cut)
     }
 
     /// The live voice state when it is this session's, as DashboardView's voiceState(for:) reads it.

@@ -444,6 +444,14 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         var result: String?
         var subagent: Subagent?
 
+        init(name: String, kind: Kind, status: String, result: String?, subagent: Subagent? = nil) {
+            self.name = name
+            self.kind = kind
+            self.status = status
+            self.result = result
+            self.subagent = subagent
+        }
+
         private enum CodingKeys: String, CodingKey { case name, kind, status, result, subagent }
 
         init(from decoder: Decoder) throws {
@@ -476,6 +484,15 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         var path: String?
         var dataUrl: String?
         var status: String?
+
+        init(kind: Kind, title: String, detail: String?, path: String? = nil, dataUrl: String? = nil, status: String? = nil) {
+            self.kind = kind
+            self.title = title
+            self.detail = detail
+            self.path = path
+            self.dataUrl = dataUrl
+            self.status = status
+        }
 
         private enum CodingKeys: String, CodingKey {
             case kind, title, detail, path, dataUrl, status
@@ -574,6 +591,32 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     let change: FileChange?
     let question: AgentQuestion?
     let material: Material?
+
+    /// Built rather than decoded: an item read back from the record store is the same
+    /// row as a live one, so it becomes one rather than growing a second set of rows.
+    init(
+        id: String,
+        rev: Int,
+        kind: Kind,
+        text: String,
+        at: TimeInterval? = nil,
+        tool: Tool? = nil,
+        plan: [PlanStep]? = nil,
+        change: FileChange? = nil,
+        question: AgentQuestion? = nil,
+        material: Material? = nil
+    ) {
+        self.id = id
+        self.rev = rev
+        self.kind = kind
+        self.text = text
+        self.at = at
+        self.tool = tool
+        self.plan = plan
+        self.change = change
+        self.question = question
+        self.material = material
+    }
 
     private enum CodingKeys: String, CodingKey {
         case id, rev, kind, text, at, tool, plan, change, question, material
