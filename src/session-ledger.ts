@@ -163,7 +163,14 @@ export class SessionLedger {
 
   /** One saved deliverable, or nothing if this conch can't read it. */
   #restoredReview(sessionId: string, candidate: unknown): SessionReview | undefined {
-    const review = (candidate ?? {}) as { summary?: unknown; link?: unknown; scene?: unknown; at?: unknown; id?: unknown };
+    const review = (candidate ?? {}) as {
+      summary?: unknown;
+      link?: unknown;
+      scene?: unknown;
+      at?: unknown;
+      id?: unknown;
+      viewedAt?: unknown;
+    };
     if (
       typeof review.summary !== "string" || typeof review.at !== "number" || !Number.isFinite(review.at)
       || (review.link !== undefined && typeof review.link !== "string")
@@ -179,7 +186,10 @@ export class SessionLedger {
       at: review.at,
     };
     const id = typeof review.id === "string" && review.id ? review.id : reviewIdentity(sessionId, restored);
-    return { ...restored, id };
+    const viewedAt = typeof review.viewedAt === "number" && Number.isFinite(review.viewedAt)
+      ? review.viewedAt
+      : undefined;
+    return { ...restored, id, ...(viewedAt !== undefined ? { viewedAt } : {}) };
   }
 
   /** Rewrite the saved deliverables (atomic rename), newest first up to `MAX_REVIEWS_BYTES`. */
@@ -198,6 +208,7 @@ export class SessionLedger {
         ...(held.scene ? { scene: held.scene } : {}),
         at: held.at,
         id: held.id,
+        ...(held.viewedAt !== undefined ? { viewedAt: held.viewedAt } : {}),
       });
       const entry = {
         label,

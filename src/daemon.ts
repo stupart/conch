@@ -209,6 +209,7 @@ import {
   buildPanelModel,
   buildPanelRows,
   buildPublishedState,
+  markReviewViewed,
   panelReplyText,
   numberPanelSessionRows,
   previewForPanelSelection,
@@ -1997,6 +1998,21 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       delivered?.(synced);
       void renderSessionPanel();
       return renamed.label;
+    },
+    markReviewViewed: (target, review) => {
+      const state = ledger.sessionStates.get(target.sessionId);
+      const held = state?.reviews;
+      if (!state || !held?.length) return false;
+      const next = markReviewViewed(held, review, Date.now());
+      if (!next) return false;
+      ledger.sessionStates.set(target.sessionId, {
+        ...state,
+        reviews: next,
+        ...(state.review?.id === review ? { review: next.find((one) => one.id === review)! } : {}),
+      });
+      ledger.saveReviews();
+      void renderSessionPanel();
+      return true;
     },
     dismiss: (target) => {
       dismissedSessionIds.add(target.sessionId);

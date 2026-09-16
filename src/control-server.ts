@@ -168,6 +168,14 @@ function applySessionControlMessage(
       void invokeSessionAction(controller, target, { command: "attach" });
       return sessionCommandAck(message, target.jobId !== undefined, target.label);
     }
+    case "review-viewed": {
+      const marked = invokeSessionAction(
+        controller,
+        target,
+        { command: "review-viewed", review: message.review },
+      );
+      return sessionCommandAck(message, marked === true, target.label);
+    }
     case "dismiss": {
       if (options.isDismissed?.(message.sessionId)) {
         return sessionCommandAck(message, false, target.label);

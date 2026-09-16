@@ -41,6 +41,11 @@ export interface SessionActionsController {
   setModel?(target: Readonly<SessionActionsTarget>, model: string): Promise<boolean>;
   /** Open a background job in a new Terminal window. Resolves false when nothing was opened. */
   attach?(target: Readonly<SessionActionsTarget>): Promise<boolean>;
+  /**
+   * Record that one of this session's deliverables has been looked at. False when there was
+   * nothing to change — no such deliverable, or it was already marked.
+   */
+  markReviewViewed?(target: Readonly<SessionActionsTarget>, review: string): boolean | void;
 }
 
 /**
@@ -59,7 +64,8 @@ export type SessionActionMutation =
   | { command: "reveal" }
   | { command: "restore" }
   | { command: "set-model"; model: string }
-  | { command: "attach" };
+  | { command: "attach" }
+  | { command: "review-viewed"; review: string };
 
 /** One closed command-to-controller adapter shared by terminal UI and socket IPC. */
 export function invokeSessionAction(
@@ -86,6 +92,8 @@ export function invokeSessionAction(
       return controller.reveal?.({ ...target }) ?? false;
     case "set-model":
       return controller.setModel?.({ ...target }, mutation.model) ?? false;
+    case "review-viewed":
+      return controller.markReviewViewed?.({ ...target }, mutation.review) ?? false;
     case "attach":
       return controller.attach?.({ ...target }) ?? false;
   }

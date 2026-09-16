@@ -73,7 +73,15 @@ export interface PanelRowModel {
   /** `opened` exists only on the terminal renderer's own copy, set once `o` has
    * handed the link to macOS — its equivalent of the Mac app's seen set. The
    * publisher copies summary/link/at explicitly, so it never reaches the wire. */
-  review?: { summary: string; link?: string; scene?: ReviewScene; at: number; id: string; opened?: boolean };
+  review?: {
+    summary: string;
+    link?: string;
+    scene?: ReviewScene;
+    at: number;
+    id: string;
+    viewedAt?: number;
+    opened?: boolean;
+  };
   /** Every deliverable the session holds, oldest first; `review` is the last of them. */
   reviews?: SessionReview[];
   paused: boolean;
@@ -279,13 +287,17 @@ export interface PublishedSessionRow {
     /** The identity it was filed with. Absent from an older daemon, which is why every
      * reader still falls back to recomputing its own key. */
     id?: string;
+    /** When it was looked at; absent means nobody has. */
+    viewedAt?: number;
   };
   /**
    * Every deliverable the session is still holding, oldest first, the last of which is
    * `review`. Absent from an older daemon; an app that wants them all and finds none reads
    * `review` alone, which is exactly what it does today.
    */
-  reviews?: Array<{ summary: string; link?: string; scene?: ReviewScene; at?: number; id?: string }>;
+  reviews?: Array<
+    { summary: string; link?: string; scene?: ReviewScene; at?: number; id?: string; viewedAt?: number }
+  >;
 }
 
 /**
@@ -314,6 +326,14 @@ export interface PublishedDelivery {
 
 export interface PublishedState {
   v: 1;
+  /**
+   * What this daemon can do, versioned per capability and separate from `v`.
+   *
+   * An app that finds no `features` is talking to a daemon from before them: it must show an
+   * honest latest-deliverable-only view rather than presenting local guesses as shared truth.
+   * Unknown means unknown.
+   */
+  features: { deliverables: 1; viewedState: 1 };
   /** Stable identity of the daemon installation that owns every local session key. */
   ownerDeviceId: string;
   ts: number;
@@ -490,6 +510,7 @@ export function buildPublishedState(
 ): PublishedState {
   return {
     v: 1,
+    features: { deliverables: 1, viewedState: 1 },
     ownerDeviceId,
     ts: now,
     ...(options.audio ? { audioControl: options.audio.control, audioOutbox: options.audio.outbox } : {}),
@@ -547,6 +568,7 @@ export function buildPublishedState(
               // The identity the deliverable was filed with. Older apps ignore it and keep
               // recomputing their own key; newer ones stop guessing.
               ...(row.review.id ? { id: row.review.id } : {}),
+              ...(row.review.viewedAt !== undefined ? { viewedAt: row.review.viewedAt } : {}),
             },
           }
           : {}),
@@ -560,6 +582,7 @@ export function buildPublishedState(
               ...(held.scene ? { scene: held.scene } : {}),
               ...(held.at !== undefined ? { at: held.at } : {}),
               ...(held.id ? { id: held.id } : {}),
+              ...(held.viewedAt !== undefined ? { viewedAt: held.viewedAt } : {}),
             })),
           }
           : {}),
@@ -875,6 +898,16 @@ export interface SessionReview {
    * a key of its own.
    */
   id: string;
+  /**
+   * When this deliverable was looked at, epoch-ms; absent means nobody has.
+   *
+   * It lives on the record, not in whichever window happened to show it. Four surfaces each
+   * kept their own set — the terminal's, the Mac pill's, the phone sheet's, and the Mac's
+   * notification set — all of them in memory, so every relaunch marked everything unread and
+   * the Mac and the phone never agreed. A panel of tabs that greys what you have already
+   * reviewed cannot be built on that.
+   */
+  viewedAt?: number;
 }
 
 /**
@@ -937,6 +970,27 @@ export function carriedReviews(
   const others = kept.filter((review) => review.id !== incoming.id);
   const next = [...others, incoming].sort((a, b) => a.at - b.at);
   return next.slice(Math.max(0, next.length - MAX_SESSION_REVIEWS));
+}
+
+/**
+ * Mark one held deliverable as looked at, or nothing if there was nothing to change.
+ *
+ * Here rather than in the daemon because the interesting parts are rules, not effects.
+ * Marking one that is ALREADY marked must not restamp it — a second window opening the same
+ * deliverable would otherwise make it look freshly read — and an identity this session does
+ * not hold must change nothing at all, rather than marking whatever is nearest.
+ *
+ * `undefined` means nothing changed, so the caller knows not to persist or republish.
+ */
+export function markReviewViewed(
+  held: readonly SessionReview[] | undefined,
+  review: string,
+  now: number,
+): SessionReview[] | undefined {
+  if (!held?.length) return undefined;
+  const index = held.findIndex((one) => one.id === review);
+  if (index < 0 || held[index]!.viewedAt !== undefined) return undefined;
+  return held.map((one, at) => at === index ? { ...one, viewedAt: now } : one);
 }
 
 export function carriedReview(

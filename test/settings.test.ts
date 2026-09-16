@@ -405,7 +405,7 @@ describe("control-message validation", () => {
     }
   });
 
-  test("recognizes and canonicalizes the nine closed session-command shapes", () => {
+  test("recognizes and canonicalizes the ten closed session-command shapes", () => {
     expect(SESSION_COMMANDS).toEqual([
       "rename",
       "set-voice",
@@ -416,6 +416,7 @@ describe("control-message validation", () => {
       "reveal",
       "set-model",
       "attach",
+      "review-viewed",
     ]);
 
     const cases: Array<{ input: unknown; output: SessionControlMessage }> = [
@@ -455,6 +456,10 @@ describe("control-message validation", () => {
         input: { kind: "session-command", sessionId: "session-1", command: "attach" },
         output: { kind: "session-command", sessionId: "session-1", command: "attach" },
       },
+      {
+        input: { kind: "session-command", sessionId: " session-1 ", command: "review-viewed", review: '  ["s",1,"abc"]  ' },
+        output: { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: '["s",1,"abc"]' },
+      },
     ];
 
     for (const { input, output } of cases) {
@@ -490,6 +495,14 @@ describe("control-message validation", () => {
       { kind: "session-command", sessionId: "session-1", command: "set-model", model: "opus high" },
       { kind: "session-command", sessionId: "session-1", command: "set-model", model: "x".repeat(129) },
       { kind: "session-command", sessionId: "session-1", command: "set-model", model: 42 },
+      // A deliverable identity is minted by the daemon; anything that is not one is refused
+      // rather than marking some other deliverable, or none, as read.
+      { kind: "session-command", sessionId: "session-1", command: "review-viewed" },
+      { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: "" },
+      { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: "   " },
+      { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: "bad\u0000id" },
+      { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: "x".repeat(513) },
+      { kind: "session-command", sessionId: "session-1", command: "review-viewed", review: 42 },
     ];
 
     for (const input of hostile) {

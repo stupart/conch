@@ -12,6 +12,7 @@ import {
   dashboardRowsForModel,
   carriedReview,
   carriedReviews,
+  markReviewViewed,
   MAX_SESSION_REVIEWS,
   type SessionReview,
   latestLatchedState,
@@ -159,6 +160,34 @@ describe("buildPanelModel — renderer seam", () => {
 });
 
 describe("buildPublishedState — external session snapshot", () => {
+  test("what has been looked at is published, and the daemon says it can tell you", () => {
+    const held = [
+      { summary: "first", at: 1_000, id: "v-1", viewedAt: 1_500 },
+      { summary: "second", at: 2_000, id: "v-2" },
+    ];
+    const model = buildPanelModel({
+      sessions: [{ sessionId: "holds", name: "Holds", status: "idle", statusUpdatedAt: 10 }],
+      sessionStates: new Map([
+        ["holds", { label: "Holds", status: "waiting" as const, at: 2_000, review: held[1]!, reviews: held }],
+      ]),
+      pausedSessionIds: new Set(),
+      live: { state: "idle", label: "", partial: "" },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+      now: 2_000,
+    });
+    const published = buildPublishedState("test-device", model, new Map(), new Set(), 2_000);
+    const row = published.rows[0]!;
+
+    expect(row.reviews?.[0]?.viewedAt).toBe(1_500);
+    expect(row.reviews?.[1]?.viewedAt).toBeUndefined();
+    expect(row.review?.viewedAt).toBeUndefined();
+    // An app that finds no `features` is talking to a daemon from before this, and must not
+    // present its own guesses as shared truth.
+    expect(published.features).toEqual({ deliverables: 1, viewedState: 1 });
+  });
+
   test("a session holding several deliverables publishes them all, with the newest as `review`", () => {
     const held = [
       { summary: "first", link: "/tmp/a.png", at: 1_000, id: "h-1" },
@@ -240,6 +269,7 @@ describe("buildPublishedState — external session snapshot", () => {
 
     expect(published).toEqual({
       v: 1,
+      features: { deliverables: 1, viewedState: 1 },
       ownerDeviceId: "test-device",
       ts: 1_234_567,
       mode: { muted: false, paused: true, holding: 2 },
@@ -1060,6 +1090,29 @@ describe("a review outlives the turn that produced it", () => {
     // destroyed the artifact you were replying about, and contradicted what
     // conch tells agents: it stays until you send another.
     expect(carriedReview(latched, "working", undefined)).toEqual(review);
+  });
+
+  test("marking one deliverable read leaves the others alone", () => {
+    const held = [
+      { summary: "first", at: 1, id: "a" },
+      { summary: "second", at: 2, id: "b" },
+    ];
+    const next = markReviewViewed(held, "a", 9_000);
+    expect(next?.[0]).toEqual({ summary: "first", at: 1, id: "a", viewedAt: 9_000 });
+    expect(next?.[1]).toEqual(held[1]);
+  });
+
+  test("marking one that was already read does not restamp it", () => {
+    const held = [{ summary: "first", at: 1, id: "a", viewedAt: 1_000 }];
+    // A second window opening the same deliverable would otherwise make it look freshly read.
+    expect(markReviewViewed(held, "a", 9_000)).toBeUndefined();
+  });
+
+  test("an identity the session does not hold changes nothing", () => {
+    const held = [{ summary: "first", at: 1, id: "a" }];
+    expect(markReviewViewed(held, "somebody-else", 9_000)).toBeUndefined();
+    expect(markReviewViewed([], "a", 9_000)).toBeUndefined();
+    expect(markReviewViewed(undefined, "a", 9_000)).toBeUndefined();
   });
 
   test("every deliverable is kept, oldest first, and republishing one is not a second", () => {

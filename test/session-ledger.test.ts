@@ -214,6 +214,19 @@ describe("saved deliverables", () => {
     expect(after?.review).toEqual(held[2]);
   }));
 
+  test("a deliverable that was looked at stays looked at across a restart", () => withFile((path) => {
+    const ledger = new SessionLedger(path);
+    const seen = { summary: "seen", at: 1_000, id: "s-1", viewedAt: 1_500 };
+    const unseen = { summary: "unseen", at: 2_000, id: "s-2" };
+    ledger.sessionStates.set("a", { label: "a", status: "waiting", at: 2_000, review: unseen, reviews: [seen, unseen] });
+    ledger.saveReviews();
+
+    const after = restored(path).sessionStates.get("a");
+    // Without this the relaunch marks everything unread, which is the whole bug.
+    expect(after?.reviews?.[0]?.viewedAt).toBe(1_500);
+    expect(after?.reviews?.[1]?.viewedAt).toBeUndefined();
+  }));
+
   test("a file written before a session could hold more than one restores as the single deliverable it was", () => withFile((path) => {
     writeFileSync(path, JSON.stringify({
       a: { label: "a", review: { summary: "a ready", at: 1_000, id: "a-rev" } },
