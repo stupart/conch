@@ -214,6 +214,26 @@ describe("§3's anatomy, where the app had drifted from it", () => {
   const dashboard = mac("DashboardView.swift");
   const stack = mac("ConversationStackView.swift");
 
+  test("an answered question collapses to what it decided (§3)", () => {
+    expect(stack).toContain("private func answeredQuestionRow(_ decided: String) -> some View {");
+    expect(stack).toContain("QuestionOutcome.summary(");
+    expect(stack).toContain("QuestionOutcome.chosen(");
+    // Only a FINISHED call collapses. A running question is still the thing the session is
+    // blocked on, and must keep every option pressable.
+    expect(stack).toContain('if item.tool?.status != "running",');
+    // The fallback survives: when the answer names no option, the block renders as before.
+    expect(stack).toContain('answerable: item.tool?.status == "running"');
+
+    const collapsed = stack.slice(
+      stack.indexOf("private func answeredQuestionRow"),
+      stack.indexOf("    private func questionRow("),
+    );
+    expect(collapsed.length).toBeGreaterThan(300);
+    // Not a button: there is nothing left to do to it, and leaving it tappable is how an
+    // earlier choice gets sent to answer a later prompt.
+    expect(collapsed).not.toContain("Button");
+  });
+
   test("consecutive tool steps fold, and the rows that demand action never do", () => {
     // §3: consecutive steps fold into one quiet line that opens to the steps on a hairline
     // guide. The rule itself is tested by swift test; this pins the WIRING.

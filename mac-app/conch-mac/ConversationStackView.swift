@@ -516,11 +516,27 @@ struct ConversationStackView: View {
             // A question outranks the generic tool shell: this row exists only
             // because the session is blocked on one of these choices.
             if let asked = item.question, !asked.options.isEmpty {
-                questionRow(
-                    asked,
-                    questionID: item.id,
-                    answerable: item.tool?.status == "running"
-                )
+                // §3: once answered it collapses to one line naming what was decided. Only
+                // when the answer actually names an option — the wire never states a choice,
+                // so it is recovered from the finished call's result text, and when nothing
+                // matches the block stays exactly as it was. Guessing at a person's decision
+                // is worse than not summarising it.
+                if item.tool?.status != "running",
+                   let decided = QuestionOutcome.summary(
+                       header: asked.header,
+                       chosen: QuestionOutcome.chosen(
+                           from: asked.options.map(\.label),
+                           in: item.tool?.result
+                       )
+                   ) {
+                    answeredQuestionRow(decided)
+                } else {
+                    questionRow(
+                        asked,
+                        questionID: item.id,
+                        answerable: item.tool?.status == "running"
+                    )
+                }
             // A plan is not a tool call you might expand — it is the answer to
             // "what is it doing", so it renders as itself rather than as a
             // collapsed row you would have to think to open.
@@ -536,6 +552,26 @@ struct ConversationStackView: View {
                 toolRow(item)
             }
         }
+    }
+
+    /// §3's collapsed question: one quiet line saying what was decided.
+    ///
+    /// It replaces a header, the whole question, and every option greyed out at 0.58 — the
+    /// largest thing in a finished transcript, saying the least. Not a button: there is
+    /// nothing left to do to it, and the exchange that produced it is right above.
+    private func answeredQuestionRow(_ decided: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "checkmark.circle")
+                .font(.system(size: 9.5))
+                .foregroundStyle(ConchPalette.textFaint)
+            Text(decided)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(ConchPalette.textDim)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func questionRow(
