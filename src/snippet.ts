@@ -952,6 +952,21 @@ const ATTRIBUTION_TAIL_BYTES = 512 * 1024;
 const MAX_ATTRIBUTION_TAIL_BYTES = 32 * 1024 * 1024;
 
 /**
+ * This window's branch of a transcript two windows may share (A8), by the one
+ * signal that is exact: the bridge-session preamble. `shared` is the answer
+ * that nothing named the branch, and callers must treat what they read as
+ * unattributed rather than guess. Prompt confirmation and permission dialogs
+ * ask this same question, so a window can never be told about one branch and
+ * answer on another.
+ */
+export function windowBranch(
+  lines: readonly string[],
+  window: WindowIdentity,
+): { lines: readonly string[]; shared: boolean } {
+  return selectWindowBranch(lines, { bridgeSessionId: window.bridgeSessionId });
+}
+
+/**
  * Whether any of the file's last `fresh` prompts is on this window's branch.
  *
  * Only the bridge-session signal decides. The `startedAt` fallback picks the
@@ -977,7 +992,7 @@ async function windowPromptSince(
       }
     }).slice(-fresh);
     if (prompts.length < fresh && start > 0 && tailBytes < MAX_ATTRIBUTION_TAIL_BYTES) continue;
-    const branch = selectWindowBranch(lines, { bridgeSessionId: window.bridgeSessionId });
+    const branch = windowBranch(lines, window);
     if (branch.shared) return "unknown";
     const mine = new Set(branch.lines);
     // A record with no uuid is on no chain, so the branch filter passes it
