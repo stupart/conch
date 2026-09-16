@@ -411,6 +411,51 @@ describe("§3's anatomy, where the app had drifted from it", () => {
     expect(deliverableArm).not.toContain("if transcriptScrolled {");
   });
 
+  test("the stage is a panel on the window ground, not one flat surface (§3)", () => {
+    // The lab's `#stage{top:8;right:8;bottom:8;left:var(--sideW);background:var(--surface);
+    // border-radius:12px;box-shadow:var(--shPanel);overflow:hidden}` — §3's prose in values.
+    const pane = dashboard.slice(
+      dashboard.indexOf("ConversationPane(\n                        state: state,"),
+      dashboard.indexOf("if store.isLogDrawerOpen {"),
+    );
+    expect(pane.length).toBeGreaterThan(200);
+    expect(pane).toContain(".background(ConchPalette.surface)");
+    expect(pane).toContain("RoundedRectangle(cornerRadius: ConchRadius.medium, style: .continuous)");
+    expect(pane).toContain(".strokeBorder(ConchPalette.divider, lineWidth: 0.5)");
+    expect(pane).toContain(".padding(8)");
+    // `--shPanel` is a whisper: .raised is radius 1.5 / y 1. `.floating` (14 / 10) is the
+    // COMPOSER's shadow — the composer floats, the stage merely sits.
+    expect(pane).toContain(".conchElevation(.raised)");
+    expect(pane).not.toContain(".conchElevation(.floating)");
+
+    // The sidebar's 1 pt rule is gone: `#stage` has no left border, and the panel's own edge
+    // is the separation now.
+    expect(dashboard).not.toContain(
+      "Rectangle()\n                        .fill(ConchPalette.divider)\n                        .frame(width: 1)",
+    );
+    // …while the window GROUND stays, because the panel has to sit on something.
+    expect(dashboard).toContain(".background(ConchPalette.bg)");
+    expect(mac("Palette.swift")).toContain("static let surface = ConchColor.surface.dynamic");
+
+    // Nothing INSIDE the panel repaints the window ground — that is what made the first
+    // attempt have the right shape and the wrong fill: the transcript, the pane body, the
+    // 52 pt header and every deliverable surface were painting `bg` over the panel's `surface`.
+    // Three ground fills remain, all OUTSIDE it: the window itself, the title strip, the ledger.
+    expect((dashboard.match(/\.background\(ConchPalette\.bg\)/g) ?? []).length).toBe(3);
+    // Three surfaces, not two: the panel's own fill, the pane body, and the 52 pt header.
+    expect((dashboard.match(/\.background\(ConchPalette\.surface\)/g) ?? []).length).toBe(3);
+    // The invariant behind those counts, stated structurally so it survives a refactor that
+    // moves a fill around: nothing inside the pane paints the window ground.
+    const insidePane = dashboard.slice(dashboard.indexOf("private struct ConversationPane: View {"));
+    expect(insidePane.length).toBeGreaterThan(1_000);
+    expect(insidePane).not.toContain(".background(ConchPalette.bg)");
+    expect(stack).toContain(".background(ConchPalette.surface)");
+    // ReviewView renders only inside the stage (#284 deleted the full-window overlay), so it
+    // carries no ground at all — including the cover that hides WKWebView's white flash, which
+    // would otherwise be a visible rectangle against the panel.
+    expect(mac("ReviewView.swift")).not.toContain("ConchPalette.bg");
+  });
+
   test("the header is 52 tall, not a toolbar's 36", () => {
     // Nothing pinned this before, which is how it sat at 36 through a spec that says 52.
     const header = dashboard.slice(

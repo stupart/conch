@@ -230,7 +230,9 @@ struct ConversationStackView: View {
                 .opacity(switchFade)
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: switchFade)
             }
-            .background(ConchPalette.bg)
+            // The stage is a `surface` panel (§3); painting the window ground here covered it,
+            // so the panel had the right shape and the wrong fill.
+            .background(ConchPalette.surface)
             .overlay(alignment: .bottom) {
                 LinkFailureLine(message: $linkFailure)
             }

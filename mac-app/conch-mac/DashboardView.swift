@@ -97,16 +97,35 @@ struct DashboardView: View {
                         value: store.isLedgerFrozen
                     )
 
-                    Rectangle()
-                        .fill(ConchPalette.divider)
-                        .frame(width: 1)
                     }
 
+                    // §3: the stage is a `surface` panel inset 8 from the window, radius 12,
+                    // with a 0.5 pt hairline shadow — "No other cards." The lab's `#stage`
+                    // gives the exact values: inset 8 on all four sides, `--surface`, radius
+                    // 12, and `--shPanel` (a 0.5 ring at 8% plus a 1 px drop at 4%).
+                    //
+                    // The window ground shows through that inset, which is what makes this
+                    // read as a panel ON a ground rather than one flat surface. The sidebar's
+                    // 1 pt rule is gone with it: the panel's own edge is the separation, and
+                    // `#stage` has no left border.
+                    //
+                    // The drop comes from `.raised` (radius 1.5, y 1) rather than `.floating`
+                    // (radius 14, y 10) — the composer floats, the stage merely sits. No
+                    // ConchElevation case carries a ring, so it is drawn explicitly, the same
+                    // way the composer does it.
                     ConversationPane(
                         state: state,
                         onSelectSession: actions.onSelectSession
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(ConchPalette.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: ConchRadius.medium, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: ConchRadius.medium, style: .continuous)
+                            .strokeBorder(ConchPalette.divider, lineWidth: 0.5)
+                    )
+                    .conchElevation(.raised)
+                    .padding(8)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -1563,7 +1582,9 @@ private struct ConversationPane: View {
         // (bounce 0.12, response 0.46). They did not move at all before — the deliverable
         // replaced the conversation between one frame and the next.
         .animation(ConchMotion.morph.animation(reduceMotion: reduceMotion), value: stage(for: focusedRow))
-        .background(ConchPalette.bg)
+        // Inside the stage panel, so it paints the panel's surface. Painting the window ground
+        // here covered the panel's own fill: right shape, wrong colour.
+        .background(ConchPalette.surface)
         .onReceive(NotificationCenter.default.publisher(for: .setStage)) { note in
             // Only where there is somewhere to go: with no deliverable filed, two of the
             // three pages are a promise the pane cannot keep — the same reason the
@@ -1741,7 +1762,7 @@ private struct ConversationPane: View {
         // strip of buttons, mean for the line that names what you are looking at and now also
         // carries the view switch.
         .frame(height: 52)
-        .background(ConchPalette.bg)
+        .background(ConchPalette.surface)
     }
 
     /// One tab per deliverable the session holds, oldest first, so a new one arrives on the
