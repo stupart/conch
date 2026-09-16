@@ -3,7 +3,7 @@ import type { TurnEvent } from "./hook.ts";
 import { presentedTo, type AudioHolder } from "./audio-holder.ts";
 import { voiceFor } from "./speak.ts";
 import type { SpeechManager } from "./speech-manager.ts";
-import { createRecordOperation, emitRecordObservation, reviewPublicationObservation, type RecordObservationScope, type RecordObserver } from "./records-receipts.ts";
+import { createRecordOperation, emitRecordObservation, reviewIdentity, reviewPublicationObservation, type RecordObservationScope, type RecordObserver } from "./records-receipts.ts";
 import * as listen from "./listen.ts";
 import type { ListenHooks, RuntimeDictationSession } from "./listen.ts";
 import type { RecorderHandle } from "./dictation-controller.ts";
@@ -699,7 +699,11 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // A review is stamped with the time it was FILED, here, once. Later latches
     // carry that exact record forward, so its identity never moves until a
     // newer review replaces it.
-    const carried = carriedReview(prior, status, review ? { ...review, at } : undefined);
+    const carried = carriedReview(
+      prior,
+      status,
+      review ? { ...review, at, id: reviewIdentity(sessionId, { ...review, at }) } : undefined,
+    );
     const incoming = {
       label,
       status,
@@ -733,7 +737,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   async function publishReview(event: TurnEvent): Promise<void> {
     const { sessionId, label } = event;
     if (!sessionId || !event.review) return;
-    const review = { ...event.review, at: eventTimestamp(event.eventAt) };
+    const filed = { ...event.review, at: eventTimestamp(event.eventAt) };
+    const review = { ...filed, id: reviewIdentity(sessionId, filed) };
     const prior = sessionStates.get(sessionId);
     // A replayed or reordered older publication never displaces a newer one.
     if (prior?.review && prior.review.at > review.at) return;

@@ -85,9 +85,22 @@ export function reviewPublicationObservation(
   scope: Omit<RecordObservationScope, "actionId">,
   review: { summary: string; link?: string; at: number },
 ): RecordObservation {
-  const digest = createHash("sha256").update(JSON.stringify([review.summary, review.link ?? null])).digest("hex");
-  const reviewId = recordKey(scope.sessionId, review.at, digest);
+  const reviewId = reviewIdentity(scope.sessionId, review);
   return { ...scope, actionId: reviewId, reviewId, kind: "review", state: "published", observedAt: review.at };
+}
+
+/**
+ * A deliverable's identity, minted ONCE when it is filed.
+ *
+ * Three surfaces used to recompute their own key from `sessionId` + filing time — the
+ * terminal's seen set, the Mac's `ReviewItem.id`, the phone's `ReviewQueue.key` — which is
+ * three chances to disagree, and two deliverables filed in the same millisecond collide in
+ * all of them. The journal already minted a better one here; now it is the only one, and it
+ * travels with the review instead of being derived again wherever it is needed.
+ */
+export function reviewIdentity(sessionId: string, review: { summary: string; link?: string; at: number }): string {
+  const digest = createHash("sha256").update(JSON.stringify([review.summary, review.link ?? null])).digest("hex");
+  return recordKey(sessionId, review.at, digest);
 }
 
 export interface RecordReceiptObserverOptions {

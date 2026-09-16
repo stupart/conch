@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { TurnEvent } from "./hook.ts";
 import type { PanelSessionState, SessionReview } from "./panel.ts";
+import { reviewIdentity } from "./records-receipts.ts";
 import { writeSettingsFileAtomic } from "./settings.ts";
 import { checkReviewScene } from "./snippet.ts";
 
@@ -134,7 +135,7 @@ export class SessionLedger {
     }
     if (!saved || typeof saved !== "object" || Array.isArray(saved)) return;
     for (const [sessionId, entry] of Object.entries(saved)) {
-      const { label, review } = (entry ?? {}) as { label?: unknown; review?: { summary?: unknown; link?: unknown; scene?: unknown; at?: unknown } };
+      const { label, review } = (entry ?? {}) as { label?: unknown; review?: { summary?: unknown; link?: unknown; scene?: unknown; at?: unknown; id?: unknown } };
       if (
         !sessionId || this.sessionStates.has(sessionId) || typeof label !== "string"
         || typeof review?.summary !== "string" || typeof review.at !== "number" || !Number.isFinite(review.at)
@@ -142,17 +143,21 @@ export class SessionLedger {
       ) continue;
       // A scene this conch can't read is dropped; the review is still the review.
       const scene = review.scene === undefined ? undefined : checkReviewScene(review.scene, Boolean(review.link));
+      // A deliverable filed before identities existed is minted from the same recipe, so a
+      // restart restores the SAME deliverable rather than introducing a second one.
+      const restored = {
+        summary: review.summary,
+        ...(review.link ? { link: review.link as string } : {}),
+        ...(scene?.ok ? { scene: scene.scene } : {}),
+        at: review.at,
+      };
+      const id = typeof review.id === "string" && review.id ? review.id : reviewIdentity(sessionId, restored);
       // ponytail: `waiting` shows only on a row nothing gives a status (no registry status, no hook yet); persist status if that bites.
       this.sessionStates.set(sessionId, {
         label,
         status: "waiting",
         at: 0,
-        review: {
-          summary: review.summary,
-          ...(review.link ? { link: review.link } : {}),
-          ...(scene?.ok ? { scene: scene.scene } : {}),
-          at: review.at,
-        },
+        review: { ...restored, id },
       });
     }
   }
@@ -173,6 +178,7 @@ export class SessionLedger {
           ...(review.link ? { link: review.link } : {}),
           ...(review.scene ? { scene: review.scene } : {}),
           at: review.at,
+          id: review.id,
         },
       };
       // Its pretty-printed lines at depth one, plus the ",\n" joining it.

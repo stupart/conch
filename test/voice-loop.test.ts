@@ -16,6 +16,11 @@ import type { ProviderCommandResult } from "../src/provider-rename.ts";
 import { collectContinuousResult, createDictationSession, type ListenHooks, type ListenResult, type RuntimeDictationSession } from "../src/listen.ts";
 import { addressParkedWindow, registrySnapshot, type SessionInfo } from "../src/sessions.ts";
 import { buildPanelModel, buildPublishedState, reviewReady } from "../src/panel.ts";
+import { reviewIdentity } from "../src/records-receipts.ts";
+
+/** A filed deliverable as the daemon stamps it: the same identity, from the same recipe. */
+const filedAs = <R extends { summary: string; link?: string; at: number }>(sessionId: string, review: R) =>
+  ({ ...review, id: reviewIdentity(sessionId, review) });
 import { voiceFor } from "../src/speak.ts";
 import { getLiveState, setState } from "../src/status.ts";
 import {
@@ -1436,7 +1441,7 @@ describe("a deliverable keeps one identity from filing until a newer one", () =>
     const h = harness({ paused: true });
     const review = { summary: "hero v3", link: "/tmp/hero-v3.png" };
     await h.voice.handle(accepted(h, turnEnd({ eventAt: 1_000, review })));
-    const filed = { ...review, at: 1_000 };
+    const filed = filedAs("s1", { ...review, at: 1_000 });
     expect(h.ledger.sessionStates.get("s1")?.review).toEqual(filed);
     expect(rowFor(h).review).toEqual(filed);
     expect(reviewReady(rowFor(h))).toBe(true);
@@ -1460,7 +1465,30 @@ describe("a deliverable keeps one identity from filing until a newer one", () =>
 
     // Sending it again, even unchanged, is a newer deliverable.
     await h.voice.handle(accepted(h, turnEnd({ eventAt: 5_000, review })));
-    expect(publishedReview(h)).toEqual({ ...review, at: 5_000 });
+    expect(publishedReview(h)).toEqual(filedAs("s1", { ...review, at: 5_000 }));
+  });
+
+  test("its identity is minted once at filing, survives republishing, and moves only for a newer one", async () => {
+    const h = harness({ paused: true });
+    const review = { summary: "hero v3", link: "/tmp/hero-v3.png" };
+    await h.voice.handle(accepted(h, turnEnd({ eventAt: 1_000, review })));
+    const first = rowFor(h).review?.id;
+    expect(first).toBeTruthy();
+
+    // Routine events carry the record forward. None of them re-stamp it.
+    await h.voice.handle(accepted(h, { type: "working", sessionId: "s1", label: "alpha", announce: "", eventAt: 2_000 }));
+    await h.voice.handle(accepted(h, turnEnd({ eventAt: 4_000 })));
+    expect(rowFor(h).review?.id).toBe(first);
+    expect(publishedReview(h)?.id).toBe(first);
+
+    // A newer deliverable is a different one, even filing the identical text again.
+    await h.voice.handle(accepted(h, turnEnd({ eventAt: 5_000, review })));
+    expect(rowFor(h).review?.id).not.toBe(first);
+
+    // Two deliverables differing only in what they say are still two deliverables: the
+    // filing time alone would collide inside a millisecond.
+    expect(reviewIdentity("s1", { ...review, at: 5_000 }))
+      .not.toBe(reviewIdentity("s1", { summary: "hero v4", link: review.link, at: 5_000 }));
   });
 
   /**
@@ -1476,7 +1504,7 @@ describe("a deliverable keeps one identity from filing until a newer one", () =>
       const before = harness({ paused: true, ledger: new SessionLedger(reviewsPath) });
       const review = { summary: "hero v3", link: "/tmp/hero-v3.png" };
       await before.voice.handle(accepted(before, turnEnd({ eventAt: 1_000, review })));
-      const filed = { ...review, at: 1_000 };
+      const filed = filedAs("s1", { ...review, at: 1_000 });
 
       // The restart: a new ledger over the same file, and nothing else carried.
       const restarted = new SessionLedger(reviewsPath);
@@ -1560,13 +1588,13 @@ describe("a publication is not the end of a turn", () => {
       activeSessionId: null,
       navSelectedId: null,
     }), new Map(), new Set(), Date.now());
-    expect(state.rows[0]!.review).toEqual({ ...review, scene, at: 2_000 });
+    expect(state.rows[0]!.review).toEqual(filedAs("s1", { ...review, scene, at: 2_000 }));
   });
 
   test("in manual it files silently and holds nothing for replay", async () => {
     const h = harness({ paused: true });
     await h.voice.handle(accepted(h, published()));
-    expect(rowFor(h).review).toEqual({ ...review, at: 2_000 });
+    expect(rowFor(h).review).toEqual(filedAs("s1", { ...review, at: 2_000 }));
     expect(h.said).toEqual([]);
     expect(h.ledger.pending.size).toBe(0);
   });
@@ -1581,7 +1609,7 @@ describe("a publication is not the end of a turn", () => {
 
     await h.voice.handle(accepted(h, published({ eventAt: 5_000, review: { summary: "hero v4" } })));
     await h.voice.handle(publication);
-    expect(rowFor(h).review).toEqual({ summary: "hero v4", at: 5_000 });
+    expect(rowFor(h).review).toEqual(filedAs("s1", { summary: "hero v4", at: 5_000 }));
   });
 });
 
