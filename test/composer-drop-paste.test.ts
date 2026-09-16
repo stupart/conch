@@ -16,7 +16,7 @@ const composer = readFileSync(
  * the file types from its registration; text drags still work.
  */
 test("the editor stops accepting file drops, and keeps everything else", () => {
-  const insets = composer.slice(composer.indexOf("func conchTextViewInsets()"));
+  const insets = composer.slice(composer.indexOf("func conchTextViewInsets("));
   const body = insets.slice(0, insets.indexOf("\n    }\n"));
   expect(body).toContain(".fileURL");
   expect(body).toContain('NSPasteboard.PasteboardType("NSFilenamesPboardType")');
