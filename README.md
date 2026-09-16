@@ -1,4 +1,4 @@
-# 🐚 conch
+# conch
 
 A voice loop for Claude Code. Your sessions announce themselves out loud when they finish — then you just talk back. From your Mac, or from your phone anywhere in the world.
 
@@ -201,7 +201,7 @@ The two default-off fast-model features (`announce-summary` and `voice-qa`) shel
 Run the daemon in a visible terminal (`conch daemon`), or just type **`conch`** to attach to the one `conch service` keeps running in the background — either way you get the dashboard from the screenshot above: a **live session ledger** on the left, a **read-along pane** on the right, so you can see who needs you at a glance without conch ever nagging you aloud:
 
 ```
-  🐚 conch
+  conch
   ─────────────────────────────────────────────────────────────────
    boatker      ❗ │ yeah let's make theater the default and
    honeyb       ❗ │ auto-open the dashboard at login so i never

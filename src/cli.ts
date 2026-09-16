@@ -79,7 +79,7 @@ async function runDashboard(): Promise<void> {
   const tmux = Bun.which("tmux") ?? "/opt/homebrew/bin/tmux";
   const hasSession = () =>
     Bun.spawnSync([tmux, "has-session", "-t", "conch"]).exitCode === 0;
-  console.log("🐚 conch dashboard  ·  ctrl-b d to detach (leaves the daemon running)");
+  console.log("conch dashboard  ·  ctrl-b d to detach (leaves the daemon running)");
   let warned = false;
   while (true) {
     while (!hasSession()) {

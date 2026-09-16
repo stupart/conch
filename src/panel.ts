@@ -866,7 +866,7 @@ export function dashboardPanelLines(rows: string[], columns: number, mode: Dashb
   const rule = "  \x1b[2m" + "─".repeat(Math.max(10, columns - 4)) + "\x1b[0m";
   return [
     "",
-    "  \x1b[1m🐚 conch\x1b[0m",
+    "  \x1b[1mconch\x1b[0m",
     dashboardModeBanner(mode),
     rule,
     ...rows,

@@ -555,7 +555,7 @@ describe("dashboard global mode banner", () => {
   const muted = dashboardPanelLines(["session row"], 80, { muted: true, paused: false, holding: 0 });
 
   test("uses a fixed slot under the header in every mode", () => {
-    expect(active[1]).toContain("🐚 conch");
+    expect(active[1]).toContain("conch");
     expect(active[2]).toBe("");
     expect(active[3]).toContain("─");
     expect(active[4]).toBe("session row");

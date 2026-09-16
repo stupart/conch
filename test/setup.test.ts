@@ -187,7 +187,7 @@ describe("one-command setup", () => {
       { color: false },
     );
     expect(ready.split("\n")[0]).toBe(
-      "╭─ 🐚 DO THIS FIRST — Type /hooks in any Claude Code session you already have open.",
+      "╭─ DO THIS FIRST — Type /hooks in any Claude Code session you already have open.",
     );
     expect(ready).toContain("Sessions opened from now on pick conch up automatically.");
     expect(ready).toContain("THEN — Just finish a turn.");
