@@ -130,5 +130,19 @@ describe("new work does not replace what you are reading", () => {
   test("the page is per session, so switching away and back returns to it", () => {
     expect(pane).toContain("workspace.presentation(for: row?.id).showsConversation");
     expect(pane).toContain("private func perspectiveBar(for row: SessionRow) -> some View {");
+
+    // The strip of deliverables asks the same shared rule, and keeps no pick of its own: the
+    // pane drifted once already by keeping chains, which is what this whole file is about.
+    expect(pane).toContain("SessionPresentation.shown(");
+    expect(pane).toContain("workspace.select(deliverable: item.id, for: row.id)");
+    expect(pane).not.toMatch(/selectedDeliverable\s*=/);
+    // Only drawn when there is more than one, so a session with a single deliverable has
+    // exactly the pane it always had.
+    expect(pane).toContain("if deliverables.count > 1 {");
+    // Three states, and looking at one is what marks it — but only ever told to a daemon that
+    // can remember, so an older one is never handed a command it will refuse.
+    expect(pane).toContain("isUnviewed ? ConchPalette.textPrimary : ConchPalette.textDim");
+    expect(pane).toContain("isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear)");
+    expect(pane).toContain("if item.viewedAt == nil, state?.features?.viewedState != nil {");
   });
 });

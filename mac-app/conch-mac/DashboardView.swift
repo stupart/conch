@@ -1393,8 +1393,23 @@ private struct ConversationPane: View {
         // here (alone of all the pane's surfaces) meant the review you were
         // just pinged about was invisible when the window opened, until you
         // clicked the row that was already in front of you.
-        guard let row = focusedRow else { return nil }
-        return ReviewItem(row: row)
+        let held = deliverables
+        guard !held.isEmpty else { return nil }
+        // The reader's pick while the session still holds it, else the newest — the rule is
+        // shared, because the phone will answer this the same way (ConchDesign/Workspace).
+        let shown = SessionPresentation.shown(
+            in: held.map(\.id),
+            picked: workspace.presentation(for: focusedRow?.id).selectedDeliverable
+        )
+        return held.first { $0.id == shown } ?? held.last
+    }
+
+    /// Every deliverable the focused session is still holding, oldest first: one tab each.
+    /// A daemon too old to send them all yields the single newest, which is today's behaviour.
+    private var deliverables: [ReviewItem] {
+        guard let row = focusedRow else { return [] }
+        let held = row.reviews ?? row.review.map { [$0] } ?? []
+        return held.map { ReviewItem(row: row, review: $0) }
     }
 
     private var watchesTranscriptForRow: SessionRow? {
@@ -1453,6 +1468,14 @@ private struct ConversationPane: View {
                     Rectangle()
                         .fill(ConchPalette.divider)
                         .frame(height: 1)
+
+                    if deliverables.count > 1 {
+                        deliverableTabs(for: reviewRow)
+
+                        Rectangle()
+                            .fill(ConchPalette.divider)
+                            .frame(height: 1)
+                    }
 
                     InlineReviewView(
                         item: selectedReview,
@@ -1716,6 +1739,33 @@ private struct ConversationPane: View {
     /// where you are AND where you can go without decoding anything, which is
     /// also what makes this read as two perspectives on one session rather
     /// than navigation away from it — same pane, same composer underneath.
+    /// One tab per deliverable the session holds, oldest first, so a new one arrives on the
+    /// right and what you have already reviewed stays where you left it. Drawn only when there
+    /// is more than one: with a single deliverable this pane is exactly what it always was.
+    private func deliverableTabs(for row: SessionRow) -> some View {
+        let held = deliverables
+        let shown = selectedReview?.id
+        return HStack(spacing: 2) {
+            ForEach(held) { item in
+                DeliverableTab(
+                    item: item,
+                    isSelected: item.id == shown,
+                    action: {
+                        workspace.select(deliverable: item.id, for: row.id)
+                        // Looking at it is what marks it, and only the daemon's copy makes
+                        // that survive a relaunch and reach the phone.
+                        if item.viewedAt == nil, state?.features?.viewedState != nil {
+                            store.markReviewViewed(sessionId: row.id, review: item.id)
+                        }
+                    }
+                )
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+    }
+
     private func perspectiveBar(for row: SessionRow) -> some View {
         let shows = showsConversation(for: row)
         return HStack(spacing: 2) {
@@ -1835,6 +1885,50 @@ private struct ConversationPane: View {
         .animation(.easeOut(duration: 0.15), value: note)
     }
 
+}
+
+/// One deliverable in the strip above the pane.
+///
+/// Three states and only three: one nobody has looked at carries the mark at full strength,
+/// one that has been looked at greys, and whichever is on screen is filled. "Looked at" is the
+/// daemon's record, so it is the same answer on the phone and after a relaunch.
+private struct DeliverableTab: View {
+    let item: ReviewItem
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    private var isUnviewed: Bool { item.viewedAt == nil }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                if isUnviewed {
+                    Circle()
+                        .fill(ConchPalette.statusReview)
+                        .frame(width: 6, height: 6)
+                        .accessibilityHidden(true)
+                }
+                Text(item.summary)
+                    .font(ConchTypography.font(size: 11, weight: isUnviewed ? .medium : .regular))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .foregroundStyle(isUnviewed ? ConchPalette.textPrimary : ConchPalette.textDim)
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(item.summary)
+        .accessibilityLabel(isUnviewed ? "\(item.summary), not yet looked at" : item.summary)
+    }
 }
 
 private struct PerspectiveOption: View {
