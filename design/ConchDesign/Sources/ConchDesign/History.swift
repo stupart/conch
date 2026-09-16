@@ -24,6 +24,9 @@ public struct HistoryItem: Identifiable, Equatable, Sendable {
     /// It is what a live snapshot row can be matched against (`snapshotNativeId`).
     public let nativeId: String?
     public let toolName: String?
+    /// The tool call's OWN id, when this item is a call or its result. A live tool row is
+    /// keyed by this; `nativeId` is the message the call happened to be written in.
+    public let toolId: String?
     public let at: Double?
     public let revision: Int
     /// At most 240 characters. The body is a separate read, made only when someone opens it.
@@ -36,6 +39,7 @@ public struct HistoryItem: Identifiable, Equatable, Sendable {
         role: String? = nil,
         nativeId: String? = nil,
         toolName: String? = nil,
+        toolId: String? = nil,
         at: Double? = nil,
         revision: Int = 1,
         preview: String = "",
@@ -46,6 +50,7 @@ public struct HistoryItem: Identifiable, Equatable, Sendable {
         self.role = role
         self.nativeId = nativeId
         self.toolName = toolName
+        self.toolId = toolId
         self.at = at
         self.revision = revision
         self.preview = preview
@@ -55,6 +60,14 @@ public struct HistoryItem: Identifiable, Equatable, Sendable {
     /// Whether anything is behind the preview. A short item is already whole, and
     /// asking for its body would be a request that could only return what is shown.
     public var hasFullBody: Bool { bodyBytes > preview.utf8.count }
+
+    /// Whether this recorded item is the one behind a live row, by the id that row is
+    /// keyed by. A tool row carries its CALL id, which is not the message's UUID — matching
+    /// those two against each other is how a tool's recorded body was never found.
+    public func answers(snapshotNativeId id: String) -> Bool {
+        if let toolId, toolId == id { return true }
+        return (nativeId ?? self.id) == id
+    }
 }
 
 /// How much of a session actually reached the index.
@@ -265,6 +278,46 @@ public struct HistoryPaging: Equatable, Sendable {
         generation += 1
     }
 
+    /// Take the NEWEST page — a read made with no cursor — without throwing away the older
+    /// pages already held.
+    ///
+    /// Paging only ever goes backwards, so a message written since the last read is in no
+    /// held page: looking for it among the items on hand finds nothing, forever, and the
+    /// row that wanted its body waits for a page that is never asked for. This is that ask.
+    /// The cursor is left alone — it points at the page before the OLDEST item held, and
+    /// this read described the other end of the transcript.
+    public mutating func apply(newest page: HistoryPage, generation: Int) {
+        guard generation == self.generation else { return }
+        guard epoch == nil || page.epoch == epoch else {
+            restart()
+            return
+        }
+        guard epoch != nil else {
+            apply(page: page, generation: generation)
+            return
+        }
+        items = Self.merge(newer: page.items, into: items)
+        coverage = page.coverage
+        status = .idle
+    }
+
+    /// Newer items after what is already held, with any item the store has since revised
+    /// kept at its newest revision.
+    public static func merge(newer page: [HistoryItem], into existing: [HistoryItem]) -> [HistoryItem] {
+        guard !page.isEmpty else { return existing }
+        var byId: [String: Int] = [:]
+        for (index, item) in existing.enumerated() { byId[item.id] = index }
+        var merged = existing
+        for item in page {
+            guard let index = byId[item.id] else {
+                merged.append(item)
+                continue
+            }
+            if item.revision > merged[index].revision { merged[index] = item }
+        }
+        return merged
+    }
+
     /// Older items in front of what is already held, with any item the store has
     /// since revised kept at its newest revision.
     public static func merge(older page: [HistoryItem], into existing: [HistoryItem]) -> [HistoryItem] {
@@ -336,6 +389,25 @@ public struct HistoryBody: Equatable, Sendable {
             status = .idle
         case let .message(message):
             status = .failed(message)
+        }
+    }
+}
+
+// MARK: - What a held body is still true of
+
+public enum HistoryCache {
+    /// The bodies a page has just made untrue.
+    ///
+    /// A body is read at one revision of one item. When a page comes back carrying a newer
+    /// revision of that item — a tool result that finished, a message rewritten by a replay —
+    /// the text held for it describes something that is no longer on screen, and drawing it
+    /// under the new row quotes a version that never existed. A changed EPOCH is handled by
+    /// the reader restarting and dropping everything; this is the finer grain inside one,
+    /// where the reader keeps its place and only the moved bodies go.
+    public static func stale(_ held: [String: HistoryBody], against page: [HistoryItem]) -> [String] {
+        page.compactMap { item in
+            guard let body = held[item.id], let revision = body.revision, revision != item.revision else { return nil }
+            return item.id
         }
     }
 }
@@ -414,7 +486,7 @@ extension HistorySnapshot {
         startingAt oldest: Double? = nil
     ) -> [HistoryItem] {
         Array(items.prefix { candidate in
-            if ids.contains(candidate.nativeId ?? candidate.id) { return false }
+            if ids.contains(where: { candidate.answers(snapshotNativeId: $0) }) { return false }
             if let oldest, let at = candidate.at, at >= oldest { return false }
             return true
         })

@@ -72,10 +72,34 @@ describe("the Mac app reads recorded history", () => {
     expect(body).toContain("bodyCursor: store.bodies[item]?.cursor");
     expect(body).toContain("next.apply(chunk: content, revision: revision, next: reply.nextBodyCursor");
     expect(body).toContain("if next.isComplete {");
-    expect(body).toContain("if let nativeId { store.fullBodies[nativeId] = next.text }");
+    expect(body).toContain("store.fullBodies[nativeId] = next.text");
+    // Both copies are remembered together: releasing or retiring one must release the other.
+    expect(body).toContain("store.bodyNative[item] = nativeId");
     // A moved body is read again from its start; that read carries no cursor, so it
     // cannot come back stale a second time.
     expect(body).toContain("if failure == .stale { continue }");
+  });
+
+  test("the epoch owns the caches, and a revised item retires the body held for it", () => {
+    // The DECISIONS are ConchDesign's and `swift test` executes them (HistoryCache.stale,
+    // apply(newest:), answers(snapshotNativeId:)). What is pinned here is that this store
+    // uses them, which no Swift test can see without building the app.
+    const receive = sliceFrom(store, "private func receive(", "// MARK: - Bodies");
+    expect(receive).toContain("if newest { paging.apply(newest: page, generation: generation) }");
+    // A restart drops the pages AND everything read under the epoch that went away.
+    expect(receive).toContain("resetEpochCaches()");
+    expect(receive).toContain("retire(HistoryCache.stale(bodies, against: page.items))");
+    const reset = sliceFrom(store, "private func resetEpochCaches()", "/// Let go of the bodies");
+    for (const cleared of ["for task in bodyTasks.values { task.cancel() }", "bodies = [:]", "fullBodies = [:]", "wantedBodies = []"]) {
+      expect(reset).toContain(cleared);
+    }
+    // A body wanted by a row that is in no page held is fetched, not waited for forever.
+    expect(store).toContain("private func loadNewest()");
+    expect(store).toContain("if paging.items.isEmpty { loadOlder() } else { loadNewest() }");
+    // And a tool row finds its call, which is not the message the call was written in.
+    expect(store).toContain("let toolId: String?");
+    expect(store).toContain("toolId: $0.toolId,");
+    expect(store).toContain("wantedBodies.first(where: item.answers(snapshotNativeId:))");
   });
 
   test("the transcript keeps the reader's place when older messages arrive", () => {
