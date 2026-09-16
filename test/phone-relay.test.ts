@@ -281,6 +281,22 @@ describe("Mac phone relay adapter", () => {
     expect(forwarded).toBe(1);
   });
 
+  // The phone turns the Mac's reason into the sentence it shows, so the relay has to carry
+  // the answer through byte for byte. A reason dropped here is a cause invented there.
+  test("a delivery failure crosses the relay with its reason intact", async () => {
+    const receipt = { kind: "inject-done", delivered: false, reason: "system-dialog-blocking", onClipboard: true };
+    const h = await connectedHarness({ forward: async () => JSON.stringify(receipt) });
+    const id = "blocked-inject";
+    const request = await h.phone.seal(
+      { id, method: "POST", kind: "request" },
+      requestBody("/control", h.relay.secret, JSON.stringify({ type: "inject", awaitDelivery: true })),
+    );
+    await h.peer.receive(JSON.stringify(request));
+    const frames = await openSent(h.phone, h.sent);
+    expect(responseStatus(frames)).toBe(200);
+    expect(JSON.parse(new TextDecoder().decode(responseBody(frames, id)))).toEqual(receipt);
+  });
+
   test("/file is authorized against the current review link at dispatch time and streams 64 KiB chunks", async () => {
     const root = mkdtempSync(join(tmpdir(), "conch-relay-file-"));
     temporary.push(root);

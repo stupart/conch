@@ -913,7 +913,7 @@ struct SessionView: View {
                 ext: attachment.ext
             ) else {
                 attachError = "Couldn't send the picture — try again."
-                return .failed("The picture didn't upload.")
+                return .failed("Not delivered — the picture didn't upload.")
             }
             paths.append(path)
         }
@@ -1022,7 +1022,7 @@ private struct YourTurnBubble: View {
                 .foregroundStyle(Palette.needs)
         case let .failed(reason):
             HStack(spacing: 10) {
-                Text("Not delivered — \(reason)")
+                Text(reason)
                     .font(Type.caption)
                     .foregroundStyle(Palette.needs)
                     .multilineTextAlignment(.trailing)

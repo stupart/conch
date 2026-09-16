@@ -382,8 +382,11 @@ export interface VoiceLoopDeps {
 }
 
 export interface VoiceLoop {
-  /** An inject resolves true when submitted, "staged" when placed without Return, or false on failure. */
-  handle(event: TurnEvent): Promise<boolean | "staged" | void>;
+  /**
+   * An inject resolves true when submitted, "staged" when placed without Return, or a
+   * `SendFailure` naming what stopped it — which is what the phone and the Mac app show.
+   */
+  handle(event: TurnEvent): Promise<boolean | "staged" | inject.SendFailure | void>;
   speak(speechCfg: Config, text: string, label?: string, volunteered?: boolean, sessionId?: string): Promise<void>;
   speakBlocker(volunteered: boolean): "mic-open" | "manual" | null;
   /** Exactly the four-term mic gate — never just `micOpen` (see the stop contract in control-server.ts). */
@@ -741,7 +744,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     await speak(cfg, event.announce, label, false, sessionId);
   }
 
-  async function handle(event: TurnEvent): Promise<boolean | "staged" | void> {
+  async function handle(event: TurnEvent): Promise<boolean | "staged" | inject.SendFailure | void> {
     // Inject and interrupt arrive immediately, not through the drain, so a
     // queued exchange may be mid-await right now: they must not touch its stop
     // or its mic (A14). The per-event reset sits below them.
@@ -798,13 +801,18 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         ...event,
         type: "turn-end",
       };
+      // Filled in by the delivery itself when it fails, so the caller is told WHY —
+      // a dialog blocking the Mac, a withdrawn Automation permission, a window that
+      // could not be reached — instead of a bare "failed" it can do nothing with.
+      const failure: inject.SendFailure = { delivered: false };
       const delivered = await deliver(target, event.announce, undefined, undefined, {
         allowNameAddressing: false,
+        failure,
       });
-      log(`phone inject into "${event.label}" ${delivered === "staged" ? "staged" : delivered ? "delivered" : "failed"}`);
+      log(`phone inject into "${event.label}" ${delivered === "staged" ? "staged" : delivered ? "delivered" : "failed"}${delivered === false && failure.reason ? ` (${failure.reason})` : ""}`);
       // The outcome goes back to whoever is waiting on it (`awaitDelivery`):
-      // the phone shows "delivered" or "not delivered" rather than guessing.
-      return delivered;
+      // the phone shows "delivered", or the reason it did not, rather than guessing.
+      return delivered === false ? failure : delivered;
     }
     stopKey = false; // a stale press from a past exchange must not skip this one
     micOpen = false; // no listen in flight yet for this event
@@ -1292,6 +1300,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     beforeInject?: () => boolean | Promise<boolean>,
     options: {
       allowNameAddressing?: boolean;
+      /** Filled with the cause when delivery fails, for whoever is waiting on the send. */
+      failure?: inject.SendFailure;
     } = {},
   ): Promise<boolean | "staged"> {
     if (event.transcriptPath) {
@@ -1324,6 +1334,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         prompt,
         diagnosticIds,
         beforeInject,
+        options.failure,
       ),
       ...(beforeInject ? { canContinue: beforeInject } : {}),
     });
@@ -1335,11 +1346,15 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     text: string,
     diagnosticIds?: string | Iterable<string | undefined>,
     beforeInject?: () => boolean | Promise<boolean>,
+    failure?: inject.SendFailure,
   ): Promise<boolean | "staged"> {
     const receipt = createRecordOperation(deps.observeRecords, recordScope(event.sessionId, event.transcriptPath), "delivery", text.length);
     receipt.emit("accepted", "delivery-accepted");
     let receiptCode = "delivery-unconfirmed";
     let uncertain = false;
+    // Whether the words survived on the Mac's clipboard. Worth saying: it is the
+    // difference between a message to retype and one that is a paste away.
+    let onClipboard = false;
     const performDelivery = async (): Promise<boolean | "staged"> => {
       let committed = false;
       const commit = (): void => {
@@ -1395,6 +1410,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
 
       if (via === "clipboard") {
         receiptCode = reason ?? "clipboard-fallback";
+        onClipboard = true;
         publishDictation(text, event.sessionId);
         // Name the cause: "keystroke-fallback-off" means the session isn't in a
         // tmux pane AND typing is disabled, so EVERY utterance lands here — a
@@ -1543,6 +1559,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       });
       publishDictation(text, event.sessionId);
       await toClipboard(text);
+      onClipboard = true;
       if (beforeInject && !(await beforeInject())) return false;
       await speak(cfg, "I typed that but it didn't send. Your words are on the clipboard — just paste and press return.", event.label, false, event.sessionId);
       // Three attempts and the transcript never grew, so the text is sitting
@@ -1553,6 +1570,12 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     try {
       const outcome = await performDelivery();
       receipt.emit(outcome === true ? "delivered" : outcome === "staged" ? "staged" : uncertain ? "unknown" : "failed", receiptCode);
+      // The same code the receipt keeps is the one the client is told, so the
+      // journal and the sentence on the phone can never disagree about a send.
+      if (failure && outcome === false) {
+        failure.reason = receiptCode;
+        if (onClipboard) failure.onClipboard = true;
+      }
       return outcome;
     } catch (error) {
       receipt.emit("unknown", "delivery-outcome-unknown");

@@ -5,6 +5,7 @@ import { chmodSync, existsSync, lstatSync, renameSync, unlinkSync } from "node:f
 import { dirname, join } from "node:path";
 import { lockSocketPath, type SocketOwnership } from "./socket-ownership.ts";
 import type { TurnEvent } from "./hook.ts";
+import type { SendFailure } from "./inject.ts";
 import { checkReviewScene } from "./snippet.ts";
 import type { PublishedState } from "./panel.ts";
 import type { SessionInfo } from "./sessions.ts";
@@ -640,7 +641,15 @@ export function enrichTargetedAudioCommand(
   };
 }
 
-export type SocketTurnOutcome = boolean | "staged" | void;
+export type SocketTurnOutcome = boolean | "staged" | SendFailure | void;
+
+/**
+ * A failure that names its cause, as `voice.handle` returns for an inject that did not land.
+ * `delivered: false` is the discriminator, so a plain `false` and a named failure stay distinct.
+ */
+export function isSendFailure(value: unknown): value is SendFailure {
+  return typeof value === "object" && value !== null && (value as SendFailure).delivered === false;
+}
 
 export interface SocketTurnEventCallbacks {
   busy(): boolean;
@@ -1004,7 +1013,12 @@ export function createControlServer(options: ControlServerOptions): ControlServe
       handled = true;
       let response:
         | ControlResponse | DeviceControlResponse | RoutingRefusal
-        | { kind: "inject-done"; delivered: boolean; staged?: true; error?: string } | { kind: "inject-accepted" }
+        | {
+          kind: "inject-done"; delivered: boolean; staged?: true; error?: string;
+          /** Why it did not land, and whether the words are on the Mac's clipboard. */
+          reason?: string; onClipboard?: true;
+        }
+        | { kind: "inject-accepted" }
         | { kind: "session-delivered" } | undefined;
       try {
         let body: unknown;
@@ -1131,13 +1145,22 @@ export function createControlServer(options: ControlServerOptions): ControlServe
                 } finally {
                   clearTimeout(timer);
                 }
+                // A failure carries its cause out to the client, which turns it into a
+                // sentence (ConchSendFailure). Unnamed stays unnamed: the phone then
+                // says only "Not delivered" rather than inventing a reason.
                 response = outcome === stillRunning
                   ? { kind: "inject-accepted" }
                   : outcome === "staged"
                     ? { kind: "inject-done", delivered: false, staged: true }
                     : typeof outcome === "boolean"
                       ? { kind: "inject-done", delivered: outcome }
-                      : { kind: "inject-done", delivered: false, error: "delivery outcome is unknown" };
+                      : isSendFailure(outcome)
+                        ? {
+                          kind: "inject-done", delivered: false,
+                          ...(outcome.reason ? { reason: outcome.reason } : {}),
+                          ...(outcome.onClipboard ? { onClipboard: true as const } : {}),
+                        }
+                        : { kind: "inject-done", delivered: false, error: "delivery outcome is unknown" };
               }
             }
           }

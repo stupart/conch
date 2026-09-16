@@ -1,3 +1,4 @@
+import ConchDesign
 import Darwin
 import Dispatch
 import Foundation
@@ -378,14 +379,16 @@ struct ConchSocketClient: Sendable {
 
     /// Returns once the line is written — acceptance, as before. For an
     /// `awaitDelivery` inject, `whenDelivered` runs later, when the daemon
-    /// says the keystrokes are done.
+    /// says the keystrokes are done, and `whenNotDelivered` gets the sentence
+    /// explaining why they never landed.
     func send(
         _ event: ConchDaemonEvent,
-        whenDelivered: (@Sendable () async -> Void)? = nil
+        whenDelivered: (@Sendable () async -> Void)? = nil,
+        whenNotDelivered: (@Sendable (String) -> Void)? = nil
     ) async -> Bool {
         let socketPath = socketPath
         return await Task.detached(priority: .userInitiated) {
-            Self.write(event, to: socketPath, whenDelivered: whenDelivered)
+            Self.write(event, to: socketPath, whenDelivered: whenDelivered, whenNotDelivered: whenNotDelivered)
         }.value
     }
 
@@ -450,7 +453,8 @@ struct ConchSocketClient: Sendable {
     private static func write(
         _ event: ConchDaemonEvent,
         to path: String,
-        whenDelivered: (@Sendable () async -> Void)?
+        whenDelivered: (@Sendable () async -> Void)?,
+        whenNotDelivered: (@Sendable (String) -> Void)? = nil
     ) -> Bool {
         guard var payload = try? JSONEncoder().encode(event) else { return false }
         payload.append(0x0A)
@@ -463,7 +467,7 @@ struct ConchSocketClient: Sendable {
             Darwin.close(descriptor)
             return false
         }
-        guard let whenDelivered else {
+        guard whenDelivered != nil || whenNotDelivered != nil else {
             Darwin.close(descriptor)
             return true
         }
@@ -479,7 +483,16 @@ struct ConchSocketClient: Sendable {
             guard case let .reply(data) = outcome,
                   let reply = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                   reply["kind"] as? String == "inject-done" else { return }
-            await whenDelivered()
+            // Say WHY it didn't land, in the same words the phone shows, so the two
+            // surfaces never describe the same failure differently. Staged text is
+            // not a failure: it is placed and waiting for a Return.
+            if reply["delivered"] as? Bool != true, reply["staged"] as? Bool != true {
+                whenNotDelivered?(ConchSendFailure.sentence(
+                    reason: reply["reason"] as? String,
+                    onClipboard: reply["onClipboard"] as? Bool ?? false
+                ))
+            }
+            await whenDelivered?()
         }
         return true
     }
