@@ -1,4 +1,5 @@
 import AppKit
+import ConchDesign
 import PDFKit
 import AVKit
 import SwiftUI
@@ -29,12 +30,11 @@ struct ReviewItem: Identifiable, Equatable {
         reviewedAt = review.at
         inspect = review.inspect
         isReady = row.status != .working
-        // `at` is the FILING time: the daemon carries it unchanged through
-        // every later event, so this id only moves when a newer deliverable
-        // replaces this one. Everything keyed on it (the pane snapping back to
-        // the conversation, the row pulse, the notification) relies on that.
-        let timestampIdentity = review.at.map { String($0.bitPattern) } ?? "undated"
-        id = [row.id, timestampIdentity].joined(separator: "\u{1F}")
+        // The identity the daemon minted when it filed this deliverable, which it carries
+        // unchanged through every later event — so this id moves only when a NEWER deliverable
+        // replaces this one. Everything keyed on it (the pane, the row pulse, the
+        // notification) relies on that. An older daemon sends none and the old key stands in.
+        id = ReviewIdentity.key(published: review.id, sessionId: row.id, filedAt: review.at)
     }
 }
 

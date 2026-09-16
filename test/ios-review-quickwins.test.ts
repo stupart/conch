@@ -57,13 +57,20 @@ describe("Next walks the ready reviews by the Mac pill's rule", () => {
     "ready means a review on a session that isn't working; oldest filed first, unopened first, never the one on screen",
     () => {
       const scene = declaration(read("design/ConchDesign/Sources/ConchDesign/Components.swift"), "public enum ReviewScene: Equatable {");
+      const identity = declaration(
+        read("design/ConchDesign/Sources/ConchDesign/ReviewIdentity.swift"),
+        "public enum ReviewIdentity {",
+      );
       const queue = declaration(sheet, "enum ReviewQueue {");
       const out = runSwift([
         scene,
+        identity,
         queue,
-        "let rows: [(id: String, status: String, hasReview: Bool, filedAt: Double?)] = [",
-        '  ("b", "waiting", true, 2000), ("w", "working", true, 500), ("a", "waiting", true, 1000),',
-        '  ("n", "needs", false, nil), ("c", "needs", true, 3000), ("z", "waiting", true, 1000),',
+        // published is nil throughout: these are an older daemon's rows, and the whole point
+        // of the fallback is that they key exactly as they always did.
+        "let rows: [(id: String, status: String, hasReview: Bool, filedAt: Double?, published: String?)] = [",
+        '  ("b", "waiting", true, 2000, nil), ("w", "working", true, 500, nil), ("a", "waiting", true, 1000, nil),',
+        '  ("n", "needs", false, nil, nil), ("c", "needs", true, 3000, nil), ("z", "waiting", true, 1000, nil),',
         "]",
         "let ready = ReviewQueue.ready(rows)",
         "func k(_ id: String) -> String { ReviewQueue.key(sessionId: id, filedAt: rows.first { $0.id == id }!.filedAt) }",
@@ -99,10 +106,14 @@ describe("Next walks the ready reviews by the Mac pill's rule", () => {
   );
 
   test("the review screen asks the queue, counts the rest, and keys versions as the Mac does", () => {
+    // One rule, in ConchDesign. Both surfaces call it, and it is what keeps the fallback
+    // byte-identical to the key each of them used to compute for itself.
     expect(read("mac-app/conch-mac/ReviewView.swift")).toContain(
-      'let timestampIdentity = review.at.map { String($0.bitPattern) } ?? "undated"',
+      "id = ReviewIdentity.key(published: review.id, sessionId: row.id, filedAt: review.at)",
     );
-    expect(sheet).toContain('[sessionId, filedAt.map { String($0.bitPattern) } ?? "undated"].joined(separator: "\\u{1F}")');
+    expect(read("design/ConchDesign/Sources/ConchDesign/ReviewIdentity.swift"))
+      .toContain('[sessionId, stamp].joined(separator: "\\u{1F}")');
+    expect(sheet).toContain("ReviewIdentity.key(published: published, sessionId: sessionId, filedAt: filedAt)");
     expect(sheet).toContain("import ConchDesign");
     expect(sheet).toContain("ReviewScene.next(after: current, in: ready.map { (key: $0.key, at: $0.at) }, opened: seen)");
     const body = between(sheet, "struct ReviewSheet: View {", "enum ReviewQueue {");

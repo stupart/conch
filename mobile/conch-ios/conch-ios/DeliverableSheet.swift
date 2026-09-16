@@ -22,12 +22,12 @@ struct ReviewSheet: View {
 
     private var ready: [ReviewQueue.Entry] {
         ReviewQueue.ready((bridge.state?.rows ?? []).map {
-            (id: $0.id, status: $0.status, hasReview: $0.review != nil, filedAt: $0.review?.at)
+            (id: $0.id, status: $0.status, hasReview: $0.review != nil, filedAt: $0.review?.at, published: $0.review?.id)
         })
     }
 
     private var currentKey: String? {
-        row?.review.map { ReviewQueue.key(sessionId: sessionId, filedAt: $0.at) }
+        row?.review.map { ReviewQueue.key(sessionId: sessionId, filedAt: $0.at, published: $0.id) }
     }
 
     var body: some View {
@@ -120,17 +120,16 @@ struct ReviewSheet: View {
 enum ReviewQueue {
     typealias Entry = (sessionId: String, key: String, at: Double)
 
-    /// A review's version, as the Mac's `ReviewItem.id` spells it: the session
-    /// and when its review was filed, which later publishes never re-stamp.
-    static func key(sessionId: String, filedAt: Double?) -> String {
-        [sessionId, filedAt.map { String($0.bitPattern) } ?? "undated"].joined(separator: "\u{1F}")
+    /// A review's version, exactly as the Mac spells it — one rule, in ConchDesign.
+    static func key(sessionId: String, filedAt: Double?, published: String? = nil) -> String {
+        ReviewIdentity.key(published: published, sessionId: sessionId, filedAt: filedAt)
     }
 
     /// Ready as the Mac's pill counts it (`StatusItem.readyRows`): a review on
     /// a session that is not working.
-    static func ready(_ rows: [(id: String, status: String, hasReview: Bool, filedAt: Double?)]) -> [Entry] {
+    static func ready(_ rows: [(id: String, status: String, hasReview: Bool, filedAt: Double?, published: String?)]) -> [Entry] {
         rows.filter { $0.hasReview && $0.status != "working" }
-            .map { (sessionId: $0.id, key: key(sessionId: $0.id, filedAt: $0.filedAt), at: $0.filedAt ?? 0) }
+            .map { (sessionId: $0.id, key: key(sessionId: $0.id, filedAt: $0.filedAt, published: $0.published), at: $0.filedAt ?? 0) }
     }
 
     /// The session Next opens: `ReviewScene.next`, oldest filed first and the
@@ -283,7 +282,7 @@ struct DeliverableSheet: View {
         // Keyed on the deliverable's identity: its link plus its FILING time,
         // which the daemon never re-stamps. Routine republishes leave it alone;
         // re-sending the same path (a re-rendered file) is new and reloads.
-        .task(id: "\(review.link ?? "")\u{1F}\(review.at ?? 0)") {
+        .task(id: "\(review.link ?? "")\u{1F}\(review.id ?? "")\u{1F}\(review.at ?? 0)") {
             localURL = nil
             failure = nil
             linkFailure = nil

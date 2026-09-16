@@ -169,11 +169,13 @@ struct PublishedState: Decodable, Equatable {
             var summary = ""
             var link: String?
             var at: Double?
+            /// The identity the daemon minted at filing; absent from an older daemon.
+            var id: String?
             /// The one thing the agent asked you to check (`scene.inspect`). A build from before scenes never asks
             /// for the key, and a keyed container ignores keys it isn't asked for, so it decodes the review unchanged.
             var inspect: String?
 
-            private enum CodingKeys: String, CodingKey { case summary, link, at, scene }
+            private enum CodingKeys: String, CodingKey { case summary, link, at, scene, id }
             private struct Scene: Decodable { var inspect: String? }
 
             init(from decoder: Decoder) throws {
@@ -181,6 +183,7 @@ struct PublishedState: Decodable, Equatable {
                 summary = (try? c.decodeIfPresent(String.self, forKey: .summary)) ?? ""
                 link = try? c.decodeIfPresent(String.self, forKey: .link)
                 at = try? c.decodeIfPresent(Double.self, forKey: .at)
+                id = try? c.decodeIfPresent(String.self, forKey: .id)
                 // A scene this build can't read is no scene, never a review that fails.
                 inspect = (try? c.decodeIfPresent(Scene.self, forKey: .scene))?.inspect
             }

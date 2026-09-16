@@ -18,8 +18,8 @@ describe("Mac", () => {
   const content = read("mac-app/conch-mac/ContentView.swift");
 
   test("ReviewItem is identified by the row and the review's own time, and knows readiness", () => {
-    expect(review).toContain("let timestampIdentity = review.at.map");
-    expect(review).toContain("id = [row.id, timestampIdentity]");
+    // One rule now, in ConchDesign, preferring what the daemon minted at filing.
+    expect(review).toContain("id = ReviewIdentity.key(published: review.id, sessionId: row.id, filedAt: review.at)");
     expect(review).toContain("isReady = row.status != .working");
   });
 
@@ -68,7 +68,7 @@ describe("iPhone", () => {
   });
 
   test("the sheet reloads on a new deliverable identity, not on a routine republish", () => {
-    expect(sheet).toContain('.task(id: "\\(review.link ?? "")\\u{1F}\\(review.at ?? 0)")');
+    expect(sheet).toContain('.task(id: "\\(review.link ?? "")\\u{1F}\\(review.id ?? "")\\u{1F}\\(review.at ?? 0)")');
     expect(sheet).not.toContain(".task(id: review.link)");
   });
 });
