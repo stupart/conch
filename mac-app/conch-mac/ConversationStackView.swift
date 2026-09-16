@@ -1,4 +1,5 @@
 import AppKit
+import ConchDesign
 import SwiftUI
 
 /// The conversation as a stack of messages, rather than one replaced string.
@@ -14,6 +15,8 @@ import SwiftUI
 /// appending to the end leaves everything above it untouched and still.
 struct ConversationStackView: View {
     let conversation: Conversation
+    /// Everything older than the live window, and the whole text behind anything it cut.
+    @ObservedObject var history: HistoryStore
     let onAnswer: (String) -> Void
     /// The artifact this session produced, shown where it happened rather than
     /// only behind a tab.
@@ -63,6 +66,8 @@ struct ConversationStackView: View {
     /// yanked away by an arriving message.
     @State private var pinnedToBottom = true
     @State private var expandedToolIDs: Set<String> = []
+    /// Where the reader was looking when older messages were asked for.
+    @State private var scrollAnchor = ConversationScrollAnchor()
     /// A multi-select question is a tiny form: taps edit this set and only the
     /// explicit Submit button sends it. Keying by tool row keeps two questions
     /// in the retained transcript from sharing checkmarks.
@@ -74,23 +79,27 @@ struct ConversationStackView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                // The daemon caps this window at thirty items. Eager layout is
-                // therefore bounded, and avoids leaving the viewport pointed at
-                // an unmaterialised region while a streaming row changes height.
+                // Eager, still. A lazy stack leaves the viewport at an offset whose rows
+                // have not been materialised, which showed as bare scroll background while
+                // a streaming row changed the document height.
+                //
+                // ponytail: that is a ceiling on how much recorded history can be on
+                // screen at once, since every loaded page is laid out. Virtualise when it
+                // can be MEASURED on a Mac with Xcode — guessing is how the bare
+                // background got shipped the first time.
                 VStack(alignment: .leading, spacing: 14) {
-                    if conversation.truncated {
-                        Text("Earlier messages not shown")
-                            .font(.system(size: 11))
-                            .foregroundStyle(ConchPalette.textFaint)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.bottom, 4)
-                    }
+                    historyHeader
                     if conversation.shared {
                         Text("Shared with another window — both windows' messages are shown")
                             .font(.system(size: 11))
                             .foregroundStyle(ConchPalette.textFaint)
                             .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.bottom, 4)
+                    }
+                    // What the record store holds above the live window, drawn by the
+                    // same renderers: a recorded message is still a message.
+                    ForEach(recordedRows) { item in
+                        row(for: item).id(item.id)
                     }
                     ForEach(conversation.items) { item in
                         row(for: item).id(item.id)
@@ -110,9 +119,11 @@ struct ConversationStackView: View {
                 .padding(.vertical, 14)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
-                    ConversationScrollObserver { isAtBottom in
-                        pinnedToBottom = isAtBottom
-                    }
+                    ConversationScrollObserver(
+                        onUserScroll: { isAtBottom in pinnedToBottom = isAtBottom },
+                        onReachTop: { loadOlder() },
+                        anchor: scrollAnchor
+                    )
                 )
             }
             .background(ConchPalette.bg)
@@ -143,16 +154,180 @@ struct ConversationStackView: View {
             }
             .onChange(of: conversation.sessionId) { _, _ in
                 // A different session is a different conversation: start at its
-                // end, and re-arm the follow.
+                // end, and re-arm the follow. The recorded reader is told too —
+                // anything still in flight for the old session is refused, not merged.
+                history.select(session: conversation.sessionId)
+                loadOlder()
                 pinnedToBottom = true
                 expandedToolIDs = []
                 multiSelections = [:]
                 linkFailure = nil
                 requestBottomScroll(using: proxy)
             }
-            .onAppear { requestBottomScroll(using: proxy) }
+            .onAppear {
+                history.select(session: conversation.sessionId)
+                // One read answers "is any of this recorded" — including the honest
+                // "records are off" — rather than leaving that to a button nobody presses.
+                loadOlder()
+                requestBottomScroll(using: proxy)
+            }
+            // Older rows land ABOVE the viewport and push everything down. Restoring the
+            // offset by how much the document grew keeps the row under the eye there.
+            .onChange(of: history.paging.items.count) { _, _ in
+                Task { @MainActor in
+                    // After layout: the document is only taller once the new rows measure.
+                    await Task.yield()
+                    scrollAnchor.restore()
+                }
+            }
         }
     }
+
+    /// What the reader is told about everything above the live window: that older
+    /// messages can be asked for, that they are coming, that only part of the session
+    /// was recorded, that a read failed — or that nothing is being recorded at all.
+    ///
+    /// Each of those is a different answer to "why does this conversation start here",
+    /// and an empty conversation is a fifth. They must not all read as the same shrug.
+    @ViewBuilder
+    private var historyHeader: some View {
+        VStack(spacing: 6) {
+            switch history.paging.status {
+            case .off:
+                // Not an error, and not an empty session: nothing is being recorded, and
+                // there is exactly one thing to do about it.
+                Text(HistoryNotice.off)
+            case .loading:
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading earlier messages…")
+                }
+            case let .failed(message):
+                HStack(spacing: 8) {
+                    Text(message)
+                    Button("Retry") { loadOlder() }
+                        .buttonStyle(.link)
+                }
+            case .idle:
+                if history.paging.canLoadOlder {
+                    Button("Load earlier messages") { loadOlder() }
+                        .buttonStyle(.link)
+                } else if conversation.truncated, history.paging.items.isEmpty {
+                    Text("Earlier messages not shown")
+                }
+            }
+            if let note = HistoryNotice.coverage(
+                history.paging.coverage,
+                reachedStart: history.paging.reachedStart,
+                oldest: oldestRecorded
+            ) {
+                Text(note)
+            }
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(ConchPalette.textFaint)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.bottom, 4)
+    }
+
+    /// When the record starts, in the reader's own locale — the view's job, not the
+    /// state machine's, which would otherwise hold a string that reads differently in
+    /// every timezone it is tested from.
+    private var oldestRecorded: String? {
+        guard let at = history.paging.items.first?.at else { return nil }
+        return Date(timeIntervalSince1970: at / 1_000)
+            .formatted(date: .abbreviated, time: .shortened)
+    }
+
+    /// The recorded rows that belong above the live window.
+    private var recordedRows: [ConversationItem] {
+        // Undecorated, because the snapshot and the record name the same message
+        // differently: `tool:call_7` here is `call_7` there.
+        let live = Set(conversation.items.map { HistorySnapshot.nativeId(forSnapshotItem: $0.id) })
+        return HistorySnapshot.older(
+            history.paging.items,
+            thanSnapshot: live,
+            startingAt: conversation.items.first?.at
+        ).map { recorded in
+            let body = history.body(for: recorded.id)
+            let whole = body?.isComplete == true ? body?.text : nil
+            return ConversationItem(recorded: recorded, text: whole ?? recorded.preview)
+        }
+    }
+
+    /// Ask for the page before the oldest row on screen, remembering where the reader is.
+    private func loadOlder() {
+        guard history.paging.canLoadOlder else { return }
+        scrollAnchor.capture()
+        history.loadOlder(anchor: recordedRows.first?.id ?? conversation.items.first?.id)
+    }
+
+    /// The row's text: the record store's whole version when it has been read, else the
+    /// snapshot's — which for a long message is its tail rather than all of it.
+    private func text(of item: ConversationItem) -> String {
+        history.fullText(forSnapshotItem: item.id) ?? item.text
+    }
+
+    /// Whether the snapshot cut this row, and so whether the store has more of it.
+    private func wasCut(_ item: ConversationItem) -> Bool {
+        if let result = item.tool?.result { return HistorySnapshot.wasCut(result, cap: Self.toolResultCap) }
+        return HistorySnapshot.wasCut(item.text, cap: Self.messageCap)
+    }
+
+    private func loadFullBody(of item: ConversationItem) {
+        guard wasCut(item), history.fullText(forSnapshotItem: item.id) == nil else { return }
+        history.loadFullBodies(forSnapshotItems: [item.id])
+    }
+
+    /// A cut message ends in an offer to read the rest of it.
+    ///
+    /// ponytail: the stack offers this on the machine's replies only; the full-screen
+    /// overlay reads any message whole, which is where a long one is actually read.
+    @ViewBuilder
+    private func cutTail(_ item: ConversationItem) -> some View {
+        if wasCut(item), history.fullText(forSnapshotItem: item.id) == nil {
+            if expandedToolIDs.contains(item.id) {
+                fullBodyStatus(for: item)
+            } else {
+                Button("Show the rest") {
+                    expandedToolIDs.insert(item.id)
+                    loadFullBody(of: item)
+                }
+                .buttonStyle(.link)
+                .font(.system(size: 10.5))
+            }
+        }
+    }
+
+    /// How a body read is going, under the row waiting for it.
+    @ViewBuilder
+    private func fullBodyStatus(for item: ConversationItem) -> some View {
+        let native = HistorySnapshot.nativeId(forSnapshotItem: item.id)
+        let recorded = history.paging.items.first { $0.nativeId == native }
+        switch recorded.flatMap({ history.body(for: $0.id) })?.status {
+        case .some(.loading):
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Loading the rest…")
+            }
+            .font(.system(size: 10.5))
+            .foregroundStyle(ConchPalette.textFaint)
+        case let .some(.failed(message)):
+            HStack(spacing: 8) {
+                Text(message)
+                Button("Retry") { history.loadFullBodies(forSnapshotItems: [item.id]) }
+                    .buttonStyle(.link)
+            }
+            .font(.system(size: 10.5))
+            .foregroundStyle(ConchPalette.textFaint)
+        default:
+            EmptyView()
+        }
+    }
+
+    /// The daemon's own caps, as `publishedConversation` applies them.
+    private static let messageCap = 4_000
+    private static let toolResultCap = 400
 
     private struct RevisionVector: Equatable {
         struct Item: Equatable {
@@ -208,11 +383,14 @@ struct ConversationStackView: View {
                     .background(ConchPalette.raised, in: RoundedRectangle(cornerRadius: 12))
             }
         case .assistant:
-            Text(AttributedString.conchMarkdown(item.text))
-                .font(.system(size: 13))
-                .foregroundStyle(ConchPalette.textPrimary)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(AttributedString.conchMarkdown(text(of: item)))
+                    .font(.system(size: 13))
+                    .foregroundStyle(ConchPalette.textPrimary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                cutTail(item)
+            }
         case .thinking:
             Text(AttributedString.conchMarkdown(item.text))
                 .font(.system(size: 12).italic())
@@ -437,12 +615,19 @@ struct ConversationStackView: View {
 
     private func toolRow(_ item: ConversationItem) -> some View {
         let expanded = expandedToolIDs.contains(item.id)
-        let result = item.tool?.result ?? ""
+        // The record store's whole output once it has been read; until then the
+        // snapshot's first 400 characters of it.
+        let result = history.fullText(forSnapshotItem: item.id) ?? item.tool?.result ?? ""
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Button {
                     guard !result.isEmpty else { return }
-                    if expanded { expandedToolIDs.remove(item.id) } else { expandedToolIDs.insert(item.id) }
+                    if expanded {
+                        expandedToolIDs.remove(item.id)
+                    } else {
+                        expandedToolIDs.insert(item.id)
+                        loadFullBody(of: item)
+                    }
                 } label: {
                     HStack(spacing: 8) {
                         // The dot carried status; the glyph carries what KIND of
@@ -515,6 +700,7 @@ struct ConversationStackView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(ConchPalette.hover, in: RoundedRectangle(cornerRadius: 8))
                 }
+                fullBodyStatus(for: item)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -534,11 +720,49 @@ struct ConversationStackView: View {
 /// notifications avoids treating content growth as a user scroll: the document
 /// may get taller while its clip view stays still, and that must not disarm an
 /// already-following conversation before it can advance to the new bottom.
+/// Where the reader was, in pixels, across a prepend.
+///
+/// Older messages arriving above the viewport push everything down by their own
+/// height, which without this reads as the transcript jumping while you are looking at
+/// it. The document's height is taken before the request and the offset moved by
+/// however much it grew, so the row under the eye stays under the eye.
+final class ConversationScrollAnchor {
+    fileprivate weak var scrollView: NSScrollView?
+    private var height: CGFloat?
+    private var offset: CGFloat?
+
+    func capture() {
+        guard let scrollView, let document = scrollView.documentView else { return }
+        height = document.bounds.height
+        offset = scrollView.contentView.bounds.origin.y
+    }
+
+    func restore() {
+        guard let scrollView, let document = scrollView.documentView,
+              let height, let offset else { return }
+        let grown = document.bounds.height - height
+        self.height = nil
+        self.offset = nil
+        // Only a prepend moves the reader. Anything else — a row growing as it streams,
+        // the window resizing — is not something to correct for.
+        guard grown > 0 else { return }
+        scrollView.contentView.scroll(
+            to: NSPoint(x: scrollView.contentView.bounds.origin.x, y: offset + grown)
+        )
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+}
+
 private struct ConversationScrollObserver: NSViewRepresentable {
     let onUserScroll: (Bool) -> Void
+    /// Reaching the oldest row held is the request for the page before it. The stack is
+    /// eagerly laid out, so nothing "appears" on the way up: the scroll view has to say so.
+    let onReachTop: () -> Void
+    /// Handed the scroll view as soon as one is found, so a prepend can be absorbed.
+    let anchor: ConversationScrollAnchor
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onUserScroll: onUserScroll)
+        Coordinator(onUserScroll: onUserScroll, onReachTop: onReachTop, anchor: anchor)
     }
 
     func makeNSView(context: Context) -> ProbeView {
@@ -556,6 +780,7 @@ private struct ConversationScrollObserver: NSViewRepresentable {
 
     func updateNSView(_ view: ProbeView, context: Context) {
         context.coordinator.onUserScroll = onUserScroll
+        context.coordinator.onReachTop = onReachTop
         DispatchQueue.main.async { [weak coordinator = context.coordinator, weak view] in
             guard let view else { return }
             coordinator?.attach(toAncestorOf: view)
@@ -577,11 +802,19 @@ private struct ConversationScrollObserver: NSViewRepresentable {
 
     final class Coordinator {
         var onUserScroll: (Bool) -> Void
+        var onReachTop: () -> Void
+        let anchor: ConversationScrollAnchor
         private weak var scrollView: NSScrollView?
         private var observations: [NSObjectProtocol] = []
 
-        init(onUserScroll: @escaping (Bool) -> Void) {
+        init(
+            onUserScroll: @escaping (Bool) -> Void,
+            onReachTop: @escaping () -> Void,
+            anchor: ConversationScrollAnchor
+        ) {
             self.onUserScroll = onUserScroll
+            self.onReachTop = onReachTop
+            self.anchor = anchor
         }
 
         deinit {
@@ -600,6 +833,7 @@ private struct ConversationScrollObserver: NSViewRepresentable {
 
             detach()
             self.scrollView = scrollView
+            anchor.scrollView = scrollView
             let center = NotificationCenter.default
             for name in [
                 NSScrollView.didLiveScrollNotification,
@@ -635,6 +869,13 @@ private struct ConversationScrollObserver: NSViewRepresentable {
                 distance = visible.minY - document.minY
             }
             onUserScroll(document.height <= visible.height || distance <= 8)
+            // The other end of the same measurement: within a screenful of the oldest row
+            // held is close enough to ask for the page before it, so it has arrived by the
+            // time the reader gets there.
+            let fromTop = documentView.isFlipped
+                ? visible.minY - document.minY
+                : document.maxY - visible.maxY
+            if document.height > visible.height, fromTop <= visible.height { onReachTop() }
         }
     }
 }

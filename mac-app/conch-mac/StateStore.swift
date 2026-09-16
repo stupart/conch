@@ -46,6 +46,10 @@ final class StateStore: ObservableObject {
 
     private let reader: StateSnapshotReader
     private let socketClient: ConchSocketClient
+    /// Recorded history for the transcript, and the overlay's own. They follow different
+    /// sessions, and neither may be answered with the other's (`HistoryStore`).
+    let history: HistoryStore
+    let overlayHistory: HistoryStore
     private var sourceState: PublishedState?
     private var pollingTask: Task<Void, Never>?
     private var deliveryTask: Task<Bool, Never>?
@@ -85,7 +89,10 @@ final class StateStore: ObservableObject {
             logURL: logURL
         )
         self.reader = reader
-        socketClient = ConchSocketClient(environment: environment)
+        let socket = ConchSocketClient(environment: environment)
+        socketClient = socket
+        history = HistoryStore(client: socket)
+        overlayHistory = HistoryStore(client: socket)
         pluginHintVisible = !UserDefaults.standard.bool(forKey: Self.pluginHintDismissedKey)
             && !PluginPresence.isInstalled()
 

@@ -1782,6 +1782,7 @@ private struct ConversationPane: View {
                        conversation.sessionId == row.id {
                         ConversationStackView(
                             conversation: conversation,
+                            history: store.history,
                             onAnswer: { label in
                                 store.send(
                                     .inject(
