@@ -147,6 +147,16 @@ describe("Mac conversation links keep the native clickable path", () => {
     expect(conversation).toContain(".environment(\\.openURL, OpenURLAction { url in");
   });
 
+  test("both transcript renderers agree on one reading measure", () => {
+    // The stack had no measure at all — 18pt of padding and the whole window — while the
+    // fallback capped at 580, so the same conversation was two different widths depending on
+    // which renderer drew it.
+    expect(mac("TranscriptFallback.swift")).toContain("static let maxMeasure: CGFloat = 700");
+    const stack = mac("ConversationStackView.swift");
+    expect(stack).toContain(".frame(maxWidth: ConversationTextView.maxMeasure, alignment: .leading)");
+    expect(stack).not.toMatch(/padding\(\.vertical, 14\)\s*\.frame\(maxWidth: \.infinity, alignment: \.leading\)/);
+  });
+
   test("the fallback AppKit renderer preserves rich selectable attributed text", () => {
     const dashboard = mac("TranscriptFallback.swift");
     expect(dashboard).toContain("NSAttributedString(AttributedString(parsed[run.range]))");
