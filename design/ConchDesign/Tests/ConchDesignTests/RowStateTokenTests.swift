@@ -61,6 +61,28 @@ final class RowStateTokenTests: XCTestCase {
         }
     }
 
+    /// §3 puts your own turns in a `fill` bubble. Measured, not judged: it has to read as a
+    /// bubble at all on every ground, and the words inside it must still clear AA — a bubble
+    /// bought with readability is not worth having.
+    func testTheUserBubbleIsVisibleAndStillReadable() {
+        for scheme in schemes {
+            for ground in grounds {
+                let base = ground.rgba(scheme)
+                let bubble = composited(ConchColor.fill, over: base, scheme)
+
+                XCTAssertGreaterThanOrEqual(
+                    bubble.contrast(on: base), 1.1,
+                    "the bubble is invisible on \(ground.name) in \(scheme)"
+                )
+                let text = ConchColor.textPrimary.rgba(scheme).contrast(on: bubble)
+                XCTAssertGreaterThanOrEqual(
+                    text, 4.5,
+                    "text in the bubble on \(ground.name) in \(scheme) is \(String(format: "%.2f", text)):1"
+                )
+            }
+        }
+    }
+
     /// Both fills must step the SAME way off the ground — darker in light, lighter in dark.
     ///
     /// If they stepped opposite ways, selection and hover would be further from each other than

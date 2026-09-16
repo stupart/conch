@@ -15,7 +15,22 @@ describe("the Mac conversation stays readable while it grows", () => {
     // lazy stack can leave the viewport at an offset whose rows have not been
     // materialised yet, exposing only the black scroll background.
     expect(conversation).not.toContain("LazyVStack");
-    expect(conversation).toMatch(/VStack\(alignment: \.leading, spacing: 14\)/);
+    // The spacing is not this test's business — it named a number only to point at the
+    // container, so changing §3's reading rhythm broke a test about laziness. The value
+    // has its own guard below.
+    expect(conversation).toMatch(/VStack\(alignment: \.leading, spacing: \d+\)/);
+  });
+
+  test("the transcript keeps §3's reading rhythm: 22 between messages, an 18 bubble on fill", () => {
+    // workspace-v1 §3: "22 pt between messages" and "your turns in a `fill` bubble, radius 18".
+    expect(conversation).toMatch(/VStack\(alignment: \.leading, spacing: 22\)/);
+    // 18 is exactly ConchRadius.large, so it comes from Tokens rather than being retyped —
+    // a literal here is how the design system and the app drift apart.
+    expect(conversation).toContain(
+      ".background(ConchPalette.fill, in: RoundedRectangle(cornerRadius: ConchRadius.large))",
+    );
+    expect(conversation).not.toContain("cornerRadius: 12))");
+    expect(mac("Palette.swift")).toContain("static let fill = ConchColor.fill.dynamic");
   });
 
   test("only a real user scroll changes whether growth is followed", () => {

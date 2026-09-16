@@ -33,6 +33,8 @@ enum ConchPalette {
     /// Chips, capsules and panels that sit above the ground. In light that is plain white
     /// against the off-white ground; in dark, one step up from it.
     static let raised = ConchColor.surfaceRaised.dynamic
+    /// The quiet fill behind your own turns (§3), and the one the switch tracks use.
+    static let fill = ConchColor.fill.dynamic
     /// Selection must outrank hover — this palette's oldest bug was the two inverted. Both now
     /// come from measured tokens that step the same way off the ground (design/ConchDesign).
     static let selection = ConchColor.rowSelected.dynamic
