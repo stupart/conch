@@ -670,6 +670,32 @@ private struct SessionLedger: View {
         WorkspaceFocus.viewed(in: Workspace(state), pinned: selectedSessionID)
     }
 
+    @State private var collapsedFolders: Set<String> = []
+
+    /// The rows grouped by the folder they run in. A folder the reader collapsed keeps its
+    /// rows out of the list entirely, which is why the count moves onto its header.
+    private var sessionFolders: [SessionFolder] {
+        SessionGrouping.folders(
+            for: (state?.rows ?? []).map {
+                ($0.id, $0.cwd, $0.parentSessionId ?? $0.startedBySessionId)
+            }
+        )
+    }
+
+    private func rows(in folder: SessionFolder) -> [SessionRow] {
+        guard let state else { return [] }
+        let byID = Dictionary(state.rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return folder.sessionIDs.compactMap { byID[$0] }
+    }
+
+    private func toggleFolder(_ folderID: String) {
+        if collapsedFolders.contains(folderID) {
+            collapsedFolders.remove(folderID)
+        } else {
+            collapsedFolders.insert(folderID)
+        }
+    }
+
     private var rowOrder: [SessionRow.ID] {
         guard let state else { return [] }
         return state.rows.map(\.id) + state.dismissedRows.map { "dismissed:\($0.id)" }
@@ -699,32 +725,48 @@ private struct SessionLedger: View {
                                     onStart: actions.onStartSession
                                 )
 
-                                ForEach(
-                                    state.rows,
-                                    id: \.id
-                                ) { row in
-                                    DashboardRow(
-                                        row: row,
-                                        now: timeline.date,
-                                        isSelected: selectedSessionID == row.id,
-                                        isRenaming: renamingSessionID == row.id,
-                                        renameDraft: $renameDraft,
-                                        rowMessage: rowMessages[row.id],
-                                        onSelect: { actions.onSelectSession(row) },
-                                        onBeginRename: { actions.onBeginRename(row) },
-                                        onCommitRename: { actions.onCommitRename(row) },
-                                        onCancelRename: actions.onCancelRename,
-                                        onDismiss: { actions.onDismiss(row) },
-                                        // The starter's current label, so a rename
-                                        // there reads through here (C15).
-                                        startedByLabel: row.startedBySessionId.flatMap { id in
-                                            state.rows.first(where: { $0.id == id })?.label
+                                // Grouped by the folder each session runs in, so a dozen
+                                // agents read as the two or three projects they are actually
+                                // in. The rule — and the cases that make it interesting, two
+                                // checkouts of one repo and a child whose folder differs from
+                                // its parent's — is ConchDesign/SessionGrouping.swift.
+                                ForEach(sessionFolders) { folder in
+                                    if !folder.name.isEmpty {
+                                        FolderHeader(
+                                            name: folder.name,
+                                            count: folder.sessionIDs.count,
+                                            isCollapsed: collapsedFolders.contains(folder.id),
+                                            onToggle: { toggleFolder(folder.id) }
+                                        )
+                                        .id("folder:\(folder.id)")
+                                    }
+
+                                    if !collapsedFolders.contains(folder.id) {
+                                        ForEach(rows(in: folder), id: \.id) { row in
+                                            DashboardRow(
+                                                row: row,
+                                                now: timeline.date,
+                                                isSelected: selectedSessionID == row.id,
+                                                isRenaming: renamingSessionID == row.id,
+                                                renameDraft: $renameDraft,
+                                                rowMessage: rowMessages[row.id],
+                                                onSelect: { actions.onSelectSession(row) },
+                                                onBeginRename: { actions.onBeginRename(row) },
+                                                onCommitRename: { actions.onCommitRename(row) },
+                                                onCancelRename: actions.onCancelRename,
+                                                onDismiss: { actions.onDismiss(row) },
+                                                // The starter's current label, so a rename
+                                                // there reads through here (C15).
+                                                startedByLabel: row.startedBySessionId.flatMap { id in
+                                                    state.rows.first(where: { $0.id == id })?.label
+                                                }
+                                            )
+                                            // Folder-style: a subagent sits under its parent (C4),
+                                            // a started session under its starter (C15).
+                                            .padding(.leading, row.parentSessionId == nil && row.startedBySessionId == nil ? 0 : 18)
+                                            .id(row.id)
                                         }
-                                    )
-                                    // Folder-style: a subagent sits under its parent (C4),
-                                    // a started session under its starter (C15).
-                                    .padding(.leading, row.parentSessionId == nil && row.startedBySessionId == nil ? 0 : 18)
-                                    .id(row.id)
+                                    }
                                 }
 
                                 if !state.dismissedRows.isEmpty {
@@ -831,6 +873,53 @@ private struct SessionLedger: View {
         } else {
             proxy.scrollTo(targetID, anchor: .center)
         }
+    }
+}
+
+/// One folder's header in the session list.
+///
+/// The name is the shortest tail of the path no other folder on screen shares, so two
+/// checkouts of one repo don't both read `conch`. Clicking it collapses the folder.
+private struct FolderHeader: View {
+    let name: String
+    let count: Int
+    let isCollapsed: Bool
+    let onToggle: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 4) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+                    // The chevron is chrome until you need it: it shows on hover, and stays
+                    // put while collapsed so a folded folder never looks like a dead heading.
+                    .opacity(hovering || isCollapsed ? 1 : 0.35)
+                    .frame(width: 10)
+                Text(name)
+                    .font(ConchTypography.font(size: 11, weight: .medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+                if isCollapsed {
+                    Text("\(count)")
+                        .font(ConchTypography.font(size: 10, weight: .medium))
+                        .monospacedDigit()
+                }
+            }
+            .foregroundStyle(ConchPalette.textDim)
+            .padding(.horizontal, 6)
+            .padding(.top, 8)
+            .padding(.bottom, 2)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(isCollapsed ? "\(name), \(count) sessions, collapsed" : name)
+        .accessibilityAddTraits(.isHeader)
     }
 }
 
