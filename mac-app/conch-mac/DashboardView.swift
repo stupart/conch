@@ -2145,23 +2145,6 @@ private struct ConversationPane: View {
         .animation(.easeOut(duration: 0.15), value: note)
     }
 
-    /// Kept for the review pane, which has no composer to hang a hint on. A
-    /// reserved row is right THERE, where nothing else moves; it was only wrong
-    /// under the composer, where it was a permanent empty bar.
-    private var noteBar: some View {
-        Text(note ?? " ")
-            .font(ConchTypography.font(size: 10.5))
-            .foregroundStyle(ConchPalette.textFaint)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16)
-            .frame(height: 32)
-            .opacity(note == nil ? 0 : 1)
-            .animation(.easeOut(duration: 0.15), value: note)
-            .accessibilityHidden(note == nil)
-            .accessibilityLabel(note ?? "")
-    }
 }
 
 private struct PerspectiveOption: View {
@@ -2898,63 +2881,6 @@ private struct DaemonLogTextView: NSViewRepresentable {
     }
 }
 
-private struct KeybarActionButton: View {
-    let label: String
-    var isProminent = false
-    var isSelected = false
-    /// A control with nothing to act on should say so rather than accept a click.
-    var isDisabled = false
-    let action: () -> Void
-
-    @State private var isHovered = false
-
-    var body: some View {
-        Button(action: action) {
-            Text(label)
-                .font(ConchTypography.font(size: 11.5, weight: .medium))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .foregroundStyle(
-                    isHovered || isProminent || isSelected
-                        ? ConchPalette.textPrimary
-                        : ConchPalette.textDim
-                )
-                .padding(.horizontal, 14)
-                .frame(minHeight: 40)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(
-                            isProminent
-                                ? ConchPalette.accent.opacity(isHovered ? 0.20 : 0.13)
-                                : isHovered || isSelected ? ConchPalette.hover : .clear
-                        )
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(KeybarPressButtonStyle())
-        .disabled(isDisabled)
-        .opacity(isDisabled ? 0.45 : 1)
-        .onHover { hovering in
-            isHovered = hovering
-        }
-        .animation(.easeOut(duration: 0.14), value: isHovered)
-        .accessibilityLabel(label)
-    }
-}
-
-private struct KeybarPressButtonStyle: ButtonStyle {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.96 : 1)
-            .animation(
-                reduceMotion ? nil : .easeOut(duration: 0.12),
-                value: configuration.isPressed
-            )
-    }
-}
-
 private struct DashboardEmptyState: View {
     let hasSnapshot: Bool
 
@@ -2999,24 +2925,6 @@ private func relativeAge(epochMilliseconds: Double, now: Date) -> String? {
         return "\(Int(elapsed / 3_600))h"
     }
     return "\(Int(elapsed / 86_400))d"
-}
-
-private func splitAtUTF16Offset(
-    _ text: String,
-    _ requestedOffset: Int
-) -> (prefix: String, remainder: String) {
-    let utf16 = text.utf16
-    let clampedOffset = min(max(0, requestedOffset), utf16.count)
-    var utf16Index = utf16.index(utf16.startIndex, offsetBy: clampedOffset)
-    var stringIndex = String.Index(utf16Index, within: text)
-
-    while stringIndex == nil && utf16Index > utf16.startIndex {
-        utf16.formIndex(before: &utf16Index)
-        stringIndex = String.Index(utf16Index, within: text)
-    }
-
-    let boundary = stringIndex ?? text.startIndex
-    return (String(text[..<boundary]), String(text[boundary...]))
 }
 
 /// "All sessions" — selected when nothing else is, and the way back when
