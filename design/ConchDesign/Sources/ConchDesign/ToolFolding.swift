@@ -19,11 +19,22 @@ public struct ToolRun: Equatable, Sendable, Identifiable {
     public var id: String { itemIDs.first ?? "" }
     public let itemIDs: [String]
 
-    /// Seconds from the FIRST step starting to the LAST step starting.
+    /// Seconds from the FIRST step starting to the LAST step starting, when the run is
+    /// plausibly one continuous stretch of work.
     ///
     /// Not the run's true elapsed time: the wire carries when each step began and never when it
     /// ended, so the last step's own duration is invisible here. It is nil when either end has
     /// no `at` — an older daemon omits it — because an invented duration is worse than none.
+    ///
+    /// It is also nil when any GAP between consecutive steps exceeds `idleCeiling`. Found by
+    /// looking at the shipped fold: two adjacent steps four hours apart, because the session
+    /// sat waiting on a person in between, rendered as "Worked 4h 40m". The word claims effort
+    /// the data cannot support. Every test agreed with it — the fixtures all used timestamps
+    /// seconds apart, which is what a run was imagined to look like.
+    ///
+    /// ponytail: a ceiling, not a real rule. With per-step END times a run could report the
+    /// time actually spent; without them a ten-minute build is indistinguishable from ten
+    /// minutes of idleness, and the ceiling picks the reading that cannot overclaim.
     public let seconds: Double?
 
     public var count: Int { itemIDs.count }
@@ -55,6 +66,25 @@ public struct ToolRun: Equatable, Sendable, Identifiable {
 }
 
 public enum ToolFolding {
+    /// Longer than this between two steps and the run is not one stretch of work. Generous on
+    /// purpose: a slow build or a long search is real work, and only a gap this size is more
+    /// likely to be a person than a process.
+    public static let idleCeiling: Double = 600
+
+    /// The run's span, or nil when it cannot be stated honestly.
+    static func span(of stamps: [Double?]) -> Double? {
+        let times = stamps.compactMap { $0 }
+        // Every step must be stamped: a run with a hole in it has no span anyone can defend.
+        // No `last >= first` here: the loop below rejects any pair that goes backwards, which
+        // implies it. A mutation proved that clause unreachable rather than untested.
+        guard times.count == stamps.count, let first = times.first, let last = times.last
+        else { return nil }
+        for (earlier, later) in zip(times, times.dropFirst()) {
+            if later < earlier || later - earlier > idleCeiling { return nil }
+        }
+        return last - first
+    }
+
     /// The runs of consecutive tool steps in a transcript, in the order they appear.
     ///
     /// Anything that is not a tool step breaks a run — that is the whole point, since the
@@ -71,12 +101,7 @@ public enum ToolFolding {
         func close() {
             defer { current = [] }
             guard current.count >= max(2, minimum) else { return }
-            let span: Double?
-            if let first = current.first?.at, let last = current.last?.at, last >= first {
-                span = last - first
-            } else {
-                span = nil
-            }
+            let span = Self.span(of: current.map(\.at))
             runs.append(ToolRun(itemIDs: current.map(\.id), seconds: span))
         }
 
