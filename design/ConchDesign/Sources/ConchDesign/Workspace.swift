@@ -126,12 +126,33 @@ public enum WorkspaceFocus {
 
 // MARK: - How each session is presented
 
+/// The stage's three pages: the exchange, both, or the work.
+///
+/// workspace-v1 §3 — side by side takes half the stage, deliverable takes all of it. It is an
+/// enum rather than the Bool it replaces because "conversation or not" cannot say which of the
+/// two ways of showing the work you asked for, and a third arm bolted onto a Bool is how a
+/// pane ends up with two sources of truth about what it is drawing.
+public enum StageMode: String, Equatable, Sendable, Codable {
+    case conversation
+    case sideBySide
+    case deliverable
+}
+
 /// What the workspace remembers about ONE session, so leaving it and coming back returns
 /// you to the page you were on rather than to a default.
 public struct SessionPresentation: Equatable, Sendable {
-    /// False = the deliverable in front. Only an explicit choice moves this: a newly filed
-    /// artifact must not take the pane from someone reading (the review's continuity point).
-    public var showsConversation = true
+    /// Which of the stage's three pages this session is on.
+    ///
+    /// Only an explicit choice moves it: a newly filed artifact must not take the stage from
+    /// someone reading (the review's continuity point), which is why nothing here is derived
+    /// from what the daemon just published.
+    public var stage: StageMode
+
+    /// Whether the conversation is on screen at all — true for `sideBySide`, because it is.
+    ///
+    /// Kept as a name so every existing reader goes on working while the stage grows a third
+    /// page: the pane, the perspective control and the guards that pin them all ask this.
+    public var showsConversation: Bool { stage != .deliverable }
     /// The tool rows opened in this session's transcript.
     public var expandedToolIDs: Set<String> = []
     /// Which of the deliverables this session holds the reader picked, by the identity the
@@ -140,11 +161,11 @@ public struct SessionPresentation: Equatable, Sendable {
     public var selectedDeliverable: String?
 
     public init(
-        showsConversation: Bool = true,
+        stage: StageMode = .conversation,
         expandedToolIDs: Set<String> = [],
         selectedDeliverable: String? = nil
     ) {
-        self.showsConversation = showsConversation
+        self.stage = stage
         self.expandedToolIDs = expandedToolIDs
         self.selectedDeliverable = selectedDeliverable
     }
@@ -205,7 +226,7 @@ public final class WorkspaceModel: ObservableObject {
     /// Both perspectives, one door. Called only from an explicit choice — the perspective
     /// control, or opening the artifact from its inline preview.
     public func show(conversation: Bool, for id: String?) {
-        update(id) { $0.showsConversation = conversation }
+        update(id) { $0.stage = conversation ? .conversation : .deliverable }
     }
 
     /// Pick one of the deliverables a session holds. Only an explicit choice moves this: a

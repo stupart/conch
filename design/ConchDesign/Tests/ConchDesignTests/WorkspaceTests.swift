@@ -12,6 +12,31 @@ final class WorkspaceTests: XCTestCase {
         Workspace(sessions: sessions, voiceIsActive: voice)
     }
 
+    // MARK: - Which page of the stage
+
+    func testASessionStartsOnTheConversation() {
+        XCTAssertEqual(SessionPresentation().stage, .conversation)
+        XCTAssertTrue(SessionPresentation().showsConversation)
+    }
+
+    /// Side by side shows BOTH, so anything asking "is the conversation up" gets the truth.
+    /// That is the whole reason the old Bool could not grow a third case.
+    func testSideBySideStillShowsTheConversation() {
+        XCTAssertTrue(SessionPresentation(stage: .sideBySide).showsConversation)
+        XCTAssertFalse(SessionPresentation(stage: .deliverable).showsConversation)
+    }
+
+    /// The existing door keeps working, so every reader and guard can move later, not now.
+    func testTheConversationToggleStillMapsOntoTheStage() {
+        let model = WorkspaceModel()
+        model.show(conversation: false, for: "a")
+        XCTAssertEqual(model.presentation(for: "a").stage, .deliverable)
+        XCTAssertFalse(model.presentation(for: "a").showsConversation)
+        model.show(conversation: true, for: "a")
+        XCTAssertEqual(model.presentation(for: "a").stage, .conversation)
+        XCTAssertTrue(model.presentation(for: "a").showsConversation)
+    }
+
     // MARK: - Which deliverable a session is showing
 
     func testTheNewestIsShownUntilSomebodyPicks() {
