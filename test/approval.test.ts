@@ -190,3 +190,45 @@ describe("the daemon's wiring", () => {
     expect(inject).toContain('key === "Down" ? 125');
   });
 });
+
+/**
+ * A8: two windows resume one session id, so one transcript holds both dialogs.
+ * The newest unresolved tool in the FILE is whoever asked last — never a reason
+ * to announce it to the other window, or to press that window's keys.
+ */
+describe("which window's permission this is", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+  const preamble = (bridge: string, leafUuid: string) => [
+    JSON.stringify({ type: "last-prompt", leafUuid }),
+    JSON.stringify({ type: "bridge-session", bridgeSessionId: `cse_${bridge}` }),
+  ];
+  const prompt = (uuid: string, parentUuid: string | null, text: string) =>
+    JSON.stringify({ type: "user", uuid, parentUuid, message: { role: "user", content: text } });
+  const reply = (uuid: string, parentUuid: string, ...content: unknown[]) =>
+    JSON.stringify({ type: "assistant", uuid, parentUuid, message: { role: "assistant", content } });
+
+  test("each window reads its own branch's ask, and an unattributable one is refused", () => {
+    const root = mkdtempSync(join(tmpdir(), "conch-approval-windows-"));
+    roots.push(root);
+    const path = join(root, "session.jsonl");
+    writeFileSync(path, [
+      ...preamble("A", "u1"), prompt("u1", null, "shared"),
+      ...preamble("A", "u1"), reply("a1", "u1", { type: "text", text: "ok" }),
+      ...preamble("A", "a1"), prompt("u2", "a1", "push it"),
+      ...preamble("A", "u2"), reply("a2", "u2", use("tu_A", "Bash", { command: "git push origin main" })),
+      ...preamble("B", "a1"), prompt("u3", "a1", "clean it"),
+      ...preamble("B", "u3"), reply("a3", "u3", use("tu_B", "Bash", { command: "rm -rf build" })),
+    ].join("\n") + "\n");
+    // Whoever wrote last owns the file's tail — that is all a window-blind read can see.
+    expect(pendingApproval(path)).toMatchObject({ id: "tu_B" });
+    expect(pendingApproval(path, { bridgeSessionId: "session_A" }))
+      .toEqual({ id: "tu_A", name: "Bash", summary: "git push origin main" });
+    expect(pendingApproval(path, { bridgeSessionId: "session_B" }))
+      .toEqual({ id: "tu_B", name: "Bash", summary: "rm -rf build" });
+    // A window the transcript cannot place answers nothing.
+    expect(pendingApproval(path, {})).toBeNull();
+  });
+});

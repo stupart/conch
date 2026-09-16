@@ -149,6 +149,9 @@ const systemClock: DictationClock = {
 
 const ABRUPT_USER_FINALIZATIONS = new Set([
   "dictation-spacebar",
+  // The same key pressed during a read gap, whose barrier is named for the gap.
+  // A tail spoken in the moment before it is the user's words either way.
+  "gap-spacebar",
   // A send (including non-hold mode) intentionally drains a hot successor.
   "dictation-send",
   // Controller tests also model the coarser diagnostic kill-cause vocabulary.

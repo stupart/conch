@@ -632,6 +632,19 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     }
   }
 
+  /**
+   * The one settlement for a dictation that could not be completed (#227),
+   * shared by ordinary dictation and the read gap: nothing that hit an error is
+   * submitted, every word that WAS captured goes back to the draft, and the
+   * same sentence says so. Returns what to say once the mic has drained.
+   */
+  function recoverIncompleteDictation(event: TurnEvent, captured: readonly string[]): string {
+    publishDictation(captured.join(" "), event.sessionId);
+    return captured.some((text) => text.trim())
+      ? "Dictation was incomplete. Your recovered words are in the draft. Review them or retry before sending."
+      : "Dictation failed. Please try again.";
+  }
+
   const consumeStopKey = () => {
     const s = stopKey;
     stopKey = false;
@@ -856,7 +869,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       && event.ntype === "permission_prompt"
       && !cfg.bypassPermissions
       && event.transcriptPath
-      ? pendingApproval(event.transcriptPath)
+      ? pendingApproval(event.transcriptPath, sharedWindow(event.sessionId))
       : null;
     // On the event, so the audibility predicate and every gate below see it;
     // cleared on a replay whose dialog was answered meanwhile.
@@ -1842,6 +1855,24 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           } = gapResult;
           const stoppedByKey = consumeStopKey();
           const external = gapExternal ?? (stoppedByKey ? "spacebar" : undefined);
+          if (gapError) {
+            // Settled here, ahead of the spacebar and the handoff, because both
+            // of those turn what was captured into a submitted prompt: the gap
+            // collector returns successful text AND the error beside it. The
+            // fragment is recovered for review, never sent.
+            emitRecorderTraces(gapDiagnosticIds ?? [gapDiagnosticId], { intent: "transcription-error", bufferCountAfterReduction: 0 });
+            recordDaemonError(
+              "dictation",
+              "Dictation incomplete. Review the recovered draft or retry before sending.",
+              event.sessionId,
+              { stage: "gap" },
+            );
+            const warning = recoverIncompleteDictation(event, gapText ? [gapText] : []);
+            if (!shuttingDown && !interruptedByPause()) {
+              await speak(cfg, warning, event.label, false, event.sessionId);
+            }
+            return;
+          }
           if (external) {
             const diagnosticIds = (gapDiagnosticIds ?? [gapDiagnosticId])
               .filter((id): id is string => Boolean(id));
@@ -1876,9 +1907,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
             }
             break reading;
           }
-          if (gapError) {
-            emitRecorderTraces(gapDiagnosticIds ?? [gapDiagnosticId], { intent: "transcription-error", bufferCountAfterReduction: 0 });
-          } else if (gapText) {
+          if (gapText) {
             const action = await onReadingUtterance(
               event,
               gapText,
@@ -2024,6 +2053,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     let reductionSequence = 0;
     let terminal = false;
     let incompleteDictation: string[] | null = null;
+    let incompleteWarning: string | undefined;
     let deferredExternal: ExternalDictationAction | undefined;
     let deferredExternalBarrierReason: string | undefined;
     let awaitingInitialBarge = Boolean(initialDictationCapture);
@@ -2750,7 +2780,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       micOpen = false;
       bargeHandoffOpen = false;
       if (incompleteDictation && !shuttingDown && !interruptedByPause() && !interruptedByManualReply()) {
-        publishDictation(incompleteDictation.join(" "), event.sessionId);
+        incompleteWarning = recoverIncompleteDictation(event, incompleteDictation);
       }
       const pendingIds = expandDiagnosticIds(
         reducer.snapshot.buffer.flatMap((segment) => segment.diagnosticId ? [segment.diagnosticId] : []),
@@ -2771,12 +2801,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     if (interruptedByManualReply() || manualReplyWatchError instanceof ManualReplyInterrupt) {
       log(`closed mic for "${event.label}" — you replied by text`);
     }
-    if (incompleteDictation && !shuttingDown && !interruptedByPause() && !interruptedByManualReply()) {
+    if (incompleteWarning && !shuttingDown && !interruptedByPause() && !interruptedByManualReply()) {
       // Recovery is already published and the mic drained. A failed warning
       // must never prevent the words from reaching their addressed composer.
-      await speak(cfg, incompleteDictation.some((text) => text.trim())
-        ? "Dictation was incomplete. Your recovered words are in the draft. Review them or retry before sending."
-        : "Dictation failed. Please try again.", event.label, false, event.sessionId);
+      await speak(cfg, incompleteWarning, event.label, false, event.sessionId);
     }
     } finally {
       // Covers every early return between gap transfer and the normal loop's
@@ -2823,7 +2851,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     let stale = false;
     const currentApproval = (allowResolved = false): boolean => {
       if (stale || shuttingDown || interruptedByPause()) return false;
-      const current = transcriptPath ? pendingApproval(transcriptPath) : null;
+      const current = transcriptPath ? pendingApproval(transcriptPath, sharedWindow(event.sessionId)) : null;
       if ((allowResolved && !current) || (ask.id && current?.id === ask.id
         && current.name === ask.name && current.summary === ask.summary)) return true;
       stale = true;
@@ -2898,16 +2926,25 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       try { delivery = await injectText(cfg, event.pid, answer.text, mayTypeAlternative); }
       catch (error) { receipt.emit("unknown", "delivery-outcome-unknown"); throw error; }
       const { via, interrupted } = delivery;
+      const failed = Boolean(delivery.failed) || via === "none" || via === "clipboard";
+      const staged = !failed && !interrupted && !cfg.autoSubmit;
       // Observe this direct send without adding retries or changing the permission
       // lifetime. The Escape above is a control action, not a prompt delivery.
       if (interrupted) receipt.emit("unknown", "delivery-interrupted");
-      else if (delivery.failed || via === "none" || via === "clipboard") {
+      else if (failed) {
         receipt.emit("failed", delivery.reason ?? (via === "clipboard" ? "clipboard-fallback" : "delivery-failed"));
-      } else if (!cfg.autoSubmit) receipt.emit("staged", "staged-not-submitted");
+      } else if (staged) receipt.emit("staged", "staged-not-submitted");
       else receipt.emit("delivered", "transport-submitted");
+      // The same settlement as every other delivery: only a submitted prompt is
+      // bookkept as one, and anything short of that — interrupted, failed, left
+      // on the clipboard, or staged for an explicit send — goes back to the
+      // draft instead of existing nowhere.
+      if (interrupted || failed || staged) publishDictation(answer.text, event.sessionId);
       if (interrupted || interruptedByPause()) return;
       if (via === "none") return void (await say("Could not type the alternative — do it by hand."));
       if (via === "clipboard") return void (await say("The alternative is on the clipboard — paste it into the session."));
+      if (failed) return void (await say("Couldn't deliver that. Your words are in the draft. Review them before trying again."));
+      if (staged) return void log(`staged the alternative in "${event.label}" via ${via} — waiting for explicit send`);
       markInjected(event.sessionId);
       log(`told "${event.label}" instead (${answer.text.length} chars) via ${via}`);
     }
