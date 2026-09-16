@@ -171,3 +171,28 @@ test("a send whose answer never arrived stays open, and keeps its pictures", () 
   const session = readFileSync(join(root, "mobile/conch-ios/conch-ios/SessionView.swift"), "utf8");
   expect(session).toMatch(/case \.unknown:[\s\S]{0,200}?break/);
 });
+
+/**
+ * A picture with no words was the one send that could fail invisibly.
+ *
+ * `TalkController.send` shepherds a DRAFT and rightly refuses an empty one, so an image-only
+ * message went straight to the bridge: no outbox entry, no bubble, no operation id — and so
+ * nothing for the daemon's later receipt to settle, and nowhere for a failure to show.
+ */
+test("a picture with no words goes through the outbox, like any other message", () => {
+  const session = readFileSync(join(root, "mobile/conch-ios/conch-ios/SessionView.swift"), "utf8");
+  const talk = readFileSync(join(root, "mobile/conch-ios/conch-ios/TalkController.swift"), "utf8");
+
+  // It no longer bypasses the controller to reach the bridge itself.
+  expect(session).toContain("talk.sendPictures(");
+  expect(session).not.toMatch(/if !talk\.hasWords\(for: sessionId\)[\s\S]{0,400}?await deliver\(text: ""/);
+
+  // The entry carries the body that will actually LAND — the uploaded paths — because
+  // `reconcile` retires a bubble by matching the transcript's own copy of that text.
+  expect(session).toContain("body: { await uploadBody(pending) }");
+  expect(talk).toMatch(/func sendPictures\([\s\S]*?let text = await body\(\)[\s\S]*?beginOutgoing\(text, session: session\)/);
+
+  // And the send quotes the entry's id, which is the only way a late outcome finds it again.
+  expect(session).toMatch(/deliver: \{ body, opId in[\s\S]{0,200}?opId: opId/);
+  expect(talk).toMatch(/sendPictures\([\s\S]*?settleOutgoing\(id, await deliver\(text, id\)\)/);
+});
