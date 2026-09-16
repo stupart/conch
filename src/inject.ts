@@ -1,7 +1,7 @@
 import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config } from "./config.ts";
-import { createPasteboard, hasUnreapedUIChild, runUICommand, type Pasteboard } from "./pasteboard.ts";
+import { createPasteboard, hasUnreapedUIChild, runUICommand, type Pasteboard, type PasteboardLease } from "./pasteboard.ts";
 
 export type InjectRoute = "tmux" | "osascript-focused" | "clipboard" | "none";
 export interface InjectTextResult {
@@ -122,6 +122,8 @@ const sendTmuxKeys = (pane: string, text: string, literal: boolean) => runUIComm
  */
 export const PASTE_OVER_CHARS = 280;
 
+const PASTE_KEYSTROKE = 'tell application "System Events" to keystroke "v" using command down';
+
 /**
  * Where the step log goes. Beside the daemon log, so a suite that redirects
  * `CONCH_LOG_FILE` (test/preload.ts) never writes into the live file — every
@@ -234,19 +236,32 @@ async function injectTextInTransaction(
   }
   let typed: OsaResult;
   if (text.length > PASTE_OVER_CHARS || text.includes("\n")) {
-    try {
-      const lease = await pasteboard.prepare(text);
+    // A broken helper must not cost the message. Preserving the clipboard is a courtesy;
+    // delivering the words is the job. When the JXA program refused every ordinary
+    // clipboard (its size guard concatenated bridged strings), this path returned
+    // clipboard-unavailable and NOTHING was sent — every paste-length send failed while a
+    // normal Chrome copy sat on the board. So a failure here drops the capture, not the send.
+    let lease: PasteboardLease | undefined;
+    try { lease = await pasteboard.prepare(text); } catch { lease = undefined; }
+    if (lease) {
       try {
         // Approval/request validity is checked after every awaited setup step.
         if (!(await mayInject())) return interrupted();
-        typed = await focusedAction(tty, osa, ['tell application "System Events" to keystroke "v" using command down'], [], lease.changeCount);
+        typed = await focusedAction(tty, osa, [PASTE_KEYSTROKE], [], lease.changeCount);
         step(`osascript paste returned (${text.length} chars)`);
         await sleep(150);
       } finally {
-        await pasteboard.restore(lease);
+        // A restore that throws must not turn a paste that LANDED into a reported failure.
+        try { await pasteboard.restore(lease); } catch { step("clipboard restore failed"); }
       }
-    } catch {
-      return failed("clipboard-unavailable");
+    } else {
+      if (!(await mayInject())) return interrupted();
+      try { await copyToClipboard(text); } catch { return failed("clipboard-unavailable"); }
+      // No changeCount to compare against: the capture never happened, so the guard that
+      // refuses a paste after someone else copies cannot run on this path.
+      typed = await focusedAction(tty, osa, [PASTE_KEYSTROKE]);
+      step(`osascript paste returned, clipboard NOT preserved (${text.length} chars)`);
+      await sleep(150);
     }
   } else {
     if (!(await mayInject())) return interrupted();
