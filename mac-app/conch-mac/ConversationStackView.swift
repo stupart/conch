@@ -1,4 +1,5 @@
 import AppKit
+import ConchDesign
 import SwiftUI
 
 /// The conversation as a stack of messages, rather than one replaced string.
