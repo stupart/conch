@@ -199,7 +199,6 @@ struct LedgerView: View {
             }
         }
         .tint(Palette.micOpen)
-        .preferredColorScheme(.dark)
         .onChange(of: bridge.state) { _, next in
             speech.consider(state: next)
         }
@@ -823,7 +822,6 @@ private struct StartSessionSheet: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
         .alert("Opened in Terminal on your Mac", isPresented: $openedTeleport) {
             Button("Done") { dismiss() }
         } message: {

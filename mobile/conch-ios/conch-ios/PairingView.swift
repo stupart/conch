@@ -147,7 +147,6 @@ struct PairingView: View {
             Spacer()
         }
         .background(Palette.bg)
-        .preferredColorScheme(.dark)
         .onAppear { focused = .host }
         .sheet(isPresented: $scanningRelay) {
             RelayQRScanner { scanned in

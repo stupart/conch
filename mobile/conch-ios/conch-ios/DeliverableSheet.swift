@@ -112,7 +112,6 @@ struct ReviewSheet: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
     }
 }
 
