@@ -420,10 +420,20 @@ struct ComposerView: View {
             // than watching it settle.
             if !dictation.isEmpty {
                 Text(dictation)
-                    .font(ConchTypography.font(size: 12.5))
+                    // `#cLive{padding:8px 10px 4px;font:var(--read)/22px var(--sans)}` — the
+                    // live line shares the editor's font AND its insets in the lab, because
+                    // this text becomes that text. At 12.5 with 6/8 padding the words changed
+                    // size and moved the instant transcription landed, which is precisely the
+                    // moment you are watching them.
+                    //
+                    // The colour is left alone: the lab sets `--text` here (and `--text3`
+                    // while transcribing) where the app speaks in cyan, and that is a
+                    // state-colour decision rather than a measurement.
+                    .font(ConchType.readingBody)
                     .foregroundStyle(ConchPalette.brandCyan)
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 8)
+                    .padding(.top, Self.fieldInsetTop)
+                    .padding(.bottom, Self.fieldInsetBottom)
+                    .padding(.horizontal, Self.fieldInsetX)
             } else {
                 // TextEditor has no intrinsic content height on macOS — it
                 // fills whatever it is given, which turned the composer into a
@@ -449,7 +459,7 @@ struct ComposerView: View {
                     .foregroundStyle(ConchPalette.textPrimary)
                     .scrollContentBackground(.hidden)
                     .focused($fieldFocused)
-                    .conchTextViewInsets()
+                    .conchTextViewInsets(lineHeight: Self.lineHeight)
                     .conchSpelling()
                     .frame(height: fieldHeight)
                     // Return SENDS. Tyler kept "trying to send and making a new
@@ -471,9 +481,14 @@ struct ComposerView: View {
                     Text(noTerminal ?? "Message \(sessionLabel)")
                         .font(ConchType.readingBody)
                         .foregroundStyle(ConchPalette.textDim)
-                        .frame(height: fieldHeight, alignment: .leading)
+                        // `.leading` centred it in the field's height, which is the whole
+                        // grown box — so it drifted further from the first line the taller
+                        // the draft got. The editor lays its first line out at the TOP; the
+                        // placeholder has to do the same or they are two different rules
+                        // positioning one line of text.
+                        .frame(height: fieldHeight, alignment: .topLeading)
                         .padding(.top, Self.fieldInsetTop)
-                    .padding(.bottom, Self.fieldInsetBottom)
+                        .padding(.bottom, Self.fieldInsetBottom)
                         .padding(.horizontal, Self.fieldInsetX)
                         .allowsHitTesting(false)
                 }
@@ -576,8 +591,17 @@ struct ComposerView: View {
     private var fieldHeight: CGFloat {
         guard fieldWidth > 1 else { return Self.lineHeight }
         let text = draft.isEmpty ? " " : draft
-        let font = NSFont.systemFont(ofSize: 12.5)
-        let attributed = NSAttributedString(string: text, attributes: [.font: font])
+        // The editor renders `ConchType.readingBody` — system 15 — in a 22 pt line box. This
+        // measured at 12.5, whose line height is 15 pt: every wrapped line was measured 7 pt
+        // short, so the box grew less than the text it had to hold. Measure what is drawn.
+        let font = NSFont.systemFont(ofSize: 15)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.minimumLineHeight = Self.lineHeight
+        paragraph.maximumLineHeight = Self.lineHeight
+        let attributed = NSAttributedString(
+            string: text,
+            attributes: [.font: font, .paragraphStyle: paragraph]
+        )
         let bounds = attributed.boundingRect(
             with: NSSize(width: fieldWidth, height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading]
@@ -737,10 +761,37 @@ private extension View {
     /// Drop NSTextView's built-in padding so SwiftUI's padding is the only one
     /// in play. Without this the editor applies its inset on top of ours and
     /// typed text lands above centre while the placeholder does not.
-    func conchTextViewInsets() -> some View {
+    /// `lineHeight` is passed rather than read off `ComposerView`: inside a `View`
+    /// extension, `ComposerView.lineHeight` resolves to SwiftUI's own `lineHeight(_:)`
+    /// modifier instead of the struct's constant, and the compiler says so in types.
+    func conchTextViewInsets(lineHeight: CGFloat) -> some View {
         introspectTextView { view in
             view.textContainerInset = .zero
             view.textContainer?.lineFragmentPadding = 0
+            // `#ta{font:var(--read)/22px}` — a 22 pt LINE BOX, which nothing in this app set.
+            //
+            // Two things were wrong because of it. Typed lines sat at the font's natural 18 pt
+            // rather than the lab's 22. And the caret is drawn to the line fragment, so it was
+            // an 18 pt bar starting at the top of the box while the placeholder — a SwiftUI
+            // Text centred in a 22 pt frame — sat 2 pt lower. Tyler: "see how the cursor isn't
+            // lined up with the preview text?"
+            //
+            // Measured, not guessed: no style puts ink at y 0.5 in an 18 pt fragment; a 22 pt
+            // box puts it at y 4.5 in a 22 pt fragment, which is where a top-aligned
+            // placeholder draws it (y 4). Same line, same caret height.
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.minimumLineHeight = lineHeight
+            paragraph.maximumLineHeight = lineHeight
+            view.defaultParagraphStyle = paragraph
+            view.typingAttributes[.paragraphStyle] = paragraph
+            // An existing draft was laid out before this ran, so restyle what is already there.
+            if let storage = view.textStorage, storage.length > 0 {
+                storage.addAttribute(
+                    .paragraphStyle,
+                    value: paragraph,
+                    range: NSRange(location: 0, length: storage.length)
+                )
+            }
             // A dropped file must reach the composer's `.onDrop`, not this
             // editor. NSTextView registers for file drops and inserts the PATH
             // as text, and it is the deeper view under the pointer, so it won
