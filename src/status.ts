@@ -428,7 +428,9 @@ export function relativeAge(at: number, now: number): string {
 
 /** The Mac app keys its seen set on row id + review FILING time (stable across republishes); the terminal matches it. */
 function reviewIdentity(row: PanelRowModel): string {
-  return `${row.sessionId}\u001f${row.review?.at ?? ""}`;
+  // The daemon mints one when it files the deliverable. An older row, or one restored from a
+  // reviews file written before identities existed, keeps the key this used to compute.
+  return row.review?.id ?? `${row.sessionId}\u001f${row.review?.at ?? ""}`;
 }
 
 function rowState(row: PanelRowModel): string {

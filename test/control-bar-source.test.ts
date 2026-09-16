@@ -585,8 +585,10 @@ test("the pill takes the exact review version at the click, runs clicks in order
   expect(member(panels, "private func next(in ready: [ReviewItem]) -> ReviewItem? {")).toContain(
     "ReviewScene.next(after: lastStaged, in: ready.map { (key: $0.id, at: $0.reviewedAt ?? 0) }, opened: opened)",
   );
-  // ReviewItem.id is the version: the row and its review's filing time.
-  expect(read("mac-app/conch-mac/ReviewView.swift")).toContain('id = [row.id, timestampIdentity].joined(separator: "\\u{1F}")');
+  // ReviewItem.id is the version: what the daemon minted at filing, or the key that stood
+  // in for it before there was one.
+  expect(read("mac-app/conch-mac/ReviewView.swift"))
+    .toContain("id = ReviewIdentity.key(published: review.id, sessionId: row.id, filedAt: review.at)");
   const steps = [
     "lastStaged = key",
     "let previous = staging",

@@ -749,6 +749,9 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
     let link: String?
     /// Epoch milliseconds supplied by newer daemon snapshots.
     let at: Double?
+    /// The identity the daemon minted when it filed this deliverable. Absent from an older
+    /// daemon, which is why `ReviewIdentity` still knows how to compute the old key.
+    let id: String?
     /// What a click on the Ready pill should bring forward (`scene.target.kind`) and the one thing to check there
     /// (`scene.inspect`). Absent from older daemons and from reviews that asked for nothing, which is `auto`.
     let sceneKind: String?
@@ -759,6 +762,7 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         case link
         case at
         case scene
+        case id
     }
 
     private struct Scene: Decodable {
@@ -772,6 +776,7 @@ struct ReviewInfo: Decodable, Equatable, Sendable {
         summary = (try? container.decodeIfPresent(String.self, forKey: .summary)) ?? ""
         link = try? container.decodeIfPresent(String.self, forKey: .link)
         at = Self.decodeTimestamp(from: container)
+        id = try? container.decodeIfPresent(String.self, forKey: .id)
         // A scene this build can't read is no scene: the review itself still decodes.
         let scene = try? container.decodeIfPresent(Scene.self, forKey: .scene)
         sceneKind = scene?.target?.kind
