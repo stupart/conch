@@ -131,7 +131,7 @@ describe("saved deliverables", () => {
     }
   };
   const file = (ledger: SessionLedger, id: string, at: number, summary = `${id} ready`): void => {
-    ledger.sessionStates.set(id, { label: id, status: "waiting", at, review: { summary, at } });
+    ledger.sessionStates.set(id, { label: id, status: "waiting", at, review: { summary, at, id: `${id}-rev` } });
   };
   const restored = (path: string): SessionLedger => {
     const ledger = new SessionLedger(path);
@@ -150,7 +150,7 @@ describe("saved deliverables", () => {
     const after = restored(path);
     expect([...after.sessionStates.keys()]).toEqual(["live"]);
     expect(after.sessionStates.get("live")).toEqual({
-      label: "live", status: "waiting", at: 0, review: { summary: "live ready", at: 1_000 },
+      label: "live", status: "waiting", at: 0, review: { summary: "live ready", at: 1_000, id: "live-rev" },
     });
   }));
 
@@ -170,13 +170,13 @@ describe("saved deliverables", () => {
   test("a review's scene is saved and restored with it, and one this conch can't read is dropped", () => withFile((path) => {
     const ledger = new SessionLedger(path);
     const scene = { v: 1 as const, target: { kind: "terminal" as const }, inspect: "the build log" };
-    ledger.sessionStates.set("a", { label: "a", status: "waiting", at: 1_000, review: { summary: "a ready", scene, at: 1_000 } });
+    ledger.sessionStates.set("a", { label: "a", status: "waiting", at: 1_000, review: { summary: "a ready", scene, at: 1_000, id: "a-rev" } });
     ledger.saveReviews();
-    expect(restored(path).sessionStates.get("a")?.review).toEqual({ summary: "a ready", scene, at: 1_000 });
+    expect(restored(path).sessionStates.get("a")?.review).toEqual({ summary: "a ready", scene, at: 1_000, id: "a-rev" });
     const saved = JSON.parse(readFileSync(path, "utf8"));
     saved.a.review.scene = { v: 9 };
     writeFileSync(path, JSON.stringify(saved));
-    expect(restored(path).sessionStates.get("a")?.review).toEqual({ summary: "a ready", at: 1_000 });
+    expect(restored(path).sessionStates.get("a")?.review).toEqual({ summary: "a ready", at: 1_000, id: "a-rev" });
   }));
 
   test("a malformed entry is skipped and a live latch is never overwritten", () => withFile((path) => {

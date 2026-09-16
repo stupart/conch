@@ -73,7 +73,7 @@ export interface PanelRowModel {
   /** `opened` exists only on the terminal renderer's own copy, set once `o` has
    * handed the link to macOS — its equivalent of the Mac app's seen set. The
    * publisher copies summary/link/at explicitly, so it never reaches the wire. */
-  review?: { summary: string; link?: string; scene?: ReviewScene; at: number; opened?: boolean };
+  review?: { summary: string; link?: string; scene?: ReviewScene; at: number; id: string; opened?: boolean };
   paused: boolean;
   muted: boolean;
   liveGlyph: PanelConchState | null;
@@ -269,7 +269,15 @@ export interface PublishedSessionRow {
   snippet?: string;
   /** A finished deliverable attached to this waiting row. Carries the link so
    * external consumers can render it, not just the summary. */
-  review?: { summary: string; link?: string; scene?: ReviewScene; at?: number };
+  review?: {
+    summary: string;
+    link?: string;
+    scene?: ReviewScene;
+    at?: number;
+    /** The identity it was filed with. Absent from an older daemon, which is why every
+     * reader still falls back to recomputing its own key. */
+    id?: string;
+  };
 }
 
 /**
@@ -528,6 +536,9 @@ export function buildPublishedState(
               // Latch time — external viewers need it to pick the NEWEST review
               // when more than one is pending, instead of guessing.
               ...(row.review.at !== undefined ? { at: row.review.at } : {}),
+              // The identity the deliverable was filed with. Older apps ignore it and keep
+              // recomputing their own key; newer ones stop guessing.
+              ...(row.review.id ? { id: row.review.id } : {}),
             },
           }
           : {}),
@@ -829,8 +840,15 @@ export interface SessionReview {
   summary: string;
   link?: string;
   scene?: ReviewScene;
-  /** Epoch-ms the deliverable was filed; its identity until a newer one replaces it. */
+  /** Epoch-ms the deliverable was filed. */
   at: number;
+  /**
+   * Minted once at filing (`reviewIdentity`), and carried unchanged from there: through the
+   * latch, the reviews file, a daemon restart, and onto the wire. Every surface that needs to
+   * say "this deliverable, the one I already looked at" keys on this rather than recomputing
+   * a key of its own.
+   */
+  id: string;
 }
 
 /**

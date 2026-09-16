@@ -308,7 +308,7 @@ describe("theater status formatting", () => {
       sessionId: "review",
       label: "review",
       status: "waiting",
-      review: { summary: "Ready to inspect", at: 1 },
+      review: { summary: "Ready to inspect", at: 1, id: "fixture-review" },
       paused: false,
       muted: false,
       liveGlyph: null,
@@ -464,7 +464,7 @@ describe("theater deliverables", () => {
     label: "hero-site",
     status: "waiting",
     at: HERO_AT,
-    review: { summary: "Hero v3 render", link: "/tmp/hero-v3.png", at: HERO_AT },
+    review: { summary: "Hero v3 render", link: "/tmp/hero-v3.png", at: HERO_AT, id: "hero-v3-rev" },
     paused: false,
     muted: false,
     liveGlyph: null,
@@ -531,14 +531,14 @@ describe("theater deliverables", () => {
 
     // A newer review from the same session is new work to look at.
     renderPanel(frame([deliverableRow({
-      review: { summary: "Hero v4 render", link: "/tmp/hero-v4.png", at: HERO_AT + 1 },
+      review: { summary: "Hero v4 render", link: "/tmp/hero-v4.png", at: HERO_AT + 1, id: "hero-v4-rev" },
     })]));
     ledger = ledgerLine(writes.at(-1)!);
     expect(ledger).toContain("⭐ needs review (Hero v4 render · /tmp/hero-v4.png)");
     expect(plainFrame(writes.at(-1)!)[0]).toContain("⭐1 to look at");
 
     // No link, nothing to hand over — and nothing is consumed.
-    renderPanel(frame([deliverableRow({ review: { summary: "Wrote the notes", at: HERO_AT + 2 } })]));
+    renderPanel(frame([deliverableRow({ review: { summary: "Wrote the notes", at: HERO_AT + 2, id: "notes-rev" } })]));
     expect(openTheaterReview("hero")).toBe("no link was published for ‹hero-site›'s review");
     expect(opens).toEqual(["/tmp/hero-v3.png"]);
     expect(ledgerLine(writes.at(-1)!)).toContain("⭐ needs review (Wrote the notes)");
@@ -563,7 +563,7 @@ describe("theater deliverables", () => {
     renderPanel(frame([deliverableRow({ at: HERO_AT + 60_000 })]));
     expect(ledgerLine(writes.at(-1)!)).not.toContain("needs review");
 
-    const v4 = { summary: "Hero v4 render", link: "/tmp/hero-v4.png", at: HERO_AT + 120_000 };
+    const v4 = { summary: "Hero v4 render", link: "/tmp/hero-v4.png", at: HERO_AT + 120_000, id: "hero-v4-rev" };
     renderPanel(frame([deliverableRow({ status: "working", at: HERO_AT + 180_000, review: v4 })]));
     const working = ledgerLine(writes.at(-1)!);
     expect(working).toContain("Hero v4 render · /tmp/hero-v4.png");
@@ -701,7 +701,7 @@ describe("theater renderer lifecycle", () => {
         sessionId: "review",
         label: "review-project",
         status: "waiting",
-        review: { summary: "PR ready to inspect", at: 20 },
+        review: { summary: "PR ready to inspect", at: 20, id: "pr-rev" },
         paused: false,
         muted: false,
         liveGlyph: null,
@@ -748,6 +748,7 @@ describe("theater renderer lifecycle", () => {
           review: {
             summary: "Review the terminal dashboard deliverable",
             at: now - 2 * 60_000 - 5_000,
+            id: "dashboard-rev",
           },
           paused: false,
           muted: false,
