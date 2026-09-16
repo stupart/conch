@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 const root = join(import.meta.dir, "..");
 
@@ -64,20 +64,18 @@ test("every reason the daemon can name has a sentence for the phone", () => {
 });
 
 test("the Swift receipt parser turns the Mac's reason into the sentence, and keeps the draft", async () => {
-  // The app's own mapping, not a copy of it: the sentences are compiled out of ConchDesign,
-  // the same library the Mac app links.
-  const design = join(root, "design/ConchDesign");
-  const built = Bun.spawnSync(["swift", "build", "--package-path", design], { stdout: "pipe", stderr: "pipe" });
-  expect(built.exitCode, built.stderr.toString()).toBe(0);
-  const modules = Bun.spawnSync(["find", join(design, ".build"), "-name", "ConchDesign.swiftmodule"], { stdout: "pipe" })
-    .stdout.toString().trim().split("\n").filter(Boolean)
-    .map((path) => dirname(path))
-    .find((directory) => existsSync(join(directory, "libConchDesign.a")));
-  expect(modules, "no built ConchDesign module to link against").toBeTruthy();
-
   const root_ = mkdtempSync(join(tmpdir(), "conch-receipt-swift-"));
   try {
     const harness = join(root_, "main.swift"), binary = join(root_, "receipt-tests");
+    // Both production sources, compiled as one module. ConchDesign is not LINKED here
+    // because SwiftPM's build layout moves between toolchains, and a test that has to
+    // guess where a built module landed is a test that fails on someone else's machine
+    // (it did, on CI). The real `import ConchDesign` is proven by the two app builds,
+    // which link the package for real; here it is only in the way.
+    const app = readFileSync(join(root, "mobile/conch-ios/conch-ios/InjectReceipt.swift"), "utf8");
+    expect(app, "the app must take its sentences from the shared design package").toContain("import ConchDesign\n");
+    const receipt = join(root_, "InjectReceipt.swift");
+    writeFileSync(receipt, app.replace("import ConchDesign\n", ""));
     const undelivered = Object.entries(SENTENCES).map(([reason, sentence]) =>
       `precondition(receipt(${receiptJSON({ kind: "inject-done", delivered: false, reason })}) == .failed(${swift(sentence)}), ${swift(reason)})`
     );
@@ -125,8 +123,7 @@ precondition(!InjectReceipt.decode(status: 502, body: Data()).reachedMac)
 print("receipt and draft assertions passed")
 `);
     const compiler = Bun.spawn([
-      "swiftc", join(root, "mobile/conch-ios/conch-ios/InjectReceipt.swift"), harness,
-      "-I", modules!, "-L", modules!, "-lConchDesign", "-o", binary,
+      "swiftc", join(root, "design/ConchDesign/Sources/ConchDesign/SendFailure.swift"), receipt, harness, "-o", binary,
     ], { stdout: "pipe", stderr: "pipe" });
     const diagnostics = await new Response(compiler.stderr).text();
     expect(await compiler.exited, diagnostics).toBe(0);
