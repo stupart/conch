@@ -15,8 +15,8 @@ import {
 import {
   parsePublishableReview,
   spokenSnippet,
-  transcriptMark,
 } from "./snippet.ts";
+import { boundedMark } from "./prompt-cursor.ts";
 import { bell, speak } from "./speak.ts";
 import { askClaude } from "./model.ts";
 
@@ -177,7 +177,8 @@ export interface CodexHookDependencies {
   writeSession(entry: CodexSessionEntry): void | Promise<void>;
   sendToDaemon(socketPath: string, event: TurnEvent): Promise<boolean>;
   spokenSnippet: typeof spokenSnippet;
-  transcriptMark(transcriptPath: string): Promise<number>;
+  /** Bounded when a committed cursor says where to resume; the same number either way. */
+  transcriptMark(config: Pick<Config, "recordsEnabled">, transcriptPath: string): Promise<number>;
   labelFor(session: SessionInfo | null, cwd: string | undefined): string;
   bell(cfg: Config): Promise<void>;
   speak(cfg: Config, text: string, label?: string): Promise<void>;
@@ -192,7 +193,7 @@ export const defaultCodexHookDependencies: CodexHookDependencies = {
   },
   sendToDaemon,
   spokenSnippet,
-  transcriptMark,
+  transcriptMark: boundedMark,
   labelFor: sessionLabel,
   bell,
   speak,
@@ -289,7 +290,7 @@ export async function handleCodexHookPayload(
       : `${label}: ${snippet || "finished, ready for your next prompt"}`,
     transcriptPath: payload.transcript_path,
     mark: payload.transcript_path
-      ? await dependencies.transcriptMark(payload.transcript_path)
+      ? await dependencies.transcriptMark(cfg, payload.transcript_path)
       : undefined,
     eventAt,
     ...(review ? { review } : {}),

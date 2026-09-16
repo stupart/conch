@@ -84,6 +84,35 @@ Permission-navigation and interrupt keys are control actions, not message delive
 and have no receipt vocabulary in this PR. Rename commands sent directly by the CLI
 or MCP process also remain outside the daemon-owned journal.
 
+## Prompt cursors for hooks
+
+Claude Code and Codex run a hook on every turn, and each hook is a fresh process
+with an empty cache. A prompt count is the one transcript read that must see the
+whole file, so every turn paid a byte-zero scan of a transcript that can be
+hundreds of megabytes — while the daemon that had already counted it could not
+help, because it is a different process.
+
+The daemon now commits what it counted. `prompt_cursors` holds one row per
+transcript file, keyed by device and inode: the byte offset of a line boundary a
+count reached, the count at that offset, and the record store's own two 256-byte
+probes (the first bytes of the file, and the bytes immediately before the
+offset). `src/prompt-cursor.ts` publishes a row after each count the daemon
+performs, and reads one back in a hook.
+
+A hook opens the database read-only in its own process, with `busy_timeout = 0`
+and a 50 ms budget, because a hook that waits on the daemon delays the user's
+next turn. It stats the transcript, re-reads the two probes, and resumes the
+existing reducer at the cursor, so only the bytes appended since are parsed.
+Records off, no database, no row, a lock, a failed probe or an offset past EOF
+all fall back to the original scan.
+
+A cursor changes how many bytes are read, never the number returned. It is
+derived state: dropping every row costs full scans and nothing else. A count
+that raised on a malformed entry before the cursor is never published, so a
+resumed count cannot return a number where a full scan raises. An interior
+rewrite that preserves both probe windows is undetected — the same ceiling
+[the source contract](records-foundation.md) already documents for ingestion.
+
 ## Verification
 
 Fixtures cover priority, byte/line budgets, coalescing, partial UTF-8, rotation,

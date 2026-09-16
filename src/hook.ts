@@ -8,10 +8,10 @@ import {
   lastAssistantText,
   stripMarkdown,
   looksLikeAwaitingReply,
-  transcriptMark,
   parsePublishableReview,
   type ReviewScene,
 } from "./snippet.ts";
+import { boundedMark } from "./prompt-cursor.ts";
 import { currentTurnText } from "./transcript-turn.ts";
 import { findHookWindow, sessionLabel, isEngageable } from "./sessions.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
@@ -265,7 +265,7 @@ export async function runHook(cfg: Config): Promise<void> {
         ? `${label} has work ready for your review: ${review.summary}`
         : `${label}: ${snippet || "finished, ready for your next prompt"}`,
       transcriptPath: payload.transcript_path,
-      mark: payload.transcript_path ? await transcriptMark(payload.transcript_path) : undefined,
+      mark: payload.transcript_path ? await boundedMark(cfg, payload.transcript_path) : undefined,
       eventAt,
       ...(backgroundWork ? { backgroundWork: true } : {}),
       ...(review ? { review } : {}),
@@ -288,7 +288,7 @@ export async function runHook(cfg: Config): Promise<void> {
       announce: `${label} needs you: ${payload.message ?? "waiting for your input"}`,
       transcriptPath: payload.transcript_path,
       ntype,
-      mark: payload.transcript_path ? await transcriptMark(payload.transcript_path) : undefined,
+      mark: payload.transcript_path ? await boundedMark(cfg, payload.transcript_path) : undefined,
       eventAt,
     };
   } else {

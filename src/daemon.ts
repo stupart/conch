@@ -117,7 +117,8 @@ import {
   writeVersionCheck,
 } from "./version-check.ts";
 import { CONCH_VERSION } from "./version.ts";
-import { lastAssistantText, stripMarkdown, firstSentences, userRespondedSince, transcriptMark } from "./snippet.ts";
+import { lastAssistantText, stripMarkdown, firstSentences, userRespondedSince, transcriptMark, setPromptCursorSink } from "./snippet.ts";
+import { promptCursorPublisher } from "./prompt-cursor.ts";
 import { PhoneUploads } from "./phone-uploads.ts";
 import { CONCH_DATA } from "./config.ts";
 import {
@@ -723,6 +724,14 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     configDir: dirname(daemonSettingsPath), ownerDeviceId,
     claudeHome: cfg.claudeDir, codexHome: codexHomeDir() ?? undefined,
     onError: (message) => log(`records: ${message}`),
+  });
+  // Hooks are fresh processes with an empty cache, so each one used to rescan a
+  // whole transcript for its prompt count while THIS daemon already knew the
+  // answer (the warm-up note on warmTranscript below). Publish every count it
+  // reaches, and the next hook resumes from it instead of from byte zero.
+  const publishPromptCursor = promptCursorPublisher((cursor) => records.putPromptCursor(cursor));
+  setPromptCursorSink((transcriptPath, cursor) => {
+    if (cfg.recordsEnabled && !shuttingDown) publishPromptCursor(transcriptPath, cursor);
   });
   const receiptObserver = createRecordReceiptObserver({
     ownerDeviceId,

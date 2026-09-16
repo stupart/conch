@@ -52,7 +52,7 @@ test("records migrate once, use WAL, and keep the database and sidecars owner-on
   expect(rows(store, "PRAGMA user_version")[0].user_version).toBe(RECORD_MIGRATIONS.length);
   expect(rows(store, "PRAGMA journal_mode")[0].journal_mode).toBe("wal");
   expect(rows(store, "SELECT name FROM sqlite_master WHERE type='table'").map((row) => row.name).sort())
-    .toEqual(["sessions", "sources", "turns", "items", "item_sources", "tool_calls", "responses", "receipts", "history_metadata"].sort());
+    .toEqual(["sessions", "sources", "turns", "items", "item_sources", "tool_calls", "responses", "receipts", "history_metadata", "prompt_cursors"].sort());
   for (const suffix of ["", "-wal", "-shm"]) expect(statSync(store.path + suffix).mode & 0o777).toBe(0o600);
   expect(statSync(join(store.path, "..")).mode & 0o777).toBe(0o700);
   const reopened = open(join(store.path, "..", ".."));

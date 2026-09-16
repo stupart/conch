@@ -17,6 +17,7 @@ function fixture(read: (request: HistoryPageRequest, owner: string) => Promise<H
   let opens = 0;
   const client: RecordsRuntimeClient = {
     async startIngestion() {}, async prioritize() {}, async appendReceipt() { return true; },
+    async putPromptCursor() {},
     historyPage: read, historyItem: async () => historyOff(), async close() {}, async terminate() {},
   };
   const runtime = new RecordsRuntime({ configDir: join(root, "config"), ownerDeviceId: "local-owner",

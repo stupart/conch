@@ -108,4 +108,16 @@ END;
 CREATE TRIGGER tools_history_name AFTER UPDATE OF name ON tool_calls WHEN NEW.name IS NOT OLD.name BEGIN
   UPDATE sessions SET change_sequence=change_sequence+1 WHERE id=NEW.session_id;
 END;
+`, String.raw`
+-- Where a prompt count reached in one transcript file, so a fresh hook process
+-- resumes instead of rescanning from byte zero. Keyed by file identity, not
+-- path: a renamed file keeps its cursor and a recycled inode fails its probes.
+-- Purely derived — losing every row costs full scans, never a wrong answer.
+CREATE TABLE prompt_cursors (
+  device TEXT NOT NULL, inode TEXT NOT NULL,
+  committed_offset INTEGER NOT NULL, prompt_count INTEGER NOT NULL,
+  prefix_hash TEXT NOT NULL, checkpoint_hash TEXT NOT NULL,
+  updated_at REAL NOT NULL,
+  PRIMARY KEY (device, inode)
+);
 `];

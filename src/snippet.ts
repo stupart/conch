@@ -135,9 +135,27 @@ export interface TranscriptSource {
   open(transcriptPath: string): Promise<OpenTranscriptFile | null>;
 }
 
+/**
+ * Where a prompt count may resume: the count of complete lines before `from`.
+ *
+ * `from` MUST be a line boundary. A count taken at an arbitrary file size
+ * includes the provisional trailing fragment, so resuming past a half-written
+ * record would drop the prompt that fragment becomes — hence `promptCursor`
+ * reports the stable offset, never the file size.
+ */
+export interface PromptResume {
+  from: number;
+  count: number;
+}
+
+/** A prompt count another process can resume from, with the version it describes. */
+export interface PromptCursor extends PromptResume {
+  version: TranscriptVersion;
+}
+
 export interface TranscriptReader {
   lastAssistantText(transcriptPath: string): Promise<string>;
-  countUserPrompts(transcriptPath: string): Promise<number>;
+  countUserPrompts(transcriptPath: string, resume?: PromptResume): Promise<number>;
 }
 
 interface AssistantAccumulator {
@@ -190,6 +208,43 @@ function sameVersion(a: TranscriptVersion, b: TranscriptVersion): boolean {
 
 function canAppend(previous: TranscriptVersion, next: TranscriptVersion): boolean {
   return next.size > previous.size && sameFileIdentity(previous, next);
+}
+
+/** A cursor may only be trusted inside the file it was committed against. */
+function usableResume(resume: PromptResume | undefined, version: TranscriptVersion): boolean {
+  return resume !== undefined
+    && Number.isSafeInteger(resume.from) && resume.from > 0 && resume.from <= version.size
+    && Number.isSafeInteger(resume.count) && resume.count >= 0;
+}
+
+let promptCursorSink: ((transcriptPath: string, cursor: PromptCursor) => void) | undefined;
+
+/**
+ * Let the daemon persist the prompt counts it already pays for.
+ *
+ * Only the daemon installs a sink. A hook is a fresh process that reads
+ * cursors and never writes them, so counting in a hook stays a pure read.
+ */
+export function setPromptCursorSink(
+  sink: ((transcriptPath: string, cursor: PromptCursor) => void) | undefined,
+): void {
+  promptCursorSink = sink;
+}
+
+/**
+ * The committed part of a count: complete lines only.
+ *
+ * A poisoned prefix (a parseable-but-invalid entry before the cursor) is never
+ * published — a resumed count would return a number where the full scan
+ * throws, which is exactly the difference this must not introduce.
+ */
+function cursorFromEntry(entry: TranscriptCacheEntry): PromptCursor | null {
+  if (entry.stable.userPrompts === undefined || entry.stable.userPromptError !== null) return null;
+  return {
+    from: entry.version.size - entry.trailing.length,
+    count: entry.stable.userPrompts,
+    version: entry.version,
+  };
 }
 
 function cloneAccumulator(accumulator: TranscriptAccumulator): TranscriptAccumulator {
@@ -660,6 +715,7 @@ export function createTranscriptReader(
   const load = async (
     transcriptPath: string,
     requirement: TranscriptRequirement,
+    resume?: PromptResume,
   ): Promise<TranscriptCacheEntry | null> => {
     for (;;) {
       const inFlight = pending.get(transcriptPath);
@@ -705,8 +761,13 @@ export function createTranscriptReader(
             state = cloneParseState(cached);
             await scanForward(file!, cached.version.size, version.size, state, format);
           } else if (requirement === "prompts") {
+            // A cursor another process committed replaces the byte-zero scan:
+            // same reducer, same lines, started at a line boundary someone
+            // already counted. An unusable cursor just scans from zero.
+            const from = usableResume(resume, version) ? resume!.from : 0;
             state = emptyParseState(true);
-            await scanForward(file!, 0, version.size, state, format);
+            if (from) state.stable.userPrompts = resume!.count;
+            await scanForward(file!, from, version.size, state, format);
           } else {
             state = await scanAssistantTail(file!, format);
           }
@@ -740,9 +801,18 @@ export function createTranscriptReader(
       const entry = await load(transcriptPath, "assistant");
       return entry ? materializeAssistant(entry, format) : "";
     },
-    async countUserPrompts(transcriptPath) {
-      const entry = await load(transcriptPath, "prompts");
-      return entry ? materializePromptCount(entry, format) : 0;
+    async countUserPrompts(transcriptPath, resume) {
+      const entry = await load(transcriptPath, "prompts", resume);
+      if (!entry) return 0;
+      const count = materializePromptCount(entry, format);
+      const cursor = promptCursorSink && cursorFromEntry(entry);
+      if (cursor) {
+        // A diagnostic-grade cache: a sink that fails must never fail a count.
+        try {
+          promptCursorSink!(transcriptPath, cursor);
+        } catch {}
+      }
+      return count;
     },
   };
 }
@@ -830,9 +900,16 @@ export function lastAssistantText(transcriptPath: string): Promise<string> {
   return readerForPath(transcriptPath).lastAssistantText(transcriptPath);
 }
 
-/** How many times you'd prompted this session when a turn fired — the "where we were" mark. */
-export async function transcriptMark(transcriptPath: string): Promise<number> {
-  return readerForPath(transcriptPath).countUserPrompts(transcriptPath);
+/**
+ * How many times you'd prompted this session when a turn fired — the "where we
+ * were" mark.
+ *
+ * `resume` is a cursor a previous count committed (see `src/prompt-cursor.ts`).
+ * It changes only how much of the file is read, never the number: an absent,
+ * stale or unusable cursor scans from byte zero exactly as before.
+ */
+export async function transcriptMark(transcriptPath: string, resume?: PromptResume): Promise<number> {
+  return readerForPath(transcriptPath).countUserPrompts(transcriptPath, resume);
 }
 
 /**

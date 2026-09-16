@@ -81,7 +81,7 @@ function harness(options: HarnessOptions = {}) {
       });
       return options.snippet ?? "finished";
     },
-    async transcriptMark(path) {
+    async transcriptMark(_config, path) {
       marks.push(path);
       return options.mark ?? 7;
     },
