@@ -2,8 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Worker } from "node:worker_threads";
 import { RecordsRuntime, type RecordsRuntimeClient } from "../src/records-runtime.ts";
-import type { RecordsIngestionOptions, RecordsPriorityHints } from "../src/records-client.ts";
+import { RecordsClient, type RecordsIngestionOptions, type RecordsPriorityHints } from "../src/records-client.ts";
 import type { RecordReceipt } from "../src/records-types.ts";
 import type { StoredPromptCursor } from "../src/records-store.ts";
 import { historyOff } from "../src/history.ts";
@@ -312,5 +313,28 @@ describe("records runtime", () => {
     expect(await write).toBe(true);
     await Promise.all([enabling, closing]);
     expect(client.events).toEqual(["receipt:accepted", "close"]);
+  });
+  test("a worker that exits is replaced instead of poisoning the store for good", async () => {
+    const root = mkdtempSync(join(tmpdir(), "conch-records-recovery-"));
+    const opened: RecordsClient[] = [];
+    const runtime = new RecordsRuntime({
+      configDir: join(root, "config"), ownerDeviceId: "device",
+      claudeHome: join(root, "claude"), codexHome: join(root, "codex"),
+      open: async (options) => { const client = await RecordsClient.open(options); opened.push(client); return client; },
+    });
+    try {
+      await runtime.setEnabled(true);
+      expect(await runtime.historyPage({ session: "absent" })).toMatchObject({ code: "session-not-found" });
+      // The worker thread dies under the runtime: a crash, an OOM, a terminate.
+      await (opened[0]! as unknown as { worker: Worker }).worker.terminate();
+      expect(await runtime.historyPage({ session: "absent" })).toMatchObject({ code: "unavailable" });
+      for (let attempt = 0; attempt < 100 && opened.length < 2; attempt++) await Bun.sleep(5);
+      expect(opened).toHaveLength(2);
+      expect(await runtime.historyPage({ session: "absent" })).toMatchObject({ code: "session-not-found" });
+      expect(await runtime.appendReceipt(receipt("after-recovery"))).toBe(true);
+    } finally {
+      await runtime.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

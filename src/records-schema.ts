@@ -120,4 +120,12 @@ CREATE TABLE prompt_cursors (
   updated_at REAL NOT NULL,
   PRIMARY KEY (device, inode)
 );
+`, String.raw`
+-- Ancestry is the provider's OWN parent link, not a record id. A child read before its
+-- parent -- another file, a fork, a backfill running backwards -- resolves the moment
+-- the parent is indexed, because nothing had to point at a row that did not exist yet.
+ALTER TABLE items ADD COLUMN parent_native_id TEXT;
+-- Where a source used to be. A replacement taking a retired file's path is a logical
+-- rotation whichever of the two files discovery happens to reach first.
+ALTER TABLE sources ADD COLUMN previous_path TEXT;
 `];

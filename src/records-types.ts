@@ -30,6 +30,8 @@ export interface RecordItem {
   turnId?: string;
   nativeId?: string;
   parentId?: string;
+  /** The provider's id for the parent event. Survives ingestion order, forks and rotation. */
+  parentNativeId?: string;
   kind: "message" | "tool_call" | "tool_result" | "compaction" | "context" | "material" | "inter_agent";
   role?: "user" | "assistant" | "tool" | "system";
   text?: string;

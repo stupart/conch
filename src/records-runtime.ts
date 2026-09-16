@@ -13,6 +13,8 @@ export interface RecordsRuntimeClient {
   historyItem(request: HistoryItemRequest, ownerDeviceId: string): Promise<HistoryResponse>;
   close(): Promise<void>;
   terminate(): Promise<void>;
+  /** True once this worker generation has gone: every later request rejects. */
+  readonly failed?: boolean;
 }
 
 export interface RecordsRuntimeOptions {
@@ -52,7 +54,11 @@ export class RecordsRuntime {
   private activeReceipt?: QueuedReceipt;
   private receipts: QueuedReceipt[] = [];
   private historyRequests = 0;
+  private restarts = 0;
   private terminated = new WeakSet<RecordsRuntimeClient>();
+  /** ponytail: three replacements, then it waits for an explicit enable. Raise it only if
+   *  a real crash loop is ever observed recovering on the fourth try. */
+  private static readonly restartLimit = 3;
   private readonly receiptLimit: number;
   private readonly closeTimeoutMs: number;
 
@@ -67,7 +73,17 @@ export class RecordsRuntime {
 
   setEnabled(enabled: boolean): Promise<void> {
     if (this.closed) return this.closing ?? Promise.resolve();
-    if (this.enabled === enabled) return this.transitions;
+    if (this.enabled === enabled) {
+      // Enabling an already-enabled store is the explicit retry: a worker that died after
+      // running comes back without restarting the daemon. A startup that never worked is
+      // deliberately not retried here — that failure repeats, and repeating it costs a
+      // worker every time.
+      if (enabled && !this.client && !this.opening && !this.startupFailed) {
+        this.restarts = 0;
+        this.transitions = this.restart(this.stateVersion);
+      }
+      return this.transitions;
+    }
     this.enabled = enabled;
     const version = ++this.stateVersion;
     this.startupFailed = false;
@@ -139,7 +155,7 @@ export class RecordsRuntime {
     const client = this.client;
     if (!this.enabled || this.closed || !this.ingesting || !client || this.cursorFlight) return;
     const flight = client.putPromptCursor(cursor)
-      .catch(() => { this.report("prompt cursor could not be stored"); })
+      .catch(() => { this.report("prompt cursor could not be stored"); this.detach(client); })
       .finally(() => { if (this.cursorFlight === flight) this.cursorFlight = undefined; });
     this.cursorFlight = flight;
   }
@@ -174,12 +190,48 @@ export class RecordsRuntime {
       }
       return checked.ok ? checked.value : historyError("response-too-large", "history worker returned an invalid or oversized response");
     } catch {
+      this.detach(client);
       return !this.enabled || this.closed ? historyOff() : historyError("unavailable", "history read failed");
     } finally { this.historyRequests--; }
   }
 
   private report(message: string): void {
     try { this.options.onError?.(message); } catch { /* Diagnostics cannot break the daemon's controls. */ }
+  }
+
+  /** Open a replacement, if this state still wants one by the time the queue reaches it. */
+  private restart(version: number): Promise<void> {
+    return this.transitions.then(async () => {
+      if (version !== this.stateVersion || !this.enabled || this.closed || this.client) return;
+      await this.startClient();
+    }).catch(() => { this.report("record runtime transition failed"); });
+  }
+
+  /**
+   * Let go of a worker generation that has exited.
+   *
+   * One crash used to poison the store for the life of the daemon: the client rejected
+   * every later request and the runtime went on holding it, so history, receipts and
+   * indexing were all off until conch was restarted. Replacement is bounded — a worker
+   * that dies four times running is not one a fifth attempt fixes — and an explicit
+   * enable clears the budget.
+   *
+   * Receipts queued against the dead generation resolve false, which is the runtime's
+   * existing word for "not known to be stored". They are idempotent by id, so a caller
+   * that observes that and writes again cannot duplicate one.
+   */
+  private detach(client: RecordsRuntimeClient): void {
+    if (this.client !== client || client.failed !== true || this.closed) return;
+    this.client = undefined;
+    this.ingesting = false;
+    this.hintFlight = undefined;
+    this.receiptFlight = undefined;
+    this.hintsSent = -1;
+    this.failReceipts();
+    this.report("record worker exited");
+    if (!this.enabled || this.restarts >= RecordsRuntime.restartLimit) return;
+    this.restarts++;
+    this.transitions = this.restart(this.stateVersion);
   }
 
   private async startClient(): Promise<void> {
@@ -251,6 +303,7 @@ export class RecordsRuntime {
     })().catch(() => {
       failed = true;
       this.report("record source priorities could not be updated");
+      this.detach(client);
     }).finally(() => {
       if (this.hintFlight === flight) {
         this.hintFlight = undefined;
@@ -274,6 +327,7 @@ export class RecordsRuntime {
           pending.resolve(false);
           this.report("record receipt could not be stored");
           if (this.client === client) this.failReceipts();
+          this.detach(client);
           break;
         } finally {
           if (this.activeReceipt === pending) this.activeReceipt = undefined;

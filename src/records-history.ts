@@ -24,13 +24,18 @@ const BODY = `(CASE WHEN i.text IS NOT NULL AND i.content_json IS NOT NULL
   THEN '{"text":'||json_quote(i.text)||',"content":'||i.content_json||'}'
   WHEN i.content_json IS NOT NULL THEN i.content_json ELSE COALESCE(i.text,'') END)`;
 const ID_COLUMNS = ["id", "turn_id", "native_id", "parent_id", "order_key"];
+// A tool row on screen is keyed by its CALL id; the item's native id is the message the
+// call was written in. A truncated id would match nothing, so an unusable one is omitted.
+const TOOL_ID = `CASE WHEN length(CAST(t.native_id AS BLOB))<=160 THEN t.native_id END`;
 const META = `${ID_COLUMNS.map((name) => `CASE WHEN length(CAST(i.${name} AS BLOB))<=${HISTORY_ID_MAX_BYTES} THEN i.${name} END AS ${name}`).join(",")},
   (${ID_COLUMNS.map((name) => `length(CAST(i.${name} AS BLOB))>${HISTORY_ID_MAX_BYTES}`).join(" OR ")}) AS oversized_metadata,
   i.kind,i.role,i.at,i.revision,
   substr(COALESCE(i.text,i.content_json,''),1,${PREVIEW_CHARACTERS}) AS preview,
   length(CAST(${BODY} AS BLOB)) AS body_bytes,
   COALESCE((SELECT substr(name,1,160) FROM tool_calls t WHERE t.session_id=i.session_id AND t.call_item_id=i.id LIMIT 1),
-    (SELECT substr(name,1,160) FROM tool_calls t WHERE t.session_id=i.session_id AND t.result_item_id=i.id LIMIT 1)) AS tool_name`;
+    (SELECT substr(name,1,160) FROM tool_calls t WHERE t.session_id=i.session_id AND t.result_item_id=i.id LIMIT 1)) AS tool_name,
+  COALESCE((SELECT ${TOOL_ID} FROM tool_calls t WHERE t.session_id=i.session_id AND t.call_item_id=i.id LIMIT 1),
+    (SELECT ${TOOL_ID} FROM tool_calls t WHERE t.session_id=i.session_id AND t.result_item_id=i.id LIMIT 1)) AS tool_id`;
 
 /** SQLite-only projection. Production callers reach this through records-worker. */
 export class RecordsHistory {
@@ -96,23 +101,34 @@ export class RecordsHistory {
     } catch { return historyError("invalid-cursor", "history cursor is invalid for this request"); }
   }
 
+  /**
+   * The ancestry above one item, walked by the PROVIDER's parent ids.
+   *
+   * The tip is a record item id because that is what a reader holds; every hop after it
+   * follows `parent_native_id`, which is the id the transcript itself wrote. That is what
+   * makes ancestry independent of ingestion order: a parent read after its child, out of
+   * another file or a fork's copy, resolves as soon as it is indexed, where a record id
+   * chosen before the parent existed could only ever dangle.
+   */
   private branch(session: Session, tip?: string): Branch | HistoryError {
     if (!tip) return { fingerprint: null, nativeIds: [] };
     if (session.provider !== "claude") return historyError("branch-unavailable", "this provider has no indexed item ancestry");
-    const seen = new Set<string>();
+    const ancestor = this.db.query("SELECT native_id,parent_native_id FROM items WHERE session_id=? AND native_id=? ORDER BY order_key,id LIMIT 1");
     const nativeIds = new Set<string>();
-    const chain: Array<[string, string | null, string]> = [];
-    let next: string | null = tip;
-    while (next !== null) {
-      if (seen.has(next) || seen.size >= MAX_ANCESTORS) return historyError("branch-unavailable", "indexed ancestry is cyclic or exceeds its traversal limit");
-      seen.add(next);
-      const row = this.db.query("SELECT id,parent_id,native_id FROM items WHERE session_id=? AND id=?")
-        .get(session.id, next) as { id: string; parent_id: string | null; native_id: string | null } | null;
-      if (!row?.native_id) return historyError("branch-unavailable", "indexed ancestry is incomplete");
+    const chain: Array<[string, string | null]> = [];
+    let row = this.db.query("SELECT native_id,parent_native_id FROM items WHERE session_id=? AND id=?")
+      .get(session.id, tip) as { native_id: string | null; parent_native_id: string | null } | null;
+    while (row?.native_id) {
+      if (nativeIds.has(row.native_id) || nativeIds.size >= MAX_ANCESTORS) {
+        return historyError("branch-unavailable", "indexed ancestry is cyclic or exceeds its traversal limit");
+      }
       nativeIds.add(row.native_id);
-      chain.push([row.id, row.parent_id, row.native_id]);
-      next = row.parent_id;
+      chain.push([row.native_id, row.parent_native_id]);
+      if (row.parent_native_id === null) break;
+      row = ancestor.get(session.id, row.parent_native_id) as typeof row;
+      if (!row) return historyError("branch-unavailable", "indexed ancestry is incomplete");
     }
+    if (!nativeIds.size) return historyError("branch-unavailable", "indexed ancestry is incomplete");
     return { fingerprint: createHash("sha256").update(JSON.stringify(chain)).digest("base64url"), nativeIds: [...nativeIds] };
   }
 
@@ -135,7 +151,8 @@ export class RecordsHistory {
       preview: row.preview, bodyBytes: row.body_bytes,
       ...(row.turn_id === null ? {} : { turnId: row.turn_id }), ...(row.native_id === null ? {} : { nativeId: row.native_id }),
       ...(row.parent_id === null ? {} : { parentId: row.parent_id }), ...(row.role === null ? {} : { role: row.role }),
-      ...(row.at === null ? {} : { at: row.at }), ...(row.tool_name === null ? {} : { toolName: row.tool_name }) };
+      ...(row.at === null ? {} : { at: row.at }), ...(row.tool_name === null ? {} : { toolName: row.tool_name }),
+      ...(row.tool_id === null || row.tool_id === undefined ? {} : { toolId: row.tool_id }) };
   }
 
   page(request: HistoryPageRequest, owner: string): HistoryPage | HistoryError {

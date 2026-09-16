@@ -81,6 +81,9 @@ export class RecordsClient {
     }
   }
 
+  /** This worker generation is gone: every later request rejects, so it must be replaced. */
+  get failed(): boolean { return this.failure !== undefined; }
+
   private fail(error: Error): void {
     this.failure ??= error;
     for (const request of this.pending.values()) request.reject(this.failure);
