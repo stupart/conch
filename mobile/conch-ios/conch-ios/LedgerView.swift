@@ -1,3 +1,4 @@
+import ConchDesign
 import SwiftUI
 
 /// The whole app is two ideas: a glanceable ledger, and a talk surface per
@@ -39,6 +40,24 @@ struct LedgerView: View {
         return format.string(from: date)
     }()
 
+    /// The rows grouped by the folder they run in — the same rule the Mac list uses
+    /// (ConchDesign/SessionGrouping.swift), so two checkouts of one repo are told apart and
+    /// a child belongs wherever its parent does.
+    private func folders(in state: PublishedState) -> [SessionFolder] {
+        SessionGrouping.folders(
+            for: state.rows.map { ($0.id, $0.cwd, $0.parentSessionId ?? $0.startedBySessionId) }
+        )
+    }
+
+    private func rows(of folder: SessionFolder, in state: PublishedState) -> [PublishedState.Row] {
+        let byID = Dictionary(state.rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return folder.sessionIDs.compactMap { byID[$0] }
+    }
+
+    private func isNested(_ row: PublishedState.Row) -> Bool {
+        row.parentSessionId != nil || row.startedBySessionId != nil
+    }
+
     var body: some View {
         NavigationStack(path: $path) {
             Group {
@@ -63,21 +82,37 @@ struct LedgerView: View {
                             .listRowBackground(Palette.bg)
                             .listRowSeparator(.hidden)
                         }
-                        ForEach(state.rows) { row in
-                            NavigationLink(value: row.id) {
-                                SessionRowView(row: row)
-                            }
-                            .listRowBackground(Palette.bg)
-                            .listRowSeparatorTint(Palette.divider)
-                            .opacity(bridge.isConnected ? 1 : 0.55)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                Button(role: .destructive) {
-                                    runSessionCommand(.dismiss, id: row.id, label: row.label)
-                                } label: {
-                                    Label("Dismiss", systemImage: "eye.slash")
+                        ForEach(folders(in: state)) { folder in
+                            Section {
+                                ForEach(rows(of: folder, in: state)) { row in
+                                    NavigationLink(value: row.id) {
+                                        SessionRowView(row: row)
+                                    }
+                                    // A subagent sits under the session it runs inside, the way
+                                    // it does on the Mac. It used to be listed as a peer of it.
+                                    .padding(.leading, isNested(row) ? 16 : 0)
+                                    .listRowBackground(Palette.bg)
+                                    .listRowSeparatorTint(Palette.divider)
+                                    .opacity(bridge.isConnected ? 1 : 0.55)
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                        Button(role: .destructive) {
+                                            runSessionCommand(.dismiss, id: row.id, label: row.label)
+                                        } label: {
+                                            Label("Dismiss", systemImage: "eye.slash")
+                                        }
+                                        .disabled(!bridge.isConnected)
+                                        .accessibilityLabel("Dismiss \(row.label)")
+                                    }
                                 }
-                                .disabled(!bridge.isConnected)
-                                .accessibilityLabel("Dismiss \(row.label)")
+                            } header: {
+                                if !folder.name.isEmpty {
+                                    Text(folder.name)
+                                        .font(Type.caption)
+                                        .foregroundStyle(Palette.textFaint)
+                                        .textCase(nil)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
                             }
                         }
 

@@ -66,6 +66,11 @@ describe("phone fixture mode", () => {
     expect(rows.some((row) => row.backend === "claude")).toBe(true);
     expect(rows.some((row) => row.backend === "codex" && row.noTerminal)).toBe(true);
     expect(rows.some((row) => row.parentSessionId)).toBe(true);
+    // A subagent whose parent is actually in the list, so nesting has something to nest.
+    expect(rows.some((row) => row.parentSessionId && rows.some((p) => p.id === row.parentSessionId))).toBe(true);
+    // More than one folder: with a single cwd the grouped list draws one header over
+    // everything, which would make the sections look right while proving nothing.
+    expect(new Set(rows.map((row) => row.cwd).filter(Boolean)).size).toBeGreaterThan(1);
     expect(rows.some((row) => row.status === "needs")).toBe(true);
 
     const items: any[] = Object.values(state.conversations).flatMap((c: any) => c.items);
