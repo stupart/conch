@@ -277,6 +277,37 @@ describe("§3's anatomy, where the app had drifted from it", () => {
     expect(folder).not.toContain("ConchPalette.textDim");
   });
 
+  test("the header's hairline waits for the transcript to scroll (§3)", () => {
+    // "A hairline appears under the header only once the transcript scrolls or a pane opens."
+    // Nothing pinned it, and it was drawn unconditionally.
+    expect(dashboard).toContain("@State private var transcriptScrolled = false");
+    expect(dashboard).toContain("onScrolled: { transcriptScrolled = $0 },");
+    expect(dashboard).toContain("if transcriptScrolled {");
+
+    // Asked of the TOP, not the bottom: a long transcript resting at its top is not at the
+    // bottom and has still scrolled nothing under the header.
+    expect(stack).toContain("onScrolled(document.height > visible.height && fromTop > 2)");
+    expect(stack).toContain("var onScrolled: (Bool) -> Void = { _ in }");
+    // Reusing the measurement already taken for onReachTop, not a second copy of it.
+    // Matched by the EXPRESSION, not the variable name: a mutation that duplicated the
+    // calculation under a new name walked straight past the name-based version of this.
+    expect(
+      stack.match(/documentView\.isFlipped\s*\n\s*\? visible\.minY - document\.minY/g) ?? [],
+    ).toHaveLength(1);
+    // And the bottom question is untouched — it is what keeps a streaming row followed.
+    expect(stack).toMatch(/onUserScroll\(document\.height <= visible\.height \|\| distance <= 8\)/);
+
+    // The deliverable pages keep their rule unconditionally: there a pane IS open, which is
+    // §3's other reason to draw it.
+    const deliverableArm = dashboard.slice(
+      dashboard.indexOf("if let selectedReview, let reviewRow = focusedRow, stage(for: reviewRow) != .conversation {"),
+      dashboard.indexOf("if deliverables.count > 1 {"),
+    );
+    expect(deliverableArm.length).toBeGreaterThan(100);
+    expect(deliverableArm).toContain("Rectangle()");
+    expect(deliverableArm).not.toContain("if transcriptScrolled {");
+  });
+
   test("the header is 52 tall, not a toolbar's 36", () => {
     // Nothing pinned this before, which is how it sat at 36 through a spec that says 52.
     const header = dashboard.slice(

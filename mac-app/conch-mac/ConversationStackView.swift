@@ -48,6 +48,8 @@ struct ConversationStackView: View {
     /// so this points at it rather than growing a second text field inside the
     /// question.
     var onFreeform: () -> Void = {}
+    /// Whether the transcript has scrolled away from its top (§3: the header's hairline).
+    var onScrolled: (Bool) -> Void = { _ in }
     /// Open the subagent a Task/Agent block started, in this same pane (C4).
     /// The daemon says which agent that was; the pane decides how to show it.
     var onOpenSubagent: (ConversationItem.Tool.Subagent) -> Void = { _ in }
@@ -213,6 +215,7 @@ struct ConversationStackView: View {
                 .background(
                     ConversationScrollObserver(
                         onUserScroll: { isAtBottom in pinnedToBottom = isAtBottom },
+                        onScrolled: onScrolled,
                         onReachTop: { loadOlder() },
                         anchor: scrollAnchor
                     )
@@ -890,6 +893,10 @@ final class ConversationScrollAnchor {
 
 private struct ConversationScrollObserver: NSViewRepresentable {
     let onUserScroll: (Bool) -> Void
+    /// Scrolled away from the top: §3 shows the header's hairline only once something has
+    /// passed under it. Not the same question as `onUserScroll`, which asks about the BOTTOM —
+    /// a long transcript sitting at its top is not at the bottom and has still scrolled nothing.
+    let onScrolled: (Bool) -> Void
     /// Reaching the oldest row held is the request for the page before it. The stack is
     /// eagerly laid out, so nothing "appears" on the way up: the scroll view has to say so.
     let onReachTop: () -> Void
@@ -897,7 +904,7 @@ private struct ConversationScrollObserver: NSViewRepresentable {
     let anchor: ConversationScrollAnchor
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onUserScroll: onUserScroll, onReachTop: onReachTop, anchor: anchor)
+        Coordinator(onUserScroll: onUserScroll, onScrolled: onScrolled, onReachTop: onReachTop, anchor: anchor)
     }
 
     func makeNSView(context: Context) -> ProbeView {
@@ -915,6 +922,7 @@ private struct ConversationScrollObserver: NSViewRepresentable {
 
     func updateNSView(_ view: ProbeView, context: Context) {
         context.coordinator.onUserScroll = onUserScroll
+        context.coordinator.onScrolled = onScrolled
         context.coordinator.onReachTop = onReachTop
         DispatchQueue.main.async { [weak coordinator = context.coordinator, weak view] in
             guard let view else { return }
@@ -937,6 +945,7 @@ private struct ConversationScrollObserver: NSViewRepresentable {
 
     final class Coordinator {
         var onUserScroll: (Bool) -> Void
+        var onScrolled: (Bool) -> Void
         var onReachTop: () -> Void
         let anchor: ConversationScrollAnchor
         private weak var scrollView: NSScrollView?
@@ -944,10 +953,12 @@ private struct ConversationScrollObserver: NSViewRepresentable {
 
         init(
             onUserScroll: @escaping (Bool) -> Void,
+            onScrolled: @escaping (Bool) -> Void,
             onReachTop: @escaping () -> Void,
             anchor: ConversationScrollAnchor
         ) {
             self.onUserScroll = onUserScroll
+            self.onScrolled = onScrolled
             self.onReachTop = onReachTop
             self.anchor = anchor
         }
@@ -1010,6 +1021,9 @@ private struct ConversationScrollObserver: NSViewRepresentable {
             let fromTop = documentView.isFlipped
                 ? visible.minY - document.minY
                 : document.maxY - visible.maxY
+            // The same `fromTop`, asked a different question: has anything gone under the
+            // header yet? A couple of points of slack, because a trackpad rests at 0.5.
+            onScrolled(document.height > visible.height && fromTop > 2)
             if document.height > visible.height, fromTop <= visible.height { onReachTop() }
         }
     }

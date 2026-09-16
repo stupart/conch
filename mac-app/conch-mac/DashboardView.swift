@@ -1334,6 +1334,8 @@ private struct ConversationPane: View {
     /// A link in the fallback (AppKit) conversation renderer that would not
     /// open, shown under it in the OS's own words (A13).
     @State private var fallbackLinkFailure: String?
+    /// §3: the header grows a hairline only once the transcript has scrolled under it.
+    @State private var transcriptScrolled = false
 
     /// Which page this session is on: false = the deliverable in front.
     ///
@@ -1532,9 +1534,15 @@ private struct ConversationPane: View {
                     if let row = focusedRow {
                         sessionBar(for: row)
 
-                        Rectangle()
-                            .fill(ConchPalette.divider)
-                            .frame(height: 1)
+                        // §3: only once the transcript has scrolled. A rule under a header
+                        // with nothing above it is just a line. The deliverable pages keep
+                        // theirs unconditionally — there a pane IS open, which is the spec's
+                        // other reason for drawing it.
+                        if transcriptScrolled {
+                            Rectangle()
+                                .fill(ConchPalette.divider)
+                                .frame(height: 1)
+                        }
                     }
 
                     conversationBody(for: focusedRow)
@@ -1795,6 +1803,7 @@ private struct ConversationPane: View {
                 cwd: row.cwd,
                 onOpenArtifact: { workspace.show(stage: .deliverable, for: row.id) },
                 onFreeform: { composerFocusRequest += 1 },
+                onScrolled: { transcriptScrolled = $0 },
                 onOpenSubagent: { agent in
                     // Its live row when the daemon lists one, else
                     // a row built from the block — the same pane
