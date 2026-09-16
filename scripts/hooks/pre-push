@@ -1,0 +1,8 @@
+#!/bin/bash
+# Runs the fast gate before every push; a red gate stops the push.
+# `git push --no-verify` skips it once — say so in the PR when you do.
+#
+# It checks the working tree, not the commits being pushed: an uncommitted fix
+# turns it green and a stray uncommitted edit turns it red. Commit first.
+# Wired by scripts/install-hooks.sh, which points core.hooksPath at this directory.
+exec "$(git rev-parse --show-toplevel)/scripts/ci-local.sh"

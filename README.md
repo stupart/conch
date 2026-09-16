@@ -93,6 +93,16 @@ security find-identity -v -p codesigning   # must list Developer ID Application 
 On a second machine, **create a new certificate there** rather than exporting the private key from the first: Xcode → Settings → Accounts → Manage Certificates → **+** → Developer ID Application. The private key is generated locally and never crosses the network. That is safe here because the app's designated requirement pins the *team*, not a certificate serial — so a second cert from the same team produces an app macOS treats as the same app, and the microphone grant survives.
 
 Pick one install per machine. Two `conch` on `$PATH` — a brew one and a linked checkout — is how the app and the daemon end up on different versions; `conch doctor` names both when that happens.
+
+**The gate.** GitHub Actions is off (no credits), so every check runs on your Mac:
+
+```bash
+scripts/ci-local.sh          # bun install --frozen-lockfile, bun test, bunx tsc --noEmit, swift test (design/ConchDesign)
+scripts/ci-local.sh all      # + the Mac and iOS app builds (minutes) and how far HEAD is past the last release
+scripts/install-hooks.sh     # once per clone: pre-push runs the fast set (git push --no-verify skips it)
+```
+
+It prints a pass/fail summary, keeps each check's log in `build/ci-local/`, and exits non-zero if anything failed. Any subset works: `scripts/ci-local.sh tsc swift`.
 </details>
 
 Setup leaves conch running in the background: as the Mac app when it is installed (it launches at login and hosts the daemon), otherwise as a launchd service that launches at login and self-heals within ~15s of a crash. In any Claude Code session that was already open during setup, type `/hooks` once to reload its configuration; sessions opened afterward pick conch up automatically. Finish a turn and conch will speak it, play a tink, and open the mic. Allow macOS microphone access when prompted; if the prompt was missed or the loop stays quiet, run `conch doctor`.

@@ -1,5 +1,11 @@
 name: release
 
+# 2026-09-17: GitHub Actions credits ran out, so the tag trigger is off and this
+# runs only by hand (workflow_dispatch, with the version). A release is cut
+# locally by scripts/release.sh, which runs the same gates, builds, publishes and
+# bumps the tap in one command; scripts/ci-local.sh is the gate for everything
+# else. To bring the tag trigger back, restore `push: tags: ["v*"]` under `on:`.
+#
 # Publishes a conch release and points the Homebrew tap at it.
 #
 # The failure this exists to prevent: the tap sat on v0.2.1 for 327 commits —
@@ -7,14 +13,12 @@ name: release
 # checklist. Anyone who ran `brew install` in that window got software that did
 # not work, and nothing told them.
 #
-# Triggered by a version tag, not by every push to main. Releasing per commit
+# Built for a version tag, not for every push to main. Releasing per commit
 # would mean a full signed build per merge and a stream of update notices for
 # something that changed a comment. To make brew track main directly, uncomment
 # the auto-tag job at the bottom: it turns "merged to main" into "tagged", and
 # the tag lands here.
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       version:
