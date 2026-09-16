@@ -111,7 +111,7 @@ private struct ReviewSurface: View {
 
     private var caption: some View {
         HStack(spacing: 9) {
-            Image(systemName: "star.fill")
+            Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(ConchPalette.statusReview)
                 .accessibilityHidden(true)

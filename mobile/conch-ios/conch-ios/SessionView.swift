@@ -1166,7 +1166,9 @@ private struct ReviewCard: View {
     var body: some View {
         Button(action: onOpen) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Image(systemName: "star.fill")
+                // The check, matching the Mac and the lab (`ic('check')` on `--ready`).
+                // The phone and the Mac must not name the same state differently.
+                Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 13))
                     .foregroundStyle(Palette.review)
                 VStack(alignment: .leading, spacing: 4) {

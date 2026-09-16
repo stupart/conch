@@ -330,7 +330,7 @@ enum StatusMark {
 
     init(row: PublishedState.Row) {
         let wantsUser = row.status == "waiting" || row.status == "needs"
-        // The deliverable stays on a working row; the star means it is waiting for you.
+        // The deliverable stays on a working row; the mark means it is waiting for you.
         if row.review != nil, row.status != "working" { self = .review; return }
         if row.paused, !wantsUser { self = .paused; return }
         switch row.live {
@@ -350,7 +350,7 @@ enum StatusMark {
         case .working: "circle.fill"
         case .waiting: "circle.inset.filled"
         case .needs: "exclamationmark.circle.fill"
-        case .review: "star.fill"
+        case .review: "checkmark.circle.fill"
         case .paused: "pause.fill"
         case .micOpen: "mic.fill"
         case .speaking: "play.fill"
