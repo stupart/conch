@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { existsSync } from "node:fs";
 import {
   DEFAULT_CONCH_CONFIG_DIR,
@@ -9,7 +9,7 @@ import {
   type PhoneLanMode,
 } from "./settings.ts";
 
-const HOME = homedir();
+const HOME = conchHome();
 
 // The whisper engine can come from three places, probed in this order so that
 // each existing setup keeps working AND a fresh `brew install whisper-cpp`

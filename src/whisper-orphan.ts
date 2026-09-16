@@ -1,6 +1,6 @@
 import { readProcessIdentity, sameProcessIdentity, validProcessIdentity, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { join } from "node:path";
 import { processAlive } from "./daemon-identity.ts";
 
@@ -28,7 +28,7 @@ export interface WhisperSpawnRecord {
   identity?: ProcessIdentity;
 }
 
-export const WHISPER_RECORD_PATH = join(homedir(), ".cache/conch/whisper-server.json");
+export const WHISPER_RECORD_PATH = join(conchHome(), ".cache/conch/whisper-server.json");
 
 export function recordSpawnedWhisper(pid: number, port: number, path = WHISPER_RECORD_PATH, probe: ProcessIdentityProbe = readProcessIdentity): void {
   const identity = probe(pid);

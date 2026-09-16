@@ -8,7 +8,8 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
+import { conchHome } from "./home.ts";
 import { join } from "node:path";
 import { awaitWithWatchdog, type WatchdogWarning } from "./audio-watchdog.ts";
 import workerSource from "./tts-worker.py" with { type: "text" };
@@ -223,7 +224,7 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<boolean> {
 /** Embed the audited Python source in compiled Bun releases, then materialize it privately. */
 export function materializeTtsWorkerScript(): string {
   const digest = createHash("sha256").update(workerSource).digest("hex").slice(0, 16);
-  const runtimeDir = join(homedir(), ".cache", "conch", "runtime");
+  const runtimeDir = join(conchHome(), ".cache", "conch", "runtime");
   mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
   chmodSync(runtimeDir, 0o700);
   const path = join(runtimeDir, `tts-worker-${digest}.py`);
@@ -250,7 +251,7 @@ export function materializeTtsWorkerScript(): string {
  * Resolve the interpreter belonging to the installed mlx_audio.server tool.
  * uv console scripts use an absolute shebang into their isolated environment.
  */
-export function resolveMlxAudioPython(explicit: string, serverBin: string, home = homedir()): string | null {
+export function resolveMlxAudioPython(explicit: string, serverBin: string, home = conchHome()): string | null {
   const requested = explicit.trim();
   if (requested) {
     const resolved = requested.includes("/") ? requested : Bun.which(requested);

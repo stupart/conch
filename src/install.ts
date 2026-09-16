@@ -1,6 +1,6 @@
 import { join, dirname } from "node:path";
 import { existsSync, mkdirSync, chmodSync, unlinkSync, rmSync, renameSync } from "node:fs";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import type { Config } from "./config.ts";
 import { CONCH_DATA } from "./config.ts";
 import { readState } from "./daemon-state.ts";
@@ -350,7 +350,7 @@ export async function runSetup(
   // `src/agent-instructions.ts` into its AGENTS.md, its conch-control skill,
   // the help session and the tool descriptions, so it arrives and updates with
   // the thing it describes, and uninstalling actually removes it.
-  const codexDir = join(homedir(), ".codex");
+  const codexDir = join(conchHome(), ".codex");
   // Capture this before the install runs: setup must not make every
   // Claude-only machine look like an existing Codex install.
   const codexWasPresent = existsSync(codexDir);
@@ -538,7 +538,7 @@ export function renderServicePlist(
 
 export async function runService(cfg: Config, action: "install" | "off"): Promise<void> {
   const uid = process.getuid?.() ?? 501;
-  const plistPath = join(homedir(), "Library/LaunchAgents", `${SERVICE_LABEL}.plist`);
+  const plistPath = join(conchHome(), "Library/LaunchAgents", `${SERVICE_LABEL}.plist`);
 
   if (action === "off") {
     serviceOff(uid, plistPath);
@@ -570,8 +570,8 @@ export async function runService(cfg: Config, action: "install" | "off"): Promis
   const path = [
     "/opt/homebrew/bin",
     "/usr/local/bin",
-    join(homedir(), ".local/bin"), // mlx_audio.server; its shebang locates the worker Python
-    join(homedir(), ".bun/bin"),
+    join(conchHome(), ".local/bin"), // mlx_audio.server; its shebang locates the worker Python
+    join(conchHome(), ".bun/bin"),
     "/usr/bin",
     "/bin",
   ].join(":");
@@ -681,7 +681,7 @@ export function buildCodexHooksSettings(
  * files is preserved; backups are written only for files that actually change.
  */
 export async function runCodexInstall(
-  codexDir = join(homedir(), ".codex"),
+  codexDir = join(conchHome(), ".codex"),
 ): Promise<void> {
   const hooksPath = join(codexDir, "hooks.json");
   const command = `${conchInvocation()} codex-hook`;

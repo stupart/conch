@@ -24,7 +24,7 @@
  */
 import { Database } from "bun:sqlite";
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { join } from "node:path";
 import type { CodexSessionEntry, CodexSessionRegistryRead } from "./codex-sessions.ts";
 
@@ -125,7 +125,7 @@ export function machineBootedAtMs(): number | null {
  */
 export function codexFolderTrusted(
   cwd: string,
-  configPath = join(homedir(), ".codex", "config.toml"),
+  configPath = join(conchHome(), ".codex", "config.toml"),
 ): boolean | null {
   let text: string;
   try {
@@ -639,7 +639,7 @@ export async function readCodexTurnSnapshots(
 export function codexHomeDir(options: CodexThreadsOptions = {}): string | null {
   const redirected = options.configDir ?? process.env.CONCH_CONFIG_DIR;
   return options.codexHome
-    ?? (redirected ? null : join(homedir(), ".codex"));
+    ?? (redirected ? null : join(conchHome(), ".codex"));
 }
 
 /**

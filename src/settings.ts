@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import type { Config } from "./config.ts";
 import {
   isAgentCapabilitiesRead,
@@ -23,7 +23,7 @@ import { startOptionsError, teleportRequestError } from "./session-lifecycle.ts"
 import { normalizeSessionLabel } from "./sessions.ts";
 import { isValidVoiceName } from "./speak.ts";
 
-export const DEFAULT_CONCH_CONFIG_DIR = join(homedir(), ".config", "conch");
+export const DEFAULT_CONCH_CONFIG_DIR = join(conchHome(), ".config", "conch");
 export const SETTINGS_FILE = "settings.json";
 
 export const SETTING_KEYS = [

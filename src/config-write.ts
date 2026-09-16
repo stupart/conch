@@ -43,7 +43,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { basename, dirname, join, resolve } from "node:path";
 
 export type ConfigWriteAgent = "claude" | "codex";
@@ -98,11 +98,11 @@ const CLAUDE_LOCK_STALE_MS = 10_000;
 export function defaultConfigWriteHomes(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): ConfigWriteHomes {
-  const claudeHome = env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+  const claudeHome = env.CLAUDE_CONFIG_DIR ?? join(conchHome(), ".claude");
   return {
     claudeHome,
     claudeStatePath: join(dirname(claudeHome), ".claude.json"),
-    codexHome: env.CODEX_HOME ?? join(homedir(), ".codex"),
+    codexHome: env.CODEX_HOME ?? join(conchHome(), ".codex"),
   };
 }
 

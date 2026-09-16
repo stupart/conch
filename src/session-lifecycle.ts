@@ -1,7 +1,7 @@
 import { withUITransaction } from "./inject.ts";
 import { runUICommand } from "./pasteboard.ts";
 import { processMatchesProvider, readProcessIdentity, sameProcessIdentity, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { statSync } from "node:fs";
 import {
   adapterFor,
@@ -186,7 +186,7 @@ export function startRequestFromArgv(args: string[]): StartSessionRequest {
 export function terminalSessionCommand(request: StartSessionRequest): string {
   const error = teleportRequestError(request) ?? startOptionsError(request);
   if (error) throw new Error(error);
-  const cwd = request.cwd?.trim() || homedir();
+  const cwd = request.cwd?.trim() || conchHome();
   const adapter = adapterFor(request.backend);
   const resume = request.resumeSessionId?.trim();
   const teleport = request.teleportSessionId?.trim();
@@ -224,7 +224,7 @@ function checkedJobId(jobId: string): string {
  * for Ctrl+Z to drop back to.
  */
 export function attachTerminalCommand(jobId: string, cwd?: string): string {
-  return `cd -- ${shellQuote(cwd?.trim() || homedir())} && ${adapterFor("claude").executable} attach ${shellQuote(checkedJobId(jobId))}`;
+  return `cd -- ${shellQuote(cwd?.trim() || conchHome())} && ${adapterFor("claude").executable} attach ${shellQuote(checkedJobId(jobId))}`;
 }
 
 function defaultSpawn(argv: string[]): SessionLifecycleProcess {
@@ -313,7 +313,7 @@ async function runInTerminal(
 ): Promise<void> {
   const which = dependencies.which ?? ((name: string) => Bun.which(name));
   if (!which(executable)) throw new Error(`${executable} is not installed or is not on PATH`);
-  const cwd = requestedCwd?.trim() || homedir();
+  const cwd = requestedCwd?.trim() || conchHome();
   // The help session's folder is conch's to create, and this is the one door
   // every launch goes through (CLI, the app's sheet via the daemon, the TUI).
   if (cwd === helpSessionDir()) ensureHelpSession();

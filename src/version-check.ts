@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { dirname, join } from "node:path";
 
 /**
@@ -50,7 +50,7 @@ export function isNewer(latest: string, current: string): boolean {
 }
 
 export function versionCheckPath(configDir?: string): string {
-  return join(configDir ?? join(homedir(), ".config", "conch"), "version-check.json");
+  return join(configDir ?? join(conchHome(), ".config", "conch"), "version-check.json");
 }
 
 export function readVersionCheck(path: string): VersionCheckState | null {

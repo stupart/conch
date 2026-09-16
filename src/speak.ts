@@ -7,7 +7,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { conchHome } from "./home.ts";
 import { dirname, join } from "node:path";
 import {
   audioTimeoutMs,
@@ -38,7 +38,7 @@ export const SYNTH_TIMEOUT_LIMIT = 2;
 const OVERLOAD_STATUSES = new Set([429, 502, 503, 504]);
 const INFERENCE_ERROR = /(?:broadcast|shape|sinegen|inference|value\s*error)/i;
 const VOICE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
-const VOICES_FILE = join(homedir(), ".config/conch/voices.json");
+const VOICES_FILE = join(conchHome(), ".config/conch/voices.json");
 
 export interface VoiceOverrideOptions {
   /** Injectable so tests and alternate front-ends never need to touch the real home directory. */
