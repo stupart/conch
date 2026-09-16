@@ -209,3 +209,18 @@ describe("Mac conversation links keep the native clickable path", () => {
     expect(dashboard).toContain("textView.isRichText = true");
   });
 });
+
+describe("§3's anatomy, where the app had drifted from it", () => {
+  const dashboard = mac("DashboardView.swift");
+
+  test("the header is 52 tall, not a toolbar's 36", () => {
+    // Nothing pinned this before, which is how it sat at 36 through a spec that says 52.
+    const header = dashboard.slice(
+      dashboard.indexOf("private func sessionBar(for row: SessionRow) -> some View {"),
+      dashboard.indexOf("private func deliverableTabs("),
+    );
+    expect(header.length).toBeGreaterThan(500);
+    expect(header).toContain(".frame(height: 52)");
+    expect(header).not.toContain(".frame(height: 36)");
+  });
+});

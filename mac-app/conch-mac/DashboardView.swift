@@ -1715,7 +1715,10 @@ private struct ConversationPane: View {
         }
         .padding(.leading, 14)
         .padding(.trailing, 8)
-        .frame(height: 36)
+        // §3: the header is 52 tall. It had been 36, which is a toolbar's height — fine for a
+        // strip of buttons, mean for the line that names what you are looking at and now also
+        // carries the view switch.
+        .frame(height: 52)
         .background(ConchPalette.bg)
     }
 
