@@ -1,16 +1,36 @@
+import ConchDesign
 import SwiftUI
 import UIKit
 
-/// The Mac dashboard's exact palette, so the two surfaces read as one product.
-/// Values are copied, not approximated — the status ladder was converged on by
-/// measurement over five audits and is not to be re-derived by eye here.
+/// The design system's colours, so the two surfaces read as one product.
+///
+/// These used to be the Mac dashboard's palette COPIED — literal values kept in step by
+/// hand across two apps. The Mac now resolves from `ConchDesign/Tokens.swift`, which left
+/// this file as the last copy; it resolves from the same tokens instead. Every name here is
+/// unchanged, so no call site moves.
+///
+/// A `UIColor` with a dynamic provider is what lets that happen without touching the ~240
+/// call sites: they all store and pass a `Color`.
+private extension ConchColorToken {
+    var dynamic: Color {
+        Color(uiColor: UIColor { traits in
+            UIColor(self.rgba(traits.userInterfaceStyle == .dark ? .dark : .light).color)
+        })
+    }
+}
+
 enum Palette {
-    static let bg = Color(red: 0.043, green: 0.051, blue: 0.047)
-    static let raised = Color(red: 0.186, green: 0.209, blue: 0.198)
-    static let textPrimary = Color(red: 0.91, green: 0.93, blue: 0.91)
-    static let textDim = Color(red: 0.48, green: 0.52, blue: 0.50)
-    static let textFaint = Color(red: 0.48, green: 0.52, blue: 0.50).opacity(0.93)
-    static let divider = Color.white.opacity(0.075)
+    static let bg = ConchColor.ground.dynamic
+    static let raised = ConchColor.surfaceRaised.dynamic
+    static let textPrimary = ConchColor.textPrimary.dynamic
+    static let textDim = ConchColor.textSecondary.dynamic
+    static let textFaint = ConchColor.textTertiary.dynamic
+    static let divider = ConchColor.hairline.dynamic
+
+    // The voice and state ladder stays literal, exactly as it does on the Mac: mapping
+    // mic-open onto `listening` orange, or "a finished turn" onto ink, rewrites the colour
+    // language the ledger is read by. That is a change to see and react to, not one to slip
+    // in under a theme change.
 
     /// Machine-busy. Calm, ignorable.
     static let working = Color(red: 0.31, green: 0.55, blue: 0.60)
@@ -18,10 +38,11 @@ enum Palette {
     static let micOpen = Color(red: 88 / 255, green: 201 / 255, blue: 212 / 255)
     /// A finished turn is sitting on you.
     static let waiting = Color(red: 0.96, green: 0.60, blue: 0.13)
-    /// Blocked on an answer.
-    static let needs = Color(red: 0.94, green: 0.38, blue: 0.24)
-    /// Has work for you to look at.
-    static let review = Color(red: 0.98, green: 0.84, blue: 0.32)
+    /// Blocked on an answer. Its token equivalent already means this, and the literal was
+    /// dark-only.
+    static let needs = ConchColor.attention.dynamic
+    /// Has work for you to look at. The literal gold measured 1.3:1 on a light ground.
+    static let review = ConchColor.ready.dynamic
 }
 
 /// iOS speaks SF. The Mac app's Helvetica Neue is its own voice; forcing it

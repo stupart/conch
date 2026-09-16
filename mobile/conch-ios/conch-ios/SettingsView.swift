@@ -98,7 +98,6 @@ struct SettingsView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
         .task { await load() }
         .onChange(of: bridge.isConnected) { _, connected in
             if connected, loadError != nil { Task { await load() } }
