@@ -607,17 +607,29 @@ test("the pill takes the exact review version at the click, runs clicks in order
 test("the conversation stays on the pill's scene, whatever the voice does, until the pill again or another pick", () => {
   expect(panels).toContain("@Published var staged: SessionRow.ID?");
   expect(panels).toContain("let row = Self.session(store.state, staged: panels.staged)");
+  // The chain itself is the window's, in the design system: the overlay pins a different
+  // session from the dashboard, but both resolve it by the same rule and by identity.
   const session = member(panels, "static func session(_ state: PublishedState?, staged: SessionRow.ID? = nil) -> SessionRow? {");
-  const staged = session.indexOf("return rows.first { $0.id == staged }");
-  const voice = session.indexOf('?? rows.first { LiveState.isExchangeActive($0.live ?? "") }');
-  const active = session.indexOf("?? rows.first(where: \\.active)");
-  expect(staged).toBeGreaterThan(-1);
-  expect(voice).toBeGreaterThan(staged);
-  expect(active).toBeGreaterThan(voice);
+  expect(session).toContain("WorkspaceFocus.viewed(in: Workspace(state), pinned: staged)");
+  const workspace = read("design/ConchDesign/Sources/ConchDesign/Workspace.swift");
+  const viewed = member(workspace, "public static func viewed(in workspace: Workspace, pinned: String?) -> String? {");
+  const pinned = viewed.indexOf("if let pinnedSession = workspace.session(pinned)");
+  const rest = viewed.indexOf("target(in: workspace, pinned: nil)");
+  const cursor = viewed.indexOf("first(where: \\.isNavSelected)");
+  expect(pinned).toBeGreaterThan(-1);
+  expect(rest).toBeGreaterThan(pinned);
+  expect(cursor).toBeGreaterThan(rest);
+  const addressed = member(workspace, "public static func addressed(in workspace: Workspace) -> String? {");
+  const live = addressed.indexOf("first(where: \\.isLive)");
+  const replying = addressed.indexOf("first(where: \\.isReplying)");
+  const active = addressed.indexOf("first(where: \\.isActive)");
+  expect(live).toBeGreaterThan(-1);
+  expect(replying).toBeGreaterThan(live);
+  expect(active).toBeGreaterThan(replying);
   // Unpinned only by a pick in conch's window of another session; the pill's own .app scene picks the same one.
   expect(panels.match(/staged = nil/g)?.length).toBe(1);
   expect(member(panels, "static func picked(_ id: SessionRow.ID) {")).toContain("guard let panels = installed, panels.staged != nil, panels.staged != id else { return }");
-  expect(read("mac-app/conch-mac/ContentView.swift")).toContain(".onChange(of: selectedSessionID) { _, id in if let id { FloatingPanels.picked(id) } }");
+  expect(read("mac-app/conch-mac/ContentView.swift")).toContain(".onChange(of: workspace.viewing) { _, id in if let id { FloatingPanels.picked(id) } }");
   // Staging never starts the mic or stops speech.
   for (const body of [member(panels, "private func stageNext() {"), member(item, "static func stage(_ row: SessionRow, store: StateStore) async -> Bool {")]) {
     for (const voiceAction of [".dictate", ".stop(", ".wake", ".speak", "store.send("]) expect(body).not.toContain(voiceAction);

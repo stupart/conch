@@ -65,7 +65,9 @@ struct ConversationStackView: View {
     /// Sticks to the bottom only when already there, so reading history is not
     /// yanked away by an arriving message.
     @State private var pinnedToBottom = true
-    @State private var expandedToolIDs: Set<String> = []
+    /// Which tool rows are open — kept per session by the workspace model, so leaving a
+    /// session and coming back finds the rows you opened still open (ConchDesign/Workspace.swift).
+    @EnvironmentObject private var workspace: WorkspaceModel
     /// Where the reader was looking when older messages were asked for.
     @State private var scrollAnchor = ConversationScrollAnchor()
     /// A multi-select question is a tiny form: taps edit this set and only the
@@ -75,6 +77,19 @@ struct ConversationStackView: View {
     @State private var scrollRequestGeneration = 0
 
     private static let bottomAnchor = "conversation-bottom"
+
+    private func isExpanded(_ itemID: String) -> Bool {
+        workspace.isToolExpanded(itemID, for: conversation.sessionId)
+    }
+
+    private func toggleExpanded(_ itemID: String) {
+        workspace.toggleTool(itemID, for: conversation.sessionId)
+    }
+
+    private func expand(_ itemID: String) {
+        guard !isExpanded(itemID) else { return }
+        toggleExpanded(itemID)
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -159,7 +174,6 @@ struct ConversationStackView: View {
                 history.select(session: conversation.sessionId)
                 loadOlder()
                 pinnedToBottom = true
-                expandedToolIDs = []
                 multiSelections = [:]
                 linkFailure = nil
                 requestBottomScroll(using: proxy)
@@ -286,11 +300,11 @@ struct ConversationStackView: View {
     @ViewBuilder
     private func cutTail(_ item: ConversationItem) -> some View {
         if wasCut(item), history.fullText(forSnapshotItem: item.id) == nil {
-            if expandedToolIDs.contains(item.id) {
+            if isExpanded(item.id) {
                 fullBodyStatus(for: item)
             } else {
                 Button("Show the rest") {
-                    expandedToolIDs.insert(item.id)
+                    expand(item.id)
                     loadFullBody(of: item)
                 }
                 .buttonStyle(.link)
@@ -420,14 +434,8 @@ struct ConversationStackView: View {
             } else if let change = item.change {
                 ChangeRow(
                     change: change,
-                    expanded: expandedToolIDs.contains(item.id),
-                    toggle: {
-                        if expandedToolIDs.contains(item.id) {
-                            expandedToolIDs.remove(item.id)
-                        } else {
-                            expandedToolIDs.insert(item.id)
-                        }
-                    }
+                    expanded: isExpanded(item.id),
+                    toggle: { toggleExpanded(item.id) }
                 )
             } else {
                 toolRow(item)
@@ -614,7 +622,7 @@ struct ConversationStackView: View {
     }
 
     private func toolRow(_ item: ConversationItem) -> some View {
-        let expanded = expandedToolIDs.contains(item.id)
+        let expanded = isExpanded(item.id)
         // The record store's whole output once it has been read; until then the
         // snapshot's first 400 characters of it.
         let result = history.fullText(forSnapshotItem: item.id) ?? item.tool?.result ?? ""
@@ -622,12 +630,8 @@ struct ConversationStackView: View {
             HStack(spacing: 8) {
                 Button {
                     guard !result.isEmpty else { return }
-                    if expanded {
-                        expandedToolIDs.remove(item.id)
-                    } else {
-                        expandedToolIDs.insert(item.id)
-                        loadFullBody(of: item)
-                    }
+                    toggleExpanded(item.id)
+                    if !expanded { loadFullBody(of: item) }
                 } label: {
                     HStack(spacing: 8) {
                         // The dot carried status; the glyph carries what KIND of

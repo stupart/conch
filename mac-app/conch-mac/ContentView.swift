@@ -1,12 +1,17 @@
 import AppKit
+import ConchDesign
 import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var store: StateStore
 
+    /// Which session is being looked at, which one the voice is on, where a message goes, and
+    /// how each session is presented: one owner, read by the pane and the transcript below it
+    /// (ConchDesign/Workspace.swift). The window used to hold a selection of its own while the
+    /// pane applied fallbacks of its own, and the two drifted.
+    @StateObject private var workspace = WorkspaceModel()
     @State private var expandedReviewID: ReviewItem.ID?
     @State private var remoteSelection: RemoteSessionID?
-    @State private var selectedSessionID: SessionRow.ID?
     @State private var renamingSessionID: SessionRow.ID?
     @State private var renameDraft = ""
     @State private var isShowingKeyboardShortcuts = false
@@ -64,25 +69,14 @@ struct ContentView: View {
     }
 
     private var selectedRow: SessionRow? {
-        guard let selectedSessionID else { return nil }
-        return store.state?.rows.first { $0.id == selectedSessionID }
+        store.state?.row(workspace.viewing)
     }
 
-    private var activeRow: SessionRow? {
-        guard let state = store.state else { return nil }
-        if let active = state.rows.first(where: \.active) {
-            return active
-        }
-        if let replyID = state.reply?.sessionId,
-           !replyID.isEmpty,
-           let replied = state.rows.first(where: { $0.id == replyID }) {
-            return replied
-        }
-        return state.rows.first { $0.label == state.live.label && !state.live.label.isEmpty }
-    }
-
+    /// What a command addresses when nothing was picked — Recite, ⌘K, the arrow keys' anchor.
+    /// The same rule the pane types into, so the window and the pane can't name two different
+    /// sessions; by identity, never by the live label, which is renameable and duplicable.
     private var actionTarget: SessionRow? {
-        selectedRow ?? activeRow
+        workspace.targetRow(in: store.state)
     }
 
     var body: some View {
@@ -90,7 +84,7 @@ struct ContentView: View {
             DashboardView(
                 onSelectRemote: { remoteSelection = $0 },
                 state: store.state,
-                selectedSessionID: selectedSessionID,
+                selectedSessionID: workspace.viewing,
                 renamingSessionID: renamingSessionID,
                 renameDraft: $renameDraft,
                 actions: DashboardActions(
@@ -130,6 +124,7 @@ struct ContentView: View {
             }
         }
         .background(ConchPalette.bg)
+        .environmentObject(workspace)
         .background(
             DashboardInputMonitor(
                 isEnabled: expandedReview == nil && remoteSelection == nil && !isShowingKeyboardShortcuts && !isShowingCommandPalette,
@@ -171,11 +166,11 @@ struct ContentView: View {
             selectSession(row)
         }
         // A session picked here takes the overlay's conversation off the Ready pill's scene, unless it is that one.
-        .onChange(of: selectedSessionID) { _, id in if let id { FloatingPanels.picked(id) } }
+        .onChange(of: workspace.viewing) { _, id in if let id { FloatingPanels.picked(id) } }
         .onChange(of: rowIDs) { _, currentIDs in
-            if let selectedSessionID, !currentIDs.contains(selectedSessionID) {
-                self.selectedSessionID = nil
-            }
+            // A pick for a session that has ended is no pick: the fallbacks take over rather
+            // than the pane staying pinned to something that is gone.
+            workspace.forget(missing: Set(currentIDs))
             if let renamingSessionID, !currentIDs.contains(renamingSessionID) {
                 cancelRename()
             }
@@ -195,16 +190,16 @@ struct ContentView: View {
 
     private func expandReview(_ row: SessionRow) {
         guard let item = ReviewItem(row: row) else { return }
-        selectedSessionID = row.id
+        workspace.viewing = row.id
         expandedReviewID = item.id
     }
 
     private func selectSession(_ row: SessionRow) {
-        selectedSessionID = row.id
+        workspace.viewing = row.id
     }
 
     private func beginRename(_ row: SessionRow) {
-        selectedSessionID = row.id
+        workspace.viewing = row.id
         renamingSessionID = row.id
         renameDraft = row.label
     }
@@ -304,17 +299,17 @@ struct ContentView: View {
             return
         }
 
-        let anchorID = selectedSessionID ?? activeRow?.id
+        let anchorID = actionTarget?.id
         let anchorIndex = anchorID.flatMap { id in
             rows.firstIndex { $0.id == id }
         }
         let currentIndex = anchorIndex ?? (delta > 0 ? -1 : rows.count)
         let nextIndex = currentIndex + delta
         guard rows.indices.contains(nextIndex) else {
-            selectedSessionID = nil
+            workspace.viewing = nil
             return
         }
-        selectedSessionID = rows[nextIndex].id
+        workspace.viewing = rows[nextIndex].id
     }
 
     private func releaseSelection() {
@@ -322,7 +317,7 @@ struct ContentView: View {
             cancelRename()
             return
         }
-        selectedSessionID = nil
+        workspace.viewing = nil
     }
 
     private func showKeyboardShortcuts() {

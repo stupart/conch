@@ -1,4 +1,5 @@
 import AppKit
+import ConchDesign
 import SwiftUI
 
 enum ConchPalette {
@@ -351,7 +352,6 @@ struct DashboardView: View {
 
                     ConversationPane(
                         state: state,
-                        selectedSessionID: selectedSessionID,
                         onExpandReview: actions.onExpandReview,
                         onSelectSession: actions.onSelectSession
                     )
@@ -663,17 +663,11 @@ private struct SessionLedger: View {
     let undoDismissal: SessionDismissUndo?
     let actions: DashboardActions
 
+    /// Which row the ledger keeps in view. The same question the pane answers, so it asks the
+    /// same rule (ConchDesign/Workspace.swift) rather than keeping a chain — and a label
+    /// match — of its own.
     private var focusID: SessionRow.ID? {
-        guard let state else { return selectedSessionID }
-        return selectedSessionID
-            ?? state.rows.first(where: \.navSelected)?.id
-            ?? state.rows.first(where: \.active)?.id
-            ?? state.reply.flatMap { reply in
-                state.rows.first(where: { $0.id == reply.sessionId })?.id
-            }
-            ?? state.rows.first(where: {
-                !$0.label.isEmpty && $0.label == state.live.label
-            })?.id
+        WorkspaceFocus.viewed(in: Workspace(state), pinned: selectedSessionID)
     }
 
     private var rowOrder: [SessionRow.ID] {
@@ -1507,11 +1501,13 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
 
 private struct ConversationPane: View {
     let state: PublishedState?
-    let selectedSessionID: SessionRow.ID?
     let onExpandReview: (SessionRow) -> Void
     let onSelectSession: (SessionRow) -> Void
 
     @EnvironmentObject private var store: StateStore
+    /// The one owner of which session is being looked at, which one the voice is on, where a
+    /// message goes, and how each session is presented (ConchDesign/Workspace.swift).
+    @EnvironmentObject private var workspace: WorkspaceModel
     @StateObject private var transcriptContent = TranscriptContentModel()
     /// Shared with the conversation fog (M3): one draft per session wherever it is typed.
     @ObservedObject private var composerDrafts = ComposerDraftStore.shared
@@ -1526,56 +1522,41 @@ private struct ConversationPane: View {
     /// open, shown under it in the OS's own words (A13).
     @State private var fallbackLinkFailure: String?
 
-    /// False = the deliverable in front, which is the pane's long-standing
-    /// default: a session that produced an artifact is showing it to you.
-    /// This state only ever loses to that default — a NEW artifact resets it
-    /// (see the onChange below), because a fresh deliverable is the agent
-    /// asking to be looked at, not background noise to read past.
-    /// Where you land: the conversation, because talking is the common case and
-    /// being dropped into a document you did not ask for means switching back.
-    /// The artifact is reached from its preview inline, which also flips this.
-    @State private var showsConversation = true
-
-    /// Only the session actually being dictated to shows the live transcript.
-    /// Without the label check every open composer would mirror the same words,
-    /// which reads as though conch is about to send them everywhere.
-    /// What conch's voice loop is doing for the session in front of you.
-    private var voiceStateForFocusedRow: String {
-        guard let row = focusedRow else { return "" }
-        return voiceState(for: row)
+    /// Which page this session is on: false = the deliverable in front.
+    ///
+    /// Per session, and moved only by an explicit choice — the perspective control, or
+    /// opening the artifact from its inline preview. A newly filed artifact used to set this
+    /// back to the conversation, which takes someone off the deliverable they were
+    /// inspecting; new work must not replace what you are reading. It still arrives as a
+    /// preview inline in the conversation, which is how it asks to be looked at.
+    private func showsConversation(for row: SessionRow?) -> Bool {
+        workspace.presentation(for: row?.id).showsConversation
     }
 
-    /// What the mic is doing FOR THIS ROW.
+    /// What the mic is doing FOR THIS ROW, by identity.
     ///
-    /// The composer is built per row, and its mic both draws from this and acts
-    /// on it — so reading the focused row's state instead of its own is a
-    /// divergence waiting to happen: whenever focus and the rendered row differ,
-    /// the button shows one session's state while its click addresses another's.
-    /// A control that can disagree with itself about what pressing it will do is
-    /// the same shape as the denylist bug that made this button dead in manual
-    /// mode, so it reads its own row now and cannot drift.
+    /// The composer is built per row, and its mic both draws from this and acts on it — so a
+    /// row the voice is not on must report nothing, or every open composer mirrors the same
+    /// words, which reads as though conch is about to send them everywhere. Which session the
+    /// voice is on comes from the daemon's published live state rather than from a name: a
+    /// label can be changed, and two sessions can share one.
     private func voiceState(for row: SessionRow) -> String {
-        guard let state else { return "" }
-        guard state.live.label.isEmpty || state.live.label == row.label else { return "" }
-        return state.live.state
+        workspace.voiceState(of: row, in: state)
     }
 
     private func voiceLevel(for row: SessionRow) -> Double {
-        guard let state else { return 0 }
-        guard state.live.label.isEmpty || state.live.label == row.label else { return 0 }
-        return state.live.level
+        workspace.voiceLevel(of: row, in: state)
     }
 
-    private var dictationForFocusedRow: String {
-        guard let state, let row = focusedRow else { return "" }
-        guard state.live.label.isEmpty || state.live.label == row.label else { return "" }
-        return state.live.partial
+    /// The words being transcribed, in the composer they were spoken into and nowhere else.
+    private func dictation(for row: SessionRow) -> String {
+        workspace.dictation(of: row, in: state)
     }
 
+    /// The session the reader PICKED, which can be a subagent the daemon no longer lists.
     private var selectedRow: SessionRow? {
-        guard let selectedSessionID else { return nil }
-        return state?.rows.first { $0.id == selectedSessionID }
-            ?? subagentRow(id: selectedSessionID)
+        guard let id = workspace.viewing else { return nil }
+        return state?.row(id) ?? subagentRow(id: id)
     }
 
     /// A subagent opened from the block that started it, when the daemon lists
@@ -1612,42 +1593,11 @@ private struct ConversationPane: View {
         return nil
     }
 
-    private var liveRow: SessionRow? {
-        guard let state, state.live.isExchangeActive else { return nil }
-        if let publishedLive = state.rows.first(where: \.hasPublishedLiveState) {
-            return publishedLive
-        }
-        if let replyID = state.reply?.sessionId,
-           !replyID.isEmpty,
-           let replied = state.rows.first(where: { $0.id == replyID }) {
-            return replied
-        }
-        // Never a subagent row: conch speaks for sessions, and a subagent's
-        // label is a task description, not an address (C4).
-        if !state.live.label.isEmpty,
-           let labelled = state.rows.first(where: {
-               $0.parentSessionId == nil && $0.label == state.live.label
-           }) {
-            return labelled
-        }
-        return state.rows.first(where: \.active)
-    }
-
+    /// What the pane is showing: the reader's pick, else the session the voice is on, else
+    /// the work. The chain itself lives in ConchDesign/Workspace.swift, where the overlay
+    /// reads it too — one decision, not two that drift.
     private var focusedRow: SessionRow? {
-        guard let state else { return nil }
-        return selectedRow
-            ?? liveRow
-            ?? state.rows.first(where: \.active)
-            ?? state.reply.flatMap { reply in
-                state.rows.first(where: { $0.id == reply.sessionId })
-            }
-            ?? state.rows.first
-    }
-
-    /// The row whose review the pane is showing: the explicit selection, or the
-    /// focused fallback when nothing is selected. Must match selectedReview.
-    private var reviewOwnerRow: SessionRow? {
-        selectedRow ?? (selectedSessionID == nil ? focusedRow : nil)
+        selectedRow ?? workspace.viewedRow(in: state)
     }
 
     private var selectedReview: ReviewItem? {
@@ -1656,7 +1606,7 @@ private struct ConversationPane: View {
         // here (alone of all the pane's surfaces) meant the review you were
         // just pinged about was invisible when the window opened, until you
         // clicked the row that was already in front of you.
-        guard let row = reviewOwnerRow else { return nil }
+        guard let row = focusedRow else { return nil }
         return ReviewItem(row: row)
     }
 
@@ -1670,14 +1620,10 @@ private struct ConversationPane: View {
             : nil
     }
 
+    /// Is the session in front of the reader the one the voice is on? They are allowed to
+    /// differ: that is what dictating to one session while reading another looks like.
     private var isFocusedSessionLive: Bool {
-        guard let state,
-              state.live.isExchangeActive,
-              let focusedRow,
-              let liveRow else {
-            return false
-        }
-        return focusedRow.id == liveRow.id
+        workspace.isAddressed(focusedRow, in: state)
     }
 
     private var document: ConversationDocument {
@@ -1707,7 +1653,7 @@ private struct ConversationPane: View {
 
     var body: some View {
         Group {
-            if let selectedReview, let reviewRow = reviewOwnerRow, !showsConversation {
+            if let selectedReview, let reviewRow = focusedRow, !showsConversation(for: reviewRow) {
                 VStack(spacing: 0) {
                     sessionBar(for: reviewRow)
 
@@ -1715,7 +1661,7 @@ private struct ConversationPane: View {
                         .fill(ConchPalette.divider)
                         .frame(height: 1)
 
-                    perspectiveBar
+                    perspectiveBar(for: reviewRow)
 
                     Rectangle()
                         .fill(ConchPalette.divider)
@@ -1758,8 +1704,8 @@ private struct ConversationPane: View {
                     // nothing on the other side the control is a promise the
                     // pane can't keep, and the pane already reads fine as
                     // plain conversation without a mode label.
-                    if selectedReview != nil {
-                        perspectiveBar
+                    if selectedReview != nil, let row = focusedRow {
+                        perspectiveBar(for: row)
 
                         Rectangle()
                             .fill(ConchPalette.divider)
@@ -1794,7 +1740,7 @@ private struct ConversationPane: View {
                             },
                             artifact: row.review,
                             cwd: row.cwd,
-                            onOpenArtifact: { showsConversation = false },
+                            onOpenArtifact: { workspace.show(conversation: false, for: row.id) },
                             onFreeform: { composerFocusRequest += 1 },
                             onOpenSubagent: { agent in
                                 // Its live row when the daemon lists one, else
@@ -1842,14 +1788,6 @@ private struct ConversationPane: View {
         .background(ConchPalette.bg)
         .task(id: TranscriptWatchID(row: watchesTranscriptForRow)) {
             await transcriptContent.monitor(row: watchesTranscriptForRow)
-        }
-        .onChange(of: selectedReview?.id) { _, current in
-            // A NEW artifact no longer takes the screen. It arrives as a
-            // preview inline in the conversation, where it can be seen without
-            // interrupting what you were reading, and goes big only when you
-            // ask. Returning to the conversation on a new artifact is what
-            // makes that true even when you were already looking at an old one.
-            if current != nil { showsConversation = true }
         }
         .onChange(of: state?.live.dictated?.id) { _, _ in
             // Spoken words land in the composer, added to whatever was typed.
@@ -1991,21 +1929,22 @@ private struct ConversationPane: View {
     /// where you are AND where you can go without decoding anything, which is
     /// also what makes this read as two perspectives on one session rather
     /// than navigation away from it — same pane, same composer underneath.
-    private var perspectiveBar: some View {
-        HStack(spacing: 2) {
+    private func perspectiveBar(for row: SessionRow) -> some View {
+        let shows = showsConversation(for: row)
+        return HStack(spacing: 2) {
             PerspectiveOption(
                 label: "Deliverable",
                 symbol: "doc.richtext",
-                isSelected: !showsConversation,
+                isSelected: !shows,
                 help: "What the session produced",
-                action: { showsConversation = false }
+                action: { workspace.show(conversation: false, for: row.id) }
             )
             PerspectiveOption(
                 label: "Conversation",
                 symbol: "text.bubble",
-                isSelected: showsConversation,
+                isSelected: shows,
                 help: "The exchange that produced it",
-                action: { showsConversation = true }
+                action: { workspace.show(conversation: true, for: row.id) }
             )
             Spacer(minLength: 0)
         }
@@ -2028,7 +1967,7 @@ private struct ConversationPane: View {
             sessionLabel: row.label,
             draft: composerDrafts.textBinding(for: row.id),
             attachments: composerDrafts.attachmentsBinding(for: row.id),
-            dictation: dictationForFocusedRow,
+            dictation: dictation(for: row),
             isWorking: row.status == .working,
             voiceState: voiceState(for: row),
             voiceLevel: voiceLevel(for: row),

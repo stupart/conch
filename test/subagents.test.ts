@@ -357,9 +357,15 @@ describe("the daemon and the Mac app wire it up", () => {
     expect(dashboard).toContain(".padding(.leading, row.parentSessionId == nil && row.startedBySessionId == nil ? 0 : 18)");
     expect(dashboard).toContain("if let row = focusedRow, row.parentSessionId == nil {\n                        composer(for: row)");
     expect(dashboard).toContain('.help("Back to \\(parent.label)")');
-    expect(dashboard).toContain("$0.parentSessionId == nil && $0.label == state.live.label");
+    // Which session the voice is on is decided by identity, in the design system, and a
+    // subagent is never it — its label is a task description, not an address. The pane used
+    // to match the live LABEL here, which is renameable and shareable between sessions.
+    const pane = dashboard.slice(dashboard.indexOf("private struct ConversationPane: View {"));
+    expect(pane).not.toContain("live.label");
+    const workspace = read("design/ConchDesign/Sources/ConchDesign/Workspace.swift");
+    expect(workspace).toContain("let speakable = workspace.sessions.filter { !$0.isSubagent }");
     // A finished agent has no row; the pane builds one from the block that started it.
-    expect(dashboard).toContain("?? subagentRow(id: selectedSessionID)");
+    expect(dashboard).toContain("?? subagentRow(id: id)");
     expect(dashboard).toContain("transcriptPath: item.tool?.subagent?.transcriptPath");
   });
 
