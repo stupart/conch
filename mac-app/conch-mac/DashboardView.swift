@@ -234,9 +234,6 @@ private struct DashboardHeader: View {
     var body: some View {
         HStack(spacing: 12) {
             HStack(spacing: 5) {
-                Text("\u{1F41A}")
-                    .font(.system(size: 11))
-                    .accessibilityHidden(true)
                 Text("conch")
                     .font(ConchTypography.font(size: 12, weight: .medium))
                     .tracking(-0.2)

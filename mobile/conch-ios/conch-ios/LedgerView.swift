@@ -163,14 +163,11 @@ struct LedgerView: View {
             .background(Palette.bg)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                // The Mac dashboard has carried the shell in its header since
-                // the beginning; the phone's ledger was the one surface without
-                // it. Same wordmark, same mark, wherever you look at conch.
+                // The name alone. The shell went from both apps' headers — the
+                // icon on the home screen is the mark; a second, different shell
+                // beside the word was the app introducing itself twice.
                 ToolbarItem(placement: .principal) {
                     HStack(spacing: 5) {
-                        Text("\u{1F41A}")
-                            .font(.system(size: 13))
-                            .accessibilityHidden(true)
                         Text("conch")
                             .font(Type.label(17, weight: .semibold))
                             .foregroundStyle(Palette.textPrimary)
