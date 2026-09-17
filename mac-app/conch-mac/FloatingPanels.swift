@@ -668,7 +668,11 @@ private struct FogLookHost: View {
 
     var body: some View {
         if FloatingPanels.showsFog, !panels.isCollapsed, !panels.isFullScreen {
+            // panel.html floats the panel off the corner (`left:24px;bottom:24px`) rather than hanging it flush, which
+            // is what lets all four corners round and the shadow read on every side. The window stays the docked frame,
+            // so the magnet, the docking contract and every motion test are untouched.
             ConchGlassPanel(darkness: panels.look.darkness, voice: ConchStatusItem.voiceState(store.state))
+                .padding(ConchSpace.x6)
         }
     }
 }
