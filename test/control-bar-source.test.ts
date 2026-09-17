@@ -276,7 +276,17 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   // The overlay's look is on (Tyler: "i don't see any overlay"), and the testing outline is gone.
   expect(panels).toContain("static let showsFog = true");
   expect(panels).not.toContain("strokeBorder(Color.black");
-  expect(panels).toContain("FogLookView(look: panels.look, voice: ConchStatusItem.voiceState(store.state))");
+  expect(panels).toContain("ConchGlassPanel(darkness: panels.look.darkness, voice: ConchStatusItem.voiceState(store.state))");
+  // Liquid Glass draws the panel; the effect view stays a sibling but hidden, so the collapse guard below still holds.
+  expect(panels).toContain("static var usesGlass: Bool { if #available(macOS 26.0, *) { true } else { false } }");
+  expect(panels).toContain("blur.isHidden = !Self.showsFog || Self.usesGlass");
+  expect(panels).toContain("fog.hasShadow = Self.usesGlass");
+  // The window is exactly the fog: the glass ends at its own edge, so no margin and no saved-frame drift.
+  expect(member(panels, "private func apply() {")).toContain("layOut(margin: EdgeInsets())");
+  const glass = read("design/ConchDesign/Sources/ConchDesign/GlassPanel.swift");
+  expect(glass).toContain("content.glassEffect(.regular.tint(tint), in: shape)");
+  expect(glass).toContain("RoundedRectangle(cornerRadius: ConchRadius.panel, style: .continuous)");
+  expect(glass).toContain("content.background(ConchColor.glass.rgba(darkness: darkness).color, in: shape)");
   // The transcript fades out toward its far end, the fade shrinking with its box, rather than ending in a cut.
   expect(components).toContain(".frame(height: min(72, height * 0.4))");
 });
@@ -377,8 +387,10 @@ test("M3: the look is a magnet: gathered to the edges it touches, a blob off the
   const apply = member(panels, "private func apply() {");
   expect(apply).toContain("var next = FogLook(motion, insets: insets)");
   expect(apply).toContain("setLook(next)");
-  expect(apply).toContain("if fog.frame != window { fog.setFrame(window, display: true) }");
-  expect(apply).toContain("layOut(margin: margin)");
+  expect(apply).toContain("if fog.frame != frame { fog.setFrame(frame, display: true) }");
+  // The blob and its density are still FogLook's, but the window no longer reaches past the fog for them: the glass
+  // ends at its own rounded edge, so the margin is always zero and the saved frame cannot grow on the next launch.
+  expect(apply).toContain("layOut(margin: EdgeInsets())");
   expect(apply).toContain("if motion.isMoving != floating { floating = motion.isMoving }");
   expect(member(panels, "private func layOut(margin: EdgeInsets) {")).toContain("container.setBoundsOrigin(origin)");
   expect(member(panels, "private func setLook(_ next: FogLook) {")).toContain("blur.maskImage = blurMask()");
@@ -405,7 +417,8 @@ test("M3: the look glows in the voice's colour, crossfades light and dark, thick
   // The scrim, in the blur's mask and in the wash; and the words fade where the blur does.
   expect(look).toContain("(scrimArea, [(0, scrim), (0.5, scrim), (1, 0)])");
   expect(look).toContain("FogLook.area(shift(look.scrimArea), [(0, 0.92 * scrim), (0.45, 0.78 * scrim), (1, 0)], wash)");
-  expect(components).toContain("FogLook.area(look.wordsFade.offsetBy(dx: -frame.minX, dy: -frame.minY), FogLook.wordsDensity, .black)");
+  expect(components).toContain("stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.26)],");
+  expect(components).toContain("startPoint: top ? .bottom : .top,");
   // Over the resize band it glows; the buttons are faint until the pointer is over the fog, and gone mid-air.
   expect(member(panels, "func pointerMoved(to point: CGPoint) {")).toContain("hoverResizeBand(resizes)");
   expect(panels).toContain("if !inside { self?.hoverResizeBand(false) }");

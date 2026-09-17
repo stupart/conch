@@ -1126,13 +1126,15 @@ public struct ConversationFog: View {
                     }
                 }
                 .frame(width: frame.width, height: frame.height, alignment: .topLeading)
-                // The words fade where the blur does, so they never sit on screen it hasn't softened.
+                // The oldest words fade out at the panel's far end rather than ending in a cut — panel.html's
+                // `.body{-webkit-mask-image:linear-gradient(transparent 0,#000 26%)}`. The newest end never fades, so
+                // the gradient runs from whichever end holds the oldest (`newestAtTop`).
                 .mask(alignment: .topLeading) {
-                    if let look, !isFullScreen {
-                        FogLook.area(look.wordsFade.offsetBy(dx: -frame.minX, dy: -frame.minY), FogLook.wordsDensity, .black)
-                    } else {
-                        Color.black
-                    }
+                    LinearGradient(
+                        stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.26)],
+                        startPoint: top ? .bottom : .top,
+                        endPoint: top ? .top : .bottom
+                    )
                 }
                 .offset(x: frame.minX, y: frame.minY)
                 .onChange(of: target, initial: true) { _, target in text.grow(to: target) }
