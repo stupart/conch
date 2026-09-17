@@ -837,6 +837,23 @@ private struct DashboardRow: View {
                 .frame(width: 10)
                 .accessibilityHidden(true)
 
+            // The mark leads the row, as it does in the lab (`${mark(v)}${label}`) and on the
+            // phone (`SessionRowView`: the symbol, then the label). The Mac was the only one
+            // of the three trailing it, hard right after the age — Tyler: "having the icons on
+            // the left side of the items on the left sidebar ... seems to work a bit better".
+            //
+            // A scanning eye reads down the left edge. A verdict parked on the right is found
+            // only after crossing the label and the summary, which is the wrong order for the
+            // question this list answers: which of these needs me?
+            //
+            // `.mk{width:16px;height:16px}` — the 16 pt slot is unchanged, and so is every
+            // colour and size: the glyph is deliberately NOT dimmed with the rest of the row,
+            // because dimming a manual row once dropped its verdict to 2.45:1, and the pixel
+            // answering "why is this one silent?" must not be the least legible thing on a
+            // screen in a product whose failure mode IS silence.
+            DashboardStatusGlyph(visual: LedgerVisual(row: row))
+                .frame(width: 16)
+
             if isRenaming {
                 TextField("Session name", text: $renameDraft)
                     .textFieldStyle(.plain)
@@ -968,16 +985,6 @@ private struct DashboardRow: View {
                     .opacity(isDimmed ? 0.58 : 1)
             }
 
-            // The status glyph reads as the row's verdict, so it sits at the end
-            // of the line where the eye lands last — after the age, hard right.
-            //
-            // It is deliberately NOT dimmed with the rest of the row. Dimming a
-            // manual row used to fade the glyph too, dropping it to 2.45:1 — so
-            // the pixel answering "why is this one silent?" became the least
-            // legible thing on screen, in a product whose failure mode IS
-            // silence. The row recedes; its verdict does not.
-            DashboardStatusGlyph(visual: LedgerVisual(row: row))
-                .frame(width: 16)
         }
         .padding(.trailing, 4)
         .frame(maxWidth: .infinity, minHeight: Self.rowHeight, alignment: .leading)
