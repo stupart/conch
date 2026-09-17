@@ -12,22 +12,29 @@ const composer = readFileSync(
  *
  * Tyler, with a screenshot: "see how the cursor isn't lined up with the preview text?"
  *
- * `#ta{...font:var(--read)/22px...}` — the lab's composer is a 22 px LINE BOX, and nothing
- * in this app set one. Two things followed from that. Typed lines sat at the reading font's
- * natural 18 pt rather than 22. And the caret is drawn to the line fragment, so it was an
- * 18 pt bar at the top of the box while the placeholder — a SwiftUI `Text` centred in a
- * 22 pt frame — drew its glyphs 2 pt lower.
+ * `#ta{...font:var(--read)/22px...}` is 15 pt of type plus 4 pt of leading — the same
+ * `ConchType.readingLineSpacing` the transcript uses, so the composer and the messages it
+ * answers cannot drift apart.
  *
- * Measured with a compiled probe rather than reasoned about: with no paragraph style the
- * fragment is 18 pt with ink at y 0.5; with a 22 pt line box it is 22 pt with ink at y 4.5,
- * which is where a top-aligned placeholder draws (y 4). Centred in 22 pt it draws at y 6 —
- * the 2 pt that was visible on screen.
+ * It must be lineSpacing, NOT min/maxLineHeight. CSS splits a line box's extra leading half
+ * above and half below; AppKit puts ALL of it above the baseline. Measured against a real
+ * NSTextView:
+ *
+ *     no paragraph style   caret 18 pt, text ink at 4 pt
+ *     min/max 22           caret 22 pt, text ink at 8 pt   <- an earlier fix, and wrong
+ *     lineSpacing 4        caret 18 pt, text ink at 4 pt
+ *
+ * The placeholder, top-aligned in the same box, draws at 4 pt. The middle row is what shipped
+ * first and what Tyler saw twice: "the cursor in the text input box still isn't lined up".
  */
 test("the editor lays its text out in the lab's 22 pt line box", () => {
   const insets = composer.slice(composer.indexOf("func conchTextViewInsets("));
   const body = insets.slice(0, insets.indexOf("\n    }\n"));
-  expect(body).toContain("paragraph.minimumLineHeight = lineHeight");
-  expect(body).toContain("paragraph.maximumLineHeight = lineHeight");
+  expect(body).toContain("paragraph.lineSpacing = lineSpacing");
+  // A line box is the wrong tool: AppKit hangs its extra leading above the baseline, so this
+  // is what pushed the text down and grew the caret the first time.
+  expect(body).not.toContain("minimumLineHeight");
+  expect(body).not.toContain("maximumLineHeight");
   // Both, or only one of them is right: `defaultParagraphStyle` styles what is laid out,
   // `typingAttributes` styles what is typed next.
   expect(body).toContain("view.defaultParagraphStyle = paragraph");
@@ -40,7 +47,7 @@ test("the editor lays its text out in the lab's 22 pt line box", () => {
   expect(body).toContain("storage.addAttribute(");
   expect(body).toContain("range: NSRange(location: 0, length: storage.length)");
   // The line box comes from the one constant the lab's `22px` is already pinned to.
-  expect(composer).toContain(".conchTextViewInsets(lineHeight: Self.lineHeight)");
+  expect(composer).toContain(".conchTextViewInsets(lineSpacing: ConchType.readingLineSpacing)");
   expect(composer).toContain("static let lineHeight: CGFloat = 22");
   // Inside a `View` extension this name belongs to SwiftUI's own modifier, so reaching for
   // the struct's constant there is a compile error, not a wrong value. Asserted against the
@@ -48,6 +55,8 @@ test("the editor lays its text out in the lab's 22 pt line box", () => {
   // to explain the trap, and a file-wide sweep would match that prose and fail on it.
   expect(composer).not.toContain("= ComposerView.lineHeight");
   expect(composer).not.toContain("(ComposerView.lineHeight");
+  // The constant still bounds the field at one line and at eight — `#ta{max-height:22*8+12}`.
+  expect(composer).toContain("min(Self.lineHeight * 8, max(Self.lineHeight, measured))");
 });
 
 test("the placeholder sits where the first typed line will", () => {
@@ -96,8 +105,9 @@ test("the field measures the font it renders, in the line box it renders it in",
   const body = height.slice(0, height.indexOf("\n    }"));
   expect(body).toContain("NSFont.systemFont(ofSize: 15)");
   expect(body).not.toContain("NSFont.systemFont(ofSize: 12.5)");
-  expect(body).toContain("paragraph.minimumLineHeight = Self.lineHeight");
-  expect(body).toContain("paragraph.maximumLineHeight = Self.lineHeight");
+  // Measured with the same leading it is drawn with, or the box is sized against a different
+  // shape from the one on screen.
+  expect(body).toContain("paragraph.lineSpacing = ConchType.readingLineSpacing");
   expect(body).toContain("attributes: [.font: font, .paragraphStyle: paragraph]");
   // Still bounded at eight lines, and never shorter than one.
   expect(body).toContain("min(Self.lineHeight * 8, max(Self.lineHeight, measured))");
