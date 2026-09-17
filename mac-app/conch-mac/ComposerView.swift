@@ -463,7 +463,7 @@ struct ComposerView: View {
                     .foregroundStyle(ConchPalette.textPrimary)
                     .scrollContentBackground(.hidden)
                     .focused($fieldFocused)
-                    .conchTextViewInsets(lineHeight: Self.lineHeight)
+                    .conchTextViewInsets(lineSpacing: ConchType.readingLineSpacing)
                     .conchSpelling()
                     .frame(height: fieldHeight)
                     // Return SENDS. Tyler kept "trying to send and making a new
@@ -599,9 +599,11 @@ struct ComposerView: View {
         // measured at 12.5, whose line height is 15 pt: every wrapped line was measured 7 pt
         // short, so the box grew less than the text it had to hold. Measure what is drawn.
         let font = NSFont.systemFont(ofSize: 15)
+        // The same leading the editor lays out with, or the box is measured against a
+        // different shape from the one drawn. `Self.lineHeight` still bounds it below and at
+        // eight lines — `#ta{max-height:calc(22px * 8 + 12px)}`.
         let paragraph = NSMutableParagraphStyle()
-        paragraph.minimumLineHeight = Self.lineHeight
-        paragraph.maximumLineHeight = Self.lineHeight
+        paragraph.lineSpacing = ConchType.readingLineSpacing
         let attributed = NSAttributedString(
             string: text,
             attributes: [.font: font, .paragraphStyle: paragraph]
@@ -787,27 +789,31 @@ private extension View {
     /// Drop NSTextView's built-in padding so SwiftUI's padding is the only one
     /// in play. Without this the editor applies its inset on top of ours and
     /// typed text lands above centre while the placeholder does not.
-    /// `lineHeight` is passed rather than read off `ComposerView`: inside a `View`
-    /// extension, `ComposerView.lineHeight` resolves to SwiftUI's own `lineHeight(_:)`
-    /// modifier instead of the struct's constant, and the compiler says so in types.
-    func conchTextViewInsets(lineHeight: CGFloat) -> some View {
+    /// `lineSpacing` is passed rather than read off `ComposerView`: inside a `View`
+    /// extension, a bare name like `lineHeight` resolves to SwiftUI's own modifier instead
+    /// of the struct's constant, and the compiler says so in types.
+    func conchTextViewInsets(lineSpacing: CGFloat) -> some View {
         introspectTextView { view in
             view.textContainerInset = .zero
             view.textContainer?.lineFragmentPadding = 0
-            // `#ta{font:var(--read)/22px}` — a 22 pt LINE BOX, which nothing in this app set.
+            // `#ta{font:var(--read)/22px}` — 22 pt between lines, which is 15 pt of type plus
+            // 4 pt of leading: `ConchType.readingLineSpacing`, the same number the transcript
+            // already uses so the composer and the messages it answers cannot drift apart.
             //
-            // Two things were wrong because of it. Typed lines sat at the font's natural 18 pt
-            // rather than the lab's 22. And the caret is drawn to the line fragment, so it was
-            // an 18 pt bar starting at the top of the box while the placeholder — a SwiftUI
-            // Text centred in a 22 pt frame — sat 2 pt lower. Tyler: "see how the cursor isn't
-            // lined up with the preview text?"
+            // It must be lineSpacing, NOT min/maxLineHeight. CSS splits a line box's extra
+            // leading half above and half below; AppKit puts ALL of it above the baseline. So
+            // asking for a 22 pt line box pushed the first line down and grew the caret with
+            // it, which is how the previous attempt at this made the gap worse:
             //
-            // Measured, not guessed: no style puts ink at y 0.5 in an 18 pt fragment; a 22 pt
-            // box puts it at y 4.5 in a 22 pt fragment, which is where a top-aligned
-            // placeholder draws it (y 4). Same line, same caret height.
+            //     no style          caret 18 pt, text ink at 4 pt
+            //     min/max 22        caret 22 pt, text ink at 8 pt   <- shipped, and wrong
+            //     lineSpacing 4     caret 18 pt, text ink at 4 pt
+            //
+            // The placeholder, top-aligned in the same box, draws its ink at 4 pt. Measured
+            // with a compiled probe against a real NSTextView, twice, because reasoning about
+            // this got it wrong once already.
             let paragraph = NSMutableParagraphStyle()
-            paragraph.minimumLineHeight = lineHeight
-            paragraph.maximumLineHeight = lineHeight
+            paragraph.lineSpacing = lineSpacing
             view.defaultParagraphStyle = paragraph
             view.typingAttributes[.paragraphStyle] = paragraph
             // An existing draft was laid out before this ran, so restyle what is already there.
