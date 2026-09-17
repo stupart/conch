@@ -191,7 +191,20 @@ final class TalkController: NSObject, ObservableObject {
     /// into the next session and be injected there — and worse, tapping the
     /// button while another session held the mic would deliver ITS words to
     /// whatever you happened to be looking at.
-    private var parked: [String: String] = [:]
+    ///
+    /// `@Published` because the composer ASKS for it: `canSend` calls `hasWords(for:)`, which
+    /// reads this for every session that is not the mic's current target. Without the wrapper
+    /// SwiftUI was never told a keystroke landed, so `canSend` stayed stale and the send button
+    /// was never built — Tyler: "where did the send button on the mobile app go? I have to
+    /// press the audio button for it to show". Pressing the mic calls `switchTarget`, which
+    /// assigns the published `targetSessionId` AND copies these words into the published
+    /// `committed`, which is what made the button appear.
+    ///
+    /// The trash and stop buttons read `canSend` too, so they were stale on the same rows.
+    ///
+    /// No `didSet` here: `setDraft` already persists this path explicitly, and adding one
+    /// would write UserDefaults twice on every keystroke.
+    @Published private var parked: [String: String] = [:]
     private static let draftKey = "conch.drafts"
 
     /// What the composer's field holds for `session`: typed and banked words.
