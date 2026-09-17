@@ -632,6 +632,14 @@ public enum FogCorner: Hashable, Sendable {
 
 /// Where the conversation fog sits: always docked in a corner of its screen, touching one side and the top or the
 /// bottom. Its two other edges are free: where it fades. Screen coordinates, y up.
+public extension EdgeInsets {
+    /// These insets with `amount` taken off each side, never below zero: the screen's edges are that much further from a
+    /// panel that floats in from them.
+    func less(_ amount: CGFloat) -> EdgeInsets {
+        EdgeInsets(top: max(0, top - amount), leading: max(0, leading - amount), bottom: max(0, bottom - amount), trailing: max(0, trailing - amount))
+    }
+}
+
 public enum FogDock {
     /// A fog of `size` docked in `corner` of `screen`, never bigger than the screen.
     public static func frame(size: CGSize, corner: FogCorner, in screen: CGRect) -> CGRect {

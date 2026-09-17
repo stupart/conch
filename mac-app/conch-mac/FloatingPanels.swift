@@ -107,6 +107,9 @@ final class FloatingPanels: ObservableObject {
     /// Liquid Glass draws the panel itself, so the behind-window effect view is not needed. It stays a sibling either
     /// way — hidden here, drawing the blur below macOS 26 — because a material that parents the words masks them.
     static var usesGlass: Bool { if #available(macOS 26.0, *) { true } else { false } }
+    /// How far the glass floats inside the window, panel.html's `left:24px;bottom:24px`. The words and the buttons come
+    /// in by the same amount, so everything the panel holds sits on it rather than beside it.
+    static let glassInset: CGFloat = ConchSpace.x6
     /// The look, tunable live with `defaults write ai.blueprintstudio.conch <key> <value>`: the running app picks a
     /// change up within half a second, no rebuild.
     enum Look {
@@ -672,7 +675,7 @@ private struct FogLookHost: View {
             // is what lets all four corners round and the shadow read on every side. The window stays the docked frame,
             // so the magnet, the docking contract and every motion test are untouched.
             ConchGlassPanel(darkness: panels.look.darkness, voice: ConchStatusItem.voiceState(store.state))
-                .padding(ConchSpace.x6)
+                .padding(FloatingPanels.glassInset)
         }
     }
 }
@@ -704,7 +707,7 @@ private struct ConversationFogHost: View {
                     isWorking: row?.status == .working,
                     isFullScreen: panels.isFullScreen,
                     corner: panels.corner,
-                    insets: panels.insets,
+                    insets: panels.insets.less(FloatingPanels.glassInset),
                     showsFog: FloatingPanels.showsFog,
                     look: panels.look,
                     floating: panels.floating,
@@ -714,6 +717,11 @@ private struct ConversationFogHost: View {
                     onCollapse: { panels.toggleCollapsed() },
                     onFullScreen: { panels.toggleFullScreen() }
                 )
+                // The glass is inset inside the window, so the words and the buttons come in with it — the buttons are
+                // placed from the edge they are given, and left at the window's they sat out on the desktop beside the
+                // panel. Inside the Group, so `FogControls` frames and the presses they are matched against
+                // (`grabs`, in the container's space) move together; outside it they would not.
+                .padding(FloatingPanels.glassInset)
                 // A throw's flight: it softens and shrinks a little mid-air, and lands whole. Reduce Motion keeps only the fade.
                 .scaleEffect(1 - (1 - ConchMotion.flightScale) * (reduceMotion ? 0 : panels.throwMotion))
                 .blur(radius: reduceMotion ? 0 : ConchMotion.flightBlur * panels.throwMotion)
