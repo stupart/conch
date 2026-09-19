@@ -639,7 +639,25 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
    * same sentence says so. Returns what to say once the mic has drained.
    */
   function recoverIncompleteDictation(event: TurnEvent, captured: readonly string[]): string {
-    publishDictation(captured.join(" "), event.sessionId);
+    // One utterance can reach here several times over. The mic's exit drain
+    // pushes EVERY late transcript it finds, and overlapping captures of the
+    // same sentence each transcribe to the same words — so the backlog holds
+    // one sentence N times, not N things you said. Joining that blind is what
+    // put a sentence into the composer six times, space-joined, and the app
+    // appends a dictation rather than replacing it, so it lands whole.
+    // Words already recovered are that artifact: a drain is a backlog, never a
+    // conversation, and nobody says the same sentence twice inside one breath.
+    // ponytail: exact repeats only. A phrase Whisper repeated INSIDE a single
+    // transcript is a transcription artifact — collapse it in transcribe.ts if
+    // it recurs, not here, where splitting text would corrupt real speech.
+    const seen = new Set<string>();
+    const recovered = captured.filter((text) => {
+      const key = text.trim();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    publishDictation(recovered.join(" "), event.sessionId);
     return captured.some((text) => text.trim())
       ? "Dictation was incomplete. Your recovered words are in the draft. Review them or retry before sending."
       : "Dictation failed. Please try again.";

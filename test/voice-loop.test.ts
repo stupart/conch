@@ -1302,6 +1302,31 @@ describe("dictation failure recovery", () => {
     expect(h.violations).toEqual([]);
   });
 
+  test("one utterance drained twice is recovered once, not repeated in the draft", async () => {
+    // Tyler's report: a sentence arrived in the composer six times, space-joined,
+    // "until i closed the convo bar". The published dictation itself held the
+    // repeats, so nothing on the app side could have deduplicated them — the
+    // recovery joined a drain backlog in which the same words appeared again and
+    // again. Here the buffered segment and the words the drain hands back are the
+    // SAME utterance, which is exactly the shape that corrupted the draft.
+    const audio = failingDictation("transcribe");
+    const h = harness({ dictationSession: () => audio.session, cfg: { interruptOnManualReply: false } });
+    const before = getLiveState().dictated?.id ?? 0;
+    const turn = h.voice.handle(wake());
+    await waitFor("first synthetic recorder", () => audio.recorders.length === 1);
+    // The same words the exit drain will hand back when it stops the live recorder.
+    audio.recorders[0]!.finish("but keep the comments");
+    await waitFor("first result to drain", () => audio.recorders.length === 2 && audio.controller.finalWorkerIdle);
+    audio.recorders[1]!.finish("failed fragment");
+    await turn;
+    expect(h.texts).toEqual([]);
+    // Published ONCE, and the sentence appears once inside it.
+    expect(getLiveState().dictated).toEqual({
+      text: "but keep the comments", id: before + 1, sessionId: "s1",
+    });
+    expect(h.violations).toEqual([]);
+  });
+
   for (const stage of ["capture", "read", "transcribe"] as const) {
     test(`a ${stage} failure preserves good speech as a draft and never submits it`, async () => {
       const audio = failingDictation(stage);
