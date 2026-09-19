@@ -639,8 +639,19 @@ export function spokenQuestion(asked: AgentQuestion): string {
  * nobody reads in that position.
  */
 export interface FileChange {
-  /** The basename. The full path is already the row's title. */
+  /** The basename, which is what a reader scanning the stack needs. */
   file: string;
+  /**
+   * Where that file actually is, exactly as the tool was given it.
+   *
+   * The basename alone cannot be located. `shot.mjs` is every `shot.mjs` in the
+   * checkout, so nothing downstream could say WHICH file an agent edited —
+   * fine for a line you scan past, useless to anything that wants to open it
+   * or mark it in a tree, and a guess by name would confidently point at the
+   * wrong file. The row's title was said to carry the path, but the title is
+   * the tool's own text and neither app parses it.
+   */
+  path: string;
   removed: string[];
   added: string[];
   /** True when the payload was too large to carry whole. */
@@ -683,6 +694,7 @@ export function fileChange(input: unknown): FileChange | null {
 
   return {
     file: path.split("/").pop() || path,
+    path,
     removed: trimmedRemoved.slice(0, DIFF_MAX_LINES),
     added: trimmedAdded.slice(0, DIFF_MAX_LINES),
     truncated,

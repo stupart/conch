@@ -1245,6 +1245,11 @@ private struct ChangeRow: View {
                     Text(change.file)
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
                         .foregroundStyle(ConchPalette.textDim)
+                        // The name stays; the PATH is a hover away. A row that reads
+                        // `shot.mjs` names one of every shot.mjs in the checkout, and putting
+                        // the absolute path on the line itself is the clutter Tyler already
+                        // objected to above the deliverables.
+                        .help(change.path.isEmpty ? change.file : change.path)
                     if !change.added.isEmpty {
                         Text("+\(change.added.count)")
                             .font(.system(size: 10.5, design: .monospaced))
