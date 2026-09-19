@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 const macRoot = join(import.meta.dir, "..", "mac-app", "conch-mac");
 const mac = (name: string) => readFileSync(join(macRoot, name), "utf8");
+const components = readFileSync(join(import.meta.dir, "..", "design", "ConchDesign", "Sources", "ConchDesign", "Components.swift"), "utf8");
 
 describe("the Mac conversation stays readable while it grows", () => {
   const conversation = mac("ConversationStackView.swift");
@@ -249,7 +250,7 @@ describe("Mac conversation links keep the native clickable path", () => {
   test("SwiftUI receives the markdown link attribute without an interaction override", () => {
     const conversation = mac("ConversationStackView.swift");
     expect(conversation).toContain("Text(AttributedString.conchMarkdown(item.text))");
-    expect(conversation).toContain("interpretedSyntax: .inlineOnlyPreservingWhitespace");
+    expect(components).toContain("interpretedSyntax: .inlineOnlyPreservingWhitespace");
     expect(conversation).not.toContain(".allowsHitTesting(false)");
     // The one override that IS allowed, and required (A13): SwiftUI's default
     // action handed a schemeless link straight to LaunchServices, which

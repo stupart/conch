@@ -262,7 +262,7 @@ final class FogTextTests: XCTestCase {
     // MARK: Layout
 
     /// Hanging from a top corner the transcript runs top-down, newest nearest the top; otherwise and full screen, bottom-up.
-    /// Docked, the words keep 52 pt from their side in a column up to 540 wide; off the corner they centre.
+    /// Docked, the words keep 52 pt from their side in a column up to 620 wide; off the corner they centre.
     func testTopCornersRunTopDownAndFloatingWordsCentre() {
         XCTAssertTrue(ConversationFog.newestAtTop(corner: .topLeading, fullScreen: false))
         XCTAssertTrue(ConversationFog.newestAtTop(corner: .topTrailing, fullScreen: false))
@@ -273,7 +273,7 @@ final class FogTextTests: XCTestCase {
         let size = CGSize(width: 900, height: 640)
         let bl = ConversationFog.textFrame(in: size, corner: .bottomLeading, insets: Self.dock, fullScreen: false)
         XCTAssertEqual(bl.minX, 52)
-        XCTAssertEqual(bl.width, 540)
+        XCTAssertEqual(bl.width, 620)
         let tr = ConversationFog.textFrame(in: size, corner: .topTrailing, insets: Self.menuBar, fullScreen: false)
         XCTAssertEqual(tr.maxX, 900 - 52)
         XCTAssertEqual(ConversationFog.textFrame(in: CGSize(width: 480, height: 360), corner: .bottomLeading, insets: Self.dock, fullScreen: false).width, 376)

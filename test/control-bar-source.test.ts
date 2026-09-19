@@ -325,9 +325,9 @@ test("M3: the control bar fits what it shows, the reply scrolls past five lines,
     "let cap = min(max(Int(((height - gap - transcriptKept - 2 * pad) / line).rounded(.down)), 1), 5)",
   );
   expect(components).toContain("let scroll = NSScrollView()");
-  // The lab's column: up to 540 wide, 52 in from its side; a taller fog is more room for words.
+  // The lab's column: up to 620 wide, 52 in from its side; a taller fog is more room for words.
   expect(member(components, "public static func textFrame(in size: CGSize, corner: FogCorner, insets: EdgeInsets, fullScreen: Bool, magnet: EdgeInsets? = nil) -> CGRect {")).toContain(
-    "let width = min(540, max(0, size.width - leading - trailing))",
+    "let width = min(620, max(0, size.width - leading - trailing))",
   );
 });
 

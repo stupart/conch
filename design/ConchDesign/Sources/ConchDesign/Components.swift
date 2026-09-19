@@ -1054,7 +1054,7 @@ public struct ConversationFog: View {
     /// The reply line's type size: the conversation's newest, `ConchType.conversationNow` (24) or, full screen, 36.
     public static func replyFontSize(fullScreen: Bool) -> CGFloat { fullScreen ? 36 : 24 }
 
-    /// Where the words and the reply line sit: a column up to 540 pt wide, the lab's, clear of the fog's padding, the
+    /// Where the words and the reply line sit: a column up to 620 pt wide, clear of the fog's padding, the
     /// screen's insets and the button row. Docked it keeps to its corner's side; off its corner `magnet` pulls it toward the
     /// screen edges it nears and centres it between them. Full screen, a wider column in the middle.
     public static func textFrame(in size: CGSize, corner: FogCorner, insets: EdgeInsets, fullScreen: Bool, magnet: EdgeInsets? = nil) -> CGRect {
@@ -1072,7 +1072,11 @@ public struct ConversationFog: View {
             return CGRect(x: leading + (room - width) / 2, y: top, width: width, height: height)
         }
         let leading = insets.leading + side, trailing = insets.trailing + side
-        let width = min(540, max(0, size.width - leading - trailing))
+        // 620, not the lab's 540: the panel defaults to 900 wide now and resizes to the whole screen, and at 852 pt of
+        // fog the 540 column left 312 pt of it empty. The cap cannot simply follow the width — `pull` below slides the
+        // column between its docked side and the centre, and that travel is (usable - cap), so a cap that fills the fog
+        // kills the magnet outright (0 pt at 748). 620 keeps 64 pt of travel and puts the newest line at 61 characters.
+        let width = min(620, max(0, size.width - leading - trailing))
         let pull = magnet ?? EdgeInsets(top: corner.bottom ? 0 : 1, leading: corner.leading ? 1 : 0, bottom: corner.bottom ? 1 : 0, trailing: corner.leading ? 0 : 1)
         let midX = (size.width - width) / 2, midY = (size.height - height) / 2
         return CGRect(
@@ -1316,10 +1320,70 @@ public struct ConversationFog: View {
         }
     }
 
-    /// Agent replies are markdown; the fog shows the inline parts (emphasis, code, links) and keeps line breaks.
-    static func inlineMarkdown(_ text: String) -> AttributedString {
-        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-            ?? AttributedString(text)
+    /// Agent replies are markdown, and a transcript that shows the source reads worst exactly where it matters most:
+    /// `**Storage moved**` with its asterisks and `` `path/to/file` `` with its backticks is most of what a summary is
+    /// made of.
+    ///
+    /// The one renderer both transcripts use — it was the dashboard stack's, and the fog had only half of it. `.inlineOnlyPreservingWhitespace` is the
+    /// parse a SwiftUI `Text` can take: the block parse (`.full`) drops every newline, so a three-item list arrives as
+    /// "onetwothree". Block markers stay literal, which reads fine for "- " and uselessly for "## " and a table's
+    /// pipes, so those two are rewritten before the parse.
+    public static func inlineMarkdown(_ text: String) -> AttributedString {
+        var parsed = (try? AttributedString(
+            markdown: promoteHeadings(flattenTables(text)),
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(text)
+        // Make a link LOOK like the link it already is. They worked the whole time — Tyler tested one — but nothing
+        // said so: blue against text that is also occasionally coloured, with no underline and no hover state, so the
+        // only way to find one was to click on the off chance. "it's just a ui problem really, to show me with an
+        // underline on hover that i can click on it."
+        //
+        // A permanent underline rather than a hover one, deliberately: SwiftUI's `Text` draws an AttributedString as a
+        // single view and cannot hit-test one run inside it, so there is no honest way to underline only the link under
+        // the pointer. Always-underlined is the same signal, available before the pointer arrives rather than after.
+        for run in parsed.runs where run.link != nil { parsed[run.range].underlineStyle = .single }
+        return parsed
+    }
+
+    /// A markdown table as lines a person can read: an inline parse cannot lay one out, so it arrives as a wall of
+    /// pipes. Each row becomes "first cell — the rest", which is how you would read it aloud.
+    static func flattenTables(_ source: String) -> String {
+        guard source.contains("|") else { return source }
+        return source
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .compactMap { line -> String? in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard trimmed.hasPrefix("|"), trimmed.hasSuffix("|"), trimmed.count > 1 else { return String(line) }
+                let cells = trimmed.dropFirst().dropLast()
+                    .split(separator: "|", omittingEmptySubsequences: false)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                // The alignment row carries no content once the grid is gone.
+                let isDivider = cells.allSatisfy { cell in !cell.isEmpty && cell.allSatisfy { ":-".contains($0) } }
+                if isDivider { return nil }
+                let filled = cells.filter { !$0.isEmpty }
+                if filled.isEmpty { return nil }
+                if filled.count == 1 { return filled[0] }
+                return "**\(filled[0])** — \(filled.dropFirst().joined(separator: " · "))"
+            }
+            .joined(separator: "\n")
+    }
+
+    /// `## Heading` keeps its hashes under an inline parse, and agents write in headings constantly. Bold keeps the
+    /// emphasis without a block parse, which would collapse every newline.
+    static func promoteHeadings(_ source: String) -> String {
+        guard source.contains("#") else { return source }
+        return source
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> Substring in
+                guard line.hasPrefix("#") else { return line }
+                let hashes = line.prefix { $0 == "#" }
+                guard hashes.count <= 6 else { return line }
+                let rest = line.dropFirst(hashes.count).drop { $0 == " " }
+                // Bold needs something to wrap, and `**` alone parses as literal.
+                guard !rest.isEmpty else { return line }
+                return Substring("**\(rest)**")
+            }
+            .joined(separator: "\n")
     }
 
     /// The words as the fog shows them, markdown taken out.
