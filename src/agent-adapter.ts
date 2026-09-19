@@ -259,7 +259,9 @@ export const codexAdapter: AgentAdapter = {
   // invalid `--sandbox` there is rejected by name). Re-read on this Mac when
   // the bypass/sandbox conflict below was found; the option set is unchanged.
   startOptions: [
-    { name: "model", flag: "--model", kind: "string", help: "Model the agent should use" },
+    // No `--model` row, deliberately: codex takes its model from its own config, and a row here is an
+    // invitation to override it from the sheet. conch never passed the flag itself; offering it was the
+    // same thing one click later.
     {
       name: "sandbox",
       flag: "--sandbox",

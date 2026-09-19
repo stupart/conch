@@ -45,7 +45,7 @@ describe("the start-options table (C1)", () => {
     expect(claudeAdapter.startOptions.map((entry) => entry.flag))
       .toEqual(["--model", "--permission-mode", "--dangerously-skip-permissions", "--effort", "--fork-session"]);
     expect(codexAdapter.startOptions.map((entry) => entry.flag))
-      .toEqual(["--model", "--sandbox", "--ask-for-approval", "--dangerously-bypass-approvals-and-sandbox", "--profile"]);
+      .toEqual(["--sandbox", "--ask-for-approval", "--dangerously-bypass-approvals-and-sandbox", "--profile"]);
     // Tool lists, extra directories and raw config overrides cannot be validated; they stay out.
     for (const adapter of agentAdapters()) {
       for (const entry of adapter.startOptions) expect(entry.flag).not.toMatch(/tools|add-dir|config|^-c$/);
@@ -276,13 +276,15 @@ describe("the rendered command", () => {
 describe("conch start", () => {
   test("parses the agent, the fixed arguments and the table's options", () => {
     expect(startRequestFromArgv([
-      "codex", "--cwd", "/w", "--resume", "t1", "--sandbox", "read-only", "--no-bypass-permissions", "--model", "gpt-5",
+      "codex", "--cwd", "/w", "--resume", "t1", "--sandbox", "read-only", "--no-bypass-permissions",
     ])).toEqual({
       backend: "codex",
       cwd: "/w",
       resumeSessionId: "t1",
-      options: { sandbox: "read-only", "bypass-permissions": false, model: "gpt-5" },
+      options: { sandbox: "read-only", "bypass-permissions": false },
     });
+    // No `--model` for codex: it takes its model from its own config. Claude still has one, and the
+    // "--model needs a value" case below is claude's (no agent argument), so the flag stays covered.
     expect(startRequestFromArgv([])).toEqual({ backend: "claude" });
     expect(startRequestFromArgv(["--effort", "high", "--bypass-permissions"]))
       .toEqual({ backend: "claude", options: { effort: "high", "bypass-permissions": true } });

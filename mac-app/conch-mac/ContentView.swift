@@ -355,7 +355,6 @@ struct StartOption: Identifiable {
     ]
 
     static let codex: [StartOption] = [
-        StartOption(name: "model", kind: .text, help: "Model the agent should use"),
         StartOption(name: "sandbox", kind: .choice(["read-only", "workspace-write", "danger-full-access"]), help: "Select the sandbox policy to use when executing model-generated shell commands"),
         StartOption(name: "ask-for-approval", kind: .choice(["on-request", "never"]), help: "Configure when the model requires human approval before executing a command"),
         StartOption(name: "bypass-permissions", kind: .toggle, help: "Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY DANGEROUS. Intended solely for running in environments that are externally sandboxed"),
