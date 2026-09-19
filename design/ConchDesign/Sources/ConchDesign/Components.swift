@@ -440,6 +440,9 @@ private struct ReplyField: NSViewRepresentable {
         view.isRichText = false
         view.allowsUndo = true
         view.drawsBackground = false
+        // Every other editor in the app turns this off; this one did not, so clicking the panel drew a focus ring
+        // around the reply line (Tyler: "theres a weird select outline that forms when i click on it").
+        view.focusRingType = .none
         view.isVerticallyResizable = true
         view.isHorizontallyResizable = false
         view.autoresizingMask = [.width]
@@ -662,9 +665,11 @@ public enum FogDock {
         )
     }
 
-    /// Biggest: 1280 by 900, never more than the screen.
+    /// Biggest: the screen itself. The lab capped this at 1280 by 900 — its own viewport's convention, not a rule about
+    /// the panel — which stopped a 1117 pt screen 217 pt short of full height (Tyler: "can we make it so that I can have
+    /// the panel fill the pt height and go to the edges like a normal window?").
     public static func maxSize(in screen: CGRect) -> CGSize {
-        CGSize(width: min(1280, screen.width), height: min(900, screen.height))
+        CGSize(width: screen.width, height: screen.height)
     }
 
     /// Smallest: 480 by 360, never more than the biggest.

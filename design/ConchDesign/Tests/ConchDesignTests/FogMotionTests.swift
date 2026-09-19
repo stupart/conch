@@ -14,11 +14,11 @@ final class FogMotionTests: XCTestCase {
         sim.gesture(from: CGPoint(x: 380, y: 30), by: CGVector(dx: 50, dy: 200))
         sim.settle()
         XCTAssertEqual(sim.motion.frame, CGRect(x: 0, y: 0, width: 810, height: 760))
-        // Pulled far past its tallest it gives a little, then springs back to 900, still in its corner.
+        // Pulled far past its tallest it gives a little, then springs back to the screen's height, still in its corner.
         sim.gesture(from: CGPoint(x: 700, y: 700), by: CGVector(dx: 0, dy: 600))
         XCTAssertGreaterThan(sim.frames.map(\.height).max() ?? 0, 910)
         sim.settle()
-        XCTAssertEqual(sim.motion.frame, CGRect(x: 0, y: 0, width: 810, height: 900))
+        XCTAssertEqual(sim.motion.frame, CGRect(x: 0, y: 0, width: 810, height: 1117))
         // And pushed far below its shortest, the same.
         sim.gesture(from: CGPoint(x: 700, y: 850), by: CGVector(dx: 0, dy: -900))
         XCTAssertLessThan(sim.frames.map(\.height).min() ?? 0, 350)

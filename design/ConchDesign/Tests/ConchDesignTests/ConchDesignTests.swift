@@ -91,7 +91,7 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertEqual(FogDock.rubberBand(500, 0, 900), 500)
         XCTAssertLessThan(FogDock.rubberBand(1e9, 0, 900), 1100)
         XCTAssertEqual(FogDock.minSize(in: screen), least)
-        XCTAssertEqual(FogDock.maxSize(in: screen), CGSize(width: 1280, height: 900))
+        XCTAssertEqual(FogDock.maxSize(in: screen), CGSize(width: 1728, height: 1117))
         XCTAssertEqual(FogDock.maxSize(in: CGRect(x: 0, y: 0, width: 1024, height: 768)), CGSize(width: 1024, height: 768))
         // A band along every edge resizes, max(120, a fifth of the short side) deep; only the middle moves.
         XCTAssertTrue(FogDock.resizes(at: CGPoint(x: 380, y: 119), in: size))

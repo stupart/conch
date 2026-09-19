@@ -261,7 +261,7 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(motion).toContain("FogDock.rubberBand(x, lo.x, hi.x)");
   expect(motion).toContain("size = FogDock.resized(gesture.size, corner: corner, by: delta, in: screen)\n            origin = docked");
   expect(components).toContain("let band = max(120, min(size.width, size.height) / 5)");
-  expect(components).toContain("CGSize(width: min(1280, screen.width), height: min(900, screen.height))");
+  expect(components).toContain("CGSize(width: screen.width, height: screen.height)");
   expect(components).toContain("CGSize(width: min(480, most.width), height: min(360, most.height))");
   expect(components).toContain("(1 - 1 / (x * 0.55 / 200 + 1)) * 200");
   // It reaches the screen's edges, and the words are padded clear of the Dock and the menu bar, with no margin for strips.
