@@ -59,6 +59,76 @@ test("the editor lays its text out in the lab's 22 pt line box", () => {
   expect(composer).toContain("min(Self.lineHeight * 8, max(Self.lineHeight, measured))");
 });
 
+/**
+ * The caret straddles the words instead of riding above them.
+ *
+ * Tyler: the cursor "rides high". Measured off the running app at 2x, focused and empty: the
+ * caret's ink spans 108..143 while the placeholder's spans 115..142 — 7 px of caret above the
+ * words and 1 px below them.
+ *
+ * The leading is not what does it. AppKit draws the caret to the LINE FRAGMENT, whose top is the
+ * font's ascent, and the reading font clears the cap line by 3.9 pt up top while its descent only
+ * just clears the descender. Every seam nearer the caret was probed against a real NSTextView
+ * first, and none of them move it:
+ *
+ *     drawInsertionPoint(in:color:turnedOn:)   never called — TextKit 2's caret is a subview
+ *     that subview's bounds / layer transform  AppKit rewrites both on the next keystroke
+ *     .baselineOffset on the text              absorbed by the typesetter under BOTH TextKits
+ *     the layout manager delegate, TextKit 1   glyph ink 72..99 -> 68..95, caret 64..99 unmoved
+ *
+ * So the glyphs rise half the leading inside the fragment and the editor slides down by that same
+ * half: the words do not move by a pixel, and only the caret does.
+ */
+test("the caret is moved by the baseline, and the words are put back", () => {
+  expect(composer).toContain(
+    "private final class ComposerCaretBaseline: NSObject, NSLayoutManagerDelegate {",
+  );
+  expect(composer).toContain("baselineOffset.pointee -= ConchType.readingLineSpacing / 2");
+  // Half the leading, taken from the one constant the lab's 22 px is already pinned to.
+  expect(composer).toContain("static let caretRaise: CGFloat = ConchType.readingLineSpacing / 2");
+  // Installed on the editor — which is also what puts the view back on TextKit 1, the point of
+  // reading `layoutManager` at all.
+  const insets = composer.slice(composer.indexOf("func conchTextViewInsets("));
+  const body = insets.slice(0, insets.indexOf("\n    }\n"));
+  expect(body).toContain("view.layoutManager?.delegate = ComposerCaretBaseline.shared");
+  // The editor trades the same 2 pt between its top and bottom inset. Raising the glyphs without
+  // sliding the editor back down would move every word instead of the caret, which is exactly
+  // the mistake #303 shipped.
+  expect(composer).toContain(".padding(.top, Self.fieldInsetTop + Self.caretRaise)");
+  expect(composer).toContain(".padding(.bottom, Self.fieldInsetBottom - Self.caretRaise)");
+  // The placeholder is NOT compensated: it is a SwiftUI Text whose glyphs never rose, so giving
+  // it the editor's padding would push it 2 pt off the line it exists to preview.
+  const field = composer.slice(composer.indexOf("if draft.isEmpty {"));
+  const placeholder = field.slice(0, field.indexOf(".allowsHitTesting(false)"));
+  expect(placeholder).toContain(".padding(.top, Self.fieldInsetTop)");
+  expect(placeholder).not.toContain("caretRaise");
+});
+
+/**
+ * The reach into the editor cannot depend on how deeply SwiftUI nests a background.
+ *
+ * The leading, the caret, the spell checking and the drag types all arrive through one
+ * `DispatchQueue.main.async` that used to hop exactly two superviews up from its probe and give
+ * up silently. Measured in a harness around a real TextEditor, that hop came up empty in 6
+ * launches out of 14. A miss is invisible and total: the editor keeps SwiftUI's own 5 pt
+ * lineFragmentPadding, gets no leading, no caret fix, no spelling, and a dropped file lands as a
+ * path.
+ */
+test("the introspector finds the editor whatever the nesting, and tries again if it is early", () => {
+  expect(composer).toContain("Self.reach(from: probe, attempts: 10, configure: configure)");
+  expect(composer).toContain("if let textView = firstTextView(in: next) {");
+  // Up from the probe, not a hard-coded hop.
+  expect(composer).toContain("ancestor = next.superview");
+  expect(composer).not.toContain("probe.superview?.superview");
+  // It stops at the window rather than walking out of it.
+  expect(composer).toContain("if next === next.window?.contentView { break }");
+  // And it looks again next turn when the tree is not up yet — bounded, so a composer that never
+  // appears cannot spin forever.
+  expect(composer).toContain(
+    "if attempts > 1 { reach(from: probe, attempts: attempts - 1, configure: configure) }",
+  );
+});
+
 test("the placeholder sits where the first typed line will", () => {
   const field = composer.slice(composer.indexOf("if draft.isEmpty {"));
   const body = field.slice(0, field.indexOf(".allowsHitTesting(false)"));

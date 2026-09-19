@@ -20,6 +20,29 @@ const palette = mac("Palette.swift");
  * The app drew 54x44 tiles at radius 6 inside a strip capped at `maxHeight: 48` — a different
  * shape from the lab in both dimensions, clipped by its own container.
  */
+/**
+ * A pasted image must actually attach, or it vanishes with nothing on screen to say so.
+ *
+ * Tyler: "images I paste into the input box don't show previews so idk if the past worked or not".
+ *
+ * The bridge decides whether the focused editor is THIS composer's. It used to walk a fixed two
+ * superviews up from its probe and require the editor to be inside that — which hard-codes how
+ * deeply SwiftUI nests `.background(...)`. One wrapper more or less and the check fails closed:
+ * Cmd+V falls through to NSTextView's own paste, which knows only text, and the image is dropped.
+ * Walking up until an ancestor holds the editor does not care about the depth.
+ */
+test("a pasted image finds its composer whatever the view nesting is", () => {
+  expect(composer).toContain("coordinator.sharesAnAncestor(with: editor)");
+  expect(composer).toContain("func sharesAnAncestor(with editor: NSView) -> Bool {");
+  expect(composer).toContain("if editor.isDescendant(of: next) { return true }");
+  // It stops at the window rather than walking out of it.
+  expect(composer).toContain("if next === next.window?.contentView { return false }");
+  // The brittle fixed-depth hop is gone for good.
+  expect(composer).not.toContain("probe?.superview?.superview");
+  // Image DATA still becomes a file so it attaches like any other.
+  expect(composer).toContain("static func imageAttachments(on pasteboard: NSPasteboard) -> [URL] {");
+});
+
 test("an image attachment is the lab's tile", () => {
   const preview = composer.slice(composer.indexOf("private struct AttachmentPreview"));
   const body = preview.slice(0, preview.indexOf("private var removeButton"));
