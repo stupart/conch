@@ -536,9 +536,62 @@ async function transcribeWavCli(
   return { text };
 }
 
+/**
+ * Whisper sometimes ends a capture by emitting the same span AGAIN, back to
+ * back, with no pause and no punctuation between the copies — a decoder
+ * repetition loop, not something anybody said. On 2026-09-19 one transcript
+ * carried an 83-character clause twice over, and the draft recovery then
+ * joined it with the rest of the backlog, so the sentence reached the composer
+ * six times.
+ *
+ * These thresholds are the narrowest that catch it. 40 characters sits above
+ * the longest phrase this file already treats as a whole short utterance
+ * ("thank you for watching", 22) and below the shortest tenth of real
+ * utterances measured from the daemon log (63); eight words rules out a single
+ * long token. Deliberate repetition is far shorter than that — "no no no" and
+ * "very very" repeat two- and four-character units — so it is never reached.
+ */
+const REPETITION_MIN_CHARS = 40;
+const REPETITION_MIN_WORDS = 8;
+
+/**
+ * Collapse a transcript that is ONE span repeated end to end, and nothing else.
+ *
+ * Deliberately not a general "drop any repeated substring": a person saying a
+ * phrase twice for emphasis, or a sentence that legitimately echoes an earlier
+ * one, must keep every word — losing those is worse than the artifact, because
+ * nothing on screen would say it happened. So the whole string has to BE the
+ * repetition, the unit has to be longer than anything said twice for effect,
+ * and copies split by a sentence boundary are left alone: a full stop means a
+ * pause, and the decoder loop has none.
+ *
+ * Copy counts descend so the SMALLEST qualifying unit wins and a span repeated
+ * four times collapses to one, not two.
+ */
+function collapseSelfRepetition(text: string): string {
+  const maxCopies = Math.floor(text.length / REPETITION_MIN_CHARS);
+  for (let copies = maxCopies; copies >= 2; copies--) {
+    for (const separator of ["", " "]) {
+      const unitLength = (text.length - separator.length * (copies - 1)) / copies;
+      if (!Number.isInteger(unitLength) || unitLength < REPETITION_MIN_CHARS) continue;
+      const unit = text.slice(0, unitLength);
+      if (text !== Array.from({ length: copies }, () => unit).join(separator)) continue;
+      const trimmed = unit.trim();
+      // A full stop between the copies is a pause. People repeat themselves
+      // across one; a decoder mid-loop does not.
+      if (/[.!?]$/.test(trimmed)) continue;
+      if (trimmed.split(/\s+/).length < REPETITION_MIN_WORDS) continue;
+      return trimmed;
+    }
+  }
+  return text;
+}
+
 function cleanTranscript(raw: string): string {
-  return raw
-    .replace(/\[.*?\]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  return collapseSelfRepetition(
+    raw
+      .replace(/\[.*?\]/g, "")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
 }
