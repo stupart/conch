@@ -7,6 +7,35 @@ Status: **open** · **doing** · **done** (with proof) · **won't** (with the re
 
 ---
 
+## Direction — the deconstructed UI
+
+Tyler, 2026-09-19. Longer-term shape rather than discrete bugs; recorded whole because the
+pieces only make sense together.
+
+**The conversation panel IS the input box, taken with you.** "bring your favorite parts of the ui
+with you". One input box visible at a time. Drag it off the conch window and toss it, and it
+becomes the overlay; the app keeps the rest. The overlay is not a second UI, it is the same input
+box relocated.
+
+**The overlay has to say which conversation it is.** And a way to cycle. Best case it INFERS the
+session from what you are looking at — "would be so great if it knew just based on what you were
+looking at what convo it was". A small local model could do that.
+
+**Annotate the screen as a prompt.** A mode where you record, click, draw, leave comments and
+annotate, and all of it goes as the prompt along with anything you say. A button on the
+conversation panel, or over the deliverable pane.
+
+**Full screen means the deliverable's own home, not conch's.** Today's full-screen button fills
+the conch window. Instead it should open the thing where it actually lives — the same idea as the
+existing "Open in browser", but for the deliverable — and bring the conversation panel with it.
+Chat and panel stay the in-app toggles; full screen becomes the deconstructed mode. Panel mode
+still covers "fill the app".
+
+**Agents get real control of their panes.** Live web pages inside a deliverable pane, watching an
+agent drive one, and the user able to reach in and interact — the way the Codex app does it.
+
+---
+
 ## Open
 
 ### UI / UX
@@ -38,8 +67,23 @@ Status: **open** · **doing** · **done** (with proof) · **won't** (with the re
   `test/review-mark.test.ts` pins that checkmark in three places.
 - **open** — Sent messages do not appear in the Mac transcript. Wants the phone's shape: the
   message lands instantly on send, then confirms with a checkmark.
-- **open** — Left sidebar cannot be collapsed or reopened, and the split cannot be dragged, so the
-  main area cannot be made smaller.
+- **open** — A real workspace pane: file tree, diffs and a terminal borrowing CotEditor's shape,
+  plus a browser. Tyler: "where are we on being able to have a terminal and see the full file tree
+  and diffs borrowing from this app: https://coteditor.com as well as a browser in the side panel".
+  STATUS, looked up rather than guessed — one of four exists:
+  BROWSER, exists: `DeliverableWebView` (WKWebView, `WebView.swift`) already renders HTML
+  deliverables full-bleed. What is missing is arbitrary browsing and a page an agent drives while
+  you reach into it — the Direction note above, not a new engine.
+  DIFFS, partial: `DiffLine` (`ConversationStackView.swift:1280`) draws an edit's changed lines
+  inline in the transcript. `Models.swift:563` says outright "Not a unified diff" — that was a
+  deliberate choice for scanning a stack, so a real diff VIEW is additive, not a fix.
+  FILE TREE, nothing: no `NSOutlineView`, no tree of any kind anywhere in mac-app.
+  TERMINAL, nothing embedded: conch drives Terminal.app through `runInTerminal`/osascript, so
+  there is no pane and nothing to host one.
+  The inputs for the first three already exist — the daemon publishes file changes with paths
+  (`fileChange`, `src/conversation.ts:653`) and every session carries its `cwd`
+  (`Models.swift:864`). A terminal does not: it needs a PTY the daemon owns, which conch has never
+  had, and that is the piece that makes this a project rather than a pane.
 - **open** — Copy a session's name from the sidebar (right-click, beside the rename that is there).
 - **open** — Overlay image paste. `ConversationFog.draft` is a plain `String` with no attachment
   concept anywhere in Components.swift, so this is a feature, not a patch.
@@ -74,6 +118,11 @@ Status: **open** · **doing** · **done** (with proof) · **won't** (with the re
 
 ## Done
 
+- **done** — The sidebar collapses AND the split drags. ⌘B and a menu item existed but nothing on
+  screen said so — Tyler: "i see the sidebar drag but how do i full close / collapse it?" A
+  `sidebar.leading` button now leads the title strip, inside the traffic lights, posting the same
+  notification ⌘B does; it stays visible while collapsed. Width drags and is remembered, bounded
+  180…520. `ec165a6` + `e4c890a`
 - **done** — Overlay is an Apple Liquid Glass panel: rounded rect, hairline, grab bar, voice-tinted
   mesh, pre-26 fallback. `1c153b6`
 - **done** — Panel floats 24 pt off the corner so all four corners round. `0a44d89`
