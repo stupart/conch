@@ -86,6 +86,14 @@ describe("the work half can hold the files or a deliverable", () => {
     // The scroller claims the remaining width, so the strip no longer needs a spacer to push
     // the tabs left — and a spacer here would fight it for room.
     expect(tabs).not.toContain("Spacer(minLength: 0)");
+
+    // And a tab is capped. Scrolling fixed the clipping but cost scannability: inside a
+    // scroller the tabs take their intrinsic width, so one long summary ran about a thousand
+    // points and hid every tab after it. Measured on screen, not reasoned about.
+    const tab = pane.slice(at(pane, "private struct DeliverableTab: View {"));
+    expect(tab).toContain(".frame(maxWidth: 220, alignment: .leading)");
+    // The cap only works because the text still truncates inside it.
+    expect(tab).toContain(".truncationMode(.middle)");
   });
 
   test("the working folder is a tab beside the deliverables, and selects itself", () => {

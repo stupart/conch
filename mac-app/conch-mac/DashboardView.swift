@@ -2223,6 +2223,15 @@ private struct DeliverableTab: View {
                     .font(ConchTypography.font(size: 11, weight: isUnviewed ? .medium : .regular))
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    // Capped, or the strip stops being scannable.
+                    //
+                    // Squashed into a plain row these shared the width and every tab stayed
+                    // visible. Inside a scroller they take their INTRINSIC width instead, and
+                    // a summary is a whole sentence — the first tab ran about a thousand
+                    // points and pushed every other one out of sight, which is worse than the
+                    // clipping the scroller was added to fix. The full text is still a hover
+                    // away, and now so are the tabs after it.
+                    .frame(maxWidth: 220, alignment: .leading)
             }
             .foregroundStyle(isUnviewed ? ConchPalette.textPrimary : ConchPalette.textDim)
             .padding(.horizontal, 8)
