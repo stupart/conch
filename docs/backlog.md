@@ -75,9 +75,31 @@ agent drive one, and the user able to reach in and interact — the way the Code
   DIFFS, partial: `DiffLine` (`ConversationStackView.swift:1280`) draws an edit's changed lines
   inline in the transcript. `Models.swift:563` says outright "Not a unified diff" — that was a
   deliberate choice for scanning a stack, so a real diff VIEW is additive, not a fix.
-  FILE TREE, nothing: no `NSOutlineView`, no tree of any kind anywhere in mac-app.
-  TERMINAL, nothing embedded: conch drives Terminal.app through `runInTerminal`/osascript, so
-  there is no pane and nothing to host one.
+  FILE TREE, DONE `21f614b`: the session's working folder is a tab in the work half, with the
+  files it changed marked in place — a folder holding a change marked more quietly than the
+  changed file, so the route to the work reads without every folder claiming to be edited.
+  Listing is cached and off the main thread; flattening is a pure function with unit tests.
+  TERMINAL, nothing embedded yet — but MEASURED and viable, 2026-09-20. A spike compiled and ran
+  a real PTY from Swift: `forkpty` typechecks from a bare `import Darwin` with no bridging
+  header (proven against a negative control), the child is a real session leader with `isatty`
+  true, and `TIOCSWINSZ` resizing works. No SwiftPM dependency is needed — which matters,
+  because the Xcode project has zero remote package references and adding SwiftTerm would be
+  the first.
+  NOT sandboxed, so spawning a shell is permitted: `ENABLE_APP_SANDBOX = NO` in both configs,
+  the entitlements file carries only audio-input, and `codesign -d --entitlements` on the
+  SHIPPED binary agrees. Re-signed with `--options runtime` and run: spawns fine, so the
+  hardened runtime does not block it either.
+  SCOPE, from the byte counts rather than taste: across 51,854 bytes of real output from
+  `git status`, `git diff`, `bun test`, `npm test`, `ls` and `swiftc` errors, 100.0% of escape
+  sequences were SGR colour — two non-colour sequences in 6,417. Alternate-screen, cursor
+  addressing and OSC titles: zero occurrences, in every capture. So a ~200-line colour-only
+  scrollback view is correct-enough, and a full VT100 emulator buys nothing measurable. What it
+  cannot do, said plainly: vim, htop, or an interactive rebase.
+  THE BLOCKER that was not a parsing problem: `git diff` through a PTY HANGS on the pager
+  waiting for a keypress there is no way to send — 723 of 21,934 bytes delivered, killed at
+  25s. `GIT_PAGER=cat`/`PAGER=cat` in the spawn environment turns the worst case into the best
+  one (complete output, 0s, pure SGR). Reuse `DaemonHost.daemonPath(inherited:)` for PATH:
+  `bun` and `npm` are not on the default one.
   The inputs for the first three already exist — the daemon publishes file changes with paths
   (`fileChange`, `src/conversation.ts:653`) and every session carries its `cwd`
   (`Models.swift:864`). A terminal does not: it needs a PTY the daemon owns, which conch has never
@@ -116,6 +138,11 @@ agent drive one, and the user able to reach in and interact — the way the Code
 
 ## Done
 
+- **done** — The file tree, as a second axis rather than a fourth page. `StageMode` still has
+  three positions; what sits in the work half (a deliverable, or the files) is its own
+  question, so side-by-side and fill-the-stage work on the files for free. Picking a file
+  reuses `ReviewContent`, so there is no second viewer. Also fixed a live defect: ⌘2/⌘3 did
+  nothing in a session that had never filed a deliverable. `21f614b`
 - **done** — A message sent from the Mac appears the instant it is sent, and confirms with a
   checkmark once the daemon proves it landed. The phone's own `ConchOutbox`, not a second one:
   begun in `StateStore.send` so the conversation fog gets a bubble too, settled from the

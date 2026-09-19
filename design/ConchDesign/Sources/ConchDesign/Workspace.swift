@@ -138,6 +138,22 @@ public enum StageMode: String, Equatable, Sendable, Codable {
     case deliverable
 }
 
+/// What the work half of the stage is SHOWING — a second axis, not a fourth page.
+///
+/// `StageMode` answers how the conversation and the work share the stage. What sits in the
+/// work half is a different question, and folding it into the same enum would give the pane
+/// two sources of truth about what it is drawing: `showsConversation` would have to guess, and
+/// "side by side with the files" could not be expressed at all.
+///
+/// Kept apart, every stage works on either content for free — the files beside the
+/// conversation, or filling the stage, with no new page and no new shortcut.
+public enum WorkPane: String, Equatable, Sendable, Codable {
+    /// What the session filed for you to look at.
+    case deliverable
+    /// The session's working folder, and what it changed in there.
+    case files
+}
+
 /// What the workspace remembers about ONE session, so leaving it and coming back returns
 /// you to the page you were on rather than to a default.
 public struct SessionPresentation: Equatable, Sendable {
@@ -147,6 +163,12 @@ public struct SessionPresentation: Equatable, Sendable {
     /// someone reading (the review's continuity point), which is why nothing here is derived
     /// from what the daemon just published.
     public var stage: StageMode
+
+    /// Which of the two things the work half is showing.
+    ///
+    /// Deliberately NOT derived from whether a deliverable exists: a session with no
+    /// deliverable still has a working folder, and one with both must stay where it was put.
+    public var work: WorkPane = .deliverable
 
     /// Whether the conversation is on screen at all — true for `sideBySide`, because it is.
     ///
@@ -162,10 +184,12 @@ public struct SessionPresentation: Equatable, Sendable {
 
     public init(
         stage: StageMode = .conversation,
+        work: WorkPane = .deliverable,
         expandedToolIDs: Set<String> = [],
         selectedDeliverable: String? = nil
     ) {
         self.stage = stage
+        self.work = work
         self.expandedToolIDs = expandedToolIDs
         self.selectedDeliverable = selectedDeliverable
     }
@@ -227,6 +251,12 @@ public final class WorkspaceModel: ObservableObject {
     /// control, or opening the artifact from its inline preview.
     public func show(stage: StageMode, for id: String?) {
         update(id) { $0.stage = stage }
+    }
+
+    /// Put the files, or a deliverable, in the work half. The other axis is untouched: asking
+    /// for the files while reading side by side keeps you side by side.
+    public func show(work: WorkPane, for id: String?) {
+        update(id) { $0.work = work }
     }
 
     /// Pick one of the deliverables a session holds. Only an explicit choice moves this: a

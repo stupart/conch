@@ -1539,6 +1539,67 @@ private struct ConversationPane: View {
         return held.first { $0.id == shown } ?? held.last
     }
 
+    /// The session's working folder, when it has one worth opening.
+    ///
+    /// A session conch merely observes may report none, and a tree rooted at nothing is a
+    /// promise the pane cannot keep — the same rule the deliverable pages already follow.
+    private var workingFolder: String? {
+        guard let cwd = focusedRow?.cwd, !cwd.isEmpty else { return nil }
+        return cwd
+    }
+
+    /// Is there anything to put in the work half at all?
+    ///
+    /// This used to be "is there a deliverable", which is why Cmd-2 and Cmd-3 did nothing in a
+    /// session that had not filed one — even though its files were there the whole time.
+    private var hasWorkPane: Bool { selectedReview != nil || workingFolder != nil }
+
+    /// More than one thing to choose between, so the strip is worth drawing.
+    private func hasWorkTabs(for row: SessionRow) -> Bool {
+        deliverables.count + (workingFolder == nil ? 0 : 1) > 1
+    }
+
+    /// Which content the work half is on, never trusting the remembered choice blindly: a
+    /// session that has been asked for its files and then loses its folder falls back to the
+    /// deliverable rather than showing an empty tree.
+    private func workPane(for row: SessionRow) -> WorkPane {
+        let chosen = workspace.presentation(for: row.id).work
+        if chosen == .files, workingFolder != nil { return .files }
+        if selectedReview != nil { return .deliverable }
+        return workingFolder != nil ? .files : .deliverable
+    }
+
+    /// What this session changed, resolved against its own folder.
+    ///
+    /// Read from the conversation the daemon published FOR THIS ROW, with the same session
+    /// check the transcript uses: the daemon publishes one conversation at a time, and marking
+    /// another session's edits on this session's tree would be a confident lie about work.
+    private func changedFiles(for row: SessionRow) -> ConchFileChanges {
+        let conversation = state?.conversations?[row.id] ?? state?.conversation
+        let items = conversation?.sessionId == row.id ? conversation?.items ?? [] : []
+        return ConchFileChanges(
+            changed: items.compactMap { $0.change?.path },
+            relativeTo: row.cwd ?? ""
+        )
+    }
+
+    /// The work half's content: the files, or the deliverable.
+    ///
+    /// One builder called from both stages, so side-by-side and fill-the-stage cannot drift
+    /// into showing different things.
+    @ViewBuilder
+    private func workContent(for row: SessionRow) -> some View {
+        if workPane(for: row) == .files, let folder = workingFolder {
+            WorkspaceFilesView(root: folder, rowID: row.id, changed: changedFiles(for: row))
+        } else if let selectedReview {
+            InlineReviewView(
+                item: selectedReview,
+                stage: stage(for: row),
+                onShow: { workspace.show(stage: $0, for: row.id) }
+            )
+        }
+    }
+
     /// Every deliverable the focused session is still holding, oldest first: one tab each.
     /// A daemon too old to send them all yields the single newest, which is today's behaviour.
     private var deliverables: [ReviewItem] {
@@ -1590,7 +1651,7 @@ private struct ConversationPane: View {
 
     var body: some View {
         Group {
-            if let selectedReview, let reviewRow = focusedRow, stage(for: reviewRow) != .conversation {
+            if let reviewRow = focusedRow, hasWorkPane, stage(for: reviewRow) != .conversation {
                 VStack(spacing: 0) {
                     sessionBar(for: reviewRow)
 
@@ -1598,7 +1659,7 @@ private struct ConversationPane: View {
                         .fill(ConchPalette.divider)
                         .frame(height: 1)
 
-                    if deliverables.count > 1 {
+                    if hasWorkTabs(for: reviewRow) {
                         deliverableTabs(for: reviewRow)
 
                         Rectangle()
@@ -1617,19 +1678,11 @@ private struct ConversationPane: View {
                                 .fill(ConchPalette.divider)
                                 .frame(width: 1)
 
-                            InlineReviewView(
-                                item: selectedReview,
-                                stage: stage(for: reviewRow),
-                                onShow: { workspace.show(stage: $0, for: reviewRow.id) }
-                            )
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            workContent(for: reviewRow)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
                     } else {
-                        InlineReviewView(
-                            item: selectedReview,
-                            stage: stage(for: reviewRow),
-                            onShow: { workspace.show(stage: $0, for: reviewRow.id) }
-                        )
+                        workContent(for: reviewRow)
 
                         Spacer(minLength: 0)
                     }
@@ -1676,7 +1729,7 @@ private struct ConversationPane: View {
             // three pages are a promise the pane cannot keep — the same reason the
             // perspective bar draws nothing until there is one.
             guard let mode = note.object as? StageMode, let row = focusedRow else { return }
-            guard mode == .conversation || selectedReview != nil else { return }
+            guard mode == .conversation || hasWorkPane else { return }
             workspace.show(stage: mode, for: row.id)
         }
         .task(id: TranscriptWatchID(row: watchesTranscriptForRow)) {
@@ -1794,7 +1847,7 @@ private struct ConversationPane: View {
             // width, and the title is what the header is for. The old lone-control worry
             // does not apply to a group of three where the selected one is filled — you can
             // see where you are without decoding anything, which was the actual point.
-            if selectedReview != nil {
+            if hasWorkPane {
                 // `.seg{padding:2px;border-radius:8px;background:var(--fill);gap:1px;margin-right:4px}`.
                 // Three loose buttons read as three unrelated controls; one track with the
                 // selected position filled reads as one control that knows where it is.
@@ -1879,13 +1932,16 @@ private struct ConversationPane: View {
     /// is more than one: with a single deliverable this pane is exactly what it always was.
     private func deliverableTabs(for row: SessionRow) -> some View {
         let held = deliverables
-        let shown = selectedReview?.id
+        // Nothing is the shown deliverable while the files are up, or two tabs would read as
+        // selected at once.
+        let shown = workPane(for: row) == .deliverable ? selectedReview?.id : nil
         return HStack(spacing: 2) {
             ForEach(held) { item in
                 DeliverableTab(
                     item: item,
                     isSelected: item.id == shown,
                     action: {
+                        workspace.show(work: .deliverable, for: row.id)
                         workspace.select(deliverable: item.id, for: row.id)
                         // Looking at it is what marks it, and only the daemon's copy makes
                         // that survive a relaunch and reach the phone.
@@ -1893,6 +1949,13 @@ private struct ConversationPane: View {
                             store.markReviewViewed(sessionId: row.id, review: item.id)
                         }
                     }
+                )
+            }
+            // The working folder, beside the work filed out of it.
+            if workingFolder != nil {
+                FilesTab(
+                    isSelected: workPane(for: row) == .files,
+                    action: { workspace.show(work: .files, for: row.id) }
                 )
             }
             Spacer(minLength: 0)
@@ -2081,6 +2144,40 @@ private struct ConversationPane: View {
 /// Three states and only three: one nobody has looked at carries the mark at full strength,
 /// one that has been looked at greys, and whichever is on screen is filled. "Looked at" is the
 /// daemon's record, so it is the same answer on the phone and after a relaunch.
+/// The working folder, as a tab beside the deliverables.
+///
+/// Deliberately not a DeliverableTab with a fake ReviewItem: that type's whole vocabulary is
+/// "filed, and not yet looked at", and a folder is neither.
+private struct FilesTab: View {
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: "folder")
+                    .font(.system(size: 10))
+                Text("Files")
+                    .font(ConchTypography.font(size: 11))
+            }
+            .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("This session's working folder, and what it changed")
+        .accessibilityLabel("Files")
+    }
+}
+
 private struct DeliverableTab: View {
     let item: ReviewItem
     let isSelected: Bool

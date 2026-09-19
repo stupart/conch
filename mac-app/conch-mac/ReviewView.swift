@@ -145,6 +145,220 @@ private struct ReviewSurface: View {
     }
 }
 
+/// The session's working folder: the tree on the left, the file you picked on the right.
+///
+/// Not a Finder in a pane. conch knows the one thing Finder cannot — which of these files this
+/// session just changed — so the folders holding the work are marked before you open anything,
+/// and the path to it is visible rather than hunted for. That is the whole reason this is here
+/// and not a "reveal in Finder" button.
+///
+/// The right-hand side is `ReviewContent`, unchanged: it already turns ANY path into the right
+/// renderer — image, PDF, markdown, text, video, or the web view — so picking a file in the
+/// tree is exactly the same act as opening a deliverable, and there is no second viewer to
+/// keep in step with the first.
+struct WorkspaceFilesView: View {
+    /// The session's working folder. Nothing is drawn above it: this is a session's workspace,
+    /// not a file browser, and the folder it runs in is the whole of it.
+    let root: String
+    let rowID: String
+    let changed: ConchFileChanges
+
+    /// Folders read once, when opened, and kept.
+    ///
+    /// The disk is NOT read from `body`. A listing in the render path runs again on every
+    /// unrelated state change — a keystroke in the composer, a snapshot from the daemon — and
+    /// stutters the very scroll it is drawing.
+    @State private var listings: [String: [ConchFileEntry]] = [:]
+    @State private var expanded: Set<String> = []
+    @State private var selected: String?
+    @State private var isWebLoading = false
+
+    private static let railWidth: CGFloat = 232
+
+    private var rows: [ConchFileRow] {
+        ConchFileTree.rows(root: root, listings: listings, expanded: expanded)
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            rail
+                .frame(width: Self.railWidth)
+                // `raised`, never `bg`. Nothing inside the stage repaints the WINDOW ground:
+                // the pane is a panel sitting on that ground, and painting it again in here
+                // punches a hole in the panel — the "right shape, wrong colour" §3 fixed once
+                // already, and which `mac-phase1-source` pins for this whole file.
+                //
+                // In light mode `raised` and `surface` are the same white, so the rail is told
+                // apart by the hairline beside it rather than by its fill — exactly how the
+                // origin bar below already behaves.
+                .background(ConchPalette.raised)
+
+            Rectangle()
+                .fill(ConchPalette.divider)
+                .frame(width: 1)
+
+            Group {
+                if let selected {
+                    ReviewContent(link: selected, rowID: rowID, isWebLoading: $isWebLoading)
+                        .id(selected)
+                } else {
+                    nothingPicked
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(ConchPalette.surface)
+        .onAppear(perform: loadRoot)
+        .onChange(of: root) { _, _ in
+            listings = [:]
+            expanded = []
+            selected = nil
+            loadRoot()
+        }
+    }
+
+    private var rail: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(rows) { row in
+                    FileRowView(
+                        row: row,
+                        isSelected: selected == row.entry.path,
+                        isOpen: expanded.contains(row.entry.path),
+                        isChanged: changed.changed(row.entry),
+                        holdsChanges: changed.contains(row.entry),
+                        action: { pick(row.entry) }
+                    )
+                }
+            }
+            .padding(.vertical, ConchSpace.x1)
+        }
+    }
+
+    private var nothingPicked: some View {
+        VStack(spacing: 9) {
+            Image(systemName: "sidebar.squares.left")
+                .font(.system(size: 18, weight: .regular))
+                .foregroundStyle(ConchPalette.textFaint)
+            Text("Pick a file to read it here.")
+                .font(ConchTypography.font(size: 12.5))
+                .foregroundStyle(ConchPalette.textDim)
+            if !changed.isEmpty {
+                // The marks are the point, so say what they mean once, where someone who has
+                // not opened anything yet will actually read it.
+                Text("A dot marks what this session changed.")
+                    .font(ConchTypography.font(size: 11))
+                    .foregroundStyle(ConchPalette.textFaint)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ConchPalette.surface)
+    }
+
+    private func pick(_ entry: ConchFileEntry) {
+        guard entry.isDirectory else {
+            selected = entry.path
+            return
+        }
+        if expanded.contains(entry.path) {
+            expanded.remove(entry.path)
+        } else {
+            expanded.insert(entry.path)
+            load(entry.path)
+        }
+    }
+
+    private func loadRoot() {
+        guard !root.isEmpty else { return }
+        load(ConchFileTree.standardized(root))
+    }
+
+    /// Listed off the main thread, because a cold folder on a network or a spinning disk takes
+    /// long enough to drop frames, and this runs while the pane is already on screen.
+    private func load(_ directory: String) {
+        guard listings[directory] == nil else { return }
+        Task.detached(priority: .userInitiated) {
+            let children = ConchFileTree.children(of: directory)
+            await MainActor.run { listings[directory] = children }
+        }
+    }
+}
+
+/// One line of the tree.
+private struct FileRowView: View {
+    let row: ConchFileRow
+    let isSelected: Bool
+    let isOpen: Bool
+    let isChanged: Bool
+    let holdsChanges: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                // The chevron turns rather than swapping glyph: one control that moves is
+                // easier to follow than two that replace each other. `pop` because the tokens
+                // say small things bounce more.
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(ConchPalette.textFaint)
+                    .rotationEffect(.degrees(isOpen ? 90 : 0))
+                    .animation(ConchMotion.pop.animation(reduceMotion: reduceMotion), value: isOpen)
+                    .frame(width: 10)
+                    .opacity(row.entry.isDirectory ? 1 : 0)
+
+                Image(systemName: row.entry.isDirectory ? "folder" : "doc")
+                    .font(.system(size: 10))
+                    .foregroundStyle(isChanged ? ConchPalette.statusReview : ConchPalette.textFaint)
+                    .frame(width: 13)
+
+                Text(row.entry.name)
+                    .font(ConchTypography.font(size: 11.5, weight: isChanged ? .medium : .regular))
+                    .foregroundStyle(isChanged || isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                Spacer(minLength: 4)
+
+                // Two strengths, on purpose. A file the session edited is the claim; a folder
+                // merely CONTAINING one is the route to it, and must not shout as loudly or
+                // every folder from the root down reads as edited.
+                if isChanged || holdsChanges {
+                    Circle()
+                        .fill(ConchPalette.statusReview)
+                        .opacity(isChanged ? 1 : 0.35)
+                        .frame(width: 5, height: 5)
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.leading, ConchSpace.x2 + CGFloat(row.depth) * ConchSpace.x3)
+            .padding(.trailing, ConchSpace.x2)
+            .frame(height: 22)
+            .background(
+                RoundedRectangle(cornerRadius: ConchRadius.small, style: .continuous)
+                    .fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
+                    .padding(.horizontal, ConchSpace.x1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help(row.entry.path)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var accessibilityLabel: String {
+        var said = row.entry.name
+        if row.entry.isDirectory { said += isOpen ? ", open folder" : ", folder" }
+        if isChanged { said += ", changed by this session" }
+        else if holdsChanges { said += ", holds changed files" }
+        return said
+    }
+}
+
 private struct MissingDeliverableView: View {
     var body: some View {
         VStack(spacing: 9) {

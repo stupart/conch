@@ -409,9 +409,12 @@ describe("§3's anatomy, where the app had drifted from it", () => {
 
     // The deliverable pages keep their rule unconditionally: there a pane IS open, which is
     // §3's other reason to draw it.
+    // Both markers moved when the work half grew a second content: the arm opens on
+    // `hasWorkPane` (a deliverable OR the session's files) and the tab strip counts both. The
+    // rule being pinned here is unchanged — this arm draws its hairline unconditionally.
     const deliverableArm = dashboard.slice(
-      dashboard.indexOf("if let selectedReview, let reviewRow = focusedRow, stage(for: reviewRow) != .conversation {"),
-      dashboard.indexOf("if deliverables.count > 1 {"),
+      dashboard.indexOf("if let reviewRow = focusedRow, hasWorkPane, stage(for: reviewRow) != .conversation {"),
+      dashboard.indexOf("if hasWorkTabs(for: reviewRow) {"),
     );
     expect(deliverableArm.length).toBeGreaterThan(100);
     expect(deliverableArm).toContain("Rectangle()");
