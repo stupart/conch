@@ -212,3 +212,31 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertFalse(model.isToolExpanded("tool-1", for: "a"))
     }
 }
+
+extension WorkspaceTests {
+    /// The work half is a SECOND axis, not a fourth page. If it were a StageMode case,
+    /// `showsConversation` would have to guess at it and "the files, side by side" could not
+    /// be expressed at all.
+    func testTheWorkHalfDefaultsToTheDeliverableAndIsIndependentOfTheStage() {
+        XCTAssertEqual(SessionPresentation().work, .deliverable)
+        XCTAssertTrue(SessionPresentation(stage: .sideBySide, work: .files).showsConversation)
+        XCTAssertFalse(SessionPresentation(stage: .deliverable, work: .files).showsConversation)
+    }
+
+    func testAskingForTheFilesKeepsTheStageYouWereOn() {
+        let model = WorkspaceModel()
+        model.show(stage: .sideBySide, for: "a")
+        model.show(work: .files, for: "a")
+
+        XCTAssertEqual(model.presentation(for: "a").work, .files)
+        XCTAssertEqual(model.presentation(for: "a").stage, .sideBySide, "the axes must not move each other")
+    }
+
+    func testTheWorkHalfIsRememberedPerSession() {
+        let model = WorkspaceModel()
+        model.show(work: .files, for: "a")
+
+        XCTAssertEqual(model.presentation(for: "a").work, .files)
+        XCTAssertEqual(model.presentation(for: "b").work, .deliverable, "b has its own default")
+    }
+}

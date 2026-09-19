@@ -143,8 +143,12 @@ describe("new work does not replace what you are reading", () => {
     expect(header.length).toBeGreaterThan(500);
     expect(header.match(/PerspectiveOption\(/g) ?? []).toHaveLength(3);
     // Only when there is something to switch to — the header must not offer a page that
-    // would be empty.
-    expect(header).toContain("if selectedReview != nil {");
+    // would be empty. That used to mean "is there a deliverable", which is why Cmd-2 and Cmd-3
+    // did nothing in a session that had never filed one, even though its FILES were there the
+    // whole time. The work half now has two possible contents, so the question is whether
+    // either exists.
+    expect(header).toContain("if hasWorkPane {");
+    expect(pane).toContain("private var hasWorkPane: Bool { selectedReview != nil || workingFolder != nil }");
     // Icons alone up here: three labelled segments take over 40% of the header at the
     // default window width, and the title is what the header is for.
     expect(pane).not.toContain("Text(label)");
@@ -154,9 +158,11 @@ describe("new work does not replace what you are reading", () => {
     expect(pane).toContain("SessionPresentation.shown(");
     expect(pane).toContain("workspace.select(deliverable: item.id, for: row.id)");
     expect(pane).not.toMatch(/selectedDeliverable\s*=/);
-    // Only drawn when there is more than one, so a session with a single deliverable has
-    // exactly the pane it always had.
-    expect(pane).toContain("if deliverables.count > 1 {");
+    // Only drawn when there is more than one thing to choose between, so a session with a
+    // single deliverable and no folder has exactly the pane it always had. The working folder
+    // is one of those things now, which is what the count has to include.
+    expect(pane).toContain("if hasWorkTabs(for: reviewRow) {");
+    expect(pane).toContain("deliverables.count + (workingFolder == nil ? 0 : 1) > 1");
     // Three states, and looking at one is what marks it — but only ever told to a daemon that
     // can remember, so an older one is never handed a command it will refuse.
     expect(pane).toContain("isUnviewed ? ConchPalette.textPrimary : ConchPalette.textDim");
@@ -177,7 +183,11 @@ describe("new work does not replace what you are reading", () => {
     const split = pane.slice(at, pane.indexOf("} else {", at));
     expect(split.length).toBeGreaterThan(200);
     expect(split).toContain("conversationBody(for: reviewRow)");
-    expect(split).toContain("InlineReviewView(");
+    // ONE builder for the work half, called from both stages, so side by side and fill-the-
+    // stage cannot drift into showing different things. It is what resolves files-or-
+    // deliverable; the split itself no longer names either.
+    expect(split).toContain("workContent(for: reviewRow)");
+    expect(pane).toContain("private func workContent(for row: SessionRow) -> some View {");
     // Half each: two equal claims on the width, rather than a measured fraction.
     expect(split.match(/\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)/g) ?? []).toHaveLength(2);
   });
@@ -218,8 +228,9 @@ describe("new work does not replace what you are reading", () => {
     expect(app).toContain('.keyboardShortcut("3", modifiers: .command)');
     expect(app).toContain("NotificationCenter.default.post(name: .setStage, object: StageMode.sideBySide)");
     expect(pane).toContain("guard let mode = note.object as? StageMode, let row = focusedRow else { return }");
-    // With nothing filed there is nothing to put beside or in front of the conversation, so
-    // those two keys do nothing rather than handing someone an empty stage.
-    expect(pane).toContain("guard mode == .conversation || selectedReview != nil else { return }");
+    // With nothing to show there is nothing to put beside or in front of the conversation, so
+    // those two keys do nothing rather than handing someone an empty stage. A working folder
+    // counts as something: the keys now work in a session that filed no deliverable.
+    expect(pane).toContain("guard mode == .conversation || hasWorkPane else { return }");
   });
 });
