@@ -65,8 +65,6 @@ agent drive one, and the user able to reach in and interact — the way the Code
   trust boundary, because a deliverable is an agent-authored URL rendered full-bleed in conch's own
   chrome and a third-party sign-in page would otherwise be indistinguishable from conch's UI.
   `test/review-mark.test.ts` pins that checkmark in three places.
-- **open** — Sent messages do not appear in the Mac transcript. Wants the phone's shape: the
-  message lands instantly on send, then confirms with a checkmark.
 - **open** — A real workspace pane: file tree, diffs and a terminal borrowing CotEditor's shape,
   plus a browser. Tyler: "where are we on being able to have a terminal and see the full file tree
   and diffs borrowing from this app: https://coteditor.com as well as a browser in the side panel".
@@ -118,6 +116,11 @@ agent drive one, and the user able to reach in and interact — the way the Code
 
 ## Done
 
+- **done** — A message sent from the Mac appears the instant it is sent, and confirms with a
+  checkmark once the daemon proves it landed. The phone's own `ConchOutbox`, not a second one:
+  begun in `StateStore.send` so the conversation fog gets a bubble too, settled from the
+  published receipt (before the `lastDeliveryAt` guard, or a relaunch's entries never settle),
+  retired by the transcript's own copy. `34faa7f`
 - **done** — The sidebar collapses AND the split drags. ⌘B and a menu item existed but nothing on
   screen said so — Tyler: "i see the sidebar drag but how do i full close / collapse it?" A
   `sidebar.leading` button now leads the title strip, inside the traffic lights, posting the same

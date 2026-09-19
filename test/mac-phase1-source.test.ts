@@ -274,9 +274,15 @@ describe("Mac conversation links keep the native clickable path", () => {
     // workspace-v1 §3: "readingBody 15/23". Both rows that are actually READ — your turn and
     // the agent's — were set at 13, the same size as the tool rows and captions around them.
     // Counted rather than forbidden: 13 is still right for the chrome in this file.
+    //
+    // THREE now, not two. The third is `PendingMessage`: a message sent from this Mac that the
+    // transcript has not shown yet. It is your turn, drawn as the exact row it is about to
+    // become, which is what lets the transcript's own copy replace it without anything on
+    // screen moving. A reading row, therefore counted — the number still says "only what is
+    // read gets 15/23", it has not been loosened to let chrome in.
     const stack = mac("ConversationStackView.swift");
-    expect(stack.match(/\.font\(ConchType\.readingBody\)/g)?.length).toBe(2);
-    expect(stack.match(/\.lineSpacing\(ConchType\.readingLineSpacing\)/g)?.length).toBe(2);
+    expect(stack.match(/\.font\(ConchType\.readingBody\)/g)?.length).toBe(3);
+    expect(stack.match(/\.lineSpacing\(ConchType\.readingLineSpacing\)/g)?.length).toBe(3);
   });
 
   test("the fallback AppKit renderer preserves rich selectable attributed text", () => {

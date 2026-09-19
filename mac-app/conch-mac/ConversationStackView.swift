@@ -205,6 +205,14 @@ struct ConversationStackView: View {
                     ForEach(conversation.items) { item in
                         foldedRow(for: item, in: conversation.items, folds: liveFolds).id(item.id)
                     }
+                    // What this Mac has sent that the transcript has not caught up to. Tyler:
+                    // "im not seeing mesages i send show in the mac app - just the same ux thing
+                    // as teh phone where we want instant response on send and confirm iwth
+                    // checkmark". The daemon reads transcripts on a poll, so a sent message had
+                    // seconds of saying nothing at all.
+                    ForEach(store.outbox.entries(for: conversation.sessionId)) { pending in
+                        PendingMessage(entry: pending).id(pending.id)
+                    }
                     // A zero-height anchor rather than scrolling to the last
                     // item: the last item GROWS while it streams, and scrolling
                     // to a growing view lands part-way up it.
@@ -1302,6 +1310,69 @@ private struct DiffLine: View {
 /// without leaving the conversation, and reach it in one gesture when you want
 /// it whole. The tab switch that comes with that gesture is what explains where
 /// you went — otherwise enlarging something feels like the app moved on its own.
+/// A message this Mac sent that the transcript has not shown yet.
+///
+/// The bubble is the `.user` row exactly — same fill, radius, measure and type — so when the
+/// transcript's own copy arrives and retires this one, nothing on screen moves. Only the line
+/// beneath it changes, and it says what conch actually KNOWS rather than what it hopes: sent,
+/// sent and confirmed, staged, or why it did not land.
+private struct PendingMessage: View {
+    let entry: ConchOutboxEntry
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 3) {
+            HStack {
+                Spacer(minLength: 48)
+                Text(AttributedString.conchMarkdown(entry.text))
+                    .font(ConchType.readingBody)
+                    .lineSpacing(ConchType.readingLineSpacing)
+                    .foregroundStyle(ConchPalette.textPrimary)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(ConchPalette.fill, in: RoundedRectangle(cornerRadius: ConchRadius.large))
+            }
+            status
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+
+    @ViewBuilder
+    private var status: some View {
+        switch entry.state {
+        // Optimistic, immediate, and honest: it says the send went through, never that anything
+        // has been delivered. It stays as long as the daemon is still working on it.
+        case .sent:
+            Text("Sent")
+                .font(.system(size: 11))
+                .foregroundStyle(ConchPalette.textFaint)
+        // The quiet mark: still "Sent", now with proof beside it. Tyler asked for exactly this —
+        // "a confirmed icon but still show as sent" — so nothing jumps when it lands.
+        case .confirmed:
+            Label("Sent", systemImage: "checkmark")
+                .font(.system(size: 11))
+                .foregroundStyle(ConchPalette.textFaint)
+                .accessibilityLabel("Sent, and confirmed")
+        case .staged:
+            Text("Staged — not submitted")
+                .font(.system(size: 11))
+                .foregroundStyle(ConchPalette.statusNeeds)
+        // Not a failure and not a confirmation: conch could not tell. It says so, and waits for
+        // the outcome the daemon publishes afterwards.
+        case let .unknown(reason):
+            Text(reason)
+                .font(.system(size: 11))
+                .foregroundStyle(ConchPalette.statusWaiting)
+                .multilineTextAlignment(.trailing)
+        case let .failed(reason):
+            Text(reason)
+                .font(.system(size: 11))
+                .foregroundStyle(ConchPalette.statusNeeds)
+                .multilineTextAlignment(.trailing)
+        }
+    }
+}
+
 private struct ArtifactPreview: View {
     let artifact: ReviewInfo
     let onOpen: () -> Void

@@ -3,6 +3,10 @@ import AppKit
 import Combine
 import Foundation
 
+/// Where this Mac's unaccounted-for sends are kept between launches, the same way the phone
+/// keeps its own. An outcome can arrive after the app was killed and reopened.
+private let conchMacOutboxKey = "conch.mac.outbox"
+
 enum DaemonLiveness: Equatable, Sendable {
     case checking
     case alive
@@ -35,6 +39,19 @@ final class StateStore: ObservableObject {
     @Published private(set) var staleBuild = false
     @Published private(set) var isLogDrawerOpen = false
     @Published private(set) var logLines: [String] = []
+    /// Messages sent from this Mac that the transcript has not shown yet.
+    ///
+    /// Tyler: "im not seeing mesages i send show in the mac app - just the same ux thing as teh
+    /// phone where we want instant response on send and confirm iwth checkmark". A send used to
+    /// vanish into the composer and reappear only when the daemon next read the transcript,
+    /// which can be many seconds; nothing on screen said it had gone anywhere.
+    ///
+    /// `ConchOutbox` is the phone's type, not a copy of it, so the two devices cannot come to
+    /// disagree about what "sent" means. Persisted for the same reason the phone persists it:
+    /// the answer outlives the request that carried the words.
+    @Published private(set) var outbox = ConchOutbox.decode(UserDefaults.standard.data(forKey: conchMacOutboxKey)) {
+        didSet { UserDefaults.standard.set(outbox.encoded(), forKey: conchMacOutboxKey) }
+    }
 
     private static let snapshotFreshness: TimeInterval = 45
     private static let failedProbeSpacing: TimeInterval = 2
@@ -55,6 +72,9 @@ final class StateStore: ObservableObject {
     /// The newest delivery outcome already accounted for. `nil` until the first snapshot, so
     /// opening the app never replays a failure from before it was running.
     private var lastDeliveryAt: TimeInterval?
+    /// Each session's user messages at the last look, so the transcript's own copy of a message
+    /// is told apart from an older line that happens to say the same thing.
+    private var seenUserItems: [String: Set<String>] = [:]
     private var pollingTask: Task<Void, Never>?
     private var deliveryTask: Task<Bool, Never>?
     private var probeTask: Task<Void, Never>?
@@ -167,6 +187,24 @@ final class StateStore: ObservableObject {
         // under a new message.
         let failedSessionID = event.type == .inject ? event.sessionId : nil
         if let failedSessionID { rowMessages[failedSessionID] = nil }
+
+        // The message appears the instant it is sent, as a bubble the transcript has not caught
+        // up to yet.
+        //
+        // Begun HERE rather than in the composer because the composer is not the only sender:
+        // the conversation fog types into a session too, and a bubble only one of them produced
+        // would be a second behaviour to keep in step. Every inject routes through this one
+        // function, so every inject gets an entry — and the id it is filed under is the one the
+        // event already minted, which is what a late outcome comes back against.
+        if event.type == .inject, let opId = event.opId, let session = event.sessionId,
+           let words = event.announce, !words.isEmpty {
+            _ = outbox.begin(ConchOutboxEntry(
+                id: opId,
+                session: session,
+                text: words,
+                earlierUserItems: seenUserItems[session] ?? []
+            ))
+        }
         let whenNotDelivered: (@Sendable (String) -> Void)? = failedSessionID.map { id in
             { [weak self] sentence in
                 Task { @MainActor in self?.rowMessages[id] = sentence }
@@ -1041,6 +1079,7 @@ final class StateStore: ObservableObject {
         let timestampAdvanced = previousTimestamp == nil || snapshot.ts > (previousTimestamp ?? 0)
         sourceState = snapshot
         applyDeliveryOutcomes(snapshot.deliveries)
+        reconcileOutbox(with: snapshot)
         reconcilePresentationOverlays(with: snapshot)
         rebuildPresentedState()
         updateNewerDaemonWarning()
@@ -1060,6 +1099,17 @@ final class StateStore: ObservableObject {
     /// nobody: the row went quiet and the message looked sent. The outcome is published
     /// instead, and this puts the same sentence on the same row it would have said at once.
     private func applyDeliveryOutcomes(_ deliveries: [PublishedState.DeliveryOutcome]) {
+        // Settled FIRST, and against EVERY outcome rather than only ones newer than the last
+        // seen. The bubbles outlive the launch that sent them, so after a relaunch the receipt
+        // an entry is still waiting for arrives in the very first snapshot — exactly when
+        // `lastDeliveryAt` is nil and the guard below returns. Settling under that guard would
+        // leave those entries saying "Sent" forever.
+        for outcome in deliveries {
+            guard let entry = outbox.entries.first(where: { $0.id == outcome.opId }),
+                  !entry.state.isTerminal else { continue }
+            outbox.settle(outcome.opId, Self.deliveryState(of: outcome))
+        }
+
         let newest = deliveries.map(\.at).max()
         defer { lastDeliveryAt = max(lastDeliveryAt ?? 0, newest ?? 0) }
         guard let seen = lastDeliveryAt else { return }
@@ -1071,6 +1121,56 @@ final class StateStore: ObservableObject {
                 onClipboard: outcome.onClipboard ?? false
             )
         }
+    }
+
+    /// The same reading the phone gives a receipt (`InjectReceipt.deliveryState`), so one send
+    /// can never be described differently on the two devices. Staged is not a failure: the text
+    /// is placed and waiting for a Return.
+    private static func deliveryState(of outcome: PublishedState.DeliveryOutcome) -> ConchDeliveryState {
+        if outcome.staged == true, !outcome.delivered { return .staged }
+        if outcome.delivered { return .confirmed }
+        return .failed(ConchSendFailure.sentence(
+            reason: outcome.reason,
+            onClipboard: outcome.onClipboard ?? false
+        ))
+    }
+
+    /// Retire bubbles the transcript now shows for itself.
+    ///
+    /// The phone's rule (`TalkController.reconcile`), for the same reason: a NEW user item with
+    /// the same words IS the transcript's own copy, so the bubble gives way instead of the
+    /// message appearing twice. Words in the transcript are stronger evidence than a receipt
+    /// that said it failed — a send reported failed that turns up anyway was delivered.
+    private func reconcileOutbox(with snapshot: PublishedState) {
+        var conversations = snapshot.conversations ?? [:]
+        // The single-conversation field is the selected session on an older daemon, and the
+        // only place its items appear. Merged in, so one shape covers both.
+        if let one = snapshot.conversation, !one.sessionId.isEmpty {
+            conversations[one.sessionId] = one
+        }
+        for (session, conversation) in conversations {
+            let users = conversation.items.filter { $0.kind == .user }
+            seenUserItems[session] = Set(users.map(\.id))
+            for message in outbox.entries(for: session) {
+                guard users.contains(where: {
+                    !message.earlierUserItems.contains($0.id) && Self.sameMessage($0.text, message.text)
+                }) else { continue }
+                outbox.remove(message.id)
+            }
+        }
+        // ponytail: a confirmed bubble the transcript never shows — words the agent rewrote —
+        // goes after ten minutes, the phone's cutoff. Match on something sturdier than the text
+        // if that proves common.
+        outbox.prune(confirmedBefore: Date().addingTimeInterval(-600))
+    }
+
+    /// Whitespace-insensitive, and a suffix counts because the daemon may prepend to what it
+    /// typed. The phone's rule, spelled the same way.
+    static func sameMessage(_ transcript: String, _ sent: String) -> Bool {
+        let squash = { (text: String) in text.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+        let seen = squash(transcript)
+        let words = squash(sent)
+        return !words.isEmpty && (seen == words || seen.hasSuffix(words))
     }
 
     private func reconcilePresentationOverlays(with snapshot: PublishedState) {
