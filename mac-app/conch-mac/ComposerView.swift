@@ -16,6 +16,14 @@ final class ComposerDraftStore: ObservableObject {
     }
 
     private static let defaultsKey = "conch.mac.composerDrafts.v1"
+    /// The last dictation applied, kept BESIDE the drafts rather than in memory.
+    ///
+    /// `live.dictated` is sticky on the daemon's side and deliberately never cleared — it has to outlive the state
+    /// transitions that follow it, because the app applies it whenever it next reads state. The guard that makes that
+    /// safe is the id. Holding the id only in memory meant every relaunch reset it to 0, so a dictation the user had
+    /// already received — and deleted — looked new again and was appended once more. Tyler, after a dozen rebuilds:
+    /// "this text keeps showing in the 'arch prime' session input box. i keep delting it and it keeps coming back."
+    private static let appliedDictationKey = "conch.mac.appliedDictationID.v1"
 
     /// One store for the dashboard's composer and the conversation fog (M3), so a session has one draft
     /// wherever it is typed, and a dictation lands in it once however many views are watching.
@@ -24,7 +32,7 @@ final class ComposerDraftStore: ObservableObject {
     @Published private var drafts: [String: Entry]
     /// The last dictation applied. State republishes several times a second, so without this the same
     /// spoken sentence would be appended over and over.
-    private var appliedDictationID = 0
+    private var appliedDictationID: Int
     private let defaults: UserDefaults
     private var previewSeed: String?
     /// The pending save. Saving every keystroke JSON-encoded every draft and wrote it to preferences; with a long
@@ -39,6 +47,7 @@ final class ComposerDraftStore: ObservableObject {
     ) {
         self.defaults = defaults
         previewSeed = environment["CONCH_COMPOSER_TEXT"]
+        appliedDictationID = defaults.integer(forKey: Self.appliedDictationKey)
         if let data = defaults.data(forKey: Self.defaultsKey),
            let saved = try? JSONDecoder().decode([String: Entry].self, from: data) {
             drafts = saved.filter { !$0.value.isEmpty }
@@ -100,6 +109,7 @@ final class ComposerDraftStore: ObservableObject {
     func apply(_ dictated: Dictation?) {
         guard let dictated, dictated.id != appliedDictationID else { return }
         appliedDictationID = dictated.id
+        defaults.set(dictated.id, forKey: Self.appliedDictationKey)
         appendDictation(dictated.text, to: dictated.sessionId)
     }
 

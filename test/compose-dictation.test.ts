@@ -65,6 +65,16 @@ test("dictation goes to the session that asked, not the one now focused", () => 
   );
   // Applied once by id in the shared draft store, which the dashboard and the fog both call.
   expect(composer).toContain("guard let dictated, dictated.id != appliedDictationID else { return }");
+  // The applied id must OUTLIVE the process. `live.dictated` is sticky on the daemon's side and deliberately never
+  // cleared, so the id is the only thing stopping a dictation being applied twice. Holding it in memory meant every
+  // relaunch reset it to 0 and a dictation the user had already received — and deleted — was appended again. Tyler,
+  // after a dozen rebuilds: "this text keeps showing in the 'arch prime' session input box. i keep delting it and it
+  // keeps coming back."
+  expect(composer).toContain('private static let appliedDictationKey = "conch.mac.appliedDictationID.v1"');
+  expect(composer).toContain("appliedDictationID = defaults.integer(forKey: Self.appliedDictationKey)");
+  expect(composer).toContain("defaults.set(dictated.id, forKey: Self.appliedDictationKey)");
+  // Not re-initialised to a literal, which is what made it forget.
+  expect(composer).not.toContain("private var appliedDictationID = 0");
   // The target comes from the dictation, never from current focus.
   expect(composer).toContain("appendDictation(dictated.text, to: dictated.sessionId)");
   // Appended to what was typed, not substituted for it.
