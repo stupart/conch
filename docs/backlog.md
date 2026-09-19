@@ -39,6 +39,11 @@ agent drive one, and the user able to reach in and interact — the way the Code
 ## Open
 
 ### UI / UX
+- **open** — The terminal pane puts a second text field directly above the session composer, so
+  two inputs sit one line apart with nothing saying which has focus. Found the hard way while
+  verifying the pane: a click that missed the terminal field left keystrokes to be read as
+  global shortcuts, which set conch speaking. Wants a visible focus treatment, and probably a
+  key that puts the cursor in the terminal.
 - **open** — Old deliverables render as live in-conversation cards. Tyler: "this one is showing
   green circle with a check tho becuase of a really old deliverable that shows at the bottom of teh
   chat. maybe old deliverables show in teh deliverable area as tabs but not as like in-convo ui
@@ -118,6 +123,13 @@ agent drive one, and the user able to reach in and interact — the way the Code
   TextKit 1 fallback the caret fix introduced.
 
 ### Engineering
+- **open** — The dashboard re-renders on every snapshot, and the transcript was only the worst
+  of it. MEASURED 2026-09-20, after the stack was fixed: main still hitches ~4.4/s at ~42 ms at
+  idle in a single instance. The rest of the window is rebuilding four times a second —
+  `ComposerView`'s `SelectionOverlay.updateNSView`, the header buttons, and plausibly the
+  terminal pane once it is open. `StateStore.hasSamePresentation` is meant to swallow
+  no-op snapshots and lets ~4 bursts/s through. Wants a Time Profiler pass on `DashboardView`
+  and `StateStore`, and probably the same `EquatableView` keying the stack now uses.
 - **open** — Why five overlapping captures of one sentence reach the exit drain at all. Both
   dictation fixes treat convergence points, not the source. Start at
   `src/dictation-controller.ts`, the capture→re-arm→transcribe path; the diagnostic is logging
@@ -139,6 +151,17 @@ agent drive one, and the user able to reach in and interact — the way the Code
 
 ## Done
 
+- **done** — The transcript scrolls without the four stalls measured under it. The stack's body
+  ran on every snapshot from ANY session (~4/s) and rebuilt every row: 44 markdown re-parses a
+  second at 30 rows, 236 with history paged in, hitches 8 ms at 30 rows to 58–67 ms at ~300.
+  Under that, `recordedRows` was a computed property re-read for every row it was passed to —
+  n×n items per snapshot, **67% of the main thread at rest** with 520 rows, hitches 200–475 ms,
+  quadratic in how far back you had read. Paging jumped because the restore ran 6–24 ms AFTER
+  the frame changed, and `loadOlder()` re-captured on every scroll tick so pages were
+  "compensated" by 2 pt. Streaming stopped following because the bottom anchor sat inside the
+  14 pt padding and landed 14 pt short — past the 8 pt the follow test allows. After: 0 parses
+  at rest, main 67% → 20% with ~700 rows, no hitch ≥ 50 ms, 51/51 pages absorbed in the same
+  millisecond. 15 mutations, each broken→fails, restored→passes. `6cd4b43`
 - **done** — A terminal in the work half: `zsh -lc <command>` on a real pty, in the session's
   own folder, with colour. A command runner rather than an interactive shell because a login
   shell's prompt is redraw a colour-only parser must swallow — measured, not chosen. `PAGER`
