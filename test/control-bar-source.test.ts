@@ -281,6 +281,23 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(panels).toContain("static var usesGlass: Bool { if #available(macOS 26.0, *) { true } else { false } }");
   expect(panels).toContain("fog.hasShadow = Self.usesGlass");
 
+  // The sidebar is draggable and remembers where it was left. Tyler: "wnat ot be able ot collapse
+  // and open the left side bar / drag to change side of main area and therefore make it smaller if
+  // I want." Collapse already existed on Cmd-B; the width was a hardcoded 264.
+  const dash = read("mac-app/conch-mac/DashboardView.swift");
+  expect(dash).toContain('@AppStorage("conch.sidebarWidth") private var storedSidebarWidth = 264.0');
+  expect(dash).toContain("private var sidebarResizer: some View {");
+  // Placed in the layout, not merely declared: asserting the bare name matched its own
+  // declaration, so deleting it from the HStack left this green. Anchor it to the layout.
+  expect(dash).toContain("                    sidebarResizer\n                    }");
+  expect(dash).toContain("NSCursor.resizeLeftRight.push()");
+  // Bounded: a name needs room, and a sidebar that can eat the stage can hide the work.
+  expect(dash).toContain("private static let sidebarBounds: ClosedRange<CGFloat> = 180...520");
+  // Banked on release, not on every frame of the drag.
+  expect(dash).toContain("storedSidebarWidth = sidebarWidth");
+  // The width is no longer a constant.
+  expect(dash).not.toContain("private var sidebarWidth: CGFloat { 264 }");
+
   // Come-look is one colour family. Waiting means a finished turn is sitting on you, which is the
   // same thing review means, so it joins review's green and the CHECK alone tells them apart —
   // Tyler: "maybe do same green circle just with no check?". The glyph already did that work.

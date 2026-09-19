@@ -40,6 +40,12 @@ struct DashboardView: View {
     /// Put away and brought back with ⌘B, and remembered: a window that reopens with the
     /// sidebar back after you deliberately closed it is a window arguing with you.
     @AppStorage("conch.sidebarCollapsed") private var sidebarCollapsed = false
+    /// Dragged, and remembered. Tyler: "wnat ot be able ot collapse and open the left side bar /
+    /// drag to change side of main area and therefore make it smaller if I want." 264 was the
+    /// hardcoded width; it is now only the starting one.
+    @AppStorage("conch.sidebarWidth") private var storedSidebarWidth = 264.0
+    /// The drag in progress, before it is banked into `storedSidebarWidth` on release.
+    @State private var sidebarDrag: CGFloat = 0
     @EnvironmentObject private var store: StateStore
     @EnvironmentObject private var daemon: DaemonHost
     @EnvironmentObject private var audio: AudioHolderStore
@@ -97,6 +103,7 @@ struct DashboardView: View {
                         value: store.isLedgerFrozen
                     )
 
+                    sidebarResizer
                     }
 
                     // §3: the stage is a `surface` panel inset 8 from the window, radius 12,
@@ -164,7 +171,33 @@ struct DashboardView: View {
 
     /// Fixed, at the spec's 264 (workspace-v1 §3). It used to scale with the window —
     /// min 280, max 380, 30% — so the stage's measure moved every time the window did.
-    private var sidebarWidth: CGFloat { 264 }
+    /// Between a usable ledger and half the window: a session's name needs room, and a sidebar
+    /// that can eat the stage is a sidebar that can hide the work.
+    private static let sidebarBounds: ClosedRange<CGFloat> = 180...520
+    private var sidebarWidth: CGFloat {
+        min(max(storedSidebarWidth + sidebarDrag, Self.sidebarBounds.lowerBound), Self.sidebarBounds.upperBound)
+    }
+
+    /// A grab strip on the sidebar's edge. Two points wide to look at, wider to hit — a resize you
+    /// have to aim for is one nobody finds.
+    private var sidebarResizer: some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(width: 10)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(coordinateSpace: .global)
+                    .onChanged { sidebarDrag = $0.translation.width }
+                    .onEnded { _ in
+                        storedSidebarWidth = sidebarWidth
+                        sidebarDrag = 0
+                    }
+            )
+            .accessibilityLabel("Resize the sidebar")
+    }
 }
 
 private struct DashboardHeader: View {
