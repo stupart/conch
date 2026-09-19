@@ -1076,11 +1076,18 @@ public struct ConversationFog: View {
             return CGRect(x: leading + (room - width) / 2, y: top, width: width, height: height)
         }
         let leading = insets.leading + side, trailing = insets.trailing + side
-        // 620, not the lab's 540: the panel defaults to 900 wide now and resizes to the whole screen, and at 852 pt of
-        // fog the 540 column left 312 pt of it empty. The cap cannot simply follow the width — `pull` below slides the
-        // column between its docked side and the centre, and that travel is (usable - cap), so a cap that fills the fog
-        // kills the magnet outright (0 pt at 748). 620 keeps 64 pt of travel and puts the newest line at 61 characters.
-        let width = min(620, max(0, size.width - leading - trailing))
+        // 620 at the sizes the panel is usually at, growing toward full screen's own 1040 measure as it is dragged
+        // wider. The lab's 540 left 312 pt of a 900 pt panel empty; a fixed 620 left a RIBBON of text against one edge
+        // of a nearly full-screen sheet of glass, most of it blurred nothing (Tyler, expanding it: "pretty silly when
+        // i expand the convo panel").
+        //
+        // 60% of the room rather than simply following it, because `pull` below slides the column between its docked
+        // side and the centre by (room - width): a column that fills its fog has nowhere to travel and the magnet dies
+        // outright. At 60% the default 900 pt panel is unchanged at 620, and a panel past about 1185 pt earns a wider
+        // column instead of a wider margin.
+        let room = max(0, size.width - leading - trailing)
+        let measure = min(1040, max(620, room * 0.6))
+        let width = min(measure, room)
         let pull = magnet ?? EdgeInsets(top: corner.bottom ? 0 : 1, leading: corner.leading ? 1 : 0, bottom: corner.bottom ? 1 : 0, trailing: corner.leading ? 0 : 1)
         let midX = (size.width - width) / 2, midY = (size.height - height) / 2
         return CGRect(
