@@ -122,6 +122,25 @@ final class TerminalOutputTests: XCTestCase {
         XCTAssertTrue(output.lines[2].isEmpty || output.lines[2][0].style.isPlain)
     }
 
+    // MARK: lines conch adds itself
+
+    /// The echoed command is conch's own text, not the shell's. It must not be run through the
+    /// parser as fake escape codes — that would make the parser's input a lie — and it must not
+    /// disturb a partial line the shell has open.
+    func testAnOwnLineIsStyledDirectlyAndKeepsTheShellsOutputSeparate() {
+        var output = ConchTerminalOutput()
+        output.append("partial without a newline")
+        var dim = ConchTerminalStyle()
+        dim.dim = true
+        output.appendOwnLine("$ git status", style: dim)
+        output.append("On branch master\r\n")
+
+        XCTAssertEqual(output.lines[0], [ConchTerminalRun(text: "partial without a newline")])
+        XCTAssertEqual(output.lines[1], [ConchTerminalRun(text: "$ git status", style: dim)])
+        XCTAssertEqual(output.lines[2].first?.text, "On branch master")
+        XCTAssertTrue(output.lines[2].first?.style.isPlain == true, "our style must not leak into the shell's")
+    }
+
     // MARK: bounds
 
     func testScrollbackIsBoundedFromTheOldestEnd() {

@@ -37,9 +37,12 @@ describe("the files are a second axis, not a fourth page", () => {
     // so the wider slice counted BOTH enums' cases and read 5. The stage still has three.
     const stage = section(workspace, "public enum StageMode", "public enum WorkPane");
     expect(stage.match(/case \w+/g) ?? []).toHaveLength(3);
-    // The new axis lives in its own type, with exactly two contents and its own default.
+    // The new axis lives in its own type, with its own default. THREE contents now: the
+    // deliverable, the session's files, and a terminal running in the same folder. All three
+    // are things the work half can hold — none of them is a way of splitting the stage, which
+    // is what keeps StageMode at three and this a separate question.
     const work = section(workspace, "public enum WorkPane", "public struct SessionPresentation");
-    expect(work.match(/case \w+/g) ?? []).toHaveLength(2);
+    expect(work.match(/case \w+/g) ?? []).toHaveLength(3);
     expect(workspace).toContain("public var work: WorkPane = .deliverable");
   });
 

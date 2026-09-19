@@ -175,6 +175,19 @@ public struct ConchTerminalOutput: Equatable, Sendable {
         lines.map { $0.map(\.text).joined() }.joined(separator: "\n")
     }
 
+    /// A line the APP is adding, rather than bytes a shell sent: the command being echoed, or
+    /// a message from conch when it could not start one.
+    ///
+    /// Styled directly instead of by feeding escape codes through the parser. The parser's
+    /// input is meant to be exactly what a program wrote to the pty; putting conch's own
+    /// synthetic sequences into it would make every test about that input a little bit false.
+    public mutating func appendOwnLine(_ text: String, style: ConchTerminalStyle = ConchTerminalStyle()) {
+        // Close whatever partial line is open so an unterminated one is not joined to ours.
+        if !lines[lines.count - 1].isEmpty { lines.append([]) }
+        lines[lines.count - 1] = [ConchTerminalRun(text: text, style: style)]
+        lines.append([])
+    }
+
     /// Keep the scrollback bounded. A build can print tens of thousands of lines and nobody
     /// scrolls back that far; the oldest go rather than the newest.
     public mutating func trim(toLastLines limit: Int) {
