@@ -279,8 +279,18 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(panels).toContain("ConchGlassPanel(darkness: panels.look.darkness, voice: ConchStatusItem.voiceState(store.state))");
   // Liquid Glass draws the panel; the effect view stays a sibling but hidden, so the collapse guard below still holds.
   expect(panels).toContain("static var usesGlass: Bool { if #available(macOS 26.0, *) { true } else { false } }");
-  expect(panels).toContain("blur.isHidden = !Self.showsFog || Self.usesGlass");
   expect(panels).toContain("fog.hasShadow = Self.usesGlass");
+  // Full screen has no glass panel — it is a rounded rect in a corner and full screen is the whole screen, so
+  // `FogLookHost` leaves it out. The behind-window blur therefore has to come BACK, or nothing softens the work under
+  // the words and the only thing painting is ConversationFog's wash over an unblurred desktop (Tyler: "on the
+  // converation overlay fullscreen mode the background fo teh panel dissapears"). This regressed silently when the
+  // glass first hid the blur unconditionally, because no test asserted anything paints behind the words there.
+  expect(panels).toContain("blur.isHidden = !Self.showsFog || (Self.usesGlass && !isFullScreen)");
+  expect(member(panels, "func toggleFullScreen() {")).toContain("blur.isHidden = !Self.showsFog");
+  // AppKit draws the focus ring on the SCROLL VIEW, not the text view inside it, so turning it off on the text view
+  // alone left the ring exactly where it was (Tyler: "thers still a strange outline around teh component").
+  expect(components).toContain("scroll.focusRingType = .none");
+  expect(components).toContain("view.focusRingType = .none");
   // The window is exactly the fog: the glass ends at its own edge, so no margin and no saved-frame drift.
   expect(member(panels, "private func apply() {")).toContain("layOut(margin: EdgeInsets())");
   const glass = read("design/ConchDesign/Sources/ConchDesign/GlassPanel.swift");

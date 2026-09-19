@@ -233,7 +233,7 @@ final class FloatingPanels: ObservableObject {
         UserDefaults.standard.register(defaults: Look.defaults)
         blur.blendingMode = .behindWindow
         blur.state = .active
-        blur.isHidden = !Self.showsFog || Self.usesGlass
+        blur.isHidden = !Self.showsFog || (Self.usesGlass && !isFullScreen)
         // The blur, its look and the words are siblings: a visual effect view's mask shapes everything inside it, which
         // faded the words with the fog and hid the collapsed handle along with the blur.
         container.panels = self
@@ -402,7 +402,7 @@ final class FloatingPanels: ObservableObject {
             blur.isHidden = true
         } else {
             fog.setFrameAutosaveName(Self.conversationFrameName)
-            blur.isHidden = !Self.showsFog || Self.usesGlass
+            blur.isHidden = !Self.showsFog || (Self.usesGlass && !isFullScreen)
         }
     }
 
@@ -423,6 +423,12 @@ final class FloatingPanels: ObservableObject {
             fog.setFrameAutosaveName("")
             fog.setFrame(screen.frame, display: true, animate: animate)
             isFullScreen = true
+            // The glass panel is a rounded rect in a corner; full screen is the whole screen, so `FogLookHost` leaves
+            // it out and the behind-window blur comes back to soften the work under the words. Without it the only
+            // thing painting was ConversationFog's wash — a gradient over an UNBLURRED desktop, which is why the text
+            // stopped being readable (Tyler: "on the converation overlay fullscreen mode the background fo teh panel
+            // dissapears"). panel.html blurs the work AND washes it; this had kept only the wash.
+            blur.isHidden = !Self.showsFog
             updateInsets(screen.frame, on: screen)
             blur.maskImage = nil
         }

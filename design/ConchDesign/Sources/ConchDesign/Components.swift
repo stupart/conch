@@ -453,6 +453,10 @@ private struct ReplyField: NSViewRepresentable {
         view.setAccessibilityLabel("Reply")
         let scroll = NSScrollView()
         scroll.drawsBackground = false
+        // AppKit draws the focus ring on the SCROLL VIEW, not on the text view inside it, so turning it off there
+        // (line above's sibling, `view.focusRingType`) left the ring exactly where it was — a rectangle around the
+        // reply line whenever it had the keyboard (Tyler: "thers still a strange outline around teh component").
+        scroll.focusRingType = .none
         scroll.hasVerticalScroller = false
         scroll.hasHorizontalScroller = false
         scroll.documentView = view
