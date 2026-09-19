@@ -27,6 +27,7 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, s
 import { conchHome } from "./home.ts";
 import { join } from "node:path";
 import type { CodexSessionEntry, CodexSessionRegistryRead } from "./codex-sessions.ts";
+import { pendingApproval, type PendingApproval } from "./approval.ts";
 
 export interface CodexThreadsOptions {
   /**
@@ -503,6 +504,52 @@ export function detectCodexTurnEnds(
     if (!live.has(sessionId)) memory.delete(sessionId);
   }
   return ended;
+}
+
+/** A Codex session that has just become blocked on an approval, or just come unblocked. */
+export interface CodexApprovalEvent {
+  snapshot: CodexTurnSnapshot;
+  /** The ask now waiting, or null when the one already announced has been answered. */
+  approval: PendingApproval | null;
+}
+
+/**
+ * Which Codex sessions are sitting on an unanswered permission ask.
+ *
+ * Codex publishes no notification for one, so this is the only way conch can
+ * know. Without it a thread parked on an escalation reports `busy` from
+ * `task_started` (or `inProgress` in `thread_turns`) for as long as it waits,
+ * and `registryToPanel` turns that into "working" — a session that will never
+ * finish, shown as one quietly making progress.
+ *
+ * Keyed on the ask's own call id, so a poll every few seconds announces one ask
+ * once. The null event closes it: the answer is in, and a thread still mid-turn
+ * goes back to working rather than sitting on "needs you" until the turn ends.
+ */
+export function detectCodexApprovals(
+  memory: Map<string, string>,
+  snapshots: readonly CodexTurnSnapshot[],
+): CodexApprovalEvent[] {
+  const events: CodexApprovalEvent[] = [];
+  for (const snapshot of snapshots) {
+    const approval = snapshot.transcriptPath ? pendingApproval(snapshot.transcriptPath) : null;
+    if (!approval) {
+      // Only worth saying for an ask conch actually announced, and only while
+      // the thread is still working — a finished turn announces itself.
+      if (memory.delete(snapshot.sessionId) && snapshot.status === "busy") {
+        events.push({ snapshot, approval: null });
+      }
+      continue;
+    }
+    if (memory.get(snapshot.sessionId) === approval.id) continue;
+    memory.set(snapshot.sessionId, approval.id);
+    events.push({ snapshot, approval });
+  }
+  const listed = new Set(snapshots.map((s) => s.sessionId));
+  for (const sessionId of [...memory.keys()]) {
+    if (!listed.has(sessionId)) memory.delete(sessionId);
+  }
+  return events;
 }
 
 /**
