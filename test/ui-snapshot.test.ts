@@ -128,4 +128,141 @@ describe("conch shot photographs what is actually on screen", () => {
     // Exactly one draw, so a second one cannot creep in outside the appearance.
     expect(snapshot.match(/cacheDisplay\(/g) ?? []).toHaveLength(1);
   });
+
+  test("a named window reaches the floating panels, and no name still means what it did", () => {
+    // The conversation overlay is the surface under the heaviest iteration and the app
+    // could not photograph it AT ALL: the candidate list excluded every FloatingPanel.
+    expect(snapshot).toContain("case key, overlay, controlbar, dashboard, geometry");
+    expect(snapshot).toContain("case .overlay: window = panels.first(where: isOverlay)");
+    expect(snapshot).toContain("case .controlbar: window = panels.first { !isOverlay($0) }");
+    // A one-line request is what every caller wrote before this existed. It still
+    // resolves the key window among the NON-panels, exactly as it always did.
+    expect(snapshot).toContain("let target = wanted.isEmpty ? Target.key : Target(rawValue: wanted) ?? Target.key");
+    expect(snapshot).toContain("case .key: window = key ?? largest");
+    expect(snapshot).toContain("let candidates = onScreen.filter { !($0 is FloatingPanel) }");
+  });
+
+  test("the overlay is found structurally, never by the autosave name it loses", () => {
+    // `takesKeys` is set once at construction, on the fog and on nothing else.
+    expect(snapshot).toContain("private static func isOverlay(_ panel: FloatingPanel) -> Bool { panel.takesKeys }");
+    const floating = read("mac-app/conch-mac/FloatingPanels.swift");
+    expect(floating.match(/takesKeys = true/g) ?? []).toHaveLength(1);
+    // And the reason a name lookup was rejected: FloatingPanels BLANKS the autosave
+    // name while the fog is collapsed or full screen, so a name-matching lookup would
+    // find the overlay in the dull states and silently miss it in the interesting ones.
+    expect(floating).toContain('fog.setFrameAutosaveName("")');
+    expect(snapshot).not.toContain("conversationFrameName");
+  });
+
+  test("named windows did not weaken the allowlist", () => {
+    // The request file is world-writable by nature. Naming a window must never have
+    // turned this into a "write a PNG anywhere" tool.
+    expect(snapshot).toContain('guard destination.hasPrefix("/tmp/"), destination.hasSuffix(".png") else { return }');
+    // And the destination is still only ever the FIRST line of the request.
+    expect(snapshot).toContain("let destination = lines.first?");
+  });
+
+  test("live geometry is written beside every shot, before the picture is taken", () => {
+    // Three measurements in one session were invalidated by cropping to where a window
+    // used to be. The sidecar is the cure: every window's frame as of the capture.
+    expect(snapshot).toContain('"windows": described');
+    expect(snapshot).toContain('"imageRect"');
+    // A caret only exists where the keyboard focus is; a whole session went into
+    // scanning for one in a field that had none.
+    expect(snapshot).toContain('"firstResponder"');
+    expect(snapshot).toContain('"isKeyWindow": window.isKeyWindow');
+    // Light-against-dark for an hour: the overlay paints its own appearance.
+    expect(snapshot).toContain('"overlayAppearance"');
+    // Written BEFORE the draw, so the geometry is of the moment photographed.
+    expect(snapshot.indexOf('destination + ".json"')).toBeLessThan(snapshot.indexOf("view.cacheDisplay"));
+  });
+});
+
+describe("the overlay shoot rig", () => {
+  const shoot = read("scripts/shoot-overlay.ts");
+
+  test("state is driven by relaunch, because a write into a running app does nothing", () => {
+    // Measured: the panel sat unmoved through 1.7s of polling after a `defaults write`.
+    // `showWhatIsOn()` reads the collapsed key from init and from
+    // UserDefaults.didChangeNotification, which another process's write does not fire.
+    expect(shoot).toContain("await quitConch();");
+    expect(shoot.indexOf("await quitConch();")).toBeLessThan(shoot.indexOf('"defaults", "write", DOMAIN, FRAME_KEY'));
+    expect(shoot).toContain('await sh("open", "-a", APP);');
+    // Never a pattern kill: it reaches whatever else matches, and has cost a session.
+    expect(shoot).toContain('await sh("pgrep", "-f", `${APP}/Contents/MacOS/`)');
+    // The argv entry, not the word: the file explains in prose why pkill is refused.
+    expect(shoot).not.toContain('"pkill"');
+  });
+
+  test("a state that did not take is thrown, never photographed", () => {
+    // The failure this rig exists to prevent: a lab resize that reported success and
+    // silently did nothing, which invalidated an hour of comparisons.
+    expect(shoot).toContain("The state did NOT take; nothing was photographed.");
+    // Settled, not merely present — a shot taken mid-animation is a state nobody asked for.
+    expect(shoot).toContain("const settled = now === last;");
+    expect(shoot).toContain("if (!settled) continue;");
+    // Full screen and size are absent from the MANIFEST itself rather than present and
+    // silently no-ops. Sliced to the manifest, because the prose above it necessarily
+    // names both to explain why they are missing.
+    const manifest = shoot.slice(shoot.indexOf("const MANIFEST"), shoot.indexOf("type Rect"));
+    expect(manifest.length).toBeGreaterThan(100);
+    expect(manifest).not.toContain("fullScreen");
+    expect(manifest).not.toContain("size");
+    expect(shoot).toContain("cannot be driven from outside the app");
+    // The size finding, measured: asked for 600x500, got the hardcoded 900x640.
+    expect(shoot).toContain("restores the ORIGIN but not the SIZE");
+  });
+
+  test("the crop is taken from the sidecar the app just wrote, not from a remembered rect", () => {
+    expect(shoot).toContain("const rect = overlayOf(sidecar)?.imageRect;");
+    expect(shoot).toContain('"--screen"');
+    // And the inset is clamped to the rect: a fixed one is wider than the collapsed
+    // handle, and a negative crop is standardised into a valid rect somewhere else in
+    // the image rather than refused — which measured the backdrop and called it the panel.
+    expect(shoot).toContain("Math.min(rect.width, rect.height) / 4");
+  });
+});
+
+describe("pixels.swift", () => {
+  const measure = join(repo, "tools", "pixels.swift");
+  const fixture = "/tmp/conch-pixels-fixture.png";
+
+  // A scanner that reads rows bottom-up gives a perfectly mirrored, entirely plausible,
+  // WRONG answer — "the caret sits below the glyph" when it sits above — and nothing in
+  // the output looks wrong. The only way to pin it is geometry known in advance, so the
+  // tool writes its own fixture: a caret mark at y 10...39 and ink at y 60...79, from the
+  // TOP, deliberately asymmetric so a flipped scan cannot land on the same answer.
+  test("rows are counted from the TOP", async () => {
+    expect((await Bun.$`swift ${measure} synth ${fixture}`.quiet()).exitCode).toBe(0);
+    const ink = (await Bun.$`swift ${measure} ink ${fixture}`.quiet()).stdout.toString();
+    expect(ink).toContain("y 10...39");
+    expect(ink).toContain("y 60...79");
+    expect(ink).toContain("caret top is 50 px ABOVE the text top");
+    // The mirrored answer, spelled out so a flip cannot pass by looking reasonable.
+    expect(ink).not.toContain("BELOW the text top");
+  }, 60_000);
+
+  test("nothing found says NOT FOUND, and never a negative height", async () => {
+    // The prototype reported an empty search as `y 44...-1  height -44`, which reads as
+    // a broken measurement rather than an empty one. A session was lost to exactly that,
+    // scanning for a caret in a field that had no keyboard focus, where "there is no
+    // caret here" was the correct answer all along.
+    expect((await Bun.$`swift ${measure} synth ${fixture}`.quiet()).exitCode).toBe(0);
+    const empty = (await Bun.$`swift ${measure} ink ${fixture} 100 85 10 10`.quiet()).stdout.toString();
+    expect(empty).toContain("caret  NOT FOUND");
+    expect(empty).toContain("text   NOT FOUND");
+    expect(empty).toContain("no comparison");
+    expect(empty).not.toMatch(/h -\d/);
+    expect(empty).not.toMatch(/\.\.\.-\d/);
+  }, 60_000);
+
+  test("a region with no area is refused, never standardised into a valid one", async () => {
+    // CGRect turns a negative-width crop into a perfectly good rect somewhere else in
+    // the image. A crop meant for a 144px panel came back as a 16px patch of backdrop
+    // that way and reported it as the panel — mean 128.0, chroma 0.00, sd 0.00.
+    expect((await Bun.$`swift ${measure} synth ${fixture}`.quiet()).exitCode).toBe(0);
+    const bad = await Bun.$`swift ${measure} stats ${fixture} 50 50 -16 -16`.quiet().nothrow();
+    expect(bad.exitCode).toBe(1);
+    expect(bad.stderr.toString()).toContain("has no area");
+  }, 60_000);
 });
