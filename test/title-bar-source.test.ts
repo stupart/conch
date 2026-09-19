@@ -91,10 +91,16 @@ describe("E1: the header lives in the title-bar strip", () => {
     expect(notices).toContain("if let host = audio.controlledBy {");
     ordered(body, "DashboardHeader(", "WorkspaceNotices()", "SessionLedger(");
 
-    // The sidebar is a fixed width and can be put away with ⌘B, which the window remembers.
-    // It used to scale with the window (min 280, max 380, 30%), so the stage's measure moved
-    // every time the window did.
-    expect(dashboard).toContain("private var sidebarWidth: CGFloat { 264 }");
+    // The sidebar can be put away with ⌘B, which the window remembers, and DRAGGED to a width it
+    // also remembers. 264 is only where it starts now — Tyler: "drag to change side of main area
+    // and therefore make it smaller if I want".
+    //
+    // It is bounded rather than free. The width used to scale with the window (min 280, max 380,
+    // 30%), so the stage's measure moved every time the window did; a drag sets it once and it
+    // stays put until dragged again.
+    expect(dashboard).toContain('@AppStorage("conch.sidebarWidth") private var storedSidebarWidth = 264.0');
+    expect(dashboard).toContain("private static let sidebarBounds: ClosedRange<CGFloat> = 180...520");
+    expect(dashboard).not.toContain("private var sidebarWidth: CGFloat { 264 }");
     expect(body).toContain("if !sidebarCollapsed {");
     expect(dashboard).toContain('@AppStorage("conch.sidebarCollapsed")');
     expect(dashboard).toContain(".onReceive(NotificationCenter.default.publisher(for: .toggleSidebar))");
