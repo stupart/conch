@@ -152,6 +152,8 @@ public enum WorkPane: String, Equatable, Sendable, Codable {
     case deliverable
     /// The session's working folder, and what it changed in there.
     case files
+    /// Commands run in that folder, and what they printed.
+    case terminal
 }
 
 /// What the workspace remembers about ONE session, so leaving it and coming back returns

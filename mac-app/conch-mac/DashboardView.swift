@@ -1556,7 +1556,8 @@ private struct ConversationPane: View {
 
     /// More than one thing to choose between, so the strip is worth drawing.
     private func hasWorkTabs(for row: SessionRow) -> Bool {
-        deliverables.count + (workingFolder == nil ? 0 : 1) > 1
+        // A working folder is worth TWO: the files in it, and a terminal running in it.
+        deliverables.count + (workingFolder == nil ? 0 : 2) > 1
     }
 
     /// Which content the work half is on, never trusting the remembered choice blindly: a
@@ -1565,6 +1566,8 @@ private struct ConversationPane: View {
     private func workPane(for row: SessionRow) -> WorkPane {
         let chosen = workspace.presentation(for: row.id).work
         if chosen == .files, workingFolder != nil { return .files }
+        // A terminal needs somewhere to run as much as a tree needs somewhere to read.
+        if chosen == .terminal, workingFolder != nil { return .terminal }
         if selectedReview != nil { return .deliverable }
         return workingFolder != nil ? .files : .deliverable
     }
@@ -1591,6 +1594,10 @@ private struct ConversationPane: View {
     private func workContent(for row: SessionRow) -> some View {
         if workPane(for: row) == .files, let folder = workingFolder {
             WorkspaceFilesView(root: folder, rowID: row.id, changed: changedFiles(for: row))
+        } else if workPane(for: row) == .terminal, let folder = workingFolder {
+            // Keyed on the session: a shell started in one session's folder must never be
+            // handed to another because SwiftUI reused the view.
+            TerminalPaneView(cwd: folder).id(row.id)
         } else if let selectedReview {
             InlineReviewView(
                 item: selectedReview,
@@ -1949,6 +1956,11 @@ private struct ConversationPane: View {
                     action: { workspace.show(work: .files, for: row.id) }
                 )
 
+                TerminalTab(
+                    isSelected: workPane(for: row) == .terminal,
+                    action: { workspace.show(work: .terminal, for: row.id) }
+                )
+
                 if !held.isEmpty {
                     // The place, and the work that came out of it, are different kinds of
                     // thing. A hairline says so without a word.
@@ -2198,6 +2210,40 @@ private struct FilesTab: View {
         .onHover { isHovered = $0 }
         .help("This session's working folder, and what it changed")
         .accessibilityLabel("Files")
+    }
+}
+
+/// Commands run in the session's folder, beside the folder itself.
+///
+/// Both of these are the PLACE the session works, which is why they sit together ahead of the
+/// hairline and the outputs scroll on the far side of it.
+private struct TerminalTab: View {
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: "chevron.left.forwardslash.chevron.right")
+                    .font(.system(size: 10))
+                Text("Terminal")
+                    .font(ConchTypography.font(size: 11))
+            }
+            .foregroundStyle(isSelected ? ConchPalette.textPrimary : ConchPalette.textDim)
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .help("Run a command where this session runs")
+        .accessibilityLabel("Terminal")
     }
 }
 

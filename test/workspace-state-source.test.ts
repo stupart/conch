@@ -162,7 +162,9 @@ describe("new work does not replace what you are reading", () => {
     // single deliverable and no folder has exactly the pane it always had. The working folder
     // is one of those things now, which is what the count has to include.
     expect(pane).toContain("if hasWorkTabs(for: reviewRow) {");
-    expect(pane).toContain("deliverables.count + (workingFolder == nil ? 0 : 1) > 1");
+    // TWO, not one: a working folder offers the files in it AND a terminal running in it, so
+    // a session with a folder and no deliverable still has a strip worth drawing.
+    expect(pane).toContain("deliverables.count + (workingFolder == nil ? 0 : 2) > 1");
     // Three states, and looking at one is what marks it — but only ever told to a daemon that
     // can remember, so an older one is never handed a command it will refuse.
     expect(pane).toContain("isUnviewed ? ConchPalette.textPrimary : ConchPalette.textDim");

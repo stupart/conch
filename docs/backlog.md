@@ -79,7 +79,8 @@ agent drive one, and the user able to reach in and interact — the way the Code
   files it changed marked in place — a folder holding a change marked more quietly than the
   changed file, so the route to the work reads without every folder claiming to be edited.
   Listing is cached and off the main thread; flattening is a pure function with unit tests.
-  TERMINAL, nothing embedded yet — but MEASURED and viable, 2026-09-20. A spike compiled and ran
+  TERMINAL, DONE `6a975fd` — a command runner in the work half, scoped by the measurements below.
+  A spike compiled and ran
   a real PTY from Swift: `forkpty` typechecks from a bare `import Darwin` with no bridging
   header (proven against a negative control), the child is a real session leader with `isatty`
   true, and `TIOCSWINSZ` resizing works. No SwiftPM dependency is needed — which matters,
@@ -138,6 +139,11 @@ agent drive one, and the user able to reach in and interact — the way the Code
 
 ## Done
 
+- **done** — A terminal in the work half: `zsh -lc <command>` on a real pty, in the session's
+  own folder, with colour. A command runner rather than an interactive shell because a login
+  shell's prompt is redraw a colour-only parser must swallow — measured, not chosen. `PAGER`
+  and `GIT_PAGER` are pinned to `cat`, or `git diff` hangs on a keypress the pane cannot send.
+  No dependency, no entitlement: `forkpty` from a bare `import Darwin`, app unsandboxed. `6a975fd`
 - **done** — The file tree, as a second axis rather than a fourth page. `StageMode` still has
   three positions; what sits in the work half (a deliverable, or the files) is its own
   question, so side-by-side and fill-the-stage work on the files for free. Picking a file
