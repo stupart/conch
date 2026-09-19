@@ -69,6 +69,25 @@ describe("the work half can hold the files or a deliverable", () => {
     expect(choose).toContain("if selectedReview != nil { return .deliverable }");
   });
 
+  /**
+   * Found by LOOKING, not by reasoning about it: a session holding six deliverables filled
+   * the strip edge to edge, and the folder tab — appended after them in a plain HStack — was
+   * laid out past the right of the pane where nothing could see or click it. The deliverables
+   * were already clipping each other before the folder was ever added.
+   *
+   * So the folder leads and is pinned OUTSIDE the scroller. It is not one of the outputs
+   * competing for room with however many there are; it is the place the session works in, and
+   * its position must not drift as they accumulate.
+   */
+  test("the folder is pinned ahead of the deliverables, which scroll", () => {
+    const tabs = section(pane, "private func deliverableTabs(", ".padding(.vertical, 5)");
+    expect(tabs).toContain("ScrollView(.horizontal)");
+    expect(at(tabs, "FilesTab(")).toBeLessThan(at(tabs, "ScrollView(.horizontal)"));
+    // The scroller claims the remaining width, so the strip no longer needs a spacer to push
+    // the tabs left — and a spacer here would fight it for room.
+    expect(tabs).not.toContain("Spacer(minLength: 0)");
+  });
+
   test("the working folder is a tab beside the deliverables, and selects itself", () => {
     expect(pane).toContain("private struct FilesTab: View {");
     expect(pane).toContain("action: { workspace.show(work: .files, for: row.id) }");
