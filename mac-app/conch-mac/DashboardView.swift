@@ -1888,6 +1888,9 @@ private struct ConversationPane: View {
                     )
                 },
                 artifact: row.review,
+                // An older daemon never reports viewedAt, so every deliverable would look
+                // unviewed and the card would show exactly as it does today.
+                reportsViewedState: state?.features?.viewedState != nil,
                 cwd: row.cwd,
                 onOpenArtifact: { workspace.show(stage: .deliverable, for: row.id) },
                 onFreeform: { composerFocusRequest += 1 },

@@ -280,6 +280,47 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   // Liquid Glass draws the panel; the effect view stays a sibling but hidden, so the collapse guard below still holds.
   expect(panels).toContain("static var usesGlass: Bool { if #available(macOS 26.0, *) { true } else { false } }");
   expect(panels).toContain("fog.hasShadow = Self.usesGlass");
+
+  // Come-look is one colour family. Waiting means a finished turn is sitting on you, which is the
+  // same thing review means, so it joins review's green and the CHECK alone tells them apart —
+  // Tyler: "maybe do same green circle just with no check?". The glyph already did that work.
+  const palette = read("mac-app/conch-mac/Palette.swift");
+  // #279B4C, not review's own #30B35A: a mark needs 3:1 and review's green measures 2.41-2.72 on
+  // the light grounds. This one clears it everywhere, 3.16 at worst, both schemes.
+  expect(palette).toContain("red: 0.153,");
+  expect(palette).toContain("green: 0.608,");
+  expect(palette).toContain("blue: 0.298");
+  // The orange it replaces is gone for good.
+  expect(palette).not.toContain("red: 0.96,\n        green: 0.60,\n        blue: 0.13");
+  // Working is the quiet state: a session doing its job asks for nothing, so its dot recedes
+  // rather than competing with the ones that do.
+  expect(palette).toContain("static let statusWorking = textFaint");
+  // The glyphs stay as they were — the check is what separates review from waiting.
+  // LedgerVisual lives in DashboardView, not in the panels.
+  const dashboard = read("mac-app/conch-mac/DashboardView.swift");
+  expect(dashboard).toContain('return "circle.inset.filled"');
+  expect(dashboard).toContain('return "checkmark.circle.fill"');
+
+  // Only a deliverable nobody has opened belongs in the conversation; an old one pinned to the end
+  // of the stack made stale work look like fresh work waiting on you.
+  const stack = read("mac-app/conch-mac/ConversationStackView.swift");
+  expect(stack).toContain("if let artifact, artifact.viewedAt == nil || !reportsViewedState {");
+  // An older daemon never reports viewedAt, so it must keep today's behaviour rather than hiding
+  // every card.
+  expect(stack).toContain("var reportsViewedState = true");
+  expect(read("mac-app/conch-mac/DashboardView.swift"))
+    .toContain("reportsViewedState: state?.features?.viewedState != nil,");
+
+  // The bar above a deliverable is gone: a review check, the session name and the summary were
+  // three restatements of what the pane already is. The stage control survived it, because it is
+  // the only way to reach side-by-side and fill-the-stage with a mouse.
+  const review = read("mac-app/conch-mac/ReviewView.swift");
+  expect(review).toContain("private var stageControl: some View {");
+  expect(review).toContain(".overlay(alignment: .topTrailing) { stageControl }");
+  expect(review).not.toContain("private var caption: some View {");
+  expect(review).not.toContain('Text(item.summary.isEmpty ? "Ready for review" : item.summary)');
+  // NOT the origin bar, which looks similar and is a trust boundary rather than decoration.
+  expect(review).toContain('Button("Open in browser") { open(link) }');
   // A fog resized by hand must come back the size it was. `setFrameUsingName` restores only the ORIGIN of a
   // borderless, non-resizable panel and drops the size, so the default won on every launch and the size someone
   // chose was never the size they got — measured twice while building the capture system: asked 480x360, got

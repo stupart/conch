@@ -32,6 +32,9 @@ struct ConversationStackView: View {
     /// kind has existed in the conversation model all along and nothing ever
     /// emitted one, so this is the position that kind was reserving.
     var artifact: ReviewInfo?
+    /// Whether this daemon reports `viewedAt` at all. Without it every deliverable looks unviewed,
+    /// so the card must not be gated on a field that is always nil.
+    var reportsViewedState = true
     /// The session's working directory: what a relative link in the agent's
     /// prose is relative to (A13). Nil on an older daemon.
     var cwd: String? = nil
@@ -205,7 +208,15 @@ struct ConversationStackView: View {
                     // A zero-height anchor rather than scrolling to the last
                     // item: the last item GROWS while it streams, and scrolling
                     // to a growing view lands part-way up it.
-                    if let artifact {
+                    // Only a deliverable nobody has looked at yet belongs IN the conversation.
+                    // One that was filed days ago and already opened is history, and pinning it to
+                    // the end of the stack makes stale work look like fresh work waiting on you —
+                    // Tyler: "this one is showing green circle with a check tho becuase of a really
+                    // old deliverable that shows at the bottom of teh chat". `viewedAt` is the same
+                    // unviewed test the ledger already uses (`isUnviewed`), gated on the daemon
+                    // actually reporting it, so an older daemon keeps today's behaviour rather than
+                    // silently hiding every card.
+                    if let artifact, artifact.viewedAt == nil || !reportsViewedState {
                         ArtifactPreview(artifact: artifact, onOpen: onOpenArtifact)
                     }
 

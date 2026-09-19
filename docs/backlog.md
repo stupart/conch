@@ -10,10 +10,32 @@ Status: **open** · **doing** · **done** (with proof) · **won't** (with the re
 ## Open
 
 ### UI / UX
-- **open** — The bar above a deliverable. Green check + session name + full title + expand, with
-  the path and "Open in browser" under it. Clutter above what should be a preview of the work.
-  Tyler: "i don't get what its for an it adds clutter / jank". Mac **and** iPhone.
-  Earlier, same thing: "just liek and image or preview of the work with little or no text".
+- **open** — Old deliverables render as live in-conversation cards. Tyler: "this one is showing
+  green circle with a check tho becuase of a really old deliverable that shows at the bottom of teh
+  chat. maybe old deliverables show in teh deliverable area as tabs but not as like in-convo ui
+  elements? only new ones show as in-convo ui elements?" `ConversationStackView` takes one
+  `artifact: ReviewInfo?` and pins it at the end of the stack — the comment even says "for
+  one-artifact-per-session IS where it happened", and that assumption is what breaks. `ReviewInfo`
+  already carries `at`, `id` and `viewedAt`, so gating the inline card needs no new plumbing.
+- **open** — Status colour semantics are backwards. Tyler: "does orange dot mean its waiting for
+  me? We should make that green or blue or something and have working be like yellow or orange or
+  some sort of working icon or no icon or color at all since its working".
+  DECIDED: waiting becomes green like review, keeping its existing `circle.inset.filled` glyph so
+  the check alone distinguishes review — Tyler: "maybe do same green circle just with no check?".
+  The glyph is already right; only the colour moves. `needs` stays red as the blocking state.
+  MEASURED: review's own `#30B35A` FAILS the 3:1 a mark needs on light (2.58 on bg, 2.72 on
+  surface) — the same trap the palette note records for the review gold at 1.3:1. `#279B4C` clears
+  it (3.39 / 3.57). Today's orange fails too (2.11 / 2.22), so this is not a regression introduced.
+  Reverses a documented decision: waiting was moved to orange to read "as attention rather than
+  inert grey" and to separate it from review, which were "20/255 apart in a single channel".
+- **open** — The bar above a deliverable: `ReviewSurface.caption` (ReviewView.swift:113) — check +
+  session label in brand cyan + summary + expand. Tyler: "i don't get what its for an it adds
+  clutter / jank". Earlier, same thing: "just liek and image or preview of the work with little or
+  no text". **Mac only** — iOS's `ReviewCard` is already just check + summary.
+  NOT the web origin bar beneath it (globe + origin + "Open in browser"): that is a deliberate
+  trust boundary, because a deliverable is an agent-authored URL rendered full-bleed in conch's own
+  chrome and a third-party sign-in page would otherwise be indistinguishable from conch's UI.
+  `test/review-mark.test.ts` pins that checkmark in three places.
 - **open** — Sent messages do not appear in the Mac transcript. Wants the phone's shape: the
   message lands instantly on send, then confirms with a checkmark.
 - **open** — Left sidebar cannot be collapsed or reopened, and the split cannot be dragged, so the
