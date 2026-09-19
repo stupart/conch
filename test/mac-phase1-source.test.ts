@@ -34,6 +34,49 @@ describe("the Mac conversation stays readable while it grows", () => {
     expect(mac("Palette.swift")).toContain("static let fill = ConchColor.fill.dynamic");
   });
 
+  test("a row is redrawn only when what it shows has changed", () => {
+    // The stack's body runs on every snapshot from ANY session — four a second while
+    // anything is working — and used to rebuild every row each time: every markdown
+    // re-parsed (44 parses a second at 30 rows, 236 once history was paged in) and the
+    // whole stack re-diffed, with a frame hitch that grew with the row count — 8 ms at 30
+    // rows, 58–67 ms at ~300 — landing four times a second under the scroll (Instruments,
+    // 2026-09-20). EquatableView leaves a row's subtree alone while its key is unchanged.
+    expect(conversation).toContain("private struct MemoRow<Key: Equatable, Content: View>: View, Equatable");
+    // And the recorded rows are computed once per body. Read as a property inside the
+    // loop, `recordedRows` was rebuilt for every row it was handed to — n × n items per
+    // snapshot, 67% of the main thread at rest with 520 rows paged in — so the local
+    // shadows it before the loop and everything below reads the local.
+    const stackBody = conversation.slice(
+      conversation.indexOf("VStack(alignment: .leading, spacing: 22) {"),
+      conversation.indexOf("ForEach(recordedRows) { item in"),
+    );
+    expect(stackBody).toContain("let recordedRows = self.recordedRows");
+    expect(stackBody.indexOf("let recordedRows = self.recordedRows")).toBeLessThan(stackBody.indexOf("folds(in: recordedRows)"));
+    expect(conversation).toContain("MemoRow(key: rowKey(for: item)) { row(for: item) }.equatable()");
+    // The deliverable card too: it reads its file, or decodes its image, in its body.
+    expect(conversation).toContain("MemoRow(key: artifact) { ArtifactPreview(artifact: artifact, onOpen: onOpenArtifact) }.equatable()");
+    // Every row goes through it: that is the only call of `row(for:)` in the file.
+    expect(conversation).toContain("private func row(for item: ConversationItem) -> some View {");
+    expect(conversation.match(/\brow\(for: /g) ?? []).toHaveLength(1);
+    // The key is everything the row reads besides its callbacks; a value the row reads that
+    // is missing here is a row that goes stale, so each one is pinned.
+    const key = conversation.slice(
+      conversation.indexOf("private func rowKey(for item: ConversationItem) -> RowKey {"),
+      conversation.indexOf("private func isExpanded("),
+    );
+    expect(key.length).toBeGreaterThan(200);
+    for (const read of [
+      "item: item",
+      "expanded: expanded",
+      "fullText: history.fullText(forSnapshotItem: item.id)",
+      "bodyStatus: expanded && wasCut(item) ? bodyStatus(for: item) : nil",
+      "selections: multiSelections[item.id]",
+      "hovered: item.question == nil ? nil : hoveredOption",
+      "noTerminal: noTerminal",
+      "canOpenInTerminal: onOpenInTerminal != nil",
+    ]) expect(key).toContain(read);
+  });
+
   test("only a real user scroll changes whether growth is followed", () => {
     // Measuring after content growth races with the follow decision: the new
     // height makes a previously-bottomed reader look scrolled up. AppKit's live
@@ -53,6 +96,14 @@ describe("the Mac conversation stays readable while it grows", () => {
     expect(conversation).toContain("await Task.yield()");
     expect(conversation).toContain("transaction.disablesAnimations = true");
     expect(conversation).not.toContain("withAnimation");
+    // The anchor IS the bottom margin. As a 1 pt line inside the stack's 14 pt bottom
+    // padding, "scroll it to the bottom" left the clip 14 pt short of the document's end
+    // on every revision (2576 for a bottom of 2590, measured 2026-09-20), nudged a clip
+    // AppKit had clamped to the real end 14 pt UP, and — 14 being past the 8 pt the follow
+    // test allows — let the next trackpad touch read as "scrolled away" and stop the follow.
+    expect(conversation).toMatch(/Color\.clear\s+\.frame\(height: 14\)\s+\.id\(Self\.bottomAnchor\)/);
+    expect(conversation).toContain(".padding(.top, 14)");
+    expect(conversation).not.toContain(".padding(.vertical, 14)");
   });
 
   test("timestamp heartbeats update liveness without republishing the dashboard", () => {
