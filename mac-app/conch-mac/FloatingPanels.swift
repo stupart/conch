@@ -304,9 +304,21 @@ final class FloatingPanels: ObservableObject {
         if !panel.setFrameUsingName(name), let screen = NSScreen.screens.first?.visibleFrame {
             panel.setFrameOrigin(start(screen, size))
         }
+        // `setFrameUsingName` restores the ORIGIN of a borderless, non-resizable panel and drops the size — so a fog
+        // resized by hand came back at this default on every single launch, and the size someone chose was never the
+        // size they got. The saved string is "x y w h ...", so take the size out of it directly.
+        if panel !== controlBar, let saved = Self.savedSize(forFrameName: name) { panel.setContentSize(saved) }
         // The control bar's size is its content's, whatever size was saved.
         if panel === controlBar { panel.setContentSize(size) }
         panel.setFrameAutosaveName(name)
+    }
+
+    /// The size inside an autosaved frame string, `"x y w h screenX screenY screenW screenH"`.
+    private static func savedSize(forFrameName name: String) -> NSSize? {
+        guard let saved = UserDefaults.standard.string(forKey: "NSWindow Frame \(name)") else { return nil }
+        let numbers = saved.split(separator: " ").compactMap { Double($0) }
+        guard numbers.count >= 4, numbers[2] > 1, numbers[3] > 1 else { return nil }
+        return NSSize(width: numbers[2], height: numbers[3])
     }
 
     private func showWhatIsOn() {

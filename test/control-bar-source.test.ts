@@ -280,6 +280,13 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   // Liquid Glass draws the panel; the effect view stays a sibling but hidden, so the collapse guard below still holds.
   expect(panels).toContain("static var usesGlass: Bool { if #available(macOS 26.0, *) { true } else { false } }");
   expect(panels).toContain("fog.hasShadow = Self.usesGlass");
+  // A fog resized by hand must come back the size it was. `setFrameUsingName` restores only the ORIGIN of a
+  // borderless, non-resizable panel and drops the size, so the default won on every launch and the size someone
+  // chose was never the size they got — measured twice while building the capture system: asked 480x360, got
+  // 900x640; asked 600x500, got 900x640.
+  expect(panels).toContain("private static func savedSize(forFrameName name: String) -> NSSize?");
+  expect(panels).toContain("if panel !== controlBar, let saved = Self.savedSize(forFrameName: name) { panel.setContentSize(saved) }");
+  expect(panels).toContain('UserDefaults.standard.string(forKey: "NSWindow Frame \\(name)")');
   // Full screen has no glass panel — it is a rounded rect in a corner and full screen is the whole screen, so
   // `FogLookHost` leaves it out. The behind-window blur therefore has to come BACK, or nothing softens the work under
   // the words and the only thing painting is ConversationFog's wash over an unblurred desktop (Tyler: "on the
