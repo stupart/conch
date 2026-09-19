@@ -565,15 +565,20 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     /// would multiply what crosses the relay for something nobody reads here.
     struct FileChange: Decodable, Equatable, Sendable {
         var file = ""
+        /// Where that file is, as the tool was given it — absolute in practice, and empty from
+        /// a daemon too old to send it. The basename alone cannot be located, so anything that
+        /// wants to OPEN the file rather than name it reads this.
+        var path = ""
         var removed: [String] = []
         var added: [String] = []
         var truncated = false
 
-        private enum CodingKeys: String, CodingKey { case file, removed, added, truncated }
+        private enum CodingKeys: String, CodingKey { case file, path, removed, added, truncated }
 
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             file = (try? c.decodeIfPresent(String.self, forKey: .file)) ?? ""
+            path = (try? c.decodeIfPresent(String.self, forKey: .path)) ?? ""
             removed = (try? c.decodeIfPresent([String].self, forKey: .removed)) ?? []
             added = (try? c.decodeIfPresent([String].self, forKey: .added)) ?? []
             truncated = (try? c.decodeIfPresent(Bool.self, forKey: .truncated)) ?? false

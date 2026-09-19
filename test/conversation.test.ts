@@ -660,6 +660,9 @@ describe("a file change shows what changed", () => {
       new_string: "const a = 1;\nconst b = 99;\nconst c = 3;",
     })!;
     expect(change.file).toBe("card.tsx");
+    // The basename cannot be located: every `card.tsx` in the checkout is this one. The path
+    // the tool was given rides along so a reader — or a file tree — can say WHICH file moved.
+    expect(change.path).toBe("/Users/t/app/src/card.tsx");
     // The unchanged anchor lines on both sides are noise that hides the one
     // line that actually moved.
     expect(change.removed).toEqual(["const b = 2;"]);
@@ -671,6 +674,16 @@ describe("a file change shows what changed", () => {
     const change = fileChange({ file_path: "/tmp/new.ts", content: "one\ntwo" })!;
     expect(change.removed).toEqual([]);
     expect(change.added).toEqual(["one", "two"]);
+    expect(change.path).toBe("/tmp/new.ts");
+  });
+
+  // Taken as given rather than resolved here: the daemon does not know the agent's working
+  // directory at this point, and inventing an absolute path from the wrong root would be the
+  // same lie as guessing by basename. The app resolves it against the session's own cwd.
+  test("a relative path is carried through unchanged", () => {
+    const change = fileChange({ file_path: "src/card.tsx", content: "one" })!;
+    expect(change.path).toBe("src/card.tsx");
+    expect(change.file).toBe("card.tsx");
   });
 
   // A big refactor must not push a thousand lines over a metered relay.
