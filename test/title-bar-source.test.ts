@@ -78,6 +78,13 @@ describe("E1: the header lives in the title-bar strip", () => {
     expect(header).toContain('Text("conch")');
     expect(header).toContain("HeaderControls(");
     ordered(header, 'Text("conch")', "if let daemonMessage {", "HeaderControls(");
+    // The sidebar could only be put away by a shortcut or a menu — nothing on screen said
+    // so. The button leads the strip, inside the traffic lights, and posts the same
+    // notification the menu item does so ⌘B and the click are one path.
+    expect(header).toContain('symbol: "sidebar.leading"');
+    expect(header).toContain('help: "Toggle sidebar (⌘B)"');
+    expect(header).toContain("action: { NotificationCenter.default.post(name: .toggleSidebar, object: nil) }");
+    ordered(header, 'symbol: "sidebar.leading"', 'Text("conch")', "HeaderControls(");
   });
 
   test("the session bar and the Cut B banners are untouched and below the strip", () => {

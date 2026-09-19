@@ -267,6 +267,21 @@ private struct DashboardHeader: View {
     var body: some View {
         HStack(spacing: 12) {
             HStack(spacing: 5) {
+                // ⌘B put the sidebar away and a menu item said so, but nothing on
+                // SCREEN did — Tyler: "i see the sidebar drag but how do i full close
+                // / collapse it?" A shortcut you have to be told about is not an
+                // affordance. The glyph is, and it sits where every Mac app puts it:
+                // the leading edge of the strip, just inside the traffic lights.
+                //
+                // It posts the same notification the menu item does rather than
+                // touching the flag, so the button and ⌘B are one code path and the
+                // collapse animates identically whichever you use.
+                HeaderButton(
+                    symbol: "sidebar.leading",
+                    help: "Toggle sidebar (⌘B)",
+                    action: { NotificationCenter.default.post(name: .toggleSidebar, object: nil) }
+                )
+
                 Text("conch")
                     .font(ConchTypography.font(size: 12, weight: .medium))
                     .tracking(-0.2)
