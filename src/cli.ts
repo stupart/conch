@@ -662,8 +662,15 @@ switch (command) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     }
-    // The persisted default; the request's own toggle, when given, wins.
-    await startTerminalSession({ bypassPermissions: cfg.bypassPermissions, ...request });
+    try {
+      // The persisted default; the request's own toggle, when given, wins.
+      await startTerminalSession({ bypassPermissions: cfg.bypassPermissions, ...request });
+    } catch (error) {
+      // A refused flag pair, a missing binary, a folder that is not there: one
+      // line, the way the parse errors above print, rather than a stack trace.
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
     console.log(`[conch] opened ${adapterFor(request.backend).displayName} in Terminal, in ${request.cwd ?? "~"}`);
     break;
   }

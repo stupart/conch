@@ -67,6 +67,14 @@ export interface StartOption {
   readonly help: string;
   /** Meaningful only with a resume; refused on a fresh start. */
   readonly resumeOnly?: boolean;
+  /**
+   * Option names this CLI refuses alongside this one, from its own
+   * `conflicts_with`. Codex exits 2 before it starts on
+   * `--dangerously-bypass-approvals-and-sandbox --ask-for-approval never`,
+   * and what conch's launch shows for that is a raw usage dump in a Terminal
+   * nobody is watching, so the pair is refused here instead.
+   */
+  readonly conflictsWith?: readonly string[];
 }
 
 /** The `options` key both agents spell their bypass toggle under; its flag is the row's `bypassPermissionsFlag`. */
@@ -246,9 +254,10 @@ export const codexAdapter: AgentAdapter = {
   resumeArgs: (id) => ` resume ${id}`,
   teleportArgs: null,
   bypassPermissionsFlag: "--dangerously-bypass-approvals-and-sandbox",
-  // `codex --help` and `codex resume --help`, codex-cli 0.153.4: the same
+  // `codex --help` and `codex resume --help`, codex-cli 0.154.0: the same
   // options on both, so they parse after `resume <id>` too (verified: an
-  // invalid `--sandbox` there is rejected by name).
+  // invalid `--sandbox` there is rejected by name). Re-read on this Mac when
+  // the bypass/sandbox conflict below was found; the option set is unchanged.
   startOptions: [
     { name: "model", flag: "--model", kind: "string", help: "Model the agent should use" },
     {
@@ -269,6 +278,11 @@ export const codexAdapter: AgentAdapter = {
       name: BYPASS_OPTION,
       flag: "--dangerously-bypass-approvals-and-sandbox",
       kind: "bool",
+      // `codex --dangerously-bypass-approvals-and-sandbox --sandbox danger-full-access
+      // --ask-for-approval never` exits 2 with "the argument ... cannot be used
+      // with ...", verified on codex-cli 0.154.0. The bypass already implies
+      // both, so it is the one coherent form.
+      conflictsWith: ["sandbox", "ask-for-approval"],
       help: "Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY DANGEROUS. Intended solely for running in environments that are externally sandboxed",
     },
     {

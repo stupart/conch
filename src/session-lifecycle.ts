@@ -95,7 +95,7 @@ const START_VALUE = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]{0,127}$/;
  * (CLI, help session) all ask here.
  */
 export function startOptionsError(
-  request: Pick<StartSessionRequest, "backend" | "resumeSessionId"> & { options?: unknown },
+  request: Pick<StartSessionRequest, "backend" | "resumeSessionId" | "bypassPermissions"> & { options?: unknown },
 ): string | undefined {
   const { options } = request;
   if (options === undefined) return;
@@ -117,6 +117,41 @@ export function startOptionsError(
       return `${entry.flag} must be letters, digits, dots, underscores, colons, brackets or hyphens, starting with a letter or number — ${entry.help}`;
     }
     if (entry.resumeOnly && !request.resumeSessionId?.trim()) return `${entry.flag} applies only to a resume — ${entry.help}`;
+  }
+  return conflictingOptionsError(adapter, options as Record<string, unknown>, request.bypassPermissions);
+}
+
+/**
+ * The pairs the agent's own CLI refuses (`conflictsWith`).
+ *
+ * Codex exits 2 on `--dangerously-bypass-approvals-and-sandbox` together with
+ * `--sandbox` or `--ask-for-approval`, and a launch that dies that way leaves a
+ * usage dump in a Terminal window and a session that never registers — the same
+ * shape as a hang. Refusing here says which two, and what to do about it,
+ * before anything is launched.
+ *
+ * The bypass flag can also come from the persisted `bypass-permissions`
+ * setting rather than this request's options, which is how the conflict reached
+ * a real command line: the sheet sent a sandbox choice and the daemon added the
+ * flag underneath it.
+ */
+function conflictingOptionsError(
+  adapter: AgentAdapter,
+  options: Record<string, unknown>,
+  bypassDefault: boolean | undefined,
+): string | undefined {
+  for (const entry of adapter.startOptions) {
+    if (!entry.conflictsWith) continue;
+    const chosen = options[entry.name];
+    const on = chosen === true
+      || (entry.name === BYPASS_OPTION && chosen === undefined && bypassDefault === true);
+    if (!on) continue;
+    for (const name of entry.conflictsWith) {
+      const other = adapter.startOptions.find((option) => option.name === name);
+      if (!other || options[name] === undefined || options[name] === false) continue;
+      return `${entry.flag} cannot be used with ${other.flag}: ${adapter.executable} refuses both at once,`
+        + ` and ${entry.flag} already covers it. Leave ${other.name} unset, or turn ${entry.name} off.`;
+    }
   }
 }
 
