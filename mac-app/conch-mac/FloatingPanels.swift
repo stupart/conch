@@ -104,6 +104,12 @@ final class FloatingPanels: ObservableObject {
     /// The overlay's look: the system blur under the lab's wash, voice colour and scrim (`FogLook`), gathered to the
     /// screen edges it touches.
     static let showsFog = true
+    /// Liquid Glass draws the panel itself, so the behind-window effect view is not needed. It stays a sibling either
+    /// way — hidden here, drawing the blur below macOS 26 — because a material that parents the words masks them.
+    static var usesGlass: Bool { if #available(macOS 26.0, *) { true } else { false } }
+    /// How far the glass floats inside the window, panel.html's `left:24px;bottom:24px`. The words and the buttons come
+    /// in by the same amount, so everything the panel holds sits on it rather than beside it.
+    static let glassInset: CGFloat = ConchSpace.x6
     /// The look, tunable live with `defaults write ai.blueprintstudio.conch <key> <value>`: the running app picks a
     /// change up within half a second, no rebuild.
     enum Look {
@@ -155,7 +161,7 @@ final class FloatingPanels: ObservableObject {
     /// Off its corner, dragged or in flight: it fades on every side until it lands.
     @Published private(set) var floating = false
     /// The look over the blur: where its blob is, how dark it is, and its tunables (`Look`).
-    @Published private(set) var look = FogLook(FogMotion(size: CGSize(width: 760, height: 560), corner: .bottomLeading, in: .zero))
+    @Published private(set) var look = FogLook(FogMotion(size: CGSize(width: 900, height: 640), corner: .bottomLeading, in: .zero))
     /// How much of the blur shows (`Look.blurKey`).
     private var blurStrength = 1.0
     /// The look's own crossfades, light to dark and the resize band's glow, stepped with the motion: where each is, where
@@ -169,7 +175,7 @@ final class FloatingPanels: ObservableObject {
     /// pill is clicked again or another session is picked (`picked`).
     @Published var staged: SessionRow.ID?
     /// Where the fog is, at what size, and how it is moving; kept through collapsing and full screen.
-    private var motion = FogMotion(size: CGSize(width: 760, height: 560), corner: .bottomLeading, in: .zero)
+    private var motion = FogMotion(size: CGSize(width: 900, height: 640), corner: .bottomLeading, in: .zero)
     /// Where the fog's buttons and reply line are (`FogControls`): a press there is theirs.
     var controlFrames: [CGRect] = []
     /// The fog's words as they move (`FogTextState`): stepped with the motion, fed the store and the reader's scrolling.
@@ -222,10 +228,12 @@ final class FloatingPanels: ObservableObject {
         // window's transparent pixels, which with the fog's look off is nearly all of it: a drag or a resize strip
         // would land on the app behind, and so would a click in the collapsed corner.
         fog.ignoresMouseEvents = false
+        // AppKit takes a window's shadow from what it draws, and the glass draws a rounded rect: no margin required.
+        fog.hasShadow = Self.usesGlass
         UserDefaults.standard.register(defaults: Look.defaults)
         blur.blendingMode = .behindWindow
         blur.state = .active
-        blur.isHidden = !Self.showsFog
+        blur.isHidden = !Self.showsFog || (Self.usesGlass && !isFullScreen)
         // The blur, its look and the words are siblings: a visual effect view's mask shapes everything inside it, which
         // faded the words with the fog and hid the collapsed handle along with the blur.
         container.panels = self
@@ -245,7 +253,7 @@ final class FloatingPanels: ObservableObject {
             view.autoresizingMask = [.width, .height]
             container.addSubview(view)
         }
-        place(fog, name: Self.conversationFrameName, size: NSSize(width: 760, height: 560)) { screen, _ in
+        place(fog, name: Self.conversationFrameName, size: NSSize(width: 900, height: 640)) { screen, _ in
             // The bottom-left corner.
             screen.origin
         }
@@ -296,9 +304,21 @@ final class FloatingPanels: ObservableObject {
         if !panel.setFrameUsingName(name), let screen = NSScreen.screens.first?.visibleFrame {
             panel.setFrameOrigin(start(screen, size))
         }
+        // `setFrameUsingName` restores the ORIGIN of a borderless, non-resizable panel and drops the size — so a fog
+        // resized by hand came back at this default on every single launch, and the size someone chose was never the
+        // size they got. The saved string is "x y w h ...", so take the size out of it directly.
+        if panel !== controlBar, let saved = Self.savedSize(forFrameName: name) { panel.setContentSize(saved) }
         // The control bar's size is its content's, whatever size was saved.
         if panel === controlBar { panel.setContentSize(size) }
         panel.setFrameAutosaveName(name)
+    }
+
+    /// The size inside an autosaved frame string, `"x y w h screenX screenY screenW screenH"`.
+    private static func savedSize(forFrameName name: String) -> NSSize? {
+        guard let saved = UserDefaults.standard.string(forKey: "NSWindow Frame \(name)") else { return nil }
+        let numbers = saved.split(separator: " ").compactMap { Double($0) }
+        guard numbers.count >= 4, numbers[2] > 1, numbers[3] > 1 else { return nil }
+        return NSSize(width: numbers[2], height: numbers[3])
     }
 
     private func showWhatIsOn() {
@@ -394,7 +414,7 @@ final class FloatingPanels: ObservableObject {
             blur.isHidden = true
         } else {
             fog.setFrameAutosaveName(Self.conversationFrameName)
-            blur.isHidden = !Self.showsFog
+            blur.isHidden = !Self.showsFog || (Self.usesGlass && !isFullScreen)
         }
     }
 
@@ -415,6 +435,12 @@ final class FloatingPanels: ObservableObject {
             fog.setFrameAutosaveName("")
             fog.setFrame(screen.frame, display: true, animate: animate)
             isFullScreen = true
+            // The glass panel is a rounded rect in a corner; full screen is the whole screen, so `FogLookHost` leaves
+            // it out and the behind-window blur comes back to soften the work under the words. Without it the only
+            // thing painting was ConversationFog's wash — a gradient over an UNBLURRED desktop, which is why the text
+            // stopped being readable (Tyler: "on the converation overlay fullscreen mode the background fo teh panel
+            // dissapears"). panel.html blurs the work AND washes it; this had kept only the wash.
+            blur.isHidden = !Self.showsFog
             updateInsets(screen.frame, on: screen)
             blur.maskImage = nil
         }
@@ -444,10 +470,11 @@ final class FloatingPanels: ObservableObject {
         (next.resizeHover, next.darkness, next.tint, next.colour, next.scrim) = (resizeHover, darkness, look.tint, look.colour, look.scrim)
         next.replyHeight = text.replyHeight
         setLook(next)
-        let margin = next.margin, frame = motion.frame
-        let window = NSRect(x: frame.minX - margin.leading, y: frame.minY - margin.bottom, width: frame.width + margin.leading + margin.trailing, height: frame.height + margin.top + margin.bottom)
-        if fog.frame != window { fog.setFrame(window, display: true) }
-        layOut(margin: margin)
+        // The glass ends at its own rounded edge and the window's shadow is drawn from that shape, so the window is
+        // exactly the fog: no margin to reach into, and nothing for the saved frame to grow by on the next launch.
+        let frame = motion.frame
+        if fog.frame != frame { fog.setFrame(frame, display: true) }
+        layOut(margin: EdgeInsets())
     }
 
     /// The words where the fog is in its window, and the blur and its look over the whole window. The container's origin
@@ -662,7 +689,11 @@ private struct FogLookHost: View {
 
     var body: some View {
         if FloatingPanels.showsFog, !panels.isCollapsed, !panels.isFullScreen {
-            FogLookView(look: panels.look, voice: ConchStatusItem.voiceState(store.state))
+            // panel.html floats the panel off the corner (`left:24px;bottom:24px`) rather than hanging it flush, which
+            // is what lets all four corners round and the shadow read on every side. The window stays the docked frame,
+            // so the magnet, the docking contract and every motion test are untouched.
+            ConchGlassPanel(darkness: panels.look.darkness, voice: ConchStatusItem.voiceState(store.state))
+                .padding(FloatingPanels.glassInset)
         }
     }
 }
@@ -694,7 +725,7 @@ private struct ConversationFogHost: View {
                     isWorking: row?.status == .working,
                     isFullScreen: panels.isFullScreen,
                     corner: panels.corner,
-                    insets: panels.insets,
+                    insets: panels.insets.less(FloatingPanels.glassInset),
                     showsFog: FloatingPanels.showsFog,
                     look: panels.look,
                     floating: panels.floating,
@@ -704,6 +735,11 @@ private struct ConversationFogHost: View {
                     onCollapse: { panels.toggleCollapsed() },
                     onFullScreen: { panels.toggleFullScreen() }
                 )
+                // The glass is inset inside the window, so the words and the buttons come in with it — the buttons are
+                // placed from the edge they are given, and left at the window's they sat out on the desktop beside the
+                // panel. Inside the Group, so `FogControls` frames and the presses they are matched against
+                // (`grabs`, in the container's space) move together; outside it they would not.
+                .padding(FloatingPanels.glassInset)
                 // A throw's flight: it softens and shrinks a little mid-air, and lands whole. Reduce Motion keeps only the fade.
                 .scaleEffect(1 - (1 - ConchMotion.flightScale) * (reduceMotion ? 0 : panels.throwMotion))
                 .blur(radius: reduceMotion ? 0 : ConchMotion.flightBlur * panels.throwMotion)

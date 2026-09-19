@@ -261,7 +261,7 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(motion).toContain("FogDock.rubberBand(x, lo.x, hi.x)");
   expect(motion).toContain("size = FogDock.resized(gesture.size, corner: corner, by: delta, in: screen)\n            origin = docked");
   expect(components).toContain("let band = max(120, min(size.width, size.height) / 5)");
-  expect(components).toContain("CGSize(width: min(1280, screen.width), height: min(900, screen.height))");
+  expect(components).toContain("CGSize(width: screen.width, height: screen.height)");
   expect(components).toContain("CGSize(width: min(480, most.width), height: min(360, most.height))");
   expect(components).toContain("(1 - 1 / (x * 0.55 / 200 + 1)) * 200");
   // It reaches the screen's edges, and the words are padded clear of the Dock and the menu bar, with no margin for strips.
@@ -276,7 +276,92 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   // The overlay's look is on (Tyler: "i don't see any overlay"), and the testing outline is gone.
   expect(panels).toContain("static let showsFog = true");
   expect(panels).not.toContain("strokeBorder(Color.black");
-  expect(panels).toContain("FogLookView(look: panels.look, voice: ConchStatusItem.voiceState(store.state))");
+  expect(panels).toContain("ConchGlassPanel(darkness: panels.look.darkness, voice: ConchStatusItem.voiceState(store.state))");
+  // Liquid Glass draws the panel; the effect view stays a sibling but hidden, so the collapse guard below still holds.
+  expect(panels).toContain("static var usesGlass: Bool { if #available(macOS 26.0, *) { true } else { false } }");
+  expect(panels).toContain("fog.hasShadow = Self.usesGlass");
+
+  // The sidebar is draggable and remembers where it was left. Tyler: "wnat ot be able ot collapse
+  // and open the left side bar / drag to change side of main area and therefore make it smaller if
+  // I want." Collapse already existed on Cmd-B; the width was a hardcoded 264.
+  const dash = read("mac-app/conch-mac/DashboardView.swift");
+  expect(dash).toContain('@AppStorage("conch.sidebarWidth") private var storedSidebarWidth = 264.0');
+  expect(dash).toContain("private var sidebarResizer: some View {");
+  // Placed in the layout, not merely declared: asserting the bare name matched its own
+  // declaration, so deleting it from the HStack left this green. Anchor it to the layout.
+  expect(dash).toContain("                    sidebarResizer\n                    }");
+  expect(dash).toContain("NSCursor.resizeLeftRight.push()");
+  // Bounded: a name needs room, and a sidebar that can eat the stage can hide the work.
+  expect(dash).toContain("private static let sidebarBounds: ClosedRange<CGFloat> = 180...520");
+  // Banked on release, not on every frame of the drag.
+  expect(dash).toContain("storedSidebarWidth = sidebarWidth");
+  // The width is no longer a constant.
+  expect(dash).not.toContain("private var sidebarWidth: CGFloat { 264 }");
+
+  // Come-look is one colour family. Waiting means a finished turn is sitting on you, which is the
+  // same thing review means, so it joins review's green and the CHECK alone tells them apart —
+  // Tyler: "maybe do same green circle just with no check?". The glyph already did that work.
+  const palette = read("mac-app/conch-mac/Palette.swift");
+  // #279B4C, not review's own #30B35A: a mark needs 3:1 and review's green measures 2.41-2.72 on
+  // the light grounds. This one clears it everywhere, 3.16 at worst, both schemes.
+  expect(palette).toContain("red: 0.153,");
+  expect(palette).toContain("green: 0.608,");
+  expect(palette).toContain("blue: 0.298");
+  // The orange it replaces is gone for good.
+  expect(palette).not.toContain("red: 0.96,\n        green: 0.60,\n        blue: 0.13");
+  // Working is the quiet state: a session doing its job asks for nothing, so its dot recedes
+  // rather than competing with the ones that do.
+  expect(palette).toContain("static let statusWorking = textFaint");
+  // The glyphs stay as they were — the check is what separates review from waiting.
+  // LedgerVisual lives in DashboardView, not in the panels.
+  const dashboard = read("mac-app/conch-mac/DashboardView.swift");
+  expect(dashboard).toContain('return "circle.inset.filled"');
+  expect(dashboard).toContain('return "checkmark.circle.fill"');
+
+  // Only a deliverable nobody has opened belongs in the conversation; an old one pinned to the end
+  // of the stack made stale work look like fresh work waiting on you.
+  const stack = read("mac-app/conch-mac/ConversationStackView.swift");
+  expect(stack).toContain("if let artifact, artifact.viewedAt == nil || !reportsViewedState {");
+  // An older daemon never reports viewedAt, so it must keep today's behaviour rather than hiding
+  // every card.
+  expect(stack).toContain("var reportsViewedState = true");
+  expect(read("mac-app/conch-mac/DashboardView.swift"))
+    .toContain("reportsViewedState: state?.features?.viewedState != nil,");
+
+  // The bar above a deliverable is gone: a review check, the session name and the summary were
+  // three restatements of what the pane already is. The stage control survived it, because it is
+  // the only way to reach side-by-side and fill-the-stage with a mouse.
+  const review = read("mac-app/conch-mac/ReviewView.swift");
+  expect(review).toContain("private var stageControl: some View {");
+  expect(review).toContain(".overlay(alignment: .topTrailing) { stageControl }");
+  expect(review).not.toContain("private var caption: some View {");
+  expect(review).not.toContain('Text(item.summary.isEmpty ? "Ready for review" : item.summary)');
+  // NOT the origin bar, which looks similar and is a trust boundary rather than decoration.
+  expect(review).toContain('Button("Open in browser") { open(link) }');
+  // A fog resized by hand must come back the size it was. `setFrameUsingName` restores only the ORIGIN of a
+  // borderless, non-resizable panel and drops the size, so the default won on every launch and the size someone
+  // chose was never the size they got — measured twice while building the capture system: asked 480x360, got
+  // 900x640; asked 600x500, got 900x640.
+  expect(panels).toContain("private static func savedSize(forFrameName name: String) -> NSSize?");
+  expect(panels).toContain("if panel !== controlBar, let saved = Self.savedSize(forFrameName: name) { panel.setContentSize(saved) }");
+  expect(panels).toContain('UserDefaults.standard.string(forKey: "NSWindow Frame \\(name)")');
+  // Full screen has no glass panel — it is a rounded rect in a corner and full screen is the whole screen, so
+  // `FogLookHost` leaves it out. The behind-window blur therefore has to come BACK, or nothing softens the work under
+  // the words and the only thing painting is ConversationFog's wash over an unblurred desktop (Tyler: "on the
+  // converation overlay fullscreen mode the background fo teh panel dissapears"). This regressed silently when the
+  // glass first hid the blur unconditionally, because no test asserted anything paints behind the words there.
+  expect(panels).toContain("blur.isHidden = !Self.showsFog || (Self.usesGlass && !isFullScreen)");
+  expect(member(panels, "func toggleFullScreen() {")).toContain("blur.isHidden = !Self.showsFog");
+  // AppKit draws the focus ring on the SCROLL VIEW, not the text view inside it, so turning it off on the text view
+  // alone left the ring exactly where it was (Tyler: "thers still a strange outline around teh component").
+  expect(components).toContain("scroll.focusRingType = .none");
+  expect(components).toContain("view.focusRingType = .none");
+  // The window is exactly the fog: the glass ends at its own edge, so no margin and no saved-frame drift.
+  expect(member(panels, "private func apply() {")).toContain("layOut(margin: EdgeInsets())");
+  const glass = read("design/ConchDesign/Sources/ConchDesign/GlassPanel.swift");
+  expect(glass).toContain("content.glassEffect(.regular.tint(tint), in: shape)");
+  expect(glass).toContain("RoundedRectangle(cornerRadius: ConchRadius.panel, style: .continuous)");
+  expect(glass).toContain("content.background(ConchColor.glass.rgba(darkness: darkness).color, in: shape)");
   // The transcript fades out toward its far end, the fade shrinking with its box, rather than ending in a cut.
   expect(components).toContain(".frame(height: min(72, height * 0.4))");
 });
@@ -315,9 +400,9 @@ test("M3: the control bar fits what it shows, the reply scrolls past five lines,
     "let cap = min(max(Int(((height - gap - transcriptKept - 2 * pad) / line).rounded(.down)), 1), 5)",
   );
   expect(components).toContain("let scroll = NSScrollView()");
-  // The lab's column: up to 540 wide, 52 in from its side; a taller fog is more room for words.
+  // The lab's column: 620 wide at the usual sizes and wider as the panel grows, 52 in from its side; a taller fog is more room for words.
   expect(member(components, "public static func textFrame(in size: CGSize, corner: FogCorner, insets: EdgeInsets, fullScreen: Bool, magnet: EdgeInsets? = nil) -> CGRect {")).toContain(
-    "let width = min(540, max(0, size.width - leading - trailing))",
+    "let measure = min(1040, max(620, room * 0.6))",
   );
 });
 
@@ -377,8 +462,10 @@ test("M3: the look is a magnet: gathered to the edges it touches, a blob off the
   const apply = member(panels, "private func apply() {");
   expect(apply).toContain("var next = FogLook(motion, insets: insets)");
   expect(apply).toContain("setLook(next)");
-  expect(apply).toContain("if fog.frame != window { fog.setFrame(window, display: true) }");
-  expect(apply).toContain("layOut(margin: margin)");
+  expect(apply).toContain("if fog.frame != frame { fog.setFrame(frame, display: true) }");
+  // The blob and its density are still FogLook's, but the window no longer reaches past the fog for them: the glass
+  // ends at its own rounded edge, so the margin is always zero and the saved frame cannot grow on the next launch.
+  expect(apply).toContain("layOut(margin: EdgeInsets())");
   expect(apply).toContain("if motion.isMoving != floating { floating = motion.isMoving }");
   expect(member(panels, "private func layOut(margin: EdgeInsets) {")).toContain("container.setBoundsOrigin(origin)");
   expect(member(panels, "private func setLook(_ next: FogLook) {")).toContain("blur.maskImage = blurMask()");
@@ -405,7 +492,8 @@ test("M3: the look glows in the voice's colour, crossfades light and dark, thick
   // The scrim, in the blur's mask and in the wash; and the words fade where the blur does.
   expect(look).toContain("(scrimArea, [(0, scrim), (0.5, scrim), (1, 0)])");
   expect(look).toContain("FogLook.area(shift(look.scrimArea), [(0, 0.92 * scrim), (0.45, 0.78 * scrim), (1, 0)], wash)");
-  expect(components).toContain("FogLook.area(look.wordsFade.offsetBy(dx: -frame.minX, dy: -frame.minY), FogLook.wordsDensity, .black)");
+  expect(components).toContain("stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.26)],");
+  expect(components).toContain("startPoint: top ? .bottom : .top,");
   // Over the resize band it glows; the buttons are faint until the pointer is over the fog, and gone mid-air.
   expect(member(panels, "func pointerMoved(to point: CGPoint) {")).toContain("hoverResizeBand(resizes)");
   expect(panels).toContain("if !inside { self?.hoverResizeBand(false) }");

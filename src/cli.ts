@@ -612,37 +612,102 @@ switch (command) {
     await runService(cfg, rest[0] === "off" ? "off" : "install");
     break;
   case "shot": {
-    // Ask the Mac app to photograph ITSELF, and wait for the file.
+    // Photograph conch. Two modes, and which one you want depends on the question:
     //
-    // Exists because verifying UI work by running `screencapture` over the
-    // display caught an unrelated window full of Tyler's private work. The
-    // app's own window is the only thing conch has any business capturing.
-    const target = rest[0] ?? `/tmp/conch-shot-${Date.now()}.png`;
-    if (!target.startsWith("/tmp/") || !target.endsWith(".png")) {
-      console.error("usage: conch shot [/tmp/<name>.png]");
+    //   conch shot <path>                     the app draws one of its own windows
+    //   conch shot <path> --window overlay    ... a named one, floating panels included
+    //   conch shot <path> --screen            the whole display, as an eye would see it
+    //
+    // `--screen` is the honest mode for anything TRANSLUCENT. The conversation
+    // overlay is mostly blur, and blur only exists where the window server
+    // composites it over what is behind; an offscreen draw of that same window
+    // comes back part-transparent (measured: mean alpha 217 of 255), so its
+    // colours are premultiplied over black rather than over the desktop. It also
+    // carries the context that makes a bad crop obvious — which window is on top,
+    // whether a field has focus, whether the thing being measured is even conch.
+    // Most of one session's wrong measurements came from cropping blind instead.
+    //
+    // `--window` is for when the window is occluded or offscreen, where a screen
+    // grab cannot reach it, or when the question did not need a picture of the
+    // rest of Tyler's desk pulled into an agent's context.
+    //
+    // Both write <path>.json beside the picture: every conch window's LIVE frame,
+    // which window is which, where each one lands inside a full-screen shot
+    // (pixels, y from the top), which window holds the keyboard, and which
+    // appearance the overlay is painting. Read a crop out of that, never out of a
+    // rect remembered from earlier in a run — three measurements in one session
+    // were invalidated by aiming at where a window used to be.
+    const targets = ["key", "overlay", "controlbar", "dashboard", "geometry"];
+    const usage = `usage: conch shot [/tmp/<name>.png] [--window ${targets.join("|")}] [--screen]`;
+    const at = rest.indexOf("--window");
+    const wanted = at === -1 ? "" : rest[at + 1] ?? "";
+    const screen = rest.includes("--screen");
+    const positional = rest.filter((arg, index) => !arg.startsWith("--") && !(at !== -1 && index === at + 1));
+    const target = positional[0] ?? `/tmp/conch-shot-${Date.now()}.png`;
+    if (at !== -1 && !targets.includes(wanted)) {
+      console.error(`${usage}\n  --window takes one of: ${targets.join(", ")}`);
       process.exitCode = 1;
       break;
     }
-    const { unlinkSync: removeFile, existsSync: fileExists } = await import("node:fs");
-    try { removeFile(target); } catch {}
-    await Bun.write("/tmp/conch-shot.request", target);
+    // The APP's allowlist is /tmp and .png and stays exactly that: its request file
+    // is world-writable, so it must never become "write a PNG anywhere". `--screen`
+    // is this process, running as the person who asked, writing where they said —
+    // a different trust boundary, not a loosened one.
+    if (!target.endsWith(".png") || (!screen && !target.startsWith("/tmp/"))) {
+      console.error(usage);
+      process.exitCode = 1;
+      break;
+    }
+    const { unlinkSync: removeFile, existsSync: fileExists, copyFileSync: copyFile } = await import("node:fs");
+    // A sidecar left behind by an earlier run is worse than none at all: it reads
+    // as live geometry and is not.
+    for (const stale of [target, `${target}.json`, `${target}.error`]) {
+      try { removeFile(stale); } catch {}
+    }
+    // One line is what every caller wrote before named windows existed, and still
+    // means what it meant then: the key window, panels excluded.
+    const selector = screen ? "geometry" : wanted;
+    // The APP writes the sidecar, and the app may only write into /tmp. A screen shot
+    // may be saved wherever the caller asked, so the geometry is fetched under /tmp and
+    // copied next to the picture afterwards. Without this the sidecar silently never
+    // appeared for any output folder outside /tmp — which is every folder a shoot
+    // script would use.
+    const ask = screen ? `/tmp/conch-shot-geometry-${Date.now()}.png` : target;
+    await Bun.write("/tmp/conch-shot.request", selector ? `${ask}\n${selector}` : ask);
+    if (screen) {
+      // -D 1 is the main display: one file, always, rather than one per screen. The
+      // sidecar's isOnMainDisplay says when the window you care about is elsewhere.
+      await Bun.spawn(["screencapture", "-x", "-D", "1", target]).exited;
+    }
+    // Geometry alone means no picture from the app — wait for the sidecar instead.
+    const expected = selector === "geometry" ? `${ask}.json` : ask;
     // The app services the request on its state poll, which runs every 250ms.
     const deadline = Date.now() + 5_000;
     while (Date.now() < deadline) {
-      if (fileExists(target)) break;
+      if (fileExists(expected)) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    if (!fileExists(target)) {
+    if (!fileExists(expected)) {
       try { removeFile("/tmp/conch-shot.request"); } catch {}
       // The app reports which step failed rather than leaving the caller to
       // guess after a five-second wait.
-      const reason = fileExists(target + ".error")
-        ? await Bun.file(target + ".error").text()
+      const reason = fileExists(`${ask}.error`)
+        ? await Bun.file(`${ask}.error`).text()
         : "is the conch Mac app running?";
+      // The screen shot itself is real even when the app never answered; only the
+      // geometry is missing, and saying so beats throwing the picture away.
+      if (screen && fileExists(target)) {
+        console.error(`warning: no geometry sidecar — ${reason.trim()}`);
+        console.log(target);
+        break;
+      }
       console.error(`no snapshot — ${reason.trim()}`);
       process.exitCode = 1;
       break;
     }
+    // Fetched under /tmp because that is all the app may write; it belongs beside the
+    // picture, which is where anyone reading a shot looks for it.
+    if (screen) copyFile(`${ask}.json`, `${target}.json`);
     console.log(target);
     break;
   }
@@ -662,8 +727,15 @@ switch (command) {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
     }
-    // The persisted default; the request's own toggle, when given, wins.
-    await startTerminalSession({ bypassPermissions: cfg.bypassPermissions, ...request });
+    try {
+      // The persisted default; the request's own toggle, when given, wins.
+      await startTerminalSession({ bypassPermissions: cfg.bypassPermissions, ...request });
+    } catch (error) {
+      // A refused flag pair, a missing binary, a folder that is not there: one
+      // line, the way the parse errors above print, rather than a stack trace.
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
     console.log(`[conch] opened ${adapterFor(request.backend).displayName} in Terminal, in ${request.cwd ?? "~"}`);
     break;
   }

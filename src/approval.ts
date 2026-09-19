@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import { classifyApproval } from "./commands.ts";
 import { visitLinesNewestFirst } from "./agent-activity.ts";
-import { windowBranch } from "./snippet.ts";
+import { isCodexTranscriptPath, windowBranch } from "./snippet.ts";
 import type { WindowIdentity } from "./conversation.ts";
 
 /**
@@ -31,6 +31,12 @@ export interface PendingApproval {
   name: string;
   /** One spoken line: the command, the path, the query — whatever names the action. */
   summary: string;
+  /**
+   * False when conch must not press keys at it. `APPROVAL_KEYS` are the rows of
+   * Claude Code's dialog; Codex's approval UI is not that dialog, so its ask is
+   * announced and shown as needing you, and answered by hand.
+   */
+  answerable?: false;
 }
 
 /** Tools whose prompt is a question, not a permission — the four-way answer does not apply. */
@@ -73,6 +79,82 @@ export function pendingApprovalFromLines(linesNewestFirst: Iterable<string>): Pe
 }
 
 /**
+ * Codex asks for permission inside the call itself.
+ *
+ * Codex has no permission notification and no hook conch can wire for one —
+ * `conch install --codex` wires Stop, UserPromptSubmit and SessionStart, and
+ * that is all Codex offers — so its rollout is the only place an open prompt is
+ * visible. It writes the tool call when it asks and the matching `*_output`
+ * only once you answer, exactly as Claude writes `tool_use` before a dialog and
+ * `tool_result` after it.
+ *
+ * An unanswered call is NOT enough on its own: every command still running
+ * looks exactly like that, and calling those "needs you" would mark every
+ * working session blocked — the same bug in the other direction. The ask is the
+ * escalation itself: Codex puts `sandbox_permissions:"require_escalated"` in
+ * the call input, beside a `justification` written for a person, when and only
+ * when it needs you to allow the command.
+ *
+ * Captured from Tyler's own rollout at 2026-09-19T11:51:31Z — a thread that sat
+ * on an unanswered `bun install` escalation for hours while conch reported it
+ * as working, which is the bug this exists to close.
+ *
+ * ponytail: `require_escalated` is the only spelling any rollout on this
+ * machine uses. Upstream Codex's shell tool spells it
+ * `with_escalated_permissions`; add that alternative here if one ever shows up.
+ */
+const CODEX_ESCALATION = /require_escalated/;
+
+export function pendingCodexApprovalFromLines(
+  linesNewestFirst: Iterable<string>,
+): PendingApproval | null {
+  const answered = new Set<string>();
+  for (const line of linesNewestFirst) {
+    let entry: any;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue; // partial final line mid-write
+    }
+    const payload = entry?.payload;
+    const type = payload?.type;
+    if (type === "custom_tool_call_output" || type === "function_call_output") {
+      if (typeof payload.call_id === "string") answered.add(payload.call_id);
+      continue;
+    }
+    if (type !== "custom_tool_call" && type !== "function_call") continue;
+    const callId = typeof payload.call_id === "string" ? payload.call_id : "";
+    if (!callId || answered.has(callId)) continue;
+    const input = typeof payload.input === "string"
+      ? payload.input
+      : typeof payload.arguments === "string" ? payload.arguments : "";
+    // Newest first, so this unanswered call is the last word on the thread:
+    // either it is the escalation you are being asked to allow, or it is
+    // ordinary work in flight and nothing is waiting on you.
+    if (!CODEX_ESCALATION.test(input)) return null;
+    const name = String(payload.name ?? "exec");
+    const command = codexCallField(input, "cmd") ?? codexCallField(input, "command");
+    const justification = codexCallField(input, "justification");
+    return {
+      id: callId,
+      name,
+      summary: summarizeToolUse(name, {
+        ...(command ? { command } : {}),
+        ...(justification ? { description: justification } : {}),
+      }),
+      answerable: false,
+    };
+  }
+  return null;
+}
+
+/** One `key:"value"` from a Codex call's input, whether written as JSON or as source. */
+function codexCallField(input: string, key: string): string | undefined {
+  const match = input.match(new RegExp(`"?\\b${key}"?\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`));
+  return match ? match[1]!.replace(/\\(.)/g, "$1") : undefined;
+}
+
+/**
  * Read the tail of a Claude Code transcript for the prompt currently waiting.
  * Never throws.
  *
@@ -95,6 +177,9 @@ export function pendingApproval(transcriptPath: string, window?: WindowIdentity)
   } catch {
     return null;
   }
+  // A Codex rollout is a different file in a different shape, and two windows
+  // never share one: its own reader decides, without a branch to attribute.
+  if (isCodexTranscriptPath(transcriptPath)) return pendingCodexApprovalFromLines(lines);
   if (!window) return pendingApprovalFromLines(lines);
   const branch = windowBranch([...lines].reverse(), window);
   return branch.shared ? null : pendingApprovalFromLines([...branch.lines].reverse());
@@ -123,8 +208,13 @@ export function summarizeToolUse(name: string, input: unknown): string {
 }
 
 /** The spoken ask: who, which tool, and what it wants to do. */
-export function approvalAnnounce(label: string, ask: Pick<PendingApproval, "name" | "summary">): string {
-  return `${label} needs permission for ${ask.name}: ${ask.summary}. Yes, always, or no?`;
+export function approvalAnnounce(
+  label: string,
+  ask: Pick<PendingApproval, "name" | "summary" | "answerable">,
+): string {
+  const head = `${label} needs permission for ${ask.name}: ${ask.summary}.`;
+  // Only Claude Code's dialog takes the four-way answer conch can press.
+  return ask.answerable === false ? `${head} Answer it in the session.` : `${head} Yes, always, or no?`;
 }
 
 /** The dashboard row's reason, so "needs an answer" says what for. */

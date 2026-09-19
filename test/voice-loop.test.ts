@@ -861,6 +861,27 @@ function replaceApproval(path: string, next: "resolved" | "new-request"): void {
 }
 
 describe("permission request lifetime", () => {
+  test("a prompt still announces when bypass-permissions is on", async () => {
+    // Tyler's own settings.json had `"bypass-permissions": true`, and every
+    // permission prompt on the machine went silent: "not getting notified that
+    // there were permissiosn questions it just said it was working".
+    //
+    // The setting only decides how conch STARTS sessions — it adds the agent's
+    // bypass flag to the command line — so it cannot bind a session conch did
+    // not start, one already running when it was switched on, or a Codex thread
+    // under `approval_policy = "on-request"`. A prompt that fired at all is
+    // proof the bypass did not apply to that session, so it must be announced.
+    const path = pendingBash();
+    const h = harness({ cfg: { bypassPermissions: true }, heard: [[]] });
+    const turn = h.voice.handle(accepted(h, permission(path)));
+    try {
+      await waitFor("the permission announcement", () => h.said.includes(approvalAnnounce("alpha", ask)));
+    } finally {
+      h.voice.stop("test cleanup");
+      await turn;
+    }
+  });
+
   test("keyboard resolution closes an idle permission mic without another voice event", async () => {
     const path = pendingBash();
     const h = harness({ heard: [[]] });
@@ -978,7 +999,7 @@ describe("permission request lifetime", () => {
 
 /** B5: the four-way decision, by voice. */
 describe("permission by voice", () => {
-  test("only a permission prompt, with bypass off, for a tool still waiting, gets a voice — and the row says what", async () => {
+  test("only a permission prompt, for a tool still waiting, gets a voice — and the row says what", async () => {
     const h = harness({ heard: [["yes"]] });
     const event = accepted(h, permission(pendingBash()));
     await h.voice.handle(event);
@@ -988,16 +1009,16 @@ describe("permission by voice", () => {
     expect(h.said[0]).toBe(approvalAnnounce("alpha", ask));
     expect(h.keys).toEqual(["Enter"]);
 
-    const bypassed = harness({ cfg: { bypassPermissions: true } });
-    await bypassed.voice.handle(accepted(bypassed, permission(pendingBash())));
-    expect(bypassed.ledger.sessionStates.get("s1")?.detail).toBe("needs an answer");
+    // bypass-permissions is deliberately NOT one of the quiet cases: it decides
+    // how conch starts sessions, not whether a prompt that already fired is
+    // real. Its own test is above.
     const idle = harness();
     await idle.voice.handle(accepted(idle, permission(pendingBash(), { ntype: "idle_prompt" })));
     const answered = harness();
     await answered.voice.handle(accepted(answered, permission(transcript(
       assistant(bash), user({ type: "tool_result", tool_use_id: "tu_1", content: "ok" }),
     ))));
-    for (const quiet of [bypassed, idle, answered]) {
+    for (const quiet of [idle, answered]) {
       expect(quiet.said).toEqual([]);
       expect(quiet.sessions).toEqual([]);
     }
@@ -1299,6 +1320,31 @@ describe("dictation failure recovery", () => {
       text: "make the change. but keep the comments", id: before + 1, sessionId: "s1",
     });
     expect(audio.controller.state).toBe("idle");
+    expect(h.violations).toEqual([]);
+  });
+
+  test("one utterance drained twice is recovered once, not repeated in the draft", async () => {
+    // Tyler's report: a sentence arrived in the composer six times, space-joined,
+    // "until i closed the convo bar". The published dictation itself held the
+    // repeats, so nothing on the app side could have deduplicated them — the
+    // recovery joined a drain backlog in which the same words appeared again and
+    // again. Here the buffered segment and the words the drain hands back are the
+    // SAME utterance, which is exactly the shape that corrupted the draft.
+    const audio = failingDictation("transcribe");
+    const h = harness({ dictationSession: () => audio.session, cfg: { interruptOnManualReply: false } });
+    const before = getLiveState().dictated?.id ?? 0;
+    const turn = h.voice.handle(wake());
+    await waitFor("first synthetic recorder", () => audio.recorders.length === 1);
+    // The same words the exit drain will hand back when it stops the live recorder.
+    audio.recorders[0]!.finish("but keep the comments");
+    await waitFor("first result to drain", () => audio.recorders.length === 2 && audio.controller.finalWorkerIdle);
+    audio.recorders[1]!.finish("failed fragment");
+    await turn;
+    expect(h.texts).toEqual([]);
+    // Published ONCE, and the sentence appears once inside it.
+    expect(getLiveState().dictated).toEqual({
+      text: "but keep the comments", id: before + 1, sessionId: "s1",
+    });
     expect(h.violations).toEqual([]);
   });
 

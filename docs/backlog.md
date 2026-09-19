@@ -1,0 +1,162 @@
+# conch backlog
+
+Tyler says it; it lands here the same turn. Nothing moves to **done** without evidence
+beside it — a commit, a measurement, or a picture. "Should be fixed" is not evidence.
+
+Status: **open** · **doing** · **done** (with proof) · **won't** (with the reason)
+
+---
+
+## Direction — the deconstructed UI
+
+Tyler, 2026-09-19. Longer-term shape rather than discrete bugs; recorded whole because the
+pieces only make sense together.
+
+**The conversation panel IS the input box, taken with you.** "bring your favorite parts of the ui
+with you". One input box visible at a time. Drag it off the conch window and toss it, and it
+becomes the overlay; the app keeps the rest. The overlay is not a second UI, it is the same input
+box relocated.
+
+**The overlay has to say which conversation it is.** And a way to cycle. Best case it INFERS the
+session from what you are looking at — "would be so great if it knew just based on what you were
+looking at what convo it was". A small local model could do that.
+
+**Annotate the screen as a prompt.** A mode where you record, click, draw, leave comments and
+annotate, and all of it goes as the prompt along with anything you say. A button on the
+conversation panel, or over the deliverable pane.
+
+**Full screen means the deliverable's own home, not conch's.** Today's full-screen button fills
+the conch window. Instead it should open the thing where it actually lives — the same idea as the
+existing "Open in browser", but for the deliverable — and bring the conversation panel with it.
+Chat and panel stay the in-app toggles; full screen becomes the deconstructed mode. Panel mode
+still covers "fill the app".
+
+**Agents get real control of their panes.** Live web pages inside a deliverable pane, watching an
+agent drive one, and the user able to reach in and interact — the way the Codex app does it.
+
+---
+
+## Open
+
+### UI / UX
+- **open** — Old deliverables render as live in-conversation cards. Tyler: "this one is showing
+  green circle with a check tho becuase of a really old deliverable that shows at the bottom of teh
+  chat. maybe old deliverables show in teh deliverable area as tabs but not as like in-convo ui
+  elements? only new ones show as in-convo ui elements?" `ConversationStackView` takes one
+  `artifact: ReviewInfo?` and pins it at the end of the stack — the comment even says "for
+  one-artifact-per-session IS where it happened", and that assumption is what breaks. `ReviewInfo`
+  already carries `at`, `id` and `viewedAt`, so gating the inline card needs no new plumbing.
+- **open** — Status colour semantics are backwards. Tyler: "does orange dot mean its waiting for
+  me? We should make that green or blue or something and have working be like yellow or orange or
+  some sort of working icon or no icon or color at all since its working".
+  DECIDED: waiting becomes green like review, keeping its existing `circle.inset.filled` glyph so
+  the check alone distinguishes review — Tyler: "maybe do same green circle just with no check?".
+  The glyph is already right; only the colour moves. `needs` stays red as the blocking state.
+  MEASURED: review's own `#30B35A` FAILS the 3:1 a mark needs on light (2.58 on bg, 2.72 on
+  surface) — the same trap the palette note records for the review gold at 1.3:1. `#279B4C` clears
+  it (3.39 / 3.57). Today's orange fails too (2.11 / 2.22), so this is not a regression introduced.
+  Reverses a documented decision: waiting was moved to orange to read "as attention rather than
+  inert grey" and to separate it from review, which were "20/255 apart in a single channel".
+- **open** — The bar above a deliverable: `ReviewSurface.caption` (ReviewView.swift:113) — check +
+  session label in brand cyan + summary + expand. Tyler: "i don't get what its for an it adds
+  clutter / jank". Earlier, same thing: "just liek and image or preview of the work with little or
+  no text". **Mac only** — iOS's `ReviewCard` is already just check + summary.
+  NOT the web origin bar beneath it (globe + origin + "Open in browser"): that is a deliberate
+  trust boundary, because a deliverable is an agent-authored URL rendered full-bleed in conch's own
+  chrome and a third-party sign-in page would otherwise be indistinguishable from conch's UI.
+  `test/review-mark.test.ts` pins that checkmark in three places.
+- **open** — Sent messages do not appear in the Mac transcript. Wants the phone's shape: the
+  message lands instantly on send, then confirms with a checkmark.
+- **open** — A real workspace pane: file tree, diffs and a terminal borrowing CotEditor's shape,
+  plus a browser. Tyler: "where are we on being able to have a terminal and see the full file tree
+  and diffs borrowing from this app: https://coteditor.com as well as a browser in the side panel".
+  STATUS, looked up rather than guessed — one of four exists:
+  BROWSER, exists: `DeliverableWebView` (WKWebView, `WebView.swift`) already renders HTML
+  deliverables full-bleed. What is missing is arbitrary browsing and a page an agent drives while
+  you reach into it — the Direction note above, not a new engine.
+  DIFFS, partial: `DiffLine` (`ConversationStackView.swift:1280`) draws an edit's changed lines
+  inline in the transcript. `Models.swift:563` says outright "Not a unified diff" — that was a
+  deliberate choice for scanning a stack, so a real diff VIEW is additive, not a fix.
+  FILE TREE, nothing: no `NSOutlineView`, no tree of any kind anywhere in mac-app.
+  TERMINAL, nothing embedded: conch drives Terminal.app through `runInTerminal`/osascript, so
+  there is no pane and nothing to host one.
+  The inputs for the first three already exist — the daemon publishes file changes with paths
+  (`fileChange`, `src/conversation.ts:653`) and every session carries its `cwd`
+  (`Models.swift:864`). A terminal does not: it needs a PTY the daemon owns, which conch has never
+  had, and that is the piece that makes this a project rather than a pane.
+- **open** — Copy a session's name from the sidebar (right-click, beside the rename that is there).
+- **open** — Overlay image paste. `ConversationFog.draft` is a plain `String` with no attachment
+  concept anywhere in Components.swift, so this is a feature, not a patch.
+- **open** — Glass reads dark over a light desktop: `.glassEffect` takes its base from the system
+  appearance, so in Dark mode it stays a dark card on a light ground.
+- **open** — Mobile input box grows without clipping lines.
+- **open** — App icons need real artwork (~1024² PNG, no alpha) at `assets/conch-icon-1024.png`.
+- **open** — A working/spinner glyph, and `needs`/`review` as filled badges.
+- **open** — Search.
+- **open** — No red spelling underline in the composer. Pre-existing; probed and NOT caused by the
+  TextKit 1 fallback the caret fix introduced.
+
+### Engineering
+- **open** — Why five overlapping captures of one sentence reach the exit drain at all. Both
+  dictation fixes treat convergence points, not the source. Start at
+  `src/dictation-controller.ts`, the capture→re-arm→transcribe path; the diagnostic is logging
+  capture PCM byte ranges beside their transcripts.
+- **open** — Post-launch session failures are structurally invisible: `runInTerminal` `exec`s, so
+  conch never sees the agent's exit code and a crashed launch reads to the sheet as a hang.
+- **open** — Top-corner docking lands 33 pt short of the true top edge; AppKit constrains a
+  restored frame below the menu bar while `FogDock` computes against `screen.frame`.
+- **open** — `scripts/build-app.sh` only relaunches an app it found running, so killing conch for a
+  test and then installing leaves it down. Left conch not running twice in one session.
+- **open** — `conch.conversationFullScreen` default so the capture manifest can drive full screen.
+  Deliberately not added yet: the existing comment records a decision that a launch never restores
+  a full-screen frame, and that should not be reversed silently.
+- **open** — Token-level streaming. Out of reach for hand-started sessions: the transcripts carry
+  no delta records, so per-message is the on-disk granularity. Needs `-p
+  --include-partial-messages` (conch must launch it) or the Codex app-server daemon.
+
+---
+
+## Done
+
+- **done** — The sidebar collapses AND the split drags. ⌘B and a menu item existed but nothing on
+  screen said so — Tyler: "i see the sidebar drag but how do i full close / collapse it?" A
+  `sidebar.leading` button now leads the title strip, inside the traffic lights, posting the same
+  notification ⌘B does; it stays visible while collapsed. Width drags and is remembered, bounded
+  180…520. `ec165a6` + `e4c890a`
+- **done** — Overlay is an Apple Liquid Glass panel: rounded rect, hairline, grab bar, voice-tinted
+  mesh, pre-26 fallback. `1c153b6`
+- **done** — Panel floats 24 pt off the corner so all four corners round. `0a44d89`
+- **done** — Words and buttons come inside the glass with it. `3371088`
+- **done** — Panel resizes to the whole screen; the lab's 1280×900 cap stopped a 1117 pt screen
+  217 pt short. `98b4785`
+- **done** — Reply line's focus ring, for real: AppKit draws it on the enclosing `NSScrollView`,
+  not the text view. `caf451a`
+- **done** — Full screen keeps its background: the glass is excluded there by design and the blur
+  had been hidden whenever glass was in use, so it had neither. `caf451a`
+- **done** — Caret sits on the line. Not leading — the caret is drawn to the line fragment whose
+  top is the ASCENT (ascender 14.50 vs capHeight 10.57). 7 px above/1 below → 3/4, measured on the
+  shipped binary. `9469647`
+- **done** — The introspector finds the editor whatever the nesting: the fixed two-superview hop
+  missed 6 launches in 14, silently, taking the leading, the caret fix, spelling and drag types
+  with it. `9469647`
+- **done** — Pasted images attach: the paste bridge had the same fixed-depth bug twelve lines away.
+  `9469647`
+- **done** — A wider panel earns a wider column, not a wider margin: 620 → up to 1040 as it grows,
+  keeping magnet travel. `4ebbec8`
+- **done** — One markdown renderer for both transcripts: headings kept their hashes, tables were a
+  wall of pipes, links had no underline. `fbd413b`
+- **done** — The Arch Prime text that kept coming back. Four independent layers: Whisper doubled
+  the clause (`46d8507`), the exit drain joined five captures (`a370445`), `live.dictated` is
+  sticky by design (cleared by hand), and the applied id did not survive relaunch (`0fd6ea1`).
+- **done** — Codex refuses the flag pair conch was sending it; `conflictsWith` at the shared
+  chokepoint. `codex --help` exits 0 WITH the conflicting pair, so only a pinned argv catches it.
+  `7ab89e5`
+- **done** — Codex is not offered a model to override its own. `ffe54ab`, `194b045`
+- **done** — A session waiting on permission says so. Codex threads parked on an approval reported
+  "working" forever; separately `bypass-permissions: true` silenced every Claude announcement.
+  `aabe101`
+- **done** — conch sees a turn as it happens: Claude no trigger → p50 122 ms, Codex 5 s poll →
+  p50 127 ms. `d9874f5`
+- **done** — conch can photograph its own overlay and measure what it sees. `d3fb490`
+- **done** — The overlay comes back the size it was left. Proven: wrote 1180×720, got 1180×720.
+  `82484a1`

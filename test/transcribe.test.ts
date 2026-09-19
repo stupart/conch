@@ -306,3 +306,54 @@ describe("cold transcription recovery", () => {
   });
 });
 
+/**
+ * Finding: Whisper's own repetition loop (2026-09-19).
+ *
+ * Read back out of /tmp/conch-sessions.json, the published dictation held this
+ * clause SIX times — five array elements space-joined by the draft recovery,
+ * the first of which was a single transcript Whisper had already doubled with
+ * no separator at all ("...what we should fix" + "also theres..."). The
+ * recovery's dedupe collapses the identical siblings; this collapses the one
+ * element that arrived doubled inside a single transcript.
+ */
+describe("Whisper self-repetition", () => {
+  // The exact clause from the incident: 83 characters, 17 words, no punctuation.
+  const clause = "also theres a weird select outline that forms when i click on it what we should fix";
+  const heard = () => constantPcm(0);
+
+  test("a clause Whisper emitted twice with no separator is recovered once", () => {
+    // Precisely the shape found in the snapshot: the transcript IS the clause doubled.
+    expect(filterWhisperTranscript(clause + clause, heard())).toBe(clause);
+  });
+
+  test("the same loop separated by single spaces, and repeated more than twice", () => {
+    expect(filterWhisperTranscript([clause, clause].join(" "), heard())).toBe(clause);
+    // Four copies collapse to one, not to two.
+    expect(filterWhisperTranscript([clause, clause, clause, clause].join(" "), heard())).toBe(clause);
+  });
+
+  test("deliberate repetition survives — short phrases are never touched", () => {
+    // The units here are 2 and 4 characters: far under the floor, by design.
+    expect(filterWhisperTranscript("no no no", heard())).toBe("no no no");
+    expect(filterWhisperTranscript("very very", heard())).toBe("very very");
+    expect(filterWhisperTranscript("that's it that's it", heard())).toBe("that's it that's it");
+  });
+
+  test("a repeated clause survives when anything sits between the copies", () => {
+    // Not one span repeated end to end, so the rule does not apply at all.
+    const spaced = `${clause} and then ${clause}`;
+    expect(filterWhisperTranscript(spaced, heard())).toBe(spaced);
+  });
+
+  test("a repetition split by a sentence boundary survives", () => {
+    // A full stop is a pause: someone said it twice, the decoder did not loop.
+    const punctuated = "I will check that for you right now. I will check that for you right now.";
+    expect(filterWhisperTranscript(punctuated, heard())).toBe(punctuated);
+  });
+
+  test("an ordinary utterance that merely repeats a word is untouched", () => {
+    const real = "the select outline shows up when i click it and then it shows up again";
+    expect(filterWhisperTranscript(real, heard())).toBe(real);
+    expect(filterWhisperTranscript(clause, heard())).toBe(clause);
+  });
+});

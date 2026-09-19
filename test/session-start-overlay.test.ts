@@ -95,7 +95,8 @@ describe("SessionStartOverlay start options (C1)", () => {
     expect(row("bypass-permissions")?.value).toBe("on");
     expect(row("permission-mode")?.value).toBe("default");
     press(RIGHT);
-    expect(keys()).toEqual(["backend", "cwd", "model", "sandbox", "ask-for-approval", "bypass-permissions", "profile", "start"]);
+    // No "model" for codex: it takes its model from its own config, so the sheet does not offer one to override it.
+    expect(keys()).toEqual(["backend", "cwd", "sandbox", "ask-for-approval", "bypass-permissions", "profile", "start"]);
 
     overlay.close();
     persisted = false;

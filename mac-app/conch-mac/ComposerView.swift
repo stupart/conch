@@ -16,6 +16,14 @@ final class ComposerDraftStore: ObservableObject {
     }
 
     private static let defaultsKey = "conch.mac.composerDrafts.v1"
+    /// The last dictation applied, kept BESIDE the drafts rather than in memory.
+    ///
+    /// `live.dictated` is sticky on the daemon's side and deliberately never cleared — it has to outlive the state
+    /// transitions that follow it, because the app applies it whenever it next reads state. The guard that makes that
+    /// safe is the id. Holding the id only in memory meant every relaunch reset it to 0, so a dictation the user had
+    /// already received — and deleted — looked new again and was appended once more. Tyler, after a dozen rebuilds:
+    /// "this text keeps showing in the 'arch prime' session input box. i keep delting it and it keeps coming back."
+    private static let appliedDictationKey = "conch.mac.appliedDictationID.v1"
 
     /// One store for the dashboard's composer and the conversation fog (M3), so a session has one draft
     /// wherever it is typed, and a dictation lands in it once however many views are watching.
@@ -24,7 +32,7 @@ final class ComposerDraftStore: ObservableObject {
     @Published private var drafts: [String: Entry]
     /// The last dictation applied. State republishes several times a second, so without this the same
     /// spoken sentence would be appended over and over.
-    private var appliedDictationID = 0
+    private var appliedDictationID: Int
     private let defaults: UserDefaults
     private var previewSeed: String?
     /// The pending save. Saving every keystroke JSON-encoded every draft and wrote it to preferences; with a long
@@ -39,6 +47,7 @@ final class ComposerDraftStore: ObservableObject {
     ) {
         self.defaults = defaults
         previewSeed = environment["CONCH_COMPOSER_TEXT"]
+        appliedDictationID = defaults.integer(forKey: Self.appliedDictationKey)
         if let data = defaults.data(forKey: Self.defaultsKey),
            let saved = try? JSONDecoder().decode([String: Entry].self, from: data) {
             drafts = saved.filter { !$0.value.isEmpty }
@@ -100,6 +109,7 @@ final class ComposerDraftStore: ObservableObject {
     func apply(_ dictated: Dictation?) {
         guard let dictated, dictated.id != appliedDictationID else { return }
         appliedDictationID = dictated.id
+        defaults.set(dictated.id, forKey: Self.appliedDictationKey)
         appendDictation(dictated.text, to: dictated.sessionId)
     }
 
@@ -476,8 +486,13 @@ struct ComposerView: View {
                         send()
                         return .handled
                     }
-                    .padding(.top, Self.fieldInsetTop)
-                    .padding(.bottom, Self.fieldInsetBottom)
+                    // The editor slides DOWN by the same half-leading its glyphs are raised
+                    // by inside their line fragment, so the words land exactly where the
+                    // placeholder draws them and only the caret has moved. Top and bottom trade
+                    // the same 2 pt, so the field's height, and the gap to the controls under
+                    // it, are both unchanged. See `ComposerCaretBaseline`.
+                    .padding(.top, Self.fieldInsetTop + Self.caretRaise)
+                    .padding(.bottom, Self.fieldInsetBottom - Self.caretRaise)
                     .padding(.horizontal, Self.fieldInsetX)
                     .background(ComposerPasteBridge { urls in attach(urls) })
 
@@ -583,6 +598,11 @@ struct ComposerView: View {
     static let fieldInsetTop: CGFloat = 8
     static let fieldInsetBottom: CGFloat = 4
     static let fieldInsetX: CGFloat = 10
+
+    /// Half the leading: what the caret moves down, and what the glyphs move up to meet it.
+    /// The two halves cancel for the words and do not for the caret — `ComposerCaretBaseline`
+    /// has the measurements.
+    static let caretRaise: CGFloat = ConchType.readingLineSpacing / 2
 
     /// One line until the text genuinely needs two, then up to six.
     ///
@@ -785,6 +805,47 @@ private struct AttachmentPreview: View {
     }
 }
 
+/// The caret straddles the words instead of riding above them.
+///
+/// Tyler: the cursor "rides high". Measured off the running app at 2x, focused and empty: the
+/// caret's ink spans 108..143 while the placeholder's spans 115..142 — 7 px of caret above the
+/// words and 1 px below them. Nothing is wrong with the leading. AppKit draws the caret to the
+/// LINE FRAGMENT, whose top is the ASCENT, and the reading font clears the cap line by 3.9 pt
+/// up top while its descent only just clears the descender.
+///
+/// Everything closer to the caret was tried first, each with a compiled probe against a real
+/// NSTextView, because two earlier attempts at "the caret" reasoned from simplified probes and
+/// shipped the wrong fix:
+///
+///     drawInsertionPoint(in:color:turnedOn:)  never called — under TextKit 2 the caret is an
+///                                             NSTextInsertionIndicator SUBVIEW
+///     that subview's bounds / layer transform  AppKit rewrites both on the next keystroke
+///     .baselineOffset on the text              absorbed by the typesetter under BOTH TextKits:
+///                                              the line grows, the ink does not move
+///     this delegate, under TextKit 1           glyph ink 72..99 -> 68..95, caret 64..99 in both
+///                                              runs: 8 px above / 0 below becomes 4 and 4
+///
+/// So the glyphs rise half the leading INSIDE the fragment while the fragment — the caret — stays
+/// where it was, and `ComposerView.caretRaise` slides the whole editor back down by that same
+/// half. The words do not move by a pixel; only the caret does.
+private final class ComposerCaretBaseline: NSObject, NSLayoutManagerDelegate {
+    /// AppKit holds a layout manager's delegate weakly, and this one is stateless and the same
+    /// for every composer, so one instance is kept alive here rather than parked on each view.
+    static let shared = ComposerCaretBaseline()
+
+    func layoutManager(
+        _ layoutManager: NSLayoutManager,
+        shouldSetLineFragmentRect lineFragmentRect: UnsafeMutablePointer<NSRect>,
+        lineFragmentUsedRect: UnsafeMutablePointer<NSRect>,
+        baselineOffset: UnsafeMutablePointer<CGFloat>,
+        in textContainer: NSTextContainer,
+        forGlyphRange glyphRange: NSRange
+    ) -> Bool {
+        baselineOffset.pointee -= ConchType.readingLineSpacing / 2
+        return true
+    }
+}
+
 private extension View {
     /// Drop NSTextView's built-in padding so SwiftUI's padding is the only one
     /// in play. Without this the editor applies its inset on top of ours and
@@ -824,6 +885,12 @@ private extension View {
                     range: NSRange(location: 0, length: storage.length)
                 )
             }
+            // The caret straddles the words instead of riding above them —
+            // `ComposerCaretBaseline` says why this is the only seam that moves it. Reading
+            // `layoutManager` is what puts the view back on TextKit 1, which is the point: the
+            // TextKit 2 caret is a subview AppKit re-places on every keystroke, with no seam.
+            view.layoutManager?.delegate = ComposerCaretBaseline.shared
+
             // A dropped file must reach the composer's `.onDrop`, not this
             // editor. NSTextView registers for file drops and inserts the PATH
             // as text, and it is the deeper view under the pointer, so it won
@@ -871,6 +938,22 @@ private struct ComposerPasteBridge: NSViewRepresentable {
         weak var probe: NSView?
         var onPaste: ([URL]) -> Void
         init(onPaste: @escaping ([URL]) -> Void) { self.onPaste = onPaste }
+
+        /// Is `editor` inside the same composer as the probe? Walking a FIXED number of superviews from the probe
+        /// hard-codes how deeply SwiftUI happens to nest `.background(...)` today: one wrapper more or less and the
+        /// check fails closed, Cmd+V falls through to the text view's own text-only paste, and a pasted image
+        /// disappears with nothing on screen to say so (Tyler: "images I paste into the input box don't show previews
+        /// so idk if the paste worked or not"). Walking UP from the probe until an ancestor holds the editor does not
+        /// care about the depth, only that they belong to one composer.
+        func sharesAnAncestor(with editor: NSView) -> Bool {
+            var view = probe?.superview
+            while let next = view {
+                if editor.isDescendant(of: next) { return true }
+                if next === next.window?.contentView { return false }
+                view = next.superview
+            }
+            return false
+        }
         deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
     }
 
@@ -887,8 +970,7 @@ private struct ComposerPasteBridge: NSViewRepresentable {
                   event.window === window,
                   let editor = window.firstResponder as? NSTextView,
                   editor.isEditable,
-                  let container = coordinator.probe?.superview?.superview,
-                  editor.isDescendant(of: container) else {
+                  coordinator.sharesAnAncestor(with: editor) else {
                 return event
             }
             let urls = Self.imageAttachments(on: .general)
@@ -938,11 +1020,37 @@ private struct TextViewIntrospector: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSView {
         let probe = NSView(frame: .zero)
-        DispatchQueue.main.async {
-            guard let container = probe.superview?.superview else { return }
-            if let textView = Self.firstTextView(in: container) { configure(textView) }
-        }
+        Self.reach(from: probe, attempts: 10, configure: configure)
         return probe
+    }
+
+    /// Walk UP from the probe until an ancestor holds the editor, and look again on the next
+    /// runloop turn if the tree is not assembled yet.
+    ///
+    /// The fixed two-superview hop this replaces did both things wrong: it
+    /// hard-coded how deeply SwiftUI nests `.background(...)`, and it assumed the tree was built
+    /// by the first async turn. Measured against a real TextEditor in a harness, it came up empty
+    /// in 6 launches out of 14 — and when it misses, NOTHING here is applied: the editor keeps
+    /// SwiftUI's own 5 pt lineFragmentPadding, with no leading, no caret, no spell checking, and
+    /// a dropped file inserting its path as text. It fails silently, which is how a miss this
+    /// often stayed invisible.
+    private static func reach(
+        from probe: NSView,
+        attempts: Int,
+        configure: @escaping (NSTextView) -> Void
+    ) {
+        DispatchQueue.main.async {
+            var ancestor = probe.superview
+            while let next = ancestor {
+                if let textView = firstTextView(in: next) {
+                    configure(textView)
+                    return
+                }
+                if next === next.window?.contentView { break }
+                ancestor = next.superview
+            }
+            if attempts > 1 { reach(from: probe, attempts: attempts - 1, configure: configure) }
+        }
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {}

@@ -41,11 +41,11 @@ describe("the start-options table (C1)", () => {
   );
 
   test("lists what each CLI's --help offers, and nothing free-form", () => {
-    // `claude --help` 2.1.266 and `codex --help` 0.153.4, read on this Mac.
+    // `claude --help` 2.1.266 and `codex --help` 0.154.0, read on this Mac.
     expect(claudeAdapter.startOptions.map((entry) => entry.flag))
       .toEqual(["--model", "--permission-mode", "--dangerously-skip-permissions", "--effort", "--fork-session"]);
     expect(codexAdapter.startOptions.map((entry) => entry.flag))
-      .toEqual(["--model", "--sandbox", "--ask-for-approval", "--dangerously-bypass-approvals-and-sandbox", "--profile"]);
+      .toEqual(["--sandbox", "--ask-for-approval", "--dangerously-bypass-approvals-and-sandbox", "--profile"]);
     // Tool lists, extra directories and raw config overrides cannot be validated; they stay out.
     for (const adapter of agentAdapters()) {
       for (const entry of adapter.startOptions) expect(entry.flag).not.toMatch(/tools|add-dir|config|^-c$/);
@@ -128,15 +128,16 @@ describe("the rendered command", () => {
   });
 
   test("Codex: after `resume <id>`, where the subcommand takes the same options", () => {
-    // Verified against codex-cli 0.153.4: `codex resume x --sandbox bogus`
+    // Verified against codex-cli 0.154.0: `codex resume x --sandbox bogus`
     // is rejected by name, so the flag is parsed there, not read as a prompt.
+    // No bypass here: Codex refuses that flag alongside these two (below).
     expect(terminalSessionCommand({
       backend: "codex",
       cwd: "/w",
       resumeSessionId: "t1",
-      options: { profile: "work", "ask-for-approval": "never", sandbox: "workspace-write", model: "gpt-5", "bypass-permissions": true },
+      options: { profile: "work", "ask-for-approval": "never", sandbox: "workspace-write", "bypass-permissions": false },
     })).toBe(
-      "cd -- '/w' && exec codex --dangerously-bypass-approvals-and-sandbox resume 't1' --model 'gpt-5' --sandbox 'workspace-write' --ask-for-approval 'never' --profile 'work'",
+      "cd -- '/w' && exec codex resume 't1' --sandbox 'workspace-write' --ask-for-approval 'never' --profile 'work'",
     );
   });
 
@@ -153,6 +154,119 @@ describe("the rendered command", () => {
       .toBe("cd -- '/w' && exec codex");
   });
 
+  /**
+   * The launch Tyler pasted from his terminal, which never opened a session:
+   *
+   *   exec codex --dangerously-bypass-approvals-and-sandbox \
+   *     -c 'projects."/Users/tylerstupart/Projects".trust_level="trusted"' \
+   *     --sandbox 'danger-full-access' --ask-for-approval 'never'
+   *   error: the argument '--dangerously-bypass-approvals-and-sandbox' cannot
+   *   be used with '--ask-for-approval <APPROVAL_POLICY>'
+   *
+   * Reproduced against the installed binary (codex-cli 0.154.0): exit 2, before
+   * anything starts. Note that `--help` exits 0 with the same pair, so a dry run
+   * cannot catch this — only these pins can.
+   */
+  describe("the mutually exclusive pair Codex refuses", () => {
+    const projects = "/Users/tylerstupart/Projects";
+    const trusted = `-c 'projects."${projects}".trust_level="trusted"'`;
+
+    test("Tyler's intent — full access, trusted folder, no approvals — is one coherent form", () => {
+      // Both halves are the bypass flag's own job, so it is the whole command.
+      expect(terminalSessionCommand({ backend: "codex", cwd: projects, bypassPermissions: true, trustFolder: true }))
+        .toBe(`cd -- '${projects}' && exec codex --dangerously-bypass-approvals-and-sandbox ${trusted}`);
+      expect(terminalSessionCommand({
+        backend: "codex", cwd: projects, bypassPermissions: true, trustFolder: true, resumeSessionId: "0199-abc",
+      })).toBe(`cd -- '${projects}' && exec codex --dangerously-bypass-approvals-and-sandbox ${trusted} resume '0199-abc'`);
+    });
+
+    test("Claude's equivalent, fresh and resumed, pinned the same way", () => {
+      expect(terminalSessionCommand({ backend: "claude", cwd: "/w", bypassPermissions: true }))
+        .toBe("cd -- '/w' && exec claude --dangerously-skip-permissions");
+      expect(terminalSessionCommand({ backend: "claude", cwd: "/w", bypassPermissions: true, resumeSessionId: "abc" }))
+        .toBe("cd -- '/w' && exec claude --dangerously-skip-permissions --resume 'abc'");
+    });
+
+    test.each([
+      ["the sheet's own toggle", { "bypass-permissions": true, sandbox: "danger-full-access" }, undefined, "--sandbox"],
+      ["the sheet's own toggle", { "bypass-permissions": true, "ask-for-approval": "never" }, undefined, "--ask-for-approval"],
+      // How it actually happened: the flag came from the persisted setting,
+      // underneath options that carried no bypass key at all.
+      ["the persisted setting", { sandbox: "danger-full-access" }, true, "--sandbox"],
+      ["the persisted setting", { "ask-for-approval": "never" }, true, "--ask-for-approval"],
+    ] as const)("refuses it when the flag comes from %s (%j), fresh and resumed", (_, options, bypassPermissions, flag) => {
+      const message = `--dangerously-bypass-approvals-and-sandbox cannot be used with ${flag}: codex refuses both at once`;
+      for (const resume of [undefined, "t1"]) {
+        expect(() => terminalSessionCommand({
+          backend: "codex",
+          cwd: "/w",
+          ...(bypassPermissions === undefined ? {} : { bypassPermissions }),
+          ...(resume === undefined ? {} : { resumeSessionId: resume }),
+          options: { ...options },
+        })).toThrow(message);
+      }
+      // And at the socket, where the sheets and the phone send it.
+      if (bypassPermissions === undefined) {
+        expect(validateControlMessage({ kind: "session-start", backend: "codex", cwd: "/w", options: { ...options } }))
+          .toEqual({ ok: false, err: expect.stringContaining(message) as unknown as string });
+      }
+    });
+
+    test("no combination conch will emit ever carries both", () => {
+      for (const sandbox of [undefined, "read-only", "workspace-write", "danger-full-access"]) {
+        for (const approval of [undefined, "on-request", "never"]) {
+          for (const bypass of [undefined, true, false]) {
+            for (const persisted of [undefined, true, false]) {
+              const options = {
+                ...(sandbox === undefined ? {} : { sandbox }),
+                ...(approval === undefined ? {} : { "ask-for-approval": approval }),
+                ...(bypass === undefined ? {} : { "bypass-permissions": bypass }),
+              };
+              let command: string;
+              try {
+                command = terminalSessionCommand({
+                  backend: "codex",
+                  cwd: "/w",
+                  ...(persisted === undefined ? {} : { bypassPermissions: persisted }),
+                  options,
+                });
+              } catch {
+                continue; // refused before launch, which is the point
+              }
+              if (command.includes("--dangerously-bypass-approvals-and-sandbox")) {
+                expect(command).not.toContain("--sandbox");
+                expect(command).not.toContain("--ask-for-approval");
+              }
+            }
+          }
+        }
+      }
+    });
+
+    test("without the bypass flag the pair is Codex's own supported form, and still renders", () => {
+      expect(terminalSessionCommand({
+        backend: "codex", cwd: "/w", options: { sandbox: "danger-full-access", "ask-for-approval": "never" },
+      })).toBe("cd -- '/w' && exec codex --sandbox 'danger-full-access' --ask-for-approval 'never'");
+      // Claude has no such pair; its bypass renders beside everything else.
+      expect(terminalSessionCommand({
+        backend: "claude", cwd: "/w", options: { "bypass-permissions": true, "permission-mode": "plan" },
+      })).toBe("cd -- '/w' && exec claude --dangerously-skip-permissions --permission-mode 'plan'");
+    });
+
+    test("the conflict is declared on the table row, from the CLI's own refusal", () => {
+      const bypass = codexAdapter.startOptions.find((entry) => entry.name === BYPASS_OPTION);
+      expect(bypass?.conflictsWith).toEqual(["sandbox", "ask-for-approval"]);
+      // Every declared conflict must name a real option on the same row.
+      for (const adapter of agentAdapters()) {
+        for (const entry of adapter.startOptions) {
+          for (const name of entry.conflictsWith ?? []) {
+            expect(adapter.startOptions.some((option) => option.name === name)).toBe(true);
+          }
+        }
+      }
+    });
+  });
+
   test("a teleport keeps its argument first", () => {
     expect(terminalSessionCommand({ backend: "claude", cwd: "/w", teleportSessionId: "s1", options: { effort: "low" } }))
       .toBe("cd -- '/w' && exec claude --teleport 's1' --effort 'low'");
@@ -162,13 +276,15 @@ describe("the rendered command", () => {
 describe("conch start", () => {
   test("parses the agent, the fixed arguments and the table's options", () => {
     expect(startRequestFromArgv([
-      "codex", "--cwd", "/w", "--resume", "t1", "--sandbox", "read-only", "--no-bypass-permissions", "--model", "gpt-5",
+      "codex", "--cwd", "/w", "--resume", "t1", "--sandbox", "read-only", "--no-bypass-permissions",
     ])).toEqual({
       backend: "codex",
       cwd: "/w",
       resumeSessionId: "t1",
-      options: { sandbox: "read-only", "bypass-permissions": false, model: "gpt-5" },
+      options: { sandbox: "read-only", "bypass-permissions": false },
     });
+    // No `--model` for codex: it takes its model from its own config. Claude still has one, and the
+    // "--model needs a value" case below is claude's (no agent argument), so the flag stays covered.
     expect(startRequestFromArgv([])).toEqual({ backend: "claude" });
     expect(startRequestFromArgv(["--effort", "high", "--bypass-permissions"]))
       .toEqual({ backend: "claude", options: { effort: "high", "bypass-permissions": true } });
@@ -207,6 +323,12 @@ describe("conch start", () => {
     expect(block).toContain("startRequestFromArgv(rest)");
     expect(block).toContain("agentAdapters().map(startUsage)");
     expect(block).toContain("startTerminalSession({ bypassPermissions: cfg.bypassPermissions, ...request })");
+    // A refused flag pair or a missing binary prints one line, not a stack
+    // trace. Measured from the launch, because the argument parser above it
+    // has a catch of its own — the first one in the block is not this one.
+    const launch = block.indexOf("startTerminalSession({ bypassPermissions: cfg.bypassPermissions, ...request })");
+    expect(block.indexOf("} catch (error) {", launch)).toBeGreaterThan(launch);
+    expect(block.indexOf("console.error(error instanceof Error ? error.message : String(error));", launch)).toBeGreaterThan(launch);
     expect(cli).toContain("start [claude|codex] [options]");
   });
 

@@ -91,7 +91,7 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertEqual(FogDock.rubberBand(500, 0, 900), 500)
         XCTAssertLessThan(FogDock.rubberBand(1e9, 0, 900), 1100)
         XCTAssertEqual(FogDock.minSize(in: screen), least)
-        XCTAssertEqual(FogDock.maxSize(in: screen), CGSize(width: 1280, height: 900))
+        XCTAssertEqual(FogDock.maxSize(in: screen), CGSize(width: 1728, height: 1117))
         XCTAssertEqual(FogDock.maxSize(in: CGRect(x: 0, y: 0, width: 1024, height: 768)), CGSize(width: 1024, height: 768))
         // A band along every edge resizes, max(120, a fifth of the short side) deep; only the middle moves.
         XCTAssertTrue(FogDock.resizes(at: CGPoint(x: 380, y: 119), in: size))
@@ -114,8 +114,8 @@ final class ConchDesignTests: XCTestCase {
         XCTAssertEqual(ConversationFog.buttonsY(in: size, corner: .topTrailing, insets: ConversationFog.buttonInsets(EdgeInsets(top: 33, leading: 0, bottom: 70, trailing: 0)), fullScreen: false), 33 + ConversationFog.padding, accuracy: 0.01)
         XCTAssertEqual(ConversationFog.buttonsAlignment(corner: .bottomTrailing, fullScreen: false), .trailing)
         XCTAssertEqual(ConversationFog.buttonsAlignment(corner: .bottomLeading, fullScreen: false), .leading)
-        // A column up to 540 wide, the lab's, 52 pt in from its side.
-        XCTAssertEqual(text.width, 540, accuracy: 0.01)
+        // A column up to 620 wide, 52 pt in from its side.
+        XCTAssertEqual(text.width, 620, accuracy: 0.01)
         XCTAssertEqual(text.minX, 52, accuracy: 0.01)
     }
 

@@ -262,7 +262,38 @@ final class FogTextTests: XCTestCase {
     // MARK: Layout
 
     /// Hanging from a top corner the transcript runs top-down, newest nearest the top; otherwise and full screen, bottom-up.
-    /// Docked, the words keep 52 pt from their side in a column up to 540 wide; off the corner they centre.
+    /// Dragged much wider, the column grows with the panel instead of leaving a ribbon of text against one edge.
+    ///
+    /// Tyler, expanding it: "pretty silly when i expand the convo panel" — a nearly full-screen sheet of glass with
+    /// the words in a narrow strip down one side and the rest of it blurred nothing.
+    ///
+    /// The magnet has to survive it: `pull` slides the column between its docked side and the centre by
+    /// (room - width), so a column that FILLS its fog cannot move at all. Every size below keeps travel.
+    func testTheColumnGrowsWithAVeryWidePanelAndTheMagnetKeepsItsTravel() {
+        let insets = EdgeInsets()
+        func column(_ width: CGFloat) -> (width: CGFloat, travel: CGFloat) {
+            let size = CGSize(width: width, height: 640)
+            let frame = ConversationFog.textFrame(in: size, corner: .bottomTrailing, insets: insets, fullScreen: false)
+            let room = width - 2 * 52
+            return (frame.width, room - frame.width)
+        }
+        // The default panel is untouched: 796 pt of room, 60% of which is under the floor, so it stays at 620.
+        XCTAssertEqual(column(900).width, 620, accuracy: 0.01)
+        XCTAssertGreaterThan(column(900).travel, 100)
+        // Past about 1185 pt the column starts earning width rather than the margin earning it.
+        XCTAssertGreaterThan(column(1400).width, 620)
+        // And it stops at the measure full screen already uses, however wide the panel goes.
+        XCTAssertEqual(column(2400).width, 1040, accuracy: 0.01)
+        XCTAssertEqual(column(3000).width, 1040, accuracy: 0.01)
+        // The magnet never runs out of somewhere to go.
+        for width in [900, 1200, 1400, 1728, 2400, 3000] {
+            XCTAssertGreaterThan(column(CGFloat(width)).travel, 50, "no magnet travel at \(width)")
+        }
+        // A panel too narrow for the floor still just uses what it has.
+        XCTAssertEqual(column(500).width, 500 - 104, accuracy: 0.01)
+    }
+
+    /// Docked, the words keep 52 pt from their side in a column up to 620 wide; off the corner they centre.
     func testTopCornersRunTopDownAndFloatingWordsCentre() {
         XCTAssertTrue(ConversationFog.newestAtTop(corner: .topLeading, fullScreen: false))
         XCTAssertTrue(ConversationFog.newestAtTop(corner: .topTrailing, fullScreen: false))
@@ -273,7 +304,7 @@ final class FogTextTests: XCTestCase {
         let size = CGSize(width: 900, height: 640)
         let bl = ConversationFog.textFrame(in: size, corner: .bottomLeading, insets: Self.dock, fullScreen: false)
         XCTAssertEqual(bl.minX, 52)
-        XCTAssertEqual(bl.width, 540)
+        XCTAssertEqual(bl.width, 620)
         let tr = ConversationFog.textFrame(in: size, corner: .topTrailing, insets: Self.menuBar, fullScreen: false)
         XCTAssertEqual(tr.maxX, 900 - 52)
         XCTAssertEqual(ConversationFog.textFrame(in: CGSize(width: 480, height: 360), corner: .bottomLeading, insets: Self.dock, fullScreen: false).width, 376)

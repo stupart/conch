@@ -32,6 +32,9 @@ struct ConversationStackView: View {
     /// kind has existed in the conversation model all along and nothing ever
     /// emitted one, so this is the position that kind was reserving.
     var artifact: ReviewInfo?
+    /// Whether this daemon reports `viewedAt` at all. Without it every deliverable looks unviewed,
+    /// so the card must not be gated on a field that is always nil.
+    var reportsViewedState = true
     /// The session's working directory: what a relative link in the agent's
     /// prose is relative to (A13). Nil on an older daemon.
     var cwd: String? = nil
@@ -205,7 +208,15 @@ struct ConversationStackView: View {
                     // A zero-height anchor rather than scrolling to the last
                     // item: the last item GROWS while it streams, and scrolling
                     // to a growing view lands part-way up it.
-                    if let artifact {
+                    // Only a deliverable nobody has looked at yet belongs IN the conversation.
+                    // One that was filed days ago and already opened is history, and pinning it to
+                    // the end of the stack makes stale work look like fresh work waiting on you —
+                    // Tyler: "this one is showing green circle with a check tho becuase of a really
+                    // old deliverable that shows at the bottom of teh chat". `viewedAt` is the same
+                    // unviewed test the ledger already uses (`isUnviewed`), gated on the daemon
+                    // actually reporting it, so an older daemon keeps today's behaviour rather than
+                    // silently hiding every card.
+                    if let artifact, artifact.viewedAt == nil || !reportsViewedState {
                         ArtifactPreview(artifact: artifact, onOpen: onOpenArtifact)
                     }
 
@@ -1076,101 +1087,12 @@ private struct ConversationScrollObserver: NSViewRepresentable {
     }
 }
 
-/// Agent replies are markdown, and until now the stack showed the source.
-///
-/// `**Storage moved**` rendered with its asterisks and `` `path/to/file` ``
-/// with its backticks, which is most of what an agent's summary is made of —
-/// so the most important messages read the worst.
-///
-/// `.inlineOnlyPreservingWhitespace` is the parse that fits a chat stack. The
-/// default markdown parse COLLAPSES newlines, which would run every bulleted
-/// list into one paragraph; this one keeps the line breaks exactly as written
-/// and still resolves bold, italic, code spans and links. Block constructs stay
-/// literal, which is fine — a leading "- " already reads as a bullet.
+/// Agent replies are markdown. The renderer is ConchDesign's, shared with the overlay, so the two transcripts cannot
+/// disagree about what a reply looks like: an inline parse that keeps the line breaks (the block parse collapses them),
+/// headings promoted to bold, tables flattened to readable lines, and links underlined.
 extension AttributedString {
     static func conchMarkdown(_ source: String) -> AttributedString {
-        var parsed = (try? AttributedString(
-            markdown: promoteHeadings(flattenTables(source)),
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        )) ?? AttributedString(source)
-        underlineLinks(&parsed)
-        return parsed
-    }
-
-    /// Make a link LOOK like the link it already is.
-    ///
-    /// The links worked the whole time — Tyler tested one — but nothing said
-    /// so. They were blue against text that is also occasionally coloured, with
-    /// no underline and no hover state, so the only way to discover a link was
-    /// to click text on the off chance. "it's just a ui problem really, to show
-    /// me with an underline on hover that i can click on it."
-    ///
-    /// A permanent underline rather than a hover one, deliberately: SwiftUI's
-    /// `Text` draws an AttributedString as a single view and cannot hit-test
-    /// one run inside it, so there is no honest way to underline only the link
-    /// under the pointer. The web convention of always-underlined is the same
-    /// signal, available before the pointer arrives rather than after, and it
-    /// survives being read rather than hovered.
-    private static func underlineLinks(_ text: inout AttributedString) {
-        for run in text.runs where run.link != nil {
-            text[run.range].underlineStyle = .single
-        }
-    }
-
-    /// Inline-only parsing leaves `## Heading` showing its hashes, and agents
-    /// write in headings constantly. Rewriting them as bold keeps the emphasis
-    /// the author intended without switching to a block parse, which would
-    /// collapse every newline in the message.
-    /// Flatten a markdown table into lines a person can read.
-    ///
-    /// Inline parsing cannot lay out a table, so one arrives as a wall of pipes
-    /// and dashes — and the divider row (`|---|---|`) is pure noise once there
-    /// are no columns. Agents reach for tables constantly to summarise work, so
-    /// this is not a rare case: it is the shape a summary usually takes.
-    ///
-    /// Each row becomes "first cell — the rest", which is what a table of two
-    /// or three columns is actually saying, and is how you would read it aloud.
-    private static func flattenTables(_ source: String) -> String {
-        guard source.contains("|") else { return source }
-        return source
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .compactMap { line -> String? in
-                let trimmed = line.trimmingCharacters(in: .whitespaces)
-                guard trimmed.hasPrefix("|"), trimmed.hasSuffix("|"), trimmed.count > 1 else {
-                    return String(line)
-                }
-                let cells = trimmed
-                    .dropFirst()
-                    .dropLast()
-                    .split(separator: "|", omittingEmptySubsequences: false)
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                // The alignment row carries no content once the grid is gone.
-                let isDivider = cells.allSatisfy { cell in
-                    !cell.isEmpty && cell.allSatisfy { ":-".contains($0) }
-                }
-                if isDivider { return nil }
-                let filled = cells.filter { !$0.isEmpty }
-                if filled.isEmpty { return nil }
-                if filled.count == 1 { return filled[0] }
-                return "**\(filled[0])** — \(filled.dropFirst().joined(separator: " · "))"
-            }
-            .joined(separator: "\n")
-    }
-
-    private static func promoteHeadings(_ source: String) -> String {
-        guard source.contains("#") else { return source }
-        return source
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { line -> Substring in
-                guard line.hasPrefix("#") else { return line }
-                let hashes = line.prefix { $0 == "#" }
-                guard hashes.count <= 6 else { return line }
-                let rest = line.dropFirst(hashes.count).drop { $0 == " " }
-                // Bold needs something to wrap, and `**` alone parses as literal.
-                guard !rest.isEmpty else { return line }
-                return Substring("**\(rest)**")
-            }
-            .joined(separator: "\n")
+        ConversationFog.inlineMarkdown(source)
     }
 }
 

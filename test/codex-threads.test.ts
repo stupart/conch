@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import {
   codexThreadDbPaths,
   codexThreadLabel,
   codexThreadStatus,
+  detectCodexApprovals,
   detectCodexTurnEnds,
   isInterAgentEnvelope,
   readCodexHelperThreads,
@@ -179,6 +180,74 @@ describe("observing Codex sessions without touching them", () => {
     expect(codexThreadLabel({ name: "   ", title: "fallback" })).toBe("fallback");
     expect(codexThreadLabel({})).toBeUndefined();
     expect(codexThreadLabel({ title: "x".repeat(80) })).toHaveLength(40);
+  });
+});
+
+/**
+ * Real lines from Tyler's rollout of 2026-09-19, reduced only by trimming a
+ * long input script and long tool output. The escalated call had no
+ * `custom_tool_call_output` after it for hours, and the thread reported "busy"
+ * — which the panel renders as "working" — the entire time.
+ */
+const STARTED_LINE = String.raw`{"timestamp":"2026-09-19T11:51:05.614Z","ordinal":89,"type":"event_msg","payload":{"type":"task_started","turn_id":"01a0b981-7a87-7cb2-8320-79a8e0312f86","started_at":1789818665,"model_context_window":258400,"collaboration_mode_kind":"default"}}`;
+const ESCALATED_LINE = String.raw`{"timestamp":"2026-09-19T11:51:31.795Z","ordinal":107,"type":"response_item","payload":{"type":"custom_tool_call","id":"ctc_0f19e8bf8f5bb023016aae7740998087d29c15626dd510a213","status":"completed","call_id":"call_R3SFJWQHZ4ebOGHTATol2WJF","name":"exec","input":"text(await tools.exec_command({cmd:\"bun install --frozen-lockfile\",workdir:\"/Users/tylerstupart/Projects/Seashell/.worktrees/fix-humain-integration\",sandbox_permissions:\"require_escalated\",justification:\"May I download the locked Seashell dependencies to run its test suite and reproduce bugs?\",prefix_rule:[\"bun\",\"install\"],yield_time_ms:10000,max_output_tokens:1500}));\n","internal_chat_message_metadata_passthrough":{"turn_id":"01a0b981-7a87-7cb2-8320-79a8e0312f86","create_time":1789818678.512885}}}`;
+const ESCALATED_ANSWERED = String.raw`{"timestamp":"2026-09-19T11:52:02.118Z","ordinal":113,"type":"response_item","payload":{"type":"custom_tool_call_output","id":"ctco_01a0b981-aac4-7182-bc32-ff832f55110f","call_id":"call_R3SFJWQHZ4ebOGHTATol2WJF","output":[{"type":"input_text","text":"Script completed\nWall time 12.4 seconds\nOutput:\n"}]}}`;
+
+describe("Codex sessions blocked on a permission ask", () => {
+  const homes: string[] = [];
+  afterEach(() => {
+    for (const dir of homes.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** A rollout on disk, named the way Codex names them so the reader routes to it. */
+  function rollout(...lines: string[]): string {
+    const dir = mkdtempSync(join(tmpdir(), "conch-codex-approval-"));
+    homes.push(dir);
+    const path = join(dir, "rollout-2026-09-19T19-00-38-01a0b8e5.jsonl");
+    writeFileSync(path, lines.join("\n") + "\n");
+    return path;
+  }
+
+  const snapshot = (transcriptPath: string, status: "busy" | "idle" = "busy") => [{
+    sessionId: "s", label: "seashell", cwd: "/tmp", transcriptPath,
+    size: 0, turnId: "01a0b981", status, text: "",
+  }];
+
+  test("a waiting ask is reported once, however often the poll runs", () => {
+    // The daemon polls every five seconds. Announcing the same ask on every
+    // pass would make one prompt nag forever.
+    const memory = new Map<string, string>();
+    const snaps = snapshot(rollout(STARTED_LINE, ESCALATED_LINE));
+    const first = detectCodexApprovals(memory, snaps);
+    expect(first.map((e) => e.approval?.id)).toEqual(["call_R3SFJWQHZ4ebOGHTATol2WJF"]);
+    expect(first[0]!.approval!.summary).toBe("bun install --frozen-lockfile");
+    expect(detectCodexApprovals(memory, snaps)).toEqual([]);
+    expect(detectCodexApprovals(memory, snaps)).toEqual([]);
+  });
+
+  test("an answered ask clears while the thread works on", () => {
+    // Approving it does not end the turn. Without this the row would sit on
+    // "needs you" until the whole turn finished, which can be many minutes.
+    const memory = new Map<string, string>();
+    expect(detectCodexApprovals(memory, snapshot(rollout(STARTED_LINE, ESCALATED_LINE)))).toHaveLength(1);
+    const answered = detectCodexApprovals(memory, snapshot(rollout(STARTED_LINE, ESCALATED_LINE, ESCALATED_ANSWERED)));
+    expect(answered).toHaveLength(1);
+    expect(answered[0]!.approval).toBeNull();
+    expect(memory.size).toBe(0);
+  });
+
+  test("says nothing about a session that never had an ask", () => {
+    const memory = new Map<string, string>();
+    expect(detectCodexApprovals(memory, snapshot(rollout(STARTED_LINE)))).toEqual([]);
+    expect(memory.size).toBe(0);
+  });
+
+  test("forgets a session that drops out of the listing", () => {
+    const memory = new Map<string, string>();
+    detectCodexApprovals(memory, snapshot(rollout(STARTED_LINE, ESCALATED_LINE)));
+    expect(memory.size).toBe(1);
+    detectCodexApprovals(memory, []);
+    expect(memory.size).toBe(0);
   });
 });
 

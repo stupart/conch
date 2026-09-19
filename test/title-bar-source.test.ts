@@ -78,6 +78,13 @@ describe("E1: the header lives in the title-bar strip", () => {
     expect(header).toContain('Text("conch")');
     expect(header).toContain("HeaderControls(");
     ordered(header, 'Text("conch")', "if let daemonMessage {", "HeaderControls(");
+    // The sidebar could only be put away by a shortcut or a menu — nothing on screen said
+    // so. The button leads the strip, inside the traffic lights, and posts the same
+    // notification the menu item does so ⌘B and the click are one path.
+    expect(header).toContain('symbol: "sidebar.leading"');
+    expect(header).toContain('help: "Toggle sidebar (⌘B)"');
+    expect(header).toContain("action: { NotificationCenter.default.post(name: .toggleSidebar, object: nil) }");
+    ordered(header, 'symbol: "sidebar.leading"', 'Text("conch")', "HeaderControls(");
   });
 
   test("the session bar and the Cut B banners are untouched and below the strip", () => {
@@ -91,10 +98,16 @@ describe("E1: the header lives in the title-bar strip", () => {
     expect(notices).toContain("if let host = audio.controlledBy {");
     ordered(body, "DashboardHeader(", "WorkspaceNotices()", "SessionLedger(");
 
-    // The sidebar is a fixed width and can be put away with ⌘B, which the window remembers.
-    // It used to scale with the window (min 280, max 380, 30%), so the stage's measure moved
-    // every time the window did.
-    expect(dashboard).toContain("private var sidebarWidth: CGFloat { 264 }");
+    // The sidebar can be put away with ⌘B, which the window remembers, and DRAGGED to a width it
+    // also remembers. 264 is only where it starts now — Tyler: "drag to change side of main area
+    // and therefore make it smaller if I want".
+    //
+    // It is bounded rather than free. The width used to scale with the window (min 280, max 380,
+    // 30%), so the stage's measure moved every time the window did; a drag sets it once and it
+    // stays put until dragged again.
+    expect(dashboard).toContain('@AppStorage("conch.sidebarWidth") private var storedSidebarWidth = 264.0');
+    expect(dashboard).toContain("private static let sidebarBounds: ClosedRange<CGFloat> = 180...520");
+    expect(dashboard).not.toContain("private var sidebarWidth: CGFloat { 264 }");
     expect(body).toContain("if !sidebarCollapsed {");
     expect(dashboard).toContain('@AppStorage("conch.sidebarCollapsed")');
     expect(dashboard).toContain(".onReceive(NotificationCenter.default.publisher(for: .toggleSidebar))");

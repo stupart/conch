@@ -440,6 +440,9 @@ private struct ReplyField: NSViewRepresentable {
         view.isRichText = false
         view.allowsUndo = true
         view.drawsBackground = false
+        // Every other editor in the app turns this off; this one did not, so clicking the panel drew a focus ring
+        // around the reply line (Tyler: "theres a weird select outline that forms when i click on it").
+        view.focusRingType = .none
         view.isVerticallyResizable = true
         view.isHorizontallyResizable = false
         view.autoresizingMask = [.width]
@@ -450,6 +453,10 @@ private struct ReplyField: NSViewRepresentable {
         view.setAccessibilityLabel("Reply")
         let scroll = NSScrollView()
         scroll.drawsBackground = false
+        // AppKit draws the focus ring on the SCROLL VIEW, not on the text view inside it, so turning it off there
+        // (line above's sibling, `view.focusRingType`) left the ring exactly where it was — a rectangle around the
+        // reply line whenever it had the keyboard (Tyler: "thers still a strange outline around teh component").
+        scroll.focusRingType = .none
         scroll.hasVerticalScroller = false
         scroll.hasHorizontalScroller = false
         scroll.documentView = view
@@ -632,6 +639,14 @@ public enum FogCorner: Hashable, Sendable {
 
 /// Where the conversation fog sits: always docked in a corner of its screen, touching one side and the top or the
 /// bottom. Its two other edges are free: where it fades. Screen coordinates, y up.
+public extension EdgeInsets {
+    /// These insets with `amount` taken off each side, never below zero: the screen's edges are that much further from a
+    /// panel that floats in from them.
+    func less(_ amount: CGFloat) -> EdgeInsets {
+        EdgeInsets(top: max(0, top - amount), leading: max(0, leading - amount), bottom: max(0, bottom - amount), trailing: max(0, trailing - amount))
+    }
+}
+
 public enum FogDock {
     /// A fog of `size` docked in `corner` of `screen`, never bigger than the screen.
     public static func frame(size: CGSize, corner: FogCorner, in screen: CGRect) -> CGRect {
@@ -654,9 +669,11 @@ public enum FogDock {
         )
     }
 
-    /// Biggest: 1280 by 900, never more than the screen.
+    /// Biggest: the screen itself. The lab capped this at 1280 by 900 — its own viewport's convention, not a rule about
+    /// the panel — which stopped a 1117 pt screen 217 pt short of full height (Tyler: "can we make it so that I can have
+    /// the panel fill the pt height and go to the edges like a normal window?").
     public static func maxSize(in screen: CGRect) -> CGSize {
-        CGSize(width: min(1280, screen.width), height: min(900, screen.height))
+        CGSize(width: screen.width, height: screen.height)
     }
 
     /// Smallest: 480 by 360, never more than the biggest.
@@ -1041,7 +1058,7 @@ public struct ConversationFog: View {
     /// The reply line's type size: the conversation's newest, `ConchType.conversationNow` (24) or, full screen, 36.
     public static func replyFontSize(fullScreen: Bool) -> CGFloat { fullScreen ? 36 : 24 }
 
-    /// Where the words and the reply line sit: a column up to 540 pt wide, the lab's, clear of the fog's padding, the
+    /// Where the words and the reply line sit: a column up to 620 pt wide, clear of the fog's padding, the
     /// screen's insets and the button row. Docked it keeps to its corner's side; off its corner `magnet` pulls it toward the
     /// screen edges it nears and centres it between them. Full screen, a wider column in the middle.
     public static func textFrame(in size: CGSize, corner: FogCorner, insets: EdgeInsets, fullScreen: Bool, magnet: EdgeInsets? = nil) -> CGRect {
@@ -1059,7 +1076,18 @@ public struct ConversationFog: View {
             return CGRect(x: leading + (room - width) / 2, y: top, width: width, height: height)
         }
         let leading = insets.leading + side, trailing = insets.trailing + side
-        let width = min(540, max(0, size.width - leading - trailing))
+        // 620 at the sizes the panel is usually at, growing toward full screen's own 1040 measure as it is dragged
+        // wider. The lab's 540 left 312 pt of a 900 pt panel empty; a fixed 620 left a RIBBON of text against one edge
+        // of a nearly full-screen sheet of glass, most of it blurred nothing (Tyler, expanding it: "pretty silly when
+        // i expand the convo panel").
+        //
+        // 60% of the room rather than simply following it, because `pull` below slides the column between its docked
+        // side and the centre by (room - width): a column that fills its fog has nowhere to travel and the magnet dies
+        // outright. At 60% the default 900 pt panel is unchanged at 620, and a panel past about 1185 pt earns a wider
+        // column instead of a wider margin.
+        let room = max(0, size.width - leading - trailing)
+        let measure = min(1040, max(620, room * 0.6))
+        let width = min(measure, room)
         let pull = magnet ?? EdgeInsets(top: corner.bottom ? 0 : 1, leading: corner.leading ? 1 : 0, bottom: corner.bottom ? 1 : 0, trailing: corner.leading ? 0 : 1)
         let midX = (size.width - width) / 2, midY = (size.height - height) / 2
         return CGRect(
@@ -1126,13 +1154,15 @@ public struct ConversationFog: View {
                     }
                 }
                 .frame(width: frame.width, height: frame.height, alignment: .topLeading)
-                // The words fade where the blur does, so they never sit on screen it hasn't softened.
+                // The oldest words fade out at the panel's far end rather than ending in a cut — panel.html's
+                // `.body{-webkit-mask-image:linear-gradient(transparent 0,#000 26%)}`. The newest end never fades, so
+                // the gradient runs from whichever end holds the oldest (`newestAtTop`).
                 .mask(alignment: .topLeading) {
-                    if let look, !isFullScreen {
-                        FogLook.area(look.wordsFade.offsetBy(dx: -frame.minX, dy: -frame.minY), FogLook.wordsDensity, .black)
-                    } else {
-                        Color.black
-                    }
+                    LinearGradient(
+                        stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.26)],
+                        startPoint: top ? .bottom : .top,
+                        endPoint: top ? .top : .bottom
+                    )
                 }
                 .offset(x: frame.minX, y: frame.minY)
                 .onChange(of: target, initial: true) { _, target in text.grow(to: target) }
@@ -1301,10 +1331,70 @@ public struct ConversationFog: View {
         }
     }
 
-    /// Agent replies are markdown; the fog shows the inline parts (emphasis, code, links) and keeps line breaks.
-    static func inlineMarkdown(_ text: String) -> AttributedString {
-        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-            ?? AttributedString(text)
+    /// Agent replies are markdown, and a transcript that shows the source reads worst exactly where it matters most:
+    /// `**Storage moved**` with its asterisks and `` `path/to/file` `` with its backticks is most of what a summary is
+    /// made of.
+    ///
+    /// The one renderer both transcripts use — it was the dashboard stack's, and the fog had only half of it. `.inlineOnlyPreservingWhitespace` is the
+    /// parse a SwiftUI `Text` can take: the block parse (`.full`) drops every newline, so a three-item list arrives as
+    /// "onetwothree". Block markers stay literal, which reads fine for "- " and uselessly for "## " and a table's
+    /// pipes, so those two are rewritten before the parse.
+    public static func inlineMarkdown(_ text: String) -> AttributedString {
+        var parsed = (try? AttributedString(
+            markdown: promoteHeadings(flattenTables(text)),
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(text)
+        // Make a link LOOK like the link it already is. They worked the whole time — Tyler tested one — but nothing
+        // said so: blue against text that is also occasionally coloured, with no underline and no hover state, so the
+        // only way to find one was to click on the off chance. "it's just a ui problem really, to show me with an
+        // underline on hover that i can click on it."
+        //
+        // A permanent underline rather than a hover one, deliberately: SwiftUI's `Text` draws an AttributedString as a
+        // single view and cannot hit-test one run inside it, so there is no honest way to underline only the link under
+        // the pointer. Always-underlined is the same signal, available before the pointer arrives rather than after.
+        for run in parsed.runs where run.link != nil { parsed[run.range].underlineStyle = .single }
+        return parsed
+    }
+
+    /// A markdown table as lines a person can read: an inline parse cannot lay one out, so it arrives as a wall of
+    /// pipes. Each row becomes "first cell — the rest", which is how you would read it aloud.
+    static func flattenTables(_ source: String) -> String {
+        guard source.contains("|") else { return source }
+        return source
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .compactMap { line -> String? in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard trimmed.hasPrefix("|"), trimmed.hasSuffix("|"), trimmed.count > 1 else { return String(line) }
+                let cells = trimmed.dropFirst().dropLast()
+                    .split(separator: "|", omittingEmptySubsequences: false)
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                // The alignment row carries no content once the grid is gone.
+                let isDivider = cells.allSatisfy { cell in !cell.isEmpty && cell.allSatisfy { ":-".contains($0) } }
+                if isDivider { return nil }
+                let filled = cells.filter { !$0.isEmpty }
+                if filled.isEmpty { return nil }
+                if filled.count == 1 { return filled[0] }
+                return "**\(filled[0])** — \(filled.dropFirst().joined(separator: " · "))"
+            }
+            .joined(separator: "\n")
+    }
+
+    /// `## Heading` keeps its hashes under an inline parse, and agents write in headings constantly. Bold keeps the
+    /// emphasis without a block parse, which would collapse every newline.
+    static func promoteHeadings(_ source: String) -> String {
+        guard source.contains("#") else { return source }
+        return source
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> Substring in
+                guard line.hasPrefix("#") else { return line }
+                let hashes = line.prefix { $0 == "#" }
+                guard hashes.count <= 6 else { return line }
+                let rest = line.dropFirst(hashes.count).drop { $0 == " " }
+                // Bold needs something to wrap, and `**` alone parses as literal.
+                guard !rest.isEmpty else { return line }
+                return Substring("**\(rest)**")
+            }
+            .joined(separator: "\n")
     }
 
     /// The words as the fog shows them, markdown taken out.

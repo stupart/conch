@@ -39,7 +39,12 @@ test("Cmd+V attaches images and leaves text to the editor", () => {
   expect(body).toContain('event.charactersIgnoringModifiers?.lowercased() == "v"');
   expect(body).toContain("== .command");
   expect(body).toContain("let editor = window.firstResponder as? NSTextView");
-  expect(body).toContain("editor.isDescendant(of: container)");
+  // Which editor is "this composer's" is answered by walking UP from the probe until an ancestor holds it, rather
+  // than by a fixed number of superviews: `.background(...)`'s nesting is SwiftUI's business, and pinning a depth
+  // made the check fail closed — Cmd+V fell through to the text view's text-only paste and a pasted image vanished
+  // with nothing on screen to say so (Tyler: "images I paste into the input box don't show previews so idk if the
+  // past worked or not").
+  expect(body).toContain("coordinator.sharesAnAncestor(with: editor)");
   // Text: pass through. Image: consume.
   expect(body).toContain("guard !urls.isEmpty else { return event }");
   expect(body).toContain("coordinator.onPaste(urls)\n            return nil");

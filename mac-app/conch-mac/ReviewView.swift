@@ -75,12 +75,6 @@ private struct ReviewSurface: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            caption
-
-            Rectangle()
-                .fill(ConchPalette.divider)
-                .frame(height: 1)
-
             ZStack(alignment: .top) {
                 if let link = item.link {
                     ReviewContent(
@@ -107,48 +101,47 @@ private struct ReviewSurface: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(ConchPalette.surface)
+        .overlay(alignment: .topTrailing) { stageControl }
     }
 
-    private var caption: some View {
-        HStack(spacing: 9) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(ConchPalette.statusReview)
-                .accessibilityHidden(true)
-
-            Text(item.label)
-                .font(ConchTypography.font(size: 12.5, weight: .medium))
-                .tracking(-0.3)
-                .foregroundStyle(ConchPalette.brandCyan)
-                .lineLimit(1)
-
-            Text(item.summary.isEmpty ? "Ready for review" : item.summary)
-                .font(ConchTypography.font(size: 12.5))
-                .tracking(-0.3)
-                .foregroundStyle(ConchPalette.textPrimary)
-                .lineLimit(2)
-                .truncationMode(.tail)
-                .textSelection(.enabled)
-
-            Spacer(minLength: 12)
-
-            if let action {
-                Button(action: action) {
-                    Image(systemName: actionSymbol)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(ConchPalette.textDim)
-                        .frame(width: 40, height: 40)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(ReviewPressButtonStyle())
-                .help(actionHelp)
-                .accessibilityLabel(actionAccessibilityLabel)
+    /// The stage control, and nothing else.
+    ///
+    /// There was a bar here: a review check, the session's name in brand cyan, and the summary
+    /// again — three restatements of what the pane already is, above a picture of the work.
+    /// Tyler: "please also remove the weird bar element that ahows above the deliverables ... i
+    /// don't get what its for an it adds clutter / jank", which is the same note that took the
+    /// inline card down to a picture and one line ("little or no text").
+    ///
+    /// What each part was saying, and why none of it earns a bar: the check duplicated the ledger
+    /// row's own mark; the session label duplicated the header above the pane; the summary
+    /// duplicated the card in the conversation that opened this. The control is the one thing that
+    /// was not a restatement, so it stays — it is the only way to reach side-by-side and fill-the-
+    /// stage with a mouse (both also on Cmd-2 and Cmd-3).
+    ///
+    /// NOT the origin bar below this, which looks similar and is not decoration: a deliverable is
+    /// an agent-authored URL rendered full-bleed in conch's own chrome, so naming the origin is
+    /// what keeps a third-party sign-in page distinguishable from conch's UI.
+    @ViewBuilder
+    private var stageControl: some View {
+        if let action {
+            Button(action: action) {
+                Image(systemName: actionSymbol)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(ConchPalette.textDim)
+                    .frame(width: 28, height: 28)
+                    .background(
+                        Circle().fill(ConchPalette.raised.opacity(0.92))
+                    )
+                    .overlay(
+                        Circle().strokeBorder(ConchPalette.divider, lineWidth: 0.5)
+                    )
+                    .contentShape(Circle())
             }
+            .buttonStyle(ReviewPressButtonStyle())
+            .help(actionHelp)
+            .accessibilityLabel(actionAccessibilityLabel)
+            .padding(10)
         }
-        .padding(.leading, 14)
-        .padding(.trailing, 2)
-        .frame(minHeight: 44)
-        .background(ConchPalette.raised.opacity(0.72))
     }
 }
 

@@ -137,12 +137,13 @@ import {
 } from "./terminal-question.ts";
 import {
   codexHomeDir,
+  detectCodexApprovals,
   detectCodexTurnEnds,
   isInterAgentEnvelope,
   readCodexTurnSnapshots,
   type CodexTurnMemory,
 } from "./codex-threads.ts";
-import { watchSessionSources } from "./session-watch.ts";
+import { watchChangingPaths, watchSessionSources } from "./session-watch.ts";
 import { daemonStateFromUnknown, readState, writeState } from "./daemon-state.ts";
 export { daemonStateFromUnknown } from "./daemon-state.ts";
 import {
@@ -1158,6 +1159,26 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     render: buildSessionPanel,
     onError: (error) => log(`session refresh failed: ${error}`),
   });
+  // See what an agent says as its turn UNFOLDS, not when it ends.
+  //
+  // Both agents append whole messages to their transcript mid-turn — each
+  // intermediate tool call and each block of prose lands the moment it
+  // completes. Conch already re-reads those files on every render; it simply
+  // was not being told to render until a turn ENDED (a Claude `Stop` hook, the
+  // 5s Codex poll). Watching the live transcripts makes each append a render.
+  //
+  // Throttled rather than debounced: a resetting debounce never fires while a
+  // file keeps being appended to, which is exactly the busy turn this is for.
+  // The leading edge renders at once and a sustained burst still renders every
+  // 250ms. The 20s panel timer stays as the backstop for dropped FSEvents.
+  //
+  // ponytail: re-reads the bounded tail rather than keeping a byte cursor per
+  // transcript. Measured: a whole tail read is 2.4-6.0ms on a 234 MB Claude
+  // transcript and 1.8-3.6ms on a 702 MB rollout, because `readConversationTail`
+  // already reads a 512 KB window and not the file. A cursor would save single
+  // digit milliseconds. Add one if a render ever has to run faster than 250ms.
+  const transcriptRender = createPublishThrottle(() => void renderSessionPanel(), { intervalMs: 250 });
+  const transcriptWatch = watchChangingPaths(() => transcriptRender.request(), { debounceMs: 50 });
   let lastPublishedPanelState: PublishedState | null = null;
   let lastPanelModel: PanelModel | null = null;
   /**
@@ -1712,6 +1733,11 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       }
       // This snapshot passed the reconciler's current() check; indexing never uses the eight-row preview cap.
       prioritizeRecords([...panelSessions.values(), ...nested], navSelectedId ?? nextActiveSessionId);
+      // Re-arms only when the set of live transcripts changes; see session-watch.ts.
+      transcriptWatch.update(visible.flatMap((session) => {
+        const path = session.transcriptPath ?? findTranscript(cfg.claudeDir, session.sessionId);
+        return path ? [path] : [];
+      }));
       numberedSessionRows = numberPanelSessionRows(model.rows, live);
       // Read mode state after the async registry snapshot so a slow older redraw
       // cannot repaint a stale manual banner over a newer toggle.
@@ -2438,6 +2464,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     theaterNavigation.dispose();
     shuttingDown = true;
     panelRefresh.close();
+    transcriptWatch.stop();
     onLiveDataChange(null);
     publishedStateWriter.flush();
     meetingMic?.close();
@@ -2634,12 +2661,45 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   // message of a turn rather than the last text it happens to see, and routes
   // on the filename, so Codex and Claude produce the same shape of summary.
   const codexTurnMemory: CodexTurnMemory = new Map();
+  /** The ask already announced per Codex session, so a five-second poll says it once. */
+  const codexApprovalMemory = new Map<string, string>();
   const codexTimer = setInterval(() => void (async () => {
     let ended: ReturnType<typeof detectCodexTurnEnds>;
+    let approvals: ReturnType<typeof detectCodexApprovals>;
     try {
-      ended = detectCodexTurnEnds(codexTurnMemory, await readCodexTurnSnapshots());
+      const snapshots = await readCodexTurnSnapshots();
+      ended = detectCodexTurnEnds(codexTurnMemory, snapshots);
+      approvals = detectCodexApprovals(codexApprovalMemory, snapshots);
     } catch (error) {
       return log(`codex watch failed: ${error}`);
+    }
+    // A Codex permission ask, through the same needs-you path Claude's
+    // Notification hook uses: the row latches "needs" and the daemon announces.
+    for (const { snapshot, approval } of approvals) {
+      if (!approval) {
+        log(`codex permission answered — "${snapshot.label}"`);
+        enqueue({
+          type: "working",
+          sessionId: snapshot.sessionId,
+          label: snapshot.label,
+          cwd: snapshot.cwd,
+          announce: "",
+          eventAt: Date.now(),
+        });
+        continue;
+      }
+      log(`codex needs permission — "${snapshot.label}": ${approval.name}`);
+      enqueue({
+        type: "needs-you",
+        ntype: "permission_prompt",
+        sessionId: snapshot.sessionId,
+        label: snapshot.label,
+        cwd: snapshot.cwd,
+        announce: `${snapshot.label} needs you: ${approval.summary}`,
+        transcriptPath: snapshot.transcriptPath,
+        approval,
+        eventAt: Date.now(),
+      });
     }
     for (const snapshot of ended) {
       void (async () => {

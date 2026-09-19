@@ -639,7 +639,25 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
    * same sentence says so. Returns what to say once the mic has drained.
    */
   function recoverIncompleteDictation(event: TurnEvent, captured: readonly string[]): string {
-    publishDictation(captured.join(" "), event.sessionId);
+    // One utterance can reach here several times over. The mic's exit drain
+    // pushes EVERY late transcript it finds, and overlapping captures of the
+    // same sentence each transcribe to the same words — so the backlog holds
+    // one sentence N times, not N things you said. Joining that blind is what
+    // put a sentence into the composer six times, space-joined, and the app
+    // appends a dictation rather than replacing it, so it lands whole.
+    // Words already recovered are that artifact: a drain is a backlog, never a
+    // conversation, and nobody says the same sentence twice inside one breath.
+    // ponytail: exact repeats only. A phrase Whisper repeated INSIDE a single
+    // transcript is a transcription artifact — collapse it in transcribe.ts if
+    // it recurs, not here, where splitting text would corrupt real speech.
+    const seen = new Set<string>();
+    const recovered = captured.filter((text) => {
+      const key = text.trim();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    publishDictation(recovered.join(" "), event.sessionId);
     return captured.some((text) => text.trim())
       ? "Dictation was incomplete. Your recovered words are in the draft. Review them or retry before sending."
       : "Dictation failed. Please try again.";
@@ -875,9 +893,16 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // the setting already skips every prompt, and only when the transcript
     // names a tool still waiting on its result (an AskUserQuestion fires the
     // same notification and is not a permission).
+    // NOT gated on cfg.bypassPermissions. That setting only decides how conch
+    // STARTS sessions (session-lifecycle.ts adds the agent's bypass flag); it
+    // cannot bind a session conch did not start, one already running when it
+    // was turned on, or a Codex thread under `approval_policy = "on-request"`.
+    // Reading it as "no prompt can happen" silenced every permission prompt on
+    // a machine with it on — Tyler's, verbatim: "not getting notified that
+    // there were permissiosn questions it just said it was working". A prompt
+    // that fired is proof the bypass did not apply to that session.
     const approval = event.type === "needs-you"
       && event.ntype === "permission_prompt"
-      && !cfg.bypassPermissions
       && event.transcriptPath
       ? pendingApproval(event.transcriptPath, sharedWindow(event.sessionId))
       : null;
@@ -2891,6 +2916,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     if (!stillPending()) return;
     await say(approvalAnnounce(event.label, ask));
     if (!stillPending() || consumeStopKey()) return;
+    // APPROVAL_KEYS are the rows of Claude Code's dialog. Codex's approval UI
+    // is not that dialog, so the blind key walk below must never be aimed at
+    // one: announced, and the row says it needs you, but the answer is yours.
+    if (ask.answerable === false) return;
     // The same holds as an announced turn: the ear is elsewhere, or you are typing.
     if (audioLease.isPhone() || !audioHolder.isLocal()) {
       return log(`mic held — ${audioLease.isPhone() ? "the phone" : "the other Mac"} has the ear ("${event.label}")`);

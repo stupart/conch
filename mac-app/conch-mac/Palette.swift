@@ -80,19 +80,31 @@ enum ConchPalette {
     // Machine-busy states share a calmer cyan so the brand cyan at full strength
     // can mean one thing only: your microphone is open. That is the state with
     // the highest cost of being wrong about.
-    static let statusWorking = Color(
-        red: 0.31,
-        green: 0.55,
-        blue: 0.60
-    )
+    // Working is the QUIET state. Tyler: "have working be like yellow or orange or some sort of
+    // working icon or no icon or color at all since its working". A session doing its job is not
+    // asking for anything, and a coloured dot on it competes with the ones that are. The dot stays
+    // — dropping it entirely would make working indistinguishable from idle, which is a different
+    // fact — but it recedes to the same faint ink idle uses.
+    static let statusWorking = textFaint
     static let statusMicOpen = brandCyan
-    // Waiting and review were 20/255 apart in a single channel — the same gold,
-    // separated only by glyph shape. Waiting now sits at the orange end, where
-    // "a finished turn is sitting on you" belongs.
+    // Waiting is GREEN, in review's family, because both mean the same thing to the person
+    // reading the ledger: come and look. Tyler: "does orange dot mean its waiting for me? We
+    // should make that green or blue or something" — then, on how to keep it apart from review:
+    // "maybe do same green circle just with no check?". The glyph already does that work
+    // (`circle.inset.filled` against review's `checkmark.circle.fill`), so only the colour moved.
+    //
+    // NOT review's own #30B35A. A mark needs 3:1 and that green measures 2.41-2.72 on the light
+    // grounds — the same failure the note below records for the review gold at 1.3:1. #279B4C is
+    // the nearest green that clears it everywhere: 3.16 at worst, across bg, surface, raised and
+    // fog, in both schemes. The orange it replaces failed too (2.11-2.22 on light), so this is a
+    // fix in both directions rather than a trade.
+    //
+    // This reverses the earlier decision that put waiting at the orange end. That was to separate
+    // it from review when the two were 20/255 apart in one channel; the glyph separates them now.
     static let statusWaiting = Color(
-        red: 0.96,
-        green: 0.60,
-        blue: 0.13
+        red: 0.153,
+        green: 0.608,
+        blue: 0.298
     )
     /// These two have exact token equivalents whose meaning already matches, and both were
     /// unreadable on a light ground as literals — the review gold measured 1.3:1 there.
