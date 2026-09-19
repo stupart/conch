@@ -1936,29 +1936,52 @@ private struct ConversationPane: View {
         // selected at once.
         let shown = workPane(for: row) == .deliverable ? selectedReview?.id : nil
         return HStack(spacing: 2) {
-            ForEach(held) { item in
-                DeliverableTab(
-                    item: item,
-                    isSelected: item.id == shown,
-                    action: {
-                        workspace.show(work: .deliverable, for: row.id)
-                        workspace.select(deliverable: item.id, for: row.id)
-                        // Looking at it is what marks it, and only the daemon's copy makes
-                        // that survive a relaunch and reach the phone.
-                        if item.viewedAt == nil, state?.features?.viewedState != nil {
-                            store.markReviewViewed(sessionId: row.id, review: item.id)
-                        }
-                    }
-                )
-            }
-            // The working folder, beside the work filed out of it.
+            // The working folder LEADS, and is pinned outside the scroller.
+            //
+            // It is not one of the outputs, competing for room with however many there are:
+            // it is the place the session works in, so its position must not drift as
+            // deliverables accumulate. Found by looking rather than by reasoning — a session
+            // holding six deliverables filled this strip edge to edge and pushed the folder
+            // clean off the right of the pane, where nothing could reach it.
             if workingFolder != nil {
                 FilesTab(
                     isSelected: workPane(for: row) == .files,
                     action: { workspace.show(work: .files, for: row.id) }
                 )
+
+                if !held.isEmpty {
+                    // The place, and the work that came out of it, are different kinds of
+                    // thing. A hairline says so without a word.
+                    Rectangle()
+                        .fill(ConchPalette.divider)
+                        .frame(width: 1, height: 14)
+                        .padding(.horizontal, 2)
+                }
             }
-            Spacer(minLength: 0)
+
+            // The filed work scrolls, because there can be any number of it. It used to be a
+            // plain row that simply ran out of pane: the sixth tab reached the edge and
+            // everything after it was laid out where no one could see or click it.
+            ScrollView(.horizontal) {
+                HStack(spacing: 2) {
+                    ForEach(held) { item in
+                        DeliverableTab(
+                            item: item,
+                            isSelected: item.id == shown,
+                            action: {
+                                workspace.show(work: .deliverable, for: row.id)
+                                workspace.select(deliverable: item.id, for: row.id)
+                                // Looking at it is what marks it, and only the daemon's copy
+                                // makes that survive a relaunch and reach the phone.
+                                if item.viewedAt == nil, state?.features?.viewedState != nil {
+                                    store.markReviewViewed(sessionId: row.id, review: item.id)
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+            .scrollIndicators(.never)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
