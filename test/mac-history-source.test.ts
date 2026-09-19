@@ -109,20 +109,38 @@ describe("the Mac app reads recorded history", () => {
   });
 
   test("the transcript keeps the reader's place when older messages arrive", () => {
+    // The place is kept by measuring the growth when it HAPPENS, never from a height
+    // captured when the page was asked for. `loadOlder()` runs on every scroll tick within
+    // a screenful of the top, so a capture taken there was overwritten by the next tick
+    // before the page it belonged to had been absorbed — measured 2026-09-20: every page
+    // that arrived during a live scroll was "compensated" by 2 pt, and a page whose capture
+    // had already been consumed by nothing at all. Nothing about the reader's place may be
+    // recorded here.
     const loadOlder = sliceFrom(conversation, "private func loadOlder()", "/// The row's text");
-    // Captured BEFORE the request: after the prepend the old height is gone.
-    expect(loadOlder).toContain("scrollAnchor.capture()");
-    expect(loadOlder.indexOf("scrollAnchor.capture()"))
-      .toBeLessThan(loadOlder.indexOf("history.loadOlder(anchor:"));
+    expect(loadOlder).not.toContain("scrollAnchor.");
     expect(loadOlder).toContain("history.loadOlder(anchor: recordedRows.first?.id ?? conversation.items.first?.id)");
 
-    // And restored after the rows have been measured, not before.
-    const restore = sliceFrom(conversation, ".onChange(of: history.paging.items.count)", "@ViewBuilder");
-    expect(restore).toContain("await Task.yield()");
-    expect(restore).toContain("scrollAnchor.restore()");
-    expect(conversation).toContain("scrollView.reflectScrolledClipView(scrollView.contentView)");
+    // The rows arriving is what arms the anchor, and the growth is absorbed from inside
+    // the document's frame-change notification — the same layout pass that grows it, so no
+    // frame is ever displayed with the jump in it. A `Task.yield()` resumed 6–24 ms after
+    // the frame changed, one to three frames of jump then snap-back; it now only ends the
+    // wait, so a growth after it (streaming, a resize) is not taken for this page's.
+    const arrival = sliceFrom(conversation, ".onChange(of: history.paging.items.count)", "@ViewBuilder");
+    expect(arrival).toContain("scrollAnchor.expectPrepend()");
+    expect(arrival.indexOf("scrollAnchor.expectPrepend()")).toBeLessThan(arrival.indexOf("Task {"));
+    expect(arrival).toContain("await Task.yield()");
+    expect(arrival).toContain("scrollAnchor.settle()");
+    expect(arrival.indexOf("await Task.yield()")).toBeLessThan(arrival.indexOf("scrollAnchor.settle()"));
+    const anchor = sliceFrom(conversation, "final class ConversationScrollAnchor", "private struct ConversationScrollObserver");
+    expect(anchor).toContain("document.postsFrameChangedNotifications = true");
+    expect(anchor).toContain("forName: NSView.frameDidChangeNotification");
+    expect(anchor).toContain("guard prependPending else { return }");
+    // Relative to where the reader is NOW: restoring to the captured offset threw away
+    // whatever they had scrolled since asking — 60 to 150 pt on every page, measured.
+    expect(anchor).toContain("y: clip.bounds.origin.y + grown");
+    expect(anchor).toContain("scrollView.reflectScrolledClipView(clip)");
     // Only a prepend moves the reader: a streaming row growing is not a jump to correct.
-    expect(conversation).toContain("guard grown > 0 else { return }");
+    expect(anchor).toContain("guard grown > 0 else { return }");
   });
 
   test("reaching the top asks for the page before it", () => {

@@ -145,7 +145,7 @@ struct ConversationStackView: View {
                     let members = Set(run.itemIDs)
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(items.filter { members.contains($0.id) }) { step in
-                            row(for: step)
+                            memoRow(step)
                         }
                     }
                     .padding(.leading, 10)
@@ -158,8 +158,39 @@ struct ConversationStackView: View {
         } else if folds.memberOf[item.id] != nil {
             EmptyView()
         } else {
-            row(for: item)
+            memoRow(item)
         }
+    }
+
+    /// `row(for:)`, redrawn only when something it shows has changed.
+    ///
+    /// This body runs on every snapshot from ANY session — four a second while anything is
+    /// working — and each run rebuilt every row: 44 markdown parses a second for a 30-row
+    /// window, 236 once history was paged in, and a SwiftUI diff of the whole stack whose
+    /// frame hitches grew with the row count, 8 ms at 30 rows and 58–67 ms at ~300
+    /// (Instruments, 2026-09-20). That stall landing four times a second is what made
+    /// scrolling stutter. `EquatableView` leaves a row's subtree untouched while its key is
+    /// unchanged, so a snapshot that changed nothing here costs one comparison per row.
+    private func memoRow(_ item: ConversationItem) -> some View {
+        MemoRow(key: rowKey(for: item)) { row(for: item) }.equatable()
+    }
+
+    /// Everything `row(for:)` reads besides its callbacks. A row is redrawn exactly when one
+    /// of these changes, so a value the row reads that is missing here is a row that goes
+    /// stale — the callbacks are the only thing deliberately left out, since a stale closure
+    /// still reaches the same store and workspace.
+    private func rowKey(for item: ConversationItem) -> RowKey {
+        let expanded = isExpanded(item.id)
+        return RowKey(
+            item: item,
+            expanded: expanded,
+            fullText: history.fullText(forSnapshotItem: item.id),
+            bodyStatus: expanded && wasCut(item) ? bodyStatus(for: item) : nil,
+            selections: multiSelections[item.id],
+            hovered: item.question == nil ? nil : hoveredOption,
+            noTerminal: noTerminal,
+            canOpenInTerminal: onOpenInTerminal != nil
+        )
     }
 
     private func isExpanded(_ itemID: String) -> Bool {
@@ -187,6 +218,13 @@ struct ConversationStackView: View {
                 // can be MEASURED on a Mac with Xcode — guessing is how the bare
                 // background got shipped the first time.
                 VStack(alignment: .leading, spacing: 22) {
+                    // Computed ONCE per body. As a property read inside the loop below it was
+                    // rebuilt for every row it was handed to — n rows × n recorded items per
+                    // snapshot, 270k `ConversationItem`s a body with 520 rows paged in, and
+                    // 67% of the main thread at rest (Time Profiler, 2026-09-20). Quadratic
+                    // in how far back the reader has scrolled, which is why a long session
+                    // stuttered harder the longer it was read.
+                    let recordedRows = self.recordedRows
                     let recordedFolds = folds(in: recordedRows)
                     let liveFolds = folds(in: conversation.items)
                     historyHeader
@@ -213,9 +251,9 @@ struct ConversationStackView: View {
                     ForEach(store.outbox.entries(for: conversation.sessionId)) { pending in
                         PendingMessage(entry: pending).id(pending.id)
                     }
-                    // A zero-height anchor rather than scrolling to the last
-                    // item: the last item GROWS while it streams, and scrolling
-                    // to a growing view lands part-way up it.
+                    // An anchor rather than scrolling to the last item: the last
+                    // item GROWS while it streams, and scrolling to a growing view
+                    // lands part-way up it.
                     // Only a deliverable nobody has looked at yet belongs IN the conversation.
                     // One that was filed days ago and already opened is history, and pinning it to
                     // the end of the stack makes stale work look like fresh work waiting on you —
@@ -225,15 +263,24 @@ struct ConversationStackView: View {
                     // actually reporting it, so an older daemon keeps today's behaviour rather than
                     // silently hiding every card.
                     if let artifact, artifact.viewedAt == nil || !reportsViewedState {
-                        ArtifactPreview(artifact: artifact, onOpen: onOpenArtifact)
+                        // Keyed like the rows: the card reads its file — or decodes its image —
+                        // on every body, and the body runs four times a second (the probe
+                        // showed one markdown parse per snapshot at rest, this one).
+                        MemoRow(key: artifact) { ArtifactPreview(artifact: artifact, onOpen: onOpenArtifact) }.equatable()
                     }
 
+                    // The anchor is the stack's bottom margin, so scrolling it to the bottom
+                    // reaches the document's end. As a 1 pt line inside a 14 pt bottom
+                    // padding it stopped 14 pt short on every revision, nudged a clip that
+                    // AppKit had clamped to the real end 14 pt UP, and left `distance` past
+                    // the 8 pt the follow test allows, so the next trackpad touch read as
+                    // "scrolled away" and the follow stopped (measured 2026-09-20).
                     Color.clear
-                        .frame(height: 1)
+                        .frame(height: 14)
                         .id(Self.bottomAnchor)
                 }
                 .padding(.horizontal, 18)
-                .padding(.vertical, 14)
+                .padding(.top, 14)
                 // The same measure the AppKit fallback uses, so the two renderers do not
                 // disagree about how wide a line of this conversation is.
                 .frame(maxWidth: ConversationTextView.maxMeasure, alignment: .leading)
@@ -303,13 +350,17 @@ struct ConversationStackView: View {
                 loadOlder()
                 requestBottomScroll(using: proxy)
             }
-            // Older rows land ABOVE the viewport and push everything down. Restoring the
-            // offset by how much the document grew keeps the row under the eye there.
+            // Older rows land ABOVE the viewport and push everything down. The clip is moved
+            // by however much the document grows, inside the layout pass that grows it, so
+            // the row under the eye never leaves it (ConversationScrollAnchor).
             .onChange(of: history.paging.items.count) { _, _ in
+                scrollAnchor.expectPrepend()
                 Task { @MainActor in
-                    // After layout: the document is only taller once the new rows measure.
+                    // The rows measure within a millisecond of this change, and a yield resumes
+                    // 6–24 ms after that (measured 2026-09-20): a growth not absorbed by now is
+                    // not this page's, so the anchor stops waiting for one.
                     await Task.yield()
-                    scrollAnchor.restore()
+                    scrollAnchor.settle()
                 }
             }
         }
@@ -397,10 +448,15 @@ struct ConversationStackView: View {
         HistorySnapshot.branchTip(forSnapshotItems: conversation.items.map(\.id), shared: conversation.shared)
     }
 
-    /// Ask for the page before the oldest row on screen, remembering where the reader is.
+    /// Ask for the page before the oldest row on screen.
+    ///
+    /// Nothing about the reader's place is captured here, deliberately. This runs on every
+    /// scroll tick within a screenful of the top, so a baseline taken now was overwritten by
+    /// the next tick before the page it belonged to had been absorbed: every page that
+    /// arrived mid-scroll on 2026-09-20 was "compensated" by 2 pt and read as a jump. The
+    /// anchor measures the growth itself, when it happens.
     private func loadOlder() {
         guard history.paging.canLoadOlder else { return }
-        scrollAnchor.capture()
         history.loadOlder(anchor: recordedRows.first?.id ?? conversation.items.first?.id)
     }
 
@@ -441,12 +497,17 @@ struct ConversationStackView: View {
         }
     }
 
+    /// How the read of a cut row's whole body is going, if one was asked for.
+    private func bodyStatus(for item: ConversationItem) -> HistoryStatus? {
+        let native = HistorySnapshot.nativeId(forSnapshotItem: item.id)
+        let recorded = history.paging.items.first { $0.nativeId == native }
+        return recorded.flatMap { history.body(for: $0.id) }?.status
+    }
+
     /// How a body read is going, under the row waiting for it.
     @ViewBuilder
     private func fullBodyStatus(for item: ConversationItem) -> some View {
-        let native = HistorySnapshot.nativeId(forSnapshotItem: item.id)
-        let recorded = history.paging.items.first { $0.nativeId == native }
-        switch recorded.flatMap({ history.body(for: $0.id) })?.status {
+        switch bodyStatus(for: item) {
         case .some(.loading):
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
@@ -919,44 +980,110 @@ struct ConversationStackView: View {
     }
 }
 
+/// What one row is drawn from (`rowKey(for:)`).
+private struct RowKey: Equatable {
+    let item: ConversationItem
+    let expanded: Bool
+    /// The record store's whole text once read, shown in place of the snapshot's cut.
+    let fullText: String?
+    /// The read's progress under an opened cut row.
+    let bodyStatus: HistoryStatus?
+    /// A multi-select question's ticked options.
+    let selections: Set<String>?
+    /// Which option the pointer is on — a question row's only, so a hover over one question
+    /// does not redraw every other.
+    let hovered: String?
+    let noTerminal: String?
+    let canOpenInTerminal: Bool
+}
+
+/// A view that is rebuilt only when its key changes — SwiftUI's `EquatableView`, keyed
+/// explicitly because the content closure cannot be compared. The same idea as the
+/// overlay's `TurnLine: View, Equatable` (ConchDesign/Components.swift).
+private struct MemoRow<Key: Equatable, Content: View>: View, Equatable {
+    let key: Key
+    let content: () -> Content
+
+    static func == (a: Self, b: Self) -> Bool { a.key == b.key }
+
+    var body: some View { content() }
+}
+
+/// Keeps the row under the eye there when older messages arrive above it.
+///
+/// A prepend pushes everything down by its own height, which reads as the transcript
+/// jumping while you are looking at it. The clip is moved by exactly that growth, from
+/// inside the document's frame-change notification — the same layout pass that grew it —
+/// so no frame is ever displayed with the jump in it.
+///
+/// It used to be a height captured when the page was asked for and restored one
+/// `Task.yield()` after the rows arrived. Measured with a frame probe on 2026-09-20: the
+/// rows take their height about 1 ms after `onChange(of: items.count)`, and the yield
+/// resumes 6–24 ms after that, so every page showed for one to three frames jumped and
+/// then snapped back; and because the request runs on every scroll tick near the top,
+/// the next tick re-captured the already-grown height before the restore ran, which
+/// reduced the correction to 2 pt on every page that arrived mid-scroll. Measuring the
+/// growth at the moment it happens has neither problem, and nothing to be overwritten.
+final class ConversationScrollAnchor {
+    fileprivate weak var scrollView: NSScrollView?
+    private var observation: NSObjectProtocol?
+    /// The document's height as of its last frame change: what a growth is measured from.
+    private var lastHeight: CGFloat = 0
+    /// Rows have been added above and are about to take their height.
+    private var prependPending = false
+
+    deinit {
+        observation.map(NotificationCenter.default.removeObserver)
+    }
+
+    fileprivate func watch(_ scrollView: NSScrollView) {
+        self.scrollView = scrollView
+        observation.map(NotificationCenter.default.removeObserver)
+        observation = nil
+        guard let document = scrollView.documentView else { return }
+        lastHeight = document.bounds.height
+        document.postsFrameChangedNotifications = true
+        observation = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification,
+            object: document,
+            queue: nil
+        ) { [weak self] _ in
+            self?.documentResized()
+        }
+    }
+
+    /// The next growth is a page of older rows: absorb it.
+    func expectPrepend() {
+        prependPending = true
+    }
+
+    /// The page has had its chance to measure. Anything that grows after this — a row
+    /// streaming at the bottom, the window resizing — is not something to correct for.
+    func settle() {
+        prependPending = false
+    }
+
+    private func documentResized() {
+        guard let scrollView, let document = scrollView.documentView else { return }
+        let grown = document.bounds.height - lastHeight
+        lastHeight = document.bounds.height
+        guard prependPending else { return }
+        prependPending = false
+        // Only a prepend moves the reader.
+        guard grown > 0 else { return }
+        let clip = scrollView.contentView
+        // Relative to where the reader is NOW, not to where they were when the page was
+        // asked for: a flick that is still moving keeps its momentum's ground.
+        clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: clip.bounds.origin.y + grown))
+        scrollView.reflectScrolledClipView(clip)
+    }
+}
+
 /// SwiftUI exposes scrolling commands on macOS 14, but not whether the person
 /// has moved the underlying scroll view. Listening only to AppKit's live-scroll
 /// notifications avoids treating content growth as a user scroll: the document
 /// may get taller while its clip view stays still, and that must not disarm an
 /// already-following conversation before it can advance to the new bottom.
-/// Where the reader was, in pixels, across a prepend.
-///
-/// Older messages arriving above the viewport push everything down by their own
-/// height, which without this reads as the transcript jumping while you are looking at
-/// it. The document's height is taken before the request and the offset moved by
-/// however much it grew, so the row under the eye stays under the eye.
-final class ConversationScrollAnchor {
-    fileprivate weak var scrollView: NSScrollView?
-    private var height: CGFloat?
-    private var offset: CGFloat?
-
-    func capture() {
-        guard let scrollView, let document = scrollView.documentView else { return }
-        height = document.bounds.height
-        offset = scrollView.contentView.bounds.origin.y
-    }
-
-    func restore() {
-        guard let scrollView, let document = scrollView.documentView,
-              let height, let offset else { return }
-        let grown = document.bounds.height - height
-        self.height = nil
-        self.offset = nil
-        // Only a prepend moves the reader. Anything else — a row growing as it streams,
-        // the window resizing — is not something to correct for.
-        guard grown > 0 else { return }
-        scrollView.contentView.scroll(
-            to: NSPoint(x: scrollView.contentView.bounds.origin.x, y: offset + grown)
-        )
-        scrollView.reflectScrolledClipView(scrollView.contentView)
-    }
-}
-
 private struct ConversationScrollObserver: NSViewRepresentable {
     let onUserScroll: (Bool) -> Void
     /// Scrolled away from the top: §3 shows the header's hairline only once something has
@@ -1045,7 +1172,7 @@ private struct ConversationScrollObserver: NSViewRepresentable {
 
             detach()
             self.scrollView = scrollView
-            anchor.scrollView = scrollView
+            anchor.watch(scrollView)
             let center = NotificationCenter.default
             for name in [
                 NSScrollView.didLiveScrollNotification,
