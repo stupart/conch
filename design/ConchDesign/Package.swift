@@ -14,6 +14,7 @@ let package = Package(
     targets: [
         .target(name: "ConchDesign"),
         .executableTarget(name: "conch-design-gallery", dependencies: ["ConchDesign"]),
-        .testTarget(name: "ConchDesignTests", dependencies: ["ConchDesign"]),
+        // Fixtures: the documents the markdown renderer is tested against, as they were written.
+        .testTarget(name: "ConchDesignTests", dependencies: ["ConchDesign"], resources: [.copy("Fixtures")]),
     ]
 )

@@ -17,7 +17,9 @@ const card = stack.slice(stack.indexOf("private struct ArtifactPreview"));
  * markdown path the replies use, and a local image at conversation width.
  */
 test("the card renders the artifact, through the conversation's own markdown path", () => {
-  expect(card).toContain("Text(AttributedString.conchMarkdown(head))");
+  // The same block renderer the reply rows use (ConchDesign/Markdown.swift), which also strips the
+  // frontmatter that filled the top third of the atlas cards with `type: document` and two `---` fences.
+  expect(card).toContain("MarkdownView(text: head, size: 12.5)");
   expect(card).toContain("case .image:");
   expect(card).toContain("case .document:");
   // The Deliverable pane's renderers are NSScrollViews; nesting one inside the

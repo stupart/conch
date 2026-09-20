@@ -198,6 +198,12 @@ public enum ConchType {
 
     /// Line spacing to add to reading text.
     public static let readingLineSpacing: CGFloat = 4
+    /// `readingBody`'s point size, for type that is scaled from it (a document's headings and code).
+    #if os(macOS)
+    public static let readingBodySize: CGFloat = 15
+    #else
+    public static let readingBodySize: CGFloat = 17
+    #endif
 
     public static let roles: [ConchTypeRole] = [
         .init(name: "title", font: title, mac: "22 semibold", iOS: ".title2 semibold (22)"),

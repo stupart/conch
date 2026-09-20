@@ -18,7 +18,9 @@ test("subagent output takes the markdown path, other tool output stays raw", () 
   const site = stack.slice(stack.indexOf("if expanded, !result.isEmpty {"));
   const body = site.slice(0, site.indexOf("\n        }"));
   expect(body).toContain("if item.tool?.kind == .subagent {");
-  expect(body).toContain("Text(AttributedString.conchMarkdown(result))");
+  // The document renderer both apps share, at the nested pane's size — a report's headings and tables come
+  // through as blocks, not as an inline parse's bold runs.
+  expect(body).toContain("MarkdownView(text: result, size: 12.5)");
   // The raw path must survive for everything else.
   expect(body).toContain("Text(result)");
   expect(body).toContain('design: .monospaced');

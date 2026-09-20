@@ -597,11 +597,14 @@ struct ConversationStackView: View {
             }
         case .assistant:
             VStack(alignment: .leading, spacing: 4) {
-                Text(AttributedString.conchMarkdown(text(of: item)))
-                    .font(ConchType.readingBody)
+                // The reply as a document: headings on a scale, lists, code on a ground, tables as columns — the
+                // renderer both apps share (ConchDesign/Markdown.swift), at readingBody's size. It replaced an inline
+                // parse that flattened a table to "**first** — rest · rest", which made a 54-row document a wall of
+                // bold runs (Tyler: "i think it might be tables that are broken?"). Affordable because the row is
+                // memoised above: this parses once per change to the row, not once per snapshot.
+                MarkdownView(text: text(of: item))
                     .lineSpacing(ConchType.readingLineSpacing)
                     .foregroundStyle(ConchPalette.textPrimary)
-                    .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 cutTail(item)
             }
@@ -955,10 +958,8 @@ struct ConversationStackView: View {
                 // sniffing whether the text "looks like" markdown — that is
                 // how a log file gets mangled.
                 if item.tool?.kind == .subagent {
-                    Text(AttributedString.conchMarkdown(result))
-                        .font(ConchTypography.font(size: 12.5))
+                    MarkdownView(text: result, size: 12.5)
                         .foregroundStyle(ConchPalette.textPrimary)
-                        .textSelection(.enabled)
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(ConchPalette.hover, in: RoundedRectangle(cornerRadius: 8))
@@ -1228,9 +1229,9 @@ private struct ConversationScrollObserver: NSViewRepresentable {
     }
 }
 
-/// Agent replies are markdown. The renderer is ConchDesign's, shared with the overlay, so the two transcripts cannot
-/// disagree about what a reply looks like: an inline parse that keeps the line breaks (the block parse collapses them),
-/// headings promoted to bold, tables flattened to readable lines, and links underlined.
+/// The inline parse, for the rows that are one flow of text in a bubble or a line — your turn, a pending send, a
+/// thought, a question — where a block-per-view document would claim the full width. It is the overlay's renderer,
+/// so those rows and the fog agree. An agent's reply and a document go through `MarkdownView` instead.
 extension AttributedString {
     static func conchMarkdown(_ source: String) -> AttributedString {
         ConversationFog.inlineMarkdown(source)
@@ -1625,14 +1626,15 @@ private struct ArtifactPreview: View {
         case .document:
             if let head = documentHead {
                 // The same markdown path the replies use, so a deliverable
-                // reads like the conversation it arrived in. Clipped, then
-                // faded, so the cut reads as "there is more" rather than as
-                // the file ending mid-word.
-                Text(AttributedString.conchMarkdown(head))
-                    .font(ConchTypography.font(size: 12.5))
+                // reads like the conversation it arrived in — and its
+                // frontmatter is stripped, where before `type: document` and
+                // both `---` fences filled the top third of the card. Clipped
+                // at fourteen lines' worth, then faded, so the cut reads as
+                // "there is more" rather than as the file ending mid-word.
+                MarkdownView(text: head, size: 12.5)
                     .foregroundStyle(ConchPalette.textPrimary)
-                    .lineLimit(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, maxHeight: 14 * 19, alignment: .topLeading)
+                    .clipped()
                     .mask(
                         LinearGradient(
                             stops: [.init(color: .black, location: 0.72), .init(color: .clear, location: 1)],
