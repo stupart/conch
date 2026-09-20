@@ -184,7 +184,9 @@ describe("every open site in the Mac app goes through the one door that reports 
   test("the deliverable pane's three buttons and its rendered document go through the door", () => {
     const review = mac("ReviewView.swift");
     expect(review).toContain('Button("Reveal in Finder") { open(url.path, reveal: true) }');
-    expect(review).toContain('Button("Open in browser") { open(link) }');
+    // Where you ARE, not where the deliverable was filed: the pane can navigate now, so
+  // opening "the link" would hand the browser a page you had already left.
+  expect(review).toContain('Button("Open in browser") { open(addressText) }');
     expect(review).toContain("onOpenInBrowser: { open(failure.url.absoluteString) }");
     expect(review).toContain("store.openLink(link, cwd: cwd, rowId: rowID, reveal: reveal) { linkFailure = $0 }");
     expect(review).toContain("content.overlay(alignment: .bottom) { LinkFailureLine(message: $linkFailure) }");
