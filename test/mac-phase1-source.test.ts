@@ -134,8 +134,11 @@ describe("the Mac composer belongs to one session", () => {
     // design system and the app come apart.
     expect(composer).toContain(".conchElevation(.floating)");
     expect(composer).toContain(".padding(.bottom, 14)");
-    // THE SAME constant the transcript uses, not a second 700 typed here.
-    expect(composer).toContain(".frame(maxWidth: ConversationTextView.maxMeasure)");
+    // A named constant out of the transcript's own file, not a second number typed here —
+    // but deliberately NOT the reading measure. The card floats OVER the text now, and at
+    // 700 it covered the column exactly, so the page looked like it stopped at the card's
+    // top edge. test/composer-underscroll.test.ts pins the size of the gap.
+    expect(composer).toContain(".frame(maxWidth: ConversationTextView.composerMeasure)");
     expect(mac("ConversationStackView.swift")).toContain("ConversationTextView.maxMeasure");
     // The hairline went with the bar it separated; a floating card needs no rule above it.
     expect(composer).not.toContain("Rectangle().fill(ConchPalette.divider).frame(height: 1)");

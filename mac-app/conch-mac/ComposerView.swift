@@ -409,7 +409,7 @@ struct ComposerView: View {
         // The token rather than a hand-rolled shadow: §3 names this elevation, and a literal
         // that happens to look right is how the design system and the app come apart.
         .conchElevation(.floating)
-        .frame(maxWidth: ConversationTextView.maxMeasure)
+        .frame(maxWidth: ConversationTextView.composerMeasure)
         .padding(.horizontal, 16)
         .padding(.bottom, 14)
         // Dropping a screenshot straight onto the window is how anyone actually

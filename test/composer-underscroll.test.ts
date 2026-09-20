@@ -55,4 +55,29 @@ describe("the composer floats over the transcript", () => {
     // And yesterday's fix is untouched.
     expect(stack).toMatch(/Color\.clear\s+\.frame\(height: 14\)\s+\.id\(Self\.bottomAnchor\)/);
   });
+
+  /**
+   * The claim this file OPENS with, asserted instead of just described.
+   *
+   * Both measures were 700 (conch shot, 2026-09-21): the card covered the reading column
+   * exactly, so no line showed either side of it and the transcript appeared to stop at the
+   * card rather than run behind it — the one thing the change was for. Read as numbers, so
+   * widening the card or narrowing the column back to a tie fails here.
+   */
+  test("the card is narrower than the column it floats over", () => {
+    const fallback = swift("mac-app/conch-mac/TranscriptFallback.swift");
+    const measure = (name: string) => {
+      const found = fallback.match(new RegExp(`static let ${name}: CGFloat = (\\d+)`));
+      expect(found).not.toBeNull();
+      return Number(found![1]);
+    };
+    const reading = measure("maxMeasure");
+    const card = measure("composerMeasure");
+    expect(card).toBeLessThan(reading);
+    // Enough to actually SEE — 60 pt of line either side, not a hairline of difference.
+    expect(reading - card).toBeGreaterThanOrEqual(100);
+    expect(swift("mac-app/conch-mac/ComposerView.swift")).toContain(
+      ".frame(maxWidth: ConversationTextView.composerMeasure)",
+    );
+  });
 });

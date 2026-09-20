@@ -283,6 +283,17 @@ struct ConversationTextView: NSViewRepresentable {
     /// a line the eye loses its place in on the way back.
     static let maxMeasure: CGFloat = 700
 
+    /// The composer's measure, deliberately narrower than the reading measure.
+    ///
+    /// The card floats OVER the transcript now, and at the same 700 pt it covered the
+    /// column exactly — so the page looked like it STOPPED at the card's top edge
+    /// instead of running behind it. The 120 pt difference leaves 60 pt of every line
+    /// visible either side, which is the whole tell that the text continues underneath.
+    /// Tyler: "see the line created in the text to the right and left of the inpt box
+    /// top... we should just be able to see the content where its not covered by the
+    /// input box."
+    static let composerMeasure: CGFloat = 580
+
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
         context.coordinator.onOpenLink = onOpenLink
