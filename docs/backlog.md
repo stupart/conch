@@ -74,7 +74,7 @@ agent drive one, and the user able to reach in and interact — the way the Code
   plus a browser. Tyler: "where are we on being able to have a terminal and see the full file tree
   and diffs borrowing from this app: https://coteditor.com as well as a browser in the side panel".
   STATUS, looked up rather than guessed — one of four exists:
-  BROWSER, exists: `DeliverableWebView` (WKWebView, `WebView.swift`) already renders HTML
+  BROWSER, DONE `ae69957` — the pane browses now, with an address bar. `DeliverableWebView` renders HTML
   deliverables full-bleed. What is missing is arbitrary browsing and a page an agent drives while
   you reach into it — the Direction note above, not a new engine.
   DIFFS, partial: `DiffLine` (`ConversationStackView.swift:1280`) draws an edit's changed lines
@@ -151,6 +151,14 @@ agent drive one, and the user able to reach in and interact — the way the Code
 
 ## Done
 
+- **done** — The deliverable pane browses the web. DECIDED BY TYLER against my advice, with the
+  trade-off stated: the pane used to hand any off-origin navigation to Safari, because a
+  deliverable is an agent-authored URL in conch's own chrome and a third-party sign-in page was
+  otherwise indistinguishable from conch's UI. The boundary is now DISCLOSED rather than
+  ENFORCED — anywhere is reachable, and the bar always says where you are, reading the live url
+  via KVO rather than the filed link. `file:` is still pinned to the published file, and a typed
+  address is parsed as a web address (`DeliverableLink.url(for:)` would read "github.com" as a
+  file path). The old lock had no test at all; the guards replacing it are mutation-checked. `ae69957`
 - **done** — The transcript scrolls without the four stalls measured under it. The stack's body
   ran on every snapshot from ANY session (~4/s) and rebuilt every row: 44 markdown re-parses a
   second at 30 rows, 236 with history paged in, hitches 8 ms at 30 rows to 58–67 ms at ~300.
