@@ -445,16 +445,26 @@ tell application "System Events" to set frontName to name of first application p
 if frontName is not "Terminal" then return "front:" & frontName
 tell application "Terminal" to return tty of selected tab of front window`;
 
+/**
+ * The question `focusedAction` asks inside the script, right before a key: is
+ * Terminal still in front, and is its front tab still this session's (the tty
+ * travels as the last argv item)? Exported so an action that presses more than
+ * once can ask it again between presses.
+ */
+export const FOCUS_GUARD_LINES: readonly string[] = [
+  "-- conch-focus-guard",
+  'tell application "System Events" to set frontName to name of first application process whose frontmost is true',
+  'if frontName is not "Terminal" then return "front-window-changed"',
+  'tell application "Terminal" to set frontTty to tty of selected tab of front window',
+  'if frontTty is not (last item of argv) then return "front-window-changed"',
+];
+
 /** Check focus and issue the key in one script, without an inter-process gap. */
 export function focusedAction(tty: string, osa: OsaRunner, action: string[], argv: string[] = [], clipboardVersion?: number): Promise<OsaResult> {
   return osa([
     ...(clipboardVersion === undefined ? [] : ['use framework "AppKit"', "use scripting additions"]),
     "on run argv",
-    "-- conch-focus-guard",
-    'tell application "System Events" to set frontName to name of first application process whose frontmost is true',
-    'if frontName is not "Terminal" then return "front-window-changed"',
-    'tell application "Terminal" to set frontTty to tty of selected tab of front window',
-    'if frontTty is not (last item of argv) then return "front-window-changed"',
+    ...FOCUS_GUARD_LINES,
     ...(clipboardVersion === undefined ? [] : [
       "set pasteboard to current application's NSPasteboard's generalPasteboard()",
       'if (pasteboard\'s changeCount() as integer) is not (item 1 of argv as integer) then return "clipboard-changed"',

@@ -53,26 +53,47 @@ describe("native Terminal session lifecycle", () => {
     )).rejects.toThrow("claude is not installed");
   });
 
-  test("clean close sends Ctrl-D to the pid's Terminal tty and waits for that pid to leave", async () => {
-    let argv: string[] = [];
-    const alive = [true, false];
-    await closeTerminalSession(4321, {
-      expectedIdentity: identityFor(4321), processIdentity: identityFor,
-      ttyForPid: async () => "ttys007",
-      pidIsAlive: async () => alive.shift() ?? false,
-      sleep: async () => {},
-      spawn(args) {
-        argv = args;
-        return settledProcess("ok\n");
-      },
+  /**
+   * Claude Code 2.1.266 treats Ctrl-D like Ctrl-C: one press shows "Press Ctrl-D again to
+   * exit" and only a second within 800ms leaves. Tyler's close "did not exit cleanly after
+   * Ctrl-D" because conch pressed once; the session sat at its prompt with the hint on screen.
+   * Codex 0.155.1 leaves on one press, and its tab's process is gone within 200ms, so a second
+   * press there would land in whatever the finished tab gives way to. The count is the
+   * adapter's, and every press — not only the first — sits behind the front-window guard.
+   */
+  for (const [backend, presses] of [["claude", 2], ["codex", 1]] as const) {
+    test(`clean close sends ${presses} Ctrl-D to a ${backend} pid's Terminal tty and waits for that pid to leave`, async () => {
+      let argv: string[] = [];
+      const alive = [true, false];
+      await closeTerminalSession(4321, {
+        expectedIdentity: { ...identityFor(4321), executable: `/opt/bin/${backend}` }, backend,
+        processIdentity: (pid) => ({ ...identityFor(pid), executable: `/opt/bin/${backend}` }),
+        ttyForPid: async () => "ttys007",
+        pidIsAlive: async () => alive.shift() ?? false,
+        sleep: async () => {},
+        spawn(args) {
+          argv = args;
+          return settledProcess("ok\n");
+        },
+      });
+      const script = argv.join(" ");
+      const press = 'keystroke "d" using control down';
+      expect(script.split(press).length - 1).toBe(presses);
+      // The tty travels as the guard's own argument now: the script checks the front window is
+      // still this session's before the key, instead of trusting the raise it just asked for.
+      expect(argv.at(-1)).toBe("/dev/ttys007");
+      expect(script.split("conch-focus-guard").length - 1).toBe(presses);
+      // A guard precedes each press, and the presses are one script: the second must land
+      // inside Claude Code's 800ms window, which two osascript launches cannot promise.
+      expect(script.indexOf("conch-focus-guard")).toBeLessThan(script.indexOf(press));
+      if (presses === 2) {
+        const second = script.indexOf(press, script.indexOf(press) + 1);
+        expect(script.indexOf("conch-focus-guard", script.indexOf(press))).toBeLessThan(second);
+        expect(script.slice(script.indexOf(press), second)).toContain("delay 0.15");
+      }
+      expect(script).not.toMatch(/kill|SIG|tmux/);
     });
-    expect(argv.join(" ")).toContain('keystroke "d" using control down');
-    // The tty travels as the guard's own argument now: the script checks the front window is
-    // still this session's before the key, instead of trusting the raise it just asked for.
-    expect(argv.at(-1)).toBe("/dev/ttys007");
-    expect(argv.join(" ")).toContain("conch-focus-guard");
-    expect(argv.join(" ")).not.toMatch(/kill|SIG|tmux/);
-  });
+  }
 
   test("a helper timeout cancels osascript but never signals the agent pid", async () => {
     let cancelled = false;

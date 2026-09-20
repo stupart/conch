@@ -72,6 +72,7 @@ describe("a third backend is one row", () => {
     backend,
     displayName: "Fable",
     executable: "fable",
+    exitKeystrokes: 1,
     resumeArgs: (id) => ` --continue ${id}`,
     teleportArgs: null,
     bypassPermissionsFlag: "--trust-me",
