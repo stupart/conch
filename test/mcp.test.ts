@@ -563,7 +563,7 @@ describe("schemas state what the handlers enforce", () => {
 
   test("review_to_front describes publishing, not opening or finishing", () => {
     expect(MCP_TOOLS.find((tool) => tool.name === "review_to_front")!.description).toBe(
-      "Publish your session’s result for the user to inspect, with a concise summary and optional artifact or conversation scene. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
+      "Publish your session’s result for the user to inspect, with a concise summary and optional artifact or conversation scene. Publishing the same link again adds a newer version of that artifact rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
     );
   });
 });

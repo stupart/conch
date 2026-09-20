@@ -66,6 +66,62 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertNil(model.presentation(for: "session-1").selectedDeliverable)
     }
 
+    // MARK: - Which deliverables are one artifact
+
+    private func version(_ id: String, _ link: String?) -> DeliverableVersion {
+        DeliverableVersion(id: id, link: link)
+    }
+
+    /// Measured on 2026-09-20: a session held six deliverables, every one the same link. That
+    /// is one artifact with six versions, newest first, not six tabs.
+    func testTheSameLinkIsOneArtifactWithItsVersionsNewestFirst() {
+        let groups = DeliverableGroups.grouped([
+            version("v1", "https://x/asset"), version("v2", "https://x/asset"), version("v3", "https://x/asset"),
+        ])
+        XCTAssertEqual(groups.map(\.id), ["https://x/asset"])
+        XCTAssertEqual(groups[0].versions, ["v3", "v2", "v1"])
+        XCTAssertEqual(groups[0].newest, "v3")
+        XCTAssertTrue(groups[0].hasOlderVersions)
+    }
+
+    /// The session holding two distinct deliverables must be left exactly as it is today.
+    func testDistinctLinksStayDistinctInTheOrderTheyWereFiled() {
+        let groups = DeliverableGroups.grouped([version("a", "https://x/a"), version("b", "https://x/b")])
+        XCTAssertEqual(groups.map(\.id), ["https://x/a", "https://x/b"])
+        XCTAssertEqual(groups.map(\.versions), [["a"], ["b"]])
+        XCTAssertFalse(groups.contains(where: \.hasOlderVersions))
+    }
+
+    /// A group sits where its NEWEST version does, so the strip's ages run in one direction.
+    func testARepublishedArtifactMovesToTheNewEnd() {
+        let groups = DeliverableGroups.grouped([
+            version("a1", "https://x/a"), version("b1", "https://x/b"), version("a2", "https://x/a"),
+        ])
+        XCTAssertEqual(groups.map(\.id), ["https://x/b", "https://x/a"])
+        XCTAssertEqual(groups[1].versions, ["a2", "a1"])
+    }
+
+    /// Nothing says two linkless deliverables are the same thing, so each stands alone — and a
+    /// blank link is no link. Whitespace around a real link is not a different artifact.
+    func testNoLinkNeverGroupsAndTrimmedLinksDo() {
+        let groups = DeliverableGroups.grouped([
+            version("n1", nil), version("n2", ""), version("n3", "  "),
+            version("l1", "https://x/l"), version("l2", " https://x/l\n"),
+        ])
+        XCTAssertEqual(groups.map(\.id), ["n1", "n2", "n3", "https://x/l"])
+        XCTAssertEqual(groups[3].versions, ["l2", "l1"])
+    }
+
+    /// The tab stands for the pick while it is one of its own versions; another group's pick,
+    /// or one the per-session cap has dropped, leaves it on the newest.
+    func testTheTabStandsForItsOwnPickElseTheNewest() {
+        let group = DeliverableGroup(id: "https://x/a", versions: ["a2", "a1"])
+        XCTAssertEqual(group.shown(picked: "a1"), "a1")
+        XCTAssertEqual(group.shown(picked: nil), "a2")
+        XCTAssertEqual(group.shown(picked: "b1"), "a2")
+        XCTAssertEqual(group.shown(picked: "a0"), "a2")
+    }
+
     // MARK: - Target resolution and its fallbacks
 
     func testThePickWinsOverEveryFallback() {

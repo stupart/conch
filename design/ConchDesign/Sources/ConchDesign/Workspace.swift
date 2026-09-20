@@ -208,6 +208,82 @@ public struct SessionPresentation: Equatable, Sendable {
     }
 }
 
+// MARK: - Which deliverables are one artifact
+
+/// One filing of a deliverable, reduced to the two facts grouping reads.
+public struct DeliverableVersion: Equatable, Sendable {
+    public let id: String
+    public let link: String?
+
+    public init(id: String, link: String?) {
+        self.id = id
+        self.link = link
+    }
+}
+
+/// One ARTIFACT, and every filing of it the session still holds.
+///
+/// Measured on 2026-09-20, from the live published state: one session held six deliverables
+/// and every one of them was the same link. Six tabs, one artifact — each `review_to_front`
+/// about the same page had become a competing tab, when to the reader it is the same page,
+/// newer. Two other sessions held six that were four things each; a fourth held two that were
+/// two. Grouping has to collapse the first and leave the last exactly as it is.
+public struct DeliverableGroup: Equatable, Sendable, Identifiable {
+    /// The link the versions share, or the lone version's own id when it has none.
+    public let id: String
+    /// Every filing of this artifact, NEWEST FIRST: `versions[0]` is what the tab stands for
+    /// until the reader picks an older one.
+    public let versions: [String]
+
+    public init(id: String, versions: [String]) {
+        self.id = id
+        self.versions = versions
+    }
+
+    public var newest: String { versions[0] }
+    public var hasOlderVersions: Bool { versions.count > 1 }
+
+    /// The version this group's tab stands for: the reader's pick while it is one of these,
+    /// else the newest. A pick that fell off the per-session cap, or belongs to another group,
+    /// is no pick here — the same rule `SessionPresentation.shown` applies to the pane.
+    public func shown(picked: String?) -> String {
+        if let picked, versions.contains(picked) { return picked }
+        return newest
+    }
+}
+
+public enum DeliverableGroups {
+    /// The held deliverables as artifacts, from `held` OLDEST FIRST as the daemon keeps them.
+    ///
+    /// The key is the link, and only the link. The identity the daemon mints folds in the filing
+    /// time on purpose (#268 fixed two filings in one millisecond colliding), so it can never say
+    /// that two filings are one artifact. The summary changes from version to version — that is
+    /// what a summary is for — so similarity would either split versions or merge strangers. The
+    /// link is what the reader lands on when they click; the same link is the same thing to them.
+    /// A filing with no link has nothing to say it is the same as another, so it stands alone.
+    ///
+    /// Groups come back oldest first BY THEIR NEWEST VERSION, so a republished artifact moves to
+    /// the new end. Ordered by first filing instead, the strip's ages would run out of order — a
+    /// tab reading "2m" beside one reading "3h" on its right — which is exactly the "which is
+    /// older" question the strip exists to answer at a glance.
+    ///
+    /// ponytail: the key is the link byte for byte after trimming; a path the agent rewrites each
+    /// run (`hero-v3.png`, `hero-v4.png`) is two artifacts here, honestly. Normalise when a real
+    /// case shows two spellings of one thing.
+    public static func grouped(_ held: [DeliverableVersion]) -> [DeliverableGroup] {
+        var versions: [String: [String]] = [:]
+        var order: [String] = []
+        for version in held {
+            let link = version.link?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let key = link.isEmpty ? version.id : link
+            versions[key, default: []].insert(version.id, at: 0)
+            order.removeAll { $0 == key }
+            order.append(key)
+        }
+        return order.map { DeliverableGroup(id: $0, versions: versions[$0]!) }
+    }
+}
+
 /// The one owner of "which session", for every surface that has an opinion about it.
 ///
 /// Drafts are NOT here: a session's draft already has exactly one owner that persists it
