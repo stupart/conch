@@ -132,13 +132,13 @@ agent drive one, and the user able to reach in and interact — the way the Code
   TextKit 1 fallback the caret fix introduced.
 
 ### Engineering
-- **open** — The dashboard re-renders on every snapshot, and the transcript was only the worst
-  of it. MEASURED 2026-09-20, after the stack was fixed: main still hitches ~4.4/s at ~42 ms at
-  idle in a single instance. The rest of the window is rebuilding four times a second —
-  `ComposerView`'s `SelectionOverlay.updateNSView`, the header buttons, and plausibly the
-  terminal pane once it is open. `StateStore.hasSamePresentation` is meant to swallow
-  no-op snapshots and lets ~4 bursts/s through. Wants a Time Profiler pass on `DashboardView`
-  and `StateStore`, and probably the same `EquatableView` keying the stack now uses.
+- **open** — A streaming snapshot still costs ~75 ms at 300 rows, after BOTH the MemoRow fix
+  and the republish fix. MEASURED 2026-09-20: 63% of it is SwiftUI's own graph walk, with
+  `ConversationItem`/`Conversation` equality (~1200 samples) and `_stringCompare` (62 ms)
+  underneath it — row keys AND `hasSamePresentation` both compare full item TEXT, so every
+  token that arrives re-compares every message in the window. Wants a cheaper identity (the
+  revision the daemon already sends, or a hash taken once per item) rather than more
+  memoisation. `ConversationStackView.swift` and `Models.swift`.
 - **open** — Why five overlapping captures of one sentence reach the exit drain at all. Both
   dictation fixes treat convergence points, not the source. Start at
   `src/dictation-controller.ts`, the capture→re-arm→transcribe path; the diagnostic is logging
@@ -160,6 +160,21 @@ agent drive one, and the user able to reach in and interact — the way the Code
 
 ## Done
 
+- **done** — The window stops re-rendering four times a second for a snapshot that has not
+  changed. Main thread at true idle: 99 ms/s → **6 ms/s** (Time Profiler on the Release app,
+  2026-09-20) — a flat 27 ms per 250 ms poll with nothing on screen changing, now ~1 ms.
+  The cause was NOT `hasSamePresentation`, which was doing its job: at true idle the daemon
+  does not rewrite the file at all (8 reads over 2 s byte-identical, `ts` included) and `state`
+  was correctly left alone. Other `@Published` stores on the same poll republished the whole
+  window anyway — `daemonMessage`/`isLedgerFrozen` (stored TWICE, from `accept()` and
+  `evaluateLiveness()`), `newerDaemonWarningVisible`, `liveness`, and a mutating call on the
+  `@Published` outbox whose `didSet` also wrote UserDefaults. `@Published` fires on assignment
+  whether or not the value changed. Each is now stored only on change. `e10d704`
+  CORRECTS this backlog's own earlier note: `SelectionOverlay.updateNSView` is **SwiftUI's own
+  type**, reached through `.textSelection(.enabled)` — not a conch view and not ours to
+  optimise. `ComposerView.body` is ~1 ms/s; the header buttons 0.02 ms each and already skipped.
+  Written down because this file named it as the suspect, and the next person would have gone
+  looking for a symbol that does not exist.
 - **done** — The deliverable pane browses the web. DECIDED BY TYLER against my advice, with the
   trade-off stated: the pane used to hand any off-origin navigation to Safari, because a
   deliverable is an agent-authored URL in conch's own chrome and a third-party sign-in page was
