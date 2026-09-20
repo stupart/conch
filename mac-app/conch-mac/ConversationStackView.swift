@@ -35,6 +35,11 @@ struct ConversationStackView: View {
     /// Whether this daemon reports `viewedAt` at all. Without it every deliverable looks unviewed,
     /// so the card must not be gated on a field that is always nil.
     var reportsViewedState = true
+    /// The work half is already showing a deliverable, so the card would be the same thing
+    /// twice on one screen. It returns when the pane is closed: the card is the way IN to the
+    /// deliverable, and a way in you are already through is just noise at the end of a
+    /// transcript.
+    var artifactShownBeside = false
     /// The session's working directory: what a relative link in the agent's
     /// prose is relative to (A13). Nil on an older daemon.
     var cwd: String? = nil
@@ -262,7 +267,8 @@ struct ConversationStackView: View {
                     // unviewed test the ledger already uses (`isUnviewed`), gated on the daemon
                     // actually reporting it, so an older daemon keeps today's behaviour rather than
                     // silently hiding every card.
-                    if let artifact, artifact.viewedAt == nil || !reportsViewedState {
+                    if let artifact, !artifactShownBeside,
+                       artifact.viewedAt == nil || !reportsViewedState {
                         // Keyed like the rows: the card reads its file — or decodes its image —
                         // on every body, and the body runs four times a second (the probe
                         // showed one markdown parse per snapshot at rest, this one).

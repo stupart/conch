@@ -215,7 +215,9 @@ public struct SessionPresentation: Equatable, Sendable {
 @MainActor
 public final class WorkspaceModel: ObservableObject {
     /// The session the reader PICKED, by id. Nil means "follow the work".
-    @Published public var viewing: String?
+    @Published public var viewing: String? {
+        didSet { carryPresentation(from: oldValue) }
+    }
     @Published private var presentations: [String: SessionPresentation] = [:]
 
     public init(viewing: String? = nil) {
@@ -223,6 +225,30 @@ public final class WorkspaceModel: ObservableObject {
     }
 
     // MARK: Which session
+
+    /// The page follows you between conversations.
+    ///
+    /// Each session still STORES its own page — nothing here changes that — but arriving at a
+    /// session seeds it from the one you just left. Tyler: "we should also preserve the view
+    /// your on when you go between conversations". Without it, reading side by side and
+    /// clicking the next session dropped you back to whatever that session was last left on,
+    /// which is a page you did not ask for in the middle of a comparison.
+    ///
+    /// Done on `viewing` rather than at the call sites because there are five of them — a
+    /// click, a rename, two cycles and a clear — and a rule that has to be remembered at five
+    /// call sites is a rule that will be forgotten at one.
+    ///
+    /// The work half carries too, and is safe to: `workPane(for:)` already refuses a pane the
+    /// session cannot fill, so arriving on Files at a session with no folder falls back rather
+    /// than showing an empty tree.
+    private func carryPresentation(from previous: String?) {
+        guard let previous, let arriving = viewing, previous != arriving else { return }
+        let leaving = presentation(for: previous)
+        update(arriving) {
+            $0.stage = leaving.stage
+            $0.work = leaving.work
+        }
+    }
 
     public func viewed(in workspace: Workspace) -> String? {
         WorkspaceFocus.viewed(in: workspace, pinned: viewing)

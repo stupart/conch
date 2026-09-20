@@ -172,18 +172,25 @@ final class WorkspaceTests: XCTestCase {
 
     // MARK: - Per-session presentation
 
-    func testEachSessionKeepsItsOwnPageAcrossSwitches() {
-        let model = WorkspaceModel()
+    /// The PAGE follows you now (Tyler, 2026-09-20: "preserve the view your on when you go
+    /// between conversations"), which reverses the half of this test that asserted each session
+    /// kept its own. The other half stands and is the point of keeping it: open TOOL ROWS are
+    /// still per session. A page is how you are reading; an opened row is a thing you opened in
+    /// one particular transcript, and carrying those would litter the next one.
+    func testTheOpenRowsStayPerSessionEvenThoughThePageFollows() {
+        // Viewing "a" to begin with, because that is the only state the carry means anything
+        // in: with nothing selected there is no view you are ON to preserve, and the carry
+        // correctly refuses. The app always has a session selected before you switch.
+        let model = WorkspaceModel(viewing: "a")
         model.show(stage: .deliverable, for: "a")
         model.toggleTool("tool-1", for: "a")
 
         model.viewing = "b"
-        XCTAssertTrue(model.presentation(for: "b").showsConversation, "b has its own default")
-        XCTAssertFalse(model.isToolExpanded("tool-1", for: "b"), "and its own open rows")
+        XCTAssertFalse(model.presentation(for: "b").showsConversation, "the page came with you")
+        XCTAssertFalse(model.isToolExpanded("tool-1", for: "b"), "but its own open rows did not")
 
         model.viewing = "a"
-        XCTAssertFalse(model.presentation(for: "a").showsConversation, "a is where it was left")
-        XCTAssertTrue(model.isToolExpanded("tool-1", for: "a"))
+        XCTAssertTrue(model.isToolExpanded("tool-1", for: "a"), "and a's rows are still a's")
     }
 
     /// The continuity violation the review named: a newly filed artifact used to set the pane
@@ -238,5 +245,44 @@ extension WorkspaceTests {
 
         XCTAssertEqual(model.presentation(for: "a").work, .files)
         XCTAssertEqual(model.presentation(for: "b").work, .deliverable, "b has its own default")
+    }
+}
+
+extension WorkspaceTests {
+    /// The page follows you between conversations, rather than each session yanking you back
+    /// to whatever it was last left on mid-comparison.
+    func testThePageFollowsYouToTheNextConversation() {
+        let model = WorkspaceModel(viewing: "a")
+        model.show(stage: .sideBySide, for: "a")
+        model.viewing = "b"
+
+        XCTAssertEqual(model.presentation(for: "b").stage, .sideBySide)
+        XCTAssertEqual(model.presentation(for: "a").stage, .sideBySide, "and the one you left is unchanged")
+    }
+
+    func testTheWorkHalfFollowsTooSoASplitKeepsShowingTheSameKindOfThing() {
+        let model = WorkspaceModel(viewing: "a")
+        model.show(stage: .sideBySide, for: "a")
+        model.show(work: .terminal, for: "a")
+        model.viewing = "b"
+
+        XCTAssertEqual(model.presentation(for: "b").work, .terminal)
+    }
+
+    /// Storage stays per session: this seeds on ARRIVAL, it does not make one global page.
+    func testClearingTheSelectionCarriesNothing() {
+        let model = WorkspaceModel(viewing: "a")
+        model.show(stage: .deliverable, for: "a")
+        model.viewing = nil
+
+        XCTAssertEqual(model.presentation(for: "a").stage, .deliverable)
+    }
+
+    func testReturningToTheSameSessionIsNotACarry() {
+        let model = WorkspaceModel(viewing: "a")
+        model.show(stage: .deliverable, for: "a")
+        model.viewing = "a"
+
+        XCTAssertEqual(model.presentation(for: "a").stage, .deliverable)
     }
 }
