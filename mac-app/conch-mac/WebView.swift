@@ -15,6 +15,10 @@ struct DeliverableWebView: NSViewRepresentable {
     let link: String
     let reloadID: UUID
     @Binding var isLoading: Bool
+    /// Where the view actually IS, which stops being the surfaced link the moment you
+    /// navigate. The bar above reads this: with navigation free, a bar derived from the link
+    /// that was FILED would confidently name the wrong origin, which is worse than no bar.
+    @Binding var currentLink: String?
     let onNavigationFailure: (DeliverableNavigationFailure) -> Void
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
@@ -23,6 +27,7 @@ struct DeliverableWebView: NSViewRepresentable {
         var loadedReloadID: UUID?
         var activeNavigation: WKNavigation?
         var loadingObservation: NSKeyValueObservation?
+        var urlObservation: NSKeyValueObservation?
         var isObservingLoadingState = false
         var surfacedURL: URL?
 
@@ -32,6 +37,20 @@ struct DeliverableWebView: NSViewRepresentable {
 
         deinit {
             loadingObservation?.invalidate()
+            urlObservation?.invalidate()
+        }
+
+        /// The same KVO shape as the loading state beside it, for the same reason: WebKit is
+        /// the only thing that knows where a page went, and a redirect or an in-page link
+        /// moves it without anyone calling us.
+        func observeCurrentURL(of webView: WKWebView) {
+            urlObservation = webView.observe(\.url, options: [.initial, .new]) { view, _ in
+                let here = view.url?.absoluteString
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.parent.currentLink != here else { return }
+                    self.parent.currentLink = here
+                }
+            }
         }
 
         func observeLoadingState(of webView: WKWebView) {
@@ -56,6 +75,8 @@ struct DeliverableWebView: NSViewRepresentable {
             isObservingLoadingState = false
             loadingObservation?.invalidate()
             loadingObservation = nil
+            urlObservation?.invalidate()
+            urlObservation = nil
             activeNavigation = nil
         }
 
@@ -105,15 +126,9 @@ struct DeliverableWebView: NSViewRepresentable {
                 return
             }
 
-            switch navigationPolicy(
-                for: destination,
-                isTopLevel: navigationAction.targetFrame?.isMainFrame != false
-            ) {
+            switch navigationPolicy(for: destination) {
             case .allow:
                 decisionHandler(.allow)
-            case .openExternally:
-                offerExternalNavigation(to: destination)
-                decisionHandler(.cancel)
             case let .refuse(message):
                 refuseNavigation(to: destination, message: message)
                 decisionHandler(.cancel)
@@ -167,26 +182,23 @@ struct DeliverableWebView: NSViewRepresentable {
             )
         }
 
-        private func navigationPolicy(
-            for destination: URL,
-            isTopLevel: Bool
-        ) -> NavigationPolicy {
+        private func navigationPolicy(for destination: URL) -> NavigationPolicy {
             guard let scheme = destination.scheme?.lowercased() else {
                 return .refuse("Only HTTP, HTTPS, and the surfaced local file can be opened in the review.")
             }
 
             switch scheme {
             case "http", "https":
-                guard isTopLevel else { return .allow }
-                guard let surfacedURL,
-                      let surfacedOrigin = WebOrigin(url: surfacedURL),
-                      let destinationOrigin = WebOrigin(url: destination) else {
-                    return .refuse("The destination does not have a valid web origin.")
-                }
-                guard surfacedOrigin == destinationOrigin else {
-                    return .openExternally
-                }
+                // The pane browses rather than refuses (Tyler's call, 2026-09-20). The
+                // boundary moves from ENFORCED to DISCLOSED: anywhere on the web is
+                // reachable, and the bar above always says where you actually are. That is
+                // only true because the bar reads the LIVE url — relaxing this without that
+                // would leave it naming the filed link while you were somewhere else, which
+                // is the failure the boundary existed to prevent, wearing a badge.
                 return .allow
+            // NOT relaxed with the web. Free navigation was asked for so the pane can browse;
+            // reading arbitrary local files is a different power nobody asked for, and the
+            // published file is still the only one this pane was handed.
             case "file":
                 guard let surfacedURL,
                       surfacedURL.isFileURL,
@@ -198,20 +210,6 @@ struct DeliverableWebView: NSViewRepresentable {
             default:
                 return .refuse("The \(scheme) URL scheme is not allowed in the review.")
             }
-        }
-
-        private func offerExternalNavigation(to destination: URL) {
-            parent.isLoading = false
-            parent.onNavigationFailure(
-                DeliverableNavigationFailure(
-                    title: "Open link in browser?",
-                    link: destination.absoluteString,
-                    url: destination,
-                    message: "This link leaves the review’s original website, so it wasn’t opened inside Conch.",
-                    canRetry: false,
-                    canOpenInBrowser: true
-                )
-            )
         }
 
         private func refuseNavigation(to destination: URL?, message: String) {
@@ -231,26 +229,9 @@ struct DeliverableWebView: NSViewRepresentable {
 
         private enum NavigationPolicy {
             case allow
-            case openExternally
             case refuse(String)
         }
 
-        private struct WebOrigin: Equatable {
-            let scheme: String
-            let host: String
-            let port: Int
-
-            init?(url: URL) {
-                guard let scheme = url.scheme?.lowercased(),
-                      scheme == "http" || scheme == "https",
-                      let host = url.host?.lowercased() else {
-                    return nil
-                }
-                self.scheme = scheme
-                self.host = host
-                port = url.port ?? (scheme == "https" ? 443 : 80)
-            }
-        }
     }
 
     func makeCoordinator() -> Coordinator {
@@ -271,6 +252,7 @@ struct DeliverableWebView: NSViewRepresentable {
         webView.wantsLayer = true
         webView.layer?.backgroundColor = NSColor(ConchPalette.bg).cgColor
         context.coordinator.observeLoadingState(of: webView)
+        context.coordinator.observeCurrentURL(of: webView)
         return webView
     }
 

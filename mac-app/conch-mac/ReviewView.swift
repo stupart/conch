@@ -384,10 +384,37 @@ private struct ReviewContent: View {
 
     /// Scheme + host together: on a bar whose job is marking a trust boundary,
     /// http:// and https:// must not look alike.
+    /// Where the user asked to go, if they typed somewhere. Nil means the filed deliverable.
+    @State private var destination: String?
+    /// Where the web view actually is, reported by WebKit.
+    @State private var liveLink: String?
+    @State private var addressDraft = ""
+
+    /// What the pane is showing: a typed destination wins over the filed link.
+    private var shownLink: String { destination ?? link }
+
+    /// The address as it should READ — the live url when WebKit has one, else what we asked
+    /// for. Derived from the live value on purpose: the pane can now navigate anywhere, so a
+    /// bar computed from the filed link would name the wrong origin the moment you moved.
+    private var addressText: String { liveLink ?? shownLink }
+
     private var originText: String {
-        guard let url = URL(string: link), let host = url.host else { return link }
+        guard let url = URL(string: addressText), let host = url.host else { return addressText }
         guard let scheme = url.scheme else { return host }
         return scheme + "://" + host
+    }
+
+    /// A typed address, made into something loadable.
+    ///
+    /// NOT `DeliverableLink.url(for:)`: that turns a schemeless string into a FILE path, so
+    /// "github.com" would have been read as a file on this Mac. Typed text is a web address.
+    static func webDestination(from typed: String) -> String? {
+        let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let url = URL(string: trimmed), let scheme = url.scheme?.lowercased() {
+            return (scheme == "http" || scheme == "https") ? trimmed : nil
+        }
+        return "https://" + trimmed
     }
     @Binding var isWebLoading: Bool
     @State private var navigationFailure: DeliverableNavigationFailure?
@@ -527,12 +554,21 @@ private struct ReviewContent: View {
                         .font(.system(size: 9.5))
                     // Scheme included: on a bar whose stated job is marking a
                     // trust boundary, http:// and https:// must not look alike.
-                    Text(originText)
+                    // An address, not a label: the pane browses now, so this is both where
+                    // you are and where you can go. It still names the origin first — that is
+                    // what keeps a third-party page from reading as conch's own UI.
+                    TextField(originText, text: $addressDraft)
+                        .textFieldStyle(.plain)
                         .font(ConchTypography.font(size: 11))
                         .lineLimit(1)
-                        .truncationMode(.middle)
+                        .onSubmit {
+                            guard let target = Self.webDestination(from: addressDraft) else { return }
+                            navigationFailure = nil
+                            isWebLoading = true
+                            destination = target
+                        }
                     Spacer(minLength: 8)
-                    Button("Open in browser") { open(link) }
+                    Button("Open in browser") { open(addressText) }
                     .buttonStyle(.link)
                     .font(ConchTypography.font(size: 11))
                 }
@@ -548,13 +584,20 @@ private struct ReviewContent: View {
 
                 ZStack {
                 DeliverableWebView(
-                    link: link,
+                    link: shownLink,
                     reloadID: reloadID,
                     isLoading: $isWebLoading,
+                    currentLink: $liveLink,
                     onNavigationFailure: { failure in
                         navigationFailure = failure
                     }
                 )
+                // The field follows the page: a redirect, or a link followed inside it, moves
+                // where you are without anyone typing.
+                .onChange(of: liveLink) { _, here in
+                    if let here { addressDraft = here }
+                }
+                .onAppear { addressDraft = addressText }
 
                 // WKWebView paints the document white until the page's own
                 // background lands, so a remote deliverable flashed a blinding

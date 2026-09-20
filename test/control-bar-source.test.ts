@@ -337,7 +337,9 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(review).not.toContain("private var caption: some View {");
   expect(review).not.toContain('Text(item.summary.isEmpty ? "Ready for review" : item.summary)');
   // NOT the origin bar, which looks similar and is a trust boundary rather than decoration.
-  expect(review).toContain('Button("Open in browser") { open(link) }');
+  // Where you ARE, not where the deliverable was filed: the pane can navigate now, so
+  // opening "the link" would hand the browser a page you had already left.
+  expect(review).toContain('Button("Open in browser") { open(addressText) }');
   // A fog resized by hand must come back the size it was. `setFrameUsingName` restores only the ORIGIN of a
   // borderless, non-resizable panel and drops the size, so the default won on every launch and the size someone
   // chose was never the size they got — measured twice while building the capture system: asked 480x360, got
