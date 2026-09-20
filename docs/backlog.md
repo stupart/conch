@@ -39,6 +39,15 @@ agent drive one, and the user able to reach in and interact — the way the Code
 ## Open
 
 ### UI / UX
+- **open** — The deliverable pane's address bar shows the whole URL, so the origin is buried
+  mid-string where it used to lead. That bar's stated job is telling a third-party page apart
+  from conch's own chrome, and with navigation now free (`ae69957`) it is the only thing doing
+  that job. Seen on screen 2026-09-20: `https://github.com/stupart/seashell/pull/13`. Safari
+  solves this by emphasising the domain and dimming the rest; this should too.
+- **open** — "Open in browser" is clipped under the stage control, which is overlaid
+  `.topTrailing` on the same corner the origin bar's trailing button occupies. Pre-existing —
+  visible in captures from before the address bar landed — but the longer address makes it
+  reliably reachable-looking and unreachable.
 - **open** — The terminal pane puts a second text field directly above the session composer, so
   two inputs sit one line apart with nothing saying which has focus. Found the hard way while
   verifying the pane: a click that missed the terminal field left keystrokes to be read as
