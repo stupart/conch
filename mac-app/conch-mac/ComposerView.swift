@@ -414,7 +414,13 @@ struct ComposerView: View {
         .padding(.bottom, 14)
         // Dropping a screenshot straight onto the window is how anyone actually
         // shares one, so it must work without opening a file picker first.
-        .onDrop(of: [.fileURL], isTargeted: $isTargetedForDrop) { providers in
+        // `.image` as well as `.fileURL`. A drag out of Finder carries a file URL and always
+        // worked; a drag from a browser, Preview, Photos or Messages carries image BYTES and
+        // matched nothing here, so the drop was refused with no feedback at all — the target
+        // never even lit, which is why it read as "doesn't seem to work" rather than as an
+        // error. `.image` is the whole tree (png, jpeg, tiff, heic, gif conform to it), the
+        // same way the file picker asks for `.image` rather than listing extensions.
+        .onDrop(of: [.fileURL, .image], isTargeted: $isTargetedForDrop) { providers in
             load(providers)
             return true
         }
@@ -690,10 +696,28 @@ struct ComposerView: View {
         attach(panel.urls)
     }
 
+    /// A dropped provider is one of two things, and only one of them is a file.
+    ///
+    /// Asked by CONFORMANCE rather than by coercing `public.image`: a provider registers the
+    /// concrete type it actually holds (`public.png`), and asking it for the abstract parent
+    /// is not guaranteed to transcode.
     private func load(_ providers: [NSItemProvider]) {
         for provider in providers {
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let url else { return }
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    // A promised file can arrive as a URL that is not written yet; attaching a
+                    // path with nothing behind it would fail later, at send.
+                    guard let url, FileManager.default.fileExists(atPath: url.path) else { return }
+                    Task { @MainActor in attach([url]) }
+                }
+                continue
+            }
+            guard let type = provider.registeredTypeIdentifiers.first(where: {
+                UTType($0)?.conforms(to: .image) == true
+            }) else { continue }
+            provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
+                guard let data, let image = NSImage(data: data),
+                      let url = ComposerPasteBridge.temporaryPNG(image, prefix: "conch-drop") else { return }
                 Task { @MainActor in attach([url]) }
             }
         }
@@ -896,11 +920,16 @@ private extension View {
             // as text, and it is the deeper view under the pointer, so it won
             // every drop on the text area — Tyler dragged two screenshots in
             // and got two paths in the message. Keep every other type (text
-            // drags still work); only files are the composer's business.
-            let files: Set<NSPasteboard.PasteboardType> = [
-                .fileURL, NSPasteboard.PasteboardType("NSFilenamesPboardType"),
+            // drags still work).
+            //
+            // Image types are refused here too now that the composer accepts image BYTES. A
+            // rich-text NSTextView registers for them and draws a dragged image inline, so
+            // fixing the drop without this would have handed it straight back to the editor —
+            // the same loss as the pasted paths, wearing a different shape.
+            let refused: Set<NSPasteboard.PasteboardType> = [
+                .fileURL, NSPasteboard.PasteboardType("NSFilenamesPboardType"), .png, .tiff,
             ]
-            let kept = view.registeredDraggedTypes.filter { !files.contains($0) }
+            let kept = view.registeredDraggedTypes.filter { !refused.contains($0) }
             view.unregisterDraggedTypes()
             view.registerForDraggedTypes(kept)
         }
@@ -1000,13 +1029,23 @@ private struct ComposerPasteBridge: NSViewRepresentable {
             if !images.isEmpty { return images }
         }
         guard let image = NSImage(pasteboard: pasteboard),
-              let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let png = rep.representation(using: .png, properties: [:]) else { return [] }
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("conch-paste-\(UUID().uuidString).png")
-        do { try png.write(to: url) } catch { return [] }
+              let url = temporaryPNG(image, prefix: "conch-paste") else { return [] }
         return [url]
+    }
+
+    /// Image bytes as a file something can attach.
+    ///
+    /// Shared with the drop path: both arrive holding pixels and no file, and writing that out
+    /// twice is how the two come to disagree about format or naming. The prefix says which
+    /// door it came through, which is the only thing a temp file can tell you afterwards.
+    static func temporaryPNG(_ image: NSImage, prefix: String) -> URL? {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return nil }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(prefix)-\(UUID().uuidString).png")
+        do { try png.write(to: url) } catch { return nil }
+        return url
     }
 }
 

@@ -249,12 +249,20 @@ describe("the Mac composer belongs to one session", () => {
     expect(attachAt).toBeGreaterThan(-1);
     const attach = composer.slice(attachAt, composer.indexOf("\n    }", attachAt));
     expect(attach).toMatch(/attachments\.append\(contentsOf: fresh\)[\s\S]*onDraftStarted\(\)/);
+    // Sliced to the function's own end, not a fixed character count — the idiom three lines
+    // above. `load` grew a doc comment and a file-URL branch when drop learned to take image
+    // BYTES, and `attach([url])` fell outside a 400-character window while still being called
+    // twice: the rule held and the guard failed anyway. A count is a guess about how long a
+    // function will stay; an end marker is not.
     const chooserAt = composer.indexOf("private func chooseFiles()");
     expect(chooserAt).toBeGreaterThan(-1);
-    expect(composer.slice(chooserAt, chooserAt + 600)).toContain("attach(panel.urls)");
+    expect(composer.slice(chooserAt, composer.indexOf("\n    }", chooserAt))).toContain("attach(panel.urls)");
     const loadAt = composer.indexOf("private func load(");
     expect(loadAt).toBeGreaterThan(-1);
-    expect(composer.slice(loadAt, loadAt + 400)).toContain("attach([url])");
+    const load = composer.slice(loadAt, composer.indexOf("\n    }", loadAt));
+    expect(load).toContain("attach([url])");
+    // Both ways in, through the one rule: the file on disk and the bytes that become one.
+    expect(load.match(/attach\(\[url\]\)/g) ?? []).toHaveLength(2);
   });
 
   test("image attachments render a thumbnail instead of only a filename", () => {
