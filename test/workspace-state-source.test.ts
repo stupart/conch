@@ -129,11 +129,41 @@ describe("new work does not replace what you are reading", () => {
     expect(pane).toContain('action: { workspace.show(stage: .conversation, for: row.id) }');
     expect(pane).toContain('action: { workspace.show(stage: .sideBySide, for: row.id) }');
     expect(pane).toContain('action: { workspace.show(stage: .deliverable, for: row.id) }');
-    expect(pane).toContain("onOpenArtifact: { workspace.show(stage: .deliverable, for: row.id) }");
+    // The closure does two things now, so it is no longer one line — but the door itself is
+    // unchanged, which is what the count above pins.
+    expect(pane).toContain("onOpenArtifact: {");
+    // Scoped to the closure: `store.markReviewViewed(` already appears at the tab click, so an
+    // unscoped toContain would pass with this call deleted — a guard that proves nothing.
+    const opening = pane.slice(
+      pane.indexOf("onOpenArtifact: {"),
+      pane.indexOf("onFreeform:", pane.indexOf("onOpenArtifact: {")),
+    );
+    expect(opening.length).toBeGreaterThan(80);
+    expect(opening).toContain("store.markReviewViewed(");
+    expect(opening).toContain("review.viewedAt == nil");
+    expect(opening).toContain("state?.features?.viewedState != nil");
   });
 
-  test("the page is per session, so switching away and back returns to it", () => {
+  /**
+   * The page FOLLOWS you between conversations now — Tyler: "preserve the view your on when you
+   * go between conversations". Storage is still per session (this line), so nothing about the
+   * model changed; arriving at a session simply seeds its page from the one you left. Done on
+   * `viewing` itself because there are five assignment sites — a click, a rename, two cycles
+   * and a clear — and a rule enforced at five call sites is a rule forgotten at one.
+   */
+  test("the page follows you between sessions, and is still stored per session", () => {
     expect(pane).toContain("workspace.presentation(for: row?.id).stage");
+    expect(rules).toContain("didSet { carryPresentation(from: oldValue) }");
+    const carry = rules.slice(
+      rules.indexOf("private func carryPresentation(from previous: String?)"),
+      rules.indexOf("public func viewed(in workspace: Workspace)"),
+    );
+    expect(carry.length).toBeGreaterThan(100);
+    expect(carry).toContain("guard let previous, let arriving = viewing, previous != arriving else { return }");
+    expect(carry).toContain("$0.stage = leaving.stage");
+    expect(carry).toContain("$0.work = leaving.work");
+    // Rows you opened in one transcript are not carried into the next.
+    expect(carry).not.toContain("expandedToolIDs");
     // §3 line 198: the switch lives in the HEADER now, not in a bar of its own under it.
     expect(pane).not.toContain("perspectiveBar");
     const header = pane.slice(
@@ -190,8 +220,59 @@ describe("new work does not replace what you are reading", () => {
     // deliverable; the split itself no longer names either.
     expect(split).toContain("workContent(for: reviewRow)");
     expect(pane).toContain("private func workContent(for row: SessionRow) -> some View {");
-    // Half each: two equal claims on the width, rather than a measured fraction.
-    expect(split.match(/\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)/g) ?? []).toHaveLength(2);
+    // ONE infinity claim now, not two. The conversation is given a measured width and the
+    // work takes whatever is left, so the two halves cannot disagree about the total by a
+    // rounding point and leave a seam down the middle. This reverses "two equal claims on the
+    // width, rather than a measured fraction": half each was right while the halves were
+    // interchangeable, and a file tree and a terminal want width a transcript does not.
+    expect(split.match(/\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)/g) ?? []).toHaveLength(1);
+    expect(split).toContain("GeometryReader { split in");
+    expect(split).toContain("splitResizer(in: split.size.width)");
+    expect(split).toContain(".frame(width: max(0, split.size.width * splitFraction(in: split.size.width)))");
+  });
+
+  /**
+   * Tyler: "drag the center diviger on the conch mac app panel view to change the proportions".
+   * Bounded so neither half can be dragged to nothing, and remembered like the sidebar's width
+   * — it is a preference about how you read, not a fact about one conversation.
+   */
+  test("the split is dragged, bounded, and remembered", () => {
+    expect(dashboard).toContain('@AppStorage("conch.splitFraction") private var storedSplitFraction = 0.5');
+    expect(dashboard).toContain("private static let splitBounds: ClosedRange<Double> = 0.25...0.75");
+    const fraction = dashboard.slice(
+      dashboard.indexOf("private func splitFraction(in width: CGFloat) -> Double {"),
+      dashboard.indexOf("private func splitResizer(in width: CGFloat)"),
+    );
+    expect(fraction.length).toBeGreaterThan(100);
+    // Clamped, and divide-by-zero safe: GeometryReader reports 0 before its first layout.
+    expect(fraction).toContain("guard width > 0 else { return storedSplitFraction }");
+    expect(fraction).toContain("min(max(dragged, Self.splitBounds.lowerBound), Self.splitBounds.upperBound)");
+    // A 1 pt hairline with a 10 pt grab area, the same split the sidebar's resizer uses: a
+    // one-point target is a target you miss.
+    const resizer = dashboard.slice(
+      dashboard.indexOf("private func splitResizer(in width: CGFloat)"),
+      dashboard.indexOf("/// More than one thing to choose between"),
+    );
+    expect(resizer).toContain(".frame(width: 1)");
+    expect(resizer).toContain(".frame(width: 10)");
+    expect(resizer).toContain("NSCursor.resizeLeftRight.push()");
+    // Banked on release, like the sidebar — not written on every drag tick.
+    expect(resizer).toContain("storedSplitFraction = splitFraction(in: width)");
+  });
+
+  /**
+   * Tyler: "if the arifcat is open on the other side you probably don't need the artifact in
+   * the conversation". The card is the way IN to the deliverable; a way in you are already
+   * through is noise at the end of a transcript. It returns when the pane closes.
+   */
+  test("the card yields when the work half is already showing a deliverable", () => {
+    expect(dashboard).toContain(
+      "artifactShownBeside: stage(for: row) != .conversation && workPane(for: row) == .deliverable,",
+    );
+    expect(stack).toContain("var artifactShownBeside = false");
+    expect(stack).toContain("if let artifact, !artifactShownBeside,");
+    // Still drawn by the same card when it IS shown — this gates it, it does not fork it.
+    expect(stack).toContain("ArtifactPreview(artifact: artifact, onOpen: onOpenArtifact)");
   });
 
   test("the work fills the stage one way, and Esc steps back off it", () => {

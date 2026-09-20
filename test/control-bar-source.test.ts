@@ -320,8 +320,16 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
 
   // Only a deliverable nobody has opened belongs in the conversation; an old one pinned to the end
   // of the stack made stale work look like fresh work waiting on you.
+  //
+  // TWO reasons to withhold it now, and this pins both. The unviewed rule above is unchanged —
+  // the card never shows for something already looked at. The second is that the work half may
+  // already be showing the deliverable, in which case the card is the same thing twice on one
+  // screen (Tyler: "if the arifcat is open on the other side you probably don't need the
+  // artifact in the conversation"). Asserted as two halves rather than as one longer string, so
+  // neither rule can be dropped while the other still satisfies the guard.
   const stack = read("mac-app/conch-mac/ConversationStackView.swift");
-  expect(stack).toContain("if let artifact, artifact.viewedAt == nil || !reportsViewedState {");
+  expect(stack).toContain("if let artifact, !artifactShownBeside,");
+  expect(stack).toContain("artifact.viewedAt == nil || !reportsViewedState {");
   // An older daemon never reports viewedAt, so it must keep today's behaviour rather than hiding
   // every card.
   expect(stack).toContain("var reportsViewedState = true");

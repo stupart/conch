@@ -1554,6 +1554,55 @@ private struct ConversationPane: View {
     /// session that had not filed one — even though its files were there the whole time.
     private var hasWorkPane: Bool { selectedReview != nil || workingFolder != nil }
 
+    /// How much of a side-by-side stage the CONVERSATION gets.
+    ///
+    /// This reverses "two equal claims on the width, rather than a measured fraction". Half
+    /// each was right while the two halves were interchangeable; they are not any more — a
+    /// file tree and a terminal want width that a transcript does not, and which one needs it
+    /// changes with what you are doing. Tyler: "drag the center diviger ... to change the
+    /// proportions given to the left and right panels".
+    ///
+    /// Bounded so neither half can be dragged away to nothing, and remembered like the
+    /// sidebar's width rather than per session: it is a preference about how you read, not a
+    /// fact about one conversation.
+    @AppStorage("conch.splitFraction") private var storedSplitFraction = 0.5
+    @State private var splitDrag: CGFloat = 0
+    private static let splitBounds: ClosedRange<Double> = 0.25...0.75
+
+    private func splitFraction(in width: CGFloat) -> Double {
+        guard width > 0 else { return storedSplitFraction }
+        let dragged = storedSplitFraction + Double(splitDrag / width)
+        return min(max(dragged, Self.splitBounds.lowerBound), Self.splitBounds.upperBound)
+    }
+
+    /// The divider, and the ten points either side of it that answer the pointer.
+    ///
+    /// A one-point target is a target you miss, so the hairline draws at 1 and the grab area
+    /// is 10 — the same split the sidebar's resizer already uses.
+    private func splitResizer(in width: CGFloat) -> some View {
+        Rectangle()
+            .fill(ConchPalette.divider)
+            .frame(width: 1)
+            .overlay(
+                Rectangle()
+                    .fill(Color.clear)
+                    .frame(width: 10)
+                    .contentShape(Rectangle())
+                    .onHover { inside in
+                        if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                    }
+                    .gesture(
+                        DragGesture(coordinateSpace: .global)
+                            .onChanged { splitDrag = $0.translation.width }
+                            .onEnded { _ in
+                                storedSplitFraction = splitFraction(in: width)
+                                splitDrag = 0
+                            }
+                    )
+            )
+            .accessibilityLabel("Resize the split between the conversation and the work")
+    }
+
     /// More than one thing to choose between, so the strip is worth drawing.
     private func hasWorkTabs(for row: SessionRow) -> Bool {
         // A working folder is worth TWO: the files in it, and a terminal running in it.
@@ -1675,18 +1724,19 @@ private struct ConversationPane: View {
                     }
 
                     if stage(for: reviewRow) == .sideBySide {
-                        // 50% each (§3). Equal .infinity widths rather than a GeometryReader
-                        // fraction: the split is the point, not a measurement.
-                        HStack(spacing: 0) {
-                            conversationBody(for: reviewRow)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        // A dragged fraction, not half each. The conversation is sized and the
+                        // work takes the rest, so the two cannot disagree about the total by a
+                        // rounding point and leave a seam.
+                        GeometryReader { split in
+                            HStack(spacing: 0) {
+                                conversationBody(for: reviewRow)
+                                    .frame(width: max(0, split.size.width * splitFraction(in: split.size.width)))
 
-                            Rectangle()
-                                .fill(ConchPalette.divider)
-                                .frame(width: 1)
+                                splitResizer(in: split.size.width)
 
-                            workContent(for: reviewRow)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                workContent(for: reviewRow)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            }
                         }
                     } else {
                         workContent(for: reviewRow)
@@ -2037,8 +2087,29 @@ private struct ConversationPane: View {
                 // An older daemon never reports viewedAt, so every deliverable would look
                 // unviewed and the card would show exactly as it does today.
                 reportsViewedState: state?.features?.viewedState != nil,
+                // Not twice. With the work half already showing a deliverable, the card at the
+                // end of the transcript is the same thing again three inches away — Tyler: "if
+                // the arifcat is open on the other side you probably don't need the artifact in
+                // the conversation". It comes back the moment the pane is closed, which is what
+                // makes the card the way IN rather than a duplicate.
+                //
+                // After `reportsViewedState`, not before: a memberwise init takes its arguments
+                // in declaration order, and the compiler says so.
+                artifactShownBeside: stage(for: row) != .conversation && workPane(for: row) == .deliverable,
                 cwd: row.cwd,
-                onOpenArtifact: { workspace.show(stage: .deliverable, for: row.id) },
+                onOpenArtifact: {
+                    workspace.show(stage: .deliverable, for: row.id)
+                    // Opening it IS looking at it. Only the tab strip marked anything before,
+                    // so the commonest way in — the card in the conversation — left the dot on
+                    // forever: every deliverable on this Mac still read as unviewed.
+                    if let review = row.review, review.viewedAt == nil,
+                       state?.features?.viewedState != nil {
+                        store.markReviewViewed(
+                            sessionId: row.id,
+                            review: ReviewItem(row: row, review: review).id
+                        )
+                    }
+                },
                 onFreeform: { composerFocusRequest += 1 },
                 onScrolled: { transcriptScrolled = $0 },
                 onOpenSubagent: { agent in

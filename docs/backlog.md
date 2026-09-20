@@ -39,6 +39,16 @@ agent drive one, and the user able to reach in and interact — the way the Code
 ## Open
 
 ### UI / UX
+- **open** — The files pane shows the whole working folder; it should be scoped to what the
+  session is actually working on. Tyler, 2026-09-20: "for the files deally thats more scopped
+  to whats being worked on by the projects but can leave for now". The material is already
+  there — `ConchFileChanges` knows every path this session touched — so a "changed only" view,
+  or a root inferred from where the changes cluster, needs no new wire.
+- **open** — The terminal might belong IN the input box as a mode rather than as its own tab.
+  Tyler: "terminal should probably just be like a mode in this input boc instead of a seperate
+  thing maybe? not sure". Unresolved on purpose: one input box that changes meaning is fewer
+  things on screen, but it also makes the composer modal, and a mode you forget you are in
+  sends a command to an agent or a message to a shell.
 - **open** — The deliverable pane's address bar shows the whole URL, so the origin is buried
   mid-string where it used to lead. That bar's stated job is telling a third-party page apart
   from conch's own chrome, and with navigation now free (`ae69957`) it is the only thing doing
@@ -132,6 +142,18 @@ agent drive one, and the user able to reach in and interact — the way the Code
   TextKit 1 fallback the caret fix introduced.
 
 ### Engineering
+- **open** — Running real agent sessions inside conch's own terminal. Tyler: "could test having
+  the real reaw sessios runnign in the terminal in th app that could be quite cool... is that
+  possible for me to move one in here?"
+  MEASURED 2026-09-20, and the answer is NO for existing sessions: tmux is not running at all
+  (`error connecting to /private/tmp/tmux-501/default`), so `inject.ts` is taking its
+  `osascript-focused` route and the sessions live in Terminal.app windows. A running process is
+  bound to its controlling tty and cannot be re-parented onto a new pty from outside, so nothing
+  can be MOVED in. Two things would make it possible, and they are separable:
+  (1) conch hosts the sessions it starts in tmux — then any session can be attached from
+  anywhere, and injection becomes the exact `send-keys` route instead of synthetic keystrokes;
+  (2) the pane grows a real emulator — alternate screen and cursor addressing — because an agent
+  TUI is exactly the case the colour-only scrollback was scoped out of. Neither is an increment.
 - **open** — A streaming snapshot still costs ~75 ms at 300 rows, after BOTH the MemoRow fix
   and the republish fix. MEASURED 2026-09-20: 63% of it is SwiftUI's own graph walk, with
   `ConversationItem`/`Conversation` equality (~1200 samples) and `_stringCompare` (62 ms)
