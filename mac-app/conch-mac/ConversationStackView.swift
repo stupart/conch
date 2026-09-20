@@ -58,6 +58,13 @@ struct ConversationStackView: View {
     var onFreeform: () -> Void = {}
     /// Whether the transcript has scrolled away from its top (§3: the header's hairline).
     var onScrolled: (Bool) -> Void = { _ in }
+    /// How much of the bottom the composer covers.
+    ///
+    /// The composer floats OVER the transcript now, so the last message would sit behind it.
+    /// This is the room left for it — inside the scrolled content, below the bottom anchor, so
+    /// "scroll to the bottom" still reaches the document's true end rather than stopping a
+    /// composer's height short of it. Tyler: "still have a spacer so i can read everything".
+    var bottomInset: CGFloat = 0
     /// Open the subagent a Task/Agent block started, in this same pane (C4).
     /// The daemon says which agent that was; the pane decides how to show it.
     var onOpenSubagent: (ConversationItem.Tool.Subagent) -> Void = { _ in }
@@ -284,6 +291,12 @@ struct ConversationStackView: View {
                     Color.clear
                         .frame(height: 14)
                         .id(Self.bottomAnchor)
+
+                    // Below the anchor, deliberately: the anchor stays the stack's own bottom
+                    // margin (measured 2026-09-20 — as a 1 pt line inside the padding it left
+                    // the clip 14 pt short every revision), and this is the room the floating
+                    // composer needs on top of that.
+                    Color.clear.frame(height: bottomInset)
                 }
                 .padding(.horizontal, 18)
                 .padding(.top, 14)

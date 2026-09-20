@@ -1432,6 +1432,10 @@ private struct ConversationPane: View {
     /// `.ib:hover` for the session-actions menu, which a `Menu` label does not get for free.
     @State private var isHoveringActions = false
     @State private var sessionPendingClose: SessionRow?
+    /// How tall the composer is right now — it grows with lines and attachments, so this is
+    /// measured rather than guessed. The transcript leaves exactly this much room beneath its
+    /// last message, which is what lets the content scroll UNDER the card and still be read.
+    @State private var composerHeight: CGFloat = 0
     /// Bumped when a question's "Something else…" row is pressed, so the
     /// composer takes the cursor.
     @State private var composerFocusRequest = 0
@@ -1753,7 +1757,7 @@ private struct ConversationPane: View {
                         Spacer(minLength: 0)
                     }
 
-                    composer(for: reviewRow)
+                    floatingComposer(for: reviewRow)
                 }
             } else {
                 VStack(spacing: 0) {
@@ -1771,14 +1775,23 @@ private struct ConversationPane: View {
                         }
                     }
 
-                    conversationBody(for: focusedRow)
-
                     // Typing belongs where you are reading. Putting the composer
                     // here rather than in a separate panel means the reply you
                     // are answering is directly above the field you answer in.
                     // A subagent has no pane of its own to type into (C4).
-                    if let row = focusedRow, row.parentSessionId == nil {
-                        composer(for: row)
+                    //
+                    // OVER the transcript rather than above it: the card is narrower than the
+                    // pane, so the text either side of it stays readable and the rule across
+                    // its top reads as the page continuing behind it rather than stopping at
+                    // it. Tyler: "we should just be able to see the content where its not
+                    // covered by the input box." The room it needs is handed to the stack as
+                    // `bottomInset`, so nothing is hidden — it is scrolled past, not cut off.
+                    ZStack(alignment: .bottom) {
+                        conversationBody(for: focusedRow)
+
+                        if let row = focusedRow, row.parentSessionId == nil {
+                            floatingComposer(for: row)
+                        }
                     }
                 }
             }
@@ -2139,6 +2152,7 @@ private struct ConversationPane: View {
                 },
                 onFreeform: { composerFocusRequest += 1 },
                 onScrolled: { transcriptScrolled = $0 },
+                bottomInset: composerHeight,
                 onOpenSubagent: { agent in
                     // Its live row when the daemon lists one, else
                     // a row built from the block — the same pane
@@ -2182,6 +2196,25 @@ private struct ConversationPane: View {
     /// presented with artifacts and verbally or via writing reacts to them and
     /// that's all".
     @ViewBuilder
+    /// The composer, floating over the transcript and reporting its own height.
+    ///
+    /// The height comes back through a preference rather than being written during layout: the
+    /// control bar already reports its size this way (`ControlBarSize`), and assigning state
+    /// inside a layout pass is how SwiftUI gets told a view changed while it is drawing it.
+    /// Rounded up to whole points so a fractional height cannot oscillate the inset.
+    private func floatingComposer(for row: SessionRow) -> some View {
+        composer(for: row)
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(key: ComposerHeight.self, value: proxy.size.height.rounded(.up))
+                }
+            )
+            .onPreferenceChange(ComposerHeight.self) { height in
+                guard composerHeight != height else { return }
+                composerHeight = height
+            }
+    }
+
     private func composer(for row: SessionRow) -> some View {
         ComposerView(
             sessionID: row.id,
@@ -2347,6 +2380,14 @@ private struct TerminalTab: View {
 
 /// One artifact's tab: the version it stands for, how old that is, and — only when the
 /// session holds older filings of the same link — a menu of them.
+/// The composer's measured height, so the transcript can leave room for a card that floats
+/// over it. A preference rather than a binding: state written during layout tells SwiftUI the
+/// view changed while it is drawing it.
+private struct ComposerHeight: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 private struct DeliverableTab: View {
     /// Every filing of this artifact the session still holds, newest first.
     let versions: [ReviewItem]
