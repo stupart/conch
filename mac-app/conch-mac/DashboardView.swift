@@ -1606,7 +1606,10 @@ private struct ConversationPane: View {
     /// More than one thing to choose between, so the strip is worth drawing.
     private func hasWorkTabs(for row: SessionRow) -> Bool {
         // A working folder is worth TWO: the files in it, and a terminal running in it.
-        deliverables.count + (workingFolder == nil ? 0 : 2) > 1
+        // Artifacts count, not filings: six versions of one page are one tab. A lone tab with
+        // older versions under it is still drawn, or those versions could not be reached at all.
+        let groups = deliverableGroups
+        return groups.count + (workingFolder == nil ? 0 : 2) > 1 || groups.contains(where: \.hasOlderVersions)
     }
 
     /// Which content the work half is on, never trusting the remembered choice blindly: a
@@ -1662,6 +1665,12 @@ private struct ConversationPane: View {
         guard let row = focusedRow else { return [] }
         let held = row.reviews ?? row.review.map { [$0] } ?? []
         return held.map { ReviewItem(row: row, review: $0) }
+    }
+
+    /// The same deliverables as ARTIFACTS: every filing of one link is a version of one thing.
+    /// The rule is shared and tested in ConchDesign/Workspace, not decided here.
+    private var deliverableGroups: [DeliverableGroup] {
+        DeliverableGroups.grouped(deliverables.map { DeliverableVersion(id: $0.id, link: $0.link) })
     }
 
     private var watchesTranscriptForRow: SessionRow? {
@@ -1984,69 +1993,87 @@ private struct ConversationPane: View {
         .background(ConchPalette.surface)
     }
 
-    /// One tab per deliverable the session holds, oldest first, so a new one arrives on the
-    /// right and what you have already reviewed stays where you left it. Drawn only when there
-    /// is more than one: with a single deliverable this pane is exactly what it always was.
+    /// One tab per ARTIFACT the session holds, oldest first, so a new one arrives on the right
+    /// and what you have already reviewed stays where you left it. Drawn only when there is more
+    /// than one: with a single deliverable this pane is exactly what it always was.
+    ///
+    /// Per artifact, not per filing. Measured on 2026-09-20: one session held six deliverables
+    /// with one link between them — six tabs for one page, each republish a competing tab. Now
+    /// the filings of one link are one tab standing for its newest, with the older ones a menu
+    /// away, and every tab carries its age so old and new are told apart at a glance. The
+    /// grouping rule is `DeliverableGroups` (ConchDesign/Workspace), where it is tested.
     private func deliverableTabs(for row: SessionRow) -> some View {
         let held = deliverables
+        let byID = Dictionary(held.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        let picked = workspace.presentation(for: row.id).selectedDeliverable
         // Nothing is the shown deliverable while the files are up, or two tabs would read as
         // selected at once.
         let shown = workPane(for: row) == .deliverable ? selectedReview?.id : nil
-        return HStack(spacing: 2) {
-            // The working folder LEADS, and is pinned outside the scroller.
-            //
-            // It is not one of the outputs, competing for room with however many there are:
-            // it is the place the session works in, so its position must not drift as
-            // deliverables accumulate. Found by looking rather than by reasoning — a session
-            // holding six deliverables filled this strip edge to edge and pushed the folder
-            // clean off the right of the pane, where nothing could reach it.
-            if workingFolder != nil {
-                FilesTab(
-                    isSelected: workPane(for: row) == .files,
-                    action: { workspace.show(work: .files, for: row.id) }
-                )
+        // The ages tick on the ledger's own clock, ten seconds, for the same reason: "3h" is
+        // a claim about now, and a tab left open all afternoon must not still say "2m".
+        return TimelineView(.periodic(from: .now, by: 10)) { timeline in
+            HStack(spacing: 2) {
+                // The working folder LEADS, and is pinned outside the scroller.
+                //
+                // It is not one of the outputs, competing for room with however many there are:
+                // it is the place the session works in, so its position must not drift as
+                // deliverables accumulate. Found by looking rather than by reasoning — a session
+                // holding six deliverables filled this strip edge to edge and pushed the folder
+                // clean off the right of the pane, where nothing could reach it.
+                if workingFolder != nil {
+                    FilesTab(
+                        isSelected: workPane(for: row) == .files,
+                        action: { workspace.show(work: .files, for: row.id) }
+                    )
 
-                TerminalTab(
-                    isSelected: workPane(for: row) == .terminal,
-                    action: { workspace.show(work: .terminal, for: row.id) }
-                )
+                    TerminalTab(
+                        isSelected: workPane(for: row) == .terminal,
+                        action: { workspace.show(work: .terminal, for: row.id) }
+                    )
 
-                if !held.isEmpty {
-                    // The place, and the work that came out of it, are different kinds of
-                    // thing. A hairline says so without a word.
-                    Rectangle()
-                        .fill(ConchPalette.divider)
-                        .frame(width: 1, height: 14)
-                        .padding(.horizontal, 2)
-                }
-            }
-
-            // The filed work scrolls, because there can be any number of it. It used to be a
-            // plain row that simply ran out of pane: the sixth tab reached the edge and
-            // everything after it was laid out where no one could see or click it.
-            ScrollView(.horizontal) {
-                HStack(spacing: 2) {
-                    ForEach(held) { item in
-                        DeliverableTab(
-                            item: item,
-                            isSelected: item.id == shown,
-                            action: {
-                                workspace.show(work: .deliverable, for: row.id)
-                                workspace.select(deliverable: item.id, for: row.id)
-                                // Looking at it is what marks it, and only the daemon's copy
-                                // makes that survive a relaunch and reach the phone.
-                                if item.viewedAt == nil, state?.features?.viewedState != nil {
-                                    store.markReviewViewed(sessionId: row.id, review: item.id)
-                                }
-                            }
-                        )
+                    if !held.isEmpty {
+                        // The place, and the work that came out of it, are different kinds of
+                        // thing. A hairline says so without a word.
+                        Rectangle()
+                            .fill(ConchPalette.divider)
+                            .frame(width: 1, height: 14)
+                            .padding(.horizontal, 2)
                     }
                 }
+
+                // The filed work scrolls, because there can be any number of it. It used to be a
+                // plain row that simply ran out of pane: the sixth tab reached the edge and
+                // everything after it was laid out where no one could see or click it.
+                ScrollView(.horizontal) {
+                    HStack(spacing: 2) {
+                        ForEach(deliverableGroups) { group in
+                            let versions = group.versions.compactMap { byID[$0] }
+                            DeliverableTab(
+                                versions: versions,
+                                current: byID[group.shown(picked: picked)] ?? versions[0],
+                                isSelected: shown.map(group.versions.contains) ?? false,
+                                now: timeline.date,
+                                open: { item in
+                                    workspace.show(work: .deliverable, for: row.id)
+                                    workspace.select(deliverable: item.id, for: row.id)
+                                    // Looking at it is what marks it, and only the daemon's copy
+                                    // makes that survive a relaunch and reach the phone. The
+                                    // version actually opened is the one marked — never the whole
+                                    // group — so `markReviewViewed`'s rules hold as they are: no
+                                    // restamping, and no id the session does not hold.
+                                    if item.viewedAt == nil, state?.features?.viewedState != nil {
+                                        store.markReviewViewed(sessionId: row.id, review: item.id)
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+                .scrollIndicators(.never)
             }
-            .scrollIndicators(.never)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
     }
 
     /// The exchange itself, drawn the same way wherever it appears.
@@ -2318,51 +2345,141 @@ private struct TerminalTab: View {
     }
 }
 
+/// One artifact's tab: the version it stands for, how old that is, and — only when the
+/// session holds older filings of the same link — a menu of them.
 private struct DeliverableTab: View {
-    let item: ReviewItem
+    /// Every filing of this artifact the session still holds, newest first.
+    let versions: [ReviewItem]
+    /// The one the tab stands for: the reader's pick when it is one of these, else the newest.
+    let current: ReviewItem
     let isSelected: Bool
-    let action: () -> Void
+    let now: Date
+    /// Open one version: the tab's own click opens `current`, the menu opens the one chosen.
+    let open: (ReviewItem) -> Void
 
     @State private var isHovered = false
 
-    private var isUnviewed: Bool { item.viewedAt == nil }
+    /// Unread belongs to the ARTIFACT, and the artifact's news is its newest filing. Six
+    /// unviewed versions of one page are one piece of news, not six dots; and once the newest
+    /// has been looked at, an older one nobody opened is superseded, not unread.
+    private var isUnviewed: Bool { versions[0].viewedAt == nil }
+
+    /// The ledger's vocabulary — "<1m", "12m", "3h", "2d" — rather than a second one. The exact
+    /// time is in the tooltip, where an unambiguous answer costs no width.
+    private var age: String? {
+        current.reviewedAt.flatMap { relativeAge(epochMilliseconds: $0, now: now) }
+    }
+
+    private static func filed(_ item: ReviewItem) -> String? {
+        item.reviewedAt.map { Date(timeIntervalSince1970: $0 / 1_000).formatted(date: .abbreviated, time: .shortened) }
+    }
+
+    private var help: String {
+        var lines = [current.summary]
+        if let filed = Self.filed(current) { lines.append("Filed \(filed)") }
+        if versions.count > 1 { lines.append("\(versions.count) versions — the newest is what a click opens") }
+        return lines.joined(separator: "\n")
+    }
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 5) {
-                if isUnviewed {
-                    Circle()
-                        .fill(ConchPalette.statusReview)
-                        .frame(width: 6, height: 6)
-                        .accessibilityHidden(true)
+        HStack(spacing: 0) {
+            Button(action: { open(current) }) {
+                HStack(spacing: 5) {
+                    if isUnviewed {
+                        // Ink, not the ready green. The green says the WORK is ready — the row
+                        // glyph and the pill already say so — where this dot says the reader has
+                        // not looked; and measured, the green is 2.41–2.72:1 on the light grounds,
+                        // under the 3:1 a mark needs (RowStateTokenTests pins both numbers).
+                        Circle()
+                            .fill(ConchPalette.ink)
+                            .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
+                    }
+                    Text(current.summary)
+                        .font(ConchTypography.font(size: 11, weight: isUnviewed ? .medium : .regular))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        // Capped, or the strip stops being scannable.
+                        //
+                        // Squashed into a plain row these shared the width and every tab stayed
+                        // visible. Inside a scroller they take their INTRINSIC width instead, and
+                        // a summary is a whole sentence — the first tab ran about a thousand
+                        // points and pushed every other one out of sight, which is worse than the
+                        // clipping the scroller was added to fix. The full text is still a hover
+                        // away, and now so are the tabs after it.
+                        .frame(maxWidth: 220, alignment: .leading)
+                    if let age {
+                        Text(age)
+                            .font(ConchTypography.font(size: 10.5))
+                            .foregroundStyle(ConchPalette.textFaint)
+                            .monospacedDigit()
+                            // Short and fixed: never the thing that gives way, for the reason the
+                            // ledger's age records — a clipped "10m" reads as a plausible "1".
+                            .fixedSize()
+                    }
                 }
-                Text(item.summary)
-                    .font(ConchTypography.font(size: 11, weight: isUnviewed ? .medium : .regular))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    // Capped, or the strip stops being scannable.
-                    //
-                    // Squashed into a plain row these shared the width and every tab stayed
-                    // visible. Inside a scroller they take their INTRINSIC width instead, and
-                    // a summary is a whole sentence — the first tab ran about a thousand
-                    // points and pushed every other one out of sight, which is worse than the
-                    // clipping the scroller was added to fix. The full text is still a hover
-                    // away, and now so are the tabs after it.
-                    .frame(maxWidth: 220, alignment: .leading)
+                .foregroundStyle(isUnviewed ? ConchPalette.textPrimary : ConchPalette.textDim)
+                .padding(.leading, 8)
+                .padding(.trailing, versions.count > 1 ? 4 : 8)
+                .frame(height: 24)
+                .contentShape(Rectangle())
             }
-            .foregroundStyle(isUnviewed ? ConchPalette.textPrimary : ConchPalette.textDim)
-            .padding(.horizontal, 8)
-            .frame(height: 24)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
+            .buttonStyle(.plain)
+            .help(help)
+            .accessibilityLabel(
+                [current.summary, age, isUnviewed ? "not yet looked at" : nil].compactMap { $0 }.joined(separator: ", ")
             )
-            .contentShape(Rectangle())
+
+            // The older versions, and only when there are any: with one filing there is nothing
+            // to choose, so the control is simply not there. It is beside the tab's own button,
+            // not inside it, so the common case — open the newest — stays one click.
+            if versions.count > 1 {
+                Menu {
+                    ForEach(versions) { version in
+                        Button {
+                            open(version)
+                        } label: {
+                            if version.id == current.id {
+                                Image(systemName: "checkmark")
+                            }
+                            Text(Self.menuLine(version, now: now))
+                        }
+                    }
+                } label: {
+                    // ONE Text, with the chevron interpolated. `.borderlessButton` rebuilds its
+                    // label the way an NSMenuItem is built — image first, title second, its own
+                    // chrome — so an HStack of count-then-chevron came out "⌄ 3" with the pill
+                    // behind it dropped. Seen in the worktree build, not reasoned about.
+                    Text("\(versions.count)\u{2009}\(Image(systemName: "chevron.down"))")
+                        .font(ConchTypography.font(size: 10, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(ConchPalette.textDim)
+                        .padding(.horizontal, 4)
+                        .frame(height: 18)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .padding(.trailing, 5)
+                .help("\(versions.count) versions of this — pick an older one")
+                .accessibilityLabel("\(versions.count) versions of \(current.summary)")
+            }
         }
-        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
+        )
         .onHover { isHovered = $0 }
-        .help(item.summary)
-        .accessibilityLabel(isUnviewed ? "\(item.summary), not yet looked at" : item.summary)
+    }
+
+    /// A menu row: the age first, so the versions read as a timeline, then the summary — which
+    /// is what tells one version from the next. A summary can run to 200 characters and an
+    /// NSMenu grows to fit, so it is cut here rather than letting the menu span the screen.
+    private static func menuLine(_ item: ReviewItem, now: Date) -> String {
+        let age = item.reviewedAt.flatMap { relativeAge(epochMilliseconds: $0, now: now) } ?? "—"
+        let summary = item.summary.count > 72 ? String(item.summary.prefix(71)) + "…" : item.summary
+        return "\(age) · \(summary)"
     }
 }
 

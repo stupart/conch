@@ -193,13 +193,66 @@ describe("new work does not replace what you are reading", () => {
     // is one of those things now, which is what the count has to include.
     expect(pane).toContain("if hasWorkTabs(for: reviewRow) {");
     // TWO, not one: a working folder offers the files in it AND a terminal running in it, so
-    // a session with a folder and no deliverable still has a strip worth drawing.
-    expect(pane).toContain("deliverables.count + (workingFolder == nil ? 0 : 2) > 1");
+    // a session with a folder and no deliverable still has a strip worth drawing. ARTIFACTS are
+    // what count on the other side of the sum — six filings of one link are one tab — and a
+    // lone artifact with older versions still earns the strip, or they could not be reached.
+    expect(pane).toContain("groups.count + (workingFolder == nil ? 0 : 2) > 1 || groups.contains(where: \\.hasOlderVersions)");
     // Three states, and looking at one is what marks it — but only ever told to a daemon that
     // can remember, so an older one is never handed a command it will refuse.
     expect(pane).toContain("isUnviewed ? ConchPalette.textPrimary : ConchPalette.textDim");
     expect(pane).toContain("isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear)");
     expect(pane).toContain("if item.viewedAt == nil, state?.features?.viewedState != nil {");
+  });
+
+  /**
+   * Measured on 2026-09-20 from the live published state: one session held six deliverables
+   * with one link between them — six tabs for one page, every republish a competing tab. A tab
+   * is an ARTIFACT now, standing for its newest filing with the older ones under a menu, and it
+   * carries its age. The grouping rule itself is `DeliverableGroups` in ConchDesign/Workspace,
+   * where `swift test` covers it; this pins that the strip asks it rather than keeping a rule.
+   */
+  test("a tab is an artifact: filings of one link are its versions, newest in front", () => {
+    // The rule lives with the other shared rules, keyed on the link and nothing else — the
+    // minted id folds in the filing time on purpose, so it can never say two filings are one.
+    expect(rules).toContain("public static func grouped(_ held: [DeliverableVersion]) -> [DeliverableGroup] {");
+    expect(rules).toContain("let key = link.isEmpty ? version.id : link");
+    expect(pane).toContain("DeliverableGroups.grouped(deliverables.map { DeliverableVersion(id: $0.id, link: $0.link) })");
+    const strip = pane.slice(
+      pane.indexOf("private func deliverableTabs("),
+      pane.indexOf("private func conversationBody("),
+    );
+    expect(strip.length).toBeGreaterThan(500);
+    expect(strip).toContain("ForEach(deliverableGroups) { group in");
+    // The tab stands for the reader's pick when it is one of its own versions, else the newest
+    // — and its click opens THAT, so the common case stays one click. Selection follows the
+    // group, so picking an older version does not unselect the tab it belongs to.
+    expect(strip).toContain("current: byID[group.shown(picked: picked)] ?? versions[0]");
+    expect(strip).toContain("isSelected: shown.map(group.versions.contains) ?? false");
+    // The ages tick on the ledger's clock, in the ledger's own vocabulary.
+    expect(strip).toContain("TimelineView(.periodic(from: .now, by: 10)) { timeline in");
+    expect(strip).toContain("now: timeline.date");
+
+    const tab = pane.slice(pane.indexOf("private struct DeliverableTab: View {"));
+    expect(tab).toContain("current.reviewedAt.flatMap { relativeAge(epochMilliseconds: $0, now: now) }");
+    // Unread belongs to the artifact — its newest filing — not to each version; six unviewed
+    // versions of one page are one piece of news.
+    expect(tab).toContain("private var isUnviewed: Bool { versions[0].viewedAt == nil }");
+    // Ink, not the ready green: the green says the WORK is ready and measures under the 3:1 a
+    // mark needs on the light grounds (RowStateTokenTests pins both numbers).
+    expect(tab).toContain(".fill(ConchPalette.ink)");
+    expect(tab).not.toContain("ConchPalette.statusReview");
+    // The menu exists only where there is something to choose. It sits BESIDE the tab's own
+    // button, never inside it, so opening the newest is still one click.
+    expect(tab).toContain("if versions.count > 1 {");
+    expect(tab).toContain("Button(action: { open(current) })");
+    // `Menu {` is the anchor, not the guard line above it: that line also appears earlier, in
+    // the tooltip, and `indexOf` finds the first — the slice trap this repo's guards keep hitting.
+    expect(tab.match(/\n\s+Menu \{/g) ?? []).toHaveLength(1);
+    expect(tab.indexOf("Button(action: { open(current) })")).toBeLessThan(tab.indexOf("Menu {"));
+    expect(tab).toContain(".menuIndicator(.hidden)");
+    // The version the reader actually opens is the one marked — never the group — so the
+    // daemon's rules (no restamp, no id it does not hold) stand as they are.
+    expect(tab).toContain("open(version)");
   });
 
   test("side by side draws one conversation, at half the stage, not a second copy of it", () => {

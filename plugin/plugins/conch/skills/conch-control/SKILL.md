@@ -67,7 +67,9 @@ https://brew.sh rather than trying to install Homebrew yourself.
   **What the user sees.** conch files the result on your session in the Mac app
   and on the iPhone, and the Mac's Ready pill lights. Nothing opens until the
   user clicks the pill, which brings the scene forward. A newer publication from
-  your session replaces the older one.
+  your session sits beside the older ones as another tab; one with the same link
+  becomes a newer version of that artifact instead — the user sees the newest,
+  with the earlier versions listed under it by summary and time.
 
   **What to link.** The best single artifact for the result:
 
