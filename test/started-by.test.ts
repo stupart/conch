@@ -272,7 +272,11 @@ describe("the theater, the Mac sidebar and the wire agree", () => {
     expect(line).toBeLessThan(badge);
     // A started session is a session: the composer, close and reveal checks
     // key on parentSessionId alone and must not have grown a second condition.
-    expect(dashboard).toContain("if let row = focusedRow, row.parentSessionId == nil {\n                        composer(for: row)");
+    // Matched without its indentation: the composer moved into a ZStack so it can float over
+  // the transcript, which reindented this line while leaving the rule untouched. What is
+  // pinned is the rule — `parentSessionId` alone decides, and the call it guards is the
+  // composer — not how deeply SwiftUI nests it today.
+  expect(dashboard).toMatch(/if let row = focusedRow, row\.parentSessionId == nil \{\s*floatingComposer\(for: row\)/);
     expect(dashboard).not.toContain("row.startedBySessionId == nil {\n                        composer(for: row)");
   });
 });
