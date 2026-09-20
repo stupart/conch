@@ -1335,25 +1335,13 @@ public struct ConversationFog: View {
     /// `**Storage moved**` with its asterisks and `` `path/to/file` `` with its backticks is most of what a summary is
     /// made of.
     ///
-    /// The one renderer both transcripts use — it was the dashboard stack's, and the fog had only half of it. `.inlineOnlyPreservingWhitespace` is the
-    /// parse a SwiftUI `Text` can take: the block parse (`.full`) drops every newline, so a three-item list arrives as
-    /// "onetwothree". Block markers stay literal, which reads fine for "- " and uselessly for "## " and a table's
-    /// pipes, so those two are rewritten before the parse.
+    /// The fog's renderer: one text flow, because the newest reply comes in word by word through `revealed`, which
+    /// walks ONE AttributedString, and a past turn must keep the shape it had while it was newest. Documents go through
+    /// `MarkdownView` (Markdown.swift) everywhere else; here a table would not fit anyway — 24 pt words in a 620 pt
+    /// column hold about 45 characters a line, and one cell of the atlas documents runs to 300 — so a table is read
+    /// the way you would read it aloud, and a heading is bold. The frontmatter rule is the shared one.
     public static func inlineMarkdown(_ text: String) -> AttributedString {
-        var parsed = (try? AttributedString(
-            markdown: promoteHeadings(flattenTables(text)),
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        )) ?? AttributedString(text)
-        // Make a link LOOK like the link it already is. They worked the whole time — Tyler tested one — but nothing
-        // said so: blue against text that is also occasionally coloured, with no underline and no hover state, so the
-        // only way to find one was to click on the off chance. "it's just a ui problem really, to show me with an
-        // underline on hover that i can click on it."
-        //
-        // A permanent underline rather than a hover one, deliberately: SwiftUI's `Text` draws an AttributedString as a
-        // single view and cannot hit-test one run inside it, so there is no honest way to underline only the link under
-        // the pointer. Always-underlined is the same signal, available before the pointer arrives rather than after.
-        for run in parsed.runs where run.link != nil { parsed[run.range].underlineStyle = .single }
-        return parsed
+        MarkdownDocument.inline(promoteHeadings(flattenTables(MarkdownDocument.stripFrontmatter(text))))
     }
 
     /// A markdown table as lines a person can read: an inline parse cannot lay one out, so it arrives as a wall of

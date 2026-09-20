@@ -5,6 +5,7 @@ import { join } from "node:path";
 const macRoot = join(import.meta.dir, "..", "mac-app", "conch-mac");
 const mac = (name: string) => readFileSync(join(macRoot, name), "utf8");
 const components = readFileSync(join(import.meta.dir, "..", "design", "ConchDesign", "Sources", "ConchDesign", "Components.swift"), "utf8");
+const markdown = readFileSync(join(import.meta.dir, "..", "design", "ConchDesign", "Sources", "ConchDesign", "Markdown.swift"), "utf8");
 
 describe("the Mac conversation stays readable while it grows", () => {
   const conversation = mac("ConversationStackView.swift");
@@ -301,7 +302,10 @@ describe("Mac conversation links keep the native clickable path", () => {
   test("SwiftUI receives the markdown link attribute without an interaction override", () => {
     const conversation = mac("ConversationStackView.swift");
     expect(conversation).toContain("Text(AttributedString.conchMarkdown(item.text))");
-    expect(components).toContain("interpretedSyntax: .inlineOnlyPreservingWhitespace");
+    // The one inline parse, in ConchDesign/Markdown.swift: the fog's rows take it whole, the block renderer takes
+    // it per block. Either way the link attribute reaches SwiftUI.
+    expect(markdown).toContain("interpretedSyntax: .inlineOnlyPreservingWhitespace");
+    expect(components).toContain("MarkdownDocument.inline(promoteHeadings(flattenTables(MarkdownDocument.stripFrontmatter(text))))");
     expect(conversation).not.toContain(".allowsHitTesting(false)");
     // The one override that IS allowed, and required (A13): SwiftUI's default
     // action handed a schemeless link straight to LaunchServices, which
@@ -331,14 +335,27 @@ describe("Mac conversation links keep the native clickable path", () => {
     // become, which is what lets the transcript's own copy replace it without anything on
     // screen moving. A reading row, therefore counted — the number still says "only what is
     // read gets 15/23", it has not been loosened to let chrome in.
+    //
+    // TWO of the three set the font by name. The agent's reply is a document now — `MarkdownView`
+    // at `ConchType.readingBodySize`, the same 15 — because a `Text` cannot lay out a table; it
+    // keeps the +4 leading, so all three still read at 15/23.
     const stack = mac("ConversationStackView.swift");
-    expect(stack.match(/\.font\(ConchType\.readingBody\)/g)?.length).toBe(3);
+    expect(stack.match(/\.font\(ConchType\.readingBody\)/g)?.length).toBe(2);
+    expect(stack).toContain("MarkdownView(text: text(of: item))");
     expect(stack.match(/\.lineSpacing\(ConchType\.readingLineSpacing\)/g)?.length).toBe(3);
   });
 
   test("the fallback AppKit renderer preserves rich selectable attributed text", () => {
     const dashboard = mac("TranscriptFallback.swift");
-    expect(dashboard).toContain("NSAttributedString(AttributedString(parsed[run.range]))");
+    // The shared typesetter: one attributed string, so the spoken half can be dimmed by range.
+    expect(dashboard).toContain("return MarkdownTypesetter.attributedString(text, base: base)");
+    expect(markdown).toContain("NSAttributedString(MarkdownDocument.inline(text))");
+    // Its tables are NSTextTables, which TextKit 2 cannot lay out; both NSTextViews that take the
+    // string switch to TextKit 1 before anything else touches them.
+    for (const [name, source] of [["the fallback", dashboard], ["the deliverable pane", mac("ReviewView.swift")]] as const) {
+      const made = source.slice(source.indexOf("let textView = NSTextView()"));
+      expect(made.slice(0, made.indexOf("textView.delegate = context.coordinator")), name).toContain("_ = textView.layoutManager");
+    }
     expect(dashboard).toContain("textView.isSelectable = true");
     expect(dashboard).toContain("textView.isRichText = true");
   });

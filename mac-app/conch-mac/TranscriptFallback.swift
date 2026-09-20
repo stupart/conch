@@ -181,238 +181,23 @@ struct ConversationDocument {
         ]
     }
 
-    /// Render an agent reply as markdown rather than showing its syntax.
+    /// An agent's reply as a document, through the typesetter both of this app's AppKit surfaces share
+    /// (ConchDesign/Markdown.swift): headings on a scale, lists on hanging indents, code on a ground, and tables as
+    /// `NSTextTable` columns.
     ///
-    /// Foundation gives us a parse tree, not a layout: `.inlineOnly` leaves
-    /// `## `, `- ` and `> ` markers visible, while `.full` strips them but drops
-    /// every newline (a three-item list arrives as "onetwothree"). So we parse
-    /// with `.full` and rebuild the block layout ourselves — separators between
-    /// blocks, bullets and ordinals for list items, an indent for quotes and
-    /// code, and heading weight — then apply inline emphasis within each run.
+    /// This used to rebuild the block layout by hand from Foundation's `.full` parse — separators, bullets, indents —
+    /// and set a table's cells on 118 pt tab stops, which no cell of the atlas documents fits, so a row became one
+    /// long line wrapped at random. `NSTextTable` is TextKit's own table layout; nothing else here had to change.
     ///
-    /// Unparseable input falls back to the literal string, so a malformed reply
-    /// can never blank the pane. The caller styles spoken vs unspoken by passing
-    /// different base attributes per half, so base is applied FIRST and the
-    /// parsed emphasis re-applied over it — bold must survive in both halves.
+    /// The caller styles spoken vs unspoken by dimming a character range of the result, which is why this is one
+    /// attributed string and not a view per block. Unparseable input comes back literal, so a malformed reply can
+    /// never blank the pane.
     static func markdown(
         _ text: String,
         attributes base: [NSAttributedString.Key: Any]
     ) -> NSAttributedString {
         guard !text.isEmpty else { return NSAttributedString(string: "", attributes: base) }
-        guard let parsed = try? AttributedString(
-            markdown: text,
-            options: AttributedString.MarkdownParsingOptions(
-                allowsExtendedAttributes: true,
-                interpretedSyntax: .full,
-                failurePolicy: .returnPartiallyParsedIfPossible
-            )
-        ), !parsed.characters.isEmpty else {
-            return NSAttributedString(string: text, attributes: base)
-        }
-
-        let baseFont = (base[.font] as? NSFont) ?? ConchTypography.nsFont(size: 16)
-        let output = NSMutableAttributedString()
-        var previousBlock: Int?
-        var previousWasListItem = false
-        var previousWasTableCell = false
-
-        for run in parsed.runs {
-            let piece = NSMutableAttributedString(
-                attributedString: NSAttributedString(AttributedString(parsed[run.range]))
-            )
-            guard piece.length > 0 else { continue }
-            var whole = NSRange(location: 0, length: piece.length)
-            piece.addAttributes(base, range: whole)
-
-            let intent = run.presentationIntent
-            let blockID = intent?.components.first?.identity
-            let isNewBlock = blockID != previousBlock
-
-            // Block styling: heading weight, monospace for code, indent for
-            // quotes/code. `.full` erases the source newlines, so reinsert one
-            // blank line between blocks and a single break between list items.
-            var prefix = ""
-            var indent: CGFloat = 0
-            var blockFont = baseFont
-            var isTableCell = false
-            var startsTableRow = false
-            var isHeaderRow = false
-            var isListItem = false
-            if let components = intent?.components {
-                // Nesting depth drives the indent: a list inside a list carries
-                // two listItem components, so count them rather than assuming one.
-                let listDepth = components.filter {
-                    if case .listItem = $0.kind { return true }
-                    return false
-                }.count
-                for component in components {
-                    switch component.kind {
-                    case .header(let level):
-                        let size = baseFont.pointSize + (level <= 1 ? 5 : level == 2 ? 3 : 1)
-                        let descriptor = baseFont.fontDescriptor.withSymbolicTraits(.bold)
-                        blockFont = NSFont(descriptor: descriptor, size: size)
-                            ?? NSFont.boldSystemFont(ofSize: size)
-                    case .listItem(let ordinal):
-                        isListItem = true
-                        // "Is ANY ancestor an ordered list" made a bullet nested
-                        // under a numbered item render as a number, and left the
-                        // "◦ " branch unreachable. What matters is the list this
-                        // item actually belongs to: the NEAREST list ancestor.
-                        let ordered: Bool = {
-                            for candidate in components {
-                                if case .orderedList = candidate.kind { return true }
-                                if case .unorderedList = candidate.kind { return false }
-                            }
-                            return false
-                        }()
-                        // Only the OUTERMOST listItem marks this line; the inner
-                        // components describe ancestors, whose bullets already ran.
-                        if isNewBlock, prefix.isEmpty {
-                            prefix = ordered ? "\(ordinal). " : (listDepth > 1 ? "◦ " : "• ")
-                        }
-                        indent = CGFloat(listDepth) * 16
-                    case .blockQuote:
-                        // Dimming a quote collides with reading progress, which
-                        // dims the text the voice has NOT reached yet: during a
-                        // read-aloud a quote looked unread and unread text looked
-                        // quoted. Indent carries the quote instead.
-                        indent = 22
-                    case .codeBlock:
-                        blockFont = NSFont.monospacedSystemFont(
-                            ofSize: baseFont.pointSize - 1,
-                            weight: .regular
-                        )
-                        indent = 16
-                    // A table arrives as one run PER CELL. Without this every
-                    // cell became its own line, so a 2x2 table rendered as four
-                    // stacked fragments. Keep a row on one line, separated, and
-                    // bold the header row.
-                    case .tableCell(let column):
-                        isTableCell = true
-                        if column == 0 { startsTableRow = true }
-                        blockFont = NSFont.monospacedSystemFont(
-                            ofSize: baseFont.pointSize - 1,
-                            weight: .regular
-                        )
-                    case .tableHeaderRow:
-                        isHeaderRow = true
-                    default:
-                        break
-                    }
-                }
-            }
-            if isTableCell, isHeaderRow {
-                let descriptor = blockFont.fontDescriptor.withSymbolicTraits(.bold)
-                blockFont = NSFont(descriptor: descriptor, size: blockFont.pointSize) ?? blockFont
-            }
-            piece.addAttribute(.font, value: blockFont, range: whole)
-
-            // We own the newlines, so a newline the parser did leave in (code
-            // blocks keep theirs) would double up against our own separator.
-            while piece.length > 0, piece.string.hasSuffix("\n") {
-                piece.deleteCharacters(in: NSRange(location: piece.length - 1, length: 1))
-            }
-            guard piece.length > 0 else { continue }
-            whole = NSRange(location: 0, length: piece.length)
-
-            // The indent has to be on the WHOLE LINE, not just the text: AppKit
-            // takes a paragraph's style from its FIRST character, which for a
-            // list item is the bullet. Styling only the text left it dead.
-            var lineAttributes = base
-            if indent > 0, let paragraph = (base[.paragraphStyle] as? NSParagraphStyle)?
-                .mutableCopy() as? NSMutableParagraphStyle {
-                paragraph.firstLineHeadIndent = indent
-                // Hanging indent so a wrapped item lines up under its own text
-                // rather than sliding back under the bullet.
-                paragraph.headIndent = indent + (prefix.isEmpty ? 0 : 14)
-                lineAttributes[.paragraphStyle] = paragraph
-                piece.addAttribute(
-                    .paragraphStyle,
-                    value: paragraph,
-                    range: NSRange(location: 0, length: piece.length)
-                )
-            }
-
-            // Tab stops are what make a table read as columns. Placed after
-            // lineAttributes exists so the separator and the cell share them.
-            if isTableCell,
-               let tabbed = (base[.paragraphStyle] as? NSParagraphStyle)?
-                   .mutableCopy() as? NSMutableParagraphStyle {
-                tabbed.tabStops = (1...8).map {
-                    NSTextTab(textAlignment: .left, location: CGFloat($0) * 118)
-                }
-                tabbed.defaultTabInterval = 118
-                lineAttributes[.paragraphStyle] = tabbed
-                piece.addAttribute(.paragraphStyle, value: tabbed, range: whole)
-            }
-
-            if isTableCell {
-                // Row breaks come from the first cell; cells within a row are
-                // separated inline so the row reads as a row.
-                if output.length > 0 {
-                    // A table is a block like any other: it needs air above it,
-                    // not to be welded onto the sentence before it. Rows within
-                    // the table stay tight.
-                    let separator = startsTableRow
-                        ? (previousWasTableCell ? "\n" : "\n\n")
-                        : "\t"
-                    output.append(NSAttributedString(string: separator, attributes: base))
-                }
-            } else {
-                if isNewBlock, output.length > 0 {
-                    // Blocks only read as blocks with air between them. The
-                    // exception is a run of list items, which is visually ONE
-                    // block — a blank line between bullets looks broken.
-                    let tight = isListItem && previousWasListItem
-                    output.append(
-                        NSAttributedString(string: tight ? "\n" : "\n\n", attributes: base)
-                    )
-                }
-                if !prefix.isEmpty {
-                    output.append(NSAttributedString(string: prefix, attributes: lineAttributes))
-                }
-            }
-
-            // Inline emphasis within the block.
-            piece.enumerateAttribute(.inlinePresentationIntent, in: whole) { value, range, _ in
-                guard let raw = value as? UInt else { return }
-                let inline = InlinePresentationIntent(rawValue: raw)
-                if inline.contains(.code) {
-                    piece.addAttribute(
-                        .font,
-                        value: NSFont.monospacedSystemFont(
-                            ofSize: blockFont.pointSize - 1,
-                            weight: .regular
-                        ),
-                        range: range
-                    )
-                    return
-                }
-                if inline.contains(.strikethrough) {
-                    piece.addAttribute(
-                        .strikethroughStyle,
-                        value: NSUnderlineStyle.single.rawValue,
-                        range: range
-                    )
-                }
-                var traits: NSFontDescriptor.SymbolicTraits = []
-                if inline.contains(.stronglyEmphasized) { traits.insert(.bold) }
-                if inline.contains(.emphasized) { traits.insert(.italic) }
-                guard !traits.isEmpty else { return }
-                let descriptor = blockFont.fontDescriptor.withSymbolicTraits(traits)
-                if let styled = NSFont(descriptor: descriptor, size: blockFont.pointSize) {
-                    piece.addAttribute(.font, value: styled, range: range)
-                }
-            }
-
-            output.append(piece)
-            previousBlock = blockID
-            previousWasListItem = isListItem
-            previousWasTableCell = isTableCell
-        }
-
-        guard output.length > 0 else { return NSAttributedString(string: text, attributes: base) }
-        return output
+        return MarkdownTypesetter.attributedString(text, base: base)
     }
 }
 
@@ -457,6 +242,11 @@ struct ConversationTextView: NSViewRepresentable {
         scrollView.borderType = .noBorder
 
         let textView = NSTextView()
+        // TextKit 1, up front. `NSTextView()` starts on TextKit 2, which has no `NSTextTable`, and a reply's tables
+        // are `NSTextTable`s now: laid out on TextKit 2 the atlas document set every cell as its own full-width
+        // paragraph (7,317 pt of stacked cells against 8,604 pt of columns, 2026-09-20). Touching `layoutManager` is
+        // the documented switch, so the columns do not depend on AppKit noticing the attribute on its own.
+        _ = textView.layoutManager
         textView.drawsBackground = false
         textView.isEditable = false
         textView.isSelectable = true

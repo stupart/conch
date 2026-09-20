@@ -1010,6 +1010,9 @@ private struct DeliverableDocumentView: NSViewRepresentable {
         scrollView.hasVerticalScroller = true
 
         let textView = NSTextView()
+        // TextKit 1, up front: `NSTextView()` starts on TextKit 2, which has no `NSTextTable`, and a rendered
+        // document's tables are `NSTextTable`s (TranscriptFallback.swift says the same, for the same reason).
+        _ = textView.layoutManager
         textView.drawsBackground = false
         textView.isEditable = false
         textView.isSelectable = true
