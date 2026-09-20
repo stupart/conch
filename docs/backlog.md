@@ -39,6 +39,10 @@ agent drive one, and the user able to reach in and interact — the way the Code
 ## Open
 
 ### UI / UX
+- **open** — Filling the stage with a deliverable (⌘3) still does not mark it viewed. Only a tab
+  click and the inline card do (`bfc4337` fixed the card; the tab always did). Same class of gap:
+  the dot stays on something you are looking at full screen. Found by the versions agent and left
+  deliberately rather than widened into its PR.
 - **open** — The files pane shows the whole working folder; it should be scoped to what the
   session is actually working on. Tyler, 2026-09-20: "for the files deally thats more scopped
   to whats being worked on by the projects but can leave for now". The material is already
@@ -142,6 +146,12 @@ agent drive one, and the user able to reach in and interact — the way the Code
   TextKit 1 fallback the caret fix introduced.
 
 ### Engineering
+- **open** — Six versions of ONE artifact can crowd distinct artifacts off the daemon's
+  `MAX_SESSION_REVIEWS` cap of 6 (`src/panel.ts`). Now that filings of a link group into one tab
+  (`bfc4337`), the cap counts versions where the reader counts artifacts: a session iterating on
+  one page six times loses every other deliverable it filed. A per-GROUP cap would fix it, but it
+  is a wire-size change — the daemon would hold more than six — so it needs deciding rather than
+  slipping in.
 - **open** — Running real agent sessions inside conch's own terminal. Tyler: "could test having
   the real reaw sessios runnign in the terminal in th app that could be quite cool... is that
   possible for me to move one in here?"
