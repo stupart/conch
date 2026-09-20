@@ -94,12 +94,15 @@ describe("a message sent from the Mac appears the moment it is sent", () => {
 
   test("the transcript's own copy retires the bubble instead of duplicating it", () => {
     const reconcile = section(store, "private func reconcileOutbox(with snapshot:", "static func sameMessage(");
+    // On a copy, stored only if it differs: a mutating call on the @Published outbox fires its
+    // willSet and the UserDefaults write whether or not it removed anything, which republished
+    // the whole window on every poll (test/idle-republish.test.ts has the measurement).
     ordered(
       reconcile,
       "seenUserItems[session] = Set(users.map(\\.id))",
       "!message.earlierUserItems.contains($0.id) && Self.sameMessage($0.text, message.text)",
-      "outbox.remove(message.id)",
-      "outbox.prune(confirmedBefore:",
+      "reconciled.remove(message.id)",
+      "reconciled.prune(confirmedBefore:",
     );
     // An older daemon puts the selected session in `conversation`, not in `conversations`.
     expect(reconcile).toContain("conversations[one.sessionId] = one");

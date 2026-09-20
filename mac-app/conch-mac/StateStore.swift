@@ -1148,20 +1148,26 @@ final class StateStore: ObservableObject {
         if let one = snapshot.conversation, !one.sessionId.isEmpty {
             conversations[one.sessionId] = one
         }
+        // Reconciled on a copy and stored only if it changed: `outbox` is @Published with a
+        // UserDefaults write in its didSet, and a mutating call fires both whether or not it
+        // removed anything — a republish and a defaults write on every poll, at rest (see
+        // refreshLivenessPresentation for the measurement).
+        var reconciled = outbox
         for (session, conversation) in conversations {
             let users = conversation.items.filter { $0.kind == .user }
             seenUserItems[session] = Set(users.map(\.id))
-            for message in outbox.entries(for: session) {
+            for message in reconciled.entries(for: session) {
                 guard users.contains(where: {
                     !message.earlierUserItems.contains($0.id) && Self.sameMessage($0.text, message.text)
                 }) else { continue }
-                outbox.remove(message.id)
+                reconciled.remove(message.id)
             }
         }
         // ponytail: a confirmed bubble the transcript never shows — words the agent rewrote —
         // goes after ten minutes, the phone's cutoff. Match on something sturdier than the text
         // if that proves common.
-        outbox.prune(confirmedBefore: Date().addingTimeInterval(-600))
+        reconciled.prune(confirmedBefore: Date().addingTimeInterval(-600))
+        if reconciled != outbox { outbox = reconciled }
     }
 
     /// Whitespace-insensitive, and a suffix counts because the daemon may prepend to what it
@@ -1319,11 +1325,10 @@ final class StateStore: ObservableObject {
     }
 
     private func updateNewerDaemonWarning() {
-        guard let sourceState, sourceState.newerDaemon else {
-            newerDaemonWarningVisible = false
-            return
-        }
-        newerDaemonWarningVisible = dismissedNewerDaemonVersion != sourceState.v
+        // Stored only on change, like every other flag the poll touches — see
+        // refreshLivenessPresentation for the measurement.
+        let visible = sourceState.map { $0.newerDaemon && dismissedNewerDaemonVersion != $0.v } ?? false
+        if newerDaemonWarningVisible != visible { newerDaemonWarningVisible = visible }
     }
 
     private func evaluateLiveness(at now: Date = Date()) {
@@ -1439,7 +1444,10 @@ final class StateStore: ObservableObject {
             lastConfirmedAliveAt = now
         }
         probeFailure = nil
-        liveness = .alive
+        // A heartbeat-only snapshot (same presentation, newer ts) reaches here, and an
+        // unconditional store of `.alive` republished the whole window for it — the exact
+        // case hasSamePresentation exists to swallow.
+        if liveness != .alive { liveness = .alive }
         for id in transportErrorSessionIDs {
             rowMessages[id] = nil
         }
@@ -1476,24 +1484,35 @@ final class StateStore: ObservableObject {
         return max(0, now.timeIntervalSince(baseline))
     }
 
+    /// Every @Published property the poll touches is stored only when its value changes.
+    ///
+    /// `@Published` fires objectWillChange on assignment, equal or not, and this ran twice per
+    /// poll (from accept and from evaluateLiveness) with `newerDaemonWarningVisible` and the
+    /// outbox alongside it. With the snapshot file byte-for-byte unchanged, hasSamePresentation
+    /// correctly kept `state` put — and these stores republished the store anyway, so every
+    /// view holding it re-ran: measured on the Release app (Time Profiler, 2026-09-20), a flat
+    /// 27 ms of main thread per 250 ms poll with nothing on screen changing, ~100 ms/s, 10% of
+    /// the main thread at rest, and the 15 ms SwiftUI transactions under it landed on whatever
+    /// happened to be animating. The Instruments attribution named the setters themselves.
     private func refreshLivenessPresentation(at now: Date) {
+        let message: String?
         switch liveness {
         case .checking, .alive:
-            daemonMessage = nil
-            isLedgerFrozen = false
+            message = nil
         case .dead:
-            daemonMessage = "daemon not running"
-            isLedgerFrozen = true
+            message = "daemon not running"
         case .stalled:
             let liveState = sourceState?.live.state ?? "idle"
             let micCanBeStuck = liveState == "speaking"
                 || liveState == "listening"
                 || liveState == "recording"
-            daemonMessage = micCanBeStuck && snapshotAge(at: now) >= Self.stuckMicAge
+            message = micCanBeStuck && snapshotAge(at: now) >= Self.stuckMicAge
                 ? "mic stuck open · press space to stop"
                 : "daemon not responding"
-            isLedgerFrozen = true
         }
+        if daemonMessage != message { daemonMessage = message }
+        let frozen = message != nil
+        if isLedgerFrozen != frozen { isLedgerFrozen = frozen }
     }
 
     private static func isValidJSONReply(_ data: Data) -> Bool {
