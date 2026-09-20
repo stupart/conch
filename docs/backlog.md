@@ -146,6 +146,15 @@ agent drive one, and the user able to reach in and interact — the way the Code
   TextKit 1 fallback the caret fix introduced.
 
 ### Engineering
+- **open** — Nine guards still slice by a FIXED character count from a marker, which breaks the
+  moment the code they read grows. Found 2026-09-21 when `composer.slice(loadAt, loadAt + 400)`
+  failed while the rule it pins was still true — `load` had gained a doc comment and a branch,
+  and the call it asserts moved past the window. The two in `mac-phase1-source` are fixed;
+  these are not: `adopted-daemon-respawn:28`, `daemon-owner:98`, `daemon-side-effects:471,586`,
+  `design-system-source:70`, `phone-speaking-latch:24`, `reveal-command:58`,
+  `phone-telemetry:59`, `setup:431`. The idiom that works is already in the same files —
+  `slice(at, source.indexOf("\n    }", at))`, an end marker searched FORWARD from the start.
+  A count is a guess about how long a function will stay.
 - **open** — Six versions of ONE artifact can crowd distinct artifacts off the daemon's
   `MAX_SESSION_REVIEWS` cap of 6 (`src/panel.ts`). Now that filings of a link group into one tab
   (`bfc4337`), the cap counts versions where the reader counts artifacts: a session iterating on
