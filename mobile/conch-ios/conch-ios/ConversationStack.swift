@@ -29,6 +29,9 @@ struct ConversationStack: View {
     /// Offered beside that reason when a window can be attached to the job.
     var onOpenInTerminal: (() -> Void)? = nil
     @State private var expandedToolIDs: Set<String> = []
+    /// Which folded runs are open. Its own set, not `expandedToolIDs`: a run is named by its
+    /// first step, and sharing the set would open that step's output every time the run opens.
+    @State private var openRunIDs: Set<String> = []
     /// Multi-select taps edit a retained set. Nothing crosses the bridge until
     /// the explicit Submit button sends the complete, option-ordered answer.
     @State private var multiSelections: [String: Set<String>] = [:]
@@ -53,11 +56,16 @@ struct ConversationStack: View {
             }
             // What the record store holds above the live window: a recorded message
             // is still a message, so it goes through the same row renderers.
-            ForEach(recordedRows) { item in
-                row(item).id(item.id)
+            // ponytail: folds are computed per list, so a run straddling the history/live
+            // seam draws as two folds — the Mac's trade too, for the same scroll-anchor reason.
+            let recorded = recordedRows
+            let recordedFolds = folds(in: recorded)
+            let liveFolds = folds(in: conversation.items)
+            ForEach(recorded) { item in
+                foldedRow(for: item, in: recorded, folds: recordedFolds).id(item.id)
             }
             ForEach(conversation.items) { item in
-                row(item).id(item.id)
+                foldedRow(for: item, in: conversation.items, folds: liveFolds).id(item.id)
             }
             LinkFailureLine(message: $linkFailure)
         }
@@ -229,6 +237,79 @@ struct ConversationStack: View {
     /// The daemon's own caps, as `publishedConversation` applies them.
     private static let messageCap = 4_000
     private static let toolResultCap = 400
+
+    /// Which rows fold (ConchDesign/ToolFolding): the generic tool line and a file change,
+    /// the same rule as the Mac's transcript. Never a question — the session is blocked on
+    /// it, and a phone is where that question is most often answered — and never a plan,
+    /// which is the answer to "what is it doing".
+    private func foldable(_ item: ConversationItem) -> Bool {
+        guard item.kind == "tool" else { return false }
+        if let asked = item.question, !asked.options.isEmpty { return false }
+        if let plan = item.plan, !plan.isEmpty { return false }
+        return true
+    }
+
+    private struct FoldIndex {
+        var heads: [String: ToolRun] = [:]
+        /// Every step after the first, pointing at the run that draws it.
+        var memberOf: [String: String] = [:]
+    }
+
+    /// `at` goes in as the wire sends it (epoch milliseconds); the rule owns the units.
+    private func folds(in items: [ConversationItem]) -> FoldIndex {
+        var index = FoldIndex()
+        for run in ToolFolding.runs(for: items.map { (id: $0.id, isTool: foldable($0), at: $0.at) }) {
+            index.heads[run.id] = run
+            for member in run.itemIDs.dropFirst() { index.memberOf[member] = run.id }
+        }
+        return index
+    }
+
+    /// One row, or the whole run it starts. A step that is not the first draws nothing: its
+    /// run draws it, so six file reads between two sentences cost one line, not six — and
+    /// on a phone six lines is the whole screen.
+    @ViewBuilder
+    private func foldedRow(for item: ConversationItem, in items: [ConversationItem], folds: FoldIndex) -> some View {
+        if let run = folds.heads[item.id] {
+            let open = openRunIDs.contains(run.id)
+            VStack(alignment: .leading, spacing: 8) {
+                Button {
+                    if open { openRunIDs.remove(run.id) } else { openRunIDs.insert(run.id) }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: open ? "chevron.down" : "chevron.right")
+                            .font(Type.caption.weight(.semibold))
+                            .foregroundStyle(Palette.textFaint)
+                            .frame(width: 16)
+                        Text(run.summary)
+                            .font(Type.caption.weight(.medium))
+                            .foregroundStyle(Palette.textDim)
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint(open ? "Hides these steps" : "Shows these steps")
+                if open {
+                    let members = Set(run.itemIDs)
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(items.filter { members.contains($0.id) }) { step in
+                            row(step)
+                        }
+                    }
+                    .padding(.leading, 10)
+                    .overlay(alignment: .leading) {
+                        Rectangle().fill(Palette.divider).frame(width: 1)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else if folds.memberOf[item.id] != nil {
+            EmptyView()
+        } else {
+            row(item)
+        }
+    }
 
     @ViewBuilder
     private func row(_ item: ConversationItem) -> some View {
