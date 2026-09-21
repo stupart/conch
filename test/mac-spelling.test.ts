@@ -37,3 +37,45 @@ test("the Mac composer checks spelling, follows the system's correction settings
   const chain = composer.slice(editor, composer.indexOf(".frame(height: fieldHeight)", editor));
   expect(chain).toContain(".conchSpelling()");
 });
+
+/**
+ * Measured 2026-09-21 with a compiled probe running the app's own bridge code (extracted by line
+ * range, not retyped): the flag above WAS set on the editor — and SwiftUI's TextEditor unset it
+ * again on its next update, which every keystroke is. Disassembled, its
+ * `AppKitTextEditorAdaptor.updateNSView` derives BOTH spelling flags from the autocorrection
+ * environment: left unset, continuous checking is turned off; set, checking and correction are
+ * turned on together. So the editor declares it, which makes SwiftUI keep the underlines on
+ * itself, and the bridge re-applies the person's own correction setting after each update,
+ * since that branch forces correction on. Once was measured to last until the first keystroke.
+ */
+test("SwiftUI is told to keep spelling on, and the bridge re-applies after every update", () => {
+  const editor = composer.indexOf("TextEditor(text: $draft)");
+  const chain = composer.slice(editor, composer.indexOf(".frame(height: fieldHeight)", editor));
+  expect(chain).toContain(".autocorrectionDisabled(false)");
+
+  const at = composer.indexOf("func conchSpelling() -> some View {");
+  const body = composer.slice(at, composer.indexOf("\n    }\n", at));
+  expect(body).toContain("introspectTextView(everyUpdate: true) { view in");
+
+  // After the pass, not inside it: SwiftUI updates the same editor in the same pass, and which
+  // sibling goes first is not ours to choose.
+  const bridge = composer.indexOf("private struct TextViewIntrospector");
+  const introspector = composer.slice(bridge, composer.indexOf("private extension View {", bridge));
+  expect(introspector).toMatch(
+    /guard everyUpdate, let textView = context\.coordinator\.textView else \{ return \}\s*DispatchQueue\.main\.async \{ configure\(textView\) \}/,
+  );
+  // Insets stay once-on-appear: restyling the whole draft and re-registering drag types on
+  // every keystroke buys nothing, since SwiftUI leaves those alone.
+  expect(composer).toMatch(/func conchTextViewInsets\(lineSpacing: CGFloat\) -> some View \{\s*introspectTextView \{ view in/);
+});
+
+/**
+ * The walk ends at the window's content view and searches the whole tree from there. With a
+ * read-only NSTextView created before the composer — a deliverable document beside the
+ * conversation, or the transcript fallback under it — it found that one and configured it
+ * instead, and the field you type in got nothing: no insets, no caret, no spelling (probe,
+ * 2026-09-21: `reached NSTextView editable=false`).
+ */
+test("the bridge configures the editable text view, not the first one it meets", () => {
+  expect(composer).toContain("if let textView = view as? NSTextView, textView.isEditable { return textView }");
+});

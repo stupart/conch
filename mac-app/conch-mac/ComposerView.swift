@@ -480,6 +480,14 @@ struct ComposerView: View {
                     .scrollContentBackground(.hidden)
                     .focused($fieldFocused)
                     .conchTextViewInsets(lineSpacing: ConchType.readingLineSpacing)
+                    // Not a no-op. SwiftUI's TextEditor rewrites the editor's spelling flags on
+                    // EVERY update — each keystroke included — from this one environment value
+                    // (disassembled `AppKitTextEditorAdaptor.updateNSView`, macOS 26): left unset
+                    // it turns continuous checking OFF; set, it turns checking AND correction on
+                    // together. So `conchSpelling()` alone lasted until the first keystroke, which
+                    // is why the flag was there and the underlines were not. Correction is put
+                    // back to the person's own setting below, after each of those updates.
+                    .autocorrectionDisabled(false)
                     .conchSpelling()
                     .frame(height: fieldHeight)
                     // Return SENDS. Tyler kept "trying to send and making a new
@@ -940,8 +948,12 @@ private extension View {
     /// text replacement only if the person has them on in System Settings.
     /// Smart quotes and dashes stay off: this text lands in terminals and
     /// code, where a curly quote breaks the command.
+    ///
+    /// Applied after EVERY update, not once: `.autocorrectionDisabled(false)` on the editor
+    /// is what keeps the underlines (see there), and the price is that SwiftUI also forces
+    /// correction on with each update. Once was measured to last until the first keystroke.
     func conchSpelling() -> some View {
-        introspectTextView { view in
+        introspectTextView(everyUpdate: true) { view in
             view.isContinuousSpellCheckingEnabled = true
             view.isAutomaticSpellingCorrectionEnabled = NSSpellChecker.isAutomaticSpellingCorrectionEnabled
             view.isAutomaticTextReplacementEnabled = NSSpellChecker.isAutomaticTextReplacementEnabled
@@ -1056,11 +1068,29 @@ private struct ComposerPasteBridge: NSViewRepresentable {
 /// taking a dependency for one property.
 private struct TextViewIntrospector: NSViewRepresentable {
     let configure: (NSTextView) -> Void
+    /// Run `configure` again after each SwiftUI update of this view, for settings SwiftUI's
+    /// own TextEditor update overwrites (spelling). Insets and the caret it leaves alone, so
+    /// those stay once-on-appear.
+    var everyUpdate = false
+
+    final class Coordinator { weak var textView: NSTextView? }
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSView {
         let probe = NSView(frame: .zero)
-        Self.reach(from: probe, attempts: 10, configure: configure)
+        let coordinator = context.coordinator
+        Self.reach(from: probe, attempts: 10) { textView in
+            coordinator.textView = textView
+            configure(textView)
+        }
         return probe
+    }
+
+    /// One runloop turn later, not inside the update: SwiftUI's TextEditor updates the same
+    /// editor in this same pass, and which sibling goes first is not ours to choose.
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard everyUpdate, let textView = context.coordinator.textView else { return }
+        DispatchQueue.main.async { configure(textView) }
     }
 
     /// Walk UP from the probe until an ancestor holds the editor, and look again on the next
@@ -1092,10 +1122,13 @@ private struct TextViewIntrospector: NSViewRepresentable {
         }
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {}
-
+    /// The EDITABLE one. The walk ends at the window's content view and searches the whole
+    /// tree from there, so with a deliverable document or the transcript fallback open — both
+    /// read-only NSTextViews created before the composer — it found those first and configured
+    /// them instead: no insets, no caret, no spelling on the field you type in (probe,
+    /// 2026-09-21). The dashboard's key monitor tells the composer apart the same way.
     private static func firstTextView(in view: NSView) -> NSTextView? {
-        if let textView = view as? NSTextView { return textView }
+        if let textView = view as? NSTextView, textView.isEditable { return textView }
         for child in view.subviews {
             if let found = firstTextView(in: child) { return found }
         }
@@ -1104,7 +1137,7 @@ private struct TextViewIntrospector: NSViewRepresentable {
 }
 
 private extension View {
-    func introspectTextView(_ configure: @escaping (NSTextView) -> Void) -> some View {
-        background(TextViewIntrospector(configure: configure))
+    func introspectTextView(everyUpdate: Bool = false, _ configure: @escaping (NSTextView) -> Void) -> some View {
+        background(TextViewIntrospector(configure: configure, everyUpdate: everyUpdate))
     }
 }

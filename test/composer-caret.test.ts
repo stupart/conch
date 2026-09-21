@@ -115,7 +115,11 @@ test("the caret is moved by the baseline, and the words are put back", () => {
  * path.
  */
 test("the introspector finds the editor whatever the nesting, and tries again if it is early", () => {
-  expect(composer).toContain("Self.reach(from: probe, attempts: 10, configure: configure)");
+  // The reach itself, not how `configure` is handed to it: the closure now also records the
+  // editor it found, so the spelling settings can be put back after each SwiftUI update
+  // (mac-spelling.test.ts). The up-walk, the ten attempts and the bounded retry are the
+  // invariant here, and they are unchanged.
+  expect(composer).toMatch(/Self\.reach\(from: probe, attempts: 10\) \{ textView in/);
   expect(composer).toContain("if let textView = firstTextView(in: next) {");
   // Up from the probe, not a hard-coded hop.
   expect(composer).toContain("ancestor = next.superview");
