@@ -54,14 +54,27 @@ X64_SHA=$(shasum -a 256 dist/conch-macos-x64.tar.gz | cut -d' ' -f1)
 
 # --- publish -------------------------------------------------------------
 step "tagging and publishing $TAG"
+# Three files carry the version, not one. test/plugin-version.test.ts compares the
+# plugin manifests against package.json — a guard written because they had already
+# drifted once — and the pre-push hook runs it. Bumping package.json alone therefore
+# made the release fail its OWN gate: measured 2026-09-21, v0.3.0 was refused because
+# the manifests still said 0.2.1, after the build had already run.
 bun --print "
   const fs = require('fs');
-  const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-  p.version = '$VERSION';
-  fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
+  for (const file of [
+    'package.json',
+    'plugin/plugins/conch/.claude-plugin/plugin.json',
+    'plugin/plugins/conch/.codex-plugin/plugin.json',
+  ]) {
+    const p = JSON.parse(fs.readFileSync(file, 'utf8'));
+    p.version = '$VERSION';
+    fs.writeFileSync(file, JSON.stringify(p, null, 2) + '\n');
+  }
   'ok'
 " >/dev/null
-git add package.json
+git add package.json \
+  plugin/plugins/conch/.claude-plugin/plugin.json \
+  plugin/plugins/conch/.codex-plugin/plugin.json
 git commit -q -m "conch $VERSION"
 git tag -a "$TAG" -m "conch $VERSION"
 git push -q origin main "$TAG"
