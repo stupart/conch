@@ -1,6 +1,6 @@
 import type { ProcessIdentity } from "./process-identity.ts";
 import { conchHome } from "./home.ts";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   closeSync,
   mkdirSync,
@@ -86,6 +86,8 @@ export interface SessionInfo {
    */
   nameSource?: "user" | "derived";
   cwd?: string;
+  /** The folder(s) the agent said it actually works in (`conch_working_folders`), when not `cwd`. */
+  workDirs?: string[];
   pid?: number;
   /** Daemon-captured process binding; never inferred from PID liveness alone. */
   processIdentity?: ProcessIdentity;
@@ -462,16 +464,20 @@ function writeLabelOverrides(
   overrides: Readonly<Record<string, string>>,
   options: LabelOverrideOptions,
 ): void {
-  const path = labelOverridePath(options);
+  writeOverrides(labelOverridePath(options), overrides);
+}
+
+/** One session-id-keyed JSON file under ~/.config/conch, replaced atomically. */
+function writeOverrides(path: string, values: Readonly<Record<string, unknown>>): void {
   mkdirSync(dirname(path), { recursive: true });
   const temp = join(
     dirname(path),
-    `.labels.json.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
+    `.${basename(path)}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`,
   );
   let fd: number | undefined;
   try {
     fd = openSync(temp, "wx", 0o600);
-    writeFileSync(fd, JSON.stringify(overrides, null, 2) + "\n", "utf8");
+    writeFileSync(fd, JSON.stringify(values, null, 2) + "\n", "utf8");
     closeSync(fd);
     fd = undefined;
     renameSync(temp, path);
@@ -505,6 +511,43 @@ export function setLabelOverride(
  * carry its label-keyed voice pin along. If the voice write fails, restore the
  * previous label map so callers never report a half-completed rename.
  */
+/**
+ * `~/.config/conch/working-folders.json`: session id -> the folders its agent said it
+ * works in. A session's `cwd` is where it STARTED, and Tyler's often work somewhere else
+ * ("sometimes its different than the folder i start the session in"); the file tree and
+ * the sidebar's grouping follow these instead when they are set. Kept by conch rather
+ * than in the project, like labels, so it survives the project moving.
+ */
+function workingFoldersPath(path?: string): string {
+  return path ?? join(process.env.CONCH_CONFIG_DIR ?? dirname(LABELS_FILE), "working-folders.json");
+}
+
+export function workingFolderOverrides(path?: string): Record<string, string[]> {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(workingFoldersPath(path), "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const entries: Array<[string, string[]]> = [];
+    for (const [sessionId, value] of Object.entries(parsed)) {
+      if (!sessionId || !Array.isArray(value)) continue;
+      const folders = value.filter((folder): folder is string => typeof folder === "string" && folder.startsWith("/"));
+      if (folders.length) entries.push([sessionId, folders]);
+    }
+    return Object.fromEntries(entries);
+  } catch {
+    return {};
+  }
+}
+
+/** Absolute paths; `conch_working_folders` has checked they exist. */
+export function setWorkingFolders(sessionId: string, folders: readonly string[], path?: string): void {
+  const id = sessionId.trim();
+  if (!id || id.replace(CONTROL_CHARS, "") !== id) {
+    throw new Error("Session id cannot be empty or contain control characters");
+  }
+  // ponytail: never pruned, like labels.json; a gone session costs one line.
+  writeOverrides(workingFoldersPath(path), { ...workingFolderOverrides(path), [id]: [...folders] });
+}
+
 export function renameSessionLabel(
   sessionId: string,
   oldLabel: string,
@@ -723,6 +766,14 @@ export async function registrySnapshot(
     const parents = await (options.processParents ?? processParentTable)();
     if (parents) infos = withStartedBy(infos, parents);
   }
+
+  // What each agent said about where it works, by the window's id first, then the id
+  // two windows share — the same two keys a label override answers to.
+  const declared = workingFolderOverrides();
+  infos = infos.map((info) => {
+    const workDirs = declared[info.sessionId] ?? (info.agentSessionId ? declared[info.agentSessionId] : undefined);
+    return workDirs ? { ...info, workDirs } : info;
+  });
 
   // No readable source at all retains the legacy "total uncertainty" result.
   // A readable Codex registry can still supply useful sessions when Claude's

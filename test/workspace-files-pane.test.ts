@@ -120,7 +120,8 @@ describe("the tree tells the truth about what changed", () => {
     const changed = section(pane, "private func changedFiles(for row: SessionRow) -> ConchFileChanges {", "\n    @ViewBuilder");
     expect(changed).toContain("conversation?.sessionId == row.id ? conversation?.items ?? [] : []");
     expect(changed).toContain("changed: items.compactMap { $0.change?.path }");
-    expect(changed).toContain("relativeTo: row.cwd ?? \"\"");
+    // The folder the agent said it works in, else where it started: what the tree is rooted at.
+    expect(changed).toContain("relativeTo: row.workFolder ?? \"\"");
   });
 
   test("a folder holding changes is marked more quietly than a changed file", () => {

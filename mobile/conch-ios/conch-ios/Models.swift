@@ -168,6 +168,8 @@ struct PublishedState: Decodable, Equatable {
         /// Mac has always read it; the phone simply never asked, so its list could
         /// not say which project a row belonged to.
         var cwd: String?
+        /// The folder(s) its agent said it actually works in, when not `cwd`.
+        var workDirs: [String]?
         /// The session this one runs inside (C4), or the one that started it (C15).
         /// Present on the wire since both landed; decoding it is what lets the phone
         /// nest a subagent under its parent instead of listing it as a peer.
@@ -203,7 +205,7 @@ struct PublishedState: Decodable, Equatable {
 
         private enum CodingKeys: String, CodingKey {
             case id, label, status, backend, context, detail, at, live, paused, review, reviews, noTerminal, attachable
-            case cwd, parentSessionId, startedBySessionId
+            case cwd, workDirs, parentSessionId, startedBySessionId
         }
 
         init() {}
@@ -224,6 +226,7 @@ struct PublishedState: Decodable, Equatable {
             noTerminal = try? c.decodeIfPresent(String.self, forKey: .noTerminal)
             attachable = (try? c.decodeIfPresent(Bool.self, forKey: .attachable)) ?? false
             cwd = try? c.decodeIfPresent(String.self, forKey: .cwd)
+            workDirs = try? c.decodeIfPresent([String].self, forKey: .workDirs)
             parentSessionId = try? c.decodeIfPresent(String.self, forKey: .parentSessionId)
             startedBySessionId = try? c.decodeIfPresent(String.self, forKey: .startedBySessionId)
         }

@@ -30,6 +30,8 @@ Publishing makes the result available. The user chooses when to open it. Do not 
 
 Omit `session` when publishing. Never attribute work to another session or invent surface references.
 
+If your work is in a folder other than the one this session started in, say so once with `conch_working_folders`; conch’s file tree and sidebar follow it.
+
 For user-requested session, audio, or settings control, load the `conch-control` skill, inspect current IDs with `conch_sessions`, and perform the requested action. Respect manual mode and report refusals.
 
 If publication is unavailable, leave the result in your reply. Where supported, use one final `conch:review <summary> | <link>` line; do not retry under another session’s identity.
@@ -112,6 +114,7 @@ https://brew.sh rather than trying to install Homebrew yourself.
   unverified, end your final reply with its own line instead: `conch:review <one-line spoken summary> | <link-or-path>`.
 - **Auto / manual** — `conch_mode {action, session?, scope?}` uses `pause` for lossless manual mode and `resume` for auto read-and-listen mode. Without `session` or `scope` it switches only YOUR session; `session` names another one. Switching every session at once — the whole daemon, what the user's `p` key and `conch pause` do — needs `scope: "all"` explicitly, and only when the user asked for exactly that. A `resume` from an agent is refused while the user put conch in manual themselves (the `p` key, the Mac's toggle, `conch pause`) — only a person undoes a person's pause, and a `conch_speak` is held then too: not spoken and not queued, and its result carries `held` saying so.
 - **Rename** — `conch_rename {session, label}` gives a session a name the user actually uses ("call that one 'the api work'").
+- **Say where you work** — `conch_working_folders {folders}` names the folder(s) you are actually working in when they differ from where the session started; conch's file tree, file viewer and sidebar grouping follow them. Once is enough; say it again only if you move.
 - **Tune** — `conch_config {key, value}` reads any conch setting live and changes these, and only these: `end-silence`, `voice-speed`, `haiku-timeout`, `read-full`, `announce-summary`, `whisper-idle-unload` — the voice and timing knobs. Every other key (the phone, the relay, permissions, meeting detection) is the user's own, by name, forever; the refusal tells you the `conch set` command to hand them. Only touch a setting the user named.
 
 ## How to behave

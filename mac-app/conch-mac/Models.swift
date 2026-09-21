@@ -867,6 +867,13 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     /// The folder the session runs in: what a relative link in the agent's
     /// prose is relative to (A13). Older daemons never send it.
     let cwd: String?
+    /// The folder(s) its agent said it actually works in (`conch_working_folders`), when not `cwd`.
+    let workDirs: [String]?
+
+    /// Where the session's work is: the first folder its agent declared, else where it started.
+    /// `cwd` stays what a relative link is relative to.
+    // ponytail: one root; a tree per declared folder if a session ever names two.
+    var workFolder: String? { workDirs?.first ?? cwd }
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -893,6 +900,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case parentSessionId
         case startedBySessionId
         case cwd
+        case workDirs
     }
 
     init(
@@ -919,7 +927,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         attachable: Bool = false,
         parentSessionId: String? = nil,
         startedBySessionId: String? = nil,
-        cwd: String? = nil
+        cwd: String? = nil,
+        workDirs: [String]? = nil
     ) {
         self.id = id
         self.label = label
@@ -945,6 +954,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.parentSessionId = parentSessionId
         self.startedBySessionId = startedBySessionId
         self.cwd = cwd
+        self.workDirs = workDirs
     }
 
     init(from decoder: Decoder) throws {
@@ -981,6 +991,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         startedBySessionId =
             try? container.decodeIfPresent(String.self, forKey: .startedBySessionId)
         cwd = try? container.decodeIfPresent(String.self, forKey: .cwd)
+        workDirs = try? container.decodeIfPresent([String].self, forKey: .workDirs)
     }
 
     func replacingLabel(with label: String) -> SessionRow {

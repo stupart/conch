@@ -8,6 +8,8 @@ Publishing makes the result available. The user chooses when to open it. Do not 
 
 Omit `session` when publishing. Never attribute work to another session or invent surface references.
 
+If your work is in a folder other than the one this session started in, say so once with `conch_working_folders`; conch’s file tree and sidebar follow it.
+
 For user-requested session, audio, or settings control, load the `conch-control` skill, inspect current IDs with `conch_sessions`, and perform the requested action. Respect manual mode and report refusals.
 
 If publication is unavailable, leave the result in your reply. Where supported, use one final `conch:review <summary> | <link>` line; do not retry under another session’s identity.

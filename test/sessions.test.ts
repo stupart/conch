@@ -2,7 +2,7 @@ import { expect, test, describe } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { AmbiguousSessionError, findSessionByName, findSessionBySpokenName, findSession, isEngageable, normalizeSessionLabel, registrySnapshot, renameSessionLabel, sessionGoneFromSnapshot, sessionLabel, setLabelOverride } from "../src/sessions.ts";
+import { AmbiguousSessionError, findSessionByName, findSessionBySpokenName, findSession, isEngageable, normalizeSessionLabel, registrySnapshot, setWorkingFolders, workingFolderOverrides, renameSessionLabel, sessionGoneFromSnapshot, sessionLabel, setLabelOverride } from "../src/sessions.ts";
 import { activeSessionIdForRows, buildPanelRows } from "../src/panel.ts";
 import { setVoiceOverride, voiceFor } from "../src/speak.ts";
 import { loadConfig } from "../src/config.ts";
@@ -151,6 +151,63 @@ describe("sessionGoneFromSnapshot — complete snapshots only", () => {
       liveIds: new Set(),
       complete: true,
     }, "")).toBe(false);
+  });
+});
+
+describe("working folders an agent declared", () => {
+  const options = () => ({
+    sessionStates: new Map(),
+    pausedSessionIds: new Set<string>(),
+    mutedSessionIds: new Set<string>(),
+    live: { state: "idle" as const, label: "", partial: "" },
+    mode: { muted: false, paused: false, holding: 0 },
+    activeSessionId: null,
+    navSelectedId: null,
+  });
+
+  test("recorded per session, and read back as absolute paths only", () => {
+    const root = mkdtempSync(join(tmpdir(), "conch-working-"));
+    const path = join(root, "config", "working-folders.json");
+    try {
+      setWorkingFolders("session-wf", ["/repo/a", "/repo/b"], path);
+      setWorkingFolders("session-other", ["/elsewhere"], path);
+      expect(workingFolderOverrides(path)).toEqual({ "session-wf": ["/repo/a", "/repo/b"], "session-other": ["/elsewhere"] });
+      writeFileSync(path, JSON.stringify({ "session-wf": ["/repo/a", "relative", 3], junk: "no", empty: [] }));
+      expect(workingFolderOverrides(path)).toEqual({ "session-wf": ["/repo/a"] });
+      writeFileSync(path, "not json");
+      expect(workingFolderOverrides(path)).toEqual({});
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("the registry's row carries them beside its cwd, and the panel publishes them", async () => {
+    const root = mkdtempSync(join(tmpdir(), "conch-working-"));
+    const claudeDir = join(root, "claude");
+    mkdirSync(join(claudeDir, "sessions"), { recursive: true });
+    // The suite's own config dir (test/preload.ts), which is where the daemon reads from.
+    const shared = join(process.env.CONCH_CONFIG_DIR!, "working-folders.json");
+    const id = "session-declared-folders";
+    try {
+      writeFileSync(join(claudeDir, "sessions", "1.json"), JSON.stringify({
+        sessionId: id, cwd: "/work/start", kind: "interactive", entrypoint: "cli",
+      }));
+      writeFileSync(join(claudeDir, "sessions", "2.json"), JSON.stringify({
+        sessionId: "session-undeclared", cwd: "/work/other", kind: "interactive", entrypoint: "cli",
+      }));
+      setWorkingFolders(id, ["/work/actual"]);
+      const snap = await registrySnapshot(claudeDir, { configDir: join(root, "conch-config") });
+      const declared = snap!.infos.find((session) => session.sessionId === id);
+      expect(declared?.workDirs).toEqual(["/work/actual"]);
+      expect(declared?.cwd).toBe("/work/start");
+      expect(snap!.infos.find((session) => session.sessionId === "session-undeclared")?.workDirs).toBeUndefined();
+      const rows = buildPanelRows({ sessions: snap!.infos, ...options() });
+      expect(rows.find((row) => row.sessionId === id)?.workDirs).toEqual(["/work/actual"]);
+      expect(rows.find((row) => row.sessionId === id)?.cwd).toBe("/work/start");
+    } finally {
+      rmSync(shared, { force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
