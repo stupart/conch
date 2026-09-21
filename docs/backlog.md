@@ -183,9 +183,13 @@ agent drive one, and the user able to reach in and interact — the way the Code
   `WorkspaceModel()` is a plain `@StateObject` (ContentView.swift:12) and nothing encodes
   `SessionPresentation`. A second, separate loss from the ledger one above — fixing the ledger
   will not restore the selection. Confirmed app-wide: no `AppStorage` names a stage.
-- **open** — A conch-internal per-session state file the agent can write, holding the left-panel
+- **done** — A conch-internal per-session state file the agent can write, holding the left-panel
   enabled state, the deliverables/artifacts that session is showing, and the parent working
-  folder(s) it is ACTUALLY in. Tyler, 2026-09-21: per-project was the first idea, but
+  folder(s) it is ACTUALLY in. Split by who owns each fact: the deliverables were already the
+  daemon's (`reviews.json`, now durable); the folded folders and the picked tab are the Mac's
+  (`WorkspaceMemory`, UserDefaults); the folders are the agent's — `conch_working_folders`
+  writes `~/.config/conch/working-folders.json` like labels, the row carries `workDirs`, and
+  the Mac's grouping and file tree, and the phone's grouping, follow the first one. Tyler, 2026-09-21: per-project was the first idea, but
   conch-internal "coudl be better incase theres multipel instances or it gets moved and restarted
   somewhere else", with conch keeping the mapping. The folders matter on their own: "sometimes
   its different than the folder i start the session in and that info would be more accurate for

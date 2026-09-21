@@ -1,5 +1,5 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, stat } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import type { AudioControl } from "./audio-holder.ts";
 import { audioTimeoutMs } from "./audio-watchdog.ts";
 import { loadConfig, type Config } from "./config.ts";
@@ -16,6 +16,7 @@ import {
   registrySnapshot,
   renameSessionLabel,
   sessionLabel,
+  setWorkingFolders,
   type RegistrySnapshot,
   type SessionInfo,
 } from "./sessions.ts";
@@ -31,6 +32,9 @@ import {
   type SettingKey,
 } from "./settings.ts";
 import { AGENT_INSTRUCTIONS, MAX_SPEAK_CHARS, type AgentInstructions } from "./agent-instructions.ts";
+
+/** A session works in a few folders, not a filesystem. */
+const WORKING_FOLDERS_MAX = 8;
 import {
   checkReviewLink,
   checkReviewScene,
@@ -153,6 +157,9 @@ interface JsonSchema {
   maxLength?: number;
   minimum?: number;
   maximum?: number;
+  items?: JsonSchema;
+  minItems?: number;
+  maxItems?: number;
   const?: unknown;
   not?: JsonSchema;
   default?: unknown;
@@ -383,6 +390,24 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
         additionalProperties: false,
       },
     },
+    {
+      name: "conch_working_folders",
+      description: text.tools.conch_working_folders,
+      inputSchema: {
+        type: "object",
+        properties: {
+          folders: {
+            type: "array",
+            items: { type: "string", minLength: 1 },
+            minItems: 1,
+            maxItems: WORKING_FOLDERS_MAX,
+            description: "The folder(s) you are actually working in, absolute or relative to your cwd. Each must exist. The first is where conch's file tree opens.",
+          },
+        },
+        required: ["folders"],
+        additionalProperties: false,
+      },
+    },
   ] as const satisfies readonly McpToolDefinition[];
 }
 
@@ -414,6 +439,7 @@ export interface McpDependencies {
     session: Readonly<SessionInfo>,
     label: string,
   ): Promise<ProviderRenameResult>;
+  setWorkingFolders(sessionId: string, folders: readonly string[]): void;
   sendToDaemon(socketPath: string, event: TurnEvent): Promise<boolean>;
   sendControlMessage(
     socketPath: string,
@@ -443,6 +469,7 @@ export const defaultMcpDependencies: McpDependencies = {
   renameProviderSession(session, label) {
     return deliverProviderRename(loadConfig(), session, label);
   },
+  setWorkingFolders,
   sendToDaemon,
   sendControlMessage,
   getSettingDescriptor,
@@ -529,6 +556,7 @@ function publishedStateFromRegistry(
         id: session.sessionId,
         label: dependencies.sessionLabel(session, session.cwd),
         ...(session.cwd === undefined ? {} : { cwd: session.cwd }),
+        ...(session.workDirs === undefined ? {} : { workDirs: session.workDirs }),
         status,
         needsResponse: status === "needs",
         paused: false,
@@ -1057,6 +1085,39 @@ export function createMcpToolHandlers(
         throw new Error("ack-unknown: daemon reply did not match the rename request");
       }
       return response;
+    },
+
+    async conch_working_folders(argumentsValue, meta) {
+      const argumentsObject = toolArguments(argumentsValue);
+      allowOnly(argumentsObject, ["folders"]);
+      const raw = argumentsObject.folders;
+      if (
+        !Array.isArray(raw) || !raw.length || raw.length > WORKING_FOLDERS_MAX
+        || !raw.every((folder) => typeof folder === "string" && folder.trim())
+      ) {
+        throw new ToolInputError(`refused: folders must be 1 to ${WORKING_FOLDERS_MAX} non-empty strings`);
+      }
+      // Its own session only, verified: where a session works is not something another
+      // session gets to say.
+      const binding = await callerBinding(config, dependencies, meta);
+      if (binding.status !== "verified") {
+        throw new ToolInputError(
+          `refused: conch cannot verify which session is calling (${binding.reason}), so it will not record where any session works`,
+        );
+      }
+      // Absolute by the time it leaves here, like a review link: resolved against this
+      // process's cwd, which is the session's.
+      const folders: string[] = [];
+      for (const folder of raw as string[]) {
+        const path = resolve(process.cwd(), folder.trim());
+        const found = await stat(path).catch(() => null);
+        if (!found?.isDirectory()) throw new ToolInputError(`refused: ${folder} is not a folder that exists`);
+        if (!folders.includes(path)) folders.push(path);
+      }
+      dependencies.setWorkingFolders(binding.session.sessionId, folders);
+      // ponytail: the daemon reads the file at its next render (any hook event, or its 20s
+      // timer); a socket nudge if that ever feels slow.
+      return { outcome: "recorded", sessionId: binding.session.sessionId, folders };
     },
 
     async conch_config(argumentsValue) {

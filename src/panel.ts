@@ -97,6 +97,8 @@ export interface PanelRowModel {
   attachable?: boolean;
   /** The folder the session runs in; what a relative link in its prose is relative to. */
   cwd?: string;
+  /** The folder(s) its agent said it actually works in, when not `cwd`: what the file tree and the sidebar follow. */
+  workDirs?: string[];
 }
 
 export interface PanelReplyModel {
@@ -258,6 +260,8 @@ export interface PublishedSessionRow {
    * a Codex reply's link answered -50 in a Finder alert).
    */
   cwd?: string;
+  /** The folder(s) its agent said it actually works in, when not `cwd` (`conch_working_folders`). */
+  workDirs?: string[];
   /** Resolved effective voice, whether pinned or automatically assigned. */
   voice?: string;
   /** Present only for sessions explicitly promoted in the hand-off order. */
@@ -552,6 +556,7 @@ export function buildPublishedState(
         ...(row.noTerminal ? { noTerminal: row.noTerminal } : {}),
         ...(row.attachable ? { attachable: true as const } : {}),
         ...(row.cwd ? { cwd: row.cwd } : {}),
+        ...(row.workDirs ? { workDirs: row.workDirs } : {}),
         ...(snippets.has(row.sessionId)
           ? { snippet: snippets.get(row.sessionId)! }
           : {}),
@@ -682,6 +687,7 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         ...(session.noTerminal ? { noTerminal: session.noTerminal } : {}),
         ...(session.jobId && !session.pid ? { attachable: true } : {}),
         ...(session.cwd ? { cwd: session.cwd } : {}),
+        ...(session.workDirs ? { workDirs: session.workDirs } : {}),
       };
     });
   const top = rows

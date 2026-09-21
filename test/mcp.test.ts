@@ -9,7 +9,7 @@ import {
 } from "node:fs/promises";
 import { CONCH_VERSION } from "../src/version.ts";
 import { tmpdir } from "node:os";
-import { join, relative, isAbsolute } from "node:path";
+import { join, relative, isAbsolute, resolve } from "node:path";
 import {
   AGENT_TUNABLE_SETTINGS,
   MAX_SPEAK_CHARS,
@@ -60,6 +60,7 @@ const TOOL_NAMES = [
   "review_to_front",
   "conch_history",
   "conch_item",
+  "conch_working_folders",
 ] as const satisfies readonly McpToolName[];
 
 const DEFERRED_TOOL_NAMES = [
@@ -160,6 +161,7 @@ interface FakeCalls {
   labels: Array<{ sessionId: string | null; cwd: string | undefined }>;
   renames: Array<{ sessionId: string; oldLabel: string; newLabel: string }>;
   providerRenames: Array<{ sessionId: string; label: string }>;
+  workingFolders: Array<{ sessionId: string; folders: readonly string[] }>;
   daemon: Array<{ socketPath: string; event: TurnEvent }>;
   control: Array<{ socketPath: string; message: ControlMessage | HistoryRequest }>;
   marks: string[];
@@ -222,6 +224,7 @@ function fakeHarness(options: FakeOptions = {}): {
     labels: [],
     renames: [],
     providerRenames: [],
+    workingFolders: [],
     daemon: [],
     control: [],
     marks: [],
@@ -257,6 +260,9 @@ function fakeHarness(options: FakeOptions = {}): {
     async renameProviderSession(found, label) {
       calls.providerRenames.push({ sessionId: found.sessionId, label });
       return { kind: "delivered", via: "tmux" };
+    },
+    setWorkingFolders(sessionId, folders) {
+      calls.workingFolders.push({ sessionId, folders });
     },
     async sendToDaemon(socketPath, event) {
       calls.daemon.push({ socketPath, event });
@@ -344,6 +350,7 @@ function recordingHandlers(
     review_to_front: handler("review_to_front"),
     conch_history: handler("conch_history"),
     conch_item: handler("conch_item"),
+    conch_working_folders: handler("conch_working_folders"),
   };
 }
 
@@ -485,8 +492,8 @@ describe("MCP tool discovery", () => {
 
     expect(response?.id).toBe(11);
     expect(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).toEqual([...TOOL_NAMES]);
-    expect(result.tools).toHaveLength(11);
-    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(11);
+    expect(result.tools).toHaveLength(12);
+    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(12);
     for (const deferred of DEFERRED_TOOL_NAMES) {
       expect(result.tools.some((tool: unknown) => isRecord(tool) && tool.name === deferred)).toBe(false);
     }
@@ -503,6 +510,7 @@ describe("MCP tool discovery", () => {
       review_to_front: ["summary", "link", "session", "scene"],
       conch_history: ["session", "branch", "before", "limit"],
       conch_item: ["session", "item", "bodyCursor"],
+      conch_working_folders: ["folders"],
     };
     const expectedRequired: Record<McpToolName, string[]> = {
       conch_sessions: [],
@@ -517,6 +525,7 @@ describe("MCP tool discovery", () => {
       review_to_front: ["summary"],
       conch_history: ["session"],
       conch_item: ["session", "item"],
+      conch_working_folders: ["folders"],
     };
 
     for (const tool of result.tools) {
@@ -539,6 +548,42 @@ describe("MCP tool discovery", () => {
       .toEqual(["pause", "resume"]);
     expect(MCP_TOOLS[7].inputSchema.properties.sentences)
       .toMatchObject({ type: "integer", minimum: 1, default: 3 });
+  });
+});
+
+describe("conch_working_folders", () => {
+  const config = { claudeDir: "/virtual/claude", socketPath: "/virtual/conch.sock" };
+
+  test("a verified session's existing folders are recorded absolute, deduplicated, in order", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "conch-working-"));
+    try {
+      const h = fakeHarness({ parentPid: 4321 });
+      const response = await callTool(createMcpToolHandlers(config, h.dependencies), "conch_working_folders", {
+        folders: [dir, "src", dir],
+      });
+      expect(rpcResult(response)).not.toMatchObject({ isError: true });
+      expect(h.calls.workingFolders).toEqual([
+        { sessionId: "session-123", folders: [dir, resolve(process.cwd(), "src")] },
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a file, a folder that does not exist, or an unverified caller records nothing", async () => {
+    const h = fakeHarness({ parentPid: 4321 });
+    const handlers = createMcpToolHandlers(config, h.dependencies);
+    expect(toolText(await callTool(handlers, "conch_working_folders", { folders: ["package.json"] })))
+      .toContain("not a folder");
+    expect(toolText(await callTool(handlers, "conch_working_folders", { folders: ["/nowhere/at/all"] })))
+      .toContain("not a folder");
+    expect(toolText(await callTool(handlers, "conch_working_folders", { folders: [] })))
+      .toContain("1 to 8");
+    const unverified = fakeHarness({ parentPid: 0 });
+    expect(toolText(await callTool(createMcpToolHandlers(config, unverified.dependencies), "conch_working_folders", { folders: ["src"] })))
+      .toContain("cannot verify");
+    expect(h.calls.workingFolders).toEqual([]);
+    expect(unverified.calls.workingFolders).toEqual([]);
   });
 });
 

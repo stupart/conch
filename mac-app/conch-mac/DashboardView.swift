@@ -491,7 +491,7 @@ private struct SessionLedger: View {
     private var sessionFolders: [SessionFolder] {
         let grouped = SessionGrouping.folders(
             for: (state?.rows ?? []).map {
-                ($0.id, $0.cwd, $0.parentSessionId ?? $0.startedBySessionId)
+                ($0.id, $0.workFolder, $0.parentSessionId ?? $0.startedBySessionId)
             }
         )
         .map { folder in
@@ -1609,8 +1609,8 @@ private struct ConversationPane: View {
     /// A session conch merely observes may report none, and a tree rooted at nothing is a
     /// promise the pane cannot keep — the same rule the deliverable pages already follow.
     private var workingFolder: String? {
-        guard let cwd = focusedRow?.cwd, !cwd.isEmpty else { return nil }
-        return cwd
+        guard let folder = focusedRow?.workFolder, !folder.isEmpty else { return nil }
+        return folder
     }
 
     /// Is there anything to put in the work half at all?
@@ -1707,7 +1707,7 @@ private struct ConversationPane: View {
         let items = conversation?.sessionId == row.id ? conversation?.items ?? [] : []
         return ConchFileChanges(
             changed: items.compactMap { $0.change?.path },
-            relativeTo: row.cwd ?? ""
+            relativeTo: row.workFolder ?? ""
         )
     }
 

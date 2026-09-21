@@ -45,7 +45,7 @@ struct LedgerView: View {
     /// a child belongs wherever its parent does.
     private func folders(in state: PublishedState) -> [SessionFolder] {
         SessionGrouping.folders(
-            for: state.rows.map { ($0.id, $0.cwd, $0.parentSessionId ?? $0.startedBySessionId) }
+            for: state.rows.map { ($0.id, $0.workDirs?.first ?? $0.cwd, $0.parentSessionId ?? $0.startedBySessionId) }
         )
     }
 
