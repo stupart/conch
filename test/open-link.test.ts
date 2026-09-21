@@ -190,6 +190,18 @@ describe("every open site in the Mac app goes through the one door that reports 
     // the control that carried it. This one stays: recovering a page that FAILED to load is a
     // different job from leaving a page that works.
     expect(review).toContain("onOpenInBrowser: { open(failure.url.absoluteString) }");
+    // BOTH halves, because either alone is a silent revert to the old bug.
+    //
+    // The pane must PUBLISH where it is — on a followed link, on a typed address, and on
+    // first appearance — or `liveAddress` stays nil forever and the arrow quietly falls back
+    // to the filed link with every test still green.
+    // COUNTED, not contained: it appears on navigate and on appear, so a `toContain` would
+    // still pass with one of them deleted and the address silently stale on arrival.
+    expect((review.match(/liveAddress = addressText/g) ?? []).length).toBe(2);
+    expect(review).toContain("liveAddress = target");
+    // ...and the owner must PREFER it. Pinning only ReviewView's side would let the pane hand
+    // up the right address to a caller that ignored it.
+    expect(mac("DashboardView.swift")).toContain("let target = address ?? link");
     expect(review).toContain("store.openLink(link, cwd: cwd, rowId: rowID, reveal: reveal) { linkFailure = $0 }");
     expect(review).toContain("content.overlay(alignment: .bottom) { LinkFailureLine(message: $linkFailure) }");
     // A link inside a rendered .md resolves against the document's own folder.
