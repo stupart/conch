@@ -48,18 +48,23 @@ struct ReviewItem: Identifiable, Equatable {
 
 struct InlineReviewView: View {
     let item: ReviewItem
-    let stage: StageMode
-    let onShow: (StageMode) -> Void
+    let onOpenInPlace: () -> Void
 
     @State private var isWebLoading = false
 
     var body: some View {
         ReviewSurface(
             item: item,
-            actionSymbol: stage == .deliverable ? "rectangle.split.2x1" : "arrow.up.left.and.arrow.down.right",
-            actionHelp: stage == .deliverable ? "Side by side (⌘2)" : "Fill the stage (⌘3)",
-            actionAccessibilityLabel: stage == .deliverable ? "Show side by side" : "Fill the stage with the deliverable",
-            action: item.link == nil ? nil : { onShow(stage == .deliverable ? .sideBySide : .deliverable) },
+            // The arrow OUT, not a bigger box. This control used to swap between filling the
+            // conch window and sharing it, which meant the deliverable had no way to reach the
+            // thing it actually is — a page in a browser, a file in its own app. Tyler: "maybe
+            // we add some sort of arrow type thing u can click on that brings you to the
+            // artifact 'in the wild'". It no longer depends on the stage at all, so it says one
+            // thing and does one thing.
+            actionSymbol: "arrow.up.forward.app",
+            actionHelp: "Open where it lives (⌘3)",
+            actionAccessibilityLabel: "Open the deliverable where it lives",
+            action: item.link == nil ? nil : onOpenInPlace,
             isWebLoading: $isWebLoading
         )
     }

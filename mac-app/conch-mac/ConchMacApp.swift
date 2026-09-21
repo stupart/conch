@@ -92,8 +92,8 @@ struct ConchMacApp: App {
                     NotificationCenter.default.post(name: .setStage, object: StageMode.sideBySide)
                 }
                 .keyboardShortcut("2", modifiers: .command)
-                Button("Deliverable") {
-                    NotificationCenter.default.post(name: .setStage, object: StageMode.deliverable)
+                Button("Open Where It Lives") {
+                    NotificationCenter.default.post(name: .openDeliverableInPlace, object: nil)
                 }
                 .keyboardShortcut("3", modifiers: .command)
             }

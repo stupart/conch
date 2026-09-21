@@ -69,15 +69,15 @@ describe("the header carries the lab's anatomy", () => {
   });
 
   // `.seg{padding:2px;border-radius:8px;background:var(--fill);gap:1px;margin-right:4px}`.
-  // Three loose buttons read as three unrelated controls.
-  test("the view switch is one control with three positions, not three buttons", () => {
+  // Loose buttons read as unrelated controls.
+  test("the view switch is one control with two positions, not two buttons", () => {
     // `hasWorkPane`, not "is there a deliverable": the work half can hold the session's FILES
-    // too, and gating this on a filed deliverable is why Cmd-2 and Cmd-3 used to do nothing in
-    // a session that had never filed one. Still three positions — the files are a tab in the
-    // work half, not a fourth page.
+    // too, and gating this on a filed deliverable is why Cmd-2 used to do nothing in a session
+    // that had never filed one. TWO positions — the files are a tab in the work half, not a
+    // page, and filling the stage stopped being a page at all.
     const track = section(header, "if hasWorkPane {", "// A subagent is not a session");
     expect(track).toContain("HStack(spacing: 1) {");
-    expect(track.match(/PerspectiveOption\(/g) ?? []).toHaveLength(3);
+    expect(track.match(/PerspectiveOption\(/g) ?? []).toHaveLength(2);
     expect(track).toContain(".padding(2)");
     expect(track).toContain("RoundedRectangle(cornerRadius: 8, style: .continuous)");
     expect(track).toContain(".fill(ConchPalette.fill)");
