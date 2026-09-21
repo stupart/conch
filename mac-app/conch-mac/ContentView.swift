@@ -2,6 +2,9 @@ import AppKit
 import ConchDesign
 import SwiftUI
 
+/// Where the Mac keeps what the workspace remembers between launches (`WorkspaceMemory`).
+private let conchMacWorkspaceKey = "conch.mac.workspace"
+
 struct ContentView: View {
     @EnvironmentObject private var store: StateStore
 
@@ -9,7 +12,10 @@ struct ContentView: View {
     /// how each session is presented: one owner, read by the pane and the transcript below it
     /// (ConchDesign/Workspace.swift). The window used to hold a selection of its own while the
     /// pane applied fallbacks of its own, and the two drifted.
-    @StateObject private var workspace = WorkspaceModel()
+    @StateObject private var workspace = WorkspaceModel(
+        remembering: WorkspaceMemory.decode(UserDefaults.standard.data(forKey: conchMacWorkspaceKey)),
+        remember: { UserDefaults.standard.set($0.encoded(), forKey: conchMacWorkspaceKey) }
+    )
     @State private var remoteSelection: RemoteSessionID?
     @State private var renamingSessionID: SessionRow.ID?
     @State private var renameDraft = ""

@@ -461,7 +461,13 @@ private struct SessionLedger: View {
         WorkspaceFocus.viewed(in: Workspace(state), pinned: selectedSessionID)
     }
 
-    @State private var collapsedFolders: Set<String> = []
+    /// Remembered like the order above, for the same reason: a folded folder is a decision
+    /// about the sidebar, and a relaunch used to unfold every one.
+    @AppStorage("conch.collapsedFolders") private var storedCollapsedFolders = ""
+    private var collapsedFolders: Set<String> {
+        get { Set(storedCollapsedFolders.split(separator: "\n").map(String.init)) }
+        nonmutating set { storedCollapsedFolders = newValue.sorted().joined(separator: "\n") }
+    }
     /// The folder a header drag is currently over, for the tint that says "this slot".
     @State private var dropTargetFolderID: String?
     /// The order Tyler dragged the folders into, newline-joined like the other sidebar

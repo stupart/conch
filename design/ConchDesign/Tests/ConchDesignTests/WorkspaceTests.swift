@@ -341,4 +341,38 @@ extension WorkspaceTests {
 
         XCTAssertEqual(model.presentation(for: "a").stage, .deliverable)
     }
+
+    // MARK: - Across a relaunch
+
+    /// The ledger survived a relaunch; the page, the pane and the tab did not, because nothing
+    /// wrote them down. Everything the model is told is handed back through what it remembered.
+    func testWhatWasRememberedComesBackAfterARelaunch() {
+        var kept: WorkspaceMemory?
+        let before = WorkspaceModel(remembering: nil, remember: { kept = $0 })
+        before.viewing = "a"
+        before.show(stage: .sideBySide, for: "a")
+        before.show(work: .files, for: "a")
+        before.select(deliverable: "a-2", for: "a")
+
+        let after = WorkspaceModel(remembering: WorkspaceMemory.decode(kept?.encoded()), remember: { _ in })
+        XCTAssertEqual(after.viewing, "a")
+        XCTAssertEqual(after.presentation(for: "a"), before.presentation(for: "a"))
+        XCTAssertEqual(after.presentation(for: "a").selectedDeliverable, "a-2")
+    }
+
+    /// Clearing the pick writes nothing else, so it is the pick's own change that must be kept.
+    func testClearingThePickIsRememberedToo() {
+        var kept: WorkspaceMemory? = WorkspaceMemory(viewing: "a")
+        let before = WorkspaceModel(remembering: kept, remember: { kept = $0 })
+        before.viewing = nil
+
+        XCTAssertNil(WorkspaceModel(remembering: kept, remember: { _ in }).viewing)
+    }
+
+    func testNothingOrGarbageRememberedStartsFresh() {
+        XCTAssertNil(WorkspaceMemory.decode(nil))
+        let model = WorkspaceModel(remembering: WorkspaceMemory.decode(Data("junk".utf8)), remember: { _ in })
+        XCTAssertNil(model.viewing)
+        XCTAssertEqual(model.presentation(for: "a"), SessionPresentation())
+    }
 }

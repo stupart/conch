@@ -176,7 +176,7 @@ agent drive one, and the user able to reach in and interact — the way the Code
   Tyler noticed losing: "the deliverables / artifacts tabs get lost when the app re-installs or
   restarts". Note the trigger is probably the DAEMON restarting or a reboot, not the app.
   Found 2026-09-21 while briefing the fix; in flight.
-- **open** — Which deliverable tab is SELECTED is in-memory only and resets every launch:
+- **done** — Which deliverable tab is SELECTED is in-memory only and resets every launch:
   `WorkspaceModel()` is a plain `@StateObject` (ContentView.swift:12) and nothing encodes
   `SessionPresentation`. A second, separate loss from the ledger one above — fixing the ledger
   will not restore the selection. Confirmed app-wide: no `AppStorage` names a stage.

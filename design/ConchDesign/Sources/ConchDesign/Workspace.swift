@@ -158,7 +158,7 @@ public enum WorkPane: String, Equatable, Sendable, Codable {
 
 /// What the workspace remembers about ONE session, so leaving it and coming back returns
 /// you to the page you were on rather than to a default.
-public struct SessionPresentation: Equatable, Sendable {
+public struct SessionPresentation: Codable, Equatable, Sendable {
     /// Which of the stage's three pages this session is on.
     ///
     /// Only an explicit choice moves it: a newly filed artifact must not take the stage from
@@ -284,6 +284,32 @@ public enum DeliverableGroups {
     }
 }
 
+/// What the workspace writes down between launches: the session in view and how each one is
+/// presented. The model encodes it; the app keeps it (UserDefaults on the Mac) and hands it back.
+///
+/// Tyler: the deliverables tabs "get lost when the app re-installs or restarts". The daemon's
+/// ledger had kept every deliverable; what was lost was THIS — the page, the pane, the tab —
+/// which nothing wrote down.
+public struct WorkspaceMemory: Codable, Equatable, Sendable {
+    public var viewing: String?
+    public var presentations: [String: SessionPresentation]
+
+    public init(viewing: String? = nil, presentations: [String: SessionPresentation] = [:]) {
+        self.viewing = viewing
+        self.presentations = presentations
+    }
+
+    /// Nothing, for no data or data this build can't read: a fresh start, never a crash.
+    public static func decode(_ data: Data?) -> WorkspaceMemory? {
+        guard let data else { return nil }
+        return try? JSONDecoder().decode(WorkspaceMemory.self, from: data)
+    }
+
+    public func encoded() -> Data? {
+        try? JSONEncoder().encode(self)
+    }
+}
+
 /// The one owner of "which session", for every surface that has an opinion about it.
 ///
 /// Drafts are NOT here: a session's draft already has exactly one owner that persists it
@@ -292,12 +318,32 @@ public enum DeliverableGroups {
 public final class WorkspaceModel: ObservableObject {
     /// The session the reader PICKED, by id. Nil means "follow the work".
     @Published public var viewing: String? {
-        didSet { carryPresentation(from: oldValue) }
+        didSet {
+            carryPresentation(from: oldValue)
+            remember?(memory)
+        }
     }
+    // ponytail: never pruned — a few enum values per session ever presented; cap it if a
+    // profile ever notices. Pruning on `forget(missing:)` would wipe it on a daemon restart,
+    // when the rows are briefly nobody.
     @Published private var presentations: [String: SessionPresentation] = [:]
+    /// Told after every change. Nil forgets on relaunch, as before.
+    private let remember: ((WorkspaceMemory) -> Void)?
 
     public init(viewing: String? = nil) {
         self.viewing = viewing
+        self.remember = nil
+    }
+
+    /// Pick up where the last launch left off.
+    public init(remembering memory: WorkspaceMemory?, remember: @escaping (WorkspaceMemory) -> Void) {
+        self.viewing = memory?.viewing
+        self.presentations = memory?.presentations ?? [:]
+        self.remember = remember
+    }
+
+    public var memory: WorkspaceMemory {
+        WorkspaceMemory(viewing: viewing, presentations: presentations)
     }
 
     // MARK: Which session
@@ -390,5 +436,6 @@ public final class WorkspaceModel: ObservableObject {
         mutate(&presentation)
         guard presentation != presentations[id] else { return }
         presentations[id] = presentation
+        remember?(memory)
     }
 }
