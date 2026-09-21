@@ -155,6 +155,10 @@ describe("the pane stays smooth", () => {
    * picking a file in the tree is the same act as opening a deliverable.
    */
   test("the file you pick is drawn by the deliverable renderer, not a second one", () => {
-    expect(review).toContain("ReviewContent(link: selected, rowID: rowID, isWebLoading: $isWebLoading)");
+    // Still one renderer; it just takes one more binding now. This pane draws no arrow, so it
+    // passes .constant(nil) — there is nowhere for a live address to go.
+    expect(review).toMatch(
+      /ReviewContent\(\s*link: selected,\s*rowID: rowID,\s*isWebLoading: \$isWebLoading,\s*liveAddress: \.constant\(nil\)\s*\)/,
+    );
   });
 });

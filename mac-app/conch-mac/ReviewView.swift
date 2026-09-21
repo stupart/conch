@@ -48,11 +48,16 @@ struct ReviewItem: Identifiable, Equatable {
 
 struct InlineReviewView: View {
     let item: ReviewItem
-    /// Takes the address the pane is actually showing, when it has one.
-    let onOpenInPlace: (String?) -> Void
+    let onOpenInPlace: () -> Void
+    /// Where the pane IS, owned by the pane rather than by this view.
+    ///
+    /// It started as `@State` here, which compiled and was wrong: ⌘3 posts a notification the
+    /// pane answers, and the pane could not see a private `@State` — so the key would have
+    /// opened the FILED link while the arrow opened the live one. That is the exact
+    /// disagreement this change exists to delete, rebuilt on a different control.
+    @Binding var liveAddress: String?
 
     @State private var isWebLoading = false
-    @State private var liveAddress: String?
 
     var body: some View {
         ReviewSurface(
@@ -69,7 +74,7 @@ struct InlineReviewView: View {
             // The page you are LOOKING AT, not the one that was filed. "Open in browser" sat
             // one row below doing exactly this while the arrow opened the original link, so the
             // two controls looked like duplicates and quietly disagreed. One control now.
-            action: item.link == nil ? nil : { onOpenInPlace(liveAddress) },
+            action: item.link == nil ? nil : onOpenInPlace,
             isWebLoading: $isWebLoading,
             liveAddress: $liveAddress
         )

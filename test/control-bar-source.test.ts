@@ -355,7 +355,8 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   // we can ceratinly consolidate / remove ui element in this box." Removing it also settles
   // the clipping recorded in the backlog: it was the control the stage control overlaid.
   expect(review).not.toContain('Button("Open in browser")');
-  expect(review).toContain("action: item.link == nil ? nil : { onOpenInPlace(liveAddress) },");
+  expect(review).toContain("action: item.link == nil ? nil : onOpenInPlace,");
+  expect(review).toContain("liveAddress: $liveAddress");
   expect(review).toContain("@Binding var liveAddress: String?");
   // A fog resized by hand must come back the size it was. `setFrameUsingName` restores only the ORIGIN of a
   // borderless, non-resizable panel and drops the size, so the default won on every launch and the size someone

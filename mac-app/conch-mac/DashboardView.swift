@@ -1506,6 +1506,9 @@ private struct ConversationPane: View {
     /// A link in the fallback (AppKit) conversation renderer that would not
     /// open, shown under it in the OS's own words (A13).
     @State private var fallbackLinkFailure: String?
+    /// The address the deliverable pane is showing, published upward by it. The arrow and ⌘3
+    /// both open THIS, so neither can send you back to a page you already left.
+    @State private var deliverableAddress: String?
     /// §3: the header grows a hairline only once the transcript has scrolled under it.
     @State private var transcriptScrolled = false
 
@@ -1726,7 +1729,8 @@ private struct ConversationPane: View {
         } else if let selectedReview {
             InlineReviewView(
                 item: selectedReview,
-                onOpenInPlace: openDeliverableInPlace
+                onOpenInPlace: openDeliverableInPlace,
+                liveAddress: $deliverableAddress
             )
         }
     }
@@ -1780,11 +1784,11 @@ private struct ConversationPane: View {
     /// were reading is still behind it.
     ///
     /// Reuses the conversation's failure line rather than inventing a second one.
-    /// `address` is where the pane actually is — nil for a deliverable that does not browse.
-    private func openDeliverableInPlace(_ address: String?) {
+    private func openDeliverableInPlace() {
         guard let review = selectedReview, let link = review.link else { return }
         fallbackLinkFailure = nil
-        let target = address ?? link
+        // Where the pane is, falling back to what was filed for a deliverable that cannot browse.
+        let target = deliverableAddress ?? link
         store.openLink(target, cwd: focusedRow?.cwd, rowId: focusedRow?.id) { fallbackLinkFailure = $0 }
     }
 

@@ -201,7 +201,11 @@ describe("every open site in the Mac app goes through the one door that reports 
     expect(review).toContain("liveAddress = target");
     // ...and the owner must PREFER it. Pinning only ReviewView's side would let the pane hand
     // up the right address to a caller that ignored it.
-    expect(mac("DashboardView.swift")).toContain("let target = address ?? link");
+    expect(mac("DashboardView.swift")).toContain("let target = deliverableAddress ?? link");
+    // The PANE owns it, so ⌘3 — which posts a notification the pane answers — opens the same
+    // address the arrow does. Held as @State here it was invisible to that handler.
+    expect(mac("DashboardView.swift")).toContain("@State private var deliverableAddress: String?");
+    expect(mac("DashboardView.swift")).toContain("liveAddress: $deliverableAddress");
     expect(review).toContain("store.openLink(link, cwd: cwd, rowId: rowID, reveal: reveal) { linkFailure = $0 }");
     expect(review).toContain("content.overlay(alignment: .bottom) { LinkFailureLine(message: $linkFailure) }");
     // A link inside a rendered .md resolves against the document's own folder.
