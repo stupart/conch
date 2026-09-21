@@ -29,7 +29,10 @@ const pane = dashboard.slice(dashboard.indexOf("private struct ConversationPane:
 
 describe("one owner", () => {
   test("the window holds the model and hands it down; no surface keeps a selection of its own", () => {
-    expect(content).toContain("@StateObject private var workspace = WorkspaceModel()");
+    expect(content).toContain("@StateObject private var workspace = WorkspaceModel(");
+    // …and writes down what it remembers, or a relaunch loses the page, the pane and the tab.
+    expect(content).toContain("remembering: WorkspaceMemory.decode(UserDefaults.standard.data(forKey: conchMacWorkspaceKey))");
+    expect(content).toContain("remember: { UserDefaults.standard.set($0.encoded(), forKey: conchMacWorkspaceKey) }");
     expect(content).toContain(".environmentObject(workspace)");
     expect(content).not.toMatch(/@State private var selectedSessionID/);
     for (const [name, source] of [
@@ -159,7 +162,7 @@ describe("new work does not replace what you are reading", () => {
    */
   test("the page follows you between sessions, and is still stored per session", () => {
     expect(pane).toContain("workspace.presentation(for: row?.id).stage");
-    expect(rules).toContain("didSet { carryPresentation(from: oldValue) }");
+    expect(rules).toContain("didSet {\n            carryPresentation(from: oldValue)\n            remember?(memory)");
     const carry = rules.slice(
       rules.indexOf("private func carryPresentation(from previous: String?)"),
       rules.indexOf("public func viewed(in workspace: Workspace)"),
