@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { TurnEvent } from "../src/hook.ts";
 import { MAX_REVIEWS_BYTES, SessionLedger } from "../src/session-ledger.ts";
 
@@ -236,16 +236,37 @@ describe("saved deliverables", () => {
     expect(after?.reviews).toEqual([{ summary: "a ready", at: 1_000, id: "a-rev" }]);
   }));
 
-  test("the daemon restores from conch's state location, which the suite redirects", () => {
+  test("a ledger that moved home reads the old file until it has written the new one", () => withFile((path) => {
+    const legacy = join(dirname(path), "legacy.json");
+    const before = new SessionLedger(legacy);
+    file(before, "a", 1_000);
+    before.saveReviews();
+
+    const moved = new SessionLedger(path, legacy);
+    moved.restoreReviews();
+    expect(moved.sessionStates.get("a")?.review).toEqual({ summary: "a ready", at: 1_000, id: "a-rev" });
+
+    // Once home exists it is the truth, whatever the old file still says.
+    moved.saveReviews();
+    file(before, "b", 2_000);
+    before.saveReviews();
+    const later = new SessionLedger(path, legacy);
+    later.restoreReviews();
+    expect([...later.sessionStates.keys()]).toEqual(["a"]);
+  }));
+
+  test("the daemon restores from conch's config dir, reading /tmp once, and the suite redirects it", () => {
     const read = (p: string) => readFileSync(join(import.meta.dir, "..", p), "utf8");
     const daemon = read("src/daemon.ts");
-    const constructed = daemon.indexOf("const ledger = new SessionLedger(REVIEWS_FILE);");
+    const constructed = daemon.indexOf("const ledger = new SessionLedger(REVIEWS_FILE, LEGACY_REVIEWS_FILE);");
     const restoredAt = daemon.indexOf("ledger.restoreReviews();");
     expect(constructed).toBeGreaterThan(-1);
     expect(restoredAt).toBeGreaterThan(constructed);
-    expect(read("src/status.ts")).toContain(
-      'export const REVIEWS_FILE = process.env.CONCH_REVIEWS_FILE || "/tmp/conch-reviews.json";',
+    const status = read("src/status.ts");
+    expect(status).toContain(
+      'join(process.env.CONCH_CONFIG_DIR ?? join(conchHome(), ".config", "conch"), "reviews.json")',
     );
+    expect(status).toContain('export const LEGACY_REVIEWS_FILE = "/tmp/conch-reviews.json";');
     expect(read("test/preload.ts")).toContain('process.env.CONCH_REVIEWS_FILE = join(process.env.CONCH_LOG_FILE, "..", "reviews.json");');
     expect(process.env.CONCH_REVIEWS_FILE).not.toBe("/tmp/conch-reviews.json");
   });

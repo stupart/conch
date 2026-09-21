@@ -26,6 +26,7 @@ import {
   type PublishedState,
   reviewReady,
 } from "./panel.ts";
+import { conchHome } from "./home.ts";
 import { toClipboard } from "./inject.ts";
 import { buildClipboardEscape, type MouseEvent } from "./theater-mouse.ts";
 import {
@@ -44,9 +45,15 @@ export type LiveState = PanelLiveState;
 export const STATE_FILE = process.env.CONCH_STATE_FILE || "/tmp/conch-state.json";
 export const SESSIONS_FILE = "/tmp/conch-sessions.json";
 // Each session's current deliverable, so a daemon restart does not erase it
-// from both apps (`SessionLedger.saveReviews`). Overridable for the same reason
-// as STATE_FILE: `test/preload.ts` points it at a temp file.
-export const REVIEWS_FILE = process.env.CONCH_REVIEWS_FILE || "/tmp/conch-reviews.json";
+// from both apps (`SessionLedger.saveReviews`). Under ~/.config/conch with the
+// other durable files: it lived in /tmp, which macOS recreates at every boot
+// (this Mac's /private/tmp is 44s younger than its boot time), so a reboot
+// took every deliverable tab with it. Overridable for the same reason as
+// STATE_FILE: `test/preload.ts` points it at a temp file.
+export const REVIEWS_FILE = process.env.CONCH_REVIEWS_FILE
+  || join(process.env.CONCH_CONFIG_DIR ?? join(conchHome(), ".config", "conch"), "reviews.json");
+/** Where the ledger lived before it moved home; read only while the new file is absent. */
+export const LEGACY_REVIEWS_FILE = "/tmp/conch-reviews.json";
 // Every log line is always appended here (for debugging) but only shown in the
 // pane when logs are toggled on — the dashboard stays clean by default.
 // Overridable so the TEST SUITE does not write into the live daemon's log:

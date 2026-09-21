@@ -176,6 +176,7 @@ import {
   onLiveChange,
   onLiveDataChange,
   openTheaterReview,
+  LEGACY_REVIEWS_FILE,
   publishSessionsFile,
   REVIEWS_FILE,
   renderPanel,
@@ -670,7 +671,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   const presented = new PresentedItems(Date.now());
   let holderExpiry: ReturnType<typeof setTimeout> | null = null;
   let shuttingDown = false;
-  const ledger = new SessionLedger(REVIEWS_FILE);
+  const ledger = new SessionLedger(REVIEWS_FILE, LEGACY_REVIEWS_FILE);
   ledger.restoreReviews(); // each session's deliverable, as it was before the restart
   // The ledger owns the per-session/window runtime facts, but exposes the raw
   // collections so render and controller paths keep their existing shape.
