@@ -465,6 +465,81 @@ describe("Codex says everything twice", () => {
   });
 });
 
+describe("Codex's echoed answer to an async question is not Tyler's own words", () => {
+  // Ground truth, byte-for-byte, from the "Asset Generator" codex session
+  // (rollout-2026-09-11T14-01-26-01a08ea0…, 2026-09-21T07:07:10Z): Codex
+  // answers a `request_user_input_async` question by filing a `role: "user"`
+  // message that quotes the whole question back, then the actual answer
+  // after a blank line. Rendering it whole put the agent's own OAuth
+  // explanation in Tyler's mouth for one word of real reply.
+  const question = "The Blueprint plugin is installed locally. To test the real connection, "
+    + "please open this sign-in link, choose Arch, and authorize it. Both the existing Claude "
+    + "connection and the new Codex connection currently need sign-in. I’m continuing the "
+    + "code review meanwhile.  https://tools.blueprintstudio.ai/oauth/authorize?response_type=code&client_id=bp_client_2GLz9eesn2a_zStv5rgoAw";
+  const echoed = `> ${question}\n\nSigned in to Arch`;
+
+  test("response_item:message strips the quoted question, keeping only the reply", () => {
+    const conversation = emptyConversation("s");
+    reduceCodexLine(conversation, {
+      type: "response_item",
+      ordinal: 1,
+      payload: { type: "message", role: "user", content: [{ text: echoed }] },
+    });
+    expect(conversation.order.length).toBe(1);
+    const item = conversation.items[conversation.order[0]!]!;
+    expect(item.kind).toBe("user");
+    expect(item.text).toBe("Signed in to Arch");
+    expect(item.text).not.toContain("Blueprint plugin");
+  });
+
+  test("event_msg:user_message strips the same way", () => {
+    const conversation = emptyConversation("s");
+    reduceCodexLine(conversation, {
+      type: "event_msg",
+      ordinal: 1,
+      payload: { type: "user_message", message: echoed },
+    });
+    const item = conversation.items[conversation.order[0]!]!;
+    expect(item.text).toBe("Signed in to Arch");
+  });
+
+  test("an assistant message is never stripped, even if it starts with a quote", () => {
+    const conversation = emptyConversation("s");
+    const text = `> quoting something\n\nhere's my actual reply`;
+    reduceCodexLine(conversation, {
+      type: "response_item",
+      ordinal: 1,
+      payload: { type: "message", role: "assistant", content: [{ text }] },
+    });
+    const item = conversation.items[conversation.order[0]!]!;
+    expect(item.text).toBe(text);
+  });
+
+  test("a user message that is ALL quote (no reply survives) is left intact rather than emptied", () => {
+    const conversation = emptyConversation("s");
+    const text = "> just a quote, no blank-line reply after it";
+    reduceCodexLine(conversation, {
+      type: "response_item",
+      ordinal: 1,
+      payload: { type: "message", role: "user", content: [{ text }] },
+    });
+    const item = conversation.items[conversation.order[0]!]!;
+    expect(item.text).toBe(text);
+  });
+
+  test("an ordinary user message never starting with a quote passes through untouched", () => {
+    const conversation = emptyConversation("s");
+    const text = "ship it";
+    reduceCodexLine(conversation, {
+      type: "response_item",
+      ordinal: 1,
+      payload: { type: "message", role: "user", content: [{ text }] },
+    });
+    const item = conversation.items[conversation.order[0]!]!;
+    expect(item.text).toBe(text);
+  });
+});
+
 describe("telling one kind of tool call from another", () => {
   // Every tool call was filed under one `tool` kind, so a session rendered as
   // an undifferentiated stripe — Tyler's "i just see a string of tools calls".

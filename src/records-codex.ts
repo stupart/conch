@@ -105,12 +105,36 @@ function ensureTurn(out: NormalizedRecords, context: RecordNormalizerContext, st
   return state.turnId ?? beginTurn(out, context, state, undefined, at);
 }
 
+/**
+ * Codex answers its own `request_user_input_async` question (a plugin
+ * sign-in link, an out-of-band approval — anything the human answers on a
+ * delay, maybe from a different device) by filing a fresh `role: "user"`
+ * item that quotes the WHOLE question back first, verbatim: `"> " + the
+ * question + "\n\n" + whichever option was picked`. The quoted half is the
+ * agent's own prior words, not anything Tyler typed — recording it whole put
+ * an agent's paragraph in Tyler's mouth (the "Asset Generator" session,
+ * 2026-09-21: a Blueprint OAuth explanation recorded as his for one word of
+ * actual reply, "Signed in to Arch"). Only the text after the blank line is
+ * his; a message that turns out to be ALL quote (no answer survives the
+ * split) is left alone rather than emptied. Duplicated in `conversation.ts`
+ * rather than imported — this module is deliberately independent of the
+ * clipped conversation renderer (see the module comment below).
+ */
+function stripEchoedQuestion(text: string): string {
+  if (!text.startsWith("> ")) return text;
+  const blankLine = text.indexOf("\n\n");
+  if (blankLine === -1) return text;
+  const reply = text.slice(blankLine + 2).trim();
+  return reply || text;
+}
+
 function message(
   out: NormalizedRecords, context: RecordNormalizerContext, state: Bookkeeping,
   payload: ObjectValue, role: "user" | "assistant", carrier: string, at?: number,
 ): void {
   if (payload.channel === "analysis" || payload.channel === "reasoning") return;
-  const text = visibleText(payload.content) ?? visibleText(payload.message) ?? visibleText(payload.text);
+  const rawText = visibleText(payload.content) ?? visibleText(payload.message) ?? visibleText(payload.text);
+  const text = role === "user" && rawText !== undefined ? stripEchoedQuestion(rawText) : rawText;
   const attachments = omittedAttachments(payload.content);
   if (text === undefined && !attachments.length) return;
   // Mirrored channels sometimes differ only by a trailing newline. The stored body remains intact.

@@ -852,6 +852,27 @@ function codexMessageId(kind: string, text: string): string {
   return `${kind}:${hash.toString(36)}`;
 }
 
+/**
+ * Codex answers its own `request_user_input_async` question (a plugin
+ * sign-in link, an out-of-band approval — anything the human answers on a
+ * delay, maybe from a different device) by filing a fresh `role: "user"`
+ * turn that quotes the WHOLE question back first, verbatim: `"> " + the
+ * question + "\n\n" + whichever option was picked`. The quoted half is the
+ * agent's own prior words, not anything Tyler typed — rendering it whole
+ * put an agent's paragraph in Tyler's mouth (conch #issue, the "Asset
+ * Generator" session, 2026-09-21: a Blueprint OAuth explanation attributed
+ * to him for one word of actual reply, "Signed in to Arch"). Only the text
+ * after the blank line is his; a message that turns out to be ALL quote
+ * (no answer survives the split) is left alone rather than emptied.
+ */
+function stripEchoedQuestion(text: string): string {
+  if (!text.startsWith("> ")) return text;
+  const blankLine = text.indexOf("\n\n");
+  if (blankLine === -1) return text;
+  const reply = text.slice(blankLine + 2).trim();
+  return reply || text;
+}
+
 export function reduceCodexLine(conversation: Conversation, entry: any): void {
   if (!entry || typeof entry !== "object") return;
   const at = Date.parse(entry.timestamp ?? "") || undefined;
@@ -878,10 +899,11 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
       return;
     }
     if (payload.type === "user_message" && typeof payload.message === "string") {
+      const text = stripEchoedQuestion(payload.message);
       upsertConversationItem(conversation, {
-        id: codexMessageId("user", payload.message),
+        id: codexMessageId("user", text),
         kind: "user",
-        text: payload.message,
+        text,
         at,
       });
     }
@@ -913,7 +935,7 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
     // of tool calls, which is exactly what Tyler saw.
     case "message": {
       const role = payload.role === "user" ? "user" : "assistant";
-      const text = Array.isArray(payload.content)
+      const raw = Array.isArray(payload.content)
         ? payload.content
           .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
           .join("")
@@ -921,6 +943,7 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
         : typeof payload.text === "string"
           ? payload.text
           : "";
+      const text = role === "user" ? stripEchoedQuestion(raw) : raw;
       if (text) {
         upsertConversationItem(conversation, {
           id: codexMessageId(role, text),

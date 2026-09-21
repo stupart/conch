@@ -315,3 +315,37 @@ describe("Codex durable records", () => {
     expect(abort.turns[0]).toMatchObject({ id: recordKey(f.context.sessionId, "turn", "aborted"), status: "interrupted" });
   });
 });
+
+describe("Codex's echoed answer to an async question is not recorded as Tyler's own words", () => {
+  // Ground truth, byte-for-byte, from the "Asset Generator" codex session
+  // (rollout-2026-09-11T14-01-26-01a08ea0…, 2026-09-21T07:07:10Z): answering
+  // a `request_user_input_async` question files a `role: "user"` item that
+  // quotes the whole question back, then the real answer after a blank line.
+  // Recording it whole put the agent's own OAuth explanation in Tyler's
+  // mouth for one word of actual reply.
+  const question = "The Blueprint plugin is installed locally. To test the real connection, "
+    + "please open this sign-in link, choose Arch, and authorize it.";
+  const echoed = `> ${question}\n\nSigned in to Arch`;
+
+  test("the quoted question is stripped; only the reply is recorded under role user", () => {
+    const f = fixture();
+    const out = f.read("response_item", responseMessage("user", echoed));
+    expect(out.items).toHaveLength(1);
+    expect(out.items[0]).toMatchObject({ kind: "message", role: "user", text: "Signed in to Arch" });
+    expect(out.items[0]?.text).not.toContain("Blueprint plugin");
+  });
+
+  test("an assistant message starting with a quote is never stripped", () => {
+    const f = fixture();
+    const text = `> quoting something\n\nhere's my actual reply`;
+    const out = f.read("response_item", responseMessage("assistant", text));
+    expect(out.items[0]?.text).toBe(text);
+  });
+
+  test("a user item that is ALL quote (no reply survives the split) is recorded intact", () => {
+    const f = fixture();
+    const text = "> just a quote, no blank-line reply after it";
+    const out = f.read("response_item", responseMessage("user", text));
+    expect(out.items[0]?.text).toBe(text);
+  });
+});
