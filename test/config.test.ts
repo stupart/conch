@@ -203,7 +203,11 @@ test("supervisor sources do not force the barge threshold", () => {
   const root = join(import.meta.dir, "..");
   const forcedBarge = /CONCH_BARGE_THRESHOLD_PCT\s*=/;
   expect(renderSupervisorScript("/opt/homebrew/bin/tmux", "conch daemon")).not.toMatch(forcedBarge);
-  expect(readFileSync(join(root, "bin", "conch-supervisor.sh"), "utf8")).not.toMatch(forcedBarge);
+  // bin/conch-supervisor.sh is gone. It was dead: nothing executed it,
+  // renderSupervisorScript returns only an "obsolete" stub, and `conch service`
+  // installs a launchd plist that exec's ProgramArguments with no shell. It also
+  // hardcoded one machine's home directory and bun path, so it could not have run
+  // anywhere else. The rule still holds on the two sources that are live.
   expect(readFileSync(join(root, "src", "install.ts"), "utf8")).not.toMatch(forcedBarge);
 });
 
