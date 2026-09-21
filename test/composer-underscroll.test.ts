@@ -57,6 +57,29 @@ describe("the composer floats over the transcript", () => {
   });
 
   /**
+   * Side by side, the same way. The card was a sibling UNDER the split there, so it took its own
+   * height off both halves and the transcript stopped at its top edge — Tyler: "the input panel
+   * is still creating that cutoff blank space on the panels view (we fixed it on the
+   * conversation view)". The room goes to the conversation half alone: that is the half that can
+   * scroll under the card. The work half cannot — a terminal's prompt and a page's last lines
+   * sit on its bottom edge — so it ends above the card instead. The card stays centred on the
+   * stage, not the column: the split reaches 0, and a card that followed the column would leave
+   * with it on the very page a deliverable is answered from.
+   */
+  test("side by side layers the card over the split, and only the conversation runs under it", () => {
+    const at = pane.indexOf("if stage(for: reviewRow) == .sideBySide {");
+    expect(at).toBeGreaterThan(-1);
+    const split = pane.slice(at, pane.indexOf("} else {", at));
+    expect(split).toMatch(/ZStack\(alignment: \.bottom\) \{\s*GeometryReader \{ split in/);
+    // INSIDE the ZStack, on top: the card is its last child and its closing brace ends the
+    // branch. "After the ZStack opens" let a sibling placed under it in the same branch pass.
+    expect(split).toMatch(/floatingComposer\(for: reviewRow\)\s*\}\s*$/);
+    expect(split).toMatch(
+      /workContent\(for: reviewRow\)\s*\.frame\(maxWidth: \.infinity, maxHeight: \.infinity\)\s*\.padding\(\.bottom, composerHeight\)/,
+    );
+  });
+
+  /**
    * The claim this file OPENS with, asserted instead of just described.
    *
    * Both measures were 700 (conch shot, 2026-09-21): the card covered the reading column

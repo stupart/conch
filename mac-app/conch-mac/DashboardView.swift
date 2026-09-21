@@ -1764,27 +1764,45 @@ private struct ConversationPane: View {
                     }
 
                     if stage(for: reviewRow) == .sideBySide {
-                        // A dragged fraction, not half each. The conversation is sized and the
-                        // work takes the rest, so the two cannot disagree about the total by a
-                        // rounding point and leave a seam.
-                        GeometryReader { split in
-                            HStack(spacing: 0) {
-                                conversationBody(for: reviewRow)
-                                    .frame(width: max(0, split.size.width * splitFraction(in: split.size.width)))
+                        // OVER the split, the way the conversation page floats it over the
+                        // transcript (#334). As a sibling under the HStack it took its own height
+                        // off both halves and cut the transcript at its top edge — Tyler: "the
+                        // input panel is still creating that cutoff blank space on the panels
+                        // view (we fixed it on the conversation view)".
+                        //
+                        // The room goes to the conversation half alone, through `bottomInset`:
+                        // that is the half that can scroll under the card. The work half cannot —
+                        // a terminal's prompt and a page's last lines sit on its bottom edge, and
+                        // there is no inset to hand a web view or a PDF — so it ends above the
+                        // card, as it did. The card stays centred on the stage rather than on the
+                        // conversation column: the split reaches 0, and a card that followed the
+                        // column would leave with it on the very page a deliverable is answered from.
+                        ZStack(alignment: .bottom) {
+                            // A dragged fraction, not half each. The conversation is sized and the
+                            // work takes the rest, so the two cannot disagree about the total by a
+                            // rounding point and leave a seam.
+                            GeometryReader { split in
+                                HStack(spacing: 0) {
+                                    conversationBody(for: reviewRow)
+                                        .frame(width: max(0, split.size.width * splitFraction(in: split.size.width)))
 
-                                splitResizer(in: split.size.width)
+                                    splitResizer(in: split.size.width)
 
-                                workContent(for: reviewRow)
-                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    workContent(for: reviewRow)
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                        .padding(.bottom, composerHeight)
+                                }
                             }
+
+                            floatingComposer(for: reviewRow)
                         }
                     } else {
                         workContent(for: reviewRow)
 
                         Spacer(minLength: 0)
-                    }
 
-                    floatingComposer(for: reviewRow)
+                        floatingComposer(for: reviewRow)
+                    }
                 }
             } else {
                 VStack(spacing: 0) {
