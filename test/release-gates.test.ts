@@ -59,6 +59,43 @@ test("publishing and the tap bump cannot come apart", () => {
   expect(release).toContain('|| fail "version did not land in the formula"');
 });
 
+/**
+ * The bump has to move every file that carries the version.
+ *
+ * `test/plugin-version.test.ts` compares the plugin manifests to package.json — it
+ * exists because they had drifted once already — and the pre-push hook runs it. So a
+ * bump touching package.json alone does not merely miss a file: it makes the release
+ * fail its own gate, after the build. Measured 2026-09-21: v0.3.0 was refused exactly
+ * that way, with the manifests still reading 0.2.1.
+ */
+test("the bump moves every file that carries the version", () => {
+  const manifests = [
+    "plugin/plugins/conch/.claude-plugin/plugin.json",
+    "plugin/plugins/conch/.codex-plugin/plugin.json",
+  ];
+  // Written — and scoped to the bump list, not the whole file. An unscoped
+  // `toContain` passes on a manifest that appears ONLY in `git add`, which is the
+  // worse bug: staged but never written, so the release commits the same drift the
+  // guard exists to catch. Caught by mutation on 2026-09-21; the unscoped version
+  // survived having a manifest deleted from the list.
+  const bumped = release.slice(
+    release.indexOf("for (const file of ["),
+    release.indexOf("git add package.json"),
+  );
+  expect(bumped.length).toBeGreaterThan(20);
+  for (const manifest of manifests) expect(bumped).toContain(manifest);
+  // ...and STAGED: an unstaged bump leaves the tag describing a tree that never existed.
+  const staged = release.slice(
+    release.indexOf("git add package.json"),
+    release.indexOf('git commit -q -m "conch $VERSION"'),
+  );
+  expect(staged.length).toBeGreaterThan(20);
+  for (const manifest of manifests) expect(staged).toContain(manifest);
+  // The list is exactly what the guard reads, so the two cannot drift apart.
+  const guard = read("test/plugin-version.test.ts");
+  for (const dir of [".claude-plugin", ".codex-plugin"]) expect(guard).toContain(dir);
+});
+
 test("the release script is executable", () => {
   const mode = statSync(join(import.meta.dir, "..", "scripts/release.sh")).mode;
   expect(mode & 0o111).toBeGreaterThan(0);
