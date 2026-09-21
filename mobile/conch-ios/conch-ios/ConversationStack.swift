@@ -336,11 +336,27 @@ struct ConversationStack: View {
             // rest of the stack reports what already happened, this one is
             // blocked on a person. It must never look like something to skim.
             if let asked = item.question, !asked.options.isEmpty {
-                questionRow(
-                    asked,
-                    questionID: item.id,
-                    isActive: item.tool?.status == "running"
-                )
+                // Once answered it collapses to one line naming what was decided
+                // (ConchDesign/QuestionOutcome, the Mac's rule). Only a FINISHED
+                // call, and only when its result names an option: the wire never
+                // states a choice, and guessing at a person's decision is worse
+                // than leaving the block as it was.
+                if item.tool?.status != "running",
+                   let decided = QuestionOutcome.summary(
+                       header: asked.header,
+                       chosen: QuestionOutcome.chosen(
+                           from: asked.options.map(\.label),
+                           in: item.tool?.result
+                       )
+                   ) {
+                    answeredQuestionRow(decided)
+                } else {
+                    questionRow(
+                        asked,
+                        questionID: item.id,
+                        isActive: item.tool?.status == "running"
+                    )
+                }
             }
             // A plan is not a tool call you might expand — it is the answer to
             // "what is it doing", so it renders as itself rather than as a
@@ -651,6 +667,25 @@ struct ConversationStack: View {
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder((isActive ? Palette.needs : Palette.textFaint).opacity(0.35))
         )
+    }
+
+    /// The collapsed question: one quiet line saying what was decided. It replaces a
+    /// header, the question and every option greyed out — the tallest thing in a finished
+    /// transcript, saying the least, and on a phone it was a screen of it. Not a button:
+    /// there is nothing left to do to it, and the exchange that produced it is right above.
+    private func answeredQuestionRow(_ decided: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "checkmark.circle")
+                .font(Type.caption)
+                .foregroundStyle(Palette.textFaint)
+                .frame(width: 16)
+            Text(decided)
+                .font(Type.caption.weight(.medium))
+                .foregroundStyle(Palette.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func toggleSelection(_ label: String, for questionID: String) {
