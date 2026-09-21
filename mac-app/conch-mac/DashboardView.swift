@@ -462,6 +462,17 @@ private struct SessionLedger: View {
     }
 
     @State private var collapsedFolders: Set<String> = []
+    /// The folder a header drag is currently over, for the tint that says "this slot".
+    @State private var dropTargetFolderID: String?
+    /// The order Tyler dragged the folders into, newline-joined like the other sidebar
+    /// preferences (`conch.sidebarWidth`, `conch.sidebarCollapsed`) so it survives a relaunch;
+    /// `WorkspaceModel` is in-memory and forgets everything at quit. The rule for what the
+    /// order means — and why rows are not draggable — is ConchDesign/SessionGrouping.swift.
+    @AppStorage("conch.folderOrder") private var storedFolderOrder = ""
+    private var folderOrder: [String] {
+        get { storedFolderOrder.split(separator: "\n").map(String.init) }
+        nonmutating set { storedFolderOrder = newValue.joined(separator: "\n") }
+    }
     /// Dismissed sessions start folded away, as the lab starts them (`showDismissed: false`).
     @State private var showsDismissed = false
 
@@ -472,7 +483,7 @@ private struct SessionLedger: View {
     /// The rows grouped by the folder they run in. A folder the reader collapsed keeps its
     /// rows out of the list entirely, which is why the count moves onto its header.
     private var sessionFolders: [SessionFolder] {
-        SessionGrouping.folders(
+        let grouped = SessionGrouping.folders(
             for: (state?.rows ?? []).map {
                 ($0.id, $0.cwd, $0.parentSessionId ?? $0.startedBySessionId)
             }
@@ -484,6 +495,21 @@ private struct SessionLedger: View {
             guard folder.id == NSHomeDirectory() else { return folder }
             return SessionFolder(id: folder.id, name: "Home", sessionIDs: folder.sessionIDs)
         }
+        return SessionGrouping.ordered(grouped, by: folderOrder)
+    }
+
+    /// A folder header dropped on another takes its slot (SessionGrouping.order). Anything
+    /// else that lands here as text — a dragged selection from the transcript — is refused.
+    private func dropFolder(_ items: [String], onto target: String) -> Bool {
+        guard let dragged = items.first, dragged != target,
+              sessionFolders.contains(where: { $0.id == dragged }) else { return false }
+        let next = SessionGrouping.order(
+            folderOrder, moving: dragged, onto: target, visible: sessionFolders.map(\.id)
+        )
+        // §4: a list changing shape is a morph, and Reduce Motion drops the bounce rather
+        // than the move (mac-phase1-source.test.ts guards the form).
+        withAnimation(ConchMotion.morph.animation(reduceMotion: reduceMotion)) { folderOrder = next }
+        return true
     }
 
     private func rows(in folder: SessionFolder) -> [SessionRow] {
@@ -540,8 +566,25 @@ private struct SessionLedger: View {
                                             name: folder.name,
                                             count: folder.sessionIDs.count,
                                             isCollapsed: collapsedFolders.contains(folder.id),
+                                            isDropTarget: dropTargetFolderID == folder.id,
                                             onToggle: { toggleFolder(folder.id) }
                                         )
+                                        // Drag a folder onto another to take its slot. Only
+                                        // headers move: a row's place is its folder's place,
+                                        // so there is nothing a row could be dragged to that
+                                        // would not contradict where it runs.
+                                        // ponytail: the payload is the path as plain text;
+                                        // a custom UTType if a stray text drop ever misfires.
+                                        .draggable(folder.id)
+                                        .dropDestination(for: String.self) { items, _ in
+                                            dropFolder(items, onto: folder.id)
+                                        } isTargeted: { over in
+                                            if over {
+                                                dropTargetFolderID = folder.id
+                                            } else if dropTargetFolderID == folder.id {
+                                                dropTargetFolderID = nil
+                                            }
+                                        }
                                         .id("folder:\(folder.id)")
                                     }
 
@@ -707,6 +750,8 @@ private struct FolderHeader: View {
     let name: String
     let count: Int
     let isCollapsed: Bool
+    /// Another folder's header is being dragged over this one and will take its slot.
+    var isDropTarget = false
     let onToggle: () -> Void
 
     @State private var hovering = false
@@ -740,6 +785,12 @@ private struct FolderHeader: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // The same ring the composer draws for a file drop (`ConchPalette.dropTarget`):
+        // one drop colour for the whole window.
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(ConchPalette.dropTarget, lineWidth: isDropTarget ? 2 : 0)
+        )
         .onHover { hovering = $0 }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(isCollapsed ? "\(name), \(count) sessions, collapsed" : name)

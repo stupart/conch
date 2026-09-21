@@ -112,6 +112,55 @@ final class SessionGroupingTests: XCTestCase {
         XCTAssertEqual(grouped.map(\.name), ["/a/b/c", "x/a/b/c"])
     }
 
+    // MARK: Reordering by drag
+
+    private func folder(_ id: String) -> SessionFolder {
+        SessionFolder(id: id, name: id, sessionIDs: [])
+    }
+
+    /// Folders the reader ordered come first in that order; the rest keep arrival order after.
+    func testOrderedPutsTheChosenFoldersFirstAndTheRestAsTheyArrived() {
+        let ordered = SessionGrouping.ordered(
+            [folder("/a"), folder("/b"), folder("/c"), folder("/d")],
+            by: ["/c", "/zzz-not-on-screen", "/a"]
+        )
+
+        XCTAssertEqual(ordered.map(\.id), ["/c", "/a", "/b", "/d"])
+    }
+
+    /// Dropping a folder onto another takes that folder's slot: down reaches the end, up
+    /// reaches the top, and the folders between shift one toward the gap.
+    func testDroppingOntoAFolderTakesItsSlot() {
+        let visible = ["/a", "/b", "/c"]
+
+        XCTAssertEqual(
+            SessionGrouping.order([], moving: "/a", onto: "/c", visible: visible),
+            ["/b", "/c", "/a"]
+        )
+        XCTAssertEqual(
+            SessionGrouping.order([], moving: "/c", onto: "/a", visible: visible),
+            ["/c", "/a", "/b"]
+        )
+        XCTAssertEqual(
+            SessionGrouping.order([], moving: "/a", onto: "/a", visible: visible),
+            visible
+        )
+    }
+
+    /// A folder dragged last week keeps its slot: the stored order is never pruned to what
+    /// is on screen, and newcomers join at the end in screen order before the move applies.
+    func testAStoredSlotSurvivesFoldersComingAndGoing() {
+        let stored = ["/old", "/a"]
+
+        let next = SessionGrouping.order(stored, moving: "/new", onto: "/a", visible: ["/a", "", "/new"])
+
+        XCTAssertEqual(next, ["/old", "/new", "/a"], "the unnamed folder has no header and is left out")
+        XCTAssertEqual(
+            SessionGrouping.ordered([folder("/new"), folder("/old"), folder("/a")], by: next).map(\.id),
+            ["/old", "/new", "/a"]
+        )
+    }
+
     /// A daemon that ever sent a parent cycle would hang the list rather than draw it.
     func testAParentCycleDoesNotHang() {
         let grouped = folders([
