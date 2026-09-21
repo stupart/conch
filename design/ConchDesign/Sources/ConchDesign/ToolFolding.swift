@@ -71,9 +71,15 @@ public enum ToolFolding {
     /// likely to be a person than a process.
     public static let idleCeiling: Double = 600
 
-    /// The run's span, or nil when it cannot be stated honestly.
+    /// The run's span in seconds, or nil when it cannot be stated honestly.
+    ///
+    /// The stamps arrive in epoch MILLISECONDS — the unit of every `at` on the wire, from
+    /// `Date.parse` in the daemon — and the summary reads in seconds. The Mac fed this raw
+    /// stamps: every real run (steps a second or more apart) tripped the 600 "second" ceiling
+    /// and lost its time, and a burst of parallel calls 300 ms apart read "Worked 5m".
+    /// Converting here, once, keeps every caller honest instead of each remembering to.
     static func span(of stamps: [Double?]) -> Double? {
-        let times = stamps.compactMap { $0 }
+        let times = stamps.compactMap { $0.map { $0 / 1_000 } }
         // Every step must be stamped: a run with a hole in it has no span anyone can defend.
         // No `last >= first` here: the loop below rejects any pair that goes backwards, which
         // implies it. A mutation proved that clause unreachable rather than untested.
@@ -91,6 +97,8 @@ public enum ToolFolding {
     /// sentences either side are what the run sits between. Runs shorter than `foldingFrom`
     /// are not returned at all: a lone step folded into a summary of itself hides one line
     /// behind another line, and costs a click to get back.
+    ///
+    /// `at` is epoch milliseconds, exactly as the daemon publishes it — never convert first.
     public static func runs(
         for items: [(id: String, isTool: Bool, at: Double?)],
         foldingFrom minimum: Int = 2

@@ -2,8 +2,26 @@ import XCTest
 @testable import ConchDesign
 
 final class ToolFoldingTests: XCTestCase {
-    private func item(_ id: String, _ isTool: Bool, _ at: Double? = nil)
-        -> (id: String, isTool: Bool, at: Double?) { (id, isTool, at) }
+    /// Fixtures are written in SECONDS, because that is what the summaries read in; the helper
+    /// hands the rule the wire's epoch milliseconds. Repointed when the fold was found reading
+    /// raw stamps as seconds — the Mac's real runs (~1 s apart) all lost their time to the
+    /// idle ceiling, and the fixtures here, written in seconds, could not see it.
+    private func item(_ id: String, _ isTool: Bool, _ atSeconds: Double? = nil)
+        -> (id: String, isTool: Bool, at: Double?) { (id, isTool, atSeconds.map { $0 * 1_000 }) }
+
+    /// Stamps exactly as `/tmp/conch-sessions.json` carried them on 2026-09-21: five steps
+    /// 1.06 s apart, which read "5 steps" on the Mac and would read "Worked 4s" here.
+    func testTheWiresMillisecondsReadAsSeconds() {
+        let wire: [(id: String, isTool: Bool, at: Double?)] = [
+            ("t1", true, 1_789_973_418_092), ("t2", true, 1_789_973_419_155), ("t3", true, 1_789_973_420_222),
+            ("t4", true, 1_789_973_421_287), ("t5", true, 1_789_973_422_353),
+        ]
+        let run = ToolFolding.runs(for: wire).first
+        XCTAssertEqual(run?.seconds.map { ($0 * 1_000).rounded() }, 4_261)
+        XCTAssertEqual(run?.summary, "Worked 4s · 5 steps")
+        // 300 ms between two parallel calls is under a second, never "Worked 5m".
+        XCTAssertEqual(ToolFolding.runs(for: [("a", true, 1_789_973_418_000), ("b", true, 1_789_973_418_300)]).first?.summary, "2 steps")
+    }
 
     func testConsecutiveStepsFoldIntoOneRun() {
         let runs = ToolFolding.runs(for: [
