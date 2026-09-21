@@ -34,7 +34,7 @@ public enum SessionGrouping {
     ///
     /// Order is first appearance rather than anything cleverer on purpose: the list is read
     /// while it changes, and a group that reorders itself by recency moves the row you were
-    /// about to click.
+    /// about to click. The reader can override it by dragging: `ordered(_:by:)`.
     public static func folders(
         for sessions: [(id: String, cwd: String?, parentID: String?)]
     ) -> [SessionFolder] {
@@ -60,6 +60,44 @@ public enum SessionGrouping {
         return order.map { path in
             SessionFolder(id: path, name: names[path] ?? "", sessionIDs: members[path] ?? [])
         }
+    }
+
+    /// The folders in the order the reader chose, then the rest as they arrived.
+    ///
+    /// Grouping stays derived from the folder each session runs in — a row's place is its
+    /// folder's place, always. What the reader owns is the order of the FOLDERS. That is the
+    /// whole answer to "what happens to a dragged thing when its folder changes": nothing can,
+    /// because rows are never dragged. A session restarted elsewhere, or a child re-parented,
+    /// simply appears under its new folder, and a folder keeps its slot as sessions come and
+    /// go in it — including across days when it is not on screen at all, since `preferred`
+    /// is never pruned to what is visible.
+    public static func ordered(_ folders: [SessionFolder], by preferred: [String]) -> [SessionFolder] {
+        let rank = Dictionary(preferred.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+        let chosen = folders.filter { rank[$0.id] != nil }.sorted { rank[$0.id]! < rank[$1.id]! }
+        return chosen + folders.filter { rank[$0.id] == nil }
+    }
+
+    /// The stored order after dragging folder `id` onto folder `target`: `id` takes `target`'s
+    /// slot and everything between shifts one toward the gap, so a drop on the last header
+    /// reaches the end and a drop on the first reaches the top without an insertion line.
+    ///
+    /// Folders on screen that were never dragged join `preferred` first, in screen order, so
+    /// the move is applied to the list the reader is looking at rather than to the subset
+    /// they happened to drag before. An unnamed folder (empty id) has no header to drag or
+    /// drop on and is left out.
+    public static func order(
+        _ preferred: [String],
+        moving id: String,
+        onto target: String,
+        visible: [String]
+    ) -> [String] {
+        var order = preferred + visible.filter { !$0.isEmpty && !preferred.contains($0) }
+        guard id != target, let from = order.firstIndex(of: id), let to = order.firstIndex(of: target) else {
+            return order
+        }
+        order.remove(at: from)
+        order.insert(id, at: to)
+        return order
     }
 
     /// A child belongs where its parent belongs.
