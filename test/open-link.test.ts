@@ -181,13 +181,31 @@ describe("every open site in the Mac app goes through the one door that reports 
     expect(mac("Models.swift")).toContain("cwd = try? container.decodeIfPresent(String.self, forKey: .cwd)");
   });
 
-  test("the deliverable pane's three buttons and its rendered document go through the door", () => {
+  test("the deliverable pane's two buttons and its rendered document go through the door", () => {
     const review = mac("ReviewView.swift");
     expect(review).toContain('Button("Reveal in Finder") { open(url.path, reveal: true) }');
-    // Where you ARE, not where the deliverable was filed: the pane can navigate now, so
-  // opening "the link" would hand the browser a page you had already left.
-  expect(review).toContain('Button("Open in browser") { open(addressText) }');
+    // Two, not three. "Open in browser" duplicated the header arrow one row above it, and the
+    // arrow was the one getting it WRONG — it opened the filed link while the button opened
+    // where you actually were. The arrow now takes the live address, so the invariant survives
+    // the control that carried it. This one stays: recovering a page that FAILED to load is a
+    // different job from leaving a page that works.
     expect(review).toContain("onOpenInBrowser: { open(failure.url.absoluteString) }");
+    // BOTH halves, because either alone is a silent revert to the old bug.
+    //
+    // The pane must PUBLISH where it is — on a followed link, on a typed address, and on
+    // first appearance — or `liveAddress` stays nil forever and the arrow quietly falls back
+    // to the filed link with every test still green.
+    // COUNTED, not contained: it appears on navigate and on appear, so a `toContain` would
+    // still pass with one of them deleted and the address silently stale on arrival.
+    expect((review.match(/liveAddress = addressText/g) ?? []).length).toBe(2);
+    expect(review).toContain("liveAddress = target");
+    // ...and the owner must PREFER it. Pinning only ReviewView's side would let the pane hand
+    // up the right address to a caller that ignored it.
+    expect(mac("DashboardView.swift")).toContain("let target = deliverableAddress ?? link");
+    // The PANE owns it, so ⌘3 — which posts a notification the pane answers — opens the same
+    // address the arrow does. Held as @State here it was invisible to that handler.
+    expect(mac("DashboardView.swift")).toContain("@State private var deliverableAddress: String?");
+    expect(mac("DashboardView.swift")).toContain("liveAddress: $deliverableAddress");
     expect(review).toContain("store.openLink(link, cwd: cwd, rowId: rowID, reveal: reveal) { linkFailure = $0 }");
     expect(review).toContain("content.overlay(alignment: .bottom) { LinkFailureLine(message: $linkFailure) }");
     // A link inside a rendered .md resolves against the document's own folder.
