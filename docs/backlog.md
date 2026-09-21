@@ -39,6 +39,12 @@ agent drive one, and the user able to reach in and interact — the way the Code
 ## Open
 
 ### UI / UX
+- **open** — The iPhone cannot open a deliverable that is a file on the Mac. Four `open-link`
+  failures on 2026-09-21 17:09 from `source: ios`, all reading "That's a file on your Mac, not a
+  page: /Users/…/Asset Generator/mcp-plugin-workflow-review-2026-09-17.md". The message is
+  honest and the phone genuinely cannot reach that path, so the fix is not "open it anyway" —
+  it is either serving the file through the bridge conch already runs, or not offering the
+  control for a link the phone cannot follow.
 - **open** — The composer still cuts a blank band in the PANEL view. The conversation arm layers
   it in a `ZStack` and hands the stack its measured height as `bottomInset` (`af61d67`,
   `992d843`), but that is the only call site: the side-by-side arm keeps `floatingComposer` as a
@@ -168,6 +174,23 @@ agent drive one, and the user able to reach in and interact — the way the Code
   TextKit 1 fallback the caret fix introduced.
 
 ### Engineering
+- **open** — MCP servers accumulate per Codex session: 15 alive, **756 MB** combined (2026-09-21).
+  One per long-lived session is the design; `pgrep -f 'cli.ts mcp'` shows pid `92162` owning
+  FOUR (Sep 19, 14:50, 15:20, 16:13) and `54952` owning two. Measured while checking whether
+  `/reload-plugins` had spawned duplicates — it had not, only 3 of the 15 were recent, so the
+  accumulation predates it and is not the plugin reload's doing. `docs/daemon-side-effects.md`
+  records "8 alive now, ~40 MB each ≈ 320 MB"; it is twice that.
+- **open** — `records/history.sqlite` had not ingested the "Asset Generator" Codex thread past
+  2026-09-16 — a five-day gap on a thread that was live at the time of measuring (2026-09-21).
+  Found while locating a message in the record: the live path had it, the record did not, which
+  is why the record could not be used to check what the app was showing.
+- **open** — `stripEchoedQuestion` and `codexAsyncQuestionOptions` are defined TWICE, in
+  `src/conversation.ts` and `src/records-codex.ts` (`2860ee2`), and the copies already disagree:
+  one takes `ReadonlySet<string> | undefined`, the other `readonly string[]`, and the remember
+  helpers have different names. Two live parsers of the same wire format is the reason they
+  exist separately, but a rule about Codex's self-quote is one rule. Flagged at review as
+  non-blocking because the behaviour is correct and gated; recorded because divergence has
+  already started rather than being a future risk.
 - **open** — The installed plugin is ten days stale, so agents run against an old contract.
   `~/.config/conch/plugin-dist/plugins/conch/AGENTS.md` is dated 2026-09-11; the repo's copy is
   today's. Measured 2026-09-21: zero files under plugin-dist mention `conch_working_folders`
