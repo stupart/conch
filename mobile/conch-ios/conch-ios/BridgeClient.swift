@@ -679,22 +679,53 @@ final class BridgeClient: ObservableObject {
         return reply["kind"] as? String == "app-error-ack"
     }
 
+    /// What `openLink` does with a tapped URL, decided in one Foundation-only
+    /// place so the phone's UIKit call and its test agree on it — the same
+    /// reason `MacLocalPage` lives apart from the view that uses it.
+    enum LinkRoute: Equatable {
+        /// No scheme at all: not a link `openLink` or iOS can act on.
+        case invalid
+        /// A file on the Mac (`.path`), which `/file` will serve only if it is
+        /// currently published — `onFile` is the caller's chance to find out.
+        case file(String)
+        /// Everything else goes to iOS's own door.
+        case open
+
+        static func decide(_ url: URL) -> LinkRoute {
+            guard url.scheme != nil else { return .invalid }
+            return url.isFileURL ? .file(url.path) : .open
+        }
+    }
+
     /// One door for every link the phone opens (A13): the conversation, a
-    /// rendered deliverable, the Settings button. A path is a file on the
-    /// Mac, which the phone cannot open; anything else goes to iOS, whose
-    /// refusal is only a Bool. Either failure goes back to where the tap
-    /// happened and to the Mac's errors.jsonl as `open-link`.
-    func openLink(_ url: URL, sessionId: String?, onFailure: @escaping @MainActor (String) -> Void) {
+    /// rendered deliverable, the Settings button. A file path used to be
+    /// refused outright — "the phone cannot open" a Mac file was true before
+    /// `/file` and `downloadFile` existed; now it can, PROVIDED the path is
+    /// something conch is currently publishing (the exact-set check the
+    /// bridge enforces, never arbitrary access). `onFile` hands a caller that
+    /// can show one (`DeliverableSheet`, reused, not a second renderer) the
+    /// Mac path; a caller that can't (or a path that turns out unpublished,
+    /// which `downloadFile`'s own 403 handling says honestly) falls back to
+    /// `onFailure`. Either failure goes back to where the tap happened and to
+    /// the Mac's errors.jsonl as `open-link`.
+    func openLink(_ url: URL, sessionId: String?, onFile: (@MainActor (String) -> Void)? = nil, onFailure: @escaping @MainActor (String) -> Void) {
         func fail(_ message: String) {
             onFailure(message)
             Task { await reportAppError(operation: "open-link", message: message, sessionId: sessionId) }
         }
-        guard url.scheme != nil, !url.isFileURL else {
-            fail("That's a file on your Mac, not a page: \(url.path)")
-            return
-        }
-        UIApplication.shared.open(url) { opened in
-            if !opened { fail("iPhone couldn't open \(url.absoluteString)") }
+        switch LinkRoute.decide(url) {
+        case .invalid:
+            fail("iPhone couldn't open \(url.absoluteString).")
+        case let .file(path):
+            guard let onFile else {
+                fail("conch doesn't open a Mac file from here.")
+                return
+            }
+            onFile(path)
+        case .open:
+            UIApplication.shared.open(url) { opened in
+                if !opened { fail("iPhone couldn't open \(url.absoluteString)") }
+            }
         }
     }
 
@@ -872,6 +903,12 @@ final class BridgeClient: ObservableObject {
     /// Materialize a currently-scoped local deliverable for either transport.
     /// Relay files are decrypted chunk-by-chunk to a temporary file; LAN files
     /// use URLSession's disk-backed download path. Neither is assembled in RAM.
+    ///
+    /// A 403 means one thing on this route — the bridge's `/file` exact-set
+    /// check refused a path that is not currently published — so it gets its
+    /// own honest reason instead of "The Mac returned HTTP 403.", which reads
+    /// as a server bug rather than the deliberate refusal it is. Every other
+    /// status keeps the transport's own words.
     func downloadFile(path: String) async -> URL? {
         var components = URLComponents()
         components.path = "/file"
@@ -879,6 +916,9 @@ final class BridgeClient: ObservableObject {
         guard let requestPath = components.string else { return nil }
         do {
             return try await transport.download(authorizedRequest(method: "GET", path: requestPath))
+        } catch BridgeTransportError.httpStatus(403) {
+            lastError = "conch isn't publishing that file."
+            return nil
         } catch {
             lastError = error.localizedDescription
             return nil

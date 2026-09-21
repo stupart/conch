@@ -191,6 +191,15 @@ struct PublishedState: Decodable, Equatable {
             private enum CodingKeys: String, CodingKey { case summary, link, at, scene, id, viewedAt }
             private struct Scene: Decodable { var inspect: String? }
 
+            /// A synthetic review for a path the phone wants to open as a
+            /// deliverable — a tapped file link, not anything the ledger
+            /// filed. `init(from:)` being custom means the memberwise init
+            /// Swift would otherwise synthesize doesn't exist; this is that,
+            /// narrowed to the one field a tapped link actually has.
+            init(link: String) {
+                self.link = link
+            }
+
             init(from decoder: Decoder) throws {
                 let c = try decoder.container(keyedBy: CodingKeys.self)
                 summary = (try? c.decodeIfPresent(String.self, forKey: .summary)) ?? ""
