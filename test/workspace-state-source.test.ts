@@ -121,14 +121,20 @@ describe("new work does not replace what you are reading", () => {
     expect(pane).not.toMatch(/showsConversation\s*=/);
     expect(stack).toContain("ArtifactPreview(artifact: artifact, onOpen: onOpenArtifact)");
 
-    // The only four ways the page moves, and every one of them is a press: the three pages
-    // in the perspective bar, and opening the artifact from its inline preview. One door
-    // (`show(stage:)`), because a page that can be set two ways can be set two ways at once.
+    // The only three ways the page moves, and every one of them is a press: the two pages in
+    // the perspective bar, and opening the artifact from its inline preview — which stages it
+    // BESIDE the conversation now rather than in front of it. One door (`show(stage:)`),
+    // because a page that can be set two ways can be set two ways at once.
     const changes = pane.match(/workspace\.show\(stage: \.\w+, for: row\.id\)/g) ?? [];
-    expect(changes).toHaveLength(4);
+    expect(changes).toHaveLength(3);
     expect(pane).toContain('action: { workspace.show(stage: .conversation, for: row.id) }');
     expect(pane).toContain('action: { workspace.show(stage: .sideBySide, for: row.id) }');
-    expect(pane).toContain('action: { workspace.show(stage: .deliverable, for: row.id) }');
+    // The third page is GONE as a destination — filling the conch window was never leaving it.
+    // Opening a deliverable now stages it BESIDE the conversation, and the way to see it alone
+    // is to drag the conversation to nothing. Tyler: "when im in the conversation view on the
+    // app and i click on the aritifact it should open the panel view instead of the artifact
+    // only view."
+    expect(pane).not.toContain("workspace.show(stage: .deliverable");
     // The closure does two things now, so it is no longer one line — but the door itself is
     // unchanged, which is what the count above pins.
     expect(pane).toContain("onOpenArtifact: {");
@@ -171,7 +177,7 @@ describe("new work does not replace what you are reading", () => {
       pane.indexOf("private func deliverableTabs("),
     );
     expect(header.length).toBeGreaterThan(500);
-    expect(header.match(/PerspectiveOption\(/g) ?? []).toHaveLength(3);
+    expect(header.match(/PerspectiveOption\(/g) ?? []).toHaveLength(2);
     // Only when there is something to switch to — the header must not offer a page that
     // would be empty. That used to mean "is there a deliverable", which is why Cmd-2 and Cmd-3
     // did nothing in a session that had never filed one, even though its FILES were there the
@@ -286,12 +292,20 @@ describe("new work does not replace what you are reading", () => {
 
   /**
    * Tyler: "drag the center diviger on the conch mac app panel view to change the proportions".
-   * Bounded so neither half can be dragged to nothing, and remembered like the sidebar's width
-   * — it is a preference about how you read, not a fact about one conversation.
+   * Remembered like the sidebar's width — it is a preference about how you read, not a fact
+   * about one conversation.
+   *
+   * It reaches BOTH edges now. The clamp at 0.25 was recorded here as "bounded so neither half
+   * can be dragged to nothing", which became exactly wrong the moment filling the stage stopped
+   * being a page: dragging the conversation away IS how you see the deliverable alone, and the
+   * clamp made that impossible by construction. Tyler, 2026-09-21: "there's no like full view
+   * artifact in the app unless you like pull the convo part of the panel view down to 0 and
+   * have the sidebar closed". What makes a collapsed half recoverable is the resizer's 10 pt
+   * grab area, pinned below — never the clamp.
    */
-  test("the split is dragged, bounded, and remembered", () => {
+  test("the split is dragged, reaches both edges, and is remembered", () => {
     expect(dashboard).toContain('@AppStorage("conch.splitFraction") private var storedSplitFraction = 0.5');
-    expect(dashboard).toContain("private static let splitBounds: ClosedRange<Double> = 0.25...0.75");
+    expect(dashboard).toContain("private static let splitBounds: ClosedRange<Double> = 0...1");
     const fraction = dashboard.slice(
       dashboard.indexOf("private func splitFraction(in width: CGFloat) -> Double {"),
       dashboard.indexOf("private func splitResizer(in width: CGFloat)"),
@@ -350,19 +364,32 @@ describe("new work does not replace what you are reading", () => {
     expect(esc.length).toBeGreaterThan(200);
     expect(esc.indexOf("cancelRename()")).toBeLessThan(esc.indexOf("workspace.show(stage: .conversation"));
 
-    // Fill or side, from the deliverable's own 44 pt header (§3) — one control that knows
-    // which page it is on, rather than two views that each only do one thing.
-    expect(review).toContain('stage == .deliverable ? "rectangle.split.2x1" : "arrow.up.left.and.arrow.down.right"');
-    expect(review).toContain("onShow(stage == .deliverable ? .sideBySide : .deliverable)");
+    // The way OUT, from the deliverable's own 44 pt header (§3). It used to toggle between
+    // filling the conch window and sharing it; neither of those reaches the thing the
+    // deliverable actually is. It no longer reads the stage at all — one thing, said once.
+    expect(review).toContain('actionSymbol: "arrow.up.forward.app"');
+    expect(review).toContain('actionHelp: "Open where it lives (\u23183)"');
+    expect(review).toContain("action: item.link == nil ? nil : onOpenInPlace,");
+    expect(review).not.toContain("stage == .deliverable");
+    expect(review).not.toContain("let stage: StageMode");
     // The shortcut parameter had exactly one non-nil caller, and it was the view now gone.
     expect(review).not.toContain("actionShortcut");
   });
 
-  test("the three pages have keys, and two of them wait for something to show", () => {
+  test("the two pages have keys, and the third key leads out of the app", () => {
     expect(app).toContain('.keyboardShortcut("1", modifiers: .command)');
     expect(app).toContain('.keyboardShortcut("2", modifiers: .command)');
     expect(app).toContain('.keyboardShortcut("3", modifiers: .command)');
     expect(app).toContain("NotificationCenter.default.post(name: .setStage, object: StageMode.sideBySide)");
+    // \u23183 stopped being a page. Leaving it posting StageMode.deliverable would have been the
+    // worst outcome of this change: every way OUT of that mode was removed, so the key alone
+    // could still strand you in a stage with no exit.
+    expect(app).not.toContain("StageMode.deliverable");
+    expect(app).toContain("NotificationCenter.default.post(name: .openDeliverableInPlace, object: nil)");
+    // On the whole file, not `pane`: the name is declared above ConversationPane, and that
+    // struct is where the `pane` slice begins — an assertion there could never have passed.
+    expect(dashboard).toContain("static let openDeliverableInPlace = Notification.Name(");
+    expect(pane).toContain("openDeliverableInPlace()");
     expect(pane).toContain("guard let mode = note.object as? StageMode, let row = focusedRow else { return }");
     // With nothing to show there is nothing to put beside or in front of the conversation, so
     // those two keys do nothing rather than handing someone an empty stage. A working folder

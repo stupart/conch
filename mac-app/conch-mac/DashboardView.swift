@@ -9,6 +9,10 @@ extension Notification.Name {
     /// ⌘1 ⌘2 ⌘3 (§3), carrying the StageMode as its object. Posted from the menu for the
     /// same reason ⌘B is: the shortcut has to work whatever holds focus.
     static let setStage = Notification.Name("com.conch.mac.set-stage")
+
+    /// ⌘3 — the deliverable, opened where it actually LIVES rather than filling more of
+    /// conch. Posted from the menu for the same reason the others are.
+    static let openDeliverableInPlace = Notification.Name("com.conch.mac.open-deliverable-in-place")
 }
 
 struct DashboardActions {
@@ -1571,7 +1575,15 @@ private struct ConversationPane: View {
     /// fact about one conversation.
     @AppStorage("conch.splitFraction") private var storedSplitFraction = 0.5
     @State private var splitDrag: CGFloat = 0
-    private static let splitBounds: ClosedRange<Double> = 0.25...0.75
+    /// All the way to either edge, on purpose.
+    ///
+    /// Filling the stage stopped being a MODE: the way to see only the deliverable is to pull
+    /// the conversation off the left of the divider, and the way back is to pull it out again.
+    /// Clamping at 0.25 made the thing the user asked for impossible by construction. Tyler:
+    /// "there's no like full view artifact in the app unless you like pull the convo part of
+    /// the panel view down to 0 and have the sidebar closed". The resizer keeps its 10 pt grab
+    /// area at either end, so a half dragged to nothing can always be dragged back.
+    private static let splitBounds: ClosedRange<Double> = 0...1
 
     private func splitFraction(in width: CGFloat) -> Double {
         guard width > 0 else { return storedSplitFraction }
@@ -1657,8 +1669,7 @@ private struct ConversationPane: View {
         } else if let selectedReview {
             InlineReviewView(
                 item: selectedReview,
-                stage: stage(for: row),
-                onShow: { workspace.show(stage: $0, for: row.id) }
+                onOpenInPlace: openDeliverableInPlace
             )
         }
     }
@@ -1700,6 +1711,22 @@ private struct ConversationPane: View {
             isTargetLive: isFocusedSessionLive,
             staticContent: transcriptContent.content(for: focusedRow)
         )
+    }
+
+    /// The deliverable, handed to whatever actually owns it.
+    ///
+    /// Direction, 2026-09-19: "Full screen means the deliverable's own home, not conch's."
+    /// The old third page filled the conch window, which is not leaving the app — it just
+    /// made conch bigger. This opens the browser for a URL and the file's own app for a file
+    /// (`openLink` resolves both, and checks a file is reachable before LaunchServices can
+    /// put up a dialog of its own), and leaves the pane exactly where it was, so what you
+    /// were reading is still behind it.
+    ///
+    /// Reuses the conversation's failure line rather than inventing a second one.
+    private func openDeliverableInPlace() {
+        guard let review = selectedReview, let link = review.link else { return }
+        fallbackLinkFailure = nil
+        store.openLink(link, cwd: focusedRow?.cwd, rowId: focusedRow?.id) { fallbackLinkFailure = $0 }
     }
 
     private var note: String? {
@@ -1804,12 +1831,15 @@ private struct ConversationPane: View {
         // here covered the panel's own fill: right shape, wrong colour.
         .background(ConchPalette.surface)
         .onReceive(NotificationCenter.default.publisher(for: .setStage)) { note in
-            // Only where there is somewhere to go: with no deliverable filed, two of the
-            // three pages are a promise the pane cannot keep — the same reason the
-            // perspective bar draws nothing until there is one.
+            // Only where there is somewhere to go: with no deliverable filed, side by side is
+            // a promise the pane cannot keep — the same reason the perspective bar draws
+            // nothing until there is one.
             guard let mode = note.object as? StageMode, let row = focusedRow else { return }
             guard mode == .conversation || hasWorkPane else { return }
             workspace.show(stage: mode, for: row.id)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openDeliverableInPlace)) { _ in
+            openDeliverableInPlace()
         }
         .task(id: TranscriptWatchID(row: watchesTranscriptForRow)) {
             await transcriptContent.monitor(row: watchesTranscriptForRow)
@@ -1921,15 +1951,18 @@ private struct ConversationPane: View {
             // The view switch, and only when there is a deliverable (§3). With nothing on
             // the other side the control is a promise the header cannot keep.
             //
-            // Icons alone here, where the bar below could afford words: three labelled
-            // segments measure about 316 pt, over 40% of this header at the default window
-            // width, and the title is what the header is for. The old lone-control worry
-            // does not apply to a group of three where the selected one is filled — you can
+            // Icons alone here, where the bar below could afford words: labelled segments
+            // measure far too wide for a header whose job is the title. The old lone-control
+            // worry does not apply to a track where the selected position is filled — you can
             // see where you are without decoding anything, which was the actual point.
+            //
+            // TWO positions now, not three. Filling the conch window was never leaving it, so
+            // it stopped being a page you switch to and became an arrow on the deliverable
+            // itself. Chat and panel are the in-app toggles; the third door leads OUT.
             if hasWorkPane {
                 // `.seg{padding:2px;border-radius:8px;background:var(--fill);gap:1px;margin-right:4px}`.
-                // Three loose buttons read as three unrelated controls; one track with the
-                // selected position filled reads as one control that knows where it is.
+                // Loose buttons read as unrelated controls; one track with the selected
+                // position filled reads as one control that knows where it is.
                 HStack(spacing: 1) {
                     PerspectiveOption(
                         label: "Conversation",
@@ -1944,13 +1977,6 @@ private struct ConversationPane: View {
                         isSelected: stage(for: row) == .sideBySide,
                         help: "The work and the exchange together (⌘2)",
                         action: { workspace.show(stage: .sideBySide, for: row.id) }
-                    )
-                    PerspectiveOption(
-                        label: "Deliverable",
-                        symbol: "doc.richtext",
-                        isSelected: stage(for: row) == .deliverable,
-                        help: "What the session produced (⌘3)",
-                        action: { workspace.show(stage: .deliverable, for: row.id) }
                     )
                 }
                 .padding(2)
@@ -2138,7 +2164,15 @@ private struct ConversationPane: View {
                 artifactShownBeside: stage(for: row) != .conversation && workPane(for: row) == .deliverable,
                 cwd: row.cwd,
                 onOpenArtifact: {
-                    workspace.show(stage: .deliverable, for: row.id)
+                    // BESIDE the conversation, not instead of it. Clicking the card used to
+                    // replace the exchange with the artifact, so the thing that explains the
+                    // deliverable vanished at the moment you went to look at it. Tyler: "when
+                    // im in the conversation view on the app and i click on the aritifact it
+                    // should open the panel view instead of the artifact only view."
+                    //
+                    // Seeing it alone is still reachable — drag the conversation off the left
+                    // of the divider — but it is a WIDTH now, not a mode to find the way out of.
+                    workspace.show(stage: .sideBySide, for: row.id)
                     // Opening it IS looking at it. Only the tab strip marked anything before,
                     // so the commonest way in — the card in the conversation — left the dot on
                     // forever: every deliverable on this Mac still read as unviewed.
