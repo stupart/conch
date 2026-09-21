@@ -4,6 +4,7 @@ import {
   applyConversationDelta,
   buildConversation,
   classifyInjectedUserText,
+  type Conversation,
   conversationDelta,
   conversationWindow,
   emptyConversation,
@@ -471,59 +472,109 @@ describe("Codex's echoed answer to an async question is not Tyler's own words", 
   // answers a `request_user_input_async` question by filing a `role: "user"`
   // message that quotes the whole question back, then the actual answer
   // after a blank line. Rendering it whole put the agent's own OAuth
-  // explanation in Tyler's mouth for one word of real reply.
+  // explanation in Tyler's mouth for one word of real reply. The record
+  // names nothing as an echo, so the guard against acting on shape alone is
+  // this: only strip when the reply exactly matches an option the SAME
+  // conversation actually offered via `request_user_input_async` earlier.
   const question = "The Blueprint plugin is installed locally. To test the real connection, "
     + "please open this sign-in link, choose Arch, and authorize it. Both the existing Claude "
     + "connection and the new Codex connection currently need sign-in. I’m continuing the "
     + "code review meanwhile.  https://tools.blueprintstudio.ai/oauth/authorize?response_type=code&client_id=bp_client_2GLz9eesn2a_zStv5rgoAw";
   const echoed = `> ${question}\n\nSigned in to Arch`;
 
-  test("response_item:message strips the quoted question, keeping only the reply", () => {
+  /** Files the exact `request_user_input_async` call conch actually observed. */
+  function askAsync(conversation: Conversation, callId: string, options: string[]): void {
+    reduceCodexLine(conversation, {
+      type: "response_item",
+      ordinal: 0,
+      payload: {
+        type: "function_call",
+        call_id: callId,
+        name: "request_user_input_async",
+        arguments: JSON.stringify({ questions: [{ title: question, options }] }),
+      },
+    });
+  }
+
+  test("response_item:message strips the quoted question, keeping only the reply — once the question was actually asked", () => {
+    const conversation = emptyConversation("s");
+    askAsync(conversation, "call_1", ["Signed in to Arch", "I’ll do it later"]);
+    reduceCodexLine(conversation, {
+      type: "response_item",
+      ordinal: 1,
+      payload: { type: "message", role: "user", content: [{ text: echoed }] },
+    });
+    // The question's own tool row, plus the collapsed answer.
+    expect(conversation.order.length).toBe(2);
+    const item = conversation.items[conversation.order[1]!]!;
+    expect(item.kind).toBe("user");
+    expect(item.text).toBe("Signed in to Arch");
+    expect(item.text).not.toContain("Blueprint plugin");
+  });
+
+  test("event_msg:user_message strips the same way, once the question was actually asked", () => {
+    const conversation = emptyConversation("s");
+    askAsync(conversation, "call_1", ["Signed in to Arch", "I’ll do it later"]);
+    reduceCodexLine(conversation, {
+      type: "event_msg",
+      ordinal: 1,
+      payload: { type: "user_message", message: echoed },
+    });
+    const item = conversation.items[conversation.order.at(-1)!]!;
+    expect(item.text).toBe("Signed in to Arch");
+  });
+
+  // The blocking case: Tyler blockquotes things constantly (he opened the very
+  // bug report behind this fix with one). A leading "> " plus a blank line is
+  // NOT enough on its own — without a matching known option, the message must
+  // survive completely whole, quote and all.
+  test("a genuine Tyler quote-then-reply is never touched, even shaped exactly like the echo", () => {
+    const conversation = emptyConversation("s");
+    askAsync(conversation, "call_1", ["Signed in to Arch", "I’ll do it later"]);
+    const text = `> some prior assistant paragraph, quoted on purpose\n\nno, that's wrong, do it this way instead`;
+    reduceCodexLine(conversation, {
+      type: "response_item",
+      ordinal: 2,
+      payload: { type: "message", role: "user", content: [{ text }] },
+    });
+    const item = conversation.items[conversation.order.at(-1)!]!;
+    expect(item.text).toBe(text);
+  });
+
+  test("no question was ever asked in this conversation: the same shape is left whole", () => {
     const conversation = emptyConversation("s");
     reduceCodexLine(conversation, {
       type: "response_item",
       ordinal: 1,
       payload: { type: "message", role: "user", content: [{ text: echoed }] },
     });
-    expect(conversation.order.length).toBe(1);
     const item = conversation.items[conversation.order[0]!]!;
-    expect(item.kind).toBe("user");
-    expect(item.text).toBe("Signed in to Arch");
-    expect(item.text).not.toContain("Blueprint plugin");
-  });
-
-  test("event_msg:user_message strips the same way", () => {
-    const conversation = emptyConversation("s");
-    reduceCodexLine(conversation, {
-      type: "event_msg",
-      ordinal: 1,
-      payload: { type: "user_message", message: echoed },
-    });
-    const item = conversation.items[conversation.order[0]!]!;
-    expect(item.text).toBe("Signed in to Arch");
+    expect(item.text).toBe(echoed);
   });
 
   test("an assistant message is never stripped, even if it starts with a quote", () => {
     const conversation = emptyConversation("s");
-    const text = `> quoting something\n\nhere's my actual reply`;
+    askAsync(conversation, "call_1", ["Signed in to Arch", "I’ll do it later"]);
+    const text = `> quoting something\n\nSigned in to Arch`;
     reduceCodexLine(conversation, {
       type: "response_item",
       ordinal: 1,
       payload: { type: "message", role: "assistant", content: [{ text }] },
     });
-    const item = conversation.items[conversation.order[0]!]!;
+    const item = conversation.items[conversation.order.at(-1)!]!;
     expect(item.text).toBe(text);
   });
 
   test("a user message that is ALL quote (no reply survives) is left intact rather than emptied", () => {
     const conversation = emptyConversation("s");
+    askAsync(conversation, "call_1", ["Signed in to Arch"]);
     const text = "> just a quote, no blank-line reply after it";
     reduceCodexLine(conversation, {
       type: "response_item",
       ordinal: 1,
       payload: { type: "message", role: "user", content: [{ text }] },
     });
-    const item = conversation.items[conversation.order[0]!]!;
+    const item = conversation.items[conversation.order.at(-1)!]!;
     expect(item.text).toBe(text);
   });
 

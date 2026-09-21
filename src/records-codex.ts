@@ -30,6 +30,8 @@ interface Bookkeeping {
   mirrors: Mirror[];
   turnMetadata: Record<string, TurnMetadata>;
   responseMetadata: Record<string, TurnMetadata>;
+  /** Option labels every `request_user_input_async` call has offered so far — see `stripEchoedQuestion`. */
+  questionOptions: string[];
 }
 
 const object = (value: unknown): ObjectValue | undefined =>
@@ -41,14 +43,16 @@ const count = (value: unknown): number | undefined =>
 const MAX_MIRRORS = 64;
 const MAX_TURN_METADATA = 32;
 const MAX_RESPONSE_METADATA = 64;
+const MAX_QUESTION_OPTIONS = 64;
 
 function bookkeeping(context: RecordNormalizerContext): Bookkeeping {
   const saved = object(context.state.codex);
   if (saved && Array.isArray(saved.mirrors) && object(saved.turnMetadata)) {
     saved.responseMetadata ??= {};
+    saved.questionOptions ??= [];
     return saved as unknown as Bookkeeping;
   }
-  const state: Bookkeeping = { mirrors: [], turnMetadata: {}, responseMetadata: {} };
+  const state: Bookkeeping = { mirrors: [], turnMetadata: {}, responseMetadata: {}, questionOptions: [] };
   context.state.codex = state as unknown as RecordObject;
   return state;
 }
@@ -114,18 +118,43 @@ function ensureTurn(out: NormalizedRecords, context: RecordNormalizerContext, st
  * agent's own prior words, not anything Tyler typed — recording it whole put
  * an agent's paragraph in Tyler's mouth (the "Asset Generator" session,
  * 2026-09-21: a Blueprint OAuth explanation recorded as his for one word of
- * actual reply, "Signed in to Arch"). Only the text after the blank line is
- * his; a message that turns out to be ALL quote (no answer survives the
- * split) is left alone rather than emptied. Duplicated in `conversation.ts`
- * rather than imported — this module is deliberately independent of the
- * clipped conversation renderer (see the module comment below).
+ * actual reply, "Signed in to Arch").
+ *
+ * The record carries no field naming this as an echo — Codex files it as
+ * ordinary `role: "user"` text, same as anything typed by hand, and Tyler
+ * himself blockquotes things constantly. A leading "> " is not enough to
+ * tell the two apart on its own, so this does not act on shape alone: it
+ * only strips when the text AFTER the blank line exactly matches one of the
+ * option labels `request_user_input_async` actually offered earlier in this
+ * same session (tracked in `questionOptions`, below). A genuine Tyler quote
+ * never collides with those labels, so it always survives whole. Duplicated
+ * in `conversation.ts` rather than imported — this module is deliberately
+ * independent of the clipped conversation renderer (see the module comment
+ * below).
  */
-function stripEchoedQuestion(text: string): string {
-  if (!text.startsWith("> ")) return text;
+function stripEchoedQuestion(text: string, knownOptions: readonly string[]): string {
+  if (!knownOptions.length || !text.startsWith("> ")) return text;
   const blankLine = text.indexOf("\n\n");
   if (blankLine === -1) return text;
   const reply = text.slice(blankLine + 2).trim();
-  return reply || text;
+  return reply && knownOptions.includes(reply) ? reply : text;
+}
+
+/** Extracts the option labels from a `request_user_input_async` call; `[]` for anything else. */
+function codexAsyncQuestionOptions(name: string | undefined, parsedArguments: unknown): string[] {
+  if (name !== "request_user_input_async") return [];
+  const questions = object(parsedArguments)?.questions;
+  const first = Array.isArray(questions) ? questions[0] : questions;
+  const options = object(first)?.options;
+  return Array.isArray(options) ? options.filter((option): option is string => typeof option === "string") : [];
+}
+
+function rememberQuestionOptions(state: Bookkeeping, options: string[]): void {
+  if (!options.length) return;
+  for (const option of options) if (!state.questionOptions.includes(option)) state.questionOptions.push(option);
+  if (state.questionOptions.length > MAX_QUESTION_OPTIONS) {
+    state.questionOptions.splice(0, state.questionOptions.length - MAX_QUESTION_OPTIONS);
+  }
 }
 
 function message(
@@ -134,7 +163,7 @@ function message(
 ): void {
   if (payload.channel === "analysis" || payload.channel === "reasoning") return;
   const rawText = visibleText(payload.content) ?? visibleText(payload.message) ?? visibleText(payload.text);
-  const text = role === "user" && rawText !== undefined ? stripEchoedQuestion(rawText) : rawText;
+  const text = role === "user" && rawText !== undefined ? stripEchoedQuestion(rawText, state.questionOptions) : rawText;
   const attachments = omittedAttachments(payload.content);
   if (text === undefined && !attachments.length) return;
   // Mirrored channels sometimes differ only by a trailing newline. The stored body remains intact.
@@ -223,6 +252,9 @@ function tool(
     let args: unknown = raw;
     if (typeof raw === "string") { try { args = JSON.parse(raw); } catch { /* Plain source is a valid argument. */ } }
     const value = recordValue(args);
+    // Remembered so a much-later echoed answer (see `stripEchoedQuestion`)
+    // can be told apart from a genuine quote of Tyler's own.
+    rememberQuestionOptions(state, codexAsyncQuestionOptions(name, args));
     out.items.push({ id: recordId, nativeId, turnId, kind: "tool_call", role: "assistant", content: value, at });
     out.tools.push({ id, nativeId, callItemId: recordId, name, arguments: value, status: "running", files: filesForCall(name, args) });
   }

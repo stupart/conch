@@ -322,28 +322,58 @@ describe("Codex's echoed answer to an async question is not recorded as Tyler's 
   // a `request_user_input_async` question files a `role: "user"` item that
   // quotes the whole question back, then the real answer after a blank line.
   // Recording it whole put the agent's own OAuth explanation in Tyler's
-  // mouth for one word of actual reply.
+  // mouth for one word of actual reply. The record names nothing as an
+  // echo, so the guard against acting on shape alone is this: only strip
+  // when the reply exactly matches an option this session actually offered
+  // via `request_user_input_async` earlier.
   const question = "The Blueprint plugin is installed locally. To test the real connection, "
     + "please open this sign-in link, choose Arch, and authorize it.";
   const echoed = `> ${question}\n\nSigned in to Arch`;
 
-  test("the quoted question is stripped; only the reply is recorded under role user", () => {
+  const askAsync = (f: ReturnType<typeof fixture>, callId: string, options: string[]) =>
+    f.read("response_item", {
+      type: "function_call", call_id: callId, name: "request_user_input_async",
+      arguments: JSON.stringify({ questions: [{ title: question, options }] }),
+    });
+
+  test("the quoted question is stripped; only the reply is recorded under role user — once the question was actually asked", () => {
     const f = fixture();
+    askAsync(f, "call_1", ["Signed in to Arch", "I’ll do it later"]);
     const out = f.read("response_item", responseMessage("user", echoed));
     expect(out.items).toHaveLength(1);
     expect(out.items[0]).toMatchObject({ kind: "message", role: "user", text: "Signed in to Arch" });
     expect(out.items[0]?.text).not.toContain("Blueprint plugin");
   });
 
+  // The blocking case: Tyler blockquotes things constantly (he opened the very
+  // bug report behind this fix with one). A leading "> " plus a blank line is
+  // NOT enough on its own — without a matching known option, the item must be
+  // recorded completely whole, quote and all.
+  test("a genuine Tyler quote-then-reply is never touched, even shaped exactly like the echo", () => {
+    const f = fixture();
+    askAsync(f, "call_1", ["Signed in to Arch", "I’ll do it later"]);
+    const text = `> some prior assistant paragraph, quoted on purpose\n\nno, that's wrong, do it this way instead`;
+    const out = f.read("response_item", responseMessage("user", text));
+    expect(out.items[0]?.text).toBe(text);
+  });
+
+  test("no question was ever asked in this session: the same shape is recorded whole", () => {
+    const f = fixture();
+    const out = f.read("response_item", responseMessage("user", echoed));
+    expect(out.items[0]?.text).toBe(echoed);
+  });
+
   test("an assistant message starting with a quote is never stripped", () => {
     const f = fixture();
-    const text = `> quoting something\n\nhere's my actual reply`;
+    askAsync(f, "call_1", ["Signed in to Arch"]);
+    const text = `> quoting something\n\nSigned in to Arch`;
     const out = f.read("response_item", responseMessage("assistant", text));
     expect(out.items[0]?.text).toBe(text);
   });
 
   test("a user item that is ALL quote (no reply survives the split) is recorded intact", () => {
     const f = fixture();
+    askAsync(f, "call_1", ["Signed in to Arch"]);
     const text = "> just a quote, no blank-line reply after it";
     const out = f.read("response_item", responseMessage("user", text));
     expect(out.items[0]?.text).toBe(text);
