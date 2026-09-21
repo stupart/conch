@@ -146,6 +146,13 @@ agent drive one, and the user able to reach in and interact — the way the Code
   TextKit 1 fallback the caret fix introduced.
 
 ### Engineering
+- **open** — Close can still fail in a way nobody has reproduced. One double-press run against a
+  session that had sat ~10 minutes did not exit, and its poller saw no "press again" hint on
+  screen at all, while nine further runs closed cleanly. No retry was added on purpose: a second
+  attempt would blow the app's 12 s close budget. The absent hint is the tell — it suggests the
+  keystroke never landed rather than that the window was missed, so if a close fails again this
+  is the path to pull, not the press count. Found while fixing `f68f389` and left rather than
+  widened into it.
 - **open** — Nine guards still slice by a FIXED character count from a marker, which breaks the
   moment the code they read grows. Found 2026-09-21 when `composer.slice(loadAt, loadAt + 400)`
   failed while the rule it pins was still true — `load` had gained a doc comment and a branch,
@@ -200,6 +207,29 @@ agent drive one, and the user able to reach in and interact — the way the Code
 ---
 
 ## Done
+
+- **done** — The transcript runs underneath the composer, and the card is narrow enough to see it
+  do it. `af61d67` floated the composer over the conversation, its measured height handed to the
+  stack as `bottomInset` with the spacer BELOW the bottom anchor, so scroll-to-bottom still
+  reaches the document's true end. That half shipped asserting the other half: the code comment
+  AND the test docstring both said "the card is narrower than the pane" while card and reading
+  column were both `maxMeasure` = 700, so no line was ever visible either side and the page
+  looked like it stopped at the card. Nothing checked the claim because nothing asserted it.
+  `992d843` adds `composerMeasure` = 580 and a guard reading BOTH constants as numbers with a
+  ≥100 pt gap required. Confirmed by looking at the running build, not inferred: "Linear" reads
+  to the left of the card (2026-09-21 10:06).
+
+- **done** — Close session works on Claude Code. Claude Code 2.1.266 treats Ctrl-D like Ctrl-C —
+  one press only shows "Press Ctrl-D again to exit" and it leaves on a second within ~800 ms —
+  and conch pressed once, so Tyler's close logged "session did not exit cleanly after Ctrl-D"
+  (`~/.config/conch/errors.jsonl`, 2026-09-20T23:24:55Z, session `37426f84`) and the row stayed
+  while the pid lived on. `exitKeystrokes` now belongs to the adapter (Claude 2, Codex 1 — Codex
+  leaves on one press and its tab is gone within ~200 ms, so a second would land in whatever
+  replaces it). Both presses ride ONE AppleScript with `delay 0.15` between and the front-window
+  guard before each, since two osascript launches cannot promise the 800 ms window. `f68f389`.
+  Measured 8/8 through the real close path on disposable sessions, plus one deliberate single
+  press that reproduced the old failure. The fix is daemon-side, so the daemon was restarted
+  onto it (pid 1997, 10:05) — rebuilding the app alone would have deployed nothing.
 
 - **done** — The window stops re-rendering four times a second for a snapshot that has not
   changed. Main thread at true idle: 99 ms/s → **6 ms/s** (Time Profiler on the Release app,
