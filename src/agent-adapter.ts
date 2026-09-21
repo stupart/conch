@@ -88,6 +88,16 @@ export interface AgentAdapter {
   // ── starting and resuming (session-lifecycle.ts) ──────────────────────────
   /** The binary `startTerminalSession` preflights on PATH and `exec`s. */
   readonly executable: string;
+  /**
+   * How many Ctrl-D presses `closeTerminalSession` types for a clean exit.
+   * Claude Code 2.1.266 treats Ctrl-D like Ctrl-C: one press shows "Press
+   * Ctrl-D again to exit" and a second within 800ms leaves — measured on the
+   * installed binary, and conch's single press was the close that "did not
+   * exit cleanly after Ctrl-D". Codex 0.155.1 leaves on one, and its tab's
+   * process has completed within 200ms, so a second press there would land in
+   * whatever the finished tab gives way to: per agent, never a default of two.
+   */
+  readonly exitKeystrokes: number;
   /** The agent's own spelling of "resume this id"; the id arrives shell-quoted. */
   resumeArgs(quotedSessionId: string): string;
   /** `--teleport <cloud id>` where the agent can open a cloud session locally; null where it cannot. */
@@ -164,6 +174,7 @@ export const claudeAdapter: AgentAdapter = {
   backend: "claude",
   displayName: "Claude Code",
   executable: "claude",
+  exitKeystrokes: 2,
   resumeArgs: (id) => ` --resume ${id}`,
   teleportArgs: (id) => ` --teleport ${id}`,
   bypassPermissionsFlag: "--dangerously-skip-permissions",
@@ -251,6 +262,7 @@ export const codexAdapter: AgentAdapter = {
   backend: "codex",
   displayName: "Codex",
   executable: "codex",
+  exitKeystrokes: 1,
   resumeArgs: (id) => ` resume ${id}`,
   teleportArgs: null,
   bypassPermissionsFlag: "--dangerously-bypass-approvals-and-sandbox",

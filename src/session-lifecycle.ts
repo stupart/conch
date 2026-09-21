@@ -1,4 +1,4 @@
-import { focusedAction, focusSessionWindow, withUITransaction, type OsaRunner } from "./inject.ts";
+import { FOCUS_GUARD_LINES, focusedAction, focusSessionWindow, withUITransaction, type OsaRunner } from "./inject.ts";
 import { runUICommand } from "./pasteboard.ts";
 import { processMatchesProvider, readProcessIdentity, sameProcessIdentity, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
 import { conchHome } from "./home.ts";
@@ -450,9 +450,16 @@ async function closeTerminalSessionInTransaction(
   if (focused.text.trim() !== "ok") throw new Error("session Terminal tab was not found");
   await (dependencies.sleep ?? Bun.sleep)(300); // let the raise settle, as injection does
   verify();
-  const closed = checkedTerminalResult(await focusedAction(
-    tty, osa, ['tell application "System Events" to keystroke "d" using control down'],
-  ));
+  // As many presses as this agent's exit takes (`exitKeystrokes`), in ONE script so
+  // the second lands inside Claude Code's 800ms "press again" window, and each one
+  // behind the front-window guard: the gap between presses is as open to a Cmd-Tab
+  // as the gap after the raise.
+  const press = 'tell application "System Events" to keystroke "d" using control down';
+  const presses = [press];
+  for (let i = 1; i < adapterFor(dependencies.backend).exitKeystrokes; i += 1) {
+    presses.push("delay 0.15", ...FOCUS_GUARD_LINES, press);
+  }
+  const closed = checkedTerminalResult(await focusedAction(tty, osa, presses));
   if (closed.text.trim() !== "ok") {
     throw new Error(closed.text.trim() === "front-window-changed"
       ? "another window came to the front on the Mac; Ctrl-D was not sent"
