@@ -224,7 +224,12 @@ describe("the iPhone reads recorded history", () => {
     // Codex keys a snapshot row by a hash of its own text, so time is the only join.
     expect(rows).toContain("startingAt: conversation.items.first?.at");
     expect(rows).toContain("ConversationItem(recorded: recorded, text: whole ?? recorded.preview)");
-    expect(stack).toContain("ForEach(recordedRows) { item in");
+    // Repointed when the phone's transcript began folding runs of tool steps: the recorded
+    // rows are read once into `recorded` and drawn through `foldedRow`, which draws a plain
+    // row for everything a run does not claim. Scoped to the body, where the loop lives.
+    const body = sliceFrom(stack, "var body: some View {", "private var historyHeader");
+    expect(body).toContain("let recorded = recordedRows");
+    expect(body).toContain("ForEach(recorded) { item in");
     // Which needs the published item's timestamp to survive decoding.
     const models = ios("Models.swift");
     expect(models).toContain("case id, rev, kind, text, at, tool, plan, change, question, material");
