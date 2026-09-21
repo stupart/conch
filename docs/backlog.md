@@ -168,8 +168,11 @@ agent drive one, and the user able to reach in and interact — the way the Code
   TextKit 1 fallback the caret fix introduced.
 
 ### Engineering
-- **open** — The deliverable ledger lives in `/tmp`, so artifact tabs vanish when the machine
-  reboots or macOS sweeps it. `src/status.ts`: `REVIEWS_FILE = process.env.CONCH_REVIEWS_FILE ||
+- **done** — The deliverable ledger lives in `/tmp`, so artifact tabs vanish when the machine
+  reboots or macOS sweeps it. Moved to `~/.config/conch/reviews.json`; the daemon reads the
+  `/tmp` file once while the new one is absent. Measured before moving: the file was intact and
+  every deliverable survived the 10:05 daemon restart, and this Mac had not rebooted in 24 days —
+  so this was a reboot-only loss, not the one Tyler saw on an app relaunch (next item). `src/status.ts`: `REVIEWS_FILE = process.env.CONCH_REVIEWS_FILE ||
   "/tmp/conch-reviews.json"`, restored by `ledger.restoreReviews()` at `src/daemon.ts:674`. Every
   other durable conch file is in `~/.config/conch/` (device-id, labels.json, records/,
   settings.json, state.json) — this one is the exception, and it is the one holding the thing

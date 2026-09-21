@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { TurnEvent } from "./hook.ts";
 import { MAX_SESSION_REVIEWS, type PanelSessionState, type SessionReview } from "./panel.ts";
 import { reviewIdentity } from "./records-receipts.ts";
@@ -63,6 +63,8 @@ export class SessionLedger {
   constructor(
     /** Where each session's current deliverable outlives the daemon. Absent writes nothing. */
     readonly reviewsPath?: string,
+    /** Where it lived before it moved home; read only while `reviewsPath` is absent. */
+    readonly legacyReviewsPath?: string,
   ) {}
   #savedReviews = "";
   // session -> last time conch drove it. Cleanup is still the TTL in markInjected.
@@ -127,9 +129,11 @@ export class SessionLedger {
    */
   restoreReviews(): void {
     if (!this.reviewsPath) return;
+    // ponytail: the old file is left where it is; the next reboot removes it.
+    const source = this.legacyReviewsPath && !existsSync(this.reviewsPath) ? this.legacyReviewsPath : this.reviewsPath;
     let saved: unknown;
     try {
-      saved = JSON.parse(readFileSync(this.reviewsPath, "utf8"));
+      saved = JSON.parse(readFileSync(source, "utf8"));
     } catch {
       return;
     }
