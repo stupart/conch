@@ -38,6 +38,9 @@ struct ConversationStack: View {
     /// A link that could not be opened from the phone, shown where it was
     /// tapped instead of a tap that does nothing (A13).
     @State private var linkFailure: String?
+    /// A tapped link that turned out to be a Mac file, opened the way any
+    /// other deliverable is.
+    @State private var openFile: FileLink?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -73,15 +76,21 @@ struct ConversationStack: View {
         // A command, a path or a paragraph can be copied out of the transcript:
         // on a phone there is no other way to get it into another app.
         .textSelection(.enabled)
-        // A path is a file on the Mac, which the phone cannot open: say so
-        // where the tap happened and record it, rather than a tap that does
-        // nothing (A13). The phone's one door decides, opens and reports.
+        // A currently published Mac file opens as a deliverable; anything
+        // else says why it didn't, where the tap happened, and records it
+        // (A13). The phone's one door decides, opens and reports.
         .environment(\.openURL, OpenURLAction { url in
             linkFailure = nil
-            bridge.openLink(url, sessionId: conversation.sessionId) { linkFailure = $0 }
+            bridge.openLink(url, sessionId: conversation.sessionId, onFile: { openFile = FileLink(id: $0) }) { linkFailure = $0 }
             return .handled
         })
-        .onChange(of: conversation.sessionId) { _, _ in linkFailure = nil }
+        .sheet(item: $openFile) { file in
+            FileLinkSheet(bridge: bridge, path: file.id, sessionId: conversation.sessionId)
+        }
+        .onChange(of: conversation.sessionId) { _, _ in
+            linkFailure = nil
+            openFile = nil
+        }
     }
 
     /// What the reader is told about everything above the live window: that older

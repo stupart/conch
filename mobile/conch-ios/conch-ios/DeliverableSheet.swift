@@ -207,6 +207,9 @@ struct DeliverableSheet: View {
     @State private var lanPage: URL?
     /// Quick Look full screen, where Share and Markup live.
     @State private var markingUp = false
+    /// A link tapped in here that turned out to be a Mac file, opened the
+    /// same way as any other deliverable (`openLink`'s `onFile`).
+    @State private var openFile: FileLink?
 
     private enum LocalKind { case image, video, pdf, markdown, page, text, unsupported }
     private enum Kind {
@@ -275,12 +278,16 @@ struct DeliverableSheet: View {
                 if let pageURL { webControls(pageURL) }
             }
             // A link in a rendered .md behaves as it does in the
-            // conversation: a web page opens, a path says it is on the Mac.
+            // conversation: a web page opens, a currently published Mac file
+            // opens the way this very sheet did, and anything else says why.
             .environment(\.openURL, OpenURLAction { url in
                 linkFailure = nil
-                bridge.openLink(url, sessionId: sessionId) { linkFailure = $0 }
+                bridge.openLink(url, sessionId: sessionId, onFile: { openFile = FileLink(id: $0) }) { linkFailure = $0 }
                 return .handled
             })
+            .sheet(item: $openFile) { file in
+                FileLinkSheet(bridge: bridge, path: file.id, sessionId: sessionId)
+            }
             .background(Palette.bg)
             .toolbar {
                 if let shared = localURL ?? pageURL, failure == nil {
@@ -492,6 +499,34 @@ struct DeliverableSheet: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(24)
+    }
+}
+
+/// A tapped link's target, once `openLink` has said it is a file
+/// (`BridgeClient.LinkRoute.file`) — `.sheet(item:)` needs Identifiable, and
+/// the Mac path itself is the identity.
+struct FileLink: Identifiable { let id: String }
+
+/// A tapped file link, opened the way any other deliverable is: reuses
+/// `DeliverableSheet` — its download, its honest 403, its renderers — rather
+/// than a second one for a Mac path that happens to arrive from a tap
+/// instead of the ledger.
+struct FileLinkSheet: View {
+    @ObservedObject var bridge: BridgeClient
+    let path: String
+    let sessionId: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            DeliverableSheet(bridge: bridge, review: .init(link: path), sessionId: sessionId)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+        }
     }
 }
 

@@ -408,21 +408,98 @@ describe("the remote Mac window's web links go through the door", () => {
 describe("the phone: the same dead tap, said and recorded", () => {
   const bridge = phone("BridgeClient.swift");
   const door = slice(bridge, "func openLink(", "/// Hide or restore one ledger row");
+  const swift = Bun.which("swift");
 
-  test("one door: a path says it lives on the Mac, a refused link says so too, both filed as open-link", () => {
-    expect(door).toContain("func openLink(_ url: URL, sessionId: String?, onFailure: @escaping @MainActor (String) -> Void)");
+  // `/file` + `downloadFile` (BridgeClient.swift) can materialize a Mac file
+  // now, so "a path is a file on the Mac, which the phone cannot open" is no
+  // longer true — a currently PUBLISHED path can be shown; the door's job is
+  // routing a file to whichever caller can show one and refusing honestly
+  // where none can, not refusing every file outright.
+  test("one door: a file goes to a caller that can show it, everything else opens or is honestly refused, all filed as open-link", () => {
+    expect(door).toContain(
+      "func openLink(_ url: URL, sessionId: String?, onFile: (@MainActor (String) -> Void)? = nil, onFailure: @escaping @MainActor (String) -> Void)",
+    );
     ordered(door, "func fail(", "onFailure(message)", 'reportAppError(operation: "open-link", message: message, sessionId: sessionId)');
     ordered(
       door,
-      "guard url.scheme != nil, !url.isFileURL else {",
-      'fail("That\'s a file on your Mac, not a page: \\(url.path)")',
+      "switch LinkRoute.decide(url) {",
+      "case .invalid:",
+      'fail("iPhone couldn\'t open \\(url.absoluteString).")',
+      "case let .file(path):",
+      "guard let onFile else {",
+      'fail("conch doesn\'t open a Mac file from here.")',
       "return",
+      "onFile(path)",
+      "case .open:",
       "UIApplication.shared.open(url) { opened in",
       'if !opened { fail("iPhone couldn\'t open \\(url.absoluteString)") }',
     );
   });
 
-  test("the conversation goes through the door and shows the failure where it was tapped", () => {
+  test.skipIf(!swift)(
+    "LinkRoute.decide — no scheme is invalid, file:// is a path to try, anything else opens — run under swift",
+    () => {
+      // Foundation-only by design, so the real branching runs here rather
+      // than being pinned by its spelling (LinkTarget, MacLocalPage's own rule).
+      const route = slice(bridge, "enum LinkRoute: Equatable {", "/// One door for every link the phone opens");
+      const dir = mkdtempSync(join(tmpdir(), "conch-link-route-"));
+      const file = join(dir, "main.swift");
+      writeFileSync(
+        file,
+        [
+          "import Foundation",
+          route,
+          "func show(_ s: String) {",
+          "  switch LinkRoute.decide(URL(string: s)!) {",
+          '  case .invalid: print("invalid")',
+          '  case let .file(path): print("file:\\(path)")',
+          '  case .open: print("open")',
+          "  }",
+          "}",
+          // Tyler's actual link, from the Mac's errors.jsonl (2026-09-17):
+          // absolute, with the space percent-encoded, in a file:// URI.
+          'show("file:///Users/t/Blueprint/Asset%20Generator/review.md")',
+          'show("https://example.com/x")',
+          'show("http://localhost:5173")',
+          'show("mailto:t@example.com")',
+          'show("not-a-url-at-all")',
+        ].join("\n"),
+      );
+      try {
+        const run = Bun.spawnSync([swift!, file], { stdout: "pipe", stderr: "pipe" });
+        if (run.exitCode !== 0) throw new Error(`swift exited ${run.exitCode}: ${run.stderr.toString()}`);
+        expect(run.stdout.toString().trim().split("\n")).toEqual([
+          "file:/Users/t/Blueprint/Asset Generator/review.md",
+          "open",
+          "open",
+          "open",
+          "invalid",
+        ]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
+  test("downloadFile gives a 403 its own honest reason: unpublished, not a server error", () => {
+    // The bridge's /file exact-set check (phone-bridge.ts) 403s a path that
+    // isn't in the currently published state — the only way a file link can
+    // fail once `onFile` has tried it. "The Mac returned HTTP 403." reads as
+    // a bug; this says what actually happened, before every other status
+    // keeps the transport's own words.
+    const download = slice(bridge, "func downloadFile(path: String) async -> URL? {", "private func authorizedRequest");
+    ordered(
+      download,
+      "} catch BridgeTransportError.httpStatus(403) {",
+      'lastError = "conch isn\'t publishing that file."',
+      "return nil",
+      "} catch {",
+      "lastError = error.localizedDescription",
+    );
+  });
+
+  test("the conversation goes through the door, opens a published file as a deliverable, and shows any other failure where it was tapped", () => {
     const stack = phone("ConversationStack.swift");
     expect(stack).not.toContain("failLink");
     expect(stack).toContain("LinkFailureLine(message: $linkFailure)");
@@ -430,9 +507,16 @@ describe("the phone: the same dead tap, said and recorded", () => {
       stack,
       ".environment(\\.openURL, OpenURLAction { url in",
       "linkFailure = nil",
-      "bridge.openLink(url, sessionId: conversation.sessionId) { linkFailure = $0 }",
+      "bridge.openLink(url, sessionId: conversation.sessionId, onFile: { openFile = FileLink(id: $0) }) { linkFailure = $0 }",
       "return .handled",
     );
+    ordered(
+      stack,
+      ".sheet(item: $openFile) { file in",
+      "FileLinkSheet(bridge: bridge, path: file.id, sessionId: conversation.sessionId)",
+    );
+    // A different session leaves neither a stale failure nor a stale sheet.
+    ordered(stack, ".onChange(of: conversation.sessionId)", "linkFailure = nil", "openFile = nil");
   });
 
   test("the deliverable sheet: fetch, text, PDF and page failures say why and are filed; a rendered .md's links take the door", () => {
@@ -482,15 +566,35 @@ describe("the phone: the same dead tap, said and recorded", () => {
     expect(delegate).toContain("didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {");
     expect(delegate).toContain("didFail navigation: WKNavigation!, withError error: Error) {");
     ordered(delegate, "guard (error as NSError).code != NSURLErrorCancelled else { return }", "onFailure(error.localizedDescription)");
-    // A link in a rendered .md behaves like one in the conversation.
+    // A link in a rendered .md behaves like one in the conversation: a
+    // currently published file opens as a deliverable too — nested, the same
+    // sheet a link tapped anywhere else opens.
     ordered(
       sheet,
       ".environment(\\.openURL, OpenURLAction { url in",
       "linkFailure = nil",
-      "bridge.openLink(url, sessionId: sessionId) { linkFailure = $0 }",
+      "bridge.openLink(url, sessionId: sessionId, onFile: { openFile = FileLink(id: $0) }) { linkFailure = $0 }",
       "return .handled",
     );
+    ordered(sheet, ".sheet(item: $openFile) { file in", "FileLinkSheet(bridge: bridge, path: file.id, sessionId: sessionId)");
     expect(sheet).toContain("LinkFailureLine(message: $linkFailure)");
+  });
+
+  test("FileLinkSheet reuses DeliverableSheet for a tapped file — no second renderer, dismissible", () => {
+    const sheet = phone("DeliverableSheet.swift");
+    // Not a second viewer: a synthetic review carrying only the path, into
+    // the exact same struct every ledger deliverable renders through.
+    const wrapper = slice(sheet, "struct FileLinkSheet: View {", "private struct QuickLookView");
+    ordered(
+      wrapper,
+      "NavigationStack {",
+      "DeliverableSheet(bridge: bridge, review: .init(link: path), sessionId: sessionId)",
+      'Button("Done") { dismiss() }',
+    );
+    expect(sheet).toContain("struct FileLink: Identifiable { let id: String }");
+    // Only one struct in the file constructs a DeliverableSheet by hand — the
+    // ledger's own ReviewSheet and this wrapper — never a duplicate renderer.
+    expect((sheet.match(/DeliverableSheet\(bridge: bridge, review:/g) ?? []).length).toBe(2);
   });
 
   test("image, PDF and video open in Quick Look, and a file it can't preview says why and is filed", () => {
