@@ -347,7 +347,16 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   // NOT the origin bar, which looks similar and is a trust boundary rather than decoration.
   // Where you ARE, not where the deliverable was filed: the pane can navigate now, so
   // opening "the link" would hand the browser a page you had already left.
-  expect(review).toContain('Button("Open in browser") { open(addressText) }');
+  //
+  // That guarantee MOVED rather than went. The button carrying it sat one row under the
+  // header's arrow doing the same job — except the arrow opened the FILED link, so the two
+  // looked like duplicates and quietly disagreed the moment you followed a link. The
+  // duplicate is gone and the arrow inherited the live address. Tyler, on that box: "i think
+  // we can ceratinly consolidate / remove ui element in this box." Removing it also settles
+  // the clipping recorded in the backlog: it was the control the stage control overlaid.
+  expect(review).not.toContain('Button("Open in browser")');
+  expect(review).toContain("action: item.link == nil ? nil : { onOpenInPlace(liveAddress) },");
+  expect(review).toContain("@Binding var liveAddress: String?");
   // A fog resized by hand must come back the size it was. `setFrameUsingName` restores only the ORIGIN of a
   // borderless, non-resizable panel and drops the size, so the default won on every launch and the size someone
   // chose was never the size they got — measured twice while building the capture system: asked 480x360, got

@@ -48,9 +48,11 @@ struct ReviewItem: Identifiable, Equatable {
 
 struct InlineReviewView: View {
     let item: ReviewItem
-    let onOpenInPlace: () -> Void
+    /// Takes the address the pane is actually showing, when it has one.
+    let onOpenInPlace: (String?) -> Void
 
     @State private var isWebLoading = false
+    @State private var liveAddress: String?
 
     var body: some View {
         ReviewSurface(
@@ -64,8 +66,12 @@ struct InlineReviewView: View {
             actionSymbol: "arrow.up.forward.app",
             actionHelp: "Open where it lives (⌘3)",
             actionAccessibilityLabel: "Open the deliverable where it lives",
-            action: item.link == nil ? nil : onOpenInPlace,
-            isWebLoading: $isWebLoading
+            // The page you are LOOKING AT, not the one that was filed. "Open in browser" sat
+            // one row below doing exactly this while the arrow opened the original link, so the
+            // two controls looked like duplicates and quietly disagreed. One control now.
+            action: item.link == nil ? nil : { onOpenInPlace(liveAddress) },
+            isWebLoading: $isWebLoading,
+            liveAddress: $liveAddress
         )
     }
 }
@@ -77,6 +83,7 @@ private struct ReviewSurface: View {
     let actionAccessibilityLabel: String
     let action: (() -> Void)?
     @Binding var isWebLoading: Bool
+    @Binding var liveAddress: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -85,7 +92,8 @@ private struct ReviewSurface: View {
                     ReviewContent(
                         link: link,
                         rowID: item.rowID,
-                        isWebLoading: $isWebLoading
+                        isWebLoading: $isWebLoading,
+                        liveAddress: $liveAddress
                     )
                     .id(item.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -204,7 +212,13 @@ struct WorkspaceFilesView: View {
 
             Group {
                 if let selected {
-                    ReviewContent(link: selected, rowID: rowID, isWebLoading: $isWebLoading)
+                    // No header arrow in this pane, so nothing consumes the live address.
+                    ReviewContent(
+                        link: selected,
+                        rowID: rowID,
+                        isWebLoading: $isWebLoading,
+                        liveAddress: .constant(nil)
+                    )
                         .id(selected)
                 } else {
                     nothingPicked
@@ -422,6 +436,10 @@ private struct ReviewContent: View {
         return "https://" + trimmed
     }
     @Binding var isWebLoading: Bool
+    /// Where this pane is NOW, published upward so the header's arrow can open the page you
+    /// are looking at rather than the one that was filed. The pane browses, so those diverge
+    /// the moment you follow a link or type an address — and the arrow used to ignore it.
+    @Binding var liveAddress: String?
     @State private var navigationFailure: DeliverableNavigationFailure?
     @State private var reloadID = UUID()
     @EnvironmentObject private var store: StateStore
@@ -571,11 +589,10 @@ private struct ReviewContent: View {
                             navigationFailure = nil
                             isWebLoading = true
                             destination = target
+                            // The typed target directly: `addressText` still reads the old
+                            // `liveLink` until WebKit reports the new one.
+                            liveAddress = target
                         }
-                    Spacer(minLength: 8)
-                    Button("Open in browser") { open(addressText) }
-                    .buttonStyle(.link)
-                    .font(ConchTypography.font(size: 11))
                 }
                 .foregroundStyle(ConchPalette.textDim)
                 .padding(.horizontal, 14)
@@ -601,8 +618,12 @@ private struct ReviewContent: View {
                 // where you are without anyone typing.
                 .onChange(of: liveLink) { _, here in
                     if let here { addressDraft = here }
+                    liveAddress = addressText
                 }
-                .onAppear { addressDraft = addressText }
+                .onAppear {
+                    addressDraft = addressText
+                    liveAddress = addressText
+                }
 
                 // WKWebView paints the document white until the page's own
                 // background lands, so a remote deliverable flashed a blinding

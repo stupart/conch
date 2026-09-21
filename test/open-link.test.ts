@@ -181,12 +181,14 @@ describe("every open site in the Mac app goes through the one door that reports 
     expect(mac("Models.swift")).toContain("cwd = try? container.decodeIfPresent(String.self, forKey: .cwd)");
   });
 
-  test("the deliverable pane's three buttons and its rendered document go through the door", () => {
+  test("the deliverable pane's two buttons and its rendered document go through the door", () => {
     const review = mac("ReviewView.swift");
     expect(review).toContain('Button("Reveal in Finder") { open(url.path, reveal: true) }');
-    // Where you ARE, not where the deliverable was filed: the pane can navigate now, so
-  // opening "the link" would hand the browser a page you had already left.
-  expect(review).toContain('Button("Open in browser") { open(addressText) }');
+    // Two, not three. "Open in browser" duplicated the header arrow one row above it, and the
+    // arrow was the one getting it WRONG — it opened the filed link while the button opened
+    // where you actually were. The arrow now takes the live address, so the invariant survives
+    // the control that carried it. This one stays: recovering a page that FAILED to load is a
+    // different job from leaving a page that works.
     expect(review).toContain("onOpenInBrowser: { open(failure.url.absoluteString) }");
     expect(review).toContain("store.openLink(link, cwd: cwd, rowId: rowID, reveal: reveal) { linkFailure = $0 }");
     expect(review).toContain("content.overlay(alignment: .bottom) { LinkFailureLine(message: $linkFailure) }");

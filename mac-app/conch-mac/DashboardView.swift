@@ -1780,10 +1780,12 @@ private struct ConversationPane: View {
     /// were reading is still behind it.
     ///
     /// Reuses the conversation's failure line rather than inventing a second one.
-    private func openDeliverableInPlace() {
+    /// `address` is where the pane actually is — nil for a deliverable that does not browse.
+    private func openDeliverableInPlace(_ address: String?) {
         guard let review = selectedReview, let link = review.link else { return }
         fallbackLinkFailure = nil
-        store.openLink(link, cwd: focusedRow?.cwd, rowId: focusedRow?.id) { fallbackLinkFailure = $0 }
+        let target = address ?? link
+        store.openLink(target, cwd: focusedRow?.cwd, rowId: focusedRow?.id) { fallbackLinkFailure = $0 }
     }
 
     private var note: String? {
