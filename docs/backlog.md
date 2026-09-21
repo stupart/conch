@@ -168,6 +168,25 @@ agent drive one, and the user able to reach in and interact — the way the Code
   TextKit 1 fallback the caret fix introduced.
 
 ### Engineering
+- **open** — The installed plugin is ten days stale, so agents run against an old contract.
+  `~/.config/conch/plugin-dist/plugins/conch/AGENTS.md` is dated 2026-09-11; the repo's copy is
+  today's. Measured 2026-09-21: zero files under plugin-dist mention `conch_working_folders`
+  (`#345`), so the tool WORKS — `.mcp.json` there execs live source,
+  `bun run ~/Projects/Conch/src/cli.ts mcp` — while no agent is ever told it exists. Refresh is
+  `conch install-plugin` (`cli.ts` → `runInstallPlugin` → `materializeAtomically`), NOT a daemon
+  start. Left for Tyler: it rewrites his MCP config, and the repo template
+  (`${CLAUDE_PLUGIN_ROOT}/bin/conch-mcp`) differs from what is installed.
+- **open** — A question an agent asks raises no signal on the row. conch files it correctly —
+  verified in `records/history.sqlite`, the `AskUserQuestion` call recorded against this session
+  with status `completed` — and `ConversationStackView` draws a real `questionRow` with clickable
+  options. But it renders only INSIDE that session's conversation, so with the window closed
+  (or another session in front) there is nothing to notice. Tyler, 2026-09-21: "i dont' think it
+  surfaced your question in the mac app for me". A permission prompt reaches `needs-you` through
+  the Notification hook (`ACTIONABLE` in `src/hook.ts`); a question has no such path, though the
+  set already names `elicitation_dialog`.
+- **open** — `~/.config/conch/records/history.sqlite` is **1.1 GB** (plus a 3.1 MB WAL), noticed
+  2026-09-21 while querying it. Nothing measured about what it costs yet — recorded because
+  unbounded growth in the file every session writes to is worth knowing before it bites.
 - **done** — The deliverable ledger lives in `/tmp`, so artifact tabs vanish when the machine
   reboots or macOS sweeps it. Moved to `~/.config/conch/reviews.json`; the daemon reads the
   `/tmp` file once while the new one is absent. Measured before moving: the file was intact and
@@ -256,6 +275,17 @@ agent drive one, and the user able to reach in and interact — the way the Code
 ---
 
 ## Done
+
+- **done** — One way out of a deliverable, and it opens the page you are on. The origin bar held
+  four elements doing three jobs, and the two that looked like duplicates were not: the button
+  opened `addressText` (where the pane IS) while the header arrow from `1997452` opened
+  `review.link` (where it was FILED), so following a link in the pane made them disagree. Both
+  test files already pinned the invariant — "Where you ARE, not where the deliverable was filed"
+  — so it moved onto the arrow rather than being deleted with the button. `0389929`. Removing it
+  also closed the clipping recorded above: it was the control the `.topTrailing` stage control
+  overlaid. The first cut held the address as `@State` in the view, which compiled and was
+  wrong — ⌘3 is answered by the PANE, which cannot see a view's private state, so the key would
+  have opened the filed link while the arrow opened the live one. The pane owns it now.
 
 - **done** — The transcript runs underneath the composer, and the card is narrow enough to see it
   do it. `af61d67` floated the composer over the conversation, its measured height handed to the
