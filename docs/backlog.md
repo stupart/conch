@@ -39,6 +39,28 @@ agent drive one, and the user able to reach in and interact — the way the Code
 ## Open
 
 ### UI / UX
+- **open** — The composer still cuts a blank band in the PANEL view. The conversation arm layers
+  it in a `ZStack` and hands the stack its measured height as `bottomInset` (`af61d67`,
+  `992d843`), but that is the only call site: the side-by-side arm keeps `floatingComposer` as a
+  plain sibling in the VStack, so it takes layout space and clips. Tyler: "the input panel is
+  still crating that cutoff blank space on the panels view (we fixed it on the conversation
+  view)". In flight.
+- **open** — Spell check does not work in the input box, and the flag is already set:
+  `ComposerView.swift:945` sets `isContinuousSpellCheckingEnabled = true`, but the field typed
+  into is a SwiftUI `TextEditor` (~:467) while that setting is applied to the bridged NSTextView
+  (~:841). The switch exists and does not reach the editor. In flight.
+- **open** — A SECOND control that fills the window with the deliverable and floats the
+  deconstructed input over it. Tyler, 2026-09-21: "maybe it like makes that thing fullscreen with
+  the deconstructed input ui stuff showing over top?" This read as a reversal of `#338`, which had
+  just repointed that same control to open the deliverable where it LIVES — from Tyler's own
+  Direction note, "Full screen means the deliverable's own home, not conch's" — so it went back to
+  him rather than being built on a guess. Decided the same day: BOTH. The arrow keeps going out;
+  fullscreen becomes its own gesture. Not built yet, and it is second in line behind the thing it
+  floats: the deconstructed input UI does not exist yet.
+- **open** — The left sidebar cannot be dragged into the order you want. Tyler: "i would like to
+  be able to drag around and reorganize the left side bar oranixation of things." Grouping is
+  DERIVED today (`SessionGrouping.folders`), so there is no user-owned order to drag, and a
+  manual order has to answer what happens to a dragged row when its folder changes. In flight.
 - **open** — Filling the stage with a deliverable (⌘3) still does not mark it viewed. Only a tab
   click and the inline card do (`bfc4337` fixed the card; the tab always did). Same class of gap:
   the dot stays on something you are looking at full screen. Found by the versions agent and left
@@ -146,6 +168,26 @@ agent drive one, and the user able to reach in and interact — the way the Code
   TextKit 1 fallback the caret fix introduced.
 
 ### Engineering
+- **open** — The deliverable ledger lives in `/tmp`, so artifact tabs vanish when the machine
+  reboots or macOS sweeps it. `src/status.ts`: `REVIEWS_FILE = process.env.CONCH_REVIEWS_FILE ||
+  "/tmp/conch-reviews.json"`, restored by `ledger.restoreReviews()` at `src/daemon.ts:674`. Every
+  other durable conch file is in `~/.config/conch/` (device-id, labels.json, records/,
+  settings.json, state.json) — this one is the exception, and it is the one holding the thing
+  Tyler noticed losing: "the deliverables / artifacts tabs get lost when the app re-installs or
+  restarts". Note the trigger is probably the DAEMON restarting or a reboot, not the app.
+  Found 2026-09-21 while briefing the fix; in flight.
+- **open** — Which deliverable tab is SELECTED is in-memory only and resets every launch:
+  `WorkspaceModel()` is a plain `@StateObject` (ContentView.swift:12) and nothing encodes
+  `SessionPresentation`. A second, separate loss from the ledger one above — fixing the ledger
+  will not restore the selection. Confirmed app-wide: no `AppStorage` names a stage.
+- **open** — A conch-internal per-session state file the agent can write, holding the left-panel
+  enabled state, the deliverables/artifacts that session is showing, and the parent working
+  folder(s) it is ACTUALLY in. Tyler, 2026-09-21: per-project was the first idea, but
+  conch-internal "coudl be better incase theres multipel instances or it gets moved and restarted
+  somewhere else", with conch keeping the mapping. The folders matter on their own: "sometimes
+  its different than the folder i start the session in and that info would be more accurate for
+  file-tree / file viewer and lefsidebar organization" — today `workingFolder` is derived from
+  `row.cwd`, which is the folder the session STARTED in. In flight.
 - **open** — Close can still fail in a way nobody has reproduced. One double-press run against a
   session that had sat ~10 minutes did not exit, and its poller saw no "press again" hint on
   screen at all, while nine further runs closed cleanly. No retry was added on purpose: a second
