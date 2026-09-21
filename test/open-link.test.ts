@@ -206,6 +206,13 @@ describe("every open site in the Mac app goes through the one door that reports 
     // address the arrow does. Held as @State here it was invisible to that handler.
     expect(mac("DashboardView.swift")).toContain("@State private var deliverableAddress: String?");
     expect(mac("DashboardView.swift")).toContain("liveAddress: $deliverableAddress");
+    // Cleared on both routes back, or a web address outlives the deliverable that published it
+    // and the arrow opens the wrong thing. Only `case .web` ever sets it, so nothing else can
+    // overwrite a stale value.
+    expect(mac("DashboardView.swift")).toContain(
+      ".onChange(of: selectedReview.id) { _, _ in deliverableAddress = nil }",
+    );
+    expect(mac("DashboardView.swift")).toContain(".onAppear { deliverableAddress = nil }");
     expect(review).toContain("store.openLink(link, cwd: cwd, rowId: rowID, reveal: reveal) { linkFailure = $0 }");
     expect(review).toContain("content.overlay(alignment: .bottom) { LinkFailureLine(message: $linkFailure) }");
     // A link inside a rendered .md resolves against the document's own folder.

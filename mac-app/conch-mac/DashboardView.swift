@@ -1732,6 +1732,17 @@ private struct ConversationPane: View {
                 onOpenInPlace: openDeliverableInPlace,
                 liveAddress: $deliverableAddress
             )
+            // Only the WEB pane publishes an address, but this state belongs to the pane, which
+            // outlives the deliverable it was showing. So opening a web deliverable and then
+            // switching to an image left the last URL sitting here, and the arrow opened that
+            // instead of the image. Tyler: "sometimes it just opens the browser not to the
+            // things was looking at at all".
+            //
+            // Both hooks, because they cover different routes back: `onChange` for switching
+            // between deliverable tabs, `onAppear` for returning from the Files or Terminal tab,
+            // where this view was gone and onChange never fires.
+            .onChange(of: selectedReview.id) { _, _ in deliverableAddress = nil }
+            .onAppear { deliverableAddress = nil }
         }
     }
 
