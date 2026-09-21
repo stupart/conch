@@ -852,6 +852,66 @@ function codexMessageId(kind: string, text: string): string {
   return `${kind}:${hash.toString(36)}`;
 }
 
+/**
+ * Codex answers its own `request_user_input_async` question (a plugin
+ * sign-in link, an out-of-band approval — anything the human answers on a
+ * delay, maybe from a different device) by filing a fresh `role: "user"`
+ * turn that quotes the WHOLE question back first, verbatim: `"> " + the
+ * question + "\n\n" + whichever option was picked`. The quoted half is the
+ * agent's own prior words, not anything Tyler typed — rendering it whole
+ * put an agent's paragraph in Tyler's mouth (the "Asset Generator" session,
+ * 2026-09-21: a Blueprint OAuth explanation attributed to him for one word
+ * of actual reply, "Signed in to Arch").
+ *
+ * The record carries no field naming this as an echo — Codex files it as
+ * ordinary `role: "user"` text, same as anything typed by hand, and Tyler
+ * himself blockquotes things constantly. A leading "> " is not enough to
+ * tell the two apart on its own, so this does not act on shape alone: it
+ * only strips when the text AFTER the blank line exactly matches one of
+ * the option labels `request_user_input_async` actually offered earlier in
+ * this same conversation (tracked below, as each question is asked). A
+ * genuine Tyler quote never collides with those labels, so it always
+ * survives whole; only the real echo — verified against what was actually
+ * asked — gets shortened to the word he picked.
+ */
+function stripEchoedQuestion(text: string, knownOptions: ReadonlySet<string> | undefined): string {
+  if (!knownOptions?.size || !text.startsWith("> ")) return text;
+  const blankLine = text.indexOf("\n\n");
+  if (blankLine === -1) return text;
+  const reply = text.slice(blankLine + 2).trim();
+  return reply && knownOptions.has(reply) ? reply : text;
+}
+
+/** One conversation's `request_user_input_async` option labels, seen so far. */
+const codexQuestionOptions = new WeakMap<Conversation, Set<string>>();
+const MAX_CODEX_QUESTION_OPTIONS = 64;
+
+/** Extracts the option labels from a `request_user_input_async` call; `[]` for anything else. */
+function codexAsyncQuestionOptions(name: unknown, parsedArguments: unknown): string[] {
+  if (name !== "request_user_input_async" || !parsedArguments || typeof parsedArguments !== "object") return [];
+  const questions = (parsedArguments as any).questions;
+  const first = Array.isArray(questions) ? questions[0] : questions;
+  const options = first && typeof first === "object" ? (first as any).options : undefined;
+  return Array.isArray(options) ? options.filter((option): option is string => typeof option === "string") : [];
+}
+
+function rememberCodexQuestionOptions(conversation: Conversation, options: string[]): void {
+  if (!options.length) return;
+  let known = codexQuestionOptions.get(conversation);
+  if (!known) {
+    known = new Set();
+    codexQuestionOptions.set(conversation, known);
+  }
+  for (const option of options) known.add(option);
+  // Bounded so a session that asks hundreds of questions cannot grow this forever.
+  if (known.size > MAX_CODEX_QUESTION_OPTIONS) {
+    for (const option of known) {
+      if (known.size <= MAX_CODEX_QUESTION_OPTIONS) break;
+      known.delete(option);
+    }
+  }
+}
+
 export function reduceCodexLine(conversation: Conversation, entry: any): void {
   if (!entry || typeof entry !== "object") return;
   const at = Date.parse(entry.timestamp ?? "") || undefined;
@@ -878,10 +938,11 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
       return;
     }
     if (payload.type === "user_message" && typeof payload.message === "string") {
+      const text = stripEchoedQuestion(payload.message, codexQuestionOptions.get(conversation));
       upsertConversationItem(conversation, {
-        id: codexMessageId("user", payload.message),
+        id: codexMessageId("user", text),
         kind: "user",
-        text: payload.message,
+        text,
         at,
       });
     }
@@ -913,7 +974,7 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
     // of tool calls, which is exactly what Tyler saw.
     case "message": {
       const role = payload.role === "user" ? "user" : "assistant";
-      const text = Array.isArray(payload.content)
+      const raw = Array.isArray(payload.content)
         ? payload.content
           .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
           .join("")
@@ -921,6 +982,7 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
         : typeof payload.text === "string"
           ? payload.text
           : "";
+      const text = role === "user" ? stripEchoedQuestion(raw, codexQuestionOptions.get(conversation)) : raw;
       if (text) {
         upsertConversationItem(conversation, {
           id: codexMessageId(role, text),
@@ -956,6 +1018,9 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
       const parsed = parseMaybeJson(raw);
       const steps = planSteps(raw);
       const asked = agentQuestion(parsed);
+      // Remembered so a much-later echoed answer (see `stripEchoedQuestion`)
+      // can be told apart from a genuine quote of Tyler's own.
+      rememberCodexQuestionOptions(conversation, codexAsyncQuestionOptions(payload.name, parsed));
       upsertConversationItem(conversation, {
         id: `tool:${callId}`,
         kind: "tool",
