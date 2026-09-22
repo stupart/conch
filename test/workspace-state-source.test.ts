@@ -324,7 +324,18 @@ describe("new work does not replace what you are reading", () => {
       dashboard.indexOf("/// More than one thing to choose between"),
     );
     expect(resizer).toContain(".frame(width: 1)");
-    expect(resizer).toContain(".frame(width: 10)");
+    // 16, widened 2026-09-22: at 10 the cursor only changed if you aimed at it. The VISIBLE
+    // line is still 1 pt — only the target grew, so the divider does not look heavier.
+    expect(resizer).toContain(".frame(width: 16)");
+    // The SIDEBAR's handle had no guard at all, so it could drift back while the divider held.
+    // Both edges are the same gesture and Tyler asked for both, so both are pinned.
+    const sidebarHandle = dashboard.slice(
+      dashboard.indexOf("private var sidebarResizer: some View {"),
+      dashboard.indexOf('.accessibilityLabel("Resize the sidebar")'),
+    );
+    expect(sidebarHandle.length).toBeGreaterThan(80);
+    expect(sidebarHandle).toContain(".frame(width: 16)");
+    expect(sidebarHandle).toContain("NSCursor.resizeLeftRight.push()");
     expect(resizer).toContain("NSCursor.resizeLeftRight.push()");
     // Banked on release, like the sidebar — not written on every drag tick.
     expect(resizer).toContain("storedSplitFraction = splitFraction(in: width)");

@@ -187,7 +187,12 @@ struct DashboardView: View {
     private var sidebarResizer: some View {
         Rectangle()
             .fill(Color.clear)
-            .frame(width: 10)
+            // 16, not 10. Tyler: "Make the area where my cursor shows that it can make the
+            // panels larger". 10 pt is the width a mouse crosses in one flick, so the cursor
+            // changed shape only if you aimed at it. Not wider than 16: session rows are
+            // clickable to the sidebar's edge, and a grab area that swallows a row's right
+            // side trades one miss for another.
+            .frame(width: 16)
             .contentShape(Rectangle())
             .onHover { inside in
                 if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
@@ -1662,7 +1667,10 @@ private struct ConversationPane: View {
             .overlay(
                 Rectangle()
                     .fill(Color.clear)
-                    .frame(width: 10)
+                    // 16 against a 1 pt line: the visible hairline stays hairline-thin, and
+                    // only the invisible target grows. Same reasoning as the sidebar's, and the
+                    // same ceiling — the transcript selects text right up to this edge.
+                    .frame(width: 16)
                     .contentShape(Rectangle())
                     .onHover { inside in
                         if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
