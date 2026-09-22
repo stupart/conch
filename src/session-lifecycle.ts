@@ -413,7 +413,11 @@ async function defaultPidIsAlive(pid: number): Promise<boolean> {
   return await child.exited === 0 && Boolean((await output).trim());
 }
 
-/** Ctrl-D asks the CLI to leave through its normal EOF path; no signal is sent to the agent. */
+/**
+ * Ctrl-D asks the CLI to leave through its normal EOF path; no signal is sent
+ * to the agent. Once that pid is confirmed gone, its Terminal tab is closed
+ * and conch is brought forward — see `closeSessionTabAndReturn`.
+ */
 export function closeTerminalSession(
   pid: number,
   dependencies: SessionLifecycleDependencies = {},
@@ -465,7 +469,63 @@ async function closeTerminalSessionInTransaction(
       ? "another window came to the front on the Mac; Ctrl-D was not sent"
       : "session Terminal tab was not found");
   }
+  // Only after the pid is actually gone: a poll timeout throws above and skips
+  // everything below, on purpose — if the process is still stuck, the tab (and
+  // whatever it's showing) has to stay on screen for the user to look at, not
+  // get closed out from under them.
   await waitForExit(pid, dependencies, "session did not exit cleanly after Ctrl-D");
+  await closeSessionTabAndReturn(tty, osa);
+}
+
+/**
+ * Once the pid is confirmed gone: close the one Terminal tab it was running
+ * in, and hand focus back to conch. Both are direct AppleScript, not
+ * keystrokes, so neither needs the front-window guard the Ctrl-D presses do.
+ *
+ * Closes the TAB, never the window — a window can hold tabs from other,
+ * unrelated sessions, and only the one that just closed should go with it.
+ * The window itself disappears only as a side effect of it being that tab's
+ * last one, same as clicking the tab's own close button would do.
+ *
+ * "notfound" is a normal outcome, not a failure: Terminal's own "when the
+ * shell exits" preference may have already closed the tab by the time we get
+ * here (the agent's process was the only thing keeping it open — the `exec`
+ * in `terminalSessionCommand` means there's no wrapping shell left either).
+ *
+ * `saving no` is Terminal's Standard Suite close, which does not by itself
+ * silence the OTHER dialog Terminal can show — "this window has running
+ * processes, terminate them?" — but that one is keyed to a process still
+ * running in the tab, and the only process that was ever running there just
+ * exited. It can still appear if someone has Terminal's own "Ask before
+ * closing" preference set to Always; conch does not override a person's
+ * Terminal preferences, and the automation timeout below (same one every
+ * other osascript call here already carries) keeps a stuck prompt from
+ * hanging conch rather than just sitting on screen.
+ *
+ * Activating conch is the second statement in the SAME script, after the
+ * close, not a separate call before it: if closing the tab errors, the
+ * script stops there and conch is never raised over whatever is stuck.
+ *
+ * Best-effort and swallowed: the session itself already closed by this
+ * point (the pid is gone), so nothing here — a tab that outlives its
+ * process, a slow Finder, conch not coming forward — is allowed to turn a
+ * successful close into a reported failure.
+ */
+async function closeSessionTabAndReturn(tty: string, osa: OsaRunner): Promise<void> {
+  const script = `
+tell application "Terminal"
+  repeat with w in windows
+    repeat with t in tabs of w
+      if tty of t is "/dev/${tty}" then
+        close t saving no
+      end if
+    end repeat
+  end repeat
+end tell
+tell application "conch" to activate`;
+  try {
+    await osa([script]);
+  } catch {}
 }
 
 async function waitForExit(
