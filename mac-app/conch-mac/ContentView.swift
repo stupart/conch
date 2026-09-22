@@ -227,24 +227,36 @@ struct ContentView: View {
         // paused — and sent PAUSE from a button labelled Resume. Tyler: "i just
         // tried clicking the resume button and nothing happened."
         //
-        // So while globally paused the control is global, and says "all".
-        // Resuming ONE session out of a global pause is a real feature and is
-        // on the roadmap; pretending the button already does it is worse than
-        // not having it.
-        // With a session selected, resume THAT one and leave the rest paused —
-        // which the daemon now supports via an exemption checked ahead of the
-        // global gate. Before that it silently did nothing, so the button was
-        // temporarily made global; it no longer needs to be.
+        // So while globally paused with NO session selected, the press stays
+        // global and says "all" (modeScope) — resuming one session out of a
+        // global pause is a distinct scoped action below, never what an
+        // unscoped press means.
         if globallyPaused, selectedRow == nil {
             store.send(.global(.resume))
             return
         }
 
         if let selectedRow {
-            let rowEffectivelyPaused = globallyPaused || selectedRow.paused
+            // The daemon has supported a scoped exemption from a global pause
+            // for a while (`resumedSessionIds`, checked ahead of the global
+            // gate) — but until `SessionRow.pauseExempt` existed on the wire,
+            // this app could not tell an exempted row apart from a plain one:
+            // both read `paused == false`. So this unconditionally computed
+            // `rowEffectivelyPaused = true` whenever the conch was globally
+            // paused and kept sending .resume on every press — the daemon
+            // dutifully re-granted an exemption the row already held, logging
+            // a fresh "▶ auto for ..." each time and never once sending
+            // .pause. Four presses 25 seconds apart in the daemon log, same
+            // session, all "auto": a button that only ever moved one way, and
+            // whose label never changed because `isManual` had the same blind
+            // spot (see above).
+            //
+            // Same rule as `isManual`: manual toggles to auto, auto (whether
+            // by exemption or an un-paused conch) toggles to manual.
+            let sessionIsManual = selectedRow.paused || (globallyPaused && !selectedRow.pauseExempt)
             store.send(
                 .scoped(
-                    rowEffectivelyPaused ? .resume : .pause,
+                    sessionIsManual ? .resume : .pause,
                     sessionId: selectedRow.id,
                     label: selectedRow.label
                 )

@@ -157,6 +157,58 @@ describe("buildPanelModel — renderer seam", () => {
     expect(row).not.toContain("muted");
     expect(row.toLowerCase()).not.toContain("snooz");
   });
+
+  test("a session resumed by name out of a global pause publishes its exemption, not just paused:false", () => {
+    const options = {
+      sessions: [
+        { sessionId: "exempt", name: "Exempt", status: "idle", statusUpdatedAt: 10 },
+        { sessionId: "plain", name: "Plain", status: "idle", statusUpdatedAt: 10 },
+      ],
+      sessionStates: new Map(),
+      pausedSessionIds: new Set<string>(),
+      resumedSessionIds: new Set(["exempt"]),
+      live: { state: "idle" as const, label: "", partial: "" },
+      mode: { muted: false, paused: true, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+    };
+
+    const rows = buildPanelRows(options);
+    const exempt = rows.find((row) => row.sessionId === "exempt")!;
+    const plain = rows.find((row) => row.sessionId === "plain")!;
+    // Both read paused:false — neither is individually pausedSessionIds — but
+    // only the exempted one carries the bit that says WHY it is auto inside a
+    // paused conch. Without this, an app reading `paused` alone cannot tell
+    // "exempt" from "plain" apart, which is the bug this field exists to fix.
+    expect(exempt.paused).toBe(false);
+    expect(exempt.pauseExempt).toBe(true);
+    expect(plain.paused).toBe(false);
+    expect(plain.pauseExempt).toBeUndefined();
+
+    // Carried onto the wire the same way: present only when true, so an older
+    // decoder that has never heard of `pauseExempt` still sees exactly the
+    // `paused` it always saw.
+    const model = buildPanelModel(options);
+    const published = buildPublishedState("test-device", model, new Map(), new Set(), 10);
+    expect(published.rows.find((row) => row.id === "exempt")?.pauseExempt).toBe(true);
+    expect(published.rows.find((row) => row.id === "plain")?.pauseExempt).toBeUndefined();
+  });
+
+  test("an older caller that never learned about resumedSessionIds still builds rows, all reading unexempt", () => {
+    const { resumedSessionIds: _omitted, ...withoutResumedSessionIds } = {
+      sessions: [{ sessionId: "quiet", name: "Quiet", status: "idle", statusUpdatedAt: 10 }],
+      sessionStates: new Map(),
+      pausedSessionIds: new Set<string>(),
+      resumedSessionIds: new Set(["quiet"]),
+      live: { state: "idle" as const, label: "", partial: "" },
+      mode: { muted: false, paused: true, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+    };
+
+    const rows = buildPanelRows(withoutResumedSessionIds);
+    expect(rows[0]?.pauseExempt).toBeUndefined();
+  });
 });
 
 describe("buildPublishedState — external session snapshot", () => {

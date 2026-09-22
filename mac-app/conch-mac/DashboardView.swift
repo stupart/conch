@@ -240,9 +240,18 @@ private struct DashboardHeader: View {
     /// the button being pressed.
     ///
     /// A session inside a manual conch is manual whatever its own flag says,
-    /// which is why this reads the global state as well as the row's.
+    /// which is why this reads the global state as well as the row's — UNLESS
+    /// it holds `pauseExempt`, the one thing that changes the answer: a scoped
+    /// resume issued while the conch was globally paused, exempting just that
+    /// session. `paused` and `pauseExempt` are never both true.
+    ///
+    /// No selection means the scope is everything, so the row is not
+    /// consulted at all — a global press must read and act on global state.
     private var isManual: Bool {
-        state?.mode.paused == true || selectedRow?.paused == true
+        guard let selectedRow else { return state?.mode.paused == true }
+        if selectedRow.paused { return true }
+        if selectedRow.pauseExempt { return false }
+        return state?.mode.paused == true
     }
 
     private var modeScope: String {

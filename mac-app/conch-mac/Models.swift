@@ -839,6 +839,11 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     /// Empty from a daemon older than many-per-session, where `review` alone is the truth.
     let reviews: [ReviewInfo]?
     let paused: Bool
+    /// Exempted from a GLOBAL pause by a scoped resume — this session is auto
+    /// even while `DashboardMode.paused` is true. Never true alongside
+    /// `paused`; the daemon clears one when it sets the other. Older daemons
+    /// never send it, which decodes to false exactly like `paused` does.
+    let pauseExempt: Bool
     let live: String?
     let active: Bool
     let snippet: String?
@@ -887,6 +892,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case review
         case reviews
         case paused
+        case pauseExempt
         case live
         case active
         case snippet
@@ -915,6 +921,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         review: ReviewInfo?,
         reviews: [ReviewInfo]? = nil,
         paused: Bool,
+        pauseExempt: Bool = false,
         live: String?,
         active: Bool,
         snippet: String?,
@@ -941,6 +948,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.review = review
         self.reviews = reviews
         self.paused = paused
+        self.pauseExempt = pauseExempt
         self.live = live
         self.active = active
         self.snippet = snippet
@@ -972,6 +980,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         review = try? container.decodeIfPresent(ReviewInfo.self, forKey: .review)
         reviews = try? container.decodeIfPresent([ReviewInfo].self, forKey: .reviews)
         paused = (try? container.decodeIfPresent(Bool.self, forKey: .paused)) ?? false
+        pauseExempt = (try? container.decodeIfPresent(Bool.self, forKey: .pauseExempt)) ?? false
         live = try? container.decodeIfPresent(String.self, forKey: .live)
         active = (try? container.decodeIfPresent(Bool.self, forKey: .active)) ?? false
         snippet = try? container.decodeIfPresent(String.self, forKey: .snippet)
@@ -1006,6 +1015,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             detail: detail,
             review: review,
             paused: paused,
+            pauseExempt: pauseExempt,
             live: live,
             active: active,
             snippet: snippet,

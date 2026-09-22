@@ -306,6 +306,38 @@ describe("new work does not replace what you are reading", () => {
    * have the sidebar closed". What makes a collapsed half recoverable is the resizer's 10 pt
    * grab area, pinned below — never the clamp.
    */
+  /**
+   * The Manual/Auto button toggles, and knows a session can be auto INSIDE a manual conch.
+   *
+   * `isManual` read `global || row.paused`, which is true on every press while the conch is
+   * globally paused — so the button always said "Manual" and always sent a resume. Measured in
+   * /tmp/conch-daemon.log on 2026-09-22: four "auto for Arch Prime" lines in 25 seconds
+   * (18:14:13/15/17/38), someone pressing a control that looked dead. The 17:15 press is why
+   * that one session announced a turn and opened the mic at 17:55 while the rest stayed quiet.
+   *
+   * Pinned as SOURCE because conch-mac has no XCTest target: without this, the exact boolean
+   * that broke has nothing holding it.
+   */
+  test("the mode button toggles, and an exempt session reads as auto", () => {
+    const mode = dashboard.slice(
+      dashboard.indexOf("private var isManual: Bool {"),
+      dashboard.indexOf("private var modeScope: String {"),
+    );
+    expect(mode.length).toBeGreaterThan(60);
+    // Order matters: an explicitly paused row is manual even if it also carries the flag.
+    expect(mode).toContain("if selectedRow.paused { return true }");
+    expect(mode).toContain("if selectedRow.pauseExempt { return false }");
+    // No selection means the scope is everything, so the row must not be consulted.
+    expect(mode).toContain("guard let selectedRow else { return state?.mode.paused == true }");
+
+    // The PRESS has to agree with the label, or the button lies about what it will do.
+    const content = read("mac-app/conch-mac/ContentView.swift");
+    expect(content).toContain(
+      "let sessionIsManual = selectedRow.paused || (globallyPaused && !selectedRow.pauseExempt)",
+    );
+    expect(content).toContain("sessionIsManual ? .resume : .pause");
+  });
+
   test("the split is dragged, reaches both edges, and is remembered", () => {
     expect(dashboard).toContain('@AppStorage("conch.splitFraction") private var storedSplitFraction = 0.5');
     expect(dashboard).toContain("private static let splitBounds: ClosedRange<Double> = 0...1");

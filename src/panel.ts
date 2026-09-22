@@ -85,6 +85,14 @@ export interface PanelRowModel {
   /** Every deliverable the session holds, oldest first; `review` is the last of them. */
   reviews?: SessionReview[];
   paused: boolean;
+  /**
+   * Exempted from a GLOBAL pause by a scoped resume (`resumedSessionIds`,
+   * checked ahead of the global gate) — this session is auto even though
+   * `mode.paused` is true. Absent means false: no exemption, so `paused`
+   * combined with the global mode is the whole answer, same as before this
+   * field existed.
+   */
+  pauseExempt?: boolean;
   muted: boolean;
   liveGlyph: PanelConchState | null;
   active: boolean;
@@ -271,6 +279,8 @@ export interface PublishedSessionRow {
   needsResponse: boolean;
   detail?: string;
   paused: boolean;
+  /** Same field as `PanelRowModel.pauseExempt`, carried onto the wire. Absent means false. */
+  pauseExempt?: boolean;
   muted: boolean;
   live: PanelConchState | null;
   active: boolean;
@@ -549,6 +559,7 @@ export function buildPublishedState(
         needsResponse: row.status === "needs",
         ...(row.detail !== undefined ? { detail: row.detail } : {}),
         paused: row.paused,
+        ...(row.pauseExempt ? { pauseExempt: true as const } : {}),
         muted: row.muted,
         live: row.liveGlyph,
         active: row.active,
@@ -614,6 +625,8 @@ export interface BuildPanelModelOptions {
   sessions: readonly SessionInfo[];
   sessionStates: ReadonlyMap<string, PanelSessionState>;
   pausedSessionIds: ReadonlySet<string>;
+  /** Sessions resumed by name out of a global pause (`SessionLedger.resumedSessionIds`); optional so an older caller that never passed one still builds rows, all reading `pauseExempt` false. */
+  resumedSessionIds?: ReadonlySet<string>;
   /** Accepted while older model builders migrate; rows never expose destructive state. */
   mutedSessionIds?: ReadonlySet<string>;
   live: PanelLiveState;
@@ -676,6 +689,7 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         ...(review ? { review } : {}),
         ...(reviews?.length ? { reviews } : {}),
         paused: options.pausedSessionIds.has(session.sessionId),
+        ...(options.resumedSessionIds?.has(session.sessionId) ? { pauseExempt: true as const } : {}),
         // Kept on the v1 wire until every installed viewer has moved past it.
         // No runtime mode may make this true again.
         muted: false,
