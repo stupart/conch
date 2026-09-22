@@ -136,7 +136,9 @@ describe("close on a background job", () => {
   });
 
   test("a terminal session still closes with Ctrl-D, and a no-terminal row still refuses", async () => {
-    let argv: string[] = [];
+    // Repointed: closing now runs a further osascript after the Ctrl-D press — closing the
+    // tab and returning to conch — so every call is captured instead of just the last one.
+    const calls: string[][] = [];
     const identity = { pid: 4321, birth: "1000.000001", birthTimeMs: 1_000_000.001, executable: "/opt/bin/claude", ttyDevice: 7 };
     await closeSession({ pid: 4321, processIdentity: identity }, {
       processIdentity: () => identity,
@@ -144,10 +146,12 @@ describe("close on a background job", () => {
       pidIsAlive: async () => false,
       sleep: async () => {},
       spawn(args) {
-        argv = args;
+        calls.push(args);
         return settled(0, "ok");
       },
     });
+    const argv = calls.find((args) => args.join(" ").includes('keystroke "d"'));
+    if (!argv) throw new Error("Ctrl-D script never ran");
     expect(argv[0]).toBe("osascript");
     expect(argv.at(-1)).toBe("/dev/ttys007");
     await expect(closeSession({ pid: 0, noTerminal: "closed: no Codex process has this thread open" }))

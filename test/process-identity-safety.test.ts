@@ -160,8 +160,10 @@ test("Close and Start wait for an existing input transaction", async () => {
     release();
     await Promise.all([blocking, closing, starting]);
   }
-  // Close is two scripts now — the raise, then the Ctrl-D inside a front-window guard — and
-  // Start is the third. What this test pins is that none of them ran while the queue was held.
-  expect(spawned).toHaveLength(3);
+  // Close is three scripts now — the raise, the Ctrl-D inside a front-window guard, and (once
+  // the pid is confirmed gone, as pidIsAlive here says immediately) closing its tab and
+  // returning to conch — and Start is the fourth. What this test pins is that none of them
+  // ran while the queue was held.
+  expect(spawned).toHaveLength(4);
   expect(spawned.filter((args) => args.join(" ").includes("conch-focus-guard"))).toHaveLength(1);
 });
