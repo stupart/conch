@@ -521,11 +521,6 @@ final class StateStore: ObservableObject {
         return value
     }
 
-    /// Shown when a start succeeded but the agent is waiting on a person.
-    static let awaitingTrustNotice =
-        "Terminal is asking you to trust this folder. Answer it there and the "
-        + "session will appear here."
-
     /// What a session is carrying, or nil if it could not be read.
     ///
     /// Not cached: the answer changes when a config file changes, and this is
@@ -602,13 +597,10 @@ final class StateStore: ObservableObject {
                 where started.backend == backend.rawValue
                     && started.resumed == (resumed != nil)
                     && (started.teleported == true) == (teleport != nil):
-                // A teleport acknowledgement only confirms the Terminal launch.
-                if teleport != nil { return .started }
-                // Not an error, but not nothing either: the session will not
-                // appear until the trust prompt in Terminal is answered.
-                return started.awaitingTrust == true
-                    ? .failed(Self.awaitingTrustNotice)
-                    : .started
+                // A teleport acknowledgement only confirms the Terminal launch. A folder
+                // that needed trusting was asked about here first (`needsTrust`), and
+                // the daemon answers the agent's own prompt, so a start is a start.
+                return .started
             case let .error(error):
                 let message = Self.nonempty(error.error) ?? "Could not start session"
                 reportAppError(operation: "session-start", message: message)

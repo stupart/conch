@@ -142,7 +142,7 @@ describe("the daemon's restart path, as source", () => {
       expect(index).toBeGreaterThan(-1);
       expect(index).toBeLessThan(close);
     }
-    expect(body.indexOf("await startTerminalSession(relaunch.request);")).toBeGreaterThan(close);
+    expect(body.indexOf("await launchSession(relaunch.request);")).toBeGreaterThan(close);
   });
 
   test("a relaunch that fails after the close says the session is closed", () => {

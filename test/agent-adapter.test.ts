@@ -75,6 +75,7 @@ describe("a third backend is one row", () => {
     exitKeystrokes: 1,
     questionKeys: null,
     inputBoxText: null,
+    trustTypedAtLaunch: false,
     resumeArgs: (id) => ` --continue ${id}`,
     teleportArgs: null,
     bypassPermissionsFlag: "--trust-me",
@@ -176,7 +177,7 @@ describe("the branch inventory", () => {
     expect(daemon).toContain("adapterFor(session.backend).rowsMayLackPid && !session.pid");
     expect(daemon).toContain("readConversationTail(path, sessionId, transcriptFormatFor(path), { window: session })");
     expect(daemon).toContain("readSessionContextUsage(path, transcriptFormatFor(path))");
-    expect(daemon).toContain('folderTrusted: adapterFor("claude").folderTrusted');
+    expect(daemon).toContain("folderTrusted: (backend, cwd) => adapterFor(backend).folderTrusted(cwd),");
     expect(read("src/session-lifecycle.ts")).toContain("const adapter = adapterFor(request.backend);");
     expect(read("src/provider-rename.ts")).toContain("adapterFor(target.backend).renameCommand(label)");
     expect(read("src/sessions.ts")).toContain("adapterFor(parent.backend).subagentSessions(parent, transcriptPath)");

@@ -10,7 +10,7 @@ function dependencies(spawn: () => SessionLifecycleProcess): SessionLifecycleDep
     automationTimeoutMs: 5,
   };
 }
-const start = (deps: SessionLifecycleDependencies) => startTerminalSession({ backend: "claude", cwd: "/fixture" }, deps);
+const start = async (deps: SessionLifecycleDependencies): Promise<void> => { await startTerminalSession({ backend: "claude", cwd: "/fixture" }, deps); };
 const close = (deps: SessionLifecycleDependencies) => closeTerminalSession(identity.pid, deps);
 function completed(): SessionLifecycleProcess {
   return { exited: Promise.resolve(0), stdout: new Response("ok").body, stderr: null, cancel() {} };

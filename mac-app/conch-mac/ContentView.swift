@@ -579,24 +579,30 @@ private struct StartSessionSheet: View {
                 set: { if !$0 { pendingTrust = nil } }
             )
         ) {
-            // Codex's own two options, in its own order. Not conch inventing a
-            // phrasing for someone else's security question.
-            Button("Yes, continue") {
+            // The agent's own options, in its own words. Not conch inventing a phrasing for
+            // someone else's security question.
+            Button(effectiveBackend == .codex ? "Yes, continue" : "Yes, I trust this folder") {
                 guard let cwd = pendingTrust else { return }
                 pendingTrust = nil
                 trustedFolders.insert(cwd)
                 start()
             }
-            Button("No, cancel", role: .cancel) { pendingTrust = nil }
+            Button(effectiveBackend == .codex ? "No, cancel" : "No, exit", role: .cancel) { pendingTrust = nil }
         } message: {
-            // Codex's own words about the risk, because softening someone
-            // else's security warning is not conch's call to make.
-            Text(
-                "\(pendingTrust ?? "")\n\nWorking with untrusted contents comes with "
-                + "higher risk of prompt injection. Trusting the directory allows "
-                + "project-local config, hooks, and exec policies to load.\n\n"
-                + "conch will tell Codex this for this session only, and will not "
-                + "change your Codex configuration."
+            // The agent's own words about the risk, because softening someone else's
+            // security warning is not conch's call to make.
+            Text(effectiveBackend == .codex
+                ? "\(pendingTrust ?? "")\n\nWorking with untrusted contents comes with "
+                    + "higher risk of prompt injection. Trusting the directory allows "
+                    + "project-local config, hooks, and exec policies to load.\n\n"
+                    + "conch will tell Codex this for this session only, and will not "
+                    + "change your Codex configuration."
+                : "\(pendingTrust ?? "")\n\nQuick safety check: Is this a project you created "
+                    + "or one you trust? (Like your own code, a well-known open source project, "
+                    + "or work from your team). If not, take a moment to review what's in this "
+                    + "folder first.\n\nClaude Code'll be able to read, edit, and execute files "
+                    + "here.\n\nconch will give Claude Code this answer in Terminal, where "
+                    + "Claude Code remembers it for this folder."
             )
         }
         // `task(id:)` rather than `onChange`, so this fires when the sheet
@@ -791,10 +797,15 @@ private struct StartSessionSheet: View {
             isStarting = false
             if appeared {
                 dismiss()
-            } else {
-                error = "Started, but it hasn\u{2019}t checked in. Terminal may be "
-                    + "waiting for you to answer something \u{2014} take a look there."
+                return
             }
+            let notice = "Started, but it hasn\u{2019}t checked in. Terminal may be "
+                + "waiting for you to answer something \u{2014} take a look there."
+            error = notice
+            // And keep watching: answered in Terminal, it checks in a minute later, and the
+            // sheet sat on this notice for a session that was already running. Tyler: "conch
+            // app is still in creation model even tho sessions has been made".
+            if await waitForSession(rounds: 225), error == notice { dismiss() }
         }
     }
 
@@ -803,17 +814,20 @@ private struct StartSessionSheet: View {
     /// Resume knows exactly which id to expect. A fresh session does not, so it
     /// watches for the row COUNT to grow instead — cruder, but it answers the
     /// same question: did anything actually start?
-    private func waitForSession() async -> Bool {
+    /// `rounds` of 0.8 s: 25 is long enough for a cold agent on a busy machine and short
+    /// enough that a stuck one is noticed while you still remember starting it.
+    private func waitForSession(rounds: Int = 25) async -> Bool {
         let expected = mode == .resume ? resumeSelection?.sessionId : nil
-        let before = store.state?.rows.count ?? 0
-        // Long enough for a cold agent on a busy machine; short enough that a
-        // stuck one is noticed while you still remember starting it.
-        for _ in 0..<25 {
+        // Sessions only: a session's agents are rows too, and one appearing elsewhere is
+        // not the session you just started.
+        let sessions = { (rows: [SessionRow]) in rows.filter { $0.parentSessionId == nil } }
+        let before = Set(sessions(store.state?.rows ?? []).map(\.id))
+        for _ in 0..<rounds {
             try? await Task.sleep(nanoseconds: 800_000_000)
             guard let rows = store.state?.rows else { continue }
             if let expected {
                 if rows.contains(where: { $0.id == expected }) { return true }
-            } else if rows.count > before {
+            } else if sessions(rows).contains(where: { !before.contains($0.id) }) {
                 return true
             }
         }

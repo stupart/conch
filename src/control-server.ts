@@ -10,6 +10,7 @@ import { checkReviewScene } from "./snippet.ts";
 import { agentQuestions } from "./conversation.ts";
 import type { PublishedDelivery, PublishedState } from "./panel.ts";
 import type { SessionInfo } from "./sessions.ts";
+import type { SessionBackend } from "./agent-adapter.ts";
 import type { InstantAudioCommand } from "./instant-controls.ts";
 import {
   invokeSessionAction,
@@ -307,10 +308,8 @@ export interface RuntimeControlDispatchOptions {
     message: Extract<RuntimeControlMessage, { kind: "agent-capabilities" }>,
   ): AgentInstall | undefined | Promise<AgentInstall | undefined>;
   start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | Promise<void>;
-  /** Whether Claude Code already trusts a folder; absent or null means unknown. */
-  folderTrusted?(cwd: string): boolean | null;
-  /** Whether Codex already trusts a folder; absent or null means unknown. */
-  codexFolderTrusted?(cwd: string): boolean | null;
+  /** Whether the agent already trusts a folder; absent or null means unknown. */
+  folderTrusted?(backend: SessionBackend, cwd: string): boolean | null;
   /** Resolves to the flags a restart did not carry over; nothing for a plain close. */
   close(sessionId: string, restart?: boolean): void | Promise<void | { notCarriedOver: string[] }>;
   report(message: Extract<RuntimeControlMessage, { kind: "app-error" }>): void | Promise<void>;
@@ -383,27 +382,19 @@ export async function applyRuntimeControlMessage(
       // outside, from one that failed. Unlike Claude's equivalent, this answer
       // CAN be supplied at launch, so conch offers the choice instead of
       // starting something that will sit there.
-      if (
-        message.backend === "codex"
-        && message.trustFolder !== true
-        && message.cwd
-        && options.codexFolderTrusted?.(message.cwd) === false
-      ) {
-        return { kind: "session-needs-trust", backend: "codex", cwd: message.cwd };
+      //
+      // Claude asks the same, and takes no answer at launch — so a yes here is typed into its
+      // prompt once it appears (acceptClaudeTrust). Before, conch launched it anyway and the
+      // app waited on a session that couldn't register until someone found the Terminal.
+      if (message.trustFolder !== true && message.cwd && options.folderTrusted?.(message.backend, message.cwd) === false) {
+        return { kind: "session-needs-trust", backend: message.backend, cwd: message.cwd };
       }
-      // Answered BEFORE launching, because afterwards it is unanswerable: a
-      // session held on the trust prompt writes no registry file, so conch
-      // cannot tell "still deciding" from "never started" from the outside.
-      const awaitingTrust = message.backend === "claude"
-        && message.cwd !== undefined
-        && options.folderTrusted?.(message.cwd) === false;
       await options.start(message);
       return {
         kind: "session-started",
         backend: message.backend,
         resumed: Boolean(message.resumeSessionId),
         ...(message.teleportSessionId ? { teleported: true as const } : {}),
-        ...(awaitingTrust ? { awaitingTrust: true } : {}),
       };
     }
     if (message.kind === "session-close") {

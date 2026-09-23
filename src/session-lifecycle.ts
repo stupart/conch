@@ -1,4 +1,4 @@
-import { FOCUS_GUARD_LINES, focusedAction, focusSessionWindow, withUITransaction, type OsaRunner } from "./inject.ts";
+import { FOCUS_GUARD_LINES, focusedAction, focusSessionWindow, readTerminalTab, withUITransaction, type OsaRunner } from "./inject.ts";
 import { runUICommand } from "./pasteboard.ts";
 import { processMatchesProvider, readProcessIdentity, sameProcessIdentity, type ProcessIdentity, type ProcessIdentityProbe } from "./process-identity.ts";
 import { conchHome } from "./home.ts";
@@ -6,6 +6,7 @@ import { statSync } from "node:fs";
 import {
   adapterFor,
   BYPASS_OPTION,
+  claudeInputBoxText,
   shellQuote,
   type AgentAdapter,
   type SessionBackend,
@@ -403,10 +404,74 @@ async function runTerminalUI(argv: string[], dependencies: SessionLifecycleDepen
 export async function startTerminalSession(
   request: StartSessionRequest,
   dependencies: SessionLifecycleDependencies = {},
-): Promise<void> {
+): Promise<{ tty?: string }> {
   const command = terminalSessionCommand(request);
-  await withUITransaction(() => runInTerminal(command, adapterFor(request.backend).executable, request.cwd, dependencies));
+  const tty = await withUITransaction(() => runInTerminal(command, adapterFor(request.backend).executable, request.cwd, dependencies));
+  return tty ? { tty } : {};
 }
+
+/** Claude Code's trust screen, as 2.1.280 shows it: "❯ No, exit" first and highlighted. */
+const CLAUDE_TRUST_YES = "Yes, I trust this folder";
+
+/**
+ * Answer Claude Code's "trust this folder?" in the Terminal tab conch just opened, once you
+ * have said yes in the app. Unlike Codex, Claude takes no such answer at launch, so it is
+ * typed: Down, then Return (measured on 2.1.280; Claude records the trust itself). Only
+ * while the screen shows exactly that menu with "No, exit" highlighted; anything else is
+ * left to you.
+ */
+export async function acceptClaudeTrust(
+  tty: string,
+  dependencies: {
+    read?: (tty: string) => Promise<string | null>;
+    press?: (tty: string) => Promise<boolean>;
+    sleep?: (ms: number) => Promise<void>;
+    waitMs?: number;
+  } = {},
+): Promise<"accepted" | "not-asked" | "failed"> {
+  const read = dependencies.read ?? readTerminalTab;
+  const press = dependencies.press ?? pressTrustKeys;
+  const sleep = dependencies.sleep ?? Bun.sleep;
+  // A login shell and a cold agent take a few seconds before the screen appears.
+  for (let waited = 0; waited < (dependencies.waitMs ?? 25_000); waited += 400) {
+    await sleep(400);
+    const screen = await read(tty);
+    if (screen === null) continue;
+    if (!screen.includes(CLAUDE_TRUST_YES)) {
+      // The agent's own input box: it started without asking.
+      if (claudeInputBoxText(screen) !== null) return "not-asked";
+      continue;
+    }
+    if (!/❯\s*No, exit/.test(screen) || !(await press(tty))) return "failed";
+    for (let check = 0; check < 10; check += 1) {
+      await sleep(300);
+      const after = await read(tty);
+      if (after !== null && !after.includes(CLAUDE_TRUST_YES)) return "accepted";
+    }
+    return "failed";
+  }
+  return "failed";
+}
+
+/** Down, then Return, into the tab on this tty, each behind the focus guard. */
+function pressTrustKeys(tty: string): Promise<boolean> {
+  return withUITransaction(async () => {
+    const focused = await focusSessionWindow(tty, runOsaLines);
+    if (focused.timedOut || (focused.exitCode ?? 0) !== 0 || focused.text.trim() !== "ok") return false;
+    await Bun.sleep(200);
+    const pressed = await focusedAction(tty, runOsaLines, [
+      'tell application "System Events" to key code 125',
+      "delay 0.25",
+      ...FOCUS_GUARD_LINES,
+      'tell application "System Events" to key code 36',
+    ]);
+    return !pressed.timedOut && (pressed.exitCode ?? 0) === 0 && pressed.text.trim() === "ok";
+  });
+}
+
+const runOsaLines: OsaRunner = (lines, argv = []) => runUICommand(
+  ["osascript", ...lines.flatMap((line) => ["-e", line]), ...(argv.length ? ["--", ...argv] : [])],
+);
 
 /**
  * "Open in Terminal" for a background job no window is attached to: a new
@@ -427,7 +492,7 @@ async function runInTerminal(
   executable: string,
   requestedCwd: string | undefined,
   dependencies: SessionLifecycleDependencies,
-): Promise<void> {
+): Promise<string | undefined> {
   const which = dependencies.which ?? ((name: string) => Bun.which(name));
   if (!which(executable)) throw new Error(`${executable} is not installed or is not on PATH`);
   const cwd = requestedCwd?.trim() || conchHome();
@@ -440,17 +505,21 @@ async function runInTerminal(
   } catch {
     throw new Error(`session directory does not exist: ${cwd}`);
   }
-  await runTerminalAutomation([
+  const opened = await runTerminalAutomation([
     "osascript",
     "-e", "on run argv",
     "-e", 'tell application "Terminal"',
     "-e", "activate",
-    "-e", "do script (item 1 of argv)",
+    "-e", "set newTab to do script (item 1 of argv)",
+    // The tab it opened, so what it asks can be read (and a trust prompt answered).
+    "-e", "return tty of newTab",
     "-e", "end tell",
     "-e", "end run",
     "--",
     command,
   ], dependencies);
+  const tty = /^\/dev\/(ttys?\d+)$/.exec(opened.text.trim())?.[1];
+  return tty;
 }
 
 /**

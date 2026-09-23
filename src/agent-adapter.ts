@@ -129,6 +129,11 @@ export interface AgentAdapter {
   readonly startOptions: readonly StartOption[];
   /** A per-launch "trust this folder" override, or "" where the agent takes none on its command line. */
   trustFolderArgs(cwd: string): string;
+  /**
+   * The agent takes no trust answer at launch and asks on screen instead, so a yes given in
+   * the app is typed into its prompt (`acceptClaudeTrust`).
+   */
+  readonly trustTypedAtLaunch: boolean;
   /** Has the agent already been told it trusts this folder? Null when unreadable — say nothing. */
   folderTrusted(cwd: string): boolean | null;
 
@@ -310,6 +315,7 @@ export const claudeAdapter: AgentAdapter = {
   // Claude Code's trust decision cannot be supplied on the command line, which
   // is why conch checks it beforehand (`folderTrusted`) and explains instead.
   trustFolderArgs: () => "",
+  trustTypedAtLaunch: true,
   folderTrusted: (cwd) => claudeFolderTrusted(cwd),
   renameCommand: (label) => `/rename ${label}`,
   transcriptFormat: "claude",
@@ -403,6 +409,7 @@ export const codexAdapter: AgentAdapter = {
     },
   ],
   trustFolderArgs: (cwd) => ` -c ${shellQuote(`projects."${cwd}".trust_level="trusted"`)}`,
+  trustTypedAtLaunch: false,
   folderTrusted: (cwd) => codexFolderTrusted(cwd),
   // Codex has no equivalent command (provider-rename.ts returned `unsupported`).
   renameCommand: () => null,

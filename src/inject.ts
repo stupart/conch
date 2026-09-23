@@ -445,8 +445,16 @@ export async function readSessionScreen(sessionPid: number | undefined): Promise
       const shown = await runUICommand(["tmux", "capture-pane", "-p", "-t", pane]);
       return shown.timedOut || shown.exitCode !== 0 ? null : shown.text;
     }
-    const tty = await ttyOf(sessionPid);
-    if (!/^ttys?\d+$/.test(tty)) return null;
+    return await readTerminalTab(await ttyOf(sessionPid));
+  } catch {
+    return null;
+  }
+}
+
+/** What the Terminal tab on this tty (`ttys012`) shows now, read without touching focus. */
+export async function readTerminalTab(tty: string): Promise<string | null> {
+  if (!/^ttys?\d+$/.test(tty)) return null;
+  try {
     // By index: in a `repeat with t in tabs` loop, `contents of t` is AppleScript's own
     // dereference of the loop variable, not the tab's text.
     const shown = await runOsa([`

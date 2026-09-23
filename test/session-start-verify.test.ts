@@ -23,9 +23,10 @@ test("starting a session waits for it to check in", () => {
 test("resume watches for its exact session, not just any new row", () => {
   // Resume knows which id to expect, so it should not be satisfied by some
   // unrelated session appearing at the same moment.
-  const wait = content.slice(content.indexOf("private func waitForSession()"));
+  const wait = content.slice(content.indexOf("private func waitForSession("));
   expect(wait).toContain("mode == .resume ? resumeSelection?.sessionId : nil");
   expect(wait).toContain("rows.contains(where: { $0.id == expected })");
-  // And a fresh session, which has no id yet, falls back to growth.
-  expect(wait).toContain("rows.count > before");
+  // And a fresh session, which has no id yet, is a SESSION id not there before: a count
+  // grew whenever another session's agent appeared (agents are rows since #390).
+  expect(wait).toContain("sessions(rows).contains(where: { !before.contains($0.id) })");
 });
