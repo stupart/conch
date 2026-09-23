@@ -41,9 +41,9 @@ describe("Mac Phase 2 session lifecycle", () => {
   test("close is isolated in an overflow menu and requires destructive confirmation", () => {
     expect(socket).toContain('let kind = "session-close"');
     expect(socket).toContain('case "session-closed"');
-    expect(store).toContain("ConchSessionCloseRequest(sessionId: row.id)");
+    expect(store).toContain("ConchSessionCloseRequest(sessionId: row.id, restart: restart ? true : nil)");
     expect(store).toContain("private static let sessionLifecycleTimeout: TimeInterval = 12");
-    expect(store).toContain("timeout: Self.sessionLifecycleTimeout");
+    expect(store).toContain("timeout: restart ? Self.sessionRestartTimeout : Self.sessionLifecycleTimeout");
     expect(dashboard).toMatch(/Menu \{[\s\S]*Button\("Close session…", role: \.destructive\)/);
     expect(dashboard).toMatch(/\.alert\([\s\S]*Button\("Cancel", role: \.cancel\)[\s\S]*Button\("Close Session", role: \.destructive\)/);
     expect(dashboard).toContain("store.closeSession(row)");

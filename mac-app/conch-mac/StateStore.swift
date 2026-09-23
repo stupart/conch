@@ -61,6 +61,8 @@ final class StateStore: ObservableObject {
     // several seconds; timing out first invites a duplicate start or a second
     // close against a session already leaving normally.
     private static let sessionLifecycleTimeout: TimeInterval = 12
+    /// A restart closes (up to the close's own 12s) and then opens a Terminal window.
+    private static let sessionRestartTimeout: TimeInterval = 22
 
     private let reader: StateSnapshotReader
     private let socketClient: ConchSocketClient
@@ -630,26 +632,32 @@ final class StateStore: ObservableObject {
     /// A lifecycle close is intentionally distinct from interrupt: interrupt
     /// stops one turn, while this asks the agent to exit normally and preserve
     /// the resumable transcript.
-    func closeSession(_ row: SessionRow) {
-        rowMessages[row.id] = "Closing cleanly…"
+    ///
+    /// `restart` then resumes the same conversation in a new Terminal window,
+    /// with the flags it was started with, so an updated Claude Code or Codex
+    /// takes effect without retyping the command.
+    func closeSession(_ row: SessionRow, restart: Bool = false) {
+        rowMessages[row.id] = restart ? "Restarting…" : "Closing cleanly…"
         let socketClient = socketClient
         let previous = sessionLifecycleTask
         sessionLifecycleTask = Task { @MainActor [weak self] in
             await previous?.value
             guard !Task.isCancelled else { return }
             let outcome = await socketClient.request(
-                ConchSessionCloseRequest(sessionId: row.id),
-                timeout: Self.sessionLifecycleTimeout
+                ConchSessionCloseRequest(sessionId: row.id, restart: restart ? true : nil),
+                timeout: restart ? Self.sessionRestartTimeout : Self.sessionLifecycleTimeout
             )
             guard let self else { return }
-            finishClose(row, outcome: outcome)
+            finishClose(row, outcome: outcome, restart: restart)
         }
     }
 
     private func finishClose(
         _ row: SessionRow,
-        outcome: ConchSocketRequestOutcome
+        outcome: ConchSocketRequestOutcome,
+        restart: Bool = false
     ) {
+        var notCarriedOver: [String] = []
         let failure: String?
         switch outcome {
         case let .reply(data):
@@ -663,6 +671,7 @@ final class StateStore: ObservableObject {
             switch reply {
             case let .closed(closed) where closed.sessionId == row.id:
                 failure = nil
+                notCarriedOver = closed.notCarriedOver ?? []
             case let .error(error):
                 failure = Self.nonempty(error.error) ?? "Could not close session"
             case .closed, .started, .needsTrust, .unknown:
@@ -679,10 +688,16 @@ final class StateStore: ObservableObject {
         if let failure {
             rowMessages[row.id] = failure
             reportAppError(
-                operation: "session-close",
+                operation: restart ? "session-restart" : "session-close",
                 message: failure,
                 sessionId: row.id
             )
+        } else if restart {
+            // The same id comes back as the resumed session, so nothing else
+            // clears this row's message the way a closed row's disappearing does.
+            rowMessages[row.id] = notCarriedOver.isEmpty
+                ? nil
+                : "Restarted without \(notCarriedOver.joined(separator: ", "))"
         } else {
             // The row disappears on the next daemon snapshot. Keeping a quiet
             // progress label until then prevents a successful close looking

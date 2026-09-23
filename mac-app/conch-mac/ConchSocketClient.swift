@@ -239,6 +239,8 @@ struct ConchConfigToggleReply: Decodable, Equatable, Sendable {
 struct ConchSessionCloseRequest: Encodable, Sendable {
     let kind = "session-close"
     let sessionId: String
+    /// Close it, then resume the same conversation with the same start flags. Omitted when nil.
+    var restart: Bool? = nil
 }
 
 struct ConchSessionStartedReply: Decodable, Equatable, Sendable {
@@ -254,6 +256,9 @@ struct ConchSessionStartedReply: Decodable, Equatable, Sendable {
 
 struct ConchSessionClosedReply: Decodable, Equatable, Sendable {
     let sessionId: String
+    let restarted: Bool?
+    /// Flags on the old command line a restart could not validate, so did not replay.
+    let notCarriedOver: [String]?
 }
 
 enum ConchSessionLifecycleReply: Decodable, Equatable, Sendable {

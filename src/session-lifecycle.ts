@@ -241,6 +241,79 @@ export function terminalSessionCommand(request: StartSessionRequest): string {
     + renderStartOptions(adapter, request.options);
 }
 
+/**
+ * Flags that pick WHICH conversation to open, not how to run it. A restart
+ * always resumes the row's own id, so these are dropped quietly: carrying
+ * `--fork-session` over would give the conversation a new id on every restart.
+ * The value says whether the flag takes one (`--resume` only sometimes does).
+ */
+const CONVERSATION_SELECTORS: Record<SessionBackend, Record<string, "value" | "optional" | "none">> = {
+  claude: { "--resume": "optional", "-r": "optional", "--continue": "none", "-c": "none", "--session-id": "value", "--fork-session": "none" },
+  codex: { "--last": "none" },
+};
+
+/**
+ * How to bring a live session back after closing it: the same agent, folder
+ * and conversation, plus every flag on its command line that the start table
+ * knows, each validated the way a start from the sheet is. Anything else that
+ * looks like a flag comes back in `notCarriedOver` rather than being replayed:
+ * conch only ever puts validated values on a command line.
+ *
+ * `args` is the process's command line after the executable, split on
+ * whitespace (`ps -o args=`). ponytail: that loses quoting, which only matters
+ * for values with spaces; no start-table value can contain one.
+ */
+export function restartRequest(
+  session: Pick<SessionInfo, "sessionId" | "agentSessionId" | "backend" | "cwd">,
+  args: readonly string[],
+): { request: StartSessionRequest; notCarriedOver: string[] } {
+  const backend = session.backend ?? "claude";
+  const adapter = adapterFor(backend);
+  const resumeSessionId = session.agentSessionId ?? session.sessionId;
+  // Explicitly off unless the command line had it: the persisted default must
+  // not switch permissions on (or off) for a session that ran the other way.
+  const options: Record<string, string | boolean> = { [BYPASS_OPTION]: false };
+  const notCarriedOver: string[] = [];
+  const selectors = CONVERSATION_SELECTORS[backend];
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (!token.startsWith("-")) continue;
+    const equals = token.startsWith("--") ? token.indexOf("=") : -1;
+    const flag = equals > 0 ? token.slice(0, equals) : token;
+    const inline = equals > 0 ? token.slice(equals + 1) : undefined;
+    const next = args[index + 1];
+    const takeNext = () => (inline === undefined && next !== undefined && !next.startsWith("-") ? (index += 1, next) : undefined);
+    const selector = selectors[flag];
+    if (selector) {
+      if (selector !== "none") takeNext();
+      continue;
+    }
+    const entry = adapter.startOptions.find((option) => option.flag === flag);
+    if (!entry) {
+      notCarriedOver.push([token, takeNext()].filter(Boolean).join(" ").slice(0, 120));
+      continue;
+    }
+    const value = entry.kind === "bool" ? true : inline ?? takeNext();
+    if (value !== undefined && !startOptionsError({ backend, resumeSessionId, options: { [entry.name]: value } })) {
+      options[entry.name] = value;
+    } else {
+      notCarriedOver.push(`${flag}${typeof value === "string" ? ` ${value}` : ""}`.slice(0, 120));
+    }
+  }
+  return {
+    request: { backend, resumeSessionId, ...(session.cwd ? { cwd: session.cwd } : {}), options },
+    notCarriedOver,
+  };
+}
+
+/** A process's command line after the executable, split on whitespace; null when `ps` can't say. */
+export async function readProcessArgs(pid: number): Promise<string[] | null> {
+  const child = Bun.spawn(["ps", "-o", "args=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" });
+  const output = await processText(child.stdout);
+  if (await child.exited !== 0 || !output.trim()) return null;
+  return output.trim().split(/\s+/).slice(1);
+}
+
 /** A background job id as Claude Code prints it (`f31f0d15`): never a shell word, never an option. */
 const JOB_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 

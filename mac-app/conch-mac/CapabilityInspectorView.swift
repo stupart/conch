@@ -34,6 +34,8 @@ struct CapabilityInspectorView: View {
     var onToggle: (@Sendable (ConchConfigToggleRequest) async -> StateStore.ConfigToggleOutcome)? = nil
     /// A switch was written; the owner re-reads the inventory.
     var onToggled: (() -> Void)? = nil
+    /// Restarts the session onto the installed version; nil where conch can't (no terminal).
+    var onRestart: (() -> Void)? = nil
     @State private var expanded: Set<String> = []
     @State private var modelDraft = ""
     @State private var modelResult: String?
@@ -177,6 +179,10 @@ struct CapabilityInspectorView: View {
                         .foregroundStyle(ConchPalette.statusNeeds)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
+                    if install.restartToUpdate == true, let onRestart {
+                        Button("Restart session", action: onRestart)
+                            .controlSize(.small)
+                    }
                 }
             }
             if let capabilities, !capabilities.complete {
@@ -769,7 +775,11 @@ struct CapabilityInspectorSheet: View {
             expandAll: expandAll,
             onSetModel: { model in await store.setModel(id: row.id, model: model) },
             onToggle: { request in await store.toggleCapability(request) },
-            onToggled: { reloads += 1 }
+            onToggled: { reloads += 1 },
+            onRestart: row.noTerminal == nil ? {
+                store.closeSession(row, restart: true)
+                onDone()
+            } : nil
         )
         .frame(width: 620, height: 560)
         .overlay(alignment: .topTrailing) {

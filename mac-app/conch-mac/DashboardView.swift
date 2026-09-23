@@ -1507,6 +1507,7 @@ private struct ConversationPane: View {
     /// `.ib:hover` for the session-actions menu, which a `Menu` label does not get for free.
     @State private var isHoveringActions = false
     @State private var sessionPendingClose: SessionRow?
+    @State private var sessionPendingRestart: SessionRow?
     /// How tall the composer is right now — it grows with lines and attachments, so this is
     /// measured rather than guessed. The transcript leaves exactly this much room beneath its
     /// last message, which is what lets the content scroll UNDER the card and still be read.
@@ -1984,6 +1985,24 @@ private struct ConversationPane: View {
         } message: {
             Text("conch will ask the agent to exit cleanly. Its transcript stays available to resume later.")
         }
+        .alert(
+            "Restart \(sessionPendingRestart?.label ?? "session")?",
+            isPresented: Binding(
+                get: { sessionPendingRestart != nil },
+                set: { if !$0 { sessionPendingRestart = nil } }
+            )
+        ) {
+            Button("Cancel", role: .cancel) {
+                sessionPendingRestart = nil
+            }
+            Button("Restart") {
+                guard let row = sessionPendingRestart else { return }
+                sessionPendingRestart = nil
+                store.closeSession(row, restart: true)
+            }
+        } message: {
+            Text("conch closes it cleanly, then resumes the same conversation in a new Terminal window with the options it was started with. A turn in progress stops.")
+        }
         .sheet(item: $inspectingSession) { row in
             CapabilityInspectorSheet(row: row, expandAll: debugExpandInspector) {
                 inspectingSession = nil
@@ -2104,6 +2123,11 @@ private struct ConversationPane: View {
                         inspectingSession = row
                     }
                     Divider()
+                    // Picks up an updated Claude Code or Codex without retyping the command.
+                    Button("Restart session…") {
+                        sessionPendingRestart = row
+                    }
+                    .disabled(row.noTerminal != nil)
                     Button("Close session…", role: .destructive) {
                         sessionPendingClose = row
                     }
