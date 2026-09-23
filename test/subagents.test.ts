@@ -355,7 +355,9 @@ describe("the daemon and the Mac app wire it up", () => {
     expect(dashboard).toContain("ForEach(folderRows.filter { $0.parentSessionId == nil }, id: \\.id) { row in");
     expect(dashboard).toMatch(/if !agents\.isEmpty \{\s*AgentGroup\(\s*agents: agents,\s*selectedID: selectedSessionID,\s*onSelect: \{ actions\.onSelectSession\(\$0\) \}/);
     const group = dashboard.slice(dashboard.indexOf("private struct AgentGroup: View {"));
-    expect(group).toContain('"\\(agents.count) \\(noun) · \\(running) running"');
+    // No count line: the lines and their marks already say it (Tyler: "we don't need the extra info").
+    expect(group).not.toContain("running\"");
+    expect(group).not.toContain("expanded");
     expect(group).toContain("Button { onSelect(agent) } label: {");
     const ledger = read("mobile/conch-ios/conch-ios/LedgerView.swift");
     expect(ledger).toMatch(/if row\.parentSessionId != nil \{\s*AgentRowView\(row: row\)\s*\} else \{\s*SessionRowView\(row: row\)/);

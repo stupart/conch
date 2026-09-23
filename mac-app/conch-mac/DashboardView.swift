@@ -2956,64 +2956,41 @@ private extension SessionRow {
     }
 }
 
-/// A session's live agents, folded under it: one line saying how many and how many are
-/// running, then a small row per agent that opens its conversation. Tyler (2026-09-23): "have
-/// the agents show under smaller as like a group and you can select on them as well just like
-/// is possible in the Claude Code ui".
+/// A session's live agents, one small line each under it, each opening that agent's
+/// conversation. Tyler (2026-09-23): "have the agents show under smaller as like a group and you
+/// can select on them as well just like is possible in the Claude Code ui". No count line above
+/// them: the lines and their marks already say how many there are and which are running ("we
+/// don't need the extra info").
 private struct AgentGroup: View {
     let agents: [SessionRow]
     let selectedID: String?
     let onSelect: (SessionRow) -> Void
-    @State private var expanded = true
-
-    private var summary: String {
-        let running = agents.filter { $0.status == .working }.count
-        let noun = agents.count == 1 ? "agent" : "agents"
-        return running == 0 ? "\(agents.count) \(noun)" : "\(agents.count) \(noun) · \(running) running"
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            Button { expanded.toggle() } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 8, weight: .semibold))
-                        .frame(width: 10)
-                    Text(summary)
-                        .font(.system(size: 11, weight: .medium))
-                    Spacer(minLength: 0)
-                }
-                .foregroundStyle(ConchPalette.textFaint)
-                .padding(.vertical, 3)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(expanded ? "Hide \(summary)" : "Show \(summary)")
-            if expanded {
-                ForEach(agents, id: \.id) { agent in
-                    Button { onSelect(agent) } label: {
-                        HStack(spacing: 7) {
-                            DashboardStatusGlyph(visual: LedgerVisual(row: agent))
-                                .scaleEffect(0.75)
-                                .frame(width: 12, height: 12)
-                            Text(agent.label)
-                                .font(.system(size: 11.5, weight: selectedID == agent.id ? .semibold : .regular))
-                                .foregroundStyle(selectedID == agent.id ? ConchPalette.textPrimary : ConchPalette.textDim)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .fill(selectedID == agent.id ? ConchPalette.selection : .clear)
-                        )
-                        .contentShape(Rectangle())
+            ForEach(agents, id: \.id) { agent in
+                Button { onSelect(agent) } label: {
+                    HStack(spacing: 7) {
+                        DashboardStatusGlyph(visual: LedgerVisual(row: agent))
+                            .scaleEffect(0.75)
+                            .frame(width: 12, height: 12)
+                        Text(agent.label)
+                            .font(.system(size: 11.5, weight: selectedID == agent.id ? .semibold : .regular))
+                            .foregroundStyle(selectedID == agent.id ? ConchPalette.textPrimary : ConchPalette.textDim)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 0)
                     }
-                    .buttonStyle(.plain)
-                    .help(agent.label)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(selectedID == agent.id ? ConchPalette.selection : .clear)
+                    )
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .help(agent.label)
             }
         }
         // `.row.child{padding-left:30px}`, the lab's indent for anything under a session.
