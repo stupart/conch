@@ -329,7 +329,7 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   // neither rule can be dropped while the other still satisfies the guard.
   const stack = read("mac-app/conch-mac/ConversationStackView.swift");
   expect(stack).toContain("if let artifact, !artifactShownBeside,");
-  expect(stack).toContain("artifact.viewedAt == nil || !reportsViewedState {");
+  expect(stack).toContain("artifact.viewedAt == nil || !reportsViewedState || artifactOpenedHere {");
   // An older daemon never reports viewedAt, so it must keep today's behaviour rather than hiding
   // every card.
   expect(stack).toContain("var reportsViewedState = true");

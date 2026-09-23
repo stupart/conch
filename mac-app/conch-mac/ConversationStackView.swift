@@ -44,6 +44,10 @@ struct ConversationStackView: View {
     /// deliverable, and a way in you are already through is just noise at the end of a
     /// transcript.
     var artifactShownBeside = false
+    /// Opened from this card since the app started: seen, but it comes back once the pane that
+    /// showed it closes. Tyler: "it doesn't need to show inline in convo anymore now that its in
+    /// open panel until panel is closed".
+    var artifactOpenedHere = false
     /// The session's working directory: what a relative link in the agent's
     /// prose is relative to (A13). Nil on an older daemon.
     var cwd: String? = nil
@@ -295,7 +299,7 @@ struct ConversationStackView: View {
                     // actually reporting it, so an older daemon keeps today's behaviour rather than
                     // silently hiding every card.
                     if let artifact, !artifactShownBeside,
-                       artifact.viewedAt == nil || !reportsViewedState {
+                       artifact.viewedAt == nil || !reportsViewedState || artifactOpenedHere {
                         // Keyed like the rows: the card reads its file — or decodes its image —
                         // on every body, and the body runs four times a second (the probe
                         // showed one markdown parse per snapshot at rest, this one).
