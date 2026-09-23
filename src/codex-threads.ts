@@ -28,6 +28,7 @@ import { conchHome } from "./home.ts";
 import { join } from "node:path";
 import type { CodexSessionEntry, CodexSessionRegistryRead } from "./codex-sessions.ts";
 import { pendingApproval, type PendingApproval } from "./approval.ts";
+import { codexTurnError } from "./conversation.ts";
 
 export interface CodexThreadsOptions {
   /**
@@ -441,6 +442,8 @@ export interface CodexTurnSnapshot {
   /** Whether the thread is mid-turn, per `task_started` / `task_complete`. */
   status: "busy" | "idle";
   text: string;
+  /** Why the turn failed (usage limit, auth, policy), from its `task_complete`. */
+  error?: string;
 }
 
 /** Per-session poll memory: what was last announced, and how big the file was. */
@@ -491,8 +494,8 @@ export function detectCodexTurnEnds(
     if (finished && snapshot.turnId !== seen.announcedTurnId) {
       memory.set(snapshot.sessionId, { announcedTurnId: snapshot.turnId });
       // An aborted turn is over but said nothing; announcing it would put the
-      // previous turn's words in its mouth.
-      if (snapshot.text) ended.push(snapshot);
+      // previous turn's words in its mouth. A failed one says why it failed.
+      if (snapshot.text || snapshot.error) ended.push(snapshot);
       continue;
     }
     memory.set(snapshot.sessionId, { announcedTurnId: seen.announcedTurnId });
@@ -585,7 +588,7 @@ export function isInterAgentEnvelope(text: string): boolean {
 export function readCodexRolloutTail(
   path: string,
   tailBytes = 1024 * 1024,
-): { size: number; turnId: string; status: "busy" | "idle"; text: string } | null {
+): { size: number; turnId: string; status: "busy" | "idle"; text: string; error?: string } | null {
   let size = 0;
   try {
     size = statSync(path).size;
@@ -635,6 +638,7 @@ export function readCodexRolloutTail(
     const text = typeof payload.last_agent_message === "string"
       ? payload.last_agent_message
       : "";
+    const error = codexTurnError(payload);
     return {
       size,
       turnId: String(payload.turn_id ?? `${size}`),
@@ -644,10 +648,12 @@ export function readCodexRolloutTail(
       // "humain" thread ended on "Message Type: FINAL_ANSWER / Task name:
       // /root / Sender: ...", addressed to a parent agent rather than to him.
       text: isInterAgentEnvelope(text) ? "" : text,
+      ...(error ? { error } : {}),
     };
   }
   return { size, turnId: "", status: "idle", text: "" };
 }
+
 
 /** Every observable Codex thread's rollout tail, for turn-end detection. */
 export async function readCodexTurnSnapshots(
@@ -669,6 +675,7 @@ export async function readCodexTurnSnapshots(
       turnId: tail.turnId,
       status: tail.status,
       text: tail.text,
+      ...(tail.error ? { error: tail.error } : {}),
     });
   }
   return snapshots;

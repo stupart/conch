@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CodexSessionEntry } from "../src/codex-sessions.ts";
@@ -312,6 +312,13 @@ describe("deciding a Codex turn has ended", () => {
     expect(memory.get("s")).toEqual({ announcedTurnId: "t2" });
   });
 
+  test("a failed turn says nothing either, but is announced with why it failed", () => {
+    const memory: CodexTurnMemory = new Map();
+    detectCodexTurnEnds(memory, done("t1"));
+    const failed = { ...base, turnId: "t2", status: "idle" as const, text: "", error: "You've hit your usage limit." };
+    expect(detectCodexTurnEnds(memory, [failed])).toEqual([failed]);
+  });
+
   test("a session leaving and returning is re-seeded rather than replayed", () => {
     const memory: CodexTurnMemory = new Map();
     detectCodexTurnEnds(memory, done("t1"));
@@ -389,6 +396,11 @@ describe("reading a turn out of a real rollout file", () => {
       expect(ended[0]!.label).toBe("asset generator");
       expect(ended[0]!.text).toBe("Second reply. Details after.");
       expect(detectCodexTurnEnds(memory, await readCodexTurnSnapshots(opts))).toEqual([]);
+
+      // A turn that fails is heard too, with Codex's reason and none of turn 2's words.
+      appendFileSync(path, [started("turn-3"), { type: "event_msg", payload: { type: "task_complete", turn_id: "turn-3", last_agent_message: null, error: { message: "You've hit your usage limit." } } }].map((l) => JSON.stringify(l)).join("\n") + "\n");
+      expect(detectCodexTurnEnds(memory, await readCodexTurnSnapshots(opts)).map(({ text, error }) => ({ text, error })))
+        .toEqual([{ text: "", error: "You've hit your usage limit." }]);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -450,6 +462,27 @@ describe("reading a turn out of a real rollout file", () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  test("a failed turn carries its error, and no reply", () => {
+    // Shape measured on Tyler's rollouts: 31 failed turns, each with last_agent_message null.
+    const home = mkdtempSync(join(tmpdir(), "conch-codex-home-"));
+    try {
+      const path = rollout(home, "fail", [complete("t1", "done"), started("t2"), {
+        type: "event_msg",
+        payload: { type: "task_complete", turn_id: "t2", last_agent_message: null, error: { message: " You've hit your usage limit. Visit https://example.test to buy more. ", codex_error_info: "usage_limit_exceeded" } },
+      }]);
+      expect(readCodexRolloutTail(path)).toMatchObject({ turnId: "t2", status: "idle", text: "", error: "You've hit your usage limit. Visit https://example.test to buy more." });
+      expect(readCodexRolloutTail(rollout(home, "ok", [complete("t1", "done")]))).not.toHaveProperty("error");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("the daemon announces a failure in one sentence, never with the turn before's reply", () => {
+    const daemon = readFileSync(join(import.meta.dir, "../src/daemon.ts"), "utf8");
+    expect(daemon).toContain("if (!snapshot.error) try {\n          const full = await lastAssistantText(snapshot.transcriptPath);");
+    expect(daemon).toContain("? `stopped. ${firstSentences(snapshot.error, 1, 160)}`");
   });
 
   test("a missing rollout is null, not a crash", () => {
