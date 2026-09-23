@@ -232,6 +232,9 @@ struct CapabilityInspectorView: View {
     /// running one keeps the binary it started with, the same honesty the
     /// config toggle preview gives for "applies to the next session".
     private func behindNotice(_ install: AgentInstall) -> String {
+        if install.restartToUpdate == true, let newer = install.newerVersion {
+            return "\(newer) is already installed. Restart this session to use it; it is still running the binary it started with."
+        }
         let newer = install.newerVersion.map { "\($0) is" } ?? "A newer version is"
         let action = install.updateCommand.map { "Update it for new sessions with: \($0)" }
             ?? "It updates with the Claude app."

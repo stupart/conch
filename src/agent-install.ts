@@ -1,3 +1,4 @@
+import { readdirSync } from "node:fs";
 import { isNewer } from "./version-check.ts";
 
 /**
@@ -35,9 +36,33 @@ export interface AgentInstall {
   behind: boolean;
   /** The newer version found among this Mac's other live copies, when behind. */
   newerVersion?: string;
+  /** The newer version is already installed where this one came from: restarting the session is the whole update. */
+  restartToUpdate?: boolean;
 }
 
 const CASKROOM_RE = /\/Caskroom\/([^/]+)\//;
+/**
+ * A cask's version directory, with the `.upgrading` suffix brew gives the old
+ * one while it installs the new one and then deletes it. A session started
+ * before a `brew upgrade` keeps running from that deleted path, so
+ * `--version` on it fails. Measured 2026-09-23: both live Codex sessions ran
+ * `Caskroom/codex/0.155.1.upgrading/bin/codex` and `0.154.0.upgrading`, gone
+ * from disk, with 0.156.0 installed.
+ */
+const CASKROOM_VERSION_RE = /\/Caskroom\/[^/]+\/(\d+\.\d+\.\d+)(?:\.upgrading)?\//;
+
+/** The newest version of this binary's cask installed right now, from its Caskroom directory names. */
+function installedCaskVersion(executable: string): string | null {
+  const root = /^(.*\/Caskroom\/[^/]+)\//.exec(executable)?.[1];
+  if (!root) return null;
+  try {
+    return readdirSync(root)
+      .filter((name) => /^\d+\.\d+\.\d+$/.test(name))
+      .reduce<string | null>((newest, name) => (!newest || isNewer(name, newest) ? name : newest), null);
+  } catch {
+    return null;
+  }
+}
 const APP_BUNDLE_RE = /\.app\/Contents\/MacOS\//;
 const NPM_MODULE_RE = /\/node_modules\/((?:@[^/]+\/)?[^/]+)\//;
 
@@ -135,7 +160,10 @@ export async function resolveAgentInstall(
   await Promise.all(
     [...sameAgentExecutables]
       .filter((executable) => !cache.has(executable))
-      .map(async (executable) => cache.set(executable, await readVersion(executable))),
+      .map(async (executable) => cache.set(
+        executable,
+        (await readVersion(executable)) ?? CASKROOM_VERSION_RE.exec(executable)?.[1] ?? null,
+      )),
   );
 
   const location = describeInstallLocation(target.executable);
@@ -150,6 +178,10 @@ export async function resolveAgentInstall(
       }
     }
   }
+  // Newer on disk than what this session runs: `brew upgrade` already happened.
+  const installed = version ? installedCaskVersion(target.executable) : null;
+  const restartToUpdate = installed !== null && isNewer(installed, version!);
+  if (restartToUpdate && (!newerVersion || isNewer(installed, newerVersion))) newerVersion = installed;
 
   return {
     backend: target.backend,
@@ -160,6 +192,7 @@ export async function resolveAgentInstall(
     updateCommand: installUpdateCommand(location),
     behind: newerVersion !== undefined,
     ...(newerVersion ? { newerVersion } : {}),
+    ...(restartToUpdate ? { restartToUpdate } : {}),
   };
 }
 
@@ -186,5 +219,6 @@ export function isAgentInstall(value: unknown): value is AgentInstall {
     && (value.packageId === undefined || boundedString(value.packageId, 512))
     && (value.updateCommand === null || boundedString(value.updateCommand, 1_024))
     && typeof value.behind === "boolean"
-    && (value.newerVersion === undefined || boundedString(value.newerVersion, 64));
+    && (value.newerVersion === undefined || boundedString(value.newerVersion, 64))
+    && (value.restartToUpdate === undefined || typeof value.restartToUpdate === "boolean");
 }
