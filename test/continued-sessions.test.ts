@@ -435,6 +435,24 @@ describe("a window's parkedJobId the daemon set without its conversation ever mo
     expect(await parkedWindowJob(f.claudeDir, "resumed", undefined, f.options)).toBeNull();
   });
 
+  test("once the job holds the conversation, the window is its viewer, even with no continued-in", async () => {
+    // 25d17f50 an hour after the decoy: the conversation continued in the job,
+    // typed into from the same window, and the window's own transcript was
+    // never marked.
+    const f = decoyParked();
+    f.transcript("spare-slot", [
+      { type: "ai-title", aiTitle: "Prime page wireframe", sessionId: "spare-slot" },
+      said("spare-slot", "u1", null, "user", "v10 and v11 are on the review branch"),
+      said("spare-slot", "a1", "u1", "assistant", "All three routes compile."),
+    ]);
+    const snap = (await registrySnapshot(f.claudeDir, f.options))!;
+    expect(snap.infos.map((s) => s.sessionId)).toEqual(["spare-slot"]);
+    const row = snap.infos[0]!;
+    expect(row.pid).toBe(WINDOW);
+    expect(row.noTerminal).toBeUndefined();
+    expect(await findHookWindow(f.claudeDir, "resumed", f.options)).toMatchObject({ sessionId: "spare-slot", pid: WINDOW });
+  });
+
   test("a genuine background move (continued-in backs the field up) is unaffected", async () => {
     // Regression guard alongside the whole `backgrounded()` suite above: the
     // corroboration check must not start rejecting a REAL move.
