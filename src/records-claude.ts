@@ -1,3 +1,4 @@
+import { unwrapPastedContent } from "./conversation.ts";
 import { recordToolResult, recordValue } from "./records-sanitize.ts";
 import {
   emptyRecords,
@@ -191,7 +192,8 @@ export function normalizeClaudeRecord(value: unknown, context: RecordNormalizerC
     // because each of those IS addressed on its own.
     const visible = rawParts.flatMap((raw) => {
       const block = object(raw);
-      const text = block?.type === "text" && typeof block.text === "string" ? recordValue(block.text) : undefined;
+      const text = block?.type === "text" && typeof block.text === "string"
+        ? recordValue(entry.type === "user" ? unwrapPastedContent(block.text) : block.text) : undefined;
       return typeof text === "string" ? [text] : [];
     });
     let messageWritten = false;

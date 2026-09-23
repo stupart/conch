@@ -189,6 +189,16 @@ function textFromClaudeParts(parts: any[], type: string): string {
  * interruption, system note, command output, and task without either assigning
  * it to the user or extending another suppression list.
  */
+/**
+ * Pasted text as Claude Code records it (2.1.280): `\n\n<pasted_content id="6a36">\n…\n</pasted_content
+ * id="6a36">\n`. conch pastes every long message, so each one showed its tags, and the app's "Sent"
+ * bubble, which gives way only to the same words, stayed beside it: the message appeared twice.
+ */
+export function unwrapPastedContent(text: string): string {
+  return text.includes("<pasted_content ") ? text.replace(PASTED_CONTENT, "$2").trim() : text;
+}
+const PASTED_CONTENT = /<pasted_content id="([^"]*)">\n?([\s\S]*?)\n?<\/pasted_content id="\1">/g;
+
 /** A compaction summary or a meta record, as the note it is; null for anything Tyler said. */
 function claudeOwnRecord(entry: any, text: string): ConversationMaterial | null {
   const detail = text.replace(/^\s*<local-command-caveat>([\s\S]*?)<\/local-command-caveat>/, "$1").trim();
@@ -318,9 +328,9 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
   const queued = entry.type === "attachment" && entry.attachment?.type === "queued_command"
     && entry.attachment.origin?.kind === "human" ? entry.attachment : null;
   if (queued) {
-    const text = typeof queued.prompt === "string"
+    const text = unwrapPastedContent(typeof queued.prompt === "string"
       ? queued.prompt.trim()
-      : Array.isArray(queued.prompt) ? textFromClaudeParts(queued.prompt, "text").trim() : "";
+      : Array.isArray(queued.prompt) ? textFromClaudeParts(queued.prompt, "text").trim() : "");
     if (text) {
       upsertConversationItem(conversation, {
         id: `queued:${typeof queued.source_uuid === "string" ? queued.source_uuid : id ?? conversation.order.length}`,
@@ -357,9 +367,9 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
       }
       return;
     }
-    const rawText = typeof entry.message?.content === "string"
+    const rawText = unwrapPastedContent(typeof entry.message?.content === "string"
       ? entry.message.content
-      : textFromClaudeParts(parts, "text");
+      : textFromClaudeParts(parts, "text"));
     // Claude Code's own records under the user's name, flagged as such: the summary it
     // writes when it compacts ("This session is being continued from a previous
     // conversation…"), and meta records — command caveats, "continued from another

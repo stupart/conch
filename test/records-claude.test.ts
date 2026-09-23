@@ -29,6 +29,14 @@ function human(uuid: string, text: string, parentUuid?: string | null) {
 }
 
 describe("Claude durable record normalization", () => {
+  test("pasted text is stored as the words, without Claude Code's tags; a reply is stored as written", () => {
+    const h = harness();
+    const tagged = '\n\n<pasted_content id="6a36">\nkeep the hero\n</pasted_content id="6a36">\n';
+    expect(h.read(human("u1", tagged)).items.map((item) => item.text)).toEqual(["keep the hero"]);
+    const reply = { type: "assistant", uuid: "a1", message: { role: "assistant", content: [{ type: "text", text: tagged }] } };
+    expect(h.read(reply).items.map((item) => item.text)).toEqual([tagged]);
+  });
+
   test("retains complete visible text and structured arguments/results beyond snapshot limits", () => {
     const h = harness();
     const long = "A long visible paragraph. ".repeat(500);
