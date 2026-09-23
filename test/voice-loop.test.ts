@@ -2330,6 +2330,30 @@ describe("answering the question a session is waiting on", () => {
     expect(h.texts).toEqual([]);
   });
 
+  test("an answer names the question row it was drawn from; any other question is refused", async () => {
+    const h = harness();
+    const path = asking(question("Alpha", ["A1", "A2"]));
+    const stale = await h.voice.handle(inject("A2", { transcriptPath: path, answers: [{ choices: [1] }], questionId: "tool:tu_earlier" }));
+    expect(stale).toMatchObject({ delivered: false, reason: "that question is no longer the one waiting" });
+    expect(h.answered).toEqual([]);
+    expect(await h.voice.handle(inject("A2", { transcriptPath: path, answers: [{ choices: [1] }], questionId: "tool:tu_ask" }))).toBe(true);
+    expect(h.answered).toEqual([[{ press: "2" }]]);
+  });
+
+  test("a question Tyler has since talked past is not waiting, though it never got a result", async () => {
+    const h = harness();
+    const sent = await h.voice.handle(inject("A2", {
+      transcriptPath: transcript(
+        user({ type: "text", text: "ask me" }),
+        assistant({ type: "tool_use", id: "tu_ask", name: "AskUserQuestion", input: { questions: [question("Alpha", ["A1", "A2"])] } }),
+        user({ type: "text", text: "never mind, do X" }),
+      ),
+      answers: [{ choices: [1] }],
+    }));
+    expect(sent).toMatchObject({ delivered: false, reason: "the session is no longer waiting on a question" });
+    expect(h.answered).toEqual([]);
+  });
+
   test("words for a lone question become its answer: the option they name, or words of your own", async () => {
     const h = harness();
     const path = asking(question("Delta", ["D1", "D2"]));
@@ -2483,7 +2507,7 @@ describe("a question known only from Claude Code's PermissionRequest hook", () =
     const h = harness({ window: () => picker("waiting") });
     await h.voice.handle(accepted(h, needs(path)));
     expect(h.voice.heldQuestionFor("s1")?.questions.map((q) => q.header)).toEqual(["Delta"]);
-    expect(await h.voice.handle(inject("Delta: D2", { transcriptPath: path, answers: [{ choices: [1] }] }))).toBe(true);
+    expect(await h.voice.handle(inject("Delta: D2", { transcriptPath: path, answers: [{ choices: [1] }], questionId: `tool:${asking.id}` }))).toBe(true);
     expect(await h.voice.handle(inject("d1", { transcriptPath: path }))).toBe(true);
     expect(h.answered).toEqual([[{ press: "2" }], [{ press: "1" }]]);
     expect(h.texts).toEqual([]);

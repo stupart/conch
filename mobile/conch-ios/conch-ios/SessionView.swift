@@ -884,7 +884,9 @@ struct SessionView: View {
                 sessionId: sessionId,
                 label: sessionLabel,
                 text: summary,
-                answers: answers
+                answers: answers,
+                // The question these answers are for: refused by the Mac if another is up now.
+                questionId: questionID
             )
             optionReplyInFlight = false
             // An option tap has no bubble to correct later, so only a refusal is reported.

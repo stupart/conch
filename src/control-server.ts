@@ -657,6 +657,10 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
     const err = type === "inject" ? questionAnswersError(value.answers) : "answers are only for inject";
     if (err) return { ok: false, err };
   }
+  if (value.questionId !== undefined && (value.answers === undefined || typeof value.questionId !== "string"
+    || !value.questionId || value.questionId.length > 300)) {
+    return { ok: false, err: "questionId names the question answers are for" };
+  }
   // Bounded and plain, because this id is echoed into published state, which every client
   // this Mac serves can read. A send may carry one; hooks and the CLI never do.
   if (value.opId !== undefined

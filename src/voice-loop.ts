@@ -26,7 +26,7 @@ import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences
 import {
   lastAssistantReply,
   latestAnswerableQuestion,
-  latestAnswerableQuestions,
+  pendingQuestion,
   readConversationTail,
   withSharedNote,
   type Conversation,
@@ -881,15 +881,23 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
    * transcript, else the ones the hook reported for a picker still on screen.
    */
   async function pendingQuestions(event: TurnEvent): Promise<AgentQuestion[]> {
+    return (await pendingQuestionRow(event))?.questions ?? [];
+  }
+
+  /** The question row this session is waiting on, with the id its card was drawn from. */
+  async function pendingQuestionRow(event: TurnEvent): Promise<{ id: string; questions: AgentQuestion[] } | null> {
     const written = event.transcriptPath
-      ? latestAnswerableQuestions(await readConversationTail(
+      ? pendingQuestion(await readConversationTail(
         event.transcriptPath,
         event.sessionId,
         transcriptFormatFor(event.transcriptPath),
         { window: deps.window(event.sessionId) },
       ))
-      : [];
-    return written.length ? written : heldQuestionShowing(event.sessionId)?.questions ?? [];
+      : null;
+    if (written) return written;
+    const held = heldQuestionShowing(event.sessionId);
+    // The same id `withHeldQuestion` publishes the row under.
+    return held ? { id: `tool:${held.id}`, questions: held.questions } : null;
   }
 
   /**
@@ -911,8 +919,12 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     const adapter = adapterForTranscript(event.transcriptPath);
     if (!adapter.questionKeys) return "as-message";
     // Keys typed into a prompt that is no longer a picker become a message.
-    const questions = await pendingQuestions(event);
-    if (!questions.length) return refuse("the session is no longer waiting on a question");
+    const pending = await pendingQuestionRow(event);
+    const questions = pending?.questions ?? [];
+    if (!pending || !questions.length) return refuse("the session is no longer waiting on a question");
+    // The card names the row it answered. Another question since (a follow-up, or the other
+    // app answering first) is not this one, however similar.
+    if (event.questionId && event.questionId !== pending.id) return refuse("that question is no longer the one waiting");
     // Known only from the hook: digits typed after the picker closed would become a message.
     if (questions === hookQuestions.get(event.sessionId)?.questions) {
       const status = deps.freshStatus ? await deps.freshStatus(event.sessionId) : deps.window(event.sessionId)?.status;
