@@ -3,7 +3,7 @@
 Research date: 2026-08-17. This document is the master inventory behind the
 backlog item “conch should know about skills and plugins, then toggle them”
 (`docs/backlog.md:140-145`). It starts from conch's implementation, then checks
-the current Claude Code and Codex documentation and a fresh checkout of t3code.
+the current Claude Code and Codex documentation.
 
 The short answer is that “installed” or “enabled” is not one state. For almost
 every entity below there are four different truths:
@@ -72,66 +72,14 @@ The difficulty labels used below mean:
   conch does not own. Conch can still offer a next-session change, or an
   authoritative feature for sessions it launches through such a protocol.
 
-## The lesson from current t3code
+## Attaching versus owning the host
 
-The fresh study used t3code commit
-[`a4cc1367`](https://github.com/pingdotgg/t3code/tree/a4cc1367b03ee0c1dc2b50fceac81ef5e63212e2),
-committed 2026-08-17. The central claim in `docs/parity.md:3-6` remains exactly
-right: t3code owns its agent runtimes while conch attaches to someone else's.
-The implementation now makes the consequence even clearer:
-
-- T3 Code is now a provider-neutral “agent harness control surface” for Codex,
-  Claude, Cursor, Grok Build and OpenCode, with desktop, web and native mobile
-  clients, not merely the narrower comparison captured in the old study
-  ([current README](https://github.com/pingdotgg/t3code/blob/a4cc1367b03ee0c1dc2b50fceac81ef5e63212e2/README.md)).
-- It keeps configured provider instances separate from live adapters and routes
-  every turn, approval, interrupt, checkpoint and session-stop operation through
-  a provider service
-  ([provider architecture](https://github.com/pingdotgg/t3code/blob/a4cc1367b03ee0c1dc2b50fceac81ef5e63212e2/docs/internals/providers.md)).
-- Its Codex provider starts a Codex app-server, asks that host for `model/list`
-  and `skills/list`, and owns another app-server process for the session itself
-  ([Codex probe](https://github.com/pingdotgg/t3code/blob/a4cc1367b03ee0c1dc2b50fceac81ef5e63212e2/apps/server/src/provider/Layers/CodexProvider.ts#L291-L415),
-  [session runtime](https://github.com/pingdotgg/t3code/blob/a4cc1367b03ee0c1dc2b50fceac81ef5e63212e2/apps/server/src/provider/Layers/CodexSessionRuntime.ts#L900-L954)).
-  It can therefore send per-turn model, effort, collaboration and permission
-  choices and explicitly reload MCP before a turn
-  ([turn construction](https://github.com/pingdotgg/t3code/blob/a4cc1367b03ee0c1dc2b50fceac81ef5e63212e2/apps/server/src/provider/Layers/CodexSessionRuntime.ts#L1803-L1835)).
-- Its Claude provider owns an Agent SDK query. A separate no-prompt initialization
-  probe disables hooks and MCP to discover account data and slash commands, and
-  a filesystem scanner builds the skills picker
-  ([Claude probe](https://github.com/pingdotgg/t3code/blob/a4cc1367b03ee0c1dc2b50fceac81ef5e63212e2/apps/server/src/provider/Layers/ClaudeProvider.ts#L600-L773),
-  [skill scan](https://github.com/pingdotgg/t3code/blob/a4cc1367b03ee0c1dc2b50fceac81ef5e63212e2/apps/server/src/provider/Drivers/ClaudeSkills.ts#L1-L155)).
-- Its composer resolves skills, slash commands and model lists per provider
-  instance, rather than treating a provider name as the environment
-  ([composer](https://github.com/pingdotgg/t3code/blob/a4cc1367b03ee0c1dc2b50fceac81ef5e63212e2/apps/web/src/components/chat/ChatComposer.tsx#L831-L850),
-  [skill and command menus](https://github.com/pingdotgg/t3code/blob/a4cc1367b03ee0c1dc2b50fceac81ef5e63212e2/apps/web/src/components/chat/ChatComposer.tsx#L1047-L1105)).
-
-What is stale or wrong in `docs/parity.md` now:
-
-- “Codex has no hook mechanism” (`docs/parity.md:18-20`) is wrong. Current
-  Codex has eleven documented lifecycle events and a trust UI, described under
-  **Hooks** below. Conch's database observer is still necessary for sessions
-  that did not start with its hooks.
-- The table-stakes gaps at `docs/parity.md:29-36` are stale. The Mac composer,
-  tool kinds, interrupt, questions, plans, diffs and queued delivery are shipped;
-  the current roadmap says Phases 1 and 2 are complete
-  (`docs/backlog.md:17-37`).
-- “Neither agent exposes a cancel an outside process could call”
-  (`docs/parity.md:79-81`) remains true for an arbitrary attached terminal, but
-  not for a host-owned Codex session: app-server exposes turn interruption, and
-  T3 Code uses its provider command path for it. The missing phrase is “outside
-  process that did not create or connect to the host.”
-- The 48-name runtime vocabulary is still visible in current t3code, but the old
-  document now omits the surfaces relevant to this roadmap: multiple provider
-  instances/accounts, model and skill catalogs, provider slash commands, hook
-  activity, MCP status/OAuth, and per-thread permission modes.
-- The old “Questions” item at `docs/parity.md:86-87` is complete, including voice
-  and tap answers (`docs/backlog.md:31-37`).
-
-No fourth comparator is included. Current t3code already contributes the lesson
-that Claude Code and Codex themselves do not: an owning control plane can report
-and change live state, while a passive companion must label inference. Another
-IDE panel would add examples of layout, not another ecosystem entity or a new
-answer to the attachment problem.
+An app that starts and owns its agent hosts (a Codex app-server or a Claude
+Agent SDK query per conversation) can ask them for live state, such as models,
+skills, slash commands and MCP status, and change it per turn. conch attaches to
+sessions someone else started, so for those it reports configured state, offers
+next-session changes, and labels anything live as inferred. Where conch launches
+a session through a host protocol, it can do what an owner does.
 
 ## 1. Runtime environment and provider instance
 
@@ -656,8 +604,8 @@ workflow, or invoke an MCP prompt without a normal model turn.
 **Outside-session discovery.** Claude's command set is version/plan/platform
 dependent and combines built-ins, skills/legacy commands, plugin commands and
 dynamic MCP prompts. A Claude Agent SDK initialization result can enumerate the
-commands of the fresh SDK host, which is the approach current t3code uses; disk
-scanning alone misses built-ins and connected prompts. The current command
+commands of the fresh SDK host; disk scanning alone misses built-ins and
+connected prompts. The current command
 reference includes session lifecycle, model/effort, permissions, MCP/plugins,
 skills, agents/tasks, context/memory, goals/schedules, worktrees and diagnostics
 ([Claude commands](https://code.claude.com/docs/en/commands)).
@@ -764,7 +712,7 @@ deliberately avoids claiming it knows the exact permission request
 (`src/hook.ts:250-270`, `src/daemon.ts:2394-2408`). Structured questions are
 instead parsed from transcript tool calls. The four-way “approve once / session
 / permanent / decline” remains blocked because a blind keypress can approve the
-wrong menu choice (`docs/parity.md:91-105`). No effective permission mode or
+wrong menu choice. No effective permission mode or
 rule set is published.
 
 **Good UI.** Show active mode, approval policy, sandbox roots, network/web
@@ -853,8 +801,8 @@ in-memory goals are not necessarily.
 interrupt, clean terminal close, local rename/priority/dismiss, voice mode and
 artifact handoff. Rename is only conch's label, not the provider session name
 (`src/settings.ts:686-714`). Checkpoint/revert remains intentionally unbuilt
-because blindly driving a destructive terminal menu has unsafe failure modes
-(`docs/parity.md:102-105`). Conch's MCP contract can see and steer sibling
+because blindly driving a destructive terminal menu has unsafe failure modes.
+Conch's MCP contract can see and steer sibling
 sessions at this limited level (`docs/conch-control-skill.md:40-85`).
 
 **Good UI.** Show provider name vs conch alias, created/updated/runtime state,
@@ -1066,7 +1014,6 @@ meaning of the read-only attached view.
 The product direction is therefore not “clone an IDE settings screen.” It is:
 make the invisible environment around each session legible, use that context to
 rank what needs attention, and reserve live toggles for states conch can actually
-confirm. That preserves the thing `docs/parity.md` got right and
-`docs/vision.md` depends on: conch can remain the voice-and-artifact layer over
+confirm. That preserves what `docs/vision.md` depends on: conch can remain the voice-and-artifact layer over
 sessions the user started elsewhere, while sessions intentionally launched
 through conch can grow a richer, authoritative control plane.

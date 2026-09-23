@@ -15,8 +15,8 @@ The rest of `docs/` is now reference, not planning:
 - `palette-plan.md` — the implementation plan for plugins/skills/MCP
 - `conch-control-skill.md` — the agent-facing contract that ships in the plugin
 - `archive/` — superseded planning docs, kept for their history: the old
-  backlog with its full Fixed list, the UI audit, the t3code parity study, the
-  phase audit, and the palette build log
+  backlog with its full Fixed list, the UI audit, the phase audit, and the
+  palette build log
 
 ## Everything left, and where it lands
 

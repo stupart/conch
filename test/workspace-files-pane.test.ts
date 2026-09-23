@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
  * The session's working folder, in the work half of the stage.
  *
  * Tyler: "where are we on being able to have a terminal and see the full file tree and diffs
- * borrowing from this app: https://coteditor.com as well as a browser in the side panel".
+ * ... as well as a browser in the side panel".
  * This is the file tree, and it is deliberately NOT a Finder in a pane — conch knows the one
  * thing Finder cannot, which is what this session just changed.
  *
