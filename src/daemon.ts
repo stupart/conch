@@ -124,6 +124,7 @@ import { CONCH_DATA } from "./config.ts";
 import {
   publishedConversation,
   readConversationTail,
+  withHeldQuestion,
 } from "./conversation.ts";
 import type { PendingApproval } from "./approval.ts";
 import { isWindowKey } from "./window-key.ts";
@@ -1668,7 +1669,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           if (!read || read.order.length === 0) return null;
           return [
             session.sessionId,
-            publishedConversation(read, { windowSize: PUBLISHED_CONVERSATION_WINDOW }),
+            publishedConversation(
+              withHeldQuestion(read, voice.heldQuestionFor(session.sessionId)),
+              { windowSize: PUBLISHED_CONVERSATION_WINDOW },
+            ),
           ] as const;
         }),
       )).filter((entry): entry is NonNullable<typeof entry> => entry !== null),

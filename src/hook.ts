@@ -1,7 +1,7 @@
 import { appendFileSync, chmodSync, existsSync, renameSync, statSync } from "node:fs";
 import { connect } from "node:net";
 import { readState } from "./daemon-state.ts";
-import type { QuestionAnswer } from "./conversation.ts";
+import { agentQuestions, type AgentQuestion, type QuestionAnswer } from "./conversation.ts";
 import type { Config } from "./config.ts";
 import { bell, speak } from "./speak.ts";
 import {
@@ -116,6 +116,12 @@ export interface TurnEvent {
    * is showing: its dialog's keys, pressed only while that same prompt is up.
    */
   approve?: { kind: "once" | "always" | "deny"; id: string };
+  /**
+   * The questions an AskUserQuestion picker on screen is asking, from Claude
+   * Code's PermissionRequest hook: on 2.1.280 the transcript may not hold them
+   * until they are answered.
+   */
+  asking?: { id: string; questions: AgentQuestion[] };
 }
 
 // Notification types that actually need a human; everything else stays silent.
@@ -304,8 +310,32 @@ export async function runHook(cfg: Config): Promise<void> {
     // as a bare needs mark — no card, no bell, no voice. It fires just before
     // the dialog opens. conch prints nothing, so the dialog still shows.
     const name = String(payload.tool_name ?? "tool");
-    const summary = summarizeToolUse(name, payload.tool_input);
     const sessionId = session?.sessionId ?? payload.session_id ?? "";
+    const id = `hook:${createHash("sha1").update(`${sessionId}\n${name}\n${JSON.stringify(payload.tool_input ?? null)}\n${eventAt}`).digest("hex").slice(0, 16)}`;
+    // Claude Code asks this hook about its question picker too (measured: tool_name
+    // AskUserQuestion, the questions in tool_input). A question is not a permission:
+    // Allow would press Enter and pick whichever option is highlighted. So it becomes
+    // the questions themselves, which the transcript may not hold while they are open.
+    if (name === "AskUserQuestion") {
+      const questions = agentQuestions(payload.tool_input);
+      if (!questions.length) return;
+      await sendToDaemon(cfg.socketPath, {
+        type: "needs-you",
+        sessionId,
+        label,
+        cwd: payload.cwd,
+        pid: session?.pid,
+        announce: `${label} is asking: ${questions[0]!.question}`,
+        transcriptPath: payload.transcript_path,
+        ntype: "elicitation_dialog",
+        eventAt,
+        asking: { id, questions },
+      });
+      return;
+    }
+    // Plan mode's exit dialog is not a yes/no either, and conch doesn't know its keys.
+    if (name === "ExitPlanMode") return;
+    const summary = summarizeToolUse(name, payload.tool_input);
     turn = {
       type: "needs-you",
       sessionId,
@@ -317,11 +347,7 @@ export async function runHook(cfg: Config): Promise<void> {
       ntype: "permission_prompt",
       mark: payload.transcript_path ? await boundedMark(cfg, payload.transcript_path) : undefined,
       eventAt,
-      approval: {
-        id: `hook:${createHash("sha1").update(`${sessionId}\n${name}\n${JSON.stringify(payload.tool_input ?? null)}\n${eventAt}`).digest("hex").slice(0, 16)}`,
-        name,
-        summary,
-      },
+      approval: { id, name, summary },
     };
   } else if (event === "Notification") {
     const ntype = payload.notification_type ?? "";

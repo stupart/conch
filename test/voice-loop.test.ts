@@ -2468,3 +2468,42 @@ describe("a permission prompt known only from Claude Code's PermissionRequest ho
     expect(h.voice.pendingApprovalFor("s1", path)).toBeNull();
   });
 });
+
+describe("a question known only from Claude Code's PermissionRequest hook", () => {
+  // The transcript holds nothing yet; the hook sent the questions (measured 2026-09-23).
+  const asking = { id: "hook:fedcba9876543210", questions: [{ header: "Delta", question: "Pick delta?", multiSelect: false, options: [{ label: "D1" }, { label: "D2" }] }] };
+  const quiet = () => transcript(user({ type: "text", text: "ask me" }));
+  const needs = (path: string) => ({
+    type: "needs-you" as const, ntype: "elicitation_dialog", sessionId: "s1", label: "alpha",
+    announce: "alpha is asking: Pick delta?", transcriptPath: path, eventAt: 1, asking,
+  });
+  const picker = (status: string) => ({ ...busy(), status }) as SessionInfo;
+
+  test("is held while the picker is open, and answered through its keys by card or by words", async () => {
+    const path = quiet();
+    const h = harness({ window: () => picker("waiting") });
+    await h.voice.handle(accepted(h, needs(path)));
+    expect(h.voice.heldQuestionFor("s1")?.questions.map((q) => q.header)).toEqual(["Delta"]);
+    expect(await h.voice.handle(inject("Delta: D2", { transcriptPath: path, answers: [{ choices: [1] }] }))).toBe(true);
+    expect(await h.voice.handle(inject("d1", { transcriptPath: path }))).toBe(true);
+    expect(h.answered).toEqual([[{ press: "2" }], [{ press: "1" }]]);
+    expect(h.texts).toEqual([]);
+  });
+
+  test("once a fresh read says the picker is gone, nothing is typed", async () => {
+    const path = quiet();
+    const h = harness({ window: () => picker("busy") });
+    await h.voice.handle(accepted(h, needs(path)));
+    const sent = await h.voice.handle(inject("Delta: D2", { transcriptPath: path, answers: [{ choices: [1] }] }));
+    expect(sent).toMatchObject({ delivered: false, reason: "the question is no longer open" });
+    expect(h.answered).toEqual([]);
+  });
+
+  test("the session moving on forgets it", async () => {
+    const path = quiet();
+    const h = harness({ window: () => picker("waiting") });
+    await h.voice.handle(accepted(h, needs(path)));
+    await h.voice.handle(accepted(h, turnEnd({ type: "working", transcriptPath: path, eventAt: 2 })));
+    expect(h.voice.heldQuestionFor("s1")).toBeNull();
+  });
+});
