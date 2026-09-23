@@ -25,6 +25,7 @@ import {
   LATCH_GRACE_MS,
 } from "../src/panel.ts";
 import { TheaterNavigation } from "../src/theater-navigation.ts";
+import type { SessionInfo } from "../src/sessions.ts";
 import { loadConfig } from "../src/config.ts";
 import { buildDaemonPublishedState } from "../src/daemon.ts";
 import {
@@ -1342,4 +1343,11 @@ describe("the reply pane shows the reply, not the announcement", () => {
   test("nothing at all is empty, not a crash", () => {
     expect(panelReplyText({ state: "idle" }, "")).toEqual({ text: "", spokenChars: 0 });
   });
+});
+
+test("an agent's row sits between sessions unnumbered: the shortcuts count only sessions", () => {
+  const session = (sessionId: string, pid: number) => ({ sessionId, label: sessionId, status: "idle", cwd: "/w", pid }) as SessionInfo;
+  const rows = [{ sessionId: "one", label: "one" }, { sessionId: "agent-x", label: "agent" }, { sessionId: "two", label: "two" }];
+  expect(numberPanelSessionRows(rows, [session("one", 1), session("two", 2)]).map((row) => [row.n, row.s.sessionId]))
+    .toEqual([[1, "one"], [2, "two"]]);
 });

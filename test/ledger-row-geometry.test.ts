@@ -45,9 +45,9 @@ test("a row's gap and trailing inset are the lab's", () => {
  * At 18 the indent read as a rendering wobble rather than a hierarchy.
  */
 test("a child row is indented the lab's 30", () => {
-  expect(dashboard).toContain(
-    "row.parentSessionId == nil && row.startedBySessionId == nil ? 0 : 30",
-  );
+  expect(dashboard).toContain("row.startedBySessionId == nil ? 0 : 30");
+  // An agent's line sits at the same 30, inside its parent's group.
+  expect(dashboard.slice(dashboard.indexOf("private struct AgentGroup: View {"))).toContain(".padding(.leading, 30)");
 });
 
 /**
