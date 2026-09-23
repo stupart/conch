@@ -496,13 +496,13 @@ describe("Codex's echoed answer to an async question is not Tyler's own words", 
     });
   }
 
-  test("response_item:message strips the quoted question, keeping only the reply — once the question was actually asked", () => {
+  test("the UserMessage item strips the quoted question, keeping only the reply — once the question was actually asked", () => {
     const conversation = emptyConversation("s");
     askAsync(conversation, "call_1", ["Signed in to Arch", "I’ll do it later"]);
     reduceCodexLine(conversation, {
-      type: "response_item",
+      type: "event_msg",
       ordinal: 1,
-      payload: { type: "message", role: "user", content: [{ text: echoed }] },
+      payload: { type: "item_completed", turn_id: "t1", item: { type: "UserMessage", id: "u1", content: [{ type: "text", text: echoed }] } },
     });
     // The question's own tool row, plus the collapsed answer.
     expect(conversation.order.length).toBe(2);
@@ -533,9 +533,9 @@ describe("Codex's echoed answer to an async question is not Tyler's own words", 
     askAsync(conversation, "call_1", ["Signed in to Arch", "I’ll do it later"]);
     const text = `> some prior assistant paragraph, quoted on purpose\n\nno, that's wrong, do it this way instead`;
     reduceCodexLine(conversation, {
-      type: "response_item",
+      type: "event_msg",
       ordinal: 2,
-      payload: { type: "message", role: "user", content: [{ text }] },
+      payload: { type: "item_completed", turn_id: "t1", item: { type: "UserMessage", id: "u1", content: [{ type: "text", text }] } },
     });
     const item = conversation.items[conversation.order.at(-1)!]!;
     expect(item.text).toBe(text);
@@ -544,9 +544,9 @@ describe("Codex's echoed answer to an async question is not Tyler's own words", 
   test("no question was ever asked in this conversation: the same shape is left whole", () => {
     const conversation = emptyConversation("s");
     reduceCodexLine(conversation, {
-      type: "response_item",
+      type: "event_msg",
       ordinal: 1,
-      payload: { type: "message", role: "user", content: [{ text: echoed }] },
+      payload: { type: "item_completed", turn_id: "t1", item: { type: "UserMessage", id: "u1", content: [{ type: "text", text: echoed }] } },
     });
     const item = conversation.items[conversation.order[0]!]!;
     expect(item.text).toBe(echoed);
@@ -570,9 +570,9 @@ describe("Codex's echoed answer to an async question is not Tyler's own words", 
     askAsync(conversation, "call_1", ["Signed in to Arch"]);
     const text = "> just a quote, no blank-line reply after it";
     reduceCodexLine(conversation, {
-      type: "response_item",
+      type: "event_msg",
       ordinal: 1,
-      payload: { type: "message", role: "user", content: [{ text }] },
+      payload: { type: "item_completed", turn_id: "t1", item: { type: "UserMessage", id: "u1", content: [{ type: "text", text }] } },
     });
     const item = conversation.items[conversation.order.at(-1)!]!;
     expect(item.text).toBe(text);
@@ -582,9 +582,9 @@ describe("Codex's echoed answer to an async question is not Tyler's own words", 
     const conversation = emptyConversation("s");
     const text = "ship it";
     reduceCodexLine(conversation, {
-      type: "response_item",
+      type: "event_msg",
       ordinal: 1,
-      payload: { type: "message", role: "user", content: [{ text }] },
+      payload: { type: "item_completed", turn_id: "t1", item: { type: "UserMessage", id: "u1", content: [{ type: "text", text }] } },
     });
     const item = conversation.items[conversation.order[0]!]!;
     expect(item.text).toBe(text);
