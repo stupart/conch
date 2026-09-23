@@ -355,6 +355,8 @@ struct AgentInstall: Decodable, Equatable, Sendable {
     let behind: Bool
     /// The newer version found among this Mac's other live copies, when behind.
     let newerVersion: String?
+    /// The newer version is already installed where this one came from: restarting the session is the whole update.
+    let restartToUpdate: Bool?
 }
 
 extension AgentInstall {

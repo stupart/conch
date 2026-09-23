@@ -84,6 +84,16 @@ describe("the inspector shows the version and the update command, and is honest 
     expect(body).toContain("This session keeps its own binary either way.");
   });
 
+  test("when the newer version is already installed, the notice says restart, not the update command", () => {
+    const at = inspector.indexOf("private func behindNotice(_ install: AgentInstall) -> String {");
+    const body = inspector.slice(at, inspector.indexOf("\n    }", at));
+    const restart = body.indexOf("if install.restartToUpdate == true, let newer = install.newerVersion {");
+    expect(restart).toBeGreaterThan(-1);
+    // Checked first, so the brew command is never the advice once brew already ran.
+    expect(restart).toBeLessThan(body.indexOf('"Update it for new sessions with: \\('));
+    expect(body.slice(restart)).toContain('"\\(newer) is already installed. Restart this session to use it;');
+  });
+
   test("the sheet fetches install alongside capabilities and threads it through, not a second unrelated request", () => {
     const sheetAt = inspector.indexOf("struct CapabilityInspectorSheet: View {");
     expect(sheetAt).toBeGreaterThan(-1);

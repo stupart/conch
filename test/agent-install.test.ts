@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   describeInstallLocation,
   extractVersion,
@@ -75,7 +78,9 @@ describe("pulling a version out of --version output", () => {
 });
 
 describe("resolveAgentInstall: behind, decided locally, never guessed", () => {
-  const cask = { backend: "claude" as const, executable: "/opt/homebrew/Caskroom/claude-code@latest/2.1.266/claude" };
+  // Under a root that doesn't exist: the installed-version check lists the
+  // cask's real Caskroom directory, and this Mac's must not leak in.
+  const cask = { backend: "claude" as const, executable: "/nonexistent-conch-test/Caskroom/claude-code@latest/2.1.266/claude" };
   const desktop = {
     backend: "claude" as const,
     executable: "/Users/x/Library/Application Support/Claude/claude-code/2.1.280/claude.app/Contents/MacOS/claude",
@@ -123,15 +128,16 @@ describe("resolveAgentInstall: behind, decided locally, never guessed", () => {
   });
 
   test("never claims behind when either side's version is unknown", async () => {
+    const bare = { backend: "claude" as const, executable: "/usr/local/bin/claude" };
     const { read: unknownSelf } = fakeReader({ [desktop.executable]: "2.1.280" });
-    expect((await resolveAgentInstall(cask, [desktop], new Map(), unknownSelf)).behind).toBe(false);
+    expect((await resolveAgentInstall(bare, [desktop], new Map(), unknownSelf)).behind).toBe(false);
 
     const { read: unknownPeer } = fakeReader({ [cask.executable]: "2.1.266" });
     expect((await resolveAgentInstall(cask, [desktop], new Map(), unknownPeer)).behind).toBe(false);
   });
 
   test("equal versions across installs are never 'behind' each other", async () => {
-    const otherCask = { backend: "claude" as const, executable: "/opt/homebrew/Caskroom/claude-code/2.1.266/claude" };
+    const otherCask = { backend: "claude" as const, executable: "/nonexistent-conch-test/Caskroom/claude-code/2.1.266/claude" };
     const { read } = fakeReader({ [cask.executable]: "2.1.266", [otherCask.executable]: "2.1.266" });
     expect((await resolveAgentInstall(cask, [otherCask], new Map(), read)).behind).toBe(false);
   });
@@ -143,6 +149,71 @@ describe("resolveAgentInstall: behind, decided locally, never guessed", () => {
     await resolveAgentInstall(cask, [desktop], cache, read);
     await resolveAgentInstall(desktop, [cask], cache, read);
     expect(calls.sort()).toEqual([cask.executable, desktop.executable].sort());
+  });
+});
+
+describe("a session still running a binary that brew upgraded", () => {
+  // Measured 2026-09-23: both live Codex sessions ran
+  // Caskroom/codex/0.155.1.upgrading/bin/codex and 0.154.0.upgrading, deleted
+  // by `brew upgrade`, with 0.156.0 installed and no session running it.
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+  function caskroom(...installed: string[]) {
+    const root = mkdtempSync(join(tmpdir(), "conch-caskroom-"));
+    roots.push(root);
+    for (const version of installed) mkdirSync(join(root, "Caskroom", "codex", version, "bin"), { recursive: true });
+    return (version: string) => ({ backend: "codex" as const, executable: join(root, "Caskroom", "codex", version, "bin", "codex") });
+  }
+  const unreadable = async () => null;
+
+  test("reads its version from the Caskroom path, and says a restart is the whole update", async () => {
+    // Mid-upgrade: brew has renamed the old directory and installed the new one.
+    const session = caskroom("0.155.1.upgrading", "0.156.0")("0.155.1.upgrading");
+    expect(await resolveAgentInstall(session, [], new Map(), unreadable)).toMatchObject({
+      version: "0.155.1",
+      packageId: "codex",
+      behind: true,
+      newerVersion: "0.156.0",
+      restartToUpdate: true,
+    });
+  });
+
+  test("the newest installed version wins over an older live peer", async () => {
+    const at = caskroom("0.156.0");
+    const install = await resolveAgentInstall(at("0.154.0.upgrading"), [at("0.155.1.upgrading")], new Map(), unreadable);
+    expect(install).toMatchObject({ version: "0.154.0", newerVersion: "0.156.0", restartToUpdate: true });
+  });
+
+  test("a session on the installed version is not behind, and a directory mid-upgrade is not an install", async () => {
+    const at = caskroom("0.156.0", "0.157.0.upgrading");
+    const install = await resolveAgentInstall(at("0.156.0"), [], new Map(), async () => "0.156.0");
+    expect(install.behind).toBe(false);
+    expect(install.restartToUpdate).toBeUndefined();
+  });
+
+  test("a cask that updated itself in place is not behind its own older directory name", async () => {
+    // Claude Code's cask self-updates: the directory keeps its install-time
+    // name while the binary inside reports the newer version.
+    const at = caskroom("0.150.0");
+    expect((await resolveAgentInstall(at("0.150.0"), [], new Map(), async () => "0.156.0")).behind).toBe(false);
+  });
+
+  test("the newest of several installed versions, compared as versions, not names", async () => {
+    const at = caskroom("0.9.0", "0.10.0", "0.156.0");
+    expect(await resolveAgentInstall(at("0.9.0"), [], new Map(), unreadable)).toMatchObject({
+      version: "0.9.0",
+      newerVersion: "0.156.0",
+      restartToUpdate: true,
+    });
+  });
+
+  test("a newer copy running elsewhere, not installed here, still gives the update command", async () => {
+    const at = caskroom("0.155.1");
+    const install = await resolveAgentInstall(at("0.155.1"), [at("0.156.0")], new Map(), unreadable);
+    expect(install).toMatchObject({ behind: true, newerVersion: "0.156.0", updateCommand: "brew upgrade --cask --greedy codex" });
+    expect(install.restartToUpdate).toBeUndefined();
   });
 });
 
@@ -173,6 +244,8 @@ describe("isAgentInstall: the wire guard", () => {
   test("rejects a bad backend, an unknown location kind, and a wrong-typed field", () => {
     expect(isAgentInstall({ ...valid, backend: "gpt" })).toBe(false);
     expect(isAgentInstall({ ...valid, location: "app-store" })).toBe(false);
+    expect(isAgentInstall({ ...valid, restartToUpdate: true })).toBe(true);
+    expect(isAgentInstall({ ...valid, restartToUpdate: "yes" })).toBe(false);
     expect(isAgentInstall({ ...valid, behind: "yes" })).toBe(false);
     expect(isAgentInstall({ ...valid, version: 2.1266 })).toBe(false);
     expect(isAgentInstall(null)).toBe(false);
