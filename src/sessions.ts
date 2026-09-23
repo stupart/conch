@@ -38,7 +38,17 @@ export interface LabelOverrideOptions {
 export interface RenameSessionLabelOptions extends LabelOverrideOptions, VoiceOverrideOptions {}
 export interface SessionLookupOptions extends LabelOverrideOptions, CodexSessionRegistryOptions {}
 
-export interface RegistrySnapshotOptions extends CodexSessionRegistryOptions {
+/**
+ * A live `claude attach <jobId>` process's pid, keyed by job id — from one
+ * system-wide `ps`. 2.1.280's `claude attach` writes no registry entry, so a
+ * job's window is findable no other way; see `attachedWindow`. Injectable so
+ * tests never shell out.
+ */
+export interface AttachProbeOptions {
+  attachedJobPids?: () => Promise<ReadonlyMap<string, number> | null>;
+}
+
+export interface RegistrySnapshotOptions extends CodexSessionRegistryOptions, AttachProbeOptions {
   /** Every process's parent pid; injectable so a test can hand in a fake tree. Defaults to one `ps`. */
   processParents?: () => Promise<ReadonlyMap<number, number> | null>;
 }
@@ -156,6 +166,44 @@ export function isEngageable(info: Pick<SessionInfo, "kind" | "entrypoint">): bo
  */
 export const BG_NO_TERMINAL = "running in the background, not open in a terminal";
 
+/** `claude attach <jobId>` as `ps -Ao pid=,args=` shows it: bare or path-prefixed, with room for flags in between. */
+const ATTACH_ARGS = /(?:^|\/)claude(?:\s+\S+)*?\s+attach\s+([A-Za-z0-9][A-Za-z0-9_-]{0,63})\b/;
+
+/**
+ * jobId -> pid of a live `claude attach <jobId>` process, parsed from one
+ * `ps -Ao pid=,args=`. Exported so the parser is unit-testable without a real
+ * process; `defaultAttachedJobPids` is the only real caller.
+ */
+export function parseAttachedJobPids(psOutput: string): Map<string, number> {
+  const byJob = new Map<string, number>();
+  for (const line of psOutput.split("\n")) {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (!match) continue;
+    const attach = ATTACH_ARGS.exec(match[2]!);
+    if (!attach) continue;
+    const pid = Number(match[1]);
+    const jobId = attach[1]!;
+    // ponytail: pid as the tie-break for two attaches of one job (pids climb
+    // monotonically outside wraparound); a real start-time compare would need
+    // a process-identity probe this hot path doesn't otherwise make — upgrade
+    // if double-attach turns out to happen in practice.
+    const current = byJob.get(jobId);
+    if (current === undefined || pid > current) byJob.set(jobId, pid);
+  }
+  return byJob;
+}
+
+/** One system-wide `ps`; null only when it cannot be read, matching `processParentTable`'s convention. */
+async function defaultAttachedJobPids(): Promise<ReadonlyMap<string, number> | null> {
+  try {
+    const proc = Bun.spawn(["ps", "-Ao", "pid=,args="], { stdout: "pipe", stderr: "ignore" });
+    const text = await new Response(proc.stdout).text();
+    return await proc.exited === 0 ? parseAttachedJobPids(text) : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The terminal window attached to a background job, if one is live.
  *
@@ -170,38 +218,93 @@ export const BG_NO_TERMINAL = "running in the background, not open in a terminal
  * Nothing documents which terminal is attached. The window's registry entry
  * carries `parkedJobId` naming the job, which is how Claude Code's own session
  * list pairs them (and it clears the field when the window takes its own
- * conversation back), so that is the signal — undocumented, read defensively.
- * Several windows on one job (a second `claude attach`): the most recently
- * started live one, the terminal a person most likely has in front of them.
+ * conversation back), so that is the signal — undocumented, read defensively,
+ * and only trusted when `genuinelyParked` backs it up (below). Several windows
+ * on one job (a second `claude attach`): the most recently started live one,
+ * the terminal a person most likely has in front of them.
+ *
+ * A second source, checked only when no registry window answers: a live
+ * `claude attach <jobId>` process. 2.1.280 writes NO registry entry for one —
+ * ground truth (2026-09-23): job f31f0d15 was open in a visible Terminal tab
+ * (pid 10231, ttys014, `claude attach f31f0d15`) with no window naming it
+ * anywhere in the registry, so conch reported "running in the background, not
+ * open in a terminal" for a job someone was actively looking at. This is the
+ * only place that pid is findable — never `job.pid` itself; see the comment
+ * on `pid:` in `toInfo` below for why.
  */
-function attachedWindow(job: any, entries: readonly any[]): any {
+async function attachedWindow(
+  claudeDir: string,
+  job: any,
+  entries: readonly any[],
+  attachPids: () => Promise<ReadonlyMap<string, number> | null>,
+): Promise<any> {
   if (job?.kind !== "bg" || typeof job.jobId !== "string" || !job.jobId) return undefined;
   let window: any;
   for (const entry of entries) {
     if (entry?.kind !== "interactive" || entry.parkedJobId !== job.jobId) continue;
     if (!Number.isSafeInteger(entry.pid) || entry.pid <= 0 || !defaultIsPidAlive(entry.pid)) continue;
+    if (!genuinelyParked(claudeDir, entry, job)) continue;
     window = newer(window, entry);
   }
-  return window;
+  if (window) return window;
+  const pid = (await attachPids())?.get(job.jobId);
+  return pid && defaultIsPidAlive(pid) ? { pid } : undefined;
 }
 
 /**
- * The background job a window is parked on, if its registry entry is there. A
- * hook or MCP call from that window names the window's own stale id; the job
- * holds the conversation now.
+ * Does the window's OWN transcript back up its `parkedJobId` — the one piece
+ * of evidence beyond the bare field.
+ *
+ * Claude Code 2.1.280's daemon pre-spawns idle "bg-spare" job slots per
+ * project directory (the registry's `spare: true`) and can leave a live
+ * window's `parkedJobId` pointing at one it never backgrounded anything into.
+ * Ground truth (2026-09-23): window 94777 kept running `claude --resume
+ * 2f266f8d` — 3,632 real lines, actively growing — the whole time its
+ * `parkedJobId` named job 25d17f50, whose entire transcript was the two
+ * metadata records (`ai-title`, `agent-name`) Claude Code wrote when the spare
+ * got auto-named; never a `user` or `assistant` record, and no
+ * `bridge-session` or other link to 2f266f8d either. Trusting the field alone
+ * hid the real 3,632-line conversation behind that empty job's row — this
+ * row's id really was 2f266f8d earlier the same day, before the daemon parked
+ * it. Fixing this un-hides it: the window was simply never moved.
+ *
+ * A genuine background move leaves the SAME mark `movedToLiveSession` already
+ * requires elsewhere: the window's own transcript ends in `continued-in`
+ * naming the successor, with nothing written since (`readContinuedIn`,
+ * 2.1.266). When the window's transcript cannot be read at all — a fresh
+ * `claude attach` parked before it ever had a conversation of its own, the
+ * existing "several windows on one job" case — there is nothing to disprove
+ * the field with, so it is still trusted; only a transcript that actively
+ * contradicts it withdraws that trust.
  */
-function parkedJob(window: any, entries: readonly any[]): any {
+function genuinelyParked(claudeDir: string, window: any, job: any): boolean {
+  const path = liveTranscriptPath(claudeDir, window?.cwd, window?.sessionId);
+  return !path || readContinuedIn(path) === job.sessionId;
+}
+
+/**
+ * The background job a window is parked on, if its registry entry is there
+ * AND the window's own transcript backs it up (`genuinelyParked`). A hook or
+ * MCP call from that window names the window's own stale id; the job holds
+ * the conversation now — but only when the move is real.
+ */
+function parkedJob(claudeDir: string, window: any, entries: readonly any[]): any {
   if (window?.kind !== "interactive" || typeof window.parkedJobId !== "string" || !window.parkedJobId) {
     return undefined;
   }
-  return entries.find((entry) => entry?.kind === "bg" && entry.jobId === window.parkedJobId);
+  const job = entries.find((entry) => entry?.kind === "bg" && entry.jobId === window.parkedJobId);
+  return job && genuinelyParked(claudeDir, window, job) ? job : undefined;
 }
 
 /**
  * Look up a live session in Claude Code's registry (~/.claude/sessions/<pid>.json).
  * Gives us the /rename-able session name and the CLI pid for pane targeting.
  */
-export async function findSession(claudeDir: string, sessionId: string): Promise<SessionInfo | null> {
+export async function findSession(
+  claudeDir: string,
+  sessionId: string,
+  options: AttachProbeOptions = {},
+): Promise<SessionInfo | null> {
   const wanted = parseWindowKey(sessionId);
   const all = await registryEntries(join(claudeDir, "sessions"));
   let match: any;
@@ -212,8 +315,8 @@ export async function findSession(claudeDir: string, sessionId: string): Promise
     match = newer(match, entry);
   }
   // A window parked on a job answers for the job.
-  match = parkedJob(match, all) ?? match;
-  return match ? currentName(toInfo(match, undefined, all), claudeDir) : null;
+  match = parkedJob(claudeDir, match, all) ?? match;
+  return match ? currentName(await toInfo(claudeDir, match, undefined, all, options.attachedJobPids), claudeDir) : null;
 }
 
 /**
@@ -230,6 +333,7 @@ export async function parkedWindowJob(
   claudeDir: string,
   sessionId: string,
   pid?: number,
+  options: AttachProbeOptions = {},
 ): Promise<SessionInfo | null> {
   const wanted = parseWindowKey(sessionId);
   if (!wanted.sessionId) return null;
@@ -240,8 +344,8 @@ export async function parkedWindowJob(
     ? named
     : pid && pid > 0 ? all.filter((entry) => entry.pid === pid) : [];
   for (const window of windows) {
-    const job = parkedJob(window, all);
-    if (job) return currentName(toInfo(job, undefined, all), claudeDir);
+    const job = parkedJob(claudeDir, window, all);
+    if (job) return currentName(await toInfo(claudeDir, job, undefined, all, options.attachedJobPids), claudeDir);
   }
   return null;
 }
@@ -295,6 +399,7 @@ async function registryEntries(dir: string): Promise<any[]> {
 export async function findHookWindow(
   claudeDir: string,
   agentSessionId: string,
+  options: AttachProbeOptions = {},
 ): Promise<SessionInfo | null> {
   if (!agentSessionId) return null;
   const all = await registryEntries(join(claudeDir, "sessions"));
@@ -302,8 +407,8 @@ export async function findHookWindow(
   if (entries.length === 0) return null;
   if (entries.length === 1) {
     // A window parked on a job speaks for the job's row, not its stale id.
-    const entry = parkedJob(entries[0], all) ?? entries[0];
-    return currentName(toInfo(entry, undefined, all), claudeDir);
+    const entry = parkedJob(claudeDir, entries[0], all) ?? entries[0];
+    return currentName(await toInfo(claudeDir, entry, undefined, all, options.attachedJobPids), claudeDir);
   }
 
   const pids = new Set<number>(
@@ -314,7 +419,7 @@ export async function findHookWindow(
   // newest window is then the same guess as before, and no worse.
   const chosen = entries.find((e) => e.pid === pid) ?? entries.reduce(newer, undefined);
   return {
-    ...toInfo(chosen, undefined, all),
+    ...(await toInfo(claudeDir, chosen, undefined, all, options.attachedJobPids)),
     sessionId: windowKey(agentSessionId, chosen.pid, true),
     agentSessionId,
   };
@@ -380,13 +485,20 @@ function currentName(info: SessionInfo, claudeDir: string): SessionInfo {
 /**
  * Project a raw registry JSON entry onto SessionInfo (keeps the fields conch
  * actually uses). `entries` is the rest of the registry, where a background
- * job finds the window attached to it.
+ * job finds the window attached to it. `attachPids` is only ever awaited for
+ * a `bg` entry with no registry-based window (see `attachedWindow`).
  */
-function toInfo(entry: any, backend?: SessionInfo["backend"], entries: readonly any[] = []): SessionInfo {
+async function toInfo(
+  claudeDir: string,
+  entry: any,
+  backend?: SessionInfo["backend"],
+  entries: readonly any[] = [],
+  attachPids: () => Promise<ReadonlyMap<string, number> | null> = defaultAttachedJobPids,
+): Promise<SessionInfo> {
   const background = !backend && entry.kind === "bg";
   // Only the route comes from the window. Id, status, name and startedAt stay
   // the job's: the window's entry froze the moment it parked.
-  const window = background ? attachedWindow(entry, entries) : undefined;
+  const window = background ? await attachedWindow(claudeDir, entry, entries, attachPids) : undefined;
   return {
     sessionId: entry.sessionId,
     ...(backend ? { backend } : {}),
@@ -400,6 +512,14 @@ function toInfo(entry: any, backend?: SessionInfo["backend"], entries: readonly 
     ...(typeof entry.bridgeSessionId === "string" && entry.bridgeSessionId
       ? { bridgeSessionId: entry.bridgeSessionId }
       : {}),
+    // NEVER `entry.pid` here for a background row, even though that looks like
+    // the obvious fix when this reads 0: a `bg` job's own registry pid sits on
+    // a hidden daemon pty (`claude --bg-pty-host`), not a Terminal tab, so
+    // typing into it types into a pty nobody can see. Measured 2026-09-23: job
+    // f31f0d15's own pid (9939) was on ttys008 (not a Terminal tab at all);
+    // the real, visible tab (ttys014) belonged to a `claude attach` process
+    // instead — that's `window` above, from the registry or from
+    // `attachedWindow`'s `ps` fallback, never the job's own `entry.pid`.
     pid: background ? window?.pid ?? 0 : entry.pid,
     ...(background && typeof entry.jobId === "string" && entry.jobId ? { jobId: entry.jobId } : {}),
     ...(background && Number.isSafeInteger(entry.pid) ? { agentPid: entry.pid } : {}),
@@ -701,12 +821,15 @@ export async function registrySnapshot(
   }
   // One conversation is one row. The window a conversation moved out of stays
   // live under the old id; the live session it moved to is the row. A window
-  // parked on a job that is listed is that job's terminal, part of its row,
-  // whether or not its own transcript says so (a `claude attach` window).
+  // parked on a job that is listed is that job's terminal, part of its row —
+  // but only when `genuinelyParked` backs the field up (a plain `claude
+  // attach` window has no transcript of its own to contradict it with, so it
+  // still counts; a window independently resuming a different, real
+  // conversation does not — see `parkedJob`).
   const engaged = new Set(claudeEntries.map((entry) => entry.sessionId));
   const moved = new Set(
     claudeEntries.filter((entry) =>
-      parkedJob(entry, claudeEntries) !== undefined
+      parkedJob(claudeDir, entry, claudeEntries) !== undefined
       || movedToLiveSession(claudeDir, entry, engaged)),
   );
   // A session id is not a window. `claude --resume <id>` in a second terminal
@@ -716,9 +839,15 @@ export async function registrySnapshot(
     if (moved.has(entry)) continue;
     windows.set(entry.sessionId, (windows.get(entry.sessionId) ?? 0) + 1);
   }
+  // Computed once per snapshot and shared by every `bg` entry that needs it,
+  // never for one that already has a live registry-parked window — the real
+  // `ps` this defaults to only runs when something actually asks (see
+  // `attachedWindow`).
+  let attachPidsOnce: Promise<ReadonlyMap<string, number> | null> | undefined;
+  const attachPids = () => (attachPidsOnce ??= (options.attachedJobPids ?? defaultAttachedJobPids)());
   for (const entry of claudeEntries) {
     if (moved.has(entry)) continue;
-    const info = toInfo(entry, undefined, allEntries);
+    const info = await toInfo(claudeDir, entry, undefined, allEntries, attachPids);
     if (windows.get(entry.sessionId) === 1) {
       infos.push(currentName(info, claudeDir));
       continue;
@@ -738,7 +867,7 @@ export async function registrySnapshot(
   const codex = readCodexSessions(options);
   for (const entry of codex.entries) {
     liveIds.add(entry.sessionId);
-    infos.push(toInfo(entry, "codex"));
+    infos.push(await toInfo(claudeDir, entry, "codex"));
   }
   if (!codex.complete) complete = false;
 
@@ -754,7 +883,7 @@ export async function registrySnapshot(
   for (const entry of observed.entries) {
     if (liveIds.has(entry.sessionId)) continue;
     liveIds.add(entry.sessionId);
-    infos.push(toInfo(entry, "codex"));
+    infos.push(await toInfo(claudeDir, entry, "codex"));
   }
   if (!observed.complete) complete = false;
 
