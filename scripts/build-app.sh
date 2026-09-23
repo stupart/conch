@@ -74,7 +74,8 @@ codesign -dv --verbose=2 "$INSTALLED_APP_PATH"
 
 if [[ -n "$WAS_RUNNING" ]]; then
   echo "Relaunching conch.app"
-  open -a "$INSTALLED_APP_PATH"
+  # -g: in the background, so a deploy never takes focus from whatever you're typing in.
+  open -g -a "$INSTALLED_APP_PATH"
 fi
 
 echo "Installed $INSTALLED_APP_PATH"
