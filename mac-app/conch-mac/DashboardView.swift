@@ -1659,6 +1659,10 @@ private struct ConversationPane: View {
     /// promise the pane cannot keep — the same rule the deliverable pages already follow.
     private var workingFolder: String? {
         guard let folder = focusedRow?.workFolder, !folder.isEmpty else { return nil }
+        // Not the home folder: a session started there has no project, and a tree of
+        // everything you own beside its first message read as broken (Tyler, 2026-09-24).
+        // With no deliverable either, the conversation takes the whole stage.
+        guard (folder as NSString).standardizingPath != (NSHomeDirectory() as NSString).standardizingPath else { return nil }
         return folder
     }
 
