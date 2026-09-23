@@ -965,7 +965,7 @@ export type RuntimeControlResponse =
      * nobody can see.
      */
     kind: "session-needs-trust";
-    backend: "codex";
+    backend: "claude" | "codex";
     cwd: string;
   }
   /** `notCarriedOver`: flags on the old command line a restart could not validate, so did not replay. */
@@ -1465,10 +1465,10 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
       : { ok: false, err: "invalid config-rollback response" };
   }
   if (value.kind === "session-needs-trust") {
-    if (value.backend !== "codex" || typeof value.cwd !== "string" || !value.cwd) {
+    if ((value.backend !== "codex" && value.backend !== "claude") || typeof value.cwd !== "string" || !value.cwd) {
       return { ok: false, err: "invalid needs-trust response" };
     }
-    return { ok: true, value: { kind: "session-needs-trust", backend: "codex", cwd: value.cwd } };
+    return { ok: true, value: { kind: "session-needs-trust", backend: value.backend, cwd: value.cwd } };
   }
   if (value.kind === "session-started") {
     if ((value.backend !== "claude" && value.backend !== "codex") || typeof value.resumed !== "boolean") {

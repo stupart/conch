@@ -92,8 +92,9 @@ describe("phone working folder for fresh sessions", () => {
     expect(ledger).toContain("trustFolder: cwd.map(trustedFolders.contains) ?? false");
     for (const shared of [
       '"Do you trust this folder?"',
-      'Button("Yes, continue")',
-      'Button("No, cancel", role: .cancel)',
+      // Codex's two options, and Claude's, each in the agent's own words.
+      'Button(effectiveBackend == .codex ? "Yes, continue" : "Yes, I trust this folder")',
+      'Button(effectiveBackend == .codex ? "No, cancel" : "No, exit", role: .cancel)',
       "trustedFolders.insert(cwd)",
       '"higher risk of prompt injection. Trusting the directory allows "',
       '"conch will tell Codex this for this session only, and will not "',
@@ -102,7 +103,7 @@ describe("phone working folder for fresh sessions", () => {
       expect(macView).toContain(shared);
     }
     // Answering yes restarts; the trust set is consulted before the send.
-    const yes = ledger.indexOf('Button("Yes, continue")');
+    const yes = ledger.indexOf('Button(effectiveBackend == .codex ? "Yes, continue" : "Yes, I trust this folder")');
     expect(yes).toBeGreaterThan(-1);
     const afterYes = ledger.slice(yes);
     expect(afterYes).toContain("trustedFolders.insert(cwd)");

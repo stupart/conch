@@ -179,8 +179,13 @@ describe("a session whose binary brew deleted while it ran", () => {
     fs.chmodSync(binary, 0o755);
     const child = Bun.spawn([binary, "30"], { stdout: "ignore", stderr: "ignore" });
     try {
-      await Bun.sleep(100);
-      const live = readProcessIdentity(child.pid);
+      // Until it has exec'd: a just-copied binary can take seconds to start on a loaded Mac,
+      // and a fixed 100 ms failed every gate run at load 70-100 (2026-09-24).
+      let live = readProcessIdentity(child.pid);
+      for (let waited = 0; live?.executable !== binary && waited < 3_000; waited += 50) {
+        await Bun.sleep(50);
+        live = readProcessIdentity(child.pid);
+      }
       expect(live?.executable).toBe(binary);
       fs.rmSync(binary);
       const orphaned = readProcessIdentity(child.pid);

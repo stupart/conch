@@ -136,8 +136,10 @@ import {
   readProcessArgs,
   refreshSessionForClose,
   restartRequest,
+  acceptClaudeTrust,
   startTerminalSession,
   terminalSessionCommand,
+  type StartSessionRequest,
 } from "./session-lifecycle.ts";
 import { SessionStartOverlay } from "./session-start-overlay.ts";
 import { TerminalComposer } from "./terminal-composer.ts";
@@ -530,6 +532,17 @@ export function shouldReportMissingCodexPid(
   }
   reported.delete(session.sessionId);
   return false;
+}
+
+/**
+ * Open a session in Terminal and, for Claude in a folder you just trusted in the app, answer
+ * its trust prompt there: Claude takes no such answer at launch (Codex does, as a flag).
+ */
+async function launchSession(request: StartSessionRequest): Promise<void> {
+  const { tty } = await startTerminalSession(request);
+  if (request.trustFolder === true && adapterFor(request.backend).trustTypedAtLaunch && tty) {
+    void acceptClaudeTrust(tty).then((outcome) => log(`trust prompt in ${tty}: ${outcome}`), () => {});
+  }
 }
 
 /** Build the external document with daemon-owned voice and priority resolution. */
@@ -2016,7 +2029,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     void renderSessionPanel();
     if (!relaunch) return;
     try {
-      await startTerminalSession(relaunch.request);
+      await launchSession(relaunch.request);
     } catch (error) {
       throw new Error(`closed, but could not open it again (${(error as Error).message}); resume it from Start`);
     }
@@ -2191,7 +2204,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   sessionStartOverlay = new SessionStartOverlay({
     controller: {
       start: async (request) => {
-        await startTerminalSession(request);
+        await launchSession(request);
         log(`started fresh ${request.backend} session in ${request.cwd ?? conchHome()}`);
         void renderSessionPanel();
       },
@@ -2322,15 +2335,14 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       });
       return resolveAgentInstall({ backend: message.backend, executable }, peers, installVersionCache);
     },
-    start: (message) => startTerminalSession({
+    start: (message) => launchSession({
       ...message,
       // Read at start time, so changing the setting affects the next session
       // you launch rather than needing a daemon restart.
       bypassPermissions: cfg.bypassPermissions,
       ...(message.trustFolder === true ? { trustFolder: true as const } : {}),
     }),
-    folderTrusted: adapterFor("claude").folderTrusted,
-    codexFolderTrusted: adapterFor("codex").folderTrusted,
+    folderTrusted: (backend, cwd) => adapterFor(backend).folderTrusted(cwd),
     close: closeLiveSession,
     report: (message) => {
       appendConchError(

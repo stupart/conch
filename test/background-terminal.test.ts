@@ -63,7 +63,8 @@ describe("Open in Terminal: claude attach <jobId>", () => {
     });
     expect(calls.length).toBe(1);
     expect(calls[0]![0]).toBe("osascript");
-    expect(calls[0]!).toContain("do script (item 1 of argv)");
+    expect(calls[0]!).toContain("set newTab to do script (item 1 of argv)");
+    expect(calls[0]!).toContain("return tty of newTab");
     expect(calls[0]!.at(-1)).toBe("cd -- '/Users/t' && claude attach 'f31f0d15'");
   });
 

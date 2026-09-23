@@ -894,22 +894,28 @@ private struct StartSessionSheet: View {
                 set: { if !$0 { pendingTrust = nil } }
             )
         ) {
-            // Codex's own two options, in its own order — the same alert the
-            // Mac shows, because it is Codex's question, not conch's.
-            Button("Yes, continue") {
+            // The agent's own two options, in its own words — the same alert the Mac
+            // shows, because it is the agent's question, not conch's.
+            Button(effectiveBackend == .codex ? "Yes, continue" : "Yes, I trust this folder") {
                 guard let cwd = pendingTrust else { return }
                 pendingTrust = nil
                 trustedFolders.insert(cwd)
                 start()
             }
-            Button("No, cancel", role: .cancel) { pendingTrust = nil }
+            Button(effectiveBackend == .codex ? "No, cancel" : "No, exit", role: .cancel) { pendingTrust = nil }
         } message: {
-            Text(
-                "\(pendingTrust ?? "")\n\nWorking with untrusted contents comes with "
-                + "higher risk of prompt injection. Trusting the directory allows "
-                + "project-local config, hooks, and exec policies to load.\n\n"
-                + "conch will tell Codex this for this session only, and will not "
-                + "change your Codex configuration."
+            Text(effectiveBackend == .codex
+                ? "\(pendingTrust ?? "")\n\nWorking with untrusted contents comes with "
+                    + "higher risk of prompt injection. Trusting the directory allows "
+                    + "project-local config, hooks, and exec policies to load.\n\n"
+                    + "conch will tell Codex this for this session only, and will not "
+                    + "change your Codex configuration."
+                : "\(pendingTrust ?? "")\n\nQuick safety check: Is this a project you created "
+                    + "or one you trust? (Like your own code, a well-known open source project, "
+                    + "or work from your team). If not, take a moment to review what's in this "
+                    + "folder first.\n\nClaude Code'll be able to read, edit, and execute files "
+                    + "here.\n\nconch will give Claude Code this answer in Terminal on your Mac, "
+                    + "where Claude Code remembers it for this folder."
             )
         }
         // `task(id:)` rather than `onChange`, so this fires when the sheet
