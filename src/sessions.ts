@@ -278,6 +278,17 @@ async function attachedWindow(
  * contradicts it withdraws that trust.
  */
 function genuinelyParked(claudeDir: string, window: any, job: any): boolean {
+  // The same decoy an hour later (2026-09-23): 25d17f50 took the Prime page
+  // conversation over — 33 user and 62 assistant records, typed into from
+  // window 94777 — and 2.1.280 wrote no `continued-in` into the window's
+  // transcript for it. The window was that job's viewer, while conch showed it
+  // as a stale row of its own and the live job as having no terminal. The
+  // decoy was only ever an EMPTY job, so a job holding a conversation is
+  // trusted as it stands.
+  // ponytail: a window pointing at some other job that has a conversation of
+  // its own would pass too; unobserved — compare the two transcripts' last
+  // activity if it ever turns up.
+  if (!unusedBackgroundJob(claudeDir, job)) return true;
   const path = liveTranscriptPath(claudeDir, window?.cwd, window?.sessionId);
   return !path || readContinuedIn(path) === job.sessionId;
 }
