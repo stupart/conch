@@ -102,3 +102,26 @@ describe("a Codex turn that ends without a reply", () => {
       .toEqual([]);
   });
 });
+
+describe("text Claude Code recorded as pasted", () => {
+  // Claude Code 2.1.280 wraps pasted text; conch pastes every long message (measured on the
+  // brand identity session, 2026-09-23, where each one then showed twice).
+  const pasted = (words: string) => `\n\n<pasted_content id="6a36">\n${words}\n</pasted_content id="6a36">\n`;
+  const said = (lines: unknown[]) => {
+    const conversation = buildConversation("s", lines.map((l) => JSON.stringify(l)), "claude");
+    return conversation.order.map((id) => conversation.items[id]!).filter((item) => item.kind === "user").map((item) => item.text);
+  };
+
+  test("shows the words, without the tags, so the app's Sent bubble gives way to it", () => {
+    expect(said([
+      { type: "user", uuid: "u1", message: { role: "user", content: pasted("I think the left option looks better") } },
+      { type: "user", uuid: "u2", message: { role: "user", content: [{ type: "text", text: "look at this:" + pasted("line one\nline two") }] } },
+      { type: "attachment", uuid: "a1", attachment: { type: "queued_command", origin: { kind: "human" }, prompt: pasted("sent while busy"), source_uuid: "q1" } },
+    ])).toEqual(["I think the left option looks better", "look at this:\n\nline one\nline two", "sent while busy"]);
+  });
+
+  test("leaves text alone that merely mentions the tag", () => {
+    expect(said([{ type: "user", uuid: "u1", message: { role: "user", content: 'what is <pasted_content id="x"> for?' } }]))
+      .toEqual(['what is <pasted_content id="x"> for?']);
+  });
+});

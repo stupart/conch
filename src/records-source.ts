@@ -6,7 +6,8 @@ import type { RecordObject, RecordProvider } from "./records-types.ts";
 // into that shape on their next read rather than showing two normalizers' output at once.
 // Per provider, so a fix to one re-reads only its transcripts (1.75 GB each, 2026-09-23).
 // codex 3: Codex's injected context is no longer stored as Tyler's words.
-export const RECORD_PARSER_VERSION = { claude: 2, codex: 3 } as const satisfies Record<RecordProvider, number>;
+// claude 3: pasted text is stored without Claude Code's `<pasted_content>` tags.
+export const RECORD_PARSER_VERSION = { claude: 3, codex: 3 } as const satisfies Record<RecordProvider, number>;
 export const SOURCE_PROBE_BYTES = 256;
 
 export interface StoredRecordSource {

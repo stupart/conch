@@ -184,9 +184,9 @@ test("the parser version is per provider: a Codex upgrade re-reads Codex's sourc
   store.ingest(codex(said("codex words"), store.source("codex-source")));
   expect(rows(store, "SELECT id, parser_version FROM sources ORDER BY id"))
     .toEqual([{ id: "codex-source", parser_version: RECORD_PARSER_VERSION.codex }, { id: "source", parser_version: RECORD_PARSER_VERSION.claude }]);
-  // A store written before the split holds one version for both.
+  // Codex's parser moved on; Claude's did not.
   const db = new Database(store.path);
-  db.exec(`UPDATE sources SET parser_version=${RECORD_PARSER_VERSION.claude}`);
+  db.exec(`UPDATE sources SET parser_version=parser_version-1 WHERE id='codex-source'`);
   db.close();
   expect(store.ingest(batch(jsonl(user("u", "claude words"), user("u2", "more")), store.source("source"))).change).toBe("append");
   expect(store.ingest(codex(said("codex words", "more"), store.source("codex-source"))).change).toBe("rewrite");
