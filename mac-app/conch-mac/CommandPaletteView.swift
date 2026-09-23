@@ -310,7 +310,7 @@ struct CommandPaletteSheet: View {
                 backend: row.backend ?? "claude",
                 cwd: "",
                 sessionId: row.id
-            )
+            ).capabilities
             if selectedID == nil { selectedID = visible.first?.id }
         }
     }

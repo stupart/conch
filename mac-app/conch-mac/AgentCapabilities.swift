@@ -329,3 +329,42 @@ extension AgentCapabilities.McpServer {
         return URL(string: url)?.host ?? url
     }
 }
+
+/// Which Claude Code / Codex binary THIS session's process is actually
+/// running, where it lives, and whether a newer copy of the same agent is
+/// running elsewhere on this Mac right now.
+///
+/// A sibling of `AgentCapabilities`, not a field on it: this comes from the
+/// process's own identity (the kernel's `proc_pidpath`, not a config file)
+/// plus a bounded `--version` of that exact binary — the one thing here conch
+/// knows with certainty rather than "configured, availability unknown". Absent
+/// entirely when that identity was never captured, rather than shown as an
+/// "unknown" row: SURFACE and ADVISE only, never a guess and never a
+/// suggestion to run something conch did not verify.
+struct AgentInstall: Decodable, Equatable, Sendable {
+    let backend: String
+    let executable: String
+    /// From `<executable> --version`; nil when it could not be read.
+    let version: String?
+    /// "homebrew-cask" | "npm-global" | "claude-desktop-app" | "other"
+    let location: String
+    let packageId: String?
+    /// What would update THIS install; nil when conch has no safe command to give.
+    let updateCommand: String?
+    /// An older version than another copy of the SAME agent running on this Mac right now.
+    let behind: Bool
+    /// The newer version found among this Mac's other live copies, when behind.
+    let newerVersion: String?
+}
+
+extension AgentInstall {
+    /// Says where it lives however specifically conch can, but never fabricates a token it doesn't have.
+    var locationLabel: String {
+        switch location {
+        case "homebrew-cask": return packageId.map { "Homebrew cask · \($0)" } ?? "Homebrew cask"
+        case "npm-global": return packageId.map { "npm · \($0)" } ?? "npm global"
+        case "claude-desktop-app": return "the Claude desktop app"
+        default: return "an install conch does not recognize"
+        }
+    }
+}

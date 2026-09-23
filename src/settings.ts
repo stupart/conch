@@ -18,6 +18,7 @@ import {
   isAgentCapabilitiesRead,
   type AgentCapabilitiesRead,
 } from "./agent-capabilities.ts";
+import { isAgentInstall, type AgentInstall } from "./agent-install.ts";
 import type { ResumableSession } from "./resumable.ts";
 import { startOptionsError, teleportRequestError } from "./session-lifecycle.ts";
 import { normalizeSessionLabel } from "./sessions.ts";
@@ -940,7 +941,12 @@ export interface PairingOpen {
 export type RuntimeControlResponse =
   | HistoryResponse
   | { kind: "resumable"; sessions: ResumableSession[]; complete: boolean }
-  | { kind: "agent-capabilities"; inventory: AgentCapabilitiesRead }
+  | {
+    kind: "agent-capabilities";
+    inventory: AgentCapabilitiesRead;
+    /** This session's own binary, where it lives, and whether a newer copy of the same agent is running elsewhere on this Mac. Absent when the process identity is unknown. */
+    install?: AgentInstall;
+  }
   | {
     kind: "session-started";
     backend: "claude" | "codex";
@@ -1388,9 +1394,20 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
   if (!record(value) || typeof value.kind !== "string") return { ok: false, err: "invalid control response" };
   if (["history-page", "history-item", "history-off", "history-error"].includes(value.kind)) return validateHistoryResponse(value);
   if (value.kind === "agent-capabilities") {
-    return isAgentCapabilitiesRead(value.inventory)
-      ? { ok: true, value: { kind: "agent-capabilities", inventory: value.inventory } }
-      : { ok: false, err: "invalid agent capabilities response" };
+    if (!isAgentCapabilitiesRead(value.inventory)) {
+      return { ok: false, err: "invalid agent capabilities response" };
+    }
+    if (value.install !== undefined && !isAgentInstall(value.install)) {
+      return { ok: false, err: "invalid agent install response" };
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "agent-capabilities",
+        inventory: value.inventory,
+        ...(value.install !== undefined ? { install: value.install as AgentInstall } : {}),
+      },
+    };
   }
   if (value.kind === "resumable") {
     if (!Array.isArray(value.sessions) || value.sessions.length > 500 || typeof value.complete !== "boolean") {

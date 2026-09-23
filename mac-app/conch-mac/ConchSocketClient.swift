@@ -206,6 +206,10 @@ struct ConchCapabilitiesRequest: Encodable, Sendable {
 
 struct ConchCapabilitiesReply: Decodable, Sendable {
     let inventory: AgentCapabilities?
+    /// This session's own binary and whether a newer copy of the same agent
+    /// is running elsewhere on this Mac; absent when the process identity was
+    /// never captured for it.
+    let install: AgentInstall?
 }
 
 /// Flip a plugin or MCP server for the NEXT session, in the agent's own

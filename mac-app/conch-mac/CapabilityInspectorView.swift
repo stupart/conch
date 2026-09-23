@@ -16,6 +16,11 @@ import SwiftUI
 /// scope, and only Apply writes. The running session is never touched.
 struct CapabilityInspectorView: View {
     let capabilities: AgentCapabilities?
+    /// Which binary this session is running, where it lives, and whether a
+    /// newer copy of the same agent is running elsewhere on this Mac. Nil
+    /// when conch never captured this session's process identity — shown as
+    /// nothing, not as "unknown".
+    var install: AgentInstall? = nil
     let isLoading: Bool
     let sessionLabel: String
     /// Debug captures open every row, so a screenshot can prove what the
@@ -152,6 +157,28 @@ struct CapabilityInspectorView: View {
                     .foregroundStyle(ConchPalette.textDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // Which binary this session is actually running, and — SURFACE and
+            // ADVISE only — the exact command that would update THAT install.
+            // conch never runs it: an upgrade swaps the binary for the NEXT
+            // session, never this running one, so the line says so on its face.
+            if let install {
+                HStack(spacing: 8) {
+                    Text("Version")
+                        .font(ConchTypography.font(size: 11))
+                        .foregroundStyle(ConchPalette.textFaint)
+                    Text("\(install.version ?? "unknown") · \(install.locationLabel)")
+                        .font(ConchTypography.font(size: 11))
+                        .foregroundStyle(ConchPalette.textDim)
+                        .textSelection(.enabled)
+                }
+                if install.behind {
+                    Text(behindNotice(install))
+                        .font(ConchTypography.font(size: 10.5))
+                        .foregroundStyle(ConchPalette.statusNeeds)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             if let capabilities, !capabilities.complete {
                 // Deliberately does not name a cause. Incompleteness also
                 // arises from a row limit or a missing package, so claiming
@@ -198,6 +225,17 @@ struct CapabilityInspectorView: View {
         let parts = [thread.model, thread.reasoningEffort, thread.approvalMode, thread.sandboxPolicy]
             .compactMap { $0 }
         return parts.isEmpty ? "" : "Codex recorded " + parts.joined(separator: " · ")
+    }
+
+    /// Says a newer copy exists, gives the exact command (selectable, never
+    /// run by conch), and is explicit that it reaches new sessions only — this
+    /// running one keeps the binary it started with, the same honesty the
+    /// config toggle preview gives for "applies to the next session".
+    private func behindNotice(_ install: AgentInstall) -> String {
+        let newer = install.newerVersion.map { "\($0) is" } ?? "A newer version is"
+        let action = install.updateCommand.map { "Update it for new sessions with: \($0)" }
+            ?? "It updates with the Claude app."
+        return "\(newer) already running elsewhere on this Mac. \(action) This session keeps its own binary either way."
     }
 
     @ViewBuilder
@@ -714,6 +752,7 @@ struct CapabilityInspectorSheet: View {
 
     @EnvironmentObject private var store: StateStore
     @State private var capabilities: AgentCapabilities?
+    @State private var install: AgentInstall?
     @State private var isLoading = true
     /// Bumped after a switch is written, so the inventory is re-read rather than assumed.
     @State private var reloads = 0
@@ -721,6 +760,7 @@ struct CapabilityInspectorSheet: View {
     var body: some View {
         CapabilityInspectorView(
             capabilities: capabilities,
+            install: install,
             isLoading: isLoading,
             sessionLabel: row.label,
             expandAll: expandAll,
@@ -739,13 +779,15 @@ struct CapabilityInspectorSheet: View {
             // and 35-48ms against real configuration is cheap enough that
             // asking again beats deciding when a cache went stale.
             isLoading = true
-            capabilities = await store.capabilities(
+            let read = await store.capabilities(
                 backend: row.backend ?? "claude",
                 // Empty: the daemon resolves the session's own directory,
                 // which it already knows and the app does not.
                 cwd: "",
                 sessionId: row.id
             )
+            capabilities = read.capabilities
+            install = read.install
             isLoading = false
         }
     }

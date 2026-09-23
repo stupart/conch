@@ -285,6 +285,7 @@ import {
   readAgentCapabilities,
   type AgentCapabilityObservation,
 } from "./agent-capabilities.ts";
+import { resolveAgentInstall } from "./agent-install.ts";
 
 /**
  * The turn-based voice loop.
@@ -712,6 +713,14 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
   let panelOrder: string[] = [];
   let panelLabels = new Map<string, string>();
   let panelSessions = new Map<string, SessionInfo>();
+  // Keyed by executable path, which is itself version-specific for a Homebrew
+  // cask or a desktop app bundle (each version lives at its own path) — so a
+  // cache hit never goes stale for those. npm global installs mutate in place
+  // at the same path, so an upgrade there is not picked up until the daemon
+  // restarts.
+  // ponytail: no invalidation beyond daemon restart; add a TTL if a stale npm
+  // version reading turns out to matter in practice.
+  const installVersionCache = new Map<string, string | null>();
   const registrySnapshot = async (claudeDir: string): Promise<Awaited<ReturnType<typeof readRegistrySnapshot>>> => {
     const snapshot = await readRegistrySnapshot(claudeDir);
     return snapshot ? { ...snapshot, infos: snapshot.infos.map((session) =>
@@ -2236,6 +2245,23 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           ? {}
           : { claudeHome: cfg.claudeDir }),
       });
+    },
+    // This session's own binary + whether a newer copy of the same agent is
+    // running elsewhere on this Mac right now. Never a guess: with no
+    // sessionId, or no process identity captured for it, there is nothing to
+    // report and the inspector shows nothing rather than something invented.
+    readInstall: async (message) => {
+      const executable = message.sessionId
+        ? panelSessions.get(message.sessionId)?.processIdentity?.executable
+        : undefined;
+      if (!executable) return undefined;
+      const peers = [...panelSessions.values()].flatMap((candidate) => {
+        const peerExecutable = candidate.processIdentity?.executable;
+        return peerExecutable && candidate.backend
+          ? [{ backend: candidate.backend, executable: peerExecutable }]
+          : [];
+      });
+      return resolveAgentInstall({ backend: message.backend, executable }, peers, installVersionCache);
     },
     start: (message) => startTerminalSession({
       ...message,
