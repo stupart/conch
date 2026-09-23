@@ -55,7 +55,11 @@ export class RecordsIndexer {
   constructor(private store: RecordStore, private options: RecordsIndexerOptions) {
     this.batchBytes = options.batchBytes ?? 256 * 1024;
     this.batchLines = options.batchLines ?? 256;
-    this.maxRecordBytes = options.maxRecordBytes ?? 8 * 1024 * 1024;
+    // Twice the longest line in Tyler's transcripts (15.2 MB, a Codex `compacted` record,
+    // 2026-09-23). At 8 MB two rollouts stopped at such a line with 513 MB still unread.
+    // ponytail: a line past this still stops its file; skipping it needs a store API that advances
+    // the cursor without parsing.
+    this.maxRecordBytes = options.maxRecordBytes ?? 32 * 1024 * 1024;
     this.pollMs = options.pollMs ?? 1000;
     this.reconcileMs = options.reconcileMs ?? 30_000;
     if (!options.ownerDeviceId || ![this.batchBytes, this.batchLines, this.maxRecordBytes, this.pollMs, this.reconcileMs]
