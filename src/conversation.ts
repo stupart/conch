@@ -924,7 +924,7 @@ export function summariseToolInput(input: unknown): string {
  * The tradeoff is that two identical messages in one session become one row.
  * Sending the same words twice is rare; seeing everything twice was constant.
  */
-function codexMessageId(kind: string, text: string): string {
+function codexMessageId(kind: string, text: string, turn?: string): string {
   // Trimmed, because the two streams are not byte-identical: the response item
   // carries a trailing newline the event does not. Hashing raw text left every
   // message still doubled, differing only in that one character.
@@ -934,7 +934,37 @@ function codexMessageId(kind: string, text: string): string {
     hash ^= normalized.charCodeAt(index);
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
-  return `${kind}:${hash.toString(36)}`;
+  // The turn keeps a repeated message ("continue", "yes") its own row: two copies of one
+  // message share a turn, the same words sent again later do not.
+  return `${kind}:${turn ? `${turn}:` : ""}${hash.toString(36)}`;
+}
+
+/** The turn a Codex rollout is in, from `task_started` and each item's own `turn_id`. */
+const codexTurn = new WeakMap<Conversation, string>();
+
+/** The words of a Codex item or message: its text parts, whichever casing the version writes. */
+function codexItemText(content: unknown): string {
+  return Array.isArray(content)
+    ? content
+      .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
+      .join("")
+      .trim()
+    : "";
+}
+
+/** One Codex message into the conversation, keyed within its turn (see `codexMessageId`). */
+function upsertCodexMessage(
+  conversation: Conversation,
+  role: "user" | "assistant",
+  text: string,
+  at: number | undefined,
+): void {
+  upsertConversationItem(conversation, {
+    id: codexMessageId(role, text, codexTurn.get(conversation)),
+    kind: role,
+    text,
+    at,
+  });
 }
 
 /**
@@ -1005,6 +1035,27 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
   const ordinal = entry.ordinal ?? conversation.order.length;
 
   if (entry.type === "event_msg") {
+    if (payload.type === "task_started" && typeof payload.turn_id === "string") {
+      codexTurn.set(conversation, payload.turn_id);
+      return;
+    }
+    // What Tyler said and what Codex replied, as Codex itself records them. Current
+    // rollouts (0.151+) write `item_completed` UserMessage / AgentMessage and no longer the
+    // `user_message` / `agent_message` events below; older ones write only those.
+    if (payload.type === "item_completed") {
+      const item = payload.item;
+      if (typeof payload.turn_id === "string") codexTurn.set(conversation, payload.turn_id);
+      if (item?.type === "UserMessage") {
+        const text = stripEchoedQuestion(codexItemText(item.content), codexQuestionOptions.get(conversation));
+        if (text) upsertCodexMessage(conversation, "user", text, at);
+      } else if (item?.type === "AgentMessage") {
+        // Commentary included, as the response_item copy it mirrors always was: Codex's
+        // own transcript shows it, and it is what the phone reads as the turn in progress.
+        const text = codexItemText(item.content);
+        if (text) upsertCodexMessage(conversation, "assistant", text, at);
+      }
+      return;
+    }
     // Codex says the same thing in three places. The index counted 286
     // `event_msg:agent_message` against 165 `response_item:agent_message`, so
     // the stream this did NOT read carried more replies than the one it did.
@@ -1014,22 +1065,12 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
       && typeof payload.message === "string"
       && payload.message.trim()
     ) {
-      upsertConversationItem(conversation, {
-        id: codexMessageId("assistant", payload.message),
-        kind: "assistant",
-        text: payload.message,
-        at,
-      });
+      upsertCodexMessage(conversation, "assistant", payload.message, at);
       return;
     }
     if (payload.type === "user_message" && typeof payload.message === "string") {
       const text = stripEchoedQuestion(payload.message, codexQuestionOptions.get(conversation));
-      upsertConversationItem(conversation, {
-        id: codexMessageId("user", text),
-        kind: "user",
-        text,
-        at,
-      });
+      upsertCodexMessage(conversation, "user", text, at);
     }
     return;
   }
@@ -1038,19 +1079,15 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
   const id = typeof payload.id === "string" ? payload.id : String(ordinal);
   switch (payload.type) {
     case "agent_message": {
+      // One agent of a team messaging another ("Message Type: NEW_TASK / Sender: /root"):
+      // their traffic, not a reply to Tyler.
+      if (payload.author || payload.recipient) return;
       const text = typeof payload.text === "string"
         ? payload.text
         : Array.isArray(payload.content)
           ? payload.content.map((part: any) => part?.text ?? "").join("")
           : "";
-      if (text) {
-        upsertConversationItem(conversation, {
-          id: codexMessageId("assistant", text),
-          kind: "assistant",
-          text,
-          at,
-        });
-      }
+      if (text) upsertCodexMessage(conversation, "assistant", text, at);
       return;
     }
     // The one that carries what Codex actually SAID. Sampled on a live rollout,
@@ -1058,24 +1095,18 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
     // — so ignoring this type left a session rendering as nothing but a string
     // of tool calls, which is exactly what Tyler saw.
     case "message": {
-      const role = payload.role === "user" ? "user" : "assistant";
-      const raw = Array.isArray(payload.content)
-        ? payload.content
-          .map((part: any) => (typeof part?.text === "string" ? part.text : ""))
-          .join("")
-          .trim()
+      // Only the assistant's. This raw stream is also where Codex puts what it injects:
+      // developer instructions, `<skills_instructions>`, `<turn_aborted>`, `<model_switch>`
+      // as developer messages, and `<environment_context>` / `<recommended_plugins>` as
+      // user ones. Measured on one rollout: 24 of its 67 user-role messages were not
+      // Tyler's. What he said comes from the user_message event or the UserMessage item.
+      if (payload.role !== "assistant") return;
+      const text = Array.isArray(payload.content)
+        ? codexItemText(payload.content)
         : typeof payload.text === "string"
           ? payload.text
           : "";
-      const text = role === "user" ? stripEchoedQuestion(raw, codexQuestionOptions.get(conversation)) : raw;
-      if (text) {
-        upsertConversationItem(conversation, {
-          id: codexMessageId(role, text),
-          kind: role,
-          text,
-          at,
-        });
-      }
+      if (text) upsertCodexMessage(conversation, "assistant", text, at);
       return;
     }
     case "reasoning": {
