@@ -1,5 +1,5 @@
 import type { AnswerKey } from "../src/agent-adapter.ts";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, setSystemTime } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -2279,5 +2279,104 @@ describe("answering the question a session is waiting on", () => {
       answers: [{ choices: [0] }],
     }));
     expect(sent).toMatchObject({ delivered: false, reason: "front-window-changed" });
+  });
+});
+
+describe("answering a permission prompt from the Mac card", () => {
+  // Tyler: "it was a confirm thing but it wasn't surfacing in conch". The card sends
+  // `approve` with the prompt's id; the loop presses the same keys a spoken answer does.
+  const approve = (kind: "once" | "always" | "deny", id: string, path = pendingBash()) =>
+    inject("Allow Bash", { transcriptPath: path, pid: 4242, approve: { kind, id } });
+
+  test("Allow, Always allow and Deny press the dialog's own keys", async () => {
+    for (const [kind, keys] of [["once", ["Enter"]], ["always", ["Down", "Enter"]], ["deny", ["Escape"]]] as const) {
+      const h = harness();
+      expect(await h.voice.handle(approve(kind, "tu_1"))).toBe(true);
+      expect(h.keys).toEqual([...keys]);
+      expect(h.texts).toEqual([]);
+    }
+  });
+
+  test("a click for a prompt that is no longer the one up presses nothing", async () => {
+    const h = harness();
+    const sent = await h.voice.handle(approve("once", "tu_older"));
+    expect(sent).toMatchObject({ delivered: false, reason: "that permission is no longer waiting" });
+    expect(h.keys).toEqual([]);
+  });
+
+  test("a prompt answered just before a key would land gets no key", async () => {
+    // The dialog resolves (answered at the keyboard) as conch is about to press: nothing lands.
+    let path = "";
+    const h = harness({
+      beforeKey: () => { writeFileSync(path, readFileSync(path, "utf8") + JSON.stringify(user({ type: "tool_result", tool_use_id: "tu_1", content: "ok" })) + "\n"); },
+    });
+    path = pendingBash();
+    const sent = await h.voice.handle(approve("always", "tu_1", path));
+    expect(sent).toMatchObject({ delivered: false, reason: "the permission changed before conch could answer it" });
+    expect(h.keys).toEqual([]);
+  });
+});
+
+describe("a permission prompt known only from Claude Code's PermissionRequest hook", () => {
+  // 2.1.280 writes nothing to the transcript while its dialog is up: the hook's record is
+  // the only source. Here the transcript has no pending tool at all, as measured.
+  const hookAsk = { id: "hook:0123456789abcdef", name: "Bash", summary: "touch look.txt" };
+  const quiet = () => transcript(user({ type: "text", text: "run it" }));
+  const needs = (path: string) =>
+    permission(path, { approval: hookAsk, announce: "alpha needs you: Bash — touch look.txt" });
+  const dialog = (status: string) => ({ ...busy(), status }) as SessionInfo;
+
+  test("is announced, and published for the card, while Claude's registry says the dialog is up", async () => {
+    const path = quiet();
+    const h = harness({ heard: [[]], window: () => dialog("waiting") });
+    const turn = h.voice.handle(accepted(h, needs(path)));
+    try {
+      await waitFor("the permission announcement", () => h.said.includes(approvalAnnounce("alpha", hookAsk)));
+      expect(h.voice.pendingApprovalFor("s1", path)).toEqual(hookAsk);
+    } finally {
+      h.voice.stop("test cleanup");
+      await turn;
+    }
+  });
+
+  test("a card answer presses keys only once a fresh read says the dialog is open", async () => {
+    const path = quiet();
+    for (const [status, expectKeys] of [["waiting", ["Enter"]], ["busy", []]] as const) {
+      const h = harness({ heard: [[]], window: () => dialog(status) });
+      const turn = h.voice.handle(accepted(h, needs(path)));
+      h.voice.stop("no voice answer in this test");
+      await turn;
+      const sent = await h.voice.handle(inject("Allow Bash", { transcriptPath: path, pid: 4242, approve: { kind: "once", id: hookAsk.id } }));
+      expect(h.keys).toEqual([...expectKeys]);
+      if (status === "busy") expect(sent).toMatchObject({ delivered: false, reason: "the permission dialog is not open" });
+      else expect(sent).toBe(true);
+    }
+  });
+
+  test("a dialog Claude's registry never shows as open is dropped once the grace is over", async () => {
+    const path = quiet();
+    const h = harness({ heard: [[]], window: () => dialog("busy") });
+    const turn = h.voice.handle(accepted(h, needs(path)));
+    h.voice.stop("no voice answer in this test");
+    await turn;
+    // Just announced: the registry may not have caught up yet, so it still shows.
+    expect(h.voice.pendingApprovalFor("s1", path)).toEqual(hookAsk);
+    try {
+      setSystemTime(new Date(Date.now() + 11_000));
+      expect(h.voice.pendingApprovalFor("s1", path)).toBeNull();
+    } finally {
+      setSystemTime();
+    }
+  });
+
+  test("the session moving on (its next prompt starting) forgets it", async () => {
+    const path = quiet();
+    const h = harness({ heard: [[]], window: () => dialog("waiting") });
+    const turn = h.voice.handle(accepted(h, needs(path)));
+    h.voice.stop("no voice answer in this test");
+    await turn;
+    expect(h.voice.pendingApprovalFor("s1", path)).toEqual(hookAsk);
+    await h.voice.handle(accepted(h, turnEnd({ type: "working", transcriptPath: path, eventAt: 2 })));
+    expect(h.voice.pendingApprovalFor("s1", path)).toBeNull();
   });
 });

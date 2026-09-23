@@ -125,6 +125,7 @@ import {
   publishedConversation,
   readConversationTail,
 } from "./conversation.ts";
+import type { PendingApproval } from "./approval.ts";
 import { isWindowKey } from "./window-key.ts";
 import { readSessionContextUsage, type SessionContextUsage } from "./context-meter.ts";
 import { appendConchError } from "./app-errors.ts";
@@ -586,6 +587,8 @@ export function buildDaemonPublishedState(
   audio?: { control: AudioControl; outbox: AudioOutboxItem[] },
   /** Recent terminal delivery outcomes, so a client still holding words can resolve them. */
   deliveries?: readonly PublishedDelivery[],
+  /** The permission prompt a session is showing (the voice loop's `pendingApprovalFor`). */
+  approvalForSessionId?: (sessionId: string, transcriptPath: string | undefined) => PendingApproval | null,
 ): PublishedState {
   return buildPublishedState(
     ownerDeviceId,
@@ -602,6 +605,7 @@ export function buildDaemonPublishedState(
       contextForSessionId: (sessionId) => sessionContexts?.get(sessionId),
       ...(audio ? { audio } : {}),
       ...(deliveries?.length ? { deliveries } : {}),
+      ...(approvalForSessionId ? { approvalForSessionId } : {}),
     },
   );
 }
@@ -1263,6 +1267,10 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     audio: { lease: audioLease, holder: audioHolder },
     quietOverrideBlocked: explicitQuietOverrideBlocked,
     window: (sessionId) => panelSessions.get(sessionId),
+    // The registry file itself, not the last snapshot: a permission key is pressed only while
+    // Claude Code says its dialog is up.
+    freshStatus: async (sessionId) => (await registrySnapshot(cfg.claudeDir))?.infos
+      .find((session) => session.sessionId === sessionId)?.status,
     sessionGone: async (sessionId) => sessionGoneFromSnapshot(await registrySnapshot(cfg.claudeDir), sessionId),
     render: () => void renderSessionPanel(),
     presentElsewhere,
@@ -1790,6 +1798,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         sessionContexts,
         { control: audioHolder.record, outbox: audioOutbox.items },
         recentDeliveries,
+        (sessionId, path) => voice.pendingApprovalFor(sessionId, path),
       );
       publishedStateWriter.request();
       if (theaterMode) theaterNavigation.commitFrame(nextActiveSessionId, navSelectedId);

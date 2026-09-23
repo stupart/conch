@@ -743,7 +743,9 @@ export async function runInstall(cfg: Config): Promise<void> {
 
   settings.hooks ??= {};
   let changed = false;
-  for (const event of ["Stop", "Notification", "UserPromptSubmit"]) {
+  // PermissionRequest: the only moment a pending permission's tool call is knowable on
+  // Claude Code 2.1.280 (see hook.ts); conch reports it and never answers it here.
+  for (const event of ["Stop", "Notification", "UserPromptSubmit", "PermissionRequest"]) {
     const entries: HookEntry[] = (settings.hooks[event] ??= []);
     // Exact match first, as the Codex merge does. The loose match alone missed a
     // source checkout whose path has no lowercase "conch" in it (~/Projects/Conch),

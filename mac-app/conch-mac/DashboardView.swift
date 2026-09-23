@@ -2347,7 +2347,18 @@ private struct ConversationPane: View {
                     }
                 },
                 noTerminal: row.noTerminal,
-                onOpenInTerminal: row.attachable ? { store.openInTerminal(row) } : nil
+                onOpenInTerminal: row.attachable ? { store.openInTerminal(row) } : nil,
+                approval: row.approval,
+                onApprove: { kind in
+                    guard let approval = row.approval else { return }
+                    let said = ["once": "Allow", "always": "Always allow", "deny": "Deny"][kind] ?? kind
+                    store.send(.inject(
+                        sessionId: row.id,
+                        label: row.label,
+                        text: "\(said) \(approval.name)",
+                        approve: ConchApproval(kind: kind, id: approval.id)
+                    ))
+                }
             )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {

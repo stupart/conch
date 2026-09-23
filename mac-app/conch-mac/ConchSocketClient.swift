@@ -9,6 +9,12 @@ struct ConchQuestionAnswer: Encodable, Equatable, Sendable {
     var text: String? = nil
 }
 
+/// Allow ("once"), Always allow ("always") or Deny ("deny") the permission prompt `id`.
+struct ConchApproval: Encodable, Equatable, Sendable {
+    let kind: String
+    let id: String
+}
+
 struct ConchDaemonEvent: Encodable, Sendable {
     enum Kind: String, Encodable, Sendable {
         case wake
@@ -41,6 +47,7 @@ struct ConchDaemonEvent: Encodable, Sendable {
     /// is the only way a failure arriving after that close can still reach the row that sent it.
     let opId: String?
     let answers: [ConchQuestionAnswer]?
+    let approve: ConchApproval?
 
     init(
         type: Kind,
@@ -51,7 +58,8 @@ struct ConchDaemonEvent: Encodable, Sendable {
         compose: Bool? = nil,
         awaitDelivery: Bool? = nil,
         opId: String? = nil,
-        answers: [ConchQuestionAnswer]? = nil
+        answers: [ConchQuestionAnswer]? = nil,
+        approve: ConchApproval? = nil
     ) {
         self.type = type
         self.sessionId = sessionId
@@ -63,15 +71,23 @@ struct ConchDaemonEvent: Encodable, Sendable {
         // Named here rather than at every call site, so no send can be built without one.
         self.opId = opId ?? (type == .inject ? UUID().uuidString : nil)
         self.answers = answers
+        self.approve = approve
     }
 
     /// Type into a session. The daemon puts `announce` into the session's
     /// input, so this is the same path the phone and the voice loop use — one
     /// delivery route with one set of failure modes, not a third.
     /// `answers`: this send answers the question the session is waiting on, typed as its
-    /// picker's own keys, and `text` is only the readable summary.
-    static func inject(sessionId: String, label: String, text: String, answers: [ConchQuestionAnswer]? = nil) -> Self {
-        Self(type: .inject, sessionId: sessionId, label: label, announce: text, awaitDelivery: true, answers: answers)
+    /// picker's own keys; `approve`: it answers the permission prompt. `text` is then only
+    /// the readable summary.
+    static func inject(
+        sessionId: String,
+        label: String,
+        text: String,
+        answers: [ConchQuestionAnswer]? = nil,
+        approve: ConchApproval? = nil
+    ) -> Self {
+        Self(type: .inject, sessionId: sessionId, label: label, announce: text, awaitDelivery: true, answers: answers, approve: approve)
     }
 
     /// Stop a session mid-turn. The daemon presses Escape in its pane, which
