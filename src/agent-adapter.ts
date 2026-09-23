@@ -104,6 +104,11 @@ export interface AgentAdapter {
    * where the picker isn't known, and the answer goes in as a message.
    */
   readonly questionKeys: ((questions: readonly AgentQuestion[], answers: readonly QuestionAnswer[]) => AnswerKey[] | string) | null;
+  /**
+   * The words in the agent's input box on a screen of its terminal: "" when the box is
+   * empty, null when no box is on screen or the agent's box is unknown (Codex).
+   */
+  readonly inputBoxText: ((screen: string) => string | null) | null;
   /** The agent's own spelling of "resume this id"; the id arrives shell-quoted. */
   resumeArgs(quotedSessionId: string): string;
   /** `--teleport <cloud id>` where the agent can open a cloud session locally; null where it cannot. */
@@ -221,6 +226,37 @@ export function claudeQuestionKeys(
   return keys;
 }
 
+/**
+ * Claude Code's input box, as its terminal shows it (2.1.280, read from a Terminal tab): the
+ * `❯` line directly under a rule (`─────…`, the session's name on its right), running on to
+ * the rule beneath. A sent message stays on screen as a `❯` line too, but higher up and not
+ * under a rule, so only the last `❯` under a rule is the box.
+ */
+export function claudeInputBoxText(screen: string): string | null {
+  const lines = screen.split("\n");
+  for (let index = lines.length - 1; index > 0; index -= 1) {
+    const prompt = /^\s*❯ ?(.*)$/.exec(lines[index]!);
+    if (!prompt || !/^\s*─{3,}/.test(lines[index - 1]!)) continue;
+    const words = [prompt[1]!];
+    for (const line of lines.slice(index + 1)) {
+      if (/^\s*─{3,}/.test(line)) break;
+      words.push(line);
+    }
+    return words.join(" ").replace(/\s+/g, " ").trim();
+  }
+  return null;
+}
+
+/**
+ * Whether an input box still holds these words: their first few, whitespace aside, or the
+ * placeholder Claude Code shows in place of a long paste.
+ */
+export function inputBoxHoldsWords(box: string, words: string): boolean {
+  const said = words.replace(/\s+/g, " ").trim();
+  if (!box || !said) return false;
+  return /^\[Pasted text #\d+/.test(box) || box.startsWith(said.slice(0, 24));
+}
+
 export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
@@ -231,6 +267,7 @@ export const claudeAdapter: AgentAdapter = {
   executable: "claude",
   exitKeystrokes: 2,
   questionKeys: claudeQuestionKeys,
+  inputBoxText: claudeInputBoxText,
   resumeArgs: (id) => ` --resume ${id}`,
   teleportArgs: (id) => ` --teleport ${id}`,
   bypassPermissionsFlag: "--dangerously-skip-permissions",
@@ -321,6 +358,7 @@ export const codexAdapter: AgentAdapter = {
   exitKeystrokes: 1,
   // Codex's request_user_input picker hasn't been measured; its answer stays a message.
   questionKeys: null,
+  inputBoxText: null,
   resumeArgs: (id) => ` resume ${id}`,
   teleportArgs: null,
   bypassPermissionsFlag: "--dangerously-bypass-approvals-and-sandbox",

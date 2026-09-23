@@ -122,6 +122,8 @@ interface Options {
   inject?: (text: string) => InjectTextResult;
   key?: (key: string) => InjectTextResult;
   answerKeys?: (keys: readonly AnswerKey[]) => InjectTextResult;
+  /** What the session's terminal shows; absent means conch can't read it (today's rules). */
+  screen?: () => string | null;
   /** The picker takes the keys without recording an answer, as one laid out unlike the measured one did. */
   pickerIgnoresKeys?: boolean;
   beforeKey?: (key: string) => void | Promise<void>;
@@ -267,6 +269,7 @@ function harness(options: Options = {}) {
         return options.command?.(line) ?? { kind: "delivered", via: "tmux" };
       },
       toClipboard: async () => {},
+      ...(options.screen ? { readSessionScreen: async () => options.screen!() } : {}),
     },
     ear: {
       createDictationSession: (_cfg, listenHooks = {}) => {
@@ -701,6 +704,62 @@ describe("inject and interrupt", () => {
     await h.voice.handle(inject("and another thing", { transcriptPath: pendingBash() }));
     expect(h.keys).toEqual([]);
     expect(h.logs).toContain('injected into "alpha" via tmux — queued behind the running turn');
+  });
+
+  describe("reading the input box after the Return", () => {
+    // Claude Code 2.1.280 as a Terminal tab shows it: the box is the ❯ line under a rule.
+    const screenWith = (box: string) => [
+      "❯ an earlier message", "", "⏺ Working on it", "",
+      "─────────────────────────────────────────── alpha ─", `❯ ${box}`,
+      "────────────────────────────────────────────────────", "  ⏵⏵ bypass permissions on",
+    ].join("\n");
+
+    test("busy: words still in the box get another Return, and count as queued once it empties", async () => {
+      let enters = 0;
+      const h = harness({
+        window: busy,
+        key: () => { enters += 1; return { via: "tmux" }; },
+        screen: () => screenWith(enters ? "" : "and another thing"),
+      });
+      expect(await h.voice.handle(inject("and another thing", { transcriptPath: pendingBash() }))).toBe(true);
+      expect(h.keys).toEqual(["Enter"]);
+      expect(h.logs).toContain('words still in the input box of "alpha" — pressing Return again (try 1)');
+      expect(h.logs).toContain('injected into "alpha" via tmux — queued behind the running turn');
+    });
+
+    test("busy: words that stay in the box through three Returns are reported, not called queued", async () => {
+      const h = harness({ window: busy, screen: () => screenWith("and another thing") });
+      expect(await h.voice.handle(inject("and another thing", { transcriptPath: pendingBash() })))
+        .toMatchObject({ delivered: false, reason: "delivery-unconfirmed" });
+      expect(h.keys).toEqual(["Enter", "Enter"]);
+      expect(h.logs.some((line) => line.includes("queued behind"))).toBe(false);
+      expect(h.said.at(-1)).toBe("I typed that but it didn't send. It's still in the session's input box — press return there.");
+    });
+
+    test("busy: a dialog that opens meanwhile never gets the Return meant for the words", async () => {
+      // The dialog opens after the Return, while the words are read back off the screen.
+      let screens = 0;
+      const h = harness({
+        window: () => (screens ? ({ ...busy(), status: "waiting" }) as SessionInfo : busy()),
+        screen: () => { screens += 1; return screenWith("and another thing"); },
+      });
+      await h.voice.handle(inject("and another thing", { transcriptPath: pendingBash() }));
+      expect(h.keys).toEqual([]);
+    });
+
+    test("busy: a box it can't read changes nothing", async () => {
+      const h = harness({ window: busy, screen: () => null });
+      expect(await h.voice.handle(inject("and another thing", { transcriptPath: pendingBash() }))).toBe(true);
+      expect(h.keys).toEqual([]);
+    });
+
+    test("idle: an emptied box means the Return landed, so it is not pressed again", async () => {
+      // 2026-09-23 21:46: the prompt reached the transcript 1.5 s after the Return, through a
+      // parked window, and a second Return was reported as a lost one.
+      const h = harness({ screen: () => screenWith("") });
+      await h.voice.handle(inject("carry on", { transcriptPath: pendingBash() }));
+      expect(h.keys).toEqual([]);
+    });
   });
 
   test("only real keystrokes in a real pane count as queued; a clipboard landing does not", async () => {
