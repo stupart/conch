@@ -179,7 +179,8 @@ agent drive one, and the user able to reach in and interact — the way the Code
 - **open** — Glass reads dark over a light desktop: `.glassEffect` takes its base from the system
   appearance, so in Dark mode it stays a dark card on a light ground.
 - **open** — Mobile input box grows without clipping lines.
-- **open** — App icons need real artwork (~1024² PNG, no alpha) at `assets/conch-icon-1024.png`.
+- **done** — App icons need real artwork (~1024² PNG, no alpha) at `assets/conch-icon-1024.png`.
+  Conch-Icon-v3 (the shell with its eyes out, 2026-09-23), through `scripts/make-icons.sh`.
 - **open** — A working/spinner glyph, and `needs`/`review` as filled badges.
 - **open** — Search.
 - **open** — No red spelling underline in the composer. Pre-existing; probed and NOT caused by the
