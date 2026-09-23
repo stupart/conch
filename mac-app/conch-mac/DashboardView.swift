@@ -2288,13 +2288,14 @@ private struct ConversationPane: View {
             ConversationStackView(
                 conversation: conversation,
                 history: store.history,
-                onAnswer: { summary, answers in
+                onAnswer: { summary, answers, questionID in
                     store.send(
                         .inject(
                             sessionId: row.id,
                             label: row.label,
                             text: summary,
-                            answers: answers
+                            answers: answers,
+                            questionId: questionID
                         )
                     )
                 },

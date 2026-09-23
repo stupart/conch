@@ -111,6 +111,8 @@ export interface TurnEvent {
    * `announce` is then only the readable summary.
    */
   answers?: QuestionAnswer[];
+  /** The question row `answers` were chosen for (its conversation item id). */
+  questionId?: string;
   /**
    * An inject that answers the permission prompt (`approval.id`) the session
    * is showing: its dialog's keys, pressed only while that same prompt is up.

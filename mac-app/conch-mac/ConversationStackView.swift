@@ -19,7 +19,9 @@ struct ConversationStackView: View {
     @ObservedObject var history: HistoryStore
     /// A readable summary, and one answer per question, in order. The answers are what the
     /// daemon types into the agent's picker; the summary is only what the send is called.
-    let onAnswer: (String, [ConchQuestionAnswer]) -> Void
+    /// The third value is the question row the answers are for, so the daemon can refuse them
+    /// if another question is up by the time they arrive.
+    let onAnswer: (String, [ConchQuestionAnswer], String) -> Void
     /// The artifact this session produced, shown where it happened rather than
     /// only behind a tab.
     ///
@@ -800,7 +802,7 @@ struct ConversationStackView: View {
                             multiSelections[questionID] = [option.label]
                             questionTexts[questionID] = nil
                         } else {
-                            onAnswer(option.label, [ConchQuestionAnswer(choices: [index])])
+                            onAnswer(option.label, [ConchQuestionAnswer(choices: [index])], questionID)
                         }
                     } label: {
                         questionOption(
@@ -900,7 +902,8 @@ struct ConversationStackView: View {
                 Button {
                     onAnswer(
                         selected.joined(separator: ", "),
-                        [ConchQuestionAnswer(choices: asked.options.indices.filter { selected.contains(asked.options[$0].label) })]
+                        [ConchQuestionAnswer(choices: asked.options.indices.filter { selected.contains(asked.options[$0].label) })],
+                        questionID
                     )
                 } label: {
                     Text(selected.isEmpty ? "Submit selections" : "Submit \(selected.count) selected")
@@ -1034,7 +1037,7 @@ struct ConversationStackView: View {
                 if answerable {
                     let filled = setAnswers(questions, itemID: itemID)
                     Button {
-                        if let filled { onAnswer(filled.summary, filled.answers) }
+                        if let filled { onAnswer(filled.summary, filled.answers, itemID) }
                     } label: {
                         Text(filled == nil ? "Answer all \(questions.count) to submit" : "Submit answers")
                             .font(.system(size: 12, weight: .semibold))

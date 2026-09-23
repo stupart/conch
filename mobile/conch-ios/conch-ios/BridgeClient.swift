@@ -321,6 +321,7 @@ final class BridgeClient: ObservableObject {
         text: String,
         opId: String? = nil,
         answers: [QuestionAnswer]? = nil,
+        questionId: String? = nil,
         approve: (kind: String, id: String)? = nil
     ) async -> InjectOutcome {
         var payload: [String: Any] = [
@@ -334,6 +335,7 @@ final class BridgeClient: ObservableObject {
         ]
         if let opId { payload["opId"] = opId }
         if let answers { payload["answers"] = answers.map(\.wire) }
+        if let questionId { payload["questionId"] = questionId }
         if let approve { payload["approve"] = ["kind": approve.kind, "id": approve.id] }
         let body = try? JSONSerialization.data(withJSONObject: payload)
         let outcome = await deliveryOutcome(body)

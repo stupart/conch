@@ -1266,11 +1266,22 @@ export function latestAnswerableQuestion(conversation: Conversation): AgentQuest
 
 /** Every question of the newest call still waiting on an answer; empty when none is. */
 export function latestAnswerableQuestions(conversation: Conversation): AgentQuestion[] {
+  return pendingQuestion(conversation)?.questions ?? [];
+}
+
+/**
+ * The question row the session is waiting on, and its questions; null when none is.
+ * Only while nothing Tyler said comes after it: a question from a turn that has since moved
+ * on (answered in the terminal, abandoned, its turn aborted) is still "running" in the
+ * transcript, and answering it would type into whatever is on screen now.
+ */
+export function pendingQuestion(conversation: Conversation): { id: string; questions: AgentQuestion[] } | null {
   for (let index = conversation.order.length - 1; index >= 0; index -= 1) {
     const item = conversation.items[conversation.order[index]!];
-    if (item?.question && item.tool?.status === "running") return item.questions ?? [item.question];
+    if (item?.kind === "user") return null;
+    if (item?.question && item.tool?.status === "running") return { id: item.id, questions: item.questions ?? [item.question] };
   }
-  return [];
+  return null;
 }
 
 /** The newest `count` items — what a bottom-anchored view actually shows. */

@@ -6,6 +6,7 @@ import {
   agentQuestions,
   buildConversation,
   latestAnswerableQuestions,
+  pendingQuestion,
   textQuestionAnswers,
   type AgentQuestion,
 } from "../src/conversation.ts";
@@ -90,6 +91,15 @@ describe("every question in a call", () => {
     expect(latestAnswerableQuestions(conversation).map(({ header }) => header)).toEqual(["Alpha", "Beta"]);
   });
 
+  test("the pending question carries its row's id, and stops being pending once Tyler says anything after it", () => {
+    const ask = JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tu_ask", name: "AskUserQuestion", input }] } });
+    expect(pendingQuestion(buildConversation("s1", [ask], "claude"))?.id).toBe("tool:tu_ask");
+    // No tool_result: dismissed in the terminal, or its turn aborted. Still "running" on disk.
+    const later = JSON.stringify({ type: "user", uuid: "u2", message: { role: "user", content: [{ type: "text", text: "never mind, do X" }] } });
+    expect(pendingQuestion(buildConversation("s1", [ask, later], "claude"))).toBeNull();
+    expect(latestAnswerableQuestions(buildConversation("s1", [ask, later], "claude"))).toEqual([]);
+  });
+
   test("a single question keeps the old shape: no `questions` field", () => {
     const conversation = buildConversation("s1", [
       JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tu_1", name: "AskUserQuestion", input: { questions: [input.questions[0]] } }] } }),
@@ -130,6 +140,15 @@ describe("the answers field on the socket", () => {
       [{ text: "x".repeat(4001) }], Array.from({ length: 9 }, () => ({ choices: [0] })),
     ]) expect(event(bad).ok).toBe(false);
     expect(event([{ choices: [0] }], "wake").ok).toBe(false);
+  });
+
+  test("questionId names the question the answers are for, and comes only with answers", () => {
+    const withId = (questionId: unknown, answers: unknown = [{ choices: [0] }]) => validateSocketTurnEvent({
+      type: "inject", sessionId: "s1", label: "alpha", announce: "A1", answers, questionId,
+    });
+    expect(withId("tool:tu_ask").ok).toBe(true);
+    for (const bad of ["", 7, "x".repeat(301)]) expect(withId(bad).ok).toBe(false);
+    expect(validateSocketTurnEvent({ type: "inject", sessionId: "s1", label: "alpha", announce: "A1", questionId: "tool:tu_ask" }).ok).toBe(false);
   });
 });
 
@@ -221,7 +240,7 @@ describe("the Mac question card, as source (conch-mac has no XCTest target)", ()
   test("several questions: each is filled in, and one Submit sends every answer in order", () => {
     const card = between("private func questionCard(", "private func setAnswers(");
     expect(card).toContain('questionRow(asked, questionID: "\\(itemID)#\\(index)", answerable: answerable, inSet: true)');
-    expect(card).toContain("if let filled { onAnswer(filled.summary, filled.answers) }");
+    expect(card).toContain("if let filled { onAnswer(filled.summary, filled.answers, itemID) }");
     expect(card).toContain(".disabled(filled == nil || noTerminal != nil)");
   });
 

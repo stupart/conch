@@ -47,6 +47,8 @@ struct ConchDaemonEvent: Encodable, Sendable {
     /// is the only way a failure arriving after that close can still reach the row that sent it.
     let opId: String?
     let answers: [ConchQuestionAnswer]?
+    /// The question row `answers` were chosen for; the daemon refuses them if another is up.
+    let questionId: String?
     let approve: ConchApproval?
 
     init(
@@ -59,6 +61,7 @@ struct ConchDaemonEvent: Encodable, Sendable {
         awaitDelivery: Bool? = nil,
         opId: String? = nil,
         answers: [ConchQuestionAnswer]? = nil,
+        questionId: String? = nil,
         approve: ConchApproval? = nil
     ) {
         self.type = type
@@ -71,6 +74,7 @@ struct ConchDaemonEvent: Encodable, Sendable {
         // Named here rather than at every call site, so no send can be built without one.
         self.opId = opId ?? (type == .inject ? UUID().uuidString : nil)
         self.answers = answers
+        self.questionId = questionId
         self.approve = approve
     }
 
@@ -85,9 +89,10 @@ struct ConchDaemonEvent: Encodable, Sendable {
         label: String,
         text: String,
         answers: [ConchQuestionAnswer]? = nil,
+        questionId: String? = nil,
         approve: ConchApproval? = nil
     ) -> Self {
-        Self(type: .inject, sessionId: sessionId, label: label, announce: text, awaitDelivery: true, answers: answers, approve: approve)
+        Self(type: .inject, sessionId: sessionId, label: label, announce: text, awaitDelivery: true, answers: answers, questionId: questionId, approve: approve)
     }
 
     /// Stop a session mid-turn. The daemon presses Escape in its pane, which
