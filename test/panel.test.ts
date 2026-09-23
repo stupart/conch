@@ -762,6 +762,53 @@ describe("reconcileStatus — Claude's stable registry corrects a stale latch af
   });
 });
 
+describe("waiting on its agents", () => {
+  // Tyler: "a state for when the session is waiting for an agent to work so I know I can
+  // talk to it, cause it's not working but it's just like waiting for an agent".
+  const background = { status: "working" as const, at: 2_000, backgroundWork: true as const };
+  const rows = (registry: string, updatedAt: number, latch: { status: "working"; at: number; backgroundWork?: true }) => {
+    const model = buildPanelModel({
+      sessions: [{ sessionId: "s", name: "S", status: registry, statusUpdatedAt: updatedAt }],
+      sessionStates: new Map([["s", { label: "S", ...latch }]]),
+      pausedSessionIds: new Set(),
+      live: { state: "idle", label: "", partial: "" },
+      mode: { muted: false, paused: false, holding: 0 },
+      activeSessionId: null,
+      navSelectedId: null,
+      now: 10_000,
+    });
+    return { row: model.rows[0]!, published: buildPublishedState("device", model, new Map(), new Set(), 10_000).rows[0]! };
+  };
+
+  test("its turn is over and its agents run on: working, flagged, and published so", () => {
+    const { row, published } = rows("idle", 1_000, background);
+    expect(row.status).toBe("working");
+    expect(row.waitingOnAgents).toBe(true);
+    expect(published.waitingOnAgents).toBe(true);
+  });
+
+  test("a new turn of its own (Claude's registry busy, newer) is plain working", () => {
+    const { row, published } = rows("busy", 3_000, background);
+    expect(row.status).toBe("working");
+    expect(row.waitingOnAgents).toBeUndefined();
+    expect(published.waitingOnAgents).toBeUndefined();
+  });
+
+  test("a busy the registry wrote BEFORE the Stop is stale: still waiting on its agents", () => {
+    expect(rows("busy", 1_000, background).row.waitingOnAgents).toBe(true);
+  });
+
+  test("working with no agents behind it is never flagged", () => {
+    expect(rows("idle", 1_000, { status: "working", at: 2_000 }).row.waitingOnAgents).toBeUndefined();
+  });
+
+  test("once the agents are done and the registry says so, it is waiting on you", () => {
+    const { row } = rows("idle", 3_000, background);
+    expect(row.status).toBe("waiting");
+    expect(row.waitingOnAgents).toBeUndefined();
+  });
+});
+
 describe("review attribute reconciliation", () => {
   function reviewRow(registryStatus: string, statusUpdatedAt: number) {
     return buildPanelRows({

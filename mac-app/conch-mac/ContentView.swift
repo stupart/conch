@@ -921,6 +921,7 @@ private struct LedgerLegendSection: View {
 
     private let entries: [Entry] = [
         Entry(symbol: "circle.fill", color: ConchPalette.statusWorking, meaning: "Working — nothing needed"),
+        Entry(symbol: "person.2.fill", color: ConchPalette.statusWaiting, meaning: "Its agents are working — you can talk to it"),
         Entry(symbol: "mic.fill", color: ConchPalette.statusMicOpen, meaning: "Mic open — it is hearing you"),
         Entry(symbol: "circle.inset.filled", color: ConchPalette.statusWaiting, meaning: "Finished — waiting on you"),
         Entry(symbol: "exclamationmark.circle.fill", color: ConchPalette.statusNeeds, meaning: "Blocked — needs an answer"),

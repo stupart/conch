@@ -1330,6 +1330,7 @@ private struct DashboardStatusGlyph: View {
 private enum LedgerVisual: String, CaseIterable, Identifiable {
     case idle
     case working
+    case waitingOnAgents
     case waiting
     case needs
     case review
@@ -1381,7 +1382,12 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
         case "transcribing":
             self = .transcribing
         default:
-            self.init(status: row.status)
+            // Its own turn is over and only its agents are running: talk to it.
+            if row.status == .working && row.waitingOnAgents {
+                self = .waitingOnAgents
+            } else {
+                self.init(status: row.status)
+            }
         }
     }
 
@@ -1391,6 +1397,9 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             return "circle.dotted"
         case .working:
             return "circle.fill"
+        case .waitingOnAgents:
+            // Two figures: the agents it handed work to, still at it.
+            return "person.2.fill"
         case .listening:
             // Was identical to .working, so the ledger could not tell you
             // whether your MICROPHONE was open — the single most consequential
@@ -1423,7 +1432,7 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
         switch self {
         case .needs, .review, .recording:
             return 10.5
-        case .manual, .speaking:
+        case .manual, .speaking, .waitingOnAgents:
             return 9
         case .transcribing:
             return 11
@@ -1443,6 +1452,10 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             // with the highest cost of being wrong about.
             return ConchPalette.statusMicOpen
         case .waiting:
+            return ConchPalette.statusWaiting
+        case .waitingOnAgents:
+            // The waiting colour, because it is the same answer to "can I talk to it?"; the
+            // glyph says why it is not finished.
             return ConchPalette.statusWaiting
         case .needs:
             return ConchPalette.statusNeeds
@@ -1472,6 +1485,8 @@ private enum LedgerVisual: String, CaseIterable, Identifiable {
             return "Idle"
         case .working:
             return "Working"
+        case .waitingOnAgents:
+            return "Waiting on its agents — you can talk to it"
         case .waiting:
             return "Waiting for you"
         case .needs:
