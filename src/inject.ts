@@ -1,6 +1,7 @@
 import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Config } from "./config.ts";
+import type { AnswerKey } from "./agent-adapter.ts";
 import { createPasteboard, hasUnreapedUIChild, pasteboardRefusal, runUICommand, type Pasteboard, type PasteboardLease } from "./pasteboard.ts";
 
 export type InjectRoute = "tmux" | "osascript-focused" | "clipboard" | "none";
@@ -89,6 +90,106 @@ export function injectKey(
   beforeInject?: () => boolean | Promise<boolean>, options: InjectTextOptions = {},
 ): Promise<InjectTextResult> {
   return withUITransaction(() => injectKeyInTransaction(cfg, sessionPid, key, beforeInject, options));
+}
+
+/**
+ * Answer an agent's picker: keys in order, into the session. The same routes
+ * and focus guard as `injectKey`, but every key in ONE script, with the guard
+ * re-checked before each, so nothing that comes to the front partway through
+ * receives the rest.
+ */
+export function injectKeys(
+  cfg: Config, sessionPid: number | undefined, keys: readonly AnswerKey[],
+  beforeInject?: () => boolean | Promise<boolean>, options: InjectTextOptions = {},
+): Promise<InjectTextResult> {
+  return withUITransaction(() => injectKeysInTransaction(cfg, sessionPid, keys, beforeInject, options));
+}
+
+/**
+ * Between two keys, so each reaches the picker as its own input: two digits
+ * arriving together read as one "21", not a pick and then another.
+ */
+export const ANSWER_KEY_GAP_MS = 200;
+
+async function injectKeysInTransaction(
+  cfg: Config,
+  sessionPid: number | undefined,
+  keys: readonly AnswerKey[],
+  beforeInject?: () => boolean | Promise<boolean>,
+  options: InjectTextOptions = {},
+): Promise<InjectTextResult> {
+  const typed = keys.reduce((sum, key) => sum + (typeof key === "object" && "type" in key ? key.type.length : 1), 0);
+  // Long enough for every key and gap: a script cut off mid-`keystroke` keeps
+  // typing after conch has given up (see PASTE_OVER_CHARS).
+  const timeoutMs = 4_000 + keys.length * (ANSWER_KEY_GAP_MS + 100) + typed * 40;
+  const osa = safeOsa(options.osa ?? ((lines, argv = []) => runUICommand(
+    ["osascript", ...lines.flatMap((line) => ["-e", line]), ...(argv.length ? ["--", ...argv] : [])],
+    undefined,
+    { timeoutMs },
+  )));
+  const ttyForPid = options.ttyForPid ?? ttyOf;
+  const sleep = options.sleep ?? Bun.sleep;
+  const mayInject = async (): Promise<boolean> => beforeInject ? await beforeInject() : true;
+  const interrupted = (): InjectTextResult => ({ via: "none", interrupted: true });
+  if (!sessionPid || !keys.length) return { via: "none" }; // never press keys in an unknown window
+  const pane = await (options.findTmuxPane ?? findTmuxPane)(sessionPid);
+  if (pane) {
+    if (!(await mayInject())) return interrupted();
+    for (const [index, key] of keys.entries()) {
+      if (index) await sleep(ANSWER_KEY_GAP_MS);
+      const [text, literal] = typeof key === "string" ? [key, false] : "press" in key ? [key.press, true] : [key.type, true];
+      const sent = await (options.sendTmuxKeys ?? sendTmuxKeys)(pane, text, literal);
+      if (sent.exitCode !== 0) return failed("automation-failed");
+    }
+    return { via: "tmux" };
+  }
+  if (!cfg.keystrokeFallback) {
+    if (!(await mayInject())) return interrupted();
+    return { via: "none" };
+  }
+  const tty = await ttyForPid(sessionPid);
+  const focused = tty ? await focusSessionWindow(tty, osa) : null;
+  if (!focused || !osaSucceeded(focused) || focused.text.trim() !== "ok") {
+    if (!(await mayInject())) return interrupted();
+    return failed(focused ? osaFailure(focused) : "window-not-focusable");
+  }
+  await sleep(300);
+  if (!(await mayInject())) return interrupted();
+  // Words longer than PASTE_OVER_CHARS are pasted, in a step of their own: typing them takes
+  // long enough for a window to come to the front partway (see PASTE_OVER_CHARS). Tyler's own
+  // answers run to ~400 characters.
+  const pasteboard = options.pasteboard ?? createPasteboard();
+  const steps: Array<AnswerKey[] | string> = [];
+  for (const key of keys) {
+    if (typeof key === "object" && "type" in key && key.type.length > PASTE_OVER_CHARS) steps.push(key.type);
+    else if (Array.isArray(steps.at(-1))) (steps.at(-1) as AnswerKey[]).push(key);
+    else steps.push([key]);
+  }
+  for (const [index, step] of steps.entries()) {
+    if (index) await sleep(ANSWER_KEY_GAP_MS);
+    let result: OsaResult;
+    if (typeof step === "string") {
+      let lease: PasteboardLease;
+      try { lease = await pasteboard.prepare(step); } catch { return failed("clipboard-unavailable"); }
+      try { result = await focusedAction(tty, osa, [PASTE_KEYSTROKE], [], lease.changeCount); }
+      finally { await pasteboard.restore(lease).catch(() => false); }
+    } else {
+      const argv: string[] = [];
+      const lines: string[] = [];
+      for (const [position, key] of step.entries()) {
+        if (position) lines.push(`delay ${ANSWER_KEY_GAP_MS / 1000}`, ...FOCUS_GUARD_LINES);
+        if (key === "Right") lines.push('tell application "System Events" to key code 124');
+        else if (key === "Enter") lines.push('tell application "System Events" to key code 36');
+        else {
+          argv.push("press" in key ? key.press : key.type);
+          lines.push(`tell application "System Events" to keystroke (item ${argv.length} of argv)`);
+        }
+      }
+      result = await focusedAction(tty, osa, lines, argv);
+    }
+    if (!osaSucceeded(result)) return failed(osaFailure(result));
+  }
+  return { via: "osascript-focused" };
 }
 
 export function revealSessionWindow(sessionPid: number, osa: OsaRunner = runOsa, ttyForPid = ttyOf): Promise<boolean> {

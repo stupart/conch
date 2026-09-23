@@ -555,7 +555,9 @@ describe("daemon config controller", () => {
     const action = sliceOf(voiceSource, "const executeAction = async", "// Mic gate (auto turns only)");
 
     expect(route).toContain("routeVoicePrompt(cfg.voiceQa");
-    expect(route).toContain("inject: (prompt) => deliverToSession(");
+    // Words for a session waiting on a question answer it; everything else is delivered.
+    expect(route).toContain("inject: async (prompt) => (await answerWithWords(event, prompt, beforeInject, options.failure))");
+    expect(route).toContain("?? deliverToSession(");
     expect(route).not.toContain("injectText(");
     expect(injector).toContain("await injectText(");
     expect(reading).toContain("await deliver(event, text");

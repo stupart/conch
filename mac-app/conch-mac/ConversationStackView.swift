@@ -17,7 +17,9 @@ struct ConversationStackView: View {
     let conversation: Conversation
     /// Everything older than the live window, and the whole text behind anything it cut.
     @ObservedObject var history: HistoryStore
-    let onAnswer: (String) -> Void
+    /// A readable summary, and one answer per question, in order. The answers are what the
+    /// daemon types into the agent's picker; the summary is only what the send is called.
+    let onAnswer: (String, [ConchQuestionAnswer]) -> Void
     /// The artifact this session produced, shown where it happened rather than
     /// only behind a tab.
     ///
@@ -95,6 +97,8 @@ struct ConversationStackView: View {
     /// explicit Submit button sends it. Keying by tool row keeps two questions
     /// in the retained transcript from sharing checkmarks.
     @State private var multiSelections: [String: Set<String>] = [:]
+    /// Words typed for one question of several, keyed like `multiSelections`.
+    @State private var questionTexts: [String: String] = [:]
     /// `.qo:hover` — which option the pointer is on, so an option can be transparent at rest.
     @State private var hoveredOption: String?
     @State private var scrollRequestGeneration = 0
@@ -198,7 +202,8 @@ struct ConversationStackView: View {
             expanded: expanded,
             fullText: history.fullText(forSnapshotItem: item.id),
             bodyStatus: expanded && wasCut(item) ? bodyStatus(for: item) : nil,
-            selections: multiSelections[item.id],
+            selections: multiSelections.filter { $0.key == item.id || $0.key.hasPrefix(item.id + "#") },
+            typed: questionTexts.filter { $0.key.hasPrefix(item.id + "#") },
             hovered: item.question == nil ? nil : hoveredOption,
             noTerminal: noTerminal,
             canOpenInTerminal: onOpenInTerminal != nil
@@ -353,6 +358,7 @@ struct ConversationStackView: View {
                 loadOlder()
                 pinnedToBottom = true
                 multiSelections = [:]
+                questionTexts = [:]
                 linkFailure = nil
                 requestBottomScroll(using: proxy)
                 // Declarative, never an imperative animation block: mac-phase1-source forbids
@@ -640,24 +646,19 @@ struct ConversationStackView: View {
             // A question outranks the generic tool shell: this row exists only
             // because the session is blocked on one of these choices.
             if let asked = item.question, !asked.options.isEmpty {
+                let questions = item.allQuestions
                 // §3: once answered it collapses to one line naming what was decided. Only
                 // when the answer actually names an option — the wire never states a choice,
                 // so it is recovered from the finished call's result text, and when nothing
                 // matches the block stays exactly as it was. Guessing at a person's decision
                 // is worse than not summarising it.
                 if item.tool?.status != "running",
-                   let decided = QuestionOutcome.summary(
-                       header: asked.header,
-                       chosen: QuestionOutcome.chosen(
-                           from: asked.options.map(\.label),
-                           in: item.tool?.result
-                       )
-                   ) {
+                   let decided = answeredSummary(questions, result: item.tool?.result) {
                     answeredQuestionRow(decided)
                 } else {
-                    questionRow(
-                        asked,
-                        questionID: item.id,
+                    questionCard(
+                        questions,
+                        itemID: item.id,
                         answerable: item.tool?.status == "running"
                     )
                 }
@@ -691,17 +692,20 @@ struct ConversationStackView: View {
             Text(decided)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(ConchPalette.textDim)
-                .lineLimit(2)
+                .lineLimit(8)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// `inSet`: one of several questions asked at once. Its picks are held for the card's one
+    /// Submit instead of sent, and "Something else…" is typed here rather than in the composer.
     private func questionRow(
         _ asked: ConversationItem.AgentQuestion,
         questionID: String,
-        answerable: Bool
+        answerable: Bool,
+        inSet: Bool = false
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             if !asked.header.isEmpty {
@@ -719,14 +723,17 @@ struct ConversationStackView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, 2)
 
-            ForEach(Array(asked.options.enumerated()), id: \.offset) { _, option in
+            ForEach(Array(asked.options.enumerated()), id: \.offset) { index, option in
                 let selected = multiSelections[questionID]?.contains(option.label) == true
                 if answerable {
                     Button {
                         if asked.multiSelect {
                             toggleSelection(option.label, for: questionID)
+                        } else if inSet {
+                            multiSelections[questionID] = [option.label]
+                            questionTexts[questionID] = nil
                         } else {
-                            onAnswer(option.label)
+                            onAnswer(option.label, [ConchQuestionAnswer(choices: [index])])
                         }
                     } label: {
                         questionOption(
@@ -775,7 +782,25 @@ struct ConversationStackView: View {
                 }
             }
 
-            if answerable {
+            if answerable && inSet && !asked.multiSelect {
+                // Claude Code's "Type something": the words become this question's answer.
+                TextField("Something else…", text: Binding(
+                    get: { questionTexts[questionID] ?? "" },
+                    set: { typed in
+                        questionTexts[questionID] = typed
+                        if !typed.isEmpty { multiSelections[questionID] = nil }
+                    }
+                ))
+                .textFieldStyle(.plain)
+                .font(.system(size: 12.5, weight: .medium))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .background(
+                    RoundedRectangle(cornerRadius: 9)
+                        .strokeBorder(ConchPalette.textDim.opacity(0.22), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                )
+                .disabled(noTerminal != nil)
+            } else if answerable && !inSet {
                 Button(action: onFreeform) {
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
                         // A pencil, not a circle: this is not a fourth choice,
@@ -803,10 +828,13 @@ struct ConversationStackView: View {
                 .accessibilityHint("Moves to the message field so you can answer in your own words")
             }
 
-            if asked.multiSelect && answerable {
+            if asked.multiSelect && answerable && !inSet {
                 let selected = selectedLabels(for: asked, questionID: questionID)
                 Button {
-                    onAnswer(selected.joined(separator: ", "))
+                    onAnswer(
+                        selected.joined(separator: ", "),
+                        [ConchQuestionAnswer(choices: asked.options.indices.filter { selected.contains(asked.options[$0].label) })]
+                    )
                 } label: {
                     Text(selected.isEmpty ? "Submit selections" : "Submit \(selected.count) selected")
                         .font(.system(size: 12, weight: .semibold))
@@ -902,6 +930,89 @@ struct ConversationStackView: View {
     ) -> [String] {
         let selected = multiSelections[questionID] ?? []
         return question.options.map(\.label).filter(selected.contains)
+    }
+
+    /// What a finished question decided, one line per question, or nil when the result
+    /// does not say for certain.
+    private func answeredSummary(_ questions: [ConversationItem.AgentQuestion], result: String?) -> String? {
+        if questions.count == 1, let asked = questions.first {
+            return QuestionOutcome.summary(
+                header: asked.header,
+                chosen: QuestionOutcome.chosen(from: asked.options.map(\.label), in: result)
+            )
+        }
+        guard let answers = QuestionOutcome.answers(to: questions.map(\.question), in: result) else { return nil }
+        return zip(questions, answers)
+            .map { asked, answer in asked.header.isEmpty ? answer : "\(asked.header) · \(answer)" }
+            .joined(separator: "\n")
+    }
+
+    /// One question as it always was; or, when the agent asked several at once, each one to
+    /// fill in and ONE Submit that sends every answer in order. Claude Code records nothing
+    /// until all of them are answered, and a card that knew only the first kept sending that
+    /// answer to whichever question the terminal had moved on to (2026-09-23).
+    @ViewBuilder
+    private func questionCard(
+        _ questions: [ConversationItem.AgentQuestion],
+        itemID: String,
+        answerable: Bool
+    ) -> some View {
+        if questions.count == 1, let asked = questions.first {
+            questionRow(asked, questionID: itemID, answerable: answerable)
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(Array(questions.enumerated()), id: \.offset) { index, asked in
+                    questionRow(asked, questionID: "\(itemID)#\(index)", answerable: answerable, inSet: true)
+                }
+                if answerable {
+                    let filled = setAnswers(questions, itemID: itemID)
+                    Button {
+                        if let filled { onAnswer(filled.summary, filled.answers) }
+                    } label: {
+                        Text(filled == nil ? "Answer all \(questions.count) to submit" : "Submit answers")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(filled == nil ? ConchPalette.textFaint : ConchPalette.bg)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 9)
+                            .background(
+                                RoundedRectangle(cornerRadius: 9)
+                                    .fill(filled == nil ? ConchPalette.raised : ConchPalette.statusNeeds)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(filled == nil || noTerminal != nil)
+                    .accessibilityHint("Sends every answer to the session, in order")
+                }
+            }
+        }
+    }
+
+    /// Every question's answer in order, and a summary to name the send by; nil while any
+    /// question is unanswered. Words typed for a question win over its ticked options.
+    private func setAnswers(
+        _ questions: [ConversationItem.AgentQuestion],
+        itemID: String
+    ) -> (answers: [ConchQuestionAnswer], summary: String)? {
+        var answers: [ConchQuestionAnswer] = []
+        var lines: [String] = []
+        for (index, asked) in questions.enumerated() {
+            let id = "\(itemID)#\(index)"
+            let typed = (questionTexts[id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let picked = asked.options.indices.filter { multiSelections[id]?.contains(asked.options[$0].label) == true }
+            if !typed.isEmpty {
+                answers.append(ConchQuestionAnswer(text: typed))
+                lines.append(typed)
+            } else if !picked.isEmpty {
+                answers.append(ConchQuestionAnswer(choices: picked))
+                lines.append(picked.map { asked.options[$0].label }.joined(separator: ", "))
+            } else {
+                return nil
+            }
+        }
+        let summary = zip(questions, lines)
+            .map { asked, line in asked.header.isEmpty ? line : "\(asked.header): \(line)" }
+            .joined(separator: "; ")
+        return (answers, summary)
     }
 
     private func toolRow(_ item: ConversationItem) -> some View {
@@ -1008,8 +1119,10 @@ private struct RowKey: Equatable {
     let fullText: String?
     /// The read's progress under an opened cut row.
     let bodyStatus: HistoryStatus?
-    /// A multi-select question's ticked options.
-    let selections: Set<String>?
+    /// A question card's ticked options, per question.
+    let selections: [String: Set<String>]
+    /// Words typed for one question of several, per question.
+    let typed: [String: String]
     /// Which option the pointer is on — a question row's only, so a hover over one question
     /// does not redraw every other.
     let hovered: String?

@@ -628,7 +628,12 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     let plan: [PlanStep]?
     let change: FileChange?
     let question: AgentQuestion?
+    /// Every question in the call when it asks more than one; `question` is the first.
+    let questions: [AgentQuestion]?
     let material: Material?
+
+    /// What a question card shows: every question, or the one.
+    var allQuestions: [AgentQuestion] { questions ?? question.map { [$0] } ?? [] }
 
     /// Built rather than decoded: an item read back from the record store is the same
     /// row as a live one, so it becomes one rather than growing a second set of rows.
@@ -642,6 +647,7 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         plan: [PlanStep]? = nil,
         change: FileChange? = nil,
         question: AgentQuestion? = nil,
+        questions: [AgentQuestion]? = nil,
         material: Material? = nil
     ) {
         self.id = id
@@ -653,11 +659,12 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         self.plan = plan
         self.change = change
         self.question = question
+        self.questions = questions
         self.material = material
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, rev, kind, text, at, tool, plan, change, question, material
+        case id, rev, kind, text, at, tool, plan, change, question, questions, material
     }
 
     init(from decoder: Decoder) throws {
@@ -671,6 +678,7 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         plan = try? c.decodeIfPresent([PlanStep].self, forKey: .plan)
         change = try? c.decodeIfPresent(FileChange.self, forKey: .change)
         question = try? c.decodeIfPresent(AgentQuestion.self, forKey: .question)
+        questions = try? c.decodeIfPresent([AgentQuestion].self, forKey: .questions)
         material = try? c.decodeIfPresent(Material.self, forKey: .material)
     }
 }

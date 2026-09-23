@@ -1,6 +1,7 @@
 import { appendFileSync, chmodSync, existsSync, renameSync, statSync } from "node:fs";
 import { connect } from "node:net";
 import { readState } from "./daemon-state.ts";
+import type { QuestionAnswer } from "./conversation.ts";
 import type { Config } from "./config.ts";
 import { bell, speak } from "./speak.ts";
 import {
@@ -99,6 +100,12 @@ export interface TurnEvent {
    * empty ack.
    */
   awaitDelivery?: true;
+  /**
+   * An inject that answers the question the session is waiting on: one answer
+   * per question, in order. Typed into the agent's picker as its own keys;
+   * `announce` is then only the readable summary.
+   */
+  answers?: QuestionAnswer[];
 }
 
 // Notification types that actually need a human; everything else stays silent.

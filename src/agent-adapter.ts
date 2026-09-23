@@ -32,7 +32,7 @@ import {
 } from "./agent-capabilities.ts";
 import { findCodexTranscript, type CodexSessionRegistryOptions } from "./codex-sessions.ts";
 import { codexFolderTrusted, readCodexHelperThreads } from "./codex-threads.ts";
-import type { ConversationFormat } from "./conversation.ts";
+import type { AgentQuestion, ConversationFormat, QuestionAnswer } from "./conversation.ts";
 import {
   readClaudeCandidates,
   readClaudeSessionHead,
@@ -98,6 +98,12 @@ export interface AgentAdapter {
    * whatever the finished tab gives way to: per agent, never a default of two.
    */
   readonly exitKeystrokes: number;
+  /**
+   * The keys that answer a pending question in the agent's own picker, one
+   * answer per question; a string is why these answers can't be typed. Null
+   * where the picker isn't known, and the answer goes in as a message.
+   */
+  readonly questionKeys: ((questions: readonly AgentQuestion[], answers: readonly QuestionAnswer[]) => AnswerKey[] | string) | null;
   /** The agent's own spelling of "resume this id"; the id arrives shell-quoted. */
   resumeArgs(quotedSessionId: string): string;
   /** `--teleport <cloud id>` where the agent can open a cloud session locally; null where it cannot. */
@@ -166,6 +172,47 @@ export interface AgentAdapter {
   ): { projectTrust?: AgentProjectTrust; threadConfiguration?: AgentThreadConfiguration };
 }
 
+/** One step of a picker answer: a key typed as itself, words typed out, or a named key. */
+export type AnswerKey = { press: string } | { type: string } | "Right" | "Enter";
+
+/**
+ * Claude Code's AskUserQuestion picker, measured on 2.1.280 by driving a
+ * real session in a pseudo-terminal and reading the recorded answer:
+ * - a question's option number picks it and moves to the next question;
+ * - a multiSelect question's numbers toggle, and → moves on;
+ * - the number after the last option is "Type something": the words, then
+ *   Return, record them and move on;
+ * - every picker ends on "Review your answers … 1. Submit answers", except a
+ *   lone single-choice question, which a number submits outright.
+ * Assumes the picker is on its first question, as a new one opens.
+ */
+export function claudeQuestionKeys(
+  questions: readonly AgentQuestion[],
+  answers: readonly QuestionAnswer[],
+): AnswerKey[] | string {
+  if (!questions.length || answers.length !== questions.length) {
+    return `the session is asking ${questions.length} question${questions.length === 1 ? "" : "s"}, and ${answers.length} answer${answers.length === 1 ? " was" : "s were"} sent`;
+  }
+  const keys: AnswerKey[] = [];
+  for (const [index, question] of questions.entries()) {
+    const answer = answers[index]!;
+    if ("text" in answer) {
+      if (question.multiSelect) return `"${question.header || question.question}" takes options, not words`;
+      keys.push({ press: String(question.options.length + 1) }, { type: answer.text }, "Enter");
+      continue;
+    }
+    const { choices } = answer;
+    if (!choices.length || (!question.multiSelect && choices.length !== 1)
+      || choices.some((choice) => !Number.isInteger(choice) || choice < 0 || choice >= question.options.length)) {
+      return `the answer to "${question.header || question.question}" doesn't match its options`;
+    }
+    keys.push(...choices.map((choice) => ({ press: String(choice + 1) })));
+    if (question.multiSelect) keys.push("Right");
+  }
+  if (questions.length > 1 || questions[0]!.multiSelect) keys.push({ press: "1" });
+  return keys;
+}
+
 export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
@@ -175,6 +222,7 @@ export const claudeAdapter: AgentAdapter = {
   displayName: "Claude Code",
   executable: "claude",
   exitKeystrokes: 2,
+  questionKeys: claudeQuestionKeys,
   resumeArgs: (id) => ` --resume ${id}`,
   teleportArgs: (id) => ` --teleport ${id}`,
   bypassPermissionsFlag: "--dangerously-skip-permissions",
@@ -263,6 +311,8 @@ export const codexAdapter: AgentAdapter = {
   displayName: "Codex",
   executable: "codex",
   exitKeystrokes: 1,
+  // Codex's request_user_input picker hasn't been measured; its answer stays a message.
+  questionKeys: null,
   resumeArgs: (id) => ` resume ${id}`,
   teleportArgs: null,
   bypassPermissionsFlag: "--dangerously-bypass-approvals-and-sandbox",
@@ -364,8 +414,12 @@ export function agentAdapters(): AgentAdapter[] {
 
 /** The reader for a transcript path: the agent that recognises the file, else Claude's. */
 export function transcriptFormatFor(transcriptPath: string): ConversationFormat {
-  return (agentAdapters().find((adapter) => adapter.ownsTranscriptPath?.(transcriptPath))
-    ?? claudeAdapter).transcriptFormat;
+  return adapterForTranscript(transcriptPath).transcriptFormat;
+}
+
+/** The agent that writes this transcript. */
+export function adapterForTranscript(transcriptPath: string): AgentAdapter {
+  return agentAdapters().find((adapter) => adapter.ownsTranscriptPath?.(transcriptPath)) ?? claudeAdapter;
 }
 
 /**

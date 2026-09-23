@@ -37,6 +37,23 @@ public enum QuestionOutcome {
         return options.enumerated().filter { accepted.contains($0.offset) }.map(\.element)
     }
 
+    /// Each question's answer, read from Claude Code's result — `"<question>"="<answer>"`
+    /// for every question — or nil unless every one is there. Read per question rather than
+    /// by searching for option labels: with several questions in one result, a label from
+    /// one would match another's answer.
+    public static func answers(to questions: [String], in result: String?) -> [String]? {
+        guard let result else { return nil }
+        var found: [String] = []
+        for question in questions {
+            let key = "\"\(question)\"=\""
+            guard let start = result.range(of: key),
+                  let end = result.range(of: "\"", range: start.upperBound..<result.endIndex)
+            else { return nil }
+            found.append(String(result[start.upperBound..<end.lowerBound]))
+        }
+        return found
+    }
+
     /// §3's collapsed line, or nil when there is nothing certain to say.
     public static func summary(header: String, chosen: [String]) -> String? {
         guard !chosen.isEmpty else { return nil }

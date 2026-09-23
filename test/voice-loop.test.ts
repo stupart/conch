@@ -1,3 +1,4 @@
+import type { AnswerKey } from "../src/agent-adapter.ts";
 import { describe, expect, test } from "bun:test";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -120,6 +121,7 @@ interface Options {
   window?: (sessionId: string) => SessionInfo | undefined;
   inject?: (text: string) => InjectTextResult;
   key?: (key: string) => InjectTextResult;
+  answerKeys?: (keys: readonly AnswerKey[]) => InjectTextResult;
   beforeKey?: (key: string) => void | Promise<void>;
   command?: (line: string) => ProviderCommandResult;
   /** One script per mic window, in order. */
@@ -204,6 +206,7 @@ function harness(options: Options = {}) {
   const texts: string[] = [];
   const keys: string[] = [];
   const keyPids: Array<number | undefined> = [];
+  const answered: AnswerKey[][] = [];
   const commands: string[] = [];
   const gone: string[] = [];
   const sessions: FakeSession[] = [];
@@ -248,6 +251,11 @@ function harness(options: Options = {}) {
         order.push(`key:${key}`);
         return options.key?.(key) ?? { via: "tmux" };
       },
+      injectKeys: async (_cfg, _pid, sequence) => {
+        answered.push([...sequence]);
+        order.push("answer");
+        return options.answerKeys?.(sequence) ?? { via: "tmux" };
+      },
       injectProviderCommand: async (_cfg, _target, line) => {
         commands.push(line);
         return options.command?.(line) ?? { kind: "delivered", via: "tmux" };
@@ -273,7 +281,7 @@ function harness(options: Options = {}) {
   voice = createVoiceLoop(deps);
   return {
     voice, cfg, ledger, lease, holder, speech, said, playing, cues, cueExits, violations, order,
-    logs, presented, latch, errors, texts, keys, keyPids, commands, gone, sessions, hooks,
+    logs, presented, latch, errors, texts, keys, keyPids, answered, commands, gone, sessions, hooks,
     barges: () => barges,
   };
 }
@@ -2192,5 +2200,84 @@ describe("an alternative prompt recovers its draft (finding 15)", () => {
       expect(getLiveState().dictated?.text).toBe("use main instead");
       expect(h.said.at(-1)).toBe("Couldn't deliver that. Your words are in the draft. Review them before trying again.");
     } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+});
+
+describe("answering the question a session is waiting on", () => {
+  // Claude Code 2.1.280's picker, measured in a pseudo-terminal (see claudeQuestionKeys):
+  // words typed or pasted into it, then Return, recorded OPTION 1 ("hello there" -> "D1").
+  const question = (header: string, labels: string[], multiSelect = false) => ({
+    header, question: `Pick ${header}?`, multiSelect,
+    options: labels.map((label) => ({ label, description: `Option ${label}` })),
+  });
+  const asking = (...questions: unknown[]) => transcript(
+    user({ type: "text", text: "ask me" }),
+    assistant({ type: "tool_use", id: "tu_ask", name: "AskUserQuestion", input: { questions } }),
+  );
+  const answeredAlready = (...questions: unknown[]) => transcript(
+    user({ type: "text", text: "ask me" }),
+    assistant({ type: "tool_use", id: "tu_ask", name: "AskUserQuestion", input: { questions } }),
+    user({ type: "tool_result", tool_use_id: "tu_ask", content: "answered" }),
+  );
+  const two = () => asking(question("Alpha", ["A1", "A2", "A3"]), question("Beta", ["B1", "B2"]));
+
+  test("the card's answers are typed as the picker's keys, never as words", async () => {
+    const h = harness();
+    const sent = await h.voice.handle(inject("Alpha: A2; Beta: B1", {
+      transcriptPath: two(),
+      answers: [{ choices: [1] }, { choices: [0] }],
+    }));
+    expect(sent).toBe(true);
+    expect(h.answered).toEqual([[{ press: "2" }, { press: "1" }, { press: "1" }]]);
+    expect(h.texts).toEqual([]);
+  });
+
+  test("an answer for a question that is no longer waiting is refused, not typed", async () => {
+    const h = harness();
+    const sent = await h.voice.handle(inject("A2", {
+      transcriptPath: answeredAlready(question("Alpha", ["A1", "A2"])),
+      answers: [{ choices: [1] }],
+    }));
+    expect(sent).toMatchObject({ delivered: false, reason: "the session is no longer waiting on a question" });
+    expect(h.answered).toEqual([]);
+    expect(h.texts).toEqual([]);
+  });
+
+  test("words for a lone question become its answer: the option they name, or words of your own", async () => {
+    const h = harness();
+    const path = asking(question("Delta", ["D1", "D2"]));
+    expect(await h.voice.handle(inject("d2", { transcriptPath: path }))).toBe(true);
+    expect(await h.voice.handle(inject("something\nelse entirely", { transcriptPath: path }))).toBe(true);
+    expect(h.answered).toEqual([
+      [{ press: "2" }],
+      [{ press: "3" }, { type: "something else entirely" }, "Enter"],
+    ]);
+    expect(h.texts).toEqual([]);
+  });
+
+  test("words while several questions wait are refused with the reason, never guessed", async () => {
+    const h = harness();
+    const sent = await h.voice.handle(inject("A2", { transcriptPath: two() }));
+    expect(sent).toMatchObject({ delivered: false });
+    expect((sent as { reason: string }).reason).toContain("asking 2 questions at once");
+    expect(h.answered).toEqual([]);
+    expect(h.texts).toEqual([]);
+  });
+
+  test("with no question waiting, words are an ordinary message", async () => {
+    const h = harness();
+    // Typed as a message (whether it then confirms is the message path's business).
+    await h.voice.handle(inject("carry on", { transcriptPath: pendingBash() }));
+    expect(h.texts[0]).toBe("carry on");
+    expect(h.answered).toEqual([]);
+  });
+
+  test("a failed key send is reported, with its reason", async () => {
+    const h = harness({ answerKeys: () => ({ via: "none", failed: true, reason: "front-window-changed" }) });
+    const sent = await h.voice.handle(inject("D1", {
+      transcriptPath: asking(question("Delta", ["D1", "D2"])),
+      answers: [{ choices: [0] }],
+    }));
+    expect(sent).toMatchObject({ delivered: false, reason: "front-window-changed" });
   });
 });

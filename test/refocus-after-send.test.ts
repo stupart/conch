@@ -24,7 +24,7 @@ const store = read("mac-app/conch-mac/StateStore.swift");
  */
 test("a Mac-app send takes the front back only after the daemon says delivery finished", () => {
   expect(client).toContain(
-    "Self(type: .inject, sessionId: sessionId, label: label, announce: text, awaitDelivery: true)",
+    "Self(type: .inject, sessionId: sessionId, label: label, announce: text, awaitDelivery: true, answers: answers)",
   );
   const write = member(client, "private static func write(\n        _ event: ConchDaemonEvent,");
   const written = write.indexOf("guard write(payload, to: descriptor, deadline: deadline) == .complete else {");
@@ -73,7 +73,7 @@ test("a Mac-app send takes the front back only after the daemon says delivery fi
   // Whitespace-normalised on purpose: this guard is about the door an answer takes, not how
   // deeply the call happens to be nested. Lifting the conversation into its own view re-indented
   // it by 12 and broke this while the routing it checks was never touched.
-  expect(dashboard.replace(/\s+/g, " ")).toContain("onAnswer: { label in store.send( .inject(");
+  expect(dashboard.replace(/\s+/g, " ")).toContain("onAnswer: { summary, answers in store.send( .inject(");
   expect(read("mac-app/conch-mac/CommandPaletteView.swift")).toContain("store.send(.inject(\n");
 });
 
