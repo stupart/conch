@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { RecordsDiscovery, recordsCandidate, recordsRoots, type RecordsCandidate } from "./records-discovery.ts";
-import { inspectRecordSource, SOURCE_PROBE_BYTES } from "./records-source.ts";
+import { inspectRecordSource, RECORD_PARSER_VERSION, SOURCE_PROBE_BYTES } from "./records-source.ts";
 import { recordKey, type RecordProvider, type RecordSession } from "./records-types.ts";
 import type { RecordStore } from "./records-store.ts";
 
@@ -216,7 +216,7 @@ export class RecordsIndexer {
         path: job.path, device: job.device, inode: job.inode, size: observed.size, modifiedMs: observed.mtimeMs,
         prefix, checkpoint, from: previous.offset, bytes: new Uint8Array(),
       };
-      const plan = inspectRecordSource(previous, source);
+      const plan = inspectRecordSource(previous, source, RECORD_PARSER_VERSION[job.session.provider]);
       const pending = plan.change === "append" && this.buffered?.id === job.id && this.buffered.from === plan.from
         && observed.size >= this.buffered.from + this.buffered.bytes.length
         && (observed.size > this.buffered.size || observed.mtimeMs === this.buffered.modifiedMs)

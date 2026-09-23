@@ -12,6 +12,14 @@ import {
 } from "./records-types.ts";
 
 type ObjectValue = Record<string, unknown>;
+
+/**
+ * Codex's own context, which it files as `role: "user"` in the raw stream: 230 of the 715
+ * Codex "user" messages this index held were these (2026-09-23), shown as things Tyler said.
+ * His words never open with them. His image and in-app-browser messages open with other tags,
+ * and a `codex exec` prompt or a fork's history reaches this index only through this stream.
+ */
+const CODEX_INJECTED_CONTEXT = /^\s*(?:<(?:environment_context|recommended_plugins|codex_internal_context|turn_aborted|skills_instructions|user_instructions|model_switch|external_codex_apps_[\w-]*)\b|# AGENTS\.md instructions)/;
 interface TurnMetadata { model?: string; provider?: string; effort?: string }
 interface Mirror {
   turnId: string;
@@ -359,6 +367,7 @@ export function normalizeCodexRecord(entry: unknown, context: RecordNormalizerCo
 
   if (envelope.type === "response_item") {
     if (payload.type === "message" && (payload.role === "user" || payload.role === "assistant")) {
+      if (payload.role === "user" && CODEX_INJECTED_CONTEXT.test(visibleText(payload.content) ?? "")) return out;
       message(out, context, state, payload, payload.role, "response_message", at);
     } else if (payload.type === "agent_message") {
       if (payload.author !== undefined || payload.recipient !== undefined) interAgent(out, context, state, payload, at);

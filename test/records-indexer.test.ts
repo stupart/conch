@@ -248,6 +248,18 @@ test("recovery refuses a parent directory replaced by a symlink", async () => {
   expect(f.indexer.status().bytesRead).toBe(before);
 });
 
+test("a Codex rollout larger than one batch is read to the end", async () => {
+  // Read with Claude's parser version, every batch after the first planned a rewrite from byte 0.
+  const f = fixture();
+  const directory = join(f.codexHome, "sessions", "2026", "09", "16");
+  mkdirSync(directory, { recursive: true });
+  const said = (n: number) => JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: `reply ${n} `.padEnd(200, "x") }] } }) + "\n";
+  writeFileSync(join(directory, `rollout-2026-09-16-${id(1)}.jsonl`),
+    JSON.stringify({ type: "session_meta", payload: { id: id(1) } }) + "\n" + Array.from({ length: 12 }, (_, n) => said(n)).join(""));
+  await until(f.indexer, () => f.store.counts().items === 12);
+  expect(f.store.sourcePage({})[0]!.coverage.error ?? null).toBeNull();
+});
+
 test("a Codex metadata UUID mismatch is reported without attributing content to the filename", async () => {
   const f = fixture();
   const directory = join(f.codexHome, "sessions", "2026", "09", "16");

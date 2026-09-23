@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, wr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RecordStore, type RecordIngest } from "../src/records-store.ts";
-import { SOURCE_PROBE_BYTES, type StoredRecordSource } from "../src/records-source.ts";
+import { RECORD_PARSER_VERSION, SOURCE_PROBE_BYTES, type StoredRecordSource } from "../src/records-source.ts";
 import type { RecordReceipt, RecordSession } from "../src/records-types.ts";
 import { RECORD_MIGRATIONS } from "../src/records-schema.ts";
 
@@ -163,6 +163,33 @@ test("a parser upgrade rebuilds even when the file rotates at the same time", ()
   const result = store.ingest(batch(jsonl(user("new", "new parser")), store.source("source"), { from: 0, inode: "3" }));
   expect(result.change).toBe("rewrite");
   expect(rows(store, "SELECT text FROM items").map((item) => item.text)).toEqual(["new parser"]);
+});
+
+test("the parser version is per provider: a Codex upgrade re-reads Codex's sources, not Claude's", () => {
+  const store = open();
+  const codexSession: RecordSession = { ...session, id: "codex-fixture", provider: "codex", nativeId: "codex-native" };
+  const said = (...texts: string[]) => jsonl(...texts.map((text) => ({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } })));
+  // From byte 0 both times, so the store alone decides between append and rewrite.
+  const codex = (bytes: Uint8Array, previous?: StoredRecordSource): RecordIngest => {
+    const input = batch(bytes, previous, { from: 0 });
+    return { session: codexSession, source: { ...input.source, id: "codex-source", path: "/fixture/rollout-x.jsonl", inode: "9" } };
+  };
+  store.ingest(batch(jsonl(user("u", "claude words"))));
+  store.ingest(codex(said("codex words")));
+  // Its acknowledgement lost, the same read retried resumes rather than reading as stale.
+  expect(store.ingest(codex(said("codex words"))).change).toBe("append");
+  // A re-index queues the replay at Codex's version, or it would replay twice.
+  store.reindex(codexSession.id);
+  expect(store.source("codex-source")?.parserVersion).toBe(RECORD_PARSER_VERSION.codex);
+  store.ingest(codex(said("codex words"), store.source("codex-source")));
+  expect(rows(store, "SELECT id, parser_version FROM sources ORDER BY id"))
+    .toEqual([{ id: "codex-source", parser_version: RECORD_PARSER_VERSION.codex }, { id: "source", parser_version: RECORD_PARSER_VERSION.claude }]);
+  // A store written before the split holds one version for both.
+  const db = new Database(store.path);
+  db.exec(`UPDATE sources SET parser_version=${RECORD_PARSER_VERSION.claude}`);
+  db.close();
+  expect(store.ingest(batch(jsonl(user("u", "claude words"), user("u2", "more")), store.source("source"))).change).toBe("append");
+  expect(store.ingest(codex(said("codex words", "more"), store.source("codex-source"))).change).toBe("rewrite");
 });
 
 test("process crash before checkpoint leaves neither new items nor an advanced cursor", async () => {
