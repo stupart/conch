@@ -97,6 +97,28 @@ export function readContinuedIn(path: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Has anyone said anything in this transcript yet — one `user` or `assistant`
+ * record. Unreadable counts as yes, so a read failure never hides a session.
+ */
+export function hasConversation(path: string): boolean {
+  try {
+    // ponytail: past the tail size it holds a conversation in practice; read the
+    // head too if a big metadata-only transcript ever turns up.
+    if (statSync(path).size > CLAUDE_TAIL_BYTES) return true;
+    return readTail(path).split("\n").some((line) => {
+      try {
+        const type = JSON.parse(line)?.type;
+        return type === "user" || type === "assistant";
+      } catch {
+        return false;
+      }
+    });
+  } catch {
+    return true;
+  }
+}
+
 /** The last `CLAUDE_TAIL_BYTES` of a transcript, decoded. Throws when unreadable. */
 function readTail(path: string): string {
   const fd = openSync(path, "r");

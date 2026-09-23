@@ -414,11 +414,10 @@ describe("a window's parkedJobId the daemon set without its conversation ever mo
   test("shows the window's real conversation, not the empty spare job", async () => {
     const f = decoyParked();
     const snap = (await registrySnapshot(f.claudeDir, f.options))!;
-    const ids = snap.infos.map((s) => s.sessionId).sort();
-    // Both rows exist — the real conversation, and the empty job with no
-    // terminal of its own (the same shape as the daemon's other bare spares;
-    // see the report's UX note) — but the window is no longer hidden behind it.
-    expect(ids).toEqual(["resumed", "spare-slot"]);
+    // The real conversation is the row. The empty job is not a row at all
+    // (see "a background job nobody has talked to yet"), though it is live.
+    expect(snap.infos.map((s) => s.sessionId)).toEqual(["resumed"]);
+    expect(snap.liveIds.has("spare-slot")).toBe(true);
 
     const real = snap.infos.find((s) => s.sessionId === "resumed")!;
     expect(real.pid).toBe(WINDOW);
@@ -427,9 +426,6 @@ describe("a window's parkedJobId the daemon set without its conversation ever mo
     const path = findTranscript(f.claudeDir, real.sessionId)!;
     const conversation = await readConversationTail(path, real.sessionId, "claude");
     expect(lastAssistantReply(conversation)).toBe("still going");
-
-    const spare = snap.infos.find((s) => s.sessionId === "spare-slot")!;
-    expect(spare).toMatchObject({ pid: 0, noTerminal: BG_NO_TERMINAL, jobId: "spare-slot" });
   });
 
   test("a hook or lookup by the window's own id is not redirected to the empty job", async () => {
@@ -447,7 +443,64 @@ describe("a window's parkedJobId the daemon set without its conversation ever mo
       said("resumed", "u1", null, "user", "start"),
       { type: "continued-in", timestamp: "2026-09-23T14:39:00.000Z", sessionId: "resumed", continuedInSessionId: "spare-slot" },
     ]);
+    // A real move forks the conversation into the job.
+    f.transcript("spare-slot", [said("spare-slot", "u1", null, "user", "start")]);
     const ids = (await registrySnapshot(f.claudeDir, f.options))!.infos.map((s) => s.sessionId);
     expect(ids).toEqual(["spare-slot"]);
+  });
+});
+
+describe("a background job nobody has talked to yet", () => {
+  // Ground truth (2026-09-23): 2.1.280's daemon keeps idle bg-spare jobs per
+  // project directory. 50b4f863 and db7b8e98 (`spare: true`, no transcript)
+  // and 25d17f50 (auto-named, transcript only `ai-title` + `agent-name`) each
+  // showed as a session with no terminal and nothing in it.
+  const job = (f: ReturnType<typeof fixture>, pid: number, id: string, extra: object = {}) =>
+    f.registry(pid, { sessionId: id, kind: "bg", name: id, jobId: id, startedAt: 2, status: "idle", ...extra });
+  const ids = async (f: ReturnType<typeof fixture>) =>
+    (await registrySnapshot(f.claudeDir, f.options))!.infos.map((s) => s.sessionId).sort();
+
+  test("a spare with no transcript is not a row, but is still live", async () => {
+    const f = fixture();
+    job(f, 8921, "spare", { spare: true });
+    const snap = (await registrySnapshot(f.claudeDir, f.options))!;
+    expect(snap.infos).toEqual([]);
+    expect(snap.liveIds.has("spare")).toBe(true);
+  });
+
+  test("a job whose transcript is only metadata is not a row; one user record makes it one", async () => {
+    const f = fixture();
+    job(f, 8936, "named", { name: "Prime page wireframe", nameSource: "auto" });
+    const metadata = [
+      { type: "ai-title", aiTitle: "Prime page wireframe", sessionId: "named" },
+      { type: "agent-name", agentName: "Prime page wireframe", sessionId: "named" },
+    ];
+    f.transcript("named", metadata);
+    expect(await ids(f)).toEqual([]);
+    f.transcript("named", [...metadata, said("named", "u1", null, "user", "go")]);
+    expect(await ids(f)).toEqual(["named"]);
+  });
+
+  test("a job with no transcript found is still a row unless the registry says spare", async () => {
+    // The transcript path is a guess from the cwd; a wrong guess must not hide a real job.
+    const f = fixture();
+    job(f, 8937, "unfound");
+    expect(await ids(f)).toEqual(["unfound"]);
+  });
+
+  test("a big transcript counts as a conversation without being parsed", async () => {
+    const f = fixture();
+    job(f, 8938, "big");
+    f.transcript("big", Array.from({ length: 800 }, () => ({ type: "custom-title", customTitle: "x".repeat(80), sessionId: "big" })));
+    expect(await ids(f)).toEqual(["big"]);
+  });
+
+  test("a window whose conversation moved into an empty job keeps its own row", async () => {
+    const f = fixture();
+    job(f, 8939, "empty");
+    f.transcript("empty", [{ type: "ai-title", aiTitle: "empty", sessionId: "empty" }]);
+    f.registry(WINDOW, { sessionId: "window", kind: "interactive", parkedJobId: "empty", startedAt: 1 });
+    f.transcript("window", [said("window", "u1", null, "user", "start"), ...movedTo("window", "empty")]);
+    expect(await ids(f)).toEqual(["window"]);
   });
 });
