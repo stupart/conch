@@ -22,7 +22,7 @@ import {
   type CodexSessionRegistryOptions,
 } from "./codex-sessions.ts";
 import { readCodexThreads } from "./codex-threads.ts";
-import { liveTranscriptPath, readClaudeTitles, readContinuedIn } from "./claude-title.ts";
+import { hasConversation, liveTranscriptPath, readClaudeTitles, readContinuedIn } from "./claude-title.ts";
 import { parseWindowKey, processParentTable, windowKey, windowPidFromAncestry } from "./window-key.ts";
 import { HELP_SESSION_LABEL, helpSessionDir } from "./help-session.ts";
 
@@ -817,7 +817,7 @@ export async function registrySnapshot(
     if (!entry.sessionId) continue;
     liveIds.add(entry.sessionId);
     allEntries.push(entry);
-    if (isEngageable(entry)) claudeEntries.push(entry);
+    if (isEngageable(entry) && !unusedBackgroundJob(claudeDir, entry)) claudeEntries.push(entry);
   }
   // One conversation is one row. The window a conversation moved out of stays
   // live under the old id; the live session it moved to is the row. A window
@@ -910,6 +910,30 @@ export async function registrySnapshot(
   // make the combined liveness view incomplete.
   if (!claudeAvailable && !codex.available) return null;
   return { infos, liveIds, complete };
+}
+
+/**
+ * A background job nobody has talked to yet: not a row.
+ *
+ * Claude Code 2.1.280's daemon keeps idle "bg-spare" jobs ready per project
+ * directory and auto-names some. Ground truth (2026-09-23): three such rows
+ * next to the real ones — 50b4f863 and db7b8e98 (`spare: true`, no transcript
+ * at all) and 25d17f50 (spare flag gone, auto-named "Prime page wireframe in
+ * blueprint studio" after the real 2f266f8d conversation, transcript only the
+ * `ai-title` and `agent-name` records). Each read as a session with no
+ * terminal and nothing in it, and the name collision made a lookup by name
+ * ambiguous. A job shows up as soon as it holds one user or assistant record.
+ *
+ * Dropped before the parked/moved checks, so a window pointing at one of
+ * these keeps its own row instead of disappearing with it. The id stays in
+ * `liveIds`: the job is live, just empty. A job whose transcript cannot be
+ * found is hidden only when the registry itself says `spare`, since
+ * `liveTranscriptPath` is a guess from the cwd.
+ */
+function unusedBackgroundJob(claudeDir: string, entry: any): boolean {
+  if (entry.kind !== "bg") return false;
+  const path = liveTranscriptPath(claudeDir, entry.cwd, entry.sessionId);
+  return path ? !hasConversation(path) : entry.spare === true;
 }
 
 /**
