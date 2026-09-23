@@ -27,7 +27,7 @@ struct SessionStaticContent: Equatable {
         let name = row.label.isEmpty ? row.id : row.label
         return SessionStaticContent(
             rowID: row.id,
-            text: "No reply yet from ‹\(name)›.",
+            text: "Nothing from \(name) yet. Send a message below to start.",
             isPlaceholder: true
         )
     }
