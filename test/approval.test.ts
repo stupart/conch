@@ -9,8 +9,6 @@ import {
   approvalAnnounce,
   approvalDetail,
   classifyApprovalAnswer,
-  confirmAlwaysPrompt,
-  confirmsAlways,
   pendingApproval,
   pendingApprovalFromLines,
   pendingCodexApprovalFromLines,
@@ -102,7 +100,7 @@ describe("what Codex is waiting on, from its rollout", () => {
       .toBe("seashell needs permission for exec: bun install. Answer it in the session.");
     // Claude's dialog is unchanged.
     expect(approvalAnnounce("alpha", { name: "Bash", summary: "git push" }))
-      .toBe("alpha needs permission for Bash: git push. Yes, always, or no?");
+      .toBe("alpha needs permission for Bash: git push. Yes, or no?");
   });
 });
 
@@ -183,10 +181,10 @@ describe("the one spoken line", () => {
 
   test("announce and row detail carry the tool and the summary", () => {
     const ask = { name: "Bash", summary: "git push origin main" };
-    expect(approvalAnnounce("Fix login", ask)).toBe("Fix login needs permission for Bash: git push origin main. Yes, always, or no?");
+    expect(approvalAnnounce("Fix login", ask)).toBe("Fix login needs permission for Bash: git push origin main. Yes, or no?");
     expect(approvalDetail(ask)).toBe("permission: Bash — git push origin main");
-    expect(confirmAlwaysPrompt(ask)).toBe("Always allow Bash for this session. Say yes to confirm.");
-    expect(APPROVAL_REASK).toContain("always");
+    // "always" is never offered: what it grants differs per tool and can't be announced.
+    expect(APPROVAL_REASK).not.toContain("always");
     expect(APPROVAL_KEYBOARD).toContain("keyboard");
   });
 });
@@ -235,17 +233,6 @@ describe("the spoken answer, four ways", () => {
       deny: ["Escape"],
       instead: ["Escape"],
     });
-  });
-});
-
-describe("the confirm gate for always", () => {
-  test("a plain yes or a repeated always confirms; anything else does not", () => {
-    expect(confirmsAlways(["yes"])).toBe(true);
-    expect(confirmsAlways(["Always."])).toBe(true);
-    expect(confirmsAlways(["no"])).toBe(false);
-    expect(confirmsAlways(["maybe later"])).toBe(false);
-    expect(confirmsAlways(["no, use main"])).toBe(false);
-    expect(confirmsAlways([])).toBe(false);
   });
 });
 

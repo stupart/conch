@@ -214,7 +214,7 @@ export function approvalAnnounce(
 ): string {
   const head = `${label} needs permission for ${ask.name}: ${ask.summary}.`;
   // Only Claude Code's dialog takes the four-way answer conch can press.
-  return ask.answerable === false ? `${head} Answer it in the session.` : `${head} Yes, always, or no?`;
+  return ask.answerable === false ? `${head} Answer it in the session.` : `${head} Yes, or no?`;
 }
 
 /** The dashboard row's reason, so "needs an answer" says what for. */
@@ -222,12 +222,15 @@ export function approvalDetail(ask: Pick<PendingApproval, "name" | "summary">): 
   return `permission: ${ask.name} — ${ask.summary}`;
 }
 
-export const APPROVAL_REASK = "Say yes for this once, always, no, or no followed by what to do instead.";
+export const APPROVAL_REASK = "Say yes for this once, no, or no followed by what to do instead.";
 export const APPROVAL_KEYBOARD = "Leaving it for the keyboard.";
-
-export function confirmAlwaysPrompt(ask: Pick<PendingApproval, "name">): string {
-  return `Always allow ${ask.name} for this session. Say yes to confirm.`;
-}
+/**
+ * Said instead of granting "always". Claude Code's second option grants something
+ * different per tool (for a Bash command, measured on 2.1.280: "always allow access to
+ * <folder> from this project", with accept-edits mode among the suggestions), reached by a
+ * blind Down, Enter — nothing conch could truthfully announce before pressing it.
+ */
+export const APPROVAL_NO_ALWAYS = "Always isn't something conch can grant: it allows more than conch can tell you. Yes for this once, or no?";
 
 export type ApprovalAnswer =
   | { kind: "once" }
@@ -289,13 +292,3 @@ export function classifyApprovalAnswer(segments: Iterable<string>): ApprovalAnsw
   return null;
 }
 
-/**
- * The confirm gate for "always" — the one outcome that outlives this prompt
- * and is delivered by a blind two-key walk through a menu conch cannot see.
- * Only a plain yes, or saying "always" again, confirms; anything else leaves
- * the dialog for the keyboard.
- */
-export function confirmsAlways(segments: Iterable<string>): boolean {
-  const answer = classifyApprovalAnswer(segments);
-  return answer?.kind === "once" || answer?.kind === "always";
-}

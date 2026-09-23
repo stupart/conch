@@ -26,10 +26,10 @@ import { voiceFor } from "../src/speak.ts";
 import { getLiveState, setState } from "../src/status.ts";
 import {
   APPROVAL_KEYBOARD,
+  APPROVAL_NO_ALWAYS,
   APPROVAL_REASK,
   approvalAnnounce,
   approvalDetail,
-  confirmAlwaysPrompt,
 } from "../src/approval.ts";
 import { createVoiceLoop, type VoiceLoop, type VoiceLoopDeps } from "../src/voice-loop.ts";
 import type { RecordObservation } from "../src/records-receipts.ts";
@@ -1042,11 +1042,11 @@ describe("permission request lifetime", () => {
     expect(h.keys).toEqual([]);
   });
 
-  test("replacement during the always confirmation announcement cancels both keys", async () => {
+  test("replacement while conch explains it can't grant always cancels the yes that follows", async () => {
     const path = pendingBash();
     const h = harness({ holdSpeech: true, heard: [["always"], ["yes"]] });
     const announce = approvalAnnounce("alpha", ask);
-    const confirmation = confirmAlwaysPrompt(ask);
+    const confirmation = APPROVAL_NO_ALWAYS;
     const turn = h.voice.handle(accepted(h, permission(path)));
     await waitFor("permission announcement", () => h.playing.has(announce));
     h.playing.get(announce)!.finish();
@@ -1082,14 +1082,11 @@ describe("permission request lifetime", () => {
     });
   }
 
-  test("replacement after Down cannot receive the confirming Enter", async () => {
+  test("always never walks to the dialog's always row: the yes that follows is a plain Enter", async () => {
     const path = pendingBash();
-    const h = harness({ heard: [["always"], ["yes"]], key: (key) => {
-      if (key === "Down") replaceApproval(path, "new-request");
-      return { via: "tmux" };
-    } });
+    const h = harness({ heard: [["always"], ["yes"]] });
     await h.voice.handle(accepted(h, permission(path)));
-    expect(h.keys).toEqual(["Down"]);
+    expect(h.keys).toEqual(["Enter"]);
   });
 });
 
@@ -1161,15 +1158,17 @@ describe("permission by voice", () => {
     expect(h.sessions).toHaveLength(2);
   });
 
-  test("always is confirmed by a second yes before any key is pressed", async () => {
-    const refused = harness({ heard: [["always"], ["no"]] });
-    await refused.voice.handle(accepted(refused, permission(pendingBash())));
-    expect(refused.said).toEqual([approvalAnnounce("alpha", ask), confirmAlwaysPrompt(ask), `Not confirmed. ${APPROVAL_KEYBOARD}`]);
-    expect(refused.keys).toEqual([]);
+  test("always is never granted: conch says why and asks for yes or no once", async () => {
+    // Claude Code 2.1.280's always option grants something different per tool
+    // (measured: folder access for a Bash command), reached by a blind Down, Enter.
+    const insists = harness({ heard: [["always"], ["always"]] });
+    await insists.voice.handle(accepted(insists, permission(pendingBash())));
+    expect(insists.said).toEqual([approvalAnnounce("alpha", ask), APPROVAL_NO_ALWAYS, APPROVAL_KEYBOARD]);
+    expect(insists.keys).toEqual([]);
 
-    const confirmed = harness({ heard: [["always"], ["yes"]] });
-    await confirmed.voice.handle(accepted(confirmed, permission(pendingBash())));
-    expect(confirmed.keys).toEqual(["Down", "Enter"]);
+    const no = harness({ heard: [["always"], ["no"]] });
+    await no.voice.handle(accepted(no, permission(pendingBash())));
+    expect(no.keys).toEqual(["Escape"]);
   });
 
   test("instead is Escape, then the alternative typed as the next prompt", async () => {
@@ -2373,11 +2372,11 @@ describe("answering the question a session is waiting on", () => {
 describe("answering a permission prompt from the Mac card", () => {
   // Tyler: "it was a confirm thing but it wasn't surfacing in conch". The card sends
   // `approve` with the prompt's id; the loop presses the same keys a spoken answer does.
-  const approve = (kind: "once" | "always" | "deny", id: string, path = pendingBash()) =>
+  const approve = (kind: "once" | "deny", id: string, path = pendingBash()) =>
     inject("Allow Bash", { transcriptPath: path, pid: 4242, approve: { kind, id } });
 
-  test("Allow, Always allow and Deny press the dialog's own keys", async () => {
-    for (const [kind, keys] of [["once", ["Enter"]], ["always", ["Down", "Enter"]], ["deny", ["Escape"]]] as const) {
+  test("Allow and Deny press the dialog's own keys", async () => {
+    for (const [kind, keys] of [["once", ["Enter"]], ["deny", ["Escape"]]] as const) {
       const h = harness();
       expect(await h.voice.handle(approve(kind, "tu_1"))).toBe(true);
       expect(h.keys).toEqual([...keys]);
@@ -2399,7 +2398,7 @@ describe("answering a permission prompt from the Mac card", () => {
       beforeKey: () => { writeFileSync(path, readFileSync(path, "utf8") + JSON.stringify(user({ type: "tool_result", tool_use_id: "tu_1", content: "ok" })) + "\n"); },
     });
     path = pendingBash();
-    const sent = await h.voice.handle(approve("always", "tu_1", path));
+    const sent = await h.voice.handle(approve("once", "tu_1", path));
     expect(sent).toMatchObject({ delivered: false, reason: "the permission changed before conch could answer it" });
     expect(h.keys).toEqual([]);
   });

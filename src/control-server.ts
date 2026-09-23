@@ -647,9 +647,10 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
     const approve = value.approve;
     if (type !== "inject") return { ok: false, err: "approve is only for inject" };
     if (value.answers !== undefined) return { ok: false, err: "an inject answers a question or a permission, not both" };
-    if (!socketRecord(approve) || !["once", "always", "deny"].includes(approve.kind as string)
+    // No "always": what it grants differs per tool and can't be shown before it is pressed.
+    if (!socketRecord(approve) || !["once", "deny"].includes(approve.kind as string)
       || typeof approve.id !== "string" || !approve.id || approve.id.length > 200) {
-      return { ok: false, err: "approve must be { kind: once | always | deny, id }" };
+      return { ok: false, err: "approve must be { kind: once | deny, id }" };
     }
   }
   if (value.answers !== undefined) {

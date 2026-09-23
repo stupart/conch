@@ -50,7 +50,9 @@ describe("the approve field on the socket", () => {
     validateSocketTurnEvent({ type, sessionId: "s1", label: "alpha", announce: "Allow Bash", ...extra });
 
   test("once, always or deny, naming the prompt", () => {
-    for (const kind of ["once", "always", "deny"]) expect(event({ approve: { kind, id: "tu_1" } }).ok).toBe(true);
+    for (const kind of ["once", "deny"]) expect(event({ approve: { kind, id: "tu_1" } }).ok).toBe(true);
+    // Never "always": what it grants differs per tool and can't be shown before it's pressed.
+    expect(event({ approve: { kind: "always", id: "tu_1" } }).ok).toBe(false);
   });
 
   test("anything else is refused before it can reach a keyboard", () => {
