@@ -1083,6 +1083,17 @@ function rememberCodexQuestionOptions(conversation: Conversation, options: strin
   }
 }
 
+/**
+ * Why a Codex turn failed, from its `task_complete`; undefined for one that didn't.
+ * Codex writes no reply for it and does not keep the error event itself, only this:
+ * 31 such turns across Tyler's rollouts (usage limit, a bad API key, a policy flag),
+ * each of which just went quiet in conch.
+ */
+export function codexTurnError(payload: any): string | undefined {
+  const message = payload?.error?.message;
+  return typeof message === "string" && message.trim() ? message.trim() : undefined;
+}
+
 export function reduceCodexLine(conversation: Conversation, entry: any): void {
   if (!entry || typeof entry !== "object") return;
   const at = Date.parse(entry.timestamp ?? "") || undefined;
@@ -1093,6 +1104,22 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
   if (entry.type === "event_msg") {
     if (payload.type === "task_started" && typeof payload.turn_id === "string") {
       codexTurn.set(conversation, payload.turn_id);
+      return;
+    }
+    // A turn that failed or was stopped leaves no reply, so without a row the session
+    // just went quiet: Tyler couldn't tell a usage limit from a turn still thinking.
+    const failed = payload.type === "task_complete" ? codexTurnError(payload) : undefined;
+    if (failed || payload.type === "turn_aborted") {
+      const material: ConversationMaterial = failed
+        ? { kind: "system_note", title: "Turn failed", detail: failed, status: "error" }
+        : { kind: "interruption", title: "Request interrupted" };
+      upsertConversationItem(conversation, {
+        id: `turn-end:${payload.turn_id ?? ordinal}`,
+        kind: "material",
+        text: material.detail ?? material.title,
+        at,
+        material,
+      });
       return;
     }
     // What Tyler said and what Codex replied, as Codex itself records them. Current

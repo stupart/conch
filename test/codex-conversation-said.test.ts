@@ -77,3 +77,28 @@ describe("a current Codex rollout shows what was said, once", () => {
     ])).toEqual([["user", "go"], ["assistant", "Done."]]);
   });
 });
+
+describe("a Codex turn that ends without a reply", () => {
+  const ended = (payload: object) => line({ type: "event_msg", payload });
+  const material = (lines: string[]) => {
+    const conversation = buildConversation("s", lines, "codex");
+    return conversation.order.map((id) => conversation.items[id]!).filter((item) => item.kind === "material").map((item) => item.material);
+  };
+
+  test("a failed one shows why, as Codex recorded it", () => {
+    expect(material([
+      started("t1"), said("t1", "UserMessage", "go", "u1"),
+      ended({ type: "task_complete", turn_id: "t1", last_agent_message: null, error: { message: "You've hit your usage limit.", codex_error_info: "usage_limit_exceeded" } }),
+    ])).toEqual([{ kind: "system_note", title: "Turn failed", detail: "You've hit your usage limit.", status: "error" }]);
+  });
+
+  test("a stopped one shows it was interrupted", () => {
+    expect(material([started("t1"), said("t1", "UserMessage", "go", "u1"), ended({ type: "turn_aborted", turn_id: "t1", reason: "interrupted" })]))
+      .toEqual([{ kind: "interruption", title: "Request interrupted" }]);
+  });
+
+  test("a finished one adds nothing", () => {
+    expect(material([started("t1"), said("t1", "AgentMessage", "Done.", "m1"), ended({ type: "task_complete", turn_id: "t1", last_agent_message: "Done." })]))
+      .toEqual([]);
+  });
+});

@@ -2783,11 +2783,15 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     for (const snapshot of ended) {
       void (async () => {
         let text = snapshot.text;
-        try {
+        // A failed turn wrote no reply: the transcript's last one is the turn before's.
+        if (!snapshot.error) try {
           const full = await lastAssistantText(snapshot.transcriptPath);
           if (full && !isInterAgentEnvelope(full)) text = full;
         } catch {}
-        const snippet = firstSentences(stripMarkdown(text), 2, 220);
+        // One sentence: the second is usually a URL.
+        const snippet = snapshot.error
+          ? `stopped. ${firstSentences(snapshot.error, 1, 160)}`
+          : firstSentences(stripMarkdown(text), 2, 220);
         log(`codex turn ended — "${snapshot.label}"`);
         enqueue({
           type: "turn-end",
