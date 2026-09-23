@@ -145,6 +145,30 @@ export function upsertConversationItem(
   conversation.items[item.id] = { ...item, rev: existing.rev + 1 };
 }
 
+/**
+ * The question a picker on screen is asking, when the transcript doesn't hold it
+ * yet (Claude Code 2.1.280 may write an AskUserQuestion call only once it is
+ * answered): added as the running question row it will become, so every card
+ * that answers transcript questions answers this one. Nothing is added while the
+ * conversation already has a running question.
+ */
+export function withHeldQuestion(
+  conversation: Conversation,
+  held: { id: string; questions: AgentQuestion[] } | null,
+): Conversation {
+  if (!held?.questions.length || latestAnswerableQuestions(conversation).length) return conversation;
+  const first = held.questions[0]!;
+  upsertConversationItem(conversation, {
+    id: `tool:${held.id}`,
+    kind: "tool",
+    text: first.question,
+    tool: { name: "AskUserQuestion", wireName: "AskUserQuestion", kind: "question", status: "running" },
+    question: first,
+    ...(held.questions.length > 1 ? { questions: held.questions } : {}),
+  });
+  return conversation;
+}
+
 function textFromClaudeParts(parts: any[], type: string): string {
   return parts
     .filter((part) => part?.type === type)

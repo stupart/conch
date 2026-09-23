@@ -7,6 +7,7 @@ import { lockSocketPath, type SocketOwnership } from "./socket-ownership.ts";
 import type { TurnEvent } from "./hook.ts";
 import type { SendFailure } from "./inject.ts";
 import { checkReviewScene } from "./snippet.ts";
+import { agentQuestions } from "./conversation.ts";
 import type { PublishedDelivery, PublishedState } from "./panel.ts";
 import type { SessionInfo } from "./sessions.ts";
 import type { InstantAudioCommand } from "./instant-controls.ts";
@@ -630,6 +631,16 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
       || !["id", "name", "summary"].every((field) => typeof approval[field] === "string"
         && (approval[field] as string).length > 0 && (approval[field] as string).length <= 2000)) {
       return { ok: false, err: "approval must be { id, name, summary } on needs-you" };
+    }
+  }
+  if (value.asking !== undefined) {
+    // From the PermissionRequest hook: the questions a picker on screen is asking.
+    const asking = value.asking;
+    const questions = socketRecord(asking) && Array.isArray(asking.questions) ? asking.questions : null;
+    if (type !== "needs-you" || !socketRecord(asking) || typeof asking.id !== "string" || !asking.id
+      || asking.id.length > 200 || !questions || questions.length < 1 || questions.length > 8
+      || agentQuestions({ questions }).length !== questions.length) {
+      return { ok: false, err: "asking must be { id, questions } on needs-you" };
     }
   }
   if (value.approve !== undefined) {

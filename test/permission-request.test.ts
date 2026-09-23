@@ -100,7 +100,79 @@ describe("the daemon wires both ends", () => {
   test("the published row asks the voice loop, which holds the hook's record", () => {
     expect(daemon).toContain("(sessionId, path) => voice.pendingApprovalFor(sessionId, path),");
   });
+  test("a question the hook reported is in the published conversation", () => {
+    expect(daemon).toContain("withHeldQuestion(read, voice.heldQuestionFor(session.sessionId)),");
+  });
   test("a key is pressed only after reading Claude's registry now, not the last snapshot", () => {
     expect(daemon).toMatch(/freshStatus: async \(sessionId\) => \(await registrySnapshot\(cfg\.claudeDir\)\)\?\.infos\s*\.find\(\(session\) => session\.sessionId === sessionId\)\?\.status,/);
+  });
+});
+
+describe("the hook and Claude Code's question picker", () => {
+  // Measured 2026-09-23: PermissionRequest fires for AskUserQuestion too, with the
+  // questions in tool_input. As a permission, Allow would press Enter and pick
+  // whichever option is highlighted.
+  const ask = {
+    hook_event_name: "PermissionRequest",
+    session_id: "69a95887-045f-483a-8e03-d3d9b56e3408",
+    cwd: "/work",
+    tool_name: "AskUserQuestion",
+    tool_input: { questions: [
+      { question: "Pick delta?", header: "Delta", multiSelect: false, options: [{ label: "D1", description: "Option D1" }, { label: "D2" }] },
+      { question: "Pick echo?", header: "Echo", multiSelect: true, options: [{ label: "E1" }, { label: "E2" }] },
+    ] },
+  };
+
+  test("is sent as the questions, never as a permission", async () => {
+    const { received, stdout } = await hook(ask);
+    expect(stdout).toBe("");
+    expect(received).toHaveLength(1);
+    expect(received[0].approval).toBeUndefined();
+    const announced = received[0].announce;
+    expect(received[0]).toMatchObject({ type: "needs-you", ntype: "elicitation_dialog" });
+    expect(typeof announced === "string" && announced.includes("Pick delta?")).toBe(true);
+    expect(received[0].asking.questions.map((q: any) => q.header)).toEqual(["Delta", "Echo"]);
+    expect(received[0].asking.id).toMatch(/^hook:[0-9a-f]{16}$/);
+    expect(validateSocketTurnEvent(received[0]).ok).toBe(true);
+  }, 30_000);
+
+  test("plan mode's exit dialog is left alone", async () => {
+    const { received, stdout } = await hook({ ...ask, tool_name: "ExitPlanMode", tool_input: { plan: "do it" } });
+    expect(stdout).toBe("");
+    expect(received).toEqual([]);
+  }, 30_000);
+
+  test("the socket takes well-formed questions on a needs-you only", () => {
+    const needs = (asking: unknown, type = "needs-you") =>
+      validateSocketTurnEvent({ type, sessionId: "s1", label: "alpha", announce: "alpha is asking", asking });
+    const questions = [{ header: "Delta", question: "Pick delta?", multiSelect: false, options: [{ label: "D1" }, { label: "D2" }] }];
+    expect(needs({ id: "hook:0123456789abcdef", questions }).ok).toBe(true);
+    for (const bad of [{ id: "x" }, { id: "", questions }, { id: "x", questions: [] }, { id: "x", questions: [{ question: "no options", options: [] }] }]) {
+      expect(needs(bad).ok).toBe(false);
+    }
+    expect(needs({ id: "x", questions }, "turn-end").ok).toBe(false);
+  });
+});
+
+describe("a held question in the published conversation", () => {
+  const { withHeldQuestion, buildConversation, latestAnswerableQuestions } = require("../src/conversation.ts") as typeof import("../src/conversation.ts");
+  const q = (header: string) => ({ header, question: `Pick ${header}?`, multiSelect: false, options: [{ label: "A" }, { label: "B" }] });
+  const talk = () => buildConversation("s1", [JSON.stringify({ type: "user", message: { role: "user", content: "ask me" } })], "claude");
+
+  test("becomes the running question row the transcript will later hold", () => {
+    const conversation = withHeldQuestion(talk(), { id: "hook:abc", questions: [q("Delta"), q("Echo")] });
+    const row = conversation.items["tool:hook:abc"]!;
+    expect(row).toMatchObject({ kind: "tool", tool: { status: "running", kind: "question" }, question: { header: "Delta" } });
+    expect(row.questions?.map((x) => x.header)).toEqual(["Delta", "Echo"]);
+    expect(latestAnswerableQuestions(conversation).map((x) => x.header)).toEqual(["Delta", "Echo"]);
+  });
+
+  test("adds nothing when the transcript already shows a running question", () => {
+    const written = buildConversation("s1", [
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: "tu_q", name: "AskUserQuestion", input: { questions: [q("Delta")] } }] } }),
+    ], "claude");
+    const before = written.order.length;
+    expect(withHeldQuestion(written, { id: "hook:abc", questions: [q("Other")] }).order.length).toBe(before);
+    expect(withHeldQuestion(talk(), null).order.length).toBe(1);
   });
 });

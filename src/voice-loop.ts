@@ -401,6 +401,8 @@ export interface VoiceLoop {
   capturing(): boolean;
   /** The permission prompt this session is showing, for the published row. */
   pendingApprovalFor(sessionId: string, transcriptPath: string | undefined): PendingApproval | null;
+  /** The questions a picker on screen is asking, from the hook, while it is open. */
+  heldQuestionFor(sessionId: string): { id: string; questions: AgentQuestion[] } | null;
   /** Space: the guaranteed stop. Drains and submits whatever was already captured. */
   stop(src: string): void;
   consumeStop(): boolean;
@@ -805,6 +807,23 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   const hookApprovals = new Map<string, { approval: PendingApproval; at: number }>();
   /** Long enough for the registry to catch up with a dialog the hook just announced. */
   const HOOK_APPROVAL_GRACE_MS = 10_000;
+  /**
+   * Questions an AskUserQuestion picker is asking, from the same hook: the
+   * transcript may not hold them until they are answered, so they are kept on
+   * the same terms as `hookApprovals`.
+   */
+  const hookQuestions = new Map<string, { id: string; questions: AgentQuestion[]; at: number }>();
+
+  function heldQuestionShowing(
+    sessionId: string,
+    status = deps.window(sessionId)?.status,
+  ): { id: string; questions: AgentQuestion[] } | null {
+    const held = hookQuestions.get(sessionId);
+    if (!held) return null;
+    if (status === "waiting" || Date.now() - held.at < HOOK_APPROVAL_GRACE_MS) return held;
+    hookQuestions.delete(sessionId);
+    return null;
+  }
 
   /**
    * The permission prompt a session is showing: the hook's record while the
@@ -858,15 +877,20 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     return true;
   }
 
-  /** The questions this session's agent is waiting on, read fresh from its transcript. */
+  /**
+   * The questions this session's agent is waiting on: read fresh from its
+   * transcript, else the ones the hook reported for a picker still on screen.
+   */
   async function pendingQuestions(event: TurnEvent): Promise<AgentQuestion[]> {
-    if (!event.transcriptPath) return [];
-    return latestAnswerableQuestions(await readConversationTail(
-      event.transcriptPath,
-      event.sessionId,
-      transcriptFormatFor(event.transcriptPath),
-      { window: deps.window(event.sessionId) },
-    ));
+    const written = event.transcriptPath
+      ? latestAnswerableQuestions(await readConversationTail(
+        event.transcriptPath,
+        event.sessionId,
+        transcriptFormatFor(event.transcriptPath),
+        { window: deps.window(event.sessionId) },
+      ))
+      : [];
+    return written.length ? written : heldQuestionShowing(event.sessionId)?.questions ?? [];
   }
 
   /**
@@ -890,6 +914,11 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // Keys typed into a prompt that is no longer a picker become a message.
     const questions = await pendingQuestions(event);
     if (!questions.length) return refuse("the session is no longer waiting on a question");
+    // Known only from the hook: digits typed after the picker closed would become a message.
+    if (questions === hookQuestions.get(event.sessionId)?.questions) {
+      const status = deps.freshStatus ? await deps.freshStatus(event.sessionId) : deps.window(event.sessionId)?.status;
+      if (status !== "waiting") return refuse("the question is no longer open");
+    }
     const keys = adapter.questionKeys(questions, answers);
     if (typeof keys === "string") return refuse(keys);
     if (!injectKeys) return refuse("answering is unavailable here");
@@ -1042,8 +1071,11 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // The hook's record of the dialog, when it sent one (see `hookApprovals`).
     if (event.type === "needs-you" && event.approval?.id.startsWith("hook:")) {
       hookApprovals.set(event.sessionId, { approval: event.approval, at: Date.now() });
+    } else if (event.type === "needs-you" && event.asking) {
+      hookQuestions.set(event.sessionId, { ...event.asking, at: Date.now() });
     } else if (event.type === "turn-end" || event.type === "working") {
       hookApprovals.delete(event.sessionId);
+      hookQuestions.delete(event.sessionId);
     }
     const approval = event.type === "needs-you" && event.ntype === "permission_prompt"
       ? approvalShowing(event.sessionId, event.transcriptPath)
@@ -3422,6 +3454,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     speakBlocker,
     capturing: normalMicOpen,
     pendingApprovalFor: (sessionId, transcriptPath) => approvalShowing(sessionId, transcriptPath),
+    heldQuestionFor: (sessionId) => heldQuestionShowing(sessionId),
     stop,
     consumeStop: consumeStopKey,
     closeMic: (reason) => activeDictation?.requestExternal("spacebar", reason),
