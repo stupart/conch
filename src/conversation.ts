@@ -538,9 +538,8 @@ function claudeResultText(content: unknown): string {
  * same event and should not look the same: only once they are told apart can an
  * edit render as a diff and a command as a terminal line.
  *
- * The vocabulary is t3code's `CanonicalItemType`, which is worth adopting
- * verbatim — it is the same set of distinctions any agent UI converges on, and
- * sharing the names makes their handling of each a usable reference.
+ * The vocabulary is the set of distinctions any agent UI converges on: a
+ * command, a file change, a search, a tool from a server, an agent.
  *
  * Claude and Codex name their tools differently for identical operations
  * (`Bash` vs `exec_command`, `Edit` vs `apply_patch`), which is exactly why the
@@ -628,9 +627,8 @@ function classifyName(name: string): ToolKind {
  * it can be read aloud with its options and answered by saying one, from
  * across the room, which is the whole point of the thing.
  *
- * The shape is Claude Code's `AskUserQuestion` and t3code's
- * `UserInputQuestion`, which agree: a header, the question, and options that
- * each carry a label and an explanation of what choosing it means.
+ * The shape is Claude Code's `AskUserQuestion`: a header, the question, and
+ * options that each carry a label and an explanation of what choosing it means.
  */
 export interface AgentQuestion {
   /** A few words naming the decision, for a row that must stay one line. */
