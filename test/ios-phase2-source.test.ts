@@ -96,20 +96,23 @@ describe("iPhone Phase 2 daily controls", () => {
   });
 
   test("question options submit one choice immediately or an explicit ordered set", () => {
-    expect(conversation).toContain("let onSelectOption: (String, String) -> Void");
-    expect(conversation).toMatch(/questionRow\([\s\S]*asked,[\s\S]*questionID: item\.id,[\s\S]*isActive: item\.tool\?\.status == "running"/);
+    expect(conversation).toContain("let onAnswer: (String, [QuestionAnswer], String) -> Void");
+    expect(conversation).toMatch(/questionCard\([\s\S]*questions,[\s\S]*itemID: item\.id,[\s\S]*isActive: item\.tool\?\.status == "running"/);
     expect(conversation).toContain("@State private var multiSelections: [String: Set<String>] = [:]");
     expect(conversation).toContain("toggleSelection(option.label, for: questionID)");
-    expect(conversation).toMatch(/if asked\.multiSelect \{[\s\S]*toggleSelection[\s\S]*\} else \{[\s\S]*onSelectOption\(option\.label, questionID\)/);
-    expect(conversation).toContain('onSelectOption(selected.joined(separator: ", "), questionID)');
+    // One choice answers at once, as the option's INDEX: Claude Code's picker records option 1
+    // for any typed words, so the label this used to send was usually the wrong answer (#367).
+    expect(conversation).toMatch(/if asked\.multiSelect \{[\s\S]*toggleSelection[\s\S]*\} else \{\s*onAnswer\(option\.label, \[QuestionAnswer\(choices: \[index\]\)\], questionID\)/);
+    expect(conversation).toContain("[QuestionAnswer(choices: asked.options.indices.filter { selected.contains(asked.options[$0].label) })],");
     expect(conversation).toContain('selected.isEmpty ? "Submit selections"');
     expect(conversation).toContain(".disabled(!isActive || optionReplyInFlight || option.label.isEmpty || noTerminal != nil)");
-    expect(session).toContain("onSelectOption: answerQuestion");
-    expect(session).toMatch(/private func answerQuestion[\s\S]*text: label/);
+    expect(session).toContain("onAnswer: answerQuestion");
+    expect(session).toMatch(/private func answerQuestion[\s\S]*?text: summary,\s*answers: answers/);
+    expect(session).not.toContain("text: label\n");
     // The answer says WHICH question it answers, and proves at the moment of sending that it
     // is still the one being asked — by the same rule the row is drawn by. The row disabling
     // itself is the view's state; a tap already in flight is not covered by it.
-    expect(session).toContain("private func answerQuestion(_ label: String, questionID: String) {");
+    expect(session).toContain("private func answerQuestion(_ summary: String, answers: [QuestionAnswer], questionID: String) {");
     expect(session).toContain("guard isStillAsking(questionID) else { return }");
     expect(session).toContain('return item.question != nil && item.tool?.status == "running"');
   });

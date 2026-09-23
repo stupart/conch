@@ -311,7 +311,18 @@ final class BridgeClient: ObservableObject {
     /// `opId` is this send's own id. The Mac echoes it back with whatever the delivery finally
     /// becomes — including an outcome reached after this request was answered and closed —
     /// so the words can be held until something actually proves they landed.
-    func inject(sessionId: String, label: String, text: String, opId: String? = nil) async -> InjectOutcome {
+    ///
+    /// `answers`: this send answers the question the session is waiting on, typed as its
+    /// picker's own keys; `approve`: it answers the permission prompt `id` ("once" or "deny").
+    /// `text` is then only the readable summary.
+    func inject(
+        sessionId: String,
+        label: String,
+        text: String,
+        opId: String? = nil,
+        answers: [QuestionAnswer]? = nil,
+        approve: (kind: String, id: String)? = nil
+    ) async -> InjectOutcome {
         var payload: [String: Any] = [
             "type": "inject",
             "sessionId": sessionId,
@@ -322,6 +333,8 @@ final class BridgeClient: ObservableObject {
             "awaitDelivery": true,
         ]
         if let opId { payload["opId"] = opId }
+        if let answers { payload["answers"] = answers.map(\.wire) }
+        if let approve { payload["approve"] = ["kind": approve.kind, "id": approve.id] }
         let body = try? JSONSerialization.data(withJSONObject: payload)
         let outcome = await deliveryOutcome(body)
         if case let .failed(reason) = outcome {

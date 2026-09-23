@@ -72,9 +72,14 @@ describe("phone fixture mode", () => {
     // everything, which would make the sections look right while proving nothing.
     expect(new Set(rows.map((row) => row.cwd).filter(Boolean)).size).toBeGreaterThan(1);
     expect(rows.some((row) => row.status === "needs")).toBe(true);
+    // A permission prompt with Allow / Deny, and a session whose only work is its agents.
+    expect(rows.some((row) => row.status === "needs" && row.approval?.id && row.approval?.name)).toBe(true);
+    expect(rows.some((row) => row.status === "working" && row.waitingOnAgents === true)).toBe(true);
 
     const items: any[] = Object.values(state.conversations).flatMap((c: any) => c.items);
     expect(items.some((item) => item.question?.options?.length > 1)).toBe(true);
+    // Several questions in one call, still open: the card with one Submit for all of them.
+    expect(items.some((item) => item.questions?.length > 1 && item.tool?.status === "running")).toBe(true);
     expect(items.some((item) => item.tool?.kind === "command_execution")).toBe(true);
     expect(items.some((item) => item.tool?.kind === "subagent")).toBe(true);
 

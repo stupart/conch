@@ -592,7 +592,7 @@ struct SessionRowView: View {
                 // quiet row is noise that trains you to stop reading the
                 // column, which costs you the one row that did need you.
                 if mark.showsMeaningInLedger {
-                    Text(mark.meaning)
+                    Text(mark.caption)
                         .font(Type.caption)
                         .foregroundStyle(mark.color)
                         .lineLimit(1)
