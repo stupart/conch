@@ -25,6 +25,27 @@ const responseMessage = (role: string, text: string, extra = {}) =>
   ({ type: "message", role, content: [{ type: role === "user" ? "input_text" : "output_text", text }], ...extra });
 
 describe("Codex durable records", () => {
+  test("Codex's injected context is not stored as Tyler's words; his own messages are", () => {
+    // Every raw user-role opening across Tyler's 140 rollouts (2026-09-23), one of each.
+    const injected = [
+      "<environment_context>\n  <current_date>2026-09-23</current_date>",
+      "<recommended_plugins>\nHere is a list of plugins",
+      "<codex_internal_context source=\"goal\">\nContinue",
+      "<turn_aborted>\nThe user interrupted the previous turn",
+      "<external_codex_apps_writing_block_edits>",
+      "# AGENTS.md instructions for /Users/tylerstupart/Projects/Conch",
+    ];
+    const his = [
+      "<image name=[Image #1] path=\"/var/folders/x/codex-clipboard.png\"></image>the outline is wrong [Image #1]",
+      "\n<in-app-browser-context source=\"ambient-ui-state\">\nThis block\n</in-app-browser-context>\n\n## My request:\nkeep the hero",
+      "Review ONLY the uncommitted lifecycle fix",
+    ];
+    const f = fixture();
+    f.read("event_msg", { type: "task_started", turn_id: "turn" });
+    for (const text of injected) expect(f.read("response_item", responseMessage("user", text)).items).toEqual([]);
+    for (const text of his) expect(f.read("response_item", responseMessage("user", text)).items.map((item) => item.text)).toEqual([text]);
+  });
+
   test("preserves full visible messages while rejecting privileged roles and hidden/binary parts", () => {
     const f = fixture();
     const text = "  Complete answer\n" + "x".repeat(8_000) + "\n";

@@ -11,7 +11,7 @@ import {
   completeRecordLines, inspectRecordSource, recordFingerprint, RECORD_PARSER_VERSION, SOURCE_PROBE_BYTES,
   type RecordSourceRead, type StoredRecordSource,
 } from "./records-source.ts";
-import type { NormalizedRecords, RecordReceipt, RecordSession } from "./records-types.ts";
+import type { NormalizedRecords, RecordProvider, RecordReceipt, RecordSession } from "./records-types.ts";
 
 export type { StoredRecordSource } from "./records-source.ts";
 export interface RecordIngest { session: RecordSession; source: RecordSourceRead }
@@ -121,7 +121,7 @@ export class RecordStore {
         ...file, sessionId: session.id, size: 0, modifiedMs: 0, generation: 1, offset: 0,
         prefixHash: recordFingerprint(new Uint8Array()), prefixLength: 0,
         checkpointHash: recordFingerprint(new Uint8Array()), checkpointLength: 0,
-        parserVersion: RECORD_PARSER_VERSION, state: {}, malformedLines: 0,
+        parserVersion: RECORD_PARSER_VERSION[session.provider], state: {}, malformedLines: 0,
       };
       this.writeSource(source);
       return source;
@@ -190,7 +190,7 @@ export class RecordStore {
         // describes this exact snapshot and contains the bytes at our newer checkpoint.
         const olderExpected = previous && (expected === null || expected.generation < previous.generation
           || (expected.generation === previous.generation && expected.offset <= previous.offset));
-        const sameSnapshot = olderExpected && previous && previous.parserVersion === RECORD_PARSER_VERSION
+        const sameSnapshot = olderExpected && previous && previous.parserVersion === RECORD_PARSER_VERSION[session.provider]
           && read.device === previous.device && read.inode === previous.inode
           && read.size === previous.size && read.modifiedMs === previous.modifiedMs
           && recordFingerprint(read.prefix.subarray(0, previous.prefixLength)) === previous.prefixHash
@@ -199,7 +199,7 @@ export class RecordStore {
           && read.from <= previous.offset && read.from + read.bytes.length >= previous.offset;
         if (!sameSnapshot) throw new Error("stale record source cursor; refresh the source before retrying");
       }
-      const plan = inspectRecordSource(previous, read);
+      const plan = inspectRecordSource(previous, read, RECORD_PARSER_VERSION[session.provider]);
       if (read.from > plan.from || read.from + read.bytes.length < plan.from) throw new Error(`source must include byte ${plan.from}`);
       if (plan.from && read.checkpoint.length !== Math.min(SOURCE_PROBE_BYTES, plan.from)) throw new Error("source checkpoint is incomplete");
       const bytes = read.bytes.subarray(plan.from - read.from);
@@ -217,7 +217,7 @@ export class RecordStore {
         prefixLength: Math.min(SOURCE_PROBE_BYTES, offset),
         prefixHash: recordFingerprint(read.prefix.subarray(0, Math.min(SOURCE_PROBE_BYTES, offset))),
         checkpointLength: checkpoint.length, checkpointHash: recordFingerprint(checkpoint),
-        parserVersion: RECORD_PARSER_VERSION, state,
+        parserVersion: RECORD_PARSER_VERSION[session.provider], state,
         malformedLines: plan.change === "append" ? previous!.malformedLines : 0,
       };
       // Provenance has a source FK, but its committed offset advances only after every item is stored.
@@ -350,13 +350,15 @@ export class RecordStore {
 
   /** Shared turns/tools can span sources. A rewrite invalidates this session's projection, not its journal. */
   private clearProjection(sessionId: string): void {
+    const session = this.db.query("SELECT provider FROM sessions WHERE id=?").get(sessionId) as { provider: RecordProvider } | null;
+    if (!session) return;
     this.db.query("UPDATE sessions SET history_epoch=history_epoch+1, change_sequence=0 WHERE id=?").run(sessionId);
     this.db.query("DELETE FROM items WHERE session_id = ?").run(sessionId);
     for (const table of ["tool_calls", "responses", "turns"] as const) this.db.query(`DELETE FROM ${table} WHERE session_id = ?`).run(sessionId);
     this.db.query(`UPDATE sources SET generation=generation+1, committed_offset=0, prefix_length=0,
       prefix_hash=?, checkpoint_length=0, checkpoint_hash=?, state_json='{}', malformed_lines=0, size=0, parser_version=?,
       replay_required=1, coverage_status='queued', coverage_error=NULL
-      WHERE session_id=?`).run(recordFingerprint(new Uint8Array()), recordFingerprint(new Uint8Array()), RECORD_PARSER_VERSION, sessionId);
+      WHERE session_id=?`).run(recordFingerprint(new Uint8Array()), recordFingerprint(new Uint8Array()), RECORD_PARSER_VERSION[session.provider], sessionId);
   }
 
   reindex(sessionId: string): void {

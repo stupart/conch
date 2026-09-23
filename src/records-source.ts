@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
-import type { RecordObject } from "./records-types.ts";
+import type { RecordObject, RecordProvider } from "./records-types.ts";
 
 // 2: one provider message is one item (its blocks are no longer separate rows), items
 // carry the provider's parent id, and tool identity is explicit. Existing stores replay
 // into that shape on their next read rather than showing two normalizers' output at once.
-export const RECORD_PARSER_VERSION = 2;
+// Per provider, so a fix to one re-reads only its transcripts (1.75 GB each, 2026-09-23).
+// codex 3: Codex's injected context is no longer stored as Tyler's words.
+export const RECORD_PARSER_VERSION = { claude: 2, codex: 3 } as const satisfies Record<RecordProvider, number>;
 export const SOURCE_PROBE_BYTES = 256;
 
 export interface StoredRecordSource {
@@ -47,14 +49,14 @@ export function recordFingerprint(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-export function inspectRecordSource(previous: StoredRecordSource | undefined, read: RecordSourceRead): {
+export function inspectRecordSource(previous: StoredRecordSource | undefined, read: RecordSourceRead, parserVersion: number): {
   change: "new" | "append" | "rewrite" | "rotation";
   generation: number;
   from: number;
 } {
   if (!previous) return { change: "new", generation: 1, from: 0 };
   // Parser state and projections must be rebuilt even if the file rotated at the same time.
-  if (previous.parserVersion !== RECORD_PARSER_VERSION) {
+  if (previous.parserVersion !== parserVersion) {
     return { change: "rewrite", generation: previous.generation + 1, from: 0 };
   }
   const rotated = previous.device !== read.device || previous.inode !== read.inode;
