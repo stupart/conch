@@ -108,7 +108,7 @@ test("reveal, Open in Terminal and close never take the front back", () => {
   for (const [marker, request] of [
     ["func reveal(_ row: SessionRow) -> Task<Bool, Never> {", "ConchSessionCommandRequest(sessionId: row.id, command: .reveal)"],
     ["func openInTerminal(_ row: SessionRow) {", "ConchSessionCommandRequest(sessionId: row.id, command: .attach)"],
-    ["func closeSession(_ row: SessionRow) {", "ConchSessionCloseRequest(sessionId: row.id)"],
+    ["func closeSession(_ row: SessionRow, restart: Bool = false) {", "ConchSessionCloseRequest(sessionId: row.id, restart: restart ? true : nil)"],
   ] as const) {
     const body = member(store, marker);
     expect(body).toContain(request);

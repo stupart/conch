@@ -836,7 +836,8 @@ export type RuntimeControlMessage =
     /** Per-session choices from the agent's own `--help`, validated against its adapter row (C1). */
     options?: Record<string, string | boolean>;
   }
-  | { kind: "session-close"; sessionId: string }
+  /** `restart`: close it, then resume the same conversation with the same start flags. */
+  | { kind: "session-close"; sessionId: string; restart?: true }
   | {
     kind: "app-error";
     source: "ios" | "mac";
@@ -967,7 +968,8 @@ export type RuntimeControlResponse =
     backend: "codex";
     cwd: string;
   }
-  | { kind: "session-closed"; sessionId: string }
+  /** `notCarriedOver`: flags on the old command line a restart could not validate, so did not replay. */
+  | { kind: "session-closed"; sessionId: string; restarted?: true; notCarriedOver?: string[] }
   | { kind: "app-error-ack" }
   | {
     kind: "config-toggle";
@@ -1216,9 +1218,9 @@ export function validateRuntimeControlMessage(value: unknown): ParseResult<Runti
   }
   if (value.kind === "session-close") {
     const sessionId = validateSessionId(value.sessionId);
-    return sessionId.ok
-      ? { ok: true, value: { kind: "session-close", sessionId: sessionId.value } }
-      : sessionId;
+    if (!sessionId.ok) return sessionId;
+    if (value.restart !== undefined && value.restart !== true) return { ok: false, err: "restart must be true when present" };
+    return { ok: true, value: { kind: "session-close", sessionId: sessionId.value, ...(value.restart ? { restart: true as const } : {}) } };
   }
   if (value.kind === "session-start") {
     if (value.backend !== "claude" && value.backend !== "codex") {
@@ -1485,9 +1487,21 @@ export function validateControlResponse(value: unknown): ParseResult<ControlResp
   }
   if (value.kind === "session-closed") {
     const sessionId = validateSessionId(value.sessionId);
-    return sessionId.ok
-      ? { ok: true, value: { kind: "session-closed", sessionId: sessionId.value } }
-      : { ok: false, err: `invalid session closed response: ${sessionId.err}` };
+    if (!sessionId.ok) return { ok: false, err: `invalid session closed response: ${sessionId.err}` };
+    const dropped = value.notCarriedOver;
+    if (dropped !== undefined && (!Array.isArray(dropped) || dropped.length > 32
+      || !dropped.every((flag) => typeof flag === "string" && flag.length > 0 && flag.length <= 120))) {
+      return { ok: false, err: "invalid session closed response: notCarriedOver" };
+    }
+    return {
+      ok: true,
+      value: {
+        kind: "session-closed",
+        sessionId: sessionId.value,
+        ...(value.restarted === true ? { restarted: true as const } : {}),
+        ...(dropped?.length ? { notCarriedOver: dropped } : {}),
+      },
+    };
   }
   if (value.kind === "session-error") {
     return typeof value.error === "string"

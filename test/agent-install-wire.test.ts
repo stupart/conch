@@ -20,12 +20,15 @@ const install: AgentInstall = {
   newerVersion: "2.1.280",
 };
 
+// Read once: it stamps `readAt: Date.now()`, so two reads a millisecond apart
+// never compare equal (a 1-in-8 flake before this).
+const INVENTORY = readAgentCapabilities({
+  backend: "claude" as const,
+  cwd: "/tmp/conch",
+  configDir: "/tmp/isolated-conch-config",
+});
 function inventory() {
-  return readAgentCapabilities({
-    backend: "claude" as const,
-    cwd: "/tmp/conch",
-    configDir: "/tmp/isolated-conch-config",
-  });
+  return INVENTORY;
 }
 
 describe("agent-capabilities carries an optional install alongside the inventory", () => {

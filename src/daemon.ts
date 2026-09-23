@@ -128,7 +128,15 @@ import {
 import { isWindowKey } from "./window-key.ts";
 import { readSessionContextUsage, type SessionContextUsage } from "./context-meter.ts";
 import { appendConchError } from "./app-errors.ts";
-import { attachTerminalSession, closeSession, refreshSessionForClose, startTerminalSession } from "./session-lifecycle.ts";
+import {
+  attachTerminalSession,
+  closeSession,
+  readProcessArgs,
+  refreshSessionForClose,
+  restartRequest,
+  startTerminalSession,
+  terminalSessionCommand,
+} from "./session-lifecycle.ts";
 import { SessionStartOverlay } from "./session-start-overlay.ts";
 import { TerminalComposer } from "./terminal-composer.ts";
 import {
@@ -551,7 +559,8 @@ export function injectTimeoutFor(line: string): number {
     if (kind === "inject") return 25_000;
     // A truthful close waits for the agent pid to disappear after Ctrl-D; the
     // bridge must not invent a failure while that clean shutdown is in flight.
-    if (kind === "session-close") return 12_000;
+    // A restart then opens a Terminal window, which a start alone gets 8s for.
+    if (kind === "session-close") return JSON.parse(line)?.restart === true ? 20_000 : 12_000;
     if (kind === "session-start") return 8_000;
   } catch {}
   return 4_000;
@@ -1945,7 +1954,7 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     log(`terminal prompt → "${labelForSessionId(session.sessionId)}"`);
     return true;
   };
-  const closeLiveSession = async (sessionId: string): Promise<void> => {
+  const closeLiveSession = async (sessionId: string, restart = false): Promise<void | { notCarriedOver: string[] }> => {
     const session = await refreshSessionForClose(sessionId, panelSessions.get(sessionId), async () =>
       (await registrySnapshot(cfg.claudeDir))?.infos ?? null);
     if (!session.pid && !session.jobId) {
@@ -1960,9 +1969,37 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       }
       throw new Error(session.noTerminal ?? "session has no routable pid");
     }
+    // Everything a restart needs is read and validated while the session is
+    // still running: a relaunch that can't be built must never cost the close.
+    let relaunch: ReturnType<typeof restartRequest> | undefined;
+    if (restart) {
+      if (session.jobId) {
+        // Its process is Claude Code's own daemon's, not a Terminal tab's, and
+        // what it was started with isn't on any command line conch can read.
+        throw new Error("a background session can't be restarted from conch yet; close it, then resume it from Start");
+      }
+      const args = session.pid ? await readProcessArgs(session.pid) : null;
+      if (!args) throw new Error("could not read the session's command line, so it was not closed");
+      relaunch = restartRequest(session, args);
+      // The session already ran in this folder. If its trust came from a
+      // launch override (Codex's `-c projects…`), the relaunch needs the same
+      // answer; an agent that can't take one at launch ignores the flag.
+      if (session.cwd && adapterFor(session.backend).folderTrusted(session.cwd) === false) {
+        relaunch.request.trustFolder = true;
+      }
+      terminalSessionCommand(relaunch.request); // throws on anything invalid, before the close
+    }
     // A background job is stopped by id (claude stop), window or not.
     await closeSession(session);
     void renderSessionPanel();
+    if (!relaunch) return;
+    try {
+      await startTerminalSession(relaunch.request);
+    } catch (error) {
+      throw new Error(`closed, but could not open it again (${(error as Error).message}); resume it from Start`);
+    }
+    log(`restarted "${labelForSessionId(sessionId)}"${relaunch.notCarriedOver.length ? ` without ${relaunch.notCarriedOver.join(", ")}` : ""}`);
+    return { notCarriedOver: relaunch.notCarriedOver };
   };
   const sessionActions: SessionActionsController = {
     voiceCandidates: () => availableVoiceRing(cfg),

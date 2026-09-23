@@ -310,7 +310,8 @@ export interface RuntimeControlDispatchOptions {
   folderTrusted?(cwd: string): boolean | null;
   /** Whether Codex already trusts a folder; absent or null means unknown. */
   codexFolderTrusted?(cwd: string): boolean | null;
-  close(sessionId: string): void | Promise<void>;
+  /** Resolves to the flags a restart did not carry over; nothing for a plain close. */
+  close(sessionId: string, restart?: boolean): void | Promise<void | { notCarriedOver: string[] }>;
   report(message: Extract<RuntimeControlMessage, { kind: "app-error" }>): void | Promise<void>;
   /** Where the agents' config files live and how they are written; absent means the real homes (B3). */
   configWrite?: { homes?: ConfigWriteHomes; io?: ConfigWriteIo };
@@ -405,8 +406,13 @@ export async function applyRuntimeControlMessage(
       };
     }
     if (message.kind === "session-close") {
-      await options.close(message.sessionId);
-      return { kind: "session-closed", sessionId: message.sessionId };
+      const restarted = await options.close(message.sessionId, message.restart === true);
+      return {
+        kind: "session-closed",
+        sessionId: message.sessionId,
+        ...(message.restart ? { restarted: true as const } : {}),
+        ...(restarted?.notCarriedOver.length ? { notCarriedOver: restarted.notCarriedOver } : {}),
+      };
     }
     if (message.kind === "config-toggle") {
       // Planned fresh on every request, so the diff is against the file as it
