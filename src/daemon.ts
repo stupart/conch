@@ -535,6 +535,8 @@ export function shouldReportMissingCodexPid(
 /** Build the external document with daemon-owned voice and priority resolution. */
 /** How many sessions get a published conversation, newest-active first. */
 const MAX_PUBLISHED_CONVERSATIONS = 8;
+/** Agents under a session, on top of the sessions' eight: running ones first. */
+const MAX_PUBLISHED_AGENT_CONVERSATIONS = 4;
 /** Per-session window. Smaller than the focused one: this is every row at once. */
 const PUBLISHED_CONVERSATION_WINDOW = 30;
 
@@ -1660,7 +1662,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
     // without the daemon having to guess which that is.
     const conversationsBySession = Object.fromEntries(
       (await Promise.all(
-        visible.slice(0, MAX_PUBLISHED_CONVERSATIONS).map(async (session) => {
+        [
+          ...live.slice(0, MAX_PUBLISHED_CONVERSATIONS),
+          // Its own budget, or seven sessions left an agent's row nothing to open (C4).
+          ...[...nested].sort((a, b) => Number(b.status === "busy") - Number(a.status === "busy"))
+            .slice(0, MAX_PUBLISHED_AGENT_CONVERSATIONS),
+        ].map(async (session) => {
           const path = session.transcriptPath
             ?? findTranscript(cfg.claudeDir, session.sessionId);
           if (!path) return null;
@@ -1716,7 +1723,9 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
         ?? (cursorAuto ? null : selectedId);
 
       const model = buildPanelModel({
-        sessions: live,
+        // With their live agents: `live` alone published none of them, so the rows C4 nests
+        // under a session never reached either app (5 agents detected, 0 rows, 2026-09-23).
+        sessions: visible,
         sessionStates,
         pausedSessionIds,
         resumedSessionIds,

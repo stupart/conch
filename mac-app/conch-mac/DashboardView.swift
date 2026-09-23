@@ -609,7 +609,11 @@ private struct SessionLedger: View {
                                     }
 
                                     if !collapsedFolders.contains(folder.id) {
-                                        ForEach(rows(in: folder), id: \.id) { row in
+                                        // A session's agents fold under it as a small group
+                                        // rather than rows of their own (C4).
+                                        let folderRows = rows(in: folder)
+                                        ForEach(folderRows.filter { $0.parentSessionId == nil }, id: \.id) { row in
+                                          VStack(alignment: .leading, spacing: 0) {
                                             DashboardRow(
                                                 row: row,
                                                 now: timeline.date,
@@ -628,10 +632,19 @@ private struct SessionLedger: View {
                                                     state.rows.first(where: { $0.id == id })?.label
                                                 }
                                             )
-                                            // Folder-style: a subagent sits under its parent (C4),
-                                            // a started session under its starter (C15).
-                                            .padding(.leading, row.parentSessionId == nil && row.startedBySessionId == nil ? 0 : 30)
-                                            .id(row.id)
+                                            // A started session sits under its starter (C15).
+                                            .padding(.leading, row.startedBySessionId == nil ? 0 : 30)
+                                            let agents = folderRows.filter { $0.parentSessionId == row.id }
+                                            if !agents.isEmpty {
+                                                AgentGroup(
+                                                    agents: agents,
+                                                    selectedID: selectedSessionID,
+                                                    onSelect: { actions.onSelectSession($0) }
+                                                )
+                                                .padding(.leading, row.startedBySessionId == nil ? 0 : 30)
+                                            }
+                                          }
+                                          .id(row.id)
                                         }
                                     }
                                 }
@@ -2940,5 +2953,71 @@ private extension SessionRow {
         default:
             return false
         }
+    }
+}
+
+/// A session's live agents, folded under it: one line saying how many and how many are
+/// running, then a small row per agent that opens its conversation. Tyler (2026-09-23): "have
+/// the agents show under smaller as like a group and you can select on them as well just like
+/// is possible in the Claude Code ui".
+private struct AgentGroup: View {
+    let agents: [SessionRow]
+    let selectedID: String?
+    let onSelect: (SessionRow) -> Void
+    @State private var expanded = true
+
+    private var summary: String {
+        let running = agents.filter { $0.status == .working }.count
+        let noun = agents.count == 1 ? "agent" : "agents"
+        return running == 0 ? "\(agents.count) \(noun)" : "\(agents.count) \(noun) · \(running) running"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Button { expanded.toggle() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 8, weight: .semibold))
+                        .frame(width: 10)
+                    Text(summary)
+                        .font(.system(size: 11, weight: .medium))
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(ConchPalette.textFaint)
+                .padding(.vertical, 3)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(expanded ? "Hide \(summary)" : "Show \(summary)")
+            if expanded {
+                ForEach(agents, id: \.id) { agent in
+                    Button { onSelect(agent) } label: {
+                        HStack(spacing: 7) {
+                            DashboardStatusGlyph(visual: LedgerVisual(row: agent))
+                                .scaleEffect(0.75)
+                                .frame(width: 12, height: 12)
+                            Text(agent.label)
+                                .font(.system(size: 11.5, weight: selectedID == agent.id ? .semibold : .regular))
+                                .foregroundStyle(selectedID == agent.id ? ConchPalette.textPrimary : ConchPalette.textDim)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(selectedID == agent.id ? ConchPalette.selection : .clear)
+                        )
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(agent.label)
+                }
+            }
+        }
+        // `.row.child{padding-left:30px}`, the lab's indent for anything under a session.
+        .padding(.leading, 30)
+        .padding(.bottom, 2)
     }
 }

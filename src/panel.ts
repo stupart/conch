@@ -792,12 +792,14 @@ export function numberPanelSessionRows(
   sessions: readonly SessionInfo[],
 ): NumberedPanelSessionRow[] {
   const sessionsById = new Map(sessions.map((session) => [session.sessionId, session]));
-  return rows.slice(0, 9).flatMap((row, index) => {
-    const session = sessionsById.get(row.sessionId);
-    return session
-      ? [{ n: index + 1, s: session, label: row.label }]
-      : [];
-  });
+  // Only rows conch can address take a number: an agent's row sits between them unnumbered.
+  return rows
+    .flatMap((row) => {
+      const session = sessionsById.get(row.sessionId);
+      return session ? [{ s: session, label: row.label }] : [];
+    })
+    .slice(0, 9)
+    .map((row, index) => ({ n: index + 1, ...row }));
 }
 
 /** Resolve label-based auto-follow against the exact order visible in the panel. */

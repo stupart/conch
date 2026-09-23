@@ -45,18 +45,12 @@ agent drive one, and the user able to reach in and interact — the way the Code
   id="6a36">`. So the transcript row shows the raw tags, and the app's own "Sent" bubble never
   matches it and stays. Fix: strip the wrapper when reading Claude user records. Separately, the
   first such message in that transcript (`35bc1e7b…`) is written as two user records; find out why.
-- **open** — Background agents as a small group under their session, each one selectable, the way
+- **done** — Background agents as a small group under their session, each one selectable, the way
   Claude Code's own agent view is. Tyler (2026-09-23): "have the agents show under smaller as like
-  a group and you can select on them as well just like is possible in the Claude Code ui".
-  - **First, a bug:** C4 already nests sub-agent rows, yet none show. On 2026-09-23 the "conch"
-    session had 5 live background agents; `liveBackgroundAgents` and `subagentSessions` (the
-    daemon's own call, `daemon.ts` `renderSessionPanel`) both returned all 5 from its transcript,
-    and `/tmp/conch-sessions.json` held 0 rows with a `parentSessionId`. Find where they drop
-    between `buildPanelRows` and the published state.
-  - **Then the feature:** under the parent, a compact collapsible group ("5 agents · 3 running"),
-    smaller rows than a session, each opening that agent's own transcript in the same pane (C4's
-    `onOpenSubagent` already does this from a Task block). The parent keeps its "waiting on its
-    agents" mark (#368) while any of them run. Same on the iPhone.
+  a group and you can select on them as well just like is possible in the Claude Code ui". The
+  daemon built the published model from `live`, so C4's nested rows never left it; it now uses
+  `visible`, agents get their own four published conversations, and both apps draw them as a
+  compact group under the parent ("3 agents · 2 running" on the Mac, small rows on the phone).
 - **open** — The iPhone cannot open a deliverable that is a file on the Mac. Four `open-link`
   failures on 2026-09-21 17:09 from `source: ios`, all reading "That's a file on your Mac, not a
   page: /Users/…/Asset Generator/mcp-plugin-workflow-review-2026-09-17.md". The message is

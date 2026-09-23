@@ -86,7 +86,12 @@ struct LedgerView: View {
                             Section {
                                 ForEach(rows(of: folder, in: state)) { row in
                                     NavigationLink(value: row.id) {
-                                        SessionRowView(row: row)
+                                        // An agent is a small line under its session, as on the Mac.
+                                        if row.parentSessionId != nil {
+                                            AgentRowView(row: row)
+                                        } else {
+                                            SessionRowView(row: row)
+                                        }
                                     }
                                     // A subagent sits under the session it runs inside, the way
                                     // it does on the Mac. It used to be listed as a peer of it.
@@ -526,6 +531,30 @@ private struct DisconnectedCard: View {
         return isRelayPaired
             ? "Your Mac needs to be awake with conch running. It will connect from anywhere once it is."
             : "Your Mac needs to be on the same Wi-Fi, awake, with conch running."
+    }
+}
+
+/// One of a session's live agents: its mark and name on one small line. Tyler (2026-09-23): "have
+/// the agents show under smaller as like a group and you can select on them as well".
+struct AgentRowView: View {
+    let row: PublishedState.Row
+    private var mark: StatusMark { StatusMark(row: row) }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: mark.symbol)
+                .font(.system(size: 11))
+                .foregroundStyle(mark.color)
+                .frame(width: 16)
+                .accessibilityLabel(mark.meaning)
+            Text(row.label)
+                .font(Type.caption)
+                .foregroundStyle(Palette.textDim)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 1)
     }
 }
 

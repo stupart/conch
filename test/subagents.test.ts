@@ -332,15 +332,33 @@ describe("the daemon and the Mac app wire it up", () => {
 
     const nested = body.indexOf("subagentSessions(session, session.transcriptPath ?? findTranscript(");
     const rows = body.indexOf("sessions: visible,");
-    const conversations = body.indexOf("visible.slice(0, MAX_PUBLISHED_CONVERSATIONS)");
+    const conversations = body.indexOf("...live.slice(0, MAX_PUBLISHED_CONVERSATIONS),");
+    const agentConversations = body.indexOf(".slice(0, MAX_PUBLISHED_AGENT_CONVERSATIONS),");
+    // The PUBLISHED model, not only the ordering pass: `sessions: visible` matched that one
+    // while the model took `live`, and no agent row ever reached either app (2026-09-23).
+    const model = body.indexOf("const model = buildPanelModel({");
     const paths = body.indexOf("visible.flatMap((session) =>");
-    for (const index of [nested, rows, conversations, paths]) expect(index).toBeGreaterThan(-1);
+    for (const index of [nested, rows, conversations, agentConversations, model, paths]) expect(index).toBeGreaterThan(-1);
+    expect(body.slice(model, body.indexOf("});", model))).toMatch(/\n\s+sessions: visible,\n/);
     expect(nested).toBeLessThan(rows);
     expect(rows).toBeLessThan(conversations);
+    expect(conversations).toBeLessThan(agentConversations);
     // Number shortcuts and the theater cursor stay on sessions conch can talk to.
     expect(body).toContain("numberPanelSessionRows(model.rows, live)");
     expect(body).toContain("theaterNavigation.reconcile(new Set(live.map(");
     expect(body).not.toContain("ledger.forgetGone(new Set(visible");
+  });
+
+  test("agents fold under their session as a small selectable group, on the Mac and the phone", () => {
+    // Tyler: "have the agents show under smaller as like a group and you can select on them".
+    const dashboard = read("mac-app/conch-mac/DashboardView.swift");
+    expect(dashboard).toContain("ForEach(folderRows.filter { $0.parentSessionId == nil }, id: \\.id) { row in");
+    expect(dashboard).toMatch(/if !agents\.isEmpty \{\s*AgentGroup\(\s*agents: agents,\s*selectedID: selectedSessionID,\s*onSelect: \{ actions\.onSelectSession\(\$0\) \}/);
+    const group = dashboard.slice(dashboard.indexOf("private struct AgentGroup: View {"));
+    expect(group).toContain('"\\(agents.count) \\(noun) · \\(running) running"');
+    expect(group).toContain("Button { onSelect(agent) } label: {");
+    const ledger = read("mobile/conch-ios/conch-ios/LedgerView.swift");
+    expect(ledger).toMatch(/if row\.parentSessionId != nil \{\s*AgentRowView\(row: row\)\s*\} else \{\s*SessionRowView\(row: row\)/);
   });
 
   test("the Mac decodes parentSessionId and the subagent link with a default of none", () => {
@@ -354,7 +372,9 @@ describe("the daemon and the Mac app wire it up", () => {
 
   test("the dashboard indents a subagent, never types into it, and offers the way back", () => {
     const dashboard = read("mac-app/conch-mac/DashboardView.swift");
-    expect(dashboard).toContain(".padding(.leading, row.parentSessionId == nil && row.startedBySessionId == nil ? 0 : 30)");
+    expect(dashboard).toContain(".padding(.leading, row.startedBySessionId == nil ? 0 : 30)");
+    // An agent is not a row of its own any more: it is a line in its parent's AgentGroup.
+    expect(dashboard).toContain("let agents = folderRows.filter { $0.parentSessionId == row.id }");
     // Matched without its indentation: the composer moved into a ZStack so it can float over
   // the transcript, which reindented this line while leaving the rule untouched. What is
   // pinned is the rule — `parentSessionId` alone decides, and the call it guards is the
