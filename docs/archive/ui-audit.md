@@ -616,7 +616,7 @@ The retirement has reached only one entry point: the top-level CLI maps legacy `
 
 - README still teaches `conch mute/unmute`, global/session `m`, forget semantics, muted status/glyphs, and includes it in dashboard keybars (`README.md:134,166-174,192-197`).
 - Mac's own README still says the app sends mute/unmute (`mac-app/README.md:5`).
-- Plugin/control documentation still exposes mute/unmute and warns about its side effects (`docs/plugin-design.md:33,52`; `docs/conch-control-skill.md:41,77,84`; `docs/parity.md:27`; `plugin/plugins/conch/skills/conch-control/SKILL.md:46,82,89`).
+- Plugin/control documentation still exposes mute/unmute and warns about its side effects (`docs/plugin-design.md:33,52`; `docs/conch-control-skill.md:41,77,84`; `plugin/plugins/conch/skills/conch-control/SKILL.md:46,82,89`).
 - The backlog records the decision that mute should go, confirming the migration is intended but unfinished (`docs/backlog.md:13,25,36-37`).
 - Tests make mute an enforced contract: global/session routing and keybar copy (`test/theater-controls.test.ts:90-109,123-180,317-325`); forget/persistence/arrival behavior (`test/instant-controls.test.ts:352-487,513-668`); footer/theater copy and precedence (`test/panel.test.ts:113-127,462-491`; `test/status.test.ts:104-163,509-545`); socket restore clearing dismiss-coupled mute (`test/socket-turn-controls.test.ts:138-148,460-467`).
 
@@ -624,7 +624,7 @@ The retirement has reached only one entry point: the top-level CLI maps legacy `
 
 A repository-wide case-insensitive scan, excluding generated build/dependency trees and this report, found matches in exactly these authored files. The substantive behavior is traced above; this index includes fixture/comment-only remnants so small references are not silently omitted.
 
-- Product/UI/docs: `README.md` (`README.md:134,166-174,192-197`); `mac-app/README.md:5`; `docs/backlog.md:13,25,36-37`; `docs/conch-control-skill.md:41,77,84`; `docs/parity.md:27`; `docs/plugin-design.md:33,52`; `plugin/plugins/conch/skills/conch-control/SKILL.md:46,82,89`; `scripts/review-harness.sh:34-38`.
+- Product/UI/docs: `README.md` (`README.md:134,166-174,192-197`); `mac-app/README.md:5`; `docs/backlog.md:13,25,36-37`; `docs/conch-control-skill.md:41,77,84`; `docs/plugin-design.md:33,52`; `plugin/plugins/conch/skills/conch-control/SKILL.md:46,82,89`; `scripts/review-harness.sh:34-38`.
 - Mac source: `ConchSocketClient.swift`, `ContentView.swift`, `DashboardInputMonitor.swift`, `DashboardView.swift`, `Models.swift`, and `ReviewView.swift` at the line groups in the preceding Mac/UI/runtime bullets.
 - iPhone source: `DeliverableSheet.swift`, `LedgerView.swift`, `Models.swift`, and `SpeechController.swift` at the line groups in the preceding iPhone/UI/runtime bullets.
 - Shared runtime: `src/cli.ts:48,404-424`; `src/config.ts:57`; `src/daemon.ts:232-247,578-594,805,863,892-893,995,1133-1140,1349,1401-1503,1544-1590,1811-1850,1913-1914,2418-2427,2589-2590,2710-2753,4544-4560,4947,5041-5054,5167-5183`; `src/hook.ts:27`; `src/instant-controls.ts:7-78,132-190,216-271`; `src/mcp.ts:39-82,179-185,376-387,649-666`; `src/panel.ts:4,26,42,147,342,379,429,545-567`; `src/pause-controller.ts:21,140,254,387`; `src/session-actions-overlay.ts:29`; `src/status.ts:105-106,346,378-419,510`; `src/theater-controls.ts:4-63`; `src/transcribe.ts:65`.

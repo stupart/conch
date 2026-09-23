@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 
 /**
  * A terminal in the work half — the last of "a terminal and ... the full file tree and diffs
- * borrowing from this app: https://coteditor.com as well as a browser in the side panel".
+ * ... as well as a browser in the side panel".
  *
  * A COMMAND RUNNER, not an interactive shell, and that was measured rather than chosen. A spike
  * spawned a real /bin/zsh on a real pty and captured what it emitted: an interactive login

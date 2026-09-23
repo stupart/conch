@@ -133,9 +133,9 @@ agent drive one, and the user able to reach in and interact — the way the Code
   trust boundary, because a deliverable is an agent-authored URL rendered full-bleed in conch's own
   chrome and a third-party sign-in page would otherwise be indistinguishable from conch's UI.
   `test/review-mark.test.ts` pins that checkmark in three places.
-- **open** — A real workspace pane: file tree, diffs and a terminal borrowing CotEditor's shape,
-  plus a browser. Tyler: "where are we on being able to have a terminal and see the full file tree
-  and diffs borrowing from this app: https://coteditor.com as well as a browser in the side panel".
+- **open** — A real workspace pane: file tree, diffs and a terminal, plus a browser. Tyler: "where
+  are we on being able to have a terminal and see the full file tree and diffs … as well as a
+  browser in the side panel".
   STATUS, looked up rather than guessed — one of four exists:
   BROWSER, DONE `ae69957` — the pane browses now, with an address bar. `DeliverableWebView` renders HTML
   deliverables full-bleed. What is missing is arbitrary browsing and a page an agent drives while
