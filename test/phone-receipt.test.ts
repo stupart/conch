@@ -35,6 +35,7 @@ const SENTENCES: Record<string, string> = {
   "delivery-unconfirmed": "Not delivered — conch typed it but the session never took it.",
   "delivery-unattributed": "Not delivered — another window shares this session, so conch can't tell whether it landed.",
   "delivery-interrupted": "Not delivered — the send was stopped before it went in.",
+  "session-awaiting-answer": "Not delivered — that session is waiting on a permission prompt or question. Answer it on the Mac, then send again.",
 };
 
 /** Every reason `injectText` itself can report, read from the daemon's own source. */

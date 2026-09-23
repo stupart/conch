@@ -1581,6 +1581,15 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // difference between a message to retype and one that is a paste away.
     let onClipboard = false;
     const performDelivery = async (): Promise<boolean | "staged"> => {
+      // Every send that did not go through cleanly leaves one record in errors.jsonl with what
+      // it takes to see why: the route, the length (never the words), the receipt code and the
+      // inject's own step timeline. Diagnosing the unsent Codex messages (2026-09-23) meant
+      // lining up the daemon log, an undated step log and Codex's rollouts by hand.
+      const steps: string[] = [];
+      const reportSend = (message: string, detail: Record<string, unknown> = {}): void =>
+        recordDaemonError("inject", message, event.sessionId, {
+          label: event.label, chars: text.length, code: receiptCode, ...detail, steps,
+        });
       let committed = false;
       const commit = (): void => {
         if (committed) return;
@@ -1602,20 +1611,33 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         uncertain ||= reason === "transport-error" || reason === "submit-error";
         publishDictation(text, event.sessionId);
         log(`delivery to "${event.label}" failed${reason ? ` (${reason})` : ""}`);
-        recordDaemonError("inject", "Could not deliver the prompt. Review the recovered draft before retrying.", event.sessionId);
+        reportSend("Could not deliver the prompt. Review the recovered draft before retrying.");
         if (!beforeInject || await beforeInject()) {
           await speak(cfg, "Couldn't deliver that. Your words are in the draft. Review them before trying again.", event.label, false, event.sessionId);
         }
         return false;
       };
 
+      // A hookless Codex session's rollout is known only to the live session list:
+      // `findTranscript` reads conch's hook registry and Claude's projects folder, and
+      // the inject routes resolved the path that way alone. So every send to Codex
+      // skipped the confirmation below and was reported delivered; 7 of the ~60 sends to
+      // an idle Codex session from 9/14 to 9/23 sat unsent in its composer for minutes, or for good.
+      const target = deps.window(event.sessionId);
+      const transcriptPath = event.transcriptPath ?? target?.transcriptPath;
+      // Keys typed into a dialog answer it. Claude Code's `waiting` is a permission prompt,
+      // question or other dialog on screen (`registryToPanel`). On 2026-09-23 a send was typed
+      // into an open permission prompt: the words went nowhere and the Return approved the
+      // pending command.
+      if (target?.status === "waiting") return failedDelivery("session-awaiting-answer");
+
       // Baseline the target session's user-prompt count so we can CONFIRM the
       // prompt actually submitted. null ⇒ no transcript to watch, skip confirmation.
-      const beforeCount = cfg.autoSubmit && event.transcriptPath ? await transcriptMark(event.transcriptPath) : null;
+      const beforeCount = cfg.autoSubmit && transcriptPath ? await transcriptMark(transcriptPath) : null;
       const injectStartedAt = Date.now();
       let result: inject.InjectTextResult;
       try {
-        result = await injectText(cfg, event.pid, text, beforeInject);
+        result = await injectText(cfg, event.pid, text, beforeInject, { steps });
       } catch {
         return failedDelivery("transport-error");
       }
@@ -1658,7 +1680,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           failure.operation,
           failure.message,
           failure.sessionId,
-          failure.state,
+          { ...failure.state, chars: text.length, steps },
         );
         if (beforeInject && !(await beforeInject())) return false;
         // Name the actual obstacle. A modal dialog on the Mac blocks every
@@ -1697,6 +1719,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         receiptCode = "transport-submitted";
         commit();
         log(`injected into "${event.label}" via ${via}`); // no transcript to confirm against — trust it
+        // Trusted, not seen. This is how every unsent Codex message was reported, so it is on record.
+        reportSend("Delivered without confirmation: no transcript to watch for the prompt.", { route: via });
         return true;
       }
 
@@ -1733,10 +1757,17 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // prompt on this window's branch confirms, and one nobody can attribute
       // stays unknown.
       let landed: boolean | "unknown" = false;
+      let resends = 0;
+      // Codex writes the prompt 1.5–4s after the Return (its rollouts, 9/14–9/23);
+      // Claude Code well inside the first wait. Look every 300ms so neither waits
+      // longer than it must, and press Return again only after a whole wait with nothing.
+      const firstWaitMs = target?.backend === "codex" ? 4_000 : 900;
       for (let attempt = 0; attempt < 3; attempt++) {
-        await (deps.sleep ?? Bun.sleep)(900 + attempt * 600); // give Claude Code time to write the prompt entry
-        if (beforeInject && !(await beforeInject())) return false;
-        landed = await promptSince(event.transcriptPath, beforeCount, sharedWindow(event.sessionId));
+        for (let waited = 0; landed === false && waited < firstWaitMs + attempt * 600; waited += 300) {
+          await (deps.sleep ?? Bun.sleep)(300);
+          if (beforeInject && !(await beforeInject())) return false;
+          landed = await promptSince(transcriptPath, beforeCount, sharedWindow(event.sessionId));
+        }
         if (landed === true) {
           receiptCode = "transcript-advanced";
           commit();
@@ -1748,13 +1779,18 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
             chars: text.length,
             latencyMs: Date.now() - injectStartedAt,
           });
+          // Sent, but only because conch pressed Return again: the first one was lost.
+          if (attempt) reportSend(`The Return was lost; the prompt went in after ${attempt} re-send${attempt > 1 ? "s" : ""}.`, { route: via, resends: attempt, latencyMs: Date.now() - injectStartedAt });
           return true;
         }
         // A prompt DID land and nothing can say whose it is. Re-pressing Return here types
         // into a session that may already have taken these words — so the keys stop at once
         // and the uncertainty is reported below, rather than acted on.
         if (landed === "unknown") break;
+        // A dialog opened since the words went in; a Return now would answer it.
+        if (deps.window(event.sessionId)?.status === "waiting") break;
         if (attempt < 2) {
+          resends++;
           log(`not confirmed yet — re-pressing Return (try ${attempt + 1})`);
           let retry: inject.InjectTextResult;
           try {
@@ -1774,6 +1810,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         publishDictation(text, event.sessionId);
         log(`inject into "${event.label}" via ${via} unconfirmed — a prompt landed in the shared transcript but its window is unknown`);
         recordTelemetry("inject", { route: via, confirmed: false, unattributed: true, chars: text.length, latencyMs: Date.now() - injectStartedAt });
+        reportSend("A prompt landed in the shared transcript, but not provably this window's.", { route: via, resends, latencyMs: Date.now() - injectStartedAt });
         await speak(cfg, "Couldn't confirm that landed. Another window shares this session. Check it before sending again.", event.label, false, event.sessionId);
         return false;
       }
@@ -1781,11 +1818,12 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       recordTelemetry("inject", {
         route: via,
         confirmed: false,
-        resends: 2,
+        resends,
         chars: text.length,
         reason: "never-confirmed",
         latencyMs: Date.now() - injectStartedAt,
       });
+      reportSend("Typed, but the session never took it. The words are on the clipboard.", { route: via, resends, latencyMs: Date.now() - injectStartedAt });
       publishDictation(text, event.sessionId);
       await toClipboard(text);
       onClipboard = true;

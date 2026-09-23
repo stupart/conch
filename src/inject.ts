@@ -63,6 +63,8 @@ export interface InjectTextOptions {
   sleep?(ms: number): Promise<void>;
   pasteboard?: Pasteboard;
   sendTmuxKeys?(pane: string, text: string, literal: boolean): Promise<{ exitCode: number }>;
+  /** Filled with this send's step lines, as the debug log gets them, for a caller that records a send gone wrong. */
+  steps?: string[];
 }
 
 // Keyboard focus and the pasteboard are global resources. This FIFO is separate
@@ -225,6 +227,9 @@ const sendTmuxKeys = (pane: string, text: string, literal: boolean) => runUIComm
  */
 export const PASTE_OVER_CHARS = 280;
 
+/** tmux's pause between the words and the Enter; the osascript route's own settle starts at the same 250ms. */
+export const TMUX_SUBMIT_GAP_MS = 250;
+
 const PASTE_KEYSTROKE = 'tell application "System Events" to keystroke "v" using command down';
 
 /**
@@ -287,15 +292,14 @@ async function injectTextInTransaction(
   const debugInject = process.env.CONCH_DEBUG_INJECT !== "0";
   const startedAt = Date.now();
   const step = (name: string): void => {
+    const line = `[${new Date().toISOString().slice(11, 23)} +${Date.now() - startedAt}ms] ${name}`;
+    options.steps?.push(line);
     if (!debugInject) return;
     // Straight to a file, never console.error: the daemon owns an alt-screen
     // TUI and its stderr goes nowhere visible, so the first attempt at this
     // produced an empty log and looked like "the code never ran" when it had.
     try {
-      appendFileSync(
-        INJECT_DEBUG_LOG,
-        `[${new Date().toISOString().slice(11, 23)} +${Date.now() - startedAt}ms] ${name}\n`,
-      );
+      appendFileSync(INJECT_DEBUG_LOG, `${line}\n`);
     } catch {}
   };
   step(`begin pid=${sessionPid ?? "none"} chars=${text.length}`);
@@ -327,8 +331,14 @@ async function injectTextInTransaction(
     step(`tmux send-keys exit=${r.exitCode}`);
     if (r.exitCode === 0) {
       if (submit) {
+        // Codex reads an Enter that lands right behind a burst of keys as more of
+        // the burst: a newline, not a submit. Measured on codex-cli 0.156.0 in
+        // tmux (2026-09-23): Enter straight after `send-keys -l` stayed in the
+        // composer as a second line; 60ms later it submitted.
+        await sleep(TMUX_SUBMIT_GAP_MS);
         if (!(await mayInject())) return interrupted();
         const submitted = await (options.sendTmuxKeys ?? sendTmuxKeys)(pane, "Enter", false);
+        step(`tmux Enter exit=${submitted.exitCode}`);
         if (submitted.exitCode !== 0) return failed("submit-failed");
       }
       return { via: "tmux" };
@@ -412,9 +422,12 @@ async function injectTextInTransaction(
     // whatever's in front. Re-focusing makes the Return land where the text went.
     if (!(await mayInject())) return interrupted();
     const refocused = await focusSessionWindow(tty, osa);
+    step(`refocus before Return -> ${refocused.text.trim() || "none"}`);
     if (!osaSucceeded(refocused) || refocused.text.trim() !== "ok") return failed(osaFailure(refocused));
     if (!(await mayInject())) return interrupted();
     const submitted = await focusedAction(tty, osa, ['tell application "System Events" to key code 36']);
+    // The Return was the one step the log never showed, and it is the step that goes missing.
+    step(`Return -> ${osaSucceeded(submitted) ? "pressed" : osaFailure(submitted)}`);
     if (!osaSucceeded(submitted)) return failed(osaFailure(submitted));
   }
   return { via: "osascript-focused" };

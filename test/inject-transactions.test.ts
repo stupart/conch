@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Config } from "../src/config.ts";
-import { FRONT_TTY_SCRIPT, injectKey, injectText, revealSessionWindow, withUITransaction } from "../src/inject.ts";
+import { FRONT_TTY_SCRIPT, injectKey, injectText, revealSessionWindow, TMUX_SUBMIT_GAP_MS, withUITransaction } from "../src/inject.ts";
 import { runUICommand } from "../src/pasteboard.ts";
 
 const cfg = { autoSubmit: true, keystrokeFallback: true } as Config;
@@ -238,6 +238,31 @@ describe("UI injection transactions", () => {
     });
     expect(result).toEqual({ via: "none", failed: true, reason: "submit-failed" });
     expect(ui.actions).toEqual([]);
+  });
+
+  // Codex reads an Enter straight behind a burst of keys as a newline: measured on
+  // codex-cli 0.156.0 in tmux, the words stayed in its composer as two lines.
+  test("tmux pauses between the words and the Enter, and logs the Enter", async () => {
+    const ui = fakeUI();
+    const calls: string[] = [];
+    const steps: string[] = [];
+    const result = await injectText(cfg, 1, "words", undefined, {
+      ...ui.options(1), findTmuxPane: async () => "%fake", steps,
+      sleep: async (ms) => { calls.push(`sleep:${ms}`); },
+      sendTmuxKeys: async (_pane, text, literal) => { calls.push(`${literal ? "text" : "key"}:${text}`); return { exitCode: 0 }; },
+    });
+    expect(result).toEqual({ via: "tmux" });
+    expect(calls).toEqual(["text:words", `sleep:${TMUX_SUBMIT_GAP_MS}`, "key:Enter"]);
+    expect(steps.at(-1)).toEndWith("] tmux Enter exit=0");
+  });
+
+  // The Return was the one step the step log never showed, and it is the one that goes missing.
+  test("the steps a caller collects say when the Return was pressed", async () => {
+    const ui = fakeUI();
+    const steps: string[] = [];
+    expect(await injectText(cfg, 1, "words", undefined, { ...ui.options(1), steps })).toEqual({ via: "osascript-focused" });
+    expect(steps.map((line) => line.replace(/^\[[^\]]*\] /, "")).slice(-2))
+      .toEqual(["refocus before Return -> ok", "Return -> pressed"]);
   });
 
   test("a rejected transaction releases the queue for the next session", async () => {

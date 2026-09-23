@@ -53,6 +53,7 @@ final class SendFailureTests: XCTestCase {
             "submit-failed",
             "clipboard-fallback", "delivery-failed", "transport-error", "submit-error",
             "delivery-unconfirmed", "delivery-unattributed", "delivery-interrupted",
+            "session-awaiting-answer",
         ]
         for reason in reasons {
             let sentence = ConchSendFailure.sentence(reason: reason)

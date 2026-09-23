@@ -515,6 +515,94 @@ describe("a shared transcript confirms only this window's send (finding 9)", () 
   });
 });
 
+/**
+ * Sends that went into the input box and never submitted (2026-09-23). Every send to a
+ * Codex session was reported delivered without a look: conch could not find a hookless
+ * Codex rollout, and counted a prompt event current Codex never writes. Seven of them sat
+ * unsent in the composer. And a send typed into an open permission prompt approved it.
+ */
+describe("a send that did not submit is caught, not reported delivered", () => {
+  const codexPrompt = (text: string) => JSON.stringify({
+    timestamp: "2026-09-23T04:00:00Z",
+    type: "event_msg",
+    payload: { type: "item_completed", item: { type: "UserMessage", id: text, content: [{ type: "text", text }] } },
+  }) + "\n";
+  function codexSession() {
+    const path = join(mkdtempSync(join(tmpdir(), "conch-unsent-")), "rollout-2026-09-23T14-00-00-codex.jsonl");
+    writeFileSync(path, codexPrompt("prior"));
+    // The session list is the only thing that knows where a hookless Codex rollout is.
+    const window = () => ({ sessionId: "s1", backend: "codex", status: "idle", transcriptPath: path }) as SessionInfo;
+    return { path, window, cleanup: () => rmSync(join(path, ".."), { recursive: true, force: true }) };
+  }
+
+  test("a Codex send is confirmed from the session's own rollout", async () => {
+    const codex = codexSession();
+    try {
+      const events: RecordObservation[] = [];
+      const h = harness({
+        window: codex.window,
+        observeRecords: (event) => events.push(event),
+        inject: () => { appendFileSync(codex.path, codexPrompt("hello")); return { via: "osascript-focused" }; },
+      });
+      expect(await h.voice.handle(inject("hello"))).toBe(true);
+      expect(events.filter(({ kind }) => kind === "delivery").at(-1)?.code).toBe("transcript-advanced");
+      expect(h.keys).toEqual([]);
+      expect(h.errors).toEqual([]);
+    } finally { codex.cleanup(); }
+  });
+
+  test("a Codex send that never submits is re-sent, then reported, and recorded with its steps", async () => {
+    const codex = codexSession();
+    try {
+      const h = harness({ window: codex.window, inject: () => ({ via: "osascript-focused" }) });
+      expect(await h.voice.handle(inject("hello")))
+        .toEqual({ delivered: false, reason: "delivery-unconfirmed", onClipboard: true });
+      expect(h.keys).toEqual(["Enter", "Enter"]);
+      expect(h.errors).toHaveLength(1);
+      const [operation, message, sessionId, state] = h.errors[0] as [string, string, string, Record<string, unknown>];
+      expect([operation, message, sessionId]).toEqual(["inject", "Typed, but the session never took it. The words are on the clipboard.", "s1"]);
+      expect(state).toMatchObject({ label: "alpha", chars: 5, code: "delivery-unconfirmed", route: "osascript-focused", resends: 2 });
+      expect(Array.isArray(state.steps)).toBe(true);
+    } finally { codex.cleanup(); }
+  });
+
+  test("nothing is typed into a session with a dialog open", async () => {
+    const h = harness({ window: () => ({ sessionId: "s1", status: "waiting" }) as SessionInfo });
+    expect(await h.voice.handle(inject("words")))
+      .toEqual({ delivered: false, reason: "session-awaiting-answer" });
+    expect(h.texts).toEqual([]);
+    expect(h.keys).toEqual([]);
+  });
+
+  test("Return is not pressed again once a dialog has opened", async () => {
+    const path = transcript(user({ type: "text", text: "prior" }));
+    try {
+      let status = "idle";
+      const h = harness({
+        window: () => ({ sessionId: "s1", status }) as SessionInfo,
+        inject: () => { status = "waiting"; return { via: "osascript-focused" }; },
+      });
+      expect(await h.voice.handle(inject("words", { transcriptPath: path })))
+        .toEqual({ delivered: false, reason: "delivery-unconfirmed", onClipboard: true });
+      expect(h.texts).toEqual(["words"]);
+      expect(h.keys).toEqual([]);
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+
+  test("a Return that needed re-sending is on record even though the send landed", async () => {
+    const path = transcript(user({ type: "text", text: "prior" }));
+    try {
+      const h = harness({
+        key: () => { appendFileSync(path, JSON.stringify(user({ type: "text", text: "words" })) + "\n"); return { via: "tmux" }; },
+      });
+      expect(await h.voice.handle(inject("words", { transcriptPath: path }))).toBe(true);
+      expect(h.keys).toEqual(["Enter"]);
+      expect(h.errors.map((entry) => entry[1])).toEqual(["The Return was lost; the prompt went in after 1 re-send."]);
+      expect(h.errors[0]?.[3]).toMatchObject({ code: "transcript-advanced", resends: 1, route: "tmux" });
+    } finally { rmSync(join(path, ".."), { recursive: true, force: true }); }
+  });
+});
+
 describe("A14: an immediate interrupt leaves the running exchange's stop and mic alone", () => {
   test("A: a stop followed by an immediate interrupt still stops — the announcement does not play", async () => {
     const registry = deferred<boolean>();
