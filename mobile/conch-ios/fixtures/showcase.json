@@ -505,6 +505,106 @@
           }
         }
       ]
+    },
+    "claude-questions": {
+      "sessionId": "claude-questions",
+      "truncated": false,
+      "items": [
+        {
+          "id": "m1",
+          "rev": 1,
+          "kind": "user",
+          "text": "Put together the brand kit for the release.",
+          "at": 1759999760000
+        },
+        {
+          "id": "m2",
+          "rev": 2,
+          "kind": "assistant",
+          "text": "Three decisions before I draw anything.",
+          "at": 1759999790000
+        },
+        {
+          "id": "m3",
+          "rev": 3,
+          "kind": "tool",
+          "text": "",
+          "at": 1759999820000,
+          "tool": {
+            "kind": "question",
+            "name": "AskUserQuestion",
+            "wireName": "AskUserQuestion",
+            "status": "running"
+          },
+          "question": {
+            "header": "Name",
+            "question": "Which name should the app ship under?",
+            "options": [
+              {
+                "label": "Conch",
+                "description": "The name it has now."
+              },
+              {
+                "label": "Horn"
+              },
+              {
+                "label": "Shell"
+              }
+            ],
+            "multiSelect": false
+          },
+          "questions": [
+            {
+              "header": "Name",
+              "question": "Which name should the app ship under?",
+              "options": [
+                {
+                  "label": "Conch",
+                  "description": "The name it has now."
+                },
+                {
+                  "label": "Horn"
+                },
+                {
+                  "label": "Shell"
+                }
+              ],
+              "multiSelect": false
+            },
+            {
+              "header": "Colours",
+              "question": "Which accent colours go in the kit?",
+              "options": [
+                {
+                  "label": "Rose"
+                },
+                {
+                  "label": "Ink"
+                },
+                {
+                  "label": "Sea"
+                }
+              ],
+              "multiSelect": true
+            },
+            {
+              "header": "Voice",
+              "question": "What should the default voice sound like?",
+              "options": [
+                {
+                  "label": "Warm",
+                  "description": "Kokoro af_heart."
+                },
+                {
+                  "label": "Crisp",
+                  "description": "Kokoro bf_emma."
+                }
+              ],
+              "multiSelect": false
+            }
+          ]
+        }
+      ]
     }
   },
   "rows": [
@@ -549,6 +649,20 @@
       }
     },
     {
+      "needsResponse": true,
+      "paused": false,
+      "muted": false,
+      "live": null,
+      "active": false,
+      "id": "claude-questions",
+      "label": "brand kit",
+      "backend": "claude",
+      "status": "needs",
+      "at": 1759999820000,
+      "detail": "Claude is asking 3 questions",
+      "cwd": "/Users/you/Projects/conch"
+    },
+    {
       "needsResponse": false,
       "paused": false,
       "muted": false,
@@ -563,7 +677,8 @@
       "context": {
         "usedTokens": 402000,
         "limitTokens": 1000000
-      }
+      },
+      "waitingOnAgents": true
     },
     {
       "needsResponse": false,
@@ -778,7 +893,12 @@
       "status": "needs",
       "at": 1759999700000,
       "cwd": "/Users/you/Projects/fieldnote-site",
-      "detail": "permission: Bash \u2014 rm -rf build/ios-sim.noindex"
+      "detail": "permission: Bash \u2014 rm -rf build/ios-sim.noindex",
+      "approval": {
+        "id": "hook:fixture-bash-1",
+        "name": "Bash",
+        "summary": "rm -rf build/ios-sim.noindex"
+      }
     }
   ],
   "dismissed": [

@@ -2,7 +2,9 @@ import { afterEach, describe, expect, setSystemTime, test } from "bun:test";
 import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createPhoneBridgeApplication } from "../src/phone-bridge.ts";
+import { createControlServer, type ControlServer } from "../src/control-server.ts";
+import type { TurnEvent } from "../src/hook.ts";
+import { createPhoneBridgeApplication, forwardToDaemonSocket } from "../src/phone-bridge.ts";
 import {
   MacRelayPeer,
   RELAY_RESPONSE_CACHE_LIMIT,
@@ -920,5 +922,109 @@ describe("a settled relay socket that drops", () => {
       await new Promise((resolve) => setTimeout(resolve, 30));
       expect(link.first.pings).toBe(1);
     } finally { link.done(); }
+  });
+});
+
+/**
+ * The phone answers a question and a permission prompt with the same inject the Mac sends:
+ * `answers` (one per question) or `approve` (a prompt id). The daemon types those as the
+ * picker's or the dialog's own keys; an inject without them is typed as WORDS, which the
+ * picker records as option 1. So both fields must reach the daemon's turn handler intact
+ * through each door the phone uses: POST /control on the LAN, and the same request sealed
+ * inside a relay frame. The phone bridge forwards the body verbatim to the control socket,
+ * which validates it and re-scopes the routing fields to the daemon's own.
+ */
+describe("a phone inject carrying answers or approve reaches the daemon intact", () => {
+  const socketRoots: string[] = [];
+  const servers: ControlServer[] = [];
+  afterEach(async () => {
+    for (const server of servers.splice(0)) await server.close();
+    for (const root of socketRoots.splice(0)) Bun.spawnSync(["rm", "-rf", root]);
+  });
+
+  async function daemon() {
+    // A short /tmp path fits Darwin's sockaddr_un limit.
+    const root = mkdtempSync("/tmp/conch-phone-answers-");
+    socketRoots.push(root);
+    const socketPath = join(root, "control.sock");
+    const turns: TurnEvent[] = [];
+    const server = createControlServer({
+      socketPath,
+      ownerDeviceId: "this-mac",
+      log() {},
+      sessions: {
+        resolve: (value) => value,
+        current: () => ({ published: true, label: "brand kit", cwd: "/work", pid: 4242, transcriptPath: "/work/s1.jsonl" }),
+      },
+      application: {
+        configuration: () => ({ kind: "config-error", error: "unused" }),
+        session: () => ({ kind: "session-error", error: "unused" }),
+        runtime: () => ({ kind: "app-error-ack" }),
+        turn(event) { turns.push(event); return Promise.resolve(true); },
+        device: () => ({ kind: "ack" }),
+      },
+    });
+    servers.push(server);
+    expect(await server.start()).toBe(true);
+    return { turns, forward: (line: string) => forwardToDaemonSocket(socketPath, line, 5_000) };
+  }
+
+  // The payload exactly as the phone builds it (BridgeClient.inject).
+  const phoneInject = (extra: Record<string, unknown>) => ({
+    type: "inject", sessionId: "s1", label: "brand kit", announce: "Name: Horn; Colours: Rose, Sea; Voice: a calm voice",
+    eventAt: 1, awaitDelivery: true, opId: crypto.randomUUID(),
+    // A phone may not route: these are the daemon's to fill in.
+    pid: 1, transcriptPath: "/elsewhere.jsonl",
+    ...extra,
+  });
+  const answers = [{ choices: [1] }, { choices: [0, 2] }, { text: "a calm voice" }];
+  const approve = { kind: "once", id: "hook:tu_1" };
+
+  test("over the LAN: POST /control", async () => {
+    const { turns, forward } = await daemon();
+    const h = await connectedHarness({ forward });
+    const post = async (body: unknown) => {
+      const response = await h.application.handle(new Request("http://mac.local/control", {
+        method: "POST",
+        headers: { authorization: "Bearer legacy-lan-token" },
+        body: JSON.stringify(body),
+      }));
+      return response!.json();
+    };
+
+    expect(await post(phoneInject({ answers }))).toMatchObject({ kind: "inject-done", delivered: true });
+    expect(await post(phoneInject({ announce: "Allow Bash", approve }))).toMatchObject({ kind: "inject-done", delivered: true });
+    expect(turns).toHaveLength(2);
+    expect(turns[0]).toMatchObject({ type: "inject", sessionId: "s1", answers, pid: 4242, transcriptPath: "/work/s1.jsonl" });
+    expect(turns[1]).toMatchObject({ type: "inject", sessionId: "s1", approve, pid: 4242, transcriptPath: "/work/s1.jsonl" });
+
+    // What the socket refuses, the phone hears refused, and nothing is typed.
+    const refused = await post(phoneInject({ answers: [{ choices: [9] }] }));
+    expect(refused).toMatchObject({ kind: "session-error" });
+    expect(turns).toHaveLength(2);
+  });
+
+  test("through the relay: the same request, sealed", async () => {
+    const { turns, forward } = await daemon();
+    const h = await connectedHarness({ forward });
+    let sequence = 0;
+    const send = async (body: unknown) => {
+      const id = `answer-${++sequence}`;
+      const sealed = await h.phone.seal(
+        { id, method: "POST", kind: "request" },
+        requestBody("/control", h.relay.secret, JSON.stringify(body)),
+      );
+      await h.peer.receive(JSON.stringify(sealed));
+      const frames = await openSent(h.phone, h.sent);
+      expect(responseStatus(frames)).toBe(200);
+      return JSON.parse(new TextDecoder().decode(responseBody(frames, id)));
+    };
+
+    expect(await send(phoneInject({ answers }))).toMatchObject({ kind: "inject-done", delivered: true });
+    expect(await send(phoneInject({ announce: "Deny Bash", approve: { kind: "deny", id: "hook:tu_1" } })))
+      .toMatchObject({ kind: "inject-done", delivered: true });
+    expect(turns).toHaveLength(2);
+    expect(turns[0]).toMatchObject({ answers, pid: 4242, transcriptPath: "/work/s1.jsonl" });
+    expect(turns[1]).toMatchObject({ approve: { kind: "deny", id: "hook:tu_1" }, pid: 4242 });
   });
 });

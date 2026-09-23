@@ -85,3 +85,37 @@ describe("the Mac card, as source (conch-mac has no XCTest target)", () => {
     expect(dashboard).toMatch(/onApprove: \{ kind in\s*guard let approval = row\.approval else \{ return \}[\s\S]*?store\.send\(\.inject\([\s\S]*?approve: ConchApproval\(kind: kind, id: approval\.id\)/);
   });
 });
+
+describe("the phone card, as source (conch-ios has no XCTest target)", () => {
+  const read = (name: string) => readFileSync(`${import.meta.dir}/../mobile/conch-ios/conch-ios/${name}`, "utf8");
+  const session = read("SessionView.swift");
+
+  test("the row's prompt is decoded, answerable included", () => {
+    const models = read("Models.swift");
+    expect(models).toContain("approval = try? c.decodeIfPresent(PendingApproval.self, forKey: .approval)");
+    expect(models).toContain("var answerable: Bool?");
+  });
+
+  test("the session shows the prompt, with Allow / Deny where conch can answer", () => {
+    expect(session).toMatch(/if let approval = row\?\.approval \{\s*ApprovalCard\(/);
+    const card = session.slice(session.indexOf("private struct ApprovalCard: View {"), session.indexOf("private struct ReviewCard: View {"));
+    expect(card.length).toBeGreaterThan(400);
+    expect(card).toContain('Text("Wants to use \\(approval.name)")');
+    const refuse = card.indexOf("if approval.answerable == false {");
+    const noTerminal = card.indexOf("} else if let noTerminal {");
+    const buttons = card.indexOf('button("Allow", kind: "once", primary: true)');
+    expect(refuse).toBeGreaterThan(-1);
+    expect(noTerminal).toBeGreaterThan(refuse);
+    expect(buttons).toBeGreaterThan(noTerminal);
+    expect(card).toContain('button("Deny", kind: "deny", primary: false)');
+    expect(card).not.toContain('kind: "always"');
+  });
+
+  test("a button sends the answer with the prompt's id, and refuses a prompt conch can't press", () => {
+    const approve = session.slice(session.indexOf("private func approve(_ kind: String) {"), session.indexOf("/// Whether the agent is still waiting on this exact question"));
+    expect(approve).toContain("guard let approval = row?.approval, approval.answerable != false,");
+    expect(approve).toContain("row?.noTerminal == nil, !optionReplyInFlight else { return }");
+    expect(approve).toContain("approve: (kind: kind, id: approval.id)");
+    expect(read("BridgeClient.swift")).toContain('if let approve { payload["approve"] = ["kind": approve.kind, "id": approve.id] }');
+  });
+});

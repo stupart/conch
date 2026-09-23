@@ -28,7 +28,11 @@ test("it only appears while the question can still be answered", () => {
   const macRow = mac.slice(mac.indexOf("private func questionRow"));
   expect(macRow.indexOf("if answerable {")).toBeLessThan(macRow.indexOf("Something else…"));
   const phoneRow = phone.slice(phone.indexOf("asked.options.enumerated"));
-  expect(phoneRow.indexOf("if isActive {")).toBeLessThan(phoneRow.indexOf("Something else…"));
+  // Two doors now: typed in place for one of several questions, or the composer for a lone one.
+  expect(phoneRow.indexOf("if isActive && !asked.multiSelect {")).toBeGreaterThan(-1);
+  expect(phoneRow.indexOf("if isActive && !asked.multiSelect {")).toBeLessThan(phoneRow.indexOf('TextField("Something else…"'));
+  expect(phoneRow.indexOf("if isActive {")).toBeGreaterThan(-1);
+  expect(phoneRow.indexOf("if isActive {")).toBeLessThan(phoneRow.indexOf('Text("Something else…")'));
 });
 
 test("both apps route it to their own composer's focus", () => {

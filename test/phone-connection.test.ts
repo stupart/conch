@@ -138,7 +138,7 @@ describe("a message shows what became of it", () => {
   });
 
   test("the phone requests delivery and delegates to the behavior-tested receipt parser", () => {
-    const inject = between(bridge, "func inject(sessionId: String, label: String, text: String, opId: String? = nil) async -> InjectOutcome {", "\n    }\n");
+    const inject = between(bridge, "    func inject(\n        sessionId: String,", "\n    }\n");
     inOrder(inject, ['"type": "inject",', '"awaitDelivery": true,', 'payload["opId"] = opId', "await deliveryOutcome(body)"]);
     const outcome = between(bridge, "private func deliveryOutcome(", "\n    }\n");
     expect(outcome).toContain("InjectOutcome.decode(status: response.status, body: response.body)");

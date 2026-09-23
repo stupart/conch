@@ -243,3 +243,60 @@ describe("the Mac question card, as source (conch-mac has no XCTest target)", ()
     expect(summary).toContain("QuestionOutcome.answers(to: questions.map(\\.question), in: result)");
   });
 });
+
+describe("the phone question card, as source (conch-ios has no XCTest target)", () => {
+  const { readFileSync } = require("node:fs") as typeof import("node:fs");
+  const read = (name: string) => readFileSync(`${import.meta.dir}/../mobile/conch-ios/conch-ios/${name}`, "utf8");
+  const stack = read("ConversationStack.swift");
+  const between = (source: string, from: string, to: string) => {
+    const start = source.indexOf(from);
+    expect(start).toBeGreaterThan(-1);
+    const slice = source.slice(start, source.indexOf(to, start + from.length));
+    expect(slice.length).toBeGreaterThan(200);
+    return slice;
+  };
+
+  test("the phone decodes every question in the call", () => {
+    const models = read("Models.swift");
+    expect(models).toContain("questions = try? c.decodeIfPresent([AgentQuestion].self, forKey: .questions)");
+    expect(models).toContain("var allQuestions: [AgentQuestion] { questions ?? question.map { [$0] } ?? [] }");
+  });
+
+  test("a question row renders every question the call asked", () => {
+    const tool = between(stack, 'case "tool":', "} else if let plan = item.plan");
+    expect(tool).toContain("let questions = item.allQuestions");
+    expect(tool).toContain("questionCard(");
+  });
+
+  test("several questions: each is filled in, and one Submit sends every answer in order", () => {
+    const card = between(stack, "private func questionCard(", "private func questionRow(");
+    expect(card).toContain('questionID: inSet ? "\\(itemID)#\\(index)" : itemID,');
+    expect(card).toContain("if let filled { onAnswer(filled.summary, filled.answers, itemID) }");
+  });
+
+  test("in a set, a pick is held for Submit and never sent on its own", () => {
+    const row = between(stack, "    private func questionRow(", "private var noTerminalReason: some View {");
+    const from = row.indexOf("} else if inSet {");
+    expect(from).toBeGreaterThan(-1);
+    const held = row.slice(from, row.indexOf("} else {", from));
+    expect(held).toContain("multiSelections[questionID] = [option.label]");
+    expect(held).not.toContain("onAnswer(");
+  });
+
+  test("Submit waits for an answer to every question; typed words win over a pick", () => {
+    const answers = between(stack, "private func setAnswers(", "/// The collapsed question:");
+    expect(answers.indexOf("if !typed.isEmpty {")).toBeLessThan(answers.indexOf("} else if !picked.isEmpty {"));
+    expect(answers).toContain("answers.append(QuestionAnswer(text: typed))");
+    expect(answers).toContain("answers.append(QuestionAnswer(choices: picked))");
+    expect(answers).toMatch(/\} else \{\s*return nil\s*\}/);
+  });
+
+  test("the answers cross the wire as `answers`, the words only as the summary", () => {
+    expect(read("Models.swift")).toContain('var wire: [String: Any] { choices.map { ["choices": $0] } ?? ["text": text ?? ""] }');
+    const inject = between(read("BridgeClient.swift"), "    func inject(", "private func deliveryOutcome(");
+    expect(inject).toContain('if let answers { payload["answers"] = answers.map(\\.wire) }');
+    const session = read("SessionView.swift");
+    const answer = between(session, "private func answerQuestion(", "private func approve(");
+    expect(answer).toMatch(/text: summary,\s*answers: answers/);
+  });
+});

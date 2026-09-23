@@ -175,6 +175,20 @@ struct PublishedState: Decodable, Equatable {
         /// nest a subagent under its parent instead of listing it as a peer.
         var parentSessionId: String?
         var startedBySessionId: String?
+        /// Working only because agents it started are still running; its own turn is over, so
+        /// it can be talked to. Older daemons never send it.
+        var waitingOnAgents = false
+        /// The permission prompt a row that needs you is showing. Older daemons never send it.
+        var approval: PendingApproval?
+
+        /// A permission prompt: which tool, and the one line that names what it wants to do.
+        struct PendingApproval: Decodable, Equatable {
+            var id = ""
+            var name = ""
+            var summary = ""
+            /// False where conch can't press keys at the agent's dialog (Codex's).
+            var answerable: Bool?
+        }
 
         struct Review: Decodable, Equatable {
             var summary = ""
@@ -214,7 +228,7 @@ struct PublishedState: Decodable, Equatable {
 
         private enum CodingKeys: String, CodingKey {
             case id, label, status, backend, context, detail, at, live, paused, review, reviews, noTerminal, attachable
-            case cwd, workDirs, parentSessionId, startedBySessionId
+            case cwd, workDirs, parentSessionId, startedBySessionId, waitingOnAgents, approval
         }
 
         init() {}
@@ -238,6 +252,8 @@ struct PublishedState: Decodable, Equatable {
             workDirs = try? c.decodeIfPresent([String].self, forKey: .workDirs)
             parentSessionId = try? c.decodeIfPresent(String.self, forKey: .parentSessionId)
             startedBySessionId = try? c.decodeIfPresent(String.self, forKey: .startedBySessionId)
+            waitingOnAgents = (try? c.decodeIfPresent(Bool.self, forKey: .waitingOnAgents)) ?? false
+            approval = try? c.decodeIfPresent(PendingApproval.self, forKey: .approval)
         }
     }
 
@@ -338,7 +354,7 @@ private struct AnyIgnored: Decodable {}
 
 /// The Mac ledger's glyph vocabulary, one for one.
 enum StatusMark {
-    case working, waiting, needs, review, paused, micOpen, speaking, idle
+    case working, waitingOnAgents, waiting, needs, review, paused, micOpen, speaking, idle
 
     init(row: PublishedState.Row) {
         let wantsUser = row.status == "waiting" || row.status == "needs"
@@ -352,6 +368,8 @@ enum StatusMark {
             switch row.status {
             case "waiting": self = .waiting
             case "needs": self = .needs
+            // Its own turn is over and only its agents are running: talk to it.
+            case "working" where row.waitingOnAgents: self = .waitingOnAgents
             default: self = .working
             }
         }
@@ -360,6 +378,8 @@ enum StatusMark {
     var symbol: String {
         switch self {
         case .working: "circle.fill"
+        // Two figures: the agents it handed work to, still at it.
+        case .waitingOnAgents: "person.2.fill"
         case .waiting: "circle.inset.filled"
         case .needs: "exclamationmark.circle.fill"
         case .review: "checkmark.circle.fill"
@@ -373,7 +393,8 @@ enum StatusMark {
     var color: Color {
         switch self {
         case .working, .speaking: Palette.working
-        case .waiting: Palette.waiting
+        // The waiting colour: the same answer to "can I talk to it?"; the glyph says why.
+        case .waiting, .waitingOnAgents: Palette.waiting
         case .needs: Palette.needs
         case .review: Palette.review
         case .paused: Palette.textDim
@@ -391,13 +412,20 @@ enum StatusMark {
     var showsMeaningInLedger: Bool {
         switch self {
         case .working, .idle: false
-        case .waiting, .needs, .review, .micOpen, .speaking, .paused: true
+        case .waitingOnAgents, .waiting, .needs, .review, .micOpen, .speaking, .paused: true
         }
+    }
+
+    /// The meaning, short enough for the one line beside a glyph. Only this state's full
+    /// sentence runs past that line, and it cut off at "you…" — the half that says why it matters.
+    var caption: String {
+        self == .waitingOnAgents ? "Agents working — talk to it" : meaning
     }
 
     var meaning: String {
         switch self {
         case .working: "Working"
+        case .waitingOnAgents: "Waiting on its agents — you can talk to it"
         case .waiting: "Waiting for you"
         case .needs: "Needs an answer"
         case .review: "Has work to look at"
@@ -633,12 +661,17 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
     var change: FileChange?
     /// Present when the agent is WAITING on you to choose.
     var question: AgentQuestion?
+    /// Every question in the call when it asks more than one; `question` is the first.
+    var questions: [AgentQuestion]?
     /// Machine-authored context shown as itself rather than under the user's name.
     var material: Material?
 
     private enum CodingKeys: String, CodingKey {
-        case id, rev, kind, text, at, tool, plan, change, question, material
+        case id, rev, kind, text, at, tool, plan, change, question, questions, material
     }
+
+    /// What a question card shows: every question, or the one.
+    var allQuestions: [AgentQuestion] { questions ?? question.map { [$0] } ?? [] }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? UUID().uuidString
@@ -650,8 +683,18 @@ struct ConversationItem: Decodable, Equatable, Sendable, Identifiable {
         plan = try? c.decodeIfPresent([PlanStep].self, forKey: .plan)
         change = try? c.decodeIfPresent(FileChange.self, forKey: .change)
         question = try? c.decodeIfPresent(AgentQuestion.self, forKey: .question)
+        questions = try? c.decodeIfPresent([AgentQuestion].self, forKey: .questions)
         material = try? c.decodeIfPresent(Material.self, forKey: .material)
     }
+}
+
+/// One answer per question: the options picked (indexes into its options), or words of your own.
+/// The daemon types it as the agent's picker keys; a label sent as text records option 1.
+struct QuestionAnswer: Equatable {
+    var choices: [Int]? = nil
+    var text: String? = nil
+
+    var wire: [String: Any] { choices.map { ["choices": $0] } ?? ["text": text ?? ""] }
 }
 
 struct Conversation: Decodable, Equatable, Sendable {

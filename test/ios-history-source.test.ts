@@ -232,7 +232,7 @@ describe("the iPhone reads recorded history", () => {
     expect(body).toContain("ForEach(recorded) { item in");
     // Which needs the published item's timestamp to survive decoding.
     const models = ios("Models.swift");
-    expect(models).toContain("case id, rev, kind, text, at, tool, plan, change, question, material");
+    expect(models).toContain("case id, rev, kind, text, at, tool, plan, change, question, questions, material");
     expect(models).toContain("at = try? c.decodeIfPresent(Double.self, forKey: .at)");
   });
 

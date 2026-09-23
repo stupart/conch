@@ -25,8 +25,12 @@ describe("an answered question collapses to what it decided", () => {
   test("the tool row asks the shared rule, and only for a finished call", () => {
     expect(stack).toContain("import ConchDesign");
     const tool = sliceFrom('case "tool":', 'case "material":');
-    expect(tool).toContain("QuestionOutcome.summary(");
-    expect(tool).toContain("QuestionOutcome.chosen(");
+    expect(tool).toContain("answeredSummary(questions, result: item.tool?.result)");
+    const summary = sliceFrom("private func answeredSummary(", "private func questionCard(");
+    expect(summary).toContain("QuestionOutcome.summary(");
+    expect(summary).toContain("QuestionOutcome.chosen(");
+    // Several questions: each one's own recorded answer, never a label search across them.
+    expect(summary).toContain("QuestionOutcome.answers(to: questions.map(\\.question), in: result)");
     // A running question is still the thing the session is blocked on: every option pressable.
     expect(tool).toContain('if item.tool?.status != "running",');
     expect(tool).toContain("answeredQuestionRow(decided)");

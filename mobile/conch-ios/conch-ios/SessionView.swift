@@ -105,6 +105,8 @@ struct SessionView: View {
     @State private var fetchedReply: String?
     @State private var loadingReply = false
     @State private var optionReplyInFlight = false
+    /// Why an answer to a question or a permission prompt did not land, in the Mac's words.
+    @State private var answerFailure: String?
     @State private var confirmingClose = false
     @State private var closingSession = false
     @State private var closeError: String?
@@ -201,7 +203,7 @@ struct SessionView: View {
                             history: history,
                             conversation: conversation,
                             optionReplyInFlight: optionReplyInFlight || isSending,
-                            onSelectOption: answerQuestion,
+                            onAnswer: answerQuestion,
                             onFreeform: { typing = true },
                             noTerminal: row?.noTerminal,
                             onOpenInTerminal: row?.attachable == true ? openInTerminal : nil
@@ -233,6 +235,17 @@ struct SessionView: View {
                             message: message,
                             onRetry: sendWords,
                             onDiscard: { talk.discardOutgoing(message.id) }
+                        )
+                    }
+
+                    // The permission prompt the session is showing, answered here rather
+                    // than only marked red (#370). After everything it said, like the Mac.
+                    if let approval = row?.approval {
+                        ApprovalCard(
+                            approval: approval,
+                            noTerminal: row?.noTerminal,
+                            inFlight: optionReplyInFlight || isSending,
+                            onApprove: approve
                         )
                     }
 
@@ -558,10 +571,11 @@ struct SessionView: View {
             // explains the glyph — a review card beneath saying the same
             // thing is clutter.
             if !isTalkingHere, mark != .review {
-                Text(mark.meaning)
+                Text(mark.caption)
                     .font(Type.caption)
                     .foregroundStyle(mark.color)
                     .lineLimit(1)
+                    .accessibilityLabel(mark.meaning)
             }
         }
     }
@@ -606,6 +620,14 @@ struct SessionView: View {
                 Text("Couldn't reach the Mac — try again.")
                     .font(Type.caption)
                     .foregroundStyle(Palette.needs)
+            }
+
+            if let answerFailure {
+                Text(answerFailure)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.needs)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 20)
             }
 
             // The phone going quiet with no explanation is indistinguishable
@@ -845,21 +867,49 @@ struct SessionView: View {
     /// answer to a question the agent had moved on from, and the reply carried nothing that
     /// said which question it was for. It carries the question's own item id now, and is
     /// checked against the live conversation by the same rule the row is drawn by.
-    private func answerQuestion(_ label: String, questionID: String) {
-        guard !label.isEmpty, !optionReplyInFlight, row?.noTerminal == nil else { return }
+    ///
+    /// The answers travel as `answers`, one per question, which the Mac types as the agent's
+    /// picker keys; `summary` is only what the send is called. The option's label, sent as
+    /// words, is what this used to send — and Claude Code's picker records option 1 for any
+    /// typed words, so a phone answer was usually the wrong one.
+    private func answerQuestion(_ summary: String, answers: [QuestionAnswer], questionID: String) {
+        guard !summary.isEmpty, !answers.isEmpty, !optionReplyInFlight, row?.noTerminal == nil else { return }
         guard isStillAsking(questionID) else { return }
         optionReplyInFlight = true
         sendFailed = false
+        answerFailure = nil
         let sessionLabel = row?.label ?? ""
         Task {
             let delivered = await bridge.inject(
                 sessionId: sessionId,
                 label: sessionLabel,
-                text: label
+                text: summary,
+                answers: answers
             )
             optionReplyInFlight = false
             // An option tap has no bubble to correct later, so only a refusal is reported.
-            if case .failed = delivered { sendFailed = true }
+            if case let .failed(reason) = delivered { answerFailure = reason }
+        }
+    }
+
+    /// Allow ("once") or Deny ("deny") the permission prompt on screen, by its id: the Mac
+    /// presses the dialog's keys only while that same prompt is still the one up.
+    private func approve(_ kind: String) {
+        guard let approval = row?.approval, approval.answerable != false,
+              row?.noTerminal == nil, !optionReplyInFlight else { return }
+        optionReplyInFlight = true
+        sendFailed = false
+        answerFailure = nil
+        let sessionLabel = row?.label ?? ""
+        Task {
+            let delivered = await bridge.inject(
+                sessionId: sessionId,
+                label: sessionLabel,
+                text: "\(kind == "deny" ? "Deny" : "Allow") \(approval.name)",
+                approve: (kind: kind, id: approval.id)
+            )
+            optionReplyInFlight = false
+            if case let .failed(reason) = delivered { answerFailure = reason }
         }
     }
 
@@ -1156,6 +1206,64 @@ private struct YourTurnBubble: View {
             }
             .accessibilityHint("Long press to discard it")
         }
+    }
+}
+
+/// The permission prompt: what it wants, and Allow / Deny — the Mac's card (#370). Where
+/// conch can't press keys at the dialog, it says so instead of offering buttons that would fail.
+private struct ApprovalCard: View {
+    let approval: PublishedState.Row.PendingApproval
+    let noTerminal: String?
+    let inFlight: Bool
+    let onApprove: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Wants to use \(approval.name)")
+                .font(Type.caption.weight(.semibold))
+                .foregroundStyle(Palette.needs)
+            Text(approval.summary)
+                .font(Type.mono)
+                .foregroundStyle(Palette.textPrimary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            if approval.answerable == false {
+                Text("conch can't answer this agent's permission prompt — answer it in its terminal.")
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textDim)
+            } else if let noTerminal {
+                Text(noTerminal)
+                    .font(Type.caption)
+                    .foregroundStyle(Palette.textDim)
+            } else {
+                // No "Always allow": Claude Code's second option grants something different
+                // per tool (for a Bash command, "always allow access to <folder> from this
+                // project"), and a button cannot say what it would grant.
+                HStack(spacing: 10) {
+                    button("Allow", kind: "once", primary: true)
+                    button("Deny", kind: "deny", primary: false)
+                }
+                .padding(.top, 2)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.needs.opacity(0.07), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Palette.needs.opacity(0.35)))
+    }
+
+    private func button(_ title: String, kind: String, primary: Bool) -> some View {
+        Button { onApprove(kind) } label: {
+            Text(title)
+                .font(Type.caption.weight(.semibold))
+                .foregroundStyle(primary ? Palette.bg : Palette.textPrimary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(primary ? Palette.needs : Palette.raised, in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+        .disabled(inFlight)
+        .accessibilityHint(kind == "deny" ? "Denies it; tell it what to do instead below" : "Allows this once")
     }
 }
 
