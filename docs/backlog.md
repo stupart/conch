@@ -39,6 +39,12 @@ agent drive one, and the user able to reach in and interact — the way the Code
 ## Open
 
 ### UI / UX
+- **open** — A long message shows twice in the conversation (2026-09-23, the brand identity
+  session). Tyler: "Im seeing messages twice in the conch ui". Claude Code records text that
+  conch pasted (anything over `PASTE_OVER_CHARS`) as `\n\n<pasted_content id="6a36">…</pasted_content
+  id="6a36">`. So the transcript row shows the raw tags, and the app's own "Sent" bubble never
+  matches it and stays. Fix: strip the wrapper when reading Claude user records. Separately, the
+  first such message in that transcript (`35bc1e7b…`) is written as two user records; find out why.
 - **open** — Background agents as a small group under their session, each one selectable, the way
   Claude Code's own agent view is. Tyler (2026-09-23): "have the agents show under smaller as like
   a group and you can select on them as well just like is possible in the Claude Code ui".
