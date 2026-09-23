@@ -351,8 +351,16 @@ function reduceCodexAssistant(assistant: AssistantAccumulator, entry: any): void
   }
 }
 
+/**
+ * A prompt the user gave Codex. Codex 0.151+ writes no `user_message` event: a
+ * submitted or steered prompt is an `item_completed` whose item is a
+ * `UserMessage`. None of the 2026 rollouts on Tyler's Mac (0.151–0.156) has a
+ * `user_message`, so this count sat at zero and no send to Codex could be confirmed.
+ */
 function isCodexUserPrompt(entry: any): boolean {
-  return entry?.type === "event_msg" && entry.payload?.type === "user_message";
+  if (entry?.type !== "event_msg") return false;
+  return entry.payload?.type === "user_message"
+    || (entry.payload?.type === "item_completed" && entry.payload.item?.type === "UserMessage");
 }
 
 function reduceLine(

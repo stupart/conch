@@ -56,6 +56,9 @@ public enum ConchSendFailure {
             "another window shares this session, so conch can't tell whether it landed."
         case "delivery-interrupted":
             "the send was stopped before it went in."
+        // Keys typed into an open dialog would answer it, so conch typed nothing.
+        case "session-awaiting-answer":
+            "that session is waiting on a permission prompt or question. Answer it on the Mac, then send again."
         default:
             nil
         }

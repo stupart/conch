@@ -330,3 +330,35 @@ test("a flat UUID transcript keeps the existing Claude Code reader behavior", as
     fixture.cleanup();
   }
 });
+
+/**
+ * Codex 0.151+ records a prompt as `item_completed` with a `UserMessage` item and writes no
+ * `user_message` at all. Counting only `user_message` left every current rollout at zero, so
+ * no send to Codex could be confirmed and seven that never submitted were reported delivered.
+ */
+test("a current Codex rollout counts each UserMessage item as a prompt", async () => {
+  const userMessage = (text: string) => ({
+    timestamp: "2026-09-23T04:00:00Z",
+    type: "event_msg",
+    payload: {
+      type: "item_completed",
+      thread_id: "t",
+      turn_id: "u",
+      item: { type: "UserMessage", id: text, content: [{ type: "text", text }] },
+    },
+  });
+  const fixture = withTranscript("rollout-2026-09-23T14-00-00-current.jsonl", [
+    { timestamp: "2026-09-23T04:00:00Z", type: "session_meta", payload: { cli_version: "0.156.0" } },
+    { timestamp: "2026-09-23T04:00:00Z", type: "event_msg", payload: { type: "task_started" } },
+    // The same words as a model input item: not a second prompt.
+    { timestamp: "2026-09-23T04:00:00Z", type: "response_item", payload: { type: "message", role: "user", content: [] } },
+    userMessage("first"),
+    { timestamp: "2026-09-23T04:00:01Z", type: "event_msg", payload: { type: "item_completed", item: { type: "AgentMessage", id: "a" } } },
+    userMessage("a steer mid-turn"),
+  ]);
+  try {
+    expect(await transcriptMark(fixture.path)).toBe(2);
+  } finally {
+    fixture.cleanup();
+  }
+});
