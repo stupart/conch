@@ -260,6 +260,14 @@ test("a Codex rollout larger than one batch is read to the end", async () => {
   expect(f.store.sourcePage({})[0]!.coverage.error ?? null).toBeNull();
 });
 
+test("a line as long as Codex's compacted records (9-15 MB) is read, and so is what follows it", async () => {
+  // At the old 8 MB default two of Tyler's rollouts stopped at such a line for good.
+  const f = fixture({ maxRecordBytes: undefined, batchBytes: 1024 * 1024, batchLines: 256 });
+  f.write(id(1), message("big", "x".repeat(12 * 1024 * 1024)) + message("after", "still read"));
+  await until(f.indexer, () => f.store.counts().items === 2, 100);
+  expect(f.store.sourcePage({})[0]!.coverage.status).toBe("complete");
+});
+
 test("a Codex metadata UUID mismatch is reported without attributing content to the filename", async () => {
   const f = fixture();
   const directory = join(f.codexHome, "sessions", "2026", "09", "16");
