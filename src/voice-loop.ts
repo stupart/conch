@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
 import { presentedTo, type AudioHolder } from "./audio-holder.ts";
@@ -103,6 +104,27 @@ import type { PauseController } from "./pause-controller.ts";
  * prose. Text that is delivered is logged by length alone.
  */
 const SPOKEN_PREVIEW_CHARS = 24;
+
+/** How long Claude Code gets to record a picker's answers after the last key; under 3 s measured. */
+const ANSWER_RECORD_WAIT_MS = 5_000;
+const ANSWER_RECORD_POLL_MS = 300;
+
+function transcriptSize(path: string): number {
+  try { return statSync(path).size; } catch { return 0; }
+}
+
+/** Whether a record written since byte `from` carries a picker's answers (`toolUseResult.answers`). */
+async function answersSince(path: string, from: number): Promise<boolean> {
+  let text: string;
+  try { text = await Bun.file(path).slice(from).text(); } catch { return false; }
+  return text.split("\n").some((line) => {
+    if (!line.includes('"answers"')) return false;
+    try {
+      const answers = JSON.parse(line)?.toolUseResult?.answers;
+      return !!answers && typeof answers === "object";
+    } catch { return false; }
+  });
+}
 function spokenPreview(text: string): string {
   const flat = text.replace(/\s+/g, " ").trim();
   if (flat.length <= SPOKEN_PREVIEW_CHARS) return JSON.stringify(flat);
@@ -935,6 +957,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     if (!injectKeys) return refuse("answering is unavailable here");
     const receipt = createRecordOperation(deps.observeRecords, recordScope(event.sessionId, event.transcriptPath), "delivery", event.announce.length);
     receipt.emit("accepted", "question-answer-accepted");
+    const recordedFrom = transcriptSize(event.transcriptPath);
     let sent: inject.InjectTextResult;
     try { sent = await injectKeys(cfg, event.pid, keys, beforeInject); }
     catch (error) { receipt.emit("unknown", "delivery-outcome-unknown"); throw error; }
@@ -946,9 +969,25 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       receipt.emit("failed", sent.reason ?? "delivery-failed");
       return refuse(sent.reason ?? "could not reach the session's window");
     }
+    // Keys can all land and still not answer: typed into a picker laid out differently from
+    // the one measured, Tyler's numbers only moved its highlight, and conch said "answered"
+    // (2026-09-23: "it just didn't work lol"). The answer counts once Claude Code records it.
+    if (!(await answerRecorded(event.transcriptPath, recordedFrom))) {
+      receipt.emit("failed", "question-answer-not-recorded");
+      return refuse("the picker didn't take the answer; answer it in the terminal");
+    }
     receipt.emit("delivered", "transport-submitted");
     log(`answered ${questions.length} question${questions.length === 1 ? "" : "s"} in "${event.label}" via ${sent.via}`);
     return true;
+  }
+
+  /** Whether Claude Code has recorded a picker's answers since byte `from` of its transcript. */
+  async function answerRecorded(transcriptPath: string, from: number): Promise<boolean> {
+    for (let waited = 0; ; waited += ANSWER_RECORD_POLL_MS) {
+      if (await answersSince(transcriptPath, from)) return true;
+      if (waited >= ANSWER_RECORD_WAIT_MS) return false;
+      await (deps.sleep ?? Bun.sleep)(ANSWER_RECORD_POLL_MS);
+    }
   }
 
   async function handle(event: TurnEvent): Promise<boolean | "staged" | inject.SendFailure | void> {

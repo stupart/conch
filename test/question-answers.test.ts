@@ -57,6 +57,16 @@ describe("Claude Code's picker keys", () => {
       .toEqual([{ press: "1" }, { press: "3" }, "Right", { press: "2" }, { press: "1" }]);
   });
 
+  test("with previews: a number moves the highlight and Return picks; words go in as notes", () => {
+    // Measured 2026-09-23 on the side-by-side picker: [2, Enter, 2, Enter, 1] recorded A2 and B2;
+    // n, words, Enter on a lone question recorded "(notes only)" with the words as its notes.
+    const previewed = (question: AgentQuestion): AgentQuestion => ({ ...question, previews: true });
+    expect(claudeQuestionKeys([previewed(alpha), previewed(beta)], [{ choices: [1] }, { choices: [1] }]))
+      .toEqual([{ press: "2" }, "Enter", { press: "2" }, "Enter", { press: "1" }]);
+    expect(claudeQuestionKeys([previewed(delta)], [{ text: "neither, something else" }]))
+      .toEqual([{ press: "n" }, { type: "neither, something else" }, "Enter"]);
+  });
+
   test("answers that don't fit the questions are refused, not typed", () => {
     for (const answers of [
       [{ choices: [1] }],                                // one answer for two questions
@@ -98,6 +108,13 @@ describe("every question in a call", () => {
     const later = JSON.stringify({ type: "user", uuid: "u2", message: { role: "user", content: [{ type: "text", text: "never mind, do X" }] } });
     expect(pendingQuestion(buildConversation("s1", [ask, later], "claude"))).toBeNull();
     expect(latestAnswerableQuestions(buildConversation("s1", [ask, later], "claude"))).toEqual([]);
+  });
+
+  test("a single-select question whose options carry previews says so; a multi-select one cannot", () => {
+    const options = [{ label: "A1", preview: "[a]" }, { label: "A2", preview: "[b]" }];
+    expect(agentQuestions({ questions: [{ header: "Alpha", question: "Pick?", options }] })[0]?.previews).toBe(true);
+    expect(agentQuestions({ questions: [{ header: "Alpha", question: "Pick?", options, multiSelect: true }] })[0]).not.toHaveProperty("previews");
+    expect(agentQuestions({ questions: [{ header: "Alpha", question: "Pick?", options: [{ label: "A1", preview: " " }] }] })[0]).not.toHaveProperty("previews");
   });
 
   test("a single question keeps the old shape: no `questions` field", () => {
@@ -230,6 +247,17 @@ describe("the Mac question card, as source (conch-mac has no XCTest target)", ()
     return slice;
   };
 
+  test("a sent answer shows as Submitted until the row closes, and the card returns with the reason if it fails", () => {
+    const tool = between("case .tool:", "} else if let plan = item.plan");
+    expect(tool).toContain('} else if item.tool?.status == "running", let sent = submittedAnswers[item.id],\n                          store.rowMessages[conversation.sessionId] == nil {\n                    submittedQuestionRow(sent)');
+    expect(tool).toContain("let failure = store.rowMessages[conversation.sessionId]");
+    // Every way the card sends goes through the one that records it.
+    expect(stack.match(/submitAnswer\(/g)?.length).toBe(4);
+    expect(stack).not.toMatch(/\bonAnswer\((?!summary, answers, itemID\))/);
+    const store = readFileSync(`${import.meta.dir}/../mac-app/conch-mac/StateStore.swift`, "utf8");
+    expect(store).toContain("if event.type == .inject, event.answers == nil, let opId = event.opId");
+  });
+
   test("a question row renders every question the call asked", () => {
     const tool = between("case .tool:", "} else if let plan = item.plan");
     expect(tool).toContain("let questions = item.allQuestions");
@@ -240,7 +268,7 @@ describe("the Mac question card, as source (conch-mac has no XCTest target)", ()
   test("several questions: each is filled in, and one Submit sends every answer in order", () => {
     const card = between("private func questionCard(", "private func setAnswers(");
     expect(card).toContain('questionRow(asked, questionID: "\\(itemID)#\\(index)", answerable: answerable, inSet: true)');
-    expect(card).toContain("if let filled { onAnswer(filled.summary, filled.answers, itemID) }");
+    expect(card).toContain("if let filled { submitAnswer(filled.summary, filled.answers, itemID: itemID) }");
     expect(card).toContain(".disabled(filled == nil || noTerminal != nil)");
   });
 
@@ -274,6 +302,15 @@ describe("the phone question card, as source (conch-ios has no XCTest target)", 
     expect(slice.length).toBeGreaterThan(200);
     return slice;
   };
+
+  test("a sent answer shows as Submitted until the row closes; a refusal brings the card back", () => {
+    expect(stack).toContain('} else if item.tool?.status == "running", let sent = submittedAnswers[item.id] {\n                    submittedQuestionRow(sent)');
+    const session = read("SessionView.swift");
+    const answering = between(session, "private func answerQuestion(", "private func approve(");
+    expect(answering).toContain("submittedAnswers[questionID] = summary");
+    expect(answering).toContain("answerFailure = reason\n                submittedAnswers[questionID] = nil");
+    expect(session).toContain("submittedAnswers: submittedAnswers,");
+  });
 
   test("the phone decodes every question in the call", () => {
     const models = read("Models.swift");

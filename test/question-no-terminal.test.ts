@@ -28,7 +28,7 @@ test("the Mac question card goes dead on a row with no terminal and says why", (
   expect(mac).toContain("var onOpenInTerminal: (() -> Void)? = nil");
   const row = sliceFrom(mac, "private func questionRow(", "private func questionOption(");
 
-  const option = sliceFrom(row, "onAnswer(option.label, [ConchQuestionAnswer(choices: [index])], questionID)", "} else {");
+  const option = sliceFrom(row, "submitAnswer(option.label, [ConchQuestionAnswer(choices: [index])], itemID: questionID)", "} else {");
   expect(option).toContain(".disabled(noTerminal != nil)");
 
   const reason = row.indexOf("if answerable, let noTerminal {");

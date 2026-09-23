@@ -52,7 +52,8 @@ describe("a message sent from the Mac appears the moment it is sent", () => {
     const send = section(store, "func send(_ event: ConchDaemonEvent) -> Task<Bool, Never> {", "private static func awaitDelivery(");
     ordered(
       send,
-      "if event.type == .inject, let opId = event.opId, let session = event.sessionId,",
+      // Except an answer to a question: its card shows "Submitted", and its words never come back.
+      "if event.type == .inject, event.answers == nil, let opId = event.opId, let session = event.sessionId,",
       "outbox.begin(ConchOutboxEntry(",
       "id: opId,",
       "earlierUserItems: seenUserItems[session] ?? []",

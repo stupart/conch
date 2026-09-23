@@ -18,6 +18,10 @@ struct ConversationStack: View {
     /// text records option 1 there, whatever it says. The summary is only what the send is
     /// called; the id is checked against the live conversation before anything goes.
     let onAnswer: (String, [QuestionAnswer], String) -> Void
+    /// What was sent from a question card and not refused, by the question row it answers: the
+    /// card shows "Submitted" until the row closes, as Tyler asked ("when submitted the state of
+    /// the question ui … should change").
+    var submittedAnswers: [String: String] = [:]
     /// Take me to the text field — I want to answer in my own words.
     ///
     /// Claude Code's own question UI always offers an "Other" row and conch
@@ -362,6 +366,8 @@ struct ConversationStack: View {
                 if item.tool?.status != "running",
                    let decided = answeredSummary(questions, result: item.tool?.result) {
                     answeredQuestionRow(decided)
+                } else if item.tool?.status == "running", let sent = submittedAnswers[item.id] {
+                    submittedQuestionRow(sent)
                 } else {
                     questionCard(
                         questions,
@@ -821,6 +827,22 @@ struct ConversationStack: View {
     /// header, the question and every option greyed out — the tallest thing in a finished
     /// transcript, saying the least, and on a phone it was a screen of it. Not a button:
     /// there is nothing left to do to it, and the exchange that produced it is right above.
+    /// Sent, and waiting for the session to record it; the row then collapses to what was decided.
+    private func submittedQuestionRow(_ summary: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "paperplane")
+                .font(Type.caption)
+                .foregroundStyle(Palette.textFaint)
+                .frame(width: 16)
+            Text("Submitted · \(summary)")
+                .font(Type.caption.weight(.medium))
+                .foregroundStyle(Palette.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private func answeredQuestionRow(_ decided: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: "checkmark.circle")

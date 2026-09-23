@@ -106,6 +106,11 @@ struct ConversationStackView: View {
     @State private var multiSelections: [String: Set<String>] = [:]
     /// Words typed for one question of several, keyed like `multiSelections`.
     @State private var questionTexts: [String: String] = [:]
+    /// What was sent from a question card, by the question row it answers. The card gives way
+    /// to "Submitted" at once — Tyler: "when submitted the state of the question ui … should
+    /// change" — and comes back with the reason if the send fails (the store's row message,
+    /// which a send clears at the press and a failure sets).
+    @State private var submittedAnswers: [String: String] = [:]
     /// `.qo:hover` — which option the pointer is on, so an option can be transparent at rest.
     @State private var hoveredOption: String?
     @State private var scrollRequestGeneration = 0
@@ -665,12 +670,24 @@ struct ConversationStackView: View {
                 if item.tool?.status != "running",
                    let decided = answeredSummary(questions, result: item.tool?.result) {
                     answeredQuestionRow(decided)
+                } else if item.tool?.status == "running", let sent = submittedAnswers[item.id],
+                          store.rowMessages[conversation.sessionId] == nil {
+                    submittedQuestionRow(sent)
                 } else {
-                    questionCard(
-                        questions,
-                        itemID: item.id,
-                        answerable: item.tool?.status == "running"
-                    )
+                    VStack(alignment: .leading, spacing: 8) {
+                        if item.tool?.status == "running", submittedAnswers[item.id] != nil,
+                           let failure = store.rowMessages[conversation.sessionId] {
+                            Text(failure)
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(ConchPalette.statusNeeds)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        questionCard(
+                            questions,
+                            itemID: item.id,
+                            answerable: item.tool?.status == "running"
+                        )
+                    }
                 }
             // A plan is not a tool call you might expand — it is the answer to
             // "what is it doing", so it renders as itself rather than as a
@@ -753,6 +770,27 @@ struct ConversationStackView: View {
     /// It replaces a header, the whole question, and every option greyed out at 0.58 — the
     /// largest thing in a finished transcript, saying the least. Not a button: there is
     /// nothing left to do to it, and the exchange that produced it is right above.
+    /// Sent, and waiting for the session to record it; the row then collapses to what was decided.
+    private func submittedQuestionRow(_ summary: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "paperplane")
+                .font(.system(size: 9.5))
+                .foregroundStyle(ConchPalette.textFaint)
+            Text("Submitted · \(summary)")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(ConchPalette.textDim)
+                .lineLimit(8)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func submitAnswer(_ summary: String, _ answers: [ConchQuestionAnswer], itemID: String) {
+        submittedAnswers[itemID] = summary
+        onAnswer(summary, answers, itemID)
+    }
+
     private func answeredQuestionRow(_ decided: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: "checkmark.circle")
@@ -802,7 +840,7 @@ struct ConversationStackView: View {
                             multiSelections[questionID] = [option.label]
                             questionTexts[questionID] = nil
                         } else {
-                            onAnswer(option.label, [ConchQuestionAnswer(choices: [index])], questionID)
+                            submitAnswer(option.label, [ConchQuestionAnswer(choices: [index])], itemID: questionID)
                         }
                     } label: {
                         questionOption(
@@ -900,10 +938,10 @@ struct ConversationStackView: View {
             if asked.multiSelect && answerable && !inSet {
                 let selected = selectedLabels(for: asked, questionID: questionID)
                 Button {
-                    onAnswer(
+                    submitAnswer(
                         selected.joined(separator: ", "),
                         [ConchQuestionAnswer(choices: asked.options.indices.filter { selected.contains(asked.options[$0].label) })],
-                        questionID
+                        itemID: questionID
                     )
                 } label: {
                     Text(selected.isEmpty ? "Submit selections" : "Submit \(selected.count) selected")
@@ -1037,7 +1075,7 @@ struct ConversationStackView: View {
                 if answerable {
                     let filled = setAnswers(questions, itemID: itemID)
                     Button {
-                        if let filled { onAnswer(filled.summary, filled.answers, itemID) }
+                        if let filled { submitAnswer(filled.summary, filled.answers, itemID: itemID) }
                     } label: {
                         Text(filled == nil ? "Answer all \(questions.count) to submit" : "Submit answers")
                             .font(.system(size: 12, weight: .semibold))
