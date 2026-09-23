@@ -3,6 +3,7 @@ import type { PublishedConversation } from "./conversation.ts";
 import type { SessionContextUsage } from "./context-meter.ts";
 import type { AudioControl, AudioOutboxItem } from "./audio-holder.ts";
 import type { ReviewScene } from "./snippet.ts";
+import type { PendingApproval } from "./approval.ts";
 
 export type PanelConchState = "idle" | "muted" | "paused" | "speaking" | "listening" | "recording" | "transcribing";
 
@@ -298,6 +299,12 @@ export interface PublishedSessionRow {
   attachable?: boolean;
   /** Same as `PanelRowModel.waitingOnAgents`. Absent means false; older apps show plain working. */
   waitingOnAgents?: true;
+  /**
+   * The permission prompt a `needs` row is showing, so an app can put Allow /
+   * Deny in front of the person rather than only a red mark. `answerable:
+   * false` where conch can't press keys at the agent's dialog (Codex).
+   */
+  approval?: { id: string; name: string; summary: string; answerable?: false };
   snippet?: string;
   /** A finished deliverable attached to this waiting row. Carries the link so
    * external consumers can render it, not just the summary. */
@@ -528,6 +535,8 @@ export function buildPublishedState(
     audio?: { control: AudioControl; outbox: AudioOutboxItem[] };
     /** Terminal delivery outcomes recent enough for a client to still be waiting on one. */
     deliveries?: readonly PublishedDelivery[];
+    /** The permission prompt a session is showing; asked only of rows that need you. */
+    approvalForSessionId?(sessionId: string, transcriptPath: string | undefined): PendingApproval | null;
   } = {},
 ): PublishedState {
   return {
@@ -547,6 +556,7 @@ export function buildPublishedState(
     ...(model.preview ? { preview: publishedReply(model.preview) } : {}),
     rows: model.rows.map((row) => {
       const transcriptPath = options.transcriptPathForSessionId?.(row.sessionId);
+      const approval = row.status === "needs" ? options.approvalForSessionId?.(row.sessionId, transcriptPath) : null;
       const voice = options.voiceForLabel?.(row.label)?.trim();
       const context = options.contextForSessionId?.(row.sessionId);
       return {
@@ -575,6 +585,16 @@ export function buildPublishedState(
         ...(row.noTerminal ? { noTerminal: row.noTerminal } : {}),
         ...(row.attachable ? { attachable: true as const } : {}),
         ...(row.waitingOnAgents ? { waitingOnAgents: true as const } : {}),
+        ...(approval
+          ? {
+            approval: {
+              id: approval.id,
+              name: approval.name,
+              summary: approval.summary,
+              ...(approval.answerable === false ? { answerable: false as const } : {}),
+            },
+          }
+          : {}),
         ...(row.cwd ? { cwd: row.cwd } : {}),
         ...(row.workDirs ? { workDirs: row.workDirs } : {}),
         ...(snippets.has(row.sessionId)

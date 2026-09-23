@@ -623,6 +623,24 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
   if (value.awaitDelivery !== undefined && value.awaitDelivery !== true) {
     return { ok: false, err: "awaitDelivery must be true when present" };
   }
+  if (value.approval !== undefined) {
+    // From the PermissionRequest hook: what a dialog is asking, shown and spoken, never typed.
+    const approval = value.approval;
+    if (type !== "needs-you" || !socketRecord(approval)
+      || !["id", "name", "summary"].every((field) => typeof approval[field] === "string"
+        && (approval[field] as string).length > 0 && (approval[field] as string).length <= 2000)) {
+      return { ok: false, err: "approval must be { id, name, summary } on needs-you" };
+    }
+  }
+  if (value.approve !== undefined) {
+    const approve = value.approve;
+    if (type !== "inject") return { ok: false, err: "approve is only for inject" };
+    if (value.answers !== undefined) return { ok: false, err: "an inject answers a question or a permission, not both" };
+    if (!socketRecord(approve) || !["once", "always", "deny"].includes(approve.kind as string)
+      || typeof approve.id !== "string" || !approve.id || approve.id.length > 200) {
+      return { ok: false, err: "approve must be { kind: once | always | deny, id }" };
+    }
+  }
   if (value.answers !== undefined) {
     const err = type === "inject" ? questionAnswersError(value.answers) : "answers are only for inject";
     if (err) return { ok: false, err };

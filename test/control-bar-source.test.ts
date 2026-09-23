@@ -131,7 +131,7 @@ test("M3: the fog replies through inject and dictates through the composer's dic
   const send = member(panels, "private func send(_ row: SessionRow) {");
   expect(send).toContain("store.send(.inject(sessionId: row.id, label: row.label, text: text))");
   expect(read("mac-app/conch-mac/ConchSocketClient.swift")).toContain(
-    "Self(type: .inject, sessionId: sessionId, label: label, announce: text, awaitDelivery: true, answers: answers)",
+    "Self(type: .inject, sessionId: sessionId, label: label, announce: text, awaitDelivery: true, answers: answers, approve: approve)",
   );
   const mic = member(panels, "private func mic(_ row: SessionRow) {");
   expect(mic).toContain("store.send(.dictate(sessionId: row.id, label: row.label))");

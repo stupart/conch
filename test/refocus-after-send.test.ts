@@ -24,7 +24,7 @@ const store = read("mac-app/conch-mac/StateStore.swift");
  */
 test("a Mac-app send takes the front back only after the daemon says delivery finished", () => {
   expect(client).toContain(
-    "Self(type: .inject, sessionId: sessionId, label: label, announce: text, awaitDelivery: true, answers: answers)",
+    "Self(type: .inject, sessionId: sessionId, label: label, announce: text, awaitDelivery: true, answers: answers, approve: approve)",
   );
   const write = member(client, "private static func write(\n        _ event: ConchDaemonEvent,");
   const written = write.indexOf("guard write(payload, to: descriptor, deadline: deadline) == .complete else {");

@@ -871,6 +871,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     /// Working only because agents it started are still running; its own turn is over, so
     /// it can be talked to. Older daemons never send it.
     let waitingOnAgents: Bool
+    /// The permission prompt a row that needs you is showing. Older daemons never send it.
+    let approval: PendingApproval?
     /// Present on a subagent row (C4): the session it runs inside. Such a row
     /// is indented under that session, has no composer, and is never the one
     /// conch is speaking for. Older daemons never send it.
@@ -915,6 +917,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case noTerminal
         case attachable
         case waitingOnAgents
+        case approval
         case parentSessionId
         case startedBySessionId
         case cwd
@@ -945,6 +948,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         noTerminal: String? = nil,
         attachable: Bool = false,
         waitingOnAgents: Bool = false,
+        approval: PendingApproval? = nil,
         parentSessionId: String? = nil,
         startedBySessionId: String? = nil,
         cwd: String? = nil,
@@ -973,6 +977,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.noTerminal = noTerminal
         self.attachable = attachable
         self.waitingOnAgents = waitingOnAgents
+        self.approval = approval
         self.parentSessionId = parentSessionId
         self.startedBySessionId = startedBySessionId
         self.cwd = cwd
@@ -1011,6 +1016,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             (try? container.decodeIfPresent(Bool.self, forKey: .attachable)) ?? false
         waitingOnAgents =
             (try? container.decodeIfPresent(Bool.self, forKey: .waitingOnAgents)) ?? false
+        approval = try? container.decodeIfPresent(PendingApproval.self, forKey: .approval)
         parentSessionId =
             try? container.decodeIfPresent(String.self, forKey: .parentSessionId)
         startedBySessionId =
@@ -1043,10 +1049,22 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             noTerminal: noTerminal,
             attachable: attachable,
             waitingOnAgents: waitingOnAgents,
+            approval: approval,
             parentSessionId: parentSessionId,
             startedBySessionId: startedBySessionId,
             cwd: cwd
         )
+    }
+}
+
+extension SessionRow {
+    /// A permission prompt: which tool, and the one line that names what it wants to do.
+    struct PendingApproval: Decodable, Equatable, Sendable {
+        let id: String
+        let name: String
+        let summary: String
+        /// False where conch can't press keys at the agent's dialog (Codex's).
+        let answerable: Bool?
     }
 }
 

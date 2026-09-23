@@ -359,6 +359,8 @@ export interface VoiceLoopDeps {
   quietOverrideBlocked(): boolean;
   /** The registry entry the dashboard last committed for this session or window. */
   window(sessionId: string): SessionInfo | undefined;
+  /** Claude Code's registry status for a session, read now rather than from the last snapshot. */
+  freshStatus?(sessionId: string): Promise<string | undefined>;
   /** The registry check: true when a complete snapshot says the session exited. */
   sessionGone(sessionId: string): Promise<boolean>;
   render(): void;
@@ -397,6 +399,8 @@ export interface VoiceLoop {
   speakBlocker(volunteered: boolean): "mic-open" | "manual" | null;
   /** Exactly the four-term mic gate — never just `micOpen` (see the stop contract in control-server.ts). */
   capturing(): boolean;
+  /** The permission prompt this session is showing, for the published row. */
+  pendingApprovalFor(sessionId: string, transcriptPath: string | undefined): PendingApproval | null;
   /** Space: the guaranteed stop. Drains and submits whatever was already captured. */
   stop(src: string): void;
   consumeStop(): boolean;
@@ -792,6 +796,68 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     await speak(cfg, event.announce, label, false, sessionId);
   }
 
+  /**
+   * Permission prompts Claude Code's PermissionRequest hook reported, by
+   * session. On 2.1.280 the transcript holds nothing while a dialog is up, so
+   * this is the only record of what it asks. The hook fires just before the
+   * dialog opens; while it is open Claude's registry reads `waiting`.
+   */
+  const hookApprovals = new Map<string, { approval: PendingApproval; at: number }>();
+  /** Long enough for the registry to catch up with a dialog the hook just announced. */
+  const HOOK_APPROVAL_GRACE_MS = 10_000;
+
+  /**
+   * The permission prompt a session is showing: the hook's record while the
+   * dialog is up (or just announced), else what the transcript names (older
+   * Claude Code, and Codex).
+   */
+  function approvalShowing(
+    sessionId: string,
+    transcriptPath: string | undefined,
+    status = deps.window(sessionId)?.status,
+  ): PendingApproval | null {
+    const held = hookApprovals.get(sessionId);
+    if (held) {
+      if (status === "waiting" || Date.now() - held.at < HOOK_APPROVAL_GRACE_MS) return held.approval;
+      hookApprovals.delete(sessionId);
+    }
+    return transcriptPath ? pendingApproval(transcriptPath, sharedWindow(sessionId)) : null;
+  }
+
+  /**
+   * Press the permission dialog's keys for `approve` — the same `APPROVAL_KEYS`
+   * a spoken answer presses — and only while the prompt it names is still the
+   * one up: re-read before every key, so a click can never answer a newer one.
+   */
+  async function answerApproval(
+    event: TurnEvent,
+    approve: NonNullable<TurnEvent["approve"]>,
+  ): Promise<true | inject.SendFailure> {
+    const refuse = (reason: string): inject.SendFailure => {
+      log(`did not answer the permission in "${event.label}": ${reason}`);
+      recordDaemonError("permission-answer", `Could not answer the permission: ${reason}`, event.sessionId, {});
+      return { delivered: false, reason };
+    };
+    const path = event.transcriptPath;
+    // Read now: a Deny sent after the dialog closed would be an Escape into a running turn.
+    const status = deps.freshStatus ? await deps.freshStatus(event.sessionId) : deps.window(event.sessionId)?.status;
+    const ask = approvalShowing(event.sessionId, path, status);
+    if (!ask || ask.id !== approve.id) return refuse("that permission is no longer waiting");
+    if (hookApprovals.has(event.sessionId) && status !== "waiting") {
+      return refuse("the permission dialog is not open");
+    }
+    if (ask.answerable === false) return refuse("conch can't answer this agent's permission prompt; answer it in the terminal");
+    const stillUp = (): boolean => approvalShowing(event.sessionId, path)?.id === approve.id;
+    for (const key of APPROVAL_KEYS[approve.kind]) {
+      const { via, interrupted, failed, reason } = await injectKey(cfg, event.pid, key, stillUp);
+      if (interrupted) return refuse("the permission changed before conch could answer it");
+      if (via === "none" || failed) return refuse(reason ?? "could not reach the session's window");
+      await Bun.sleep(150); // let the dialog move before the next key, as a spoken answer does
+    }
+    log(`answered the permission in "${event.label}": ${approve.kind} (${ask.name})`);
+    return true;
+  }
+
   /** The questions this session's agent is waiting on, read fresh from its transcript. */
   async function pendingQuestions(event: TurnEvent): Promise<AgentQuestion[]> {
     if (!event.transcriptPath) return [];
@@ -902,6 +968,8 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         const answered = await answerQuestion(event, event.answers);
         if (answered !== "as-message") return answered;
       }
+      // Allow / Always allow / Deny on the Mac's permission card.
+      if (event.approve) return answerApproval(event, event.approve);
 
       // The phone's voice path: text transcribed ON the phone, delivered into
       // the named session through the exact machinery Mac dictation uses —
@@ -971,10 +1039,14 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // a machine with it on — Tyler's, verbatim: "not getting notified that
     // there were permissiosn questions it just said it was working". A prompt
     // that fired is proof the bypass did not apply to that session.
-    const approval = event.type === "needs-you"
-      && event.ntype === "permission_prompt"
-      && event.transcriptPath
-      ? pendingApproval(event.transcriptPath, sharedWindow(event.sessionId))
+    // The hook's record of the dialog, when it sent one (see `hookApprovals`).
+    if (event.type === "needs-you" && event.approval?.id.startsWith("hook:")) {
+      hookApprovals.set(event.sessionId, { approval: event.approval, at: Date.now() });
+    } else if (event.type === "turn-end" || event.type === "working") {
+      hookApprovals.delete(event.sessionId);
+    }
+    const approval = event.type === "needs-you" && event.ntype === "permission_prompt"
+      ? approvalShowing(event.sessionId, event.transcriptPath)
       : null;
     // On the event, so the audibility predicate and every gate below see it;
     // cleared on a replay whose dialog was answered meanwhile.
@@ -2995,7 +3067,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     let stale = false;
     const currentApproval = (allowResolved = false): boolean => {
       if (stale || shuttingDown || interruptedByPause()) return false;
-      const current = transcriptPath ? pendingApproval(transcriptPath, sharedWindow(event.sessionId)) : null;
+      const current = approvalShowing(event.sessionId, transcriptPath);
       if ((allowResolved && !current) || (ask.id && current?.id === ask.id
         && current.name === ask.name && current.summary === ask.summary)) return true;
       stale = true;
@@ -3311,6 +3383,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     speak,
     speakBlocker,
     capturing: normalMicOpen,
+    pendingApprovalFor: (sessionId, transcriptPath) => approvalShowing(sessionId, transcriptPath),
     stop,
     consumeStop: consumeStopKey,
     closeMic: (reason) => activeDictation?.requestExternal("spacebar", reason),

@@ -13,6 +13,8 @@ import {
   type ReviewScene,
 } from "./snippet.ts";
 import { boundedMark } from "./prompt-cursor.ts";
+import { createHash } from "node:crypto";
+import { summarizeToolUse } from "./approval.ts";
 import { currentTurnText } from "./transcript-turn.ts";
 import { findHookWindow, sessionLabel, isEngageable } from "./sessions.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
@@ -25,6 +27,9 @@ interface HookPayload {
   cwd?: string;
   message?: string;
   notification_type?: string;
+  /** PermissionRequest: the tool call its dialog is asking about. */
+  tool_name?: string;
+  tool_input?: unknown;
 }
 
 export interface TurnEvent {
@@ -106,6 +111,11 @@ export interface TurnEvent {
    * `announce` is then only the readable summary.
    */
   answers?: QuestionAnswer[];
+  /**
+   * An inject that answers the permission prompt (`approval.id`) the session
+   * is showing: its dialog's keys, pressed only while that same prompt is up.
+   */
+  approve?: { kind: "once" | "always" | "deny"; id: string };
 }
 
 // Notification types that actually need a human; everything else stays silent.
@@ -285,6 +295,33 @@ export async function runHook(cfg: Config): Promise<void> {
       eventAt,
       ...(backgroundWork ? { backgroundWork: true } : {}),
       ...(review ? { review } : {}),
+    };
+  } else if (event === "PermissionRequest") {
+    // The one moment a pending permission is knowable on Claude Code 2.1.280:
+    // it writes the tool call to the transcript only once the dialog resolves
+    // (measured: no assistant record at all while it is up), so the transcript
+    // read this used to depend on found nothing, and every prompt reached conch
+    // as a bare needs mark — no card, no bell, no voice. It fires just before
+    // the dialog opens. conch prints nothing, so the dialog still shows.
+    const name = String(payload.tool_name ?? "tool");
+    const summary = summarizeToolUse(name, payload.tool_input);
+    const sessionId = session?.sessionId ?? payload.session_id ?? "";
+    turn = {
+      type: "needs-you",
+      sessionId,
+      label,
+      cwd: payload.cwd,
+      pid: session?.pid,
+      announce: `${label} needs you: ${name} — ${summary}`,
+      transcriptPath: payload.transcript_path,
+      ntype: "permission_prompt",
+      mark: payload.transcript_path ? await boundedMark(cfg, payload.transcript_path) : undefined,
+      eventAt,
+      approval: {
+        id: `hook:${createHash("sha1").update(`${sessionId}\n${name}\n${JSON.stringify(payload.tool_input ?? null)}\n${eventAt}`).digest("hex").slice(0, 16)}`,
+        name,
+        summary,
+      },
     };
   } else if (event === "Notification") {
     const ntype = payload.notification_type ?? "";

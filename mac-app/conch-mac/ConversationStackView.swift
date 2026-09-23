@@ -76,6 +76,11 @@ struct ConversationStackView: View {
     var noTerminal: String? = nil
     /// Offered beside that reason when a window can be attached to the job.
     var onOpenInTerminal: (() -> Void)? = nil
+    /// The permission prompt this session is showing, answered here rather than only marked
+    /// red in the sidebar. Tyler: "it was a confirm thing but it wasn't surfacing in conch".
+    var approval: SessionRow.PendingApproval? = nil
+    /// "once", "always" or "deny".
+    var onApprove: ((String) -> Void)? = nil
     @EnvironmentObject private var store: StateStore
     /// The last link that would not open — the OS's own words and the
     /// resolved target — shown here, where the click happened, never as a
@@ -267,6 +272,9 @@ struct ConversationStackView: View {
                     // seconds of saying nothing at all.
                     ForEach(store.outbox.entries(for: conversation.sessionId)) { pending in
                         PendingMessage(entry: pending).id(pending.id)
+                    }
+                    if let approval {
+                        approvalCard(approval)
                     }
                     // An anchor rather than scrolling to the last item: the last
                     // item GROWS while it streams, and scrolling to a growing view
@@ -677,6 +685,65 @@ struct ConversationStackView: View {
                 toolRow(item)
             }
         }
+    }
+
+    /// The permission prompt, as the question card's shape: what it wants, and the three
+    /// answers Claude Code's dialog offers. Where conch can't press keys at the dialog, it
+    /// says so and points at the terminal instead of offering buttons that would fail.
+    private func approvalCard(_ approval: SessionRow.PendingApproval) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Wants to use \(approval.name)")
+                .font(ConchTypography.font(size: 12, weight: .semibold))
+                .foregroundStyle(ConchPalette.statusNeeds)
+            Text(approval.summary)
+                .font(.system(size: 13, design: .monospaced))
+                .foregroundStyle(ConchPalette.textPrimary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            if approval.answerable == false || onApprove == nil {
+                Text("conch can't answer this agent's permission prompt — answer it in its terminal.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(ConchPalette.textDim)
+            } else if let noTerminal {
+                Text(noTerminal)
+                    .font(.system(size: 11))
+                    .foregroundStyle(ConchPalette.textDim)
+            } else {
+                // No "Always allow": Claude Code 2.1.280's second option grants something
+                // different per tool (for a Bash command, measured: "always allow access to
+                // <folder> from this project"), and a button cannot say what it would grant.
+                HStack(spacing: 8) {
+                    approvalButton("Allow", kind: "once", primary: true)
+                    approvalButton("Deny", kind: "deny", primary: false)
+                }
+                .padding(.top, 2)
+            }
+        }
+        .padding(.top, 14)
+        .padding(.trailing, 10)
+        .padding(.bottom, 12)
+        .padding(.leading, 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(ConchPalette.hairlineStrong, lineWidth: 1)
+        )
+    }
+
+    private func approvalButton(_ title: String, kind: String, primary: Bool) -> some View {
+        Button { onApprove?(kind) } label: {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(primary ? ConchPalette.bg : ConchPalette.textPrimary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(primary ? ConchPalette.statusNeeds : ConchPalette.raised)
+                )
+        }
+        .buttonStyle(.plain)
+        .help(kind == "deny" ? "Deny, and tell it what to do instead in the composer" : "Allow this once")
     }
 
     /// §3's collapsed question: one quiet line saying what was decided.
