@@ -1,11 +1,11 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeSession, refreshSessionForClose, startTerminalSession } from "../src/session-lifecycle.ts";
 import { reapOrphanedWhisper } from "../src/whisper-orphan.ts";
 import { reapOrphanedSox } from "../src/sox-orphan.ts";
-import { bindSessionProcess, decodeProcessIdentity, readProcessIdentity, type ProcessIdentity } from "../src/process-identity.ts";
+import { bindSessionProcess, decodeProcessIdentity, readProcessIdentity, sameProcessIdentity, type ProcessIdentity } from "../src/process-identity.ts";
 import type { SessionInfo } from "../src/sessions.ts";
 import { withUITransaction } from "../src/inject.ts";
 import { readIdentity, writeIdentity } from "../src/daemon-identity.ts";
@@ -130,6 +130,80 @@ test("kernel decoding distinguishes births one microsecond apart and rejects inc
   }
 });
 
+
+describe("a session whose binary brew deleted while it ran", () => {
+  // Measured 2026-09-23: `brew upgrade` renamed claude 2.1.266's directory to
+  // `2.1.266.upgrading` and deleted it; pid 43544 kept running from it, and
+  // proc_pidpath returned 0 for it — so conch had no identity, and Close refused.
+  const deleted = "/opt/homebrew/Caskroom/claude-code@latest/2.1.266.upgrading/claude";
+  function bsd(comm: string): Buffer {
+    const data = Buffer.alloc(136);
+    data.writeUInt32LE(4242, 12); data.writeUInt32LE(7, 108);
+    data.write(comm, 48);
+    data.writeBigUInt64LE(1000n, 120); data.writeBigUInt64LE(1n, 128);
+    return data;
+  }
+  const reader = (comm: string, region?: string) => ({
+    info: (_: number, buffer: Buffer) => { bsd(comm).copy(buffer); return 136; },
+    path: () => 0,
+    ...(region ? { region: (_: number, buffer: Buffer) => { buffer.write(region); return region.length; } } : {}),
+  });
+
+  test("a running binary that was deleted is identified by the file its process maps", () => {
+    expect(readProcessIdentity(4242, reader("claude", deleted))).toEqual({ ...identity, executable: deleted });
+  });
+
+  test("only when that file's name is the process's own name, and never without it", () => {
+    expect(readProcessIdentity(4242, reader("claude", "/usr/lib/dyld"))).toBeNull();
+    expect(readProcessIdentity(4242, reader("codex", deleted))).toBeNull();
+    expect(readProcessIdentity(4242, reader("claude"))).toBeNull();
+  });
+
+  test("brew's rename of the version directory is the same binary; any other change is not", () => {
+    const before = { ...identity, executable: "/opt/homebrew/Caskroom/claude-code@latest/2.1.266/claude" };
+    expect(sameProcessIdentity(before, { ...before, executable: deleted })).toBe(true);
+    expect(sameProcessIdentity(before, { ...before, executable: "/opt/homebrew/Caskroom/claude-code@latest/2.1.280/claude" })).toBe(false);
+    expect(sameProcessIdentity(before, { ...before, executable: "/opt/homebrew/Caskroom/codex/2.1.266.upgrading/claude" })).toBe(false);
+    expect(sameProcessIdentity(
+      { ...identity, executable: "/opt/tools.upgrading/claude" },
+      { ...identity, executable: "/opt/tools/claude" },
+    )).toBe(false);
+  });
+
+  test("for real: a process whose binary is deleted under it keeps an identity", async () => {
+    if (process.platform !== "darwin") return;
+    const dir = fs.realpathSync(fs.mkdtempSync(join(tmpdir(), "conch-deleted-bin-")));
+    roots.push(dir);
+    const binary = join(dir, "sleep");
+    fs.copyFileSync("/bin/sleep", binary);
+    fs.chmodSync(binary, 0o755);
+    const child = Bun.spawn([binary, "30"], { stdout: "ignore", stderr: "ignore" });
+    try {
+      await Bun.sleep(100);
+      const live = readProcessIdentity(child.pid);
+      expect(live?.executable).toBe(binary);
+      fs.rmSync(binary);
+      const orphaned = readProcessIdentity(child.pid);
+      expect(orphaned?.executable).toBe(binary);
+      expect(sameProcessIdentity(live, orphaned)).toBe(true);
+    } finally {
+      child.kill();
+    }
+  });
+
+  test("a session bound before an upgrade can still be closed after it", async () => {
+    const bound = { ...identity, executable: "/opt/homebrew/Caskroom/claude-code@latest/2.1.266/claude" };
+    const spawned: string[][] = [];
+    await closeSession({ pid: 4242, processIdentity: bound }, {
+      processIdentity: () => ({ ...bound, executable: deleted }),
+      ttyForPid: async () => "ttys007",
+      pidIsAlive: async () => false,
+      sleep: async () => {},
+      spawn: (args) => { spawned.push(args); return processResult(); },
+    });
+    expect(spawned.length).toBeGreaterThan(0);
+  });
+});
 
 test("close refuses provider mismatch even when the cached process remains alive", async () => {
   const spawned: string[][] = [];
