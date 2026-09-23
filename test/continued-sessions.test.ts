@@ -10,6 +10,7 @@ import {
   findSessionByName,
   findTranscript,
   parkedWindowJob,
+  parseAttachedJobPids,
   isEngageable,
   registrySnapshot,
   withStartedBy,
@@ -59,7 +60,12 @@ function fixture() {
       writeFileSync(join(projects, `${id}.jsonl`), records.map((r) => JSON.stringify(r)).join("\n") + "\n");
     },
     // Hermetic: no Codex home, no `ps`.
-    options: { configDir: join(claudeDir, "conch-config"), codexHome: join(claudeDir, "codex"), processParents: async () => null },
+    options: {
+      configDir: join(claudeDir, "conch-config"),
+      codexHome: join(claudeDir, "codex"),
+      processParents: async () => null,
+      attachedJobPids: async () => null,
+    },
   };
 }
 
@@ -177,7 +183,7 @@ describe("a conversation moved to a background session", () => {
     expect(row).toMatchObject({ sessionId: "succ", pid: 0, noTerminal: BG_NO_TERMINAL, jobId: "succjob", status: "busy" });
     expect(published(row)).toMatchObject({ id: "succ", noTerminal: BG_NO_TERMINAL, attachable: true });
     expect(published(row).revealable).toBeUndefined();
-    expect((await findHookWindow(f.claudeDir, "succ"))?.pid).toBe(0);
+    expect((await findHookWindow(f.claudeDir, "succ", f.options))?.pid).toBe(0);
 
     f.unregister(DEAD); // or gone entirely
     const alone = (await registrySnapshot(f.claudeDir, f.options))!.infos.find((s) => s.sessionId === "succ")!;
@@ -306,5 +312,142 @@ describe("an address naming the hidden window", () => {
     expect(await addressParkedWindow(f.claudeDir, wire, (id) => id === "pred")).toBe(wire);
     const unscoped = { type: "wake", sessionId: "", pid: WINDOW };
     expect(await addressParkedWindow(f.claudeDir, unscoped, () => false)).toBe(unscoped);
+  });
+});
+
+describe("a live `claude attach <jobId>` process with no registry entry", () => {
+  // Claude Code 2.1.280's `claude attach <jobId>` writes no registry file at
+  // all — ground truth (2026-09-23): job f31f0d15 was open in a visible
+  // Terminal tab (pid 10231, ttys014) with nothing in ~/.claude/sessions
+  // naming it, so conch reported BG_NO_TERMINAL for a job someone was looking
+  // right at. Only a process-table probe finds that window.
+  function attachedJob() {
+    const f = fixture();
+    f.registry(JOB, {
+      sessionId: "attached-job", kind: "bg", name: "conch", jobId: "attachjob",
+      startedAt: 2, status: "busy", statusUpdatedAt: 900,
+    });
+    f.transcript("attached-job", [
+      { type: "custom-title", customTitle: "attached job title", sessionId: "attached-job" },
+      said("attached-job", "u1", null, "user", "start"),
+      said("attached-job", "a1", "u1", "assistant", "still running"),
+    ]);
+    return f;
+  }
+
+  test("is routed through the attach process, not reported as having no terminal", async () => {
+    const f = attachedJob();
+    const options = { ...f.options, attachedJobPids: async () => new Map([["attachjob", WINDOW]]) };
+    const row = (await registrySnapshot(f.claudeDir, options))!.infos.find((s) => s.sessionId === "attached-job")!;
+    expect(row).toMatchObject({ pid: WINDOW, jobId: "attachjob", agentPid: JOB });
+    expect(row.noTerminal).toBeUndefined();
+
+    const window = await findHookWindow(f.claudeDir, "attached-job", options);
+    expect(window).toMatchObject({ sessionId: "attached-job", pid: WINDOW });
+  });
+
+  test("a dead attach pid is treated the same as none", async () => {
+    const f = attachedJob();
+    const options = { ...f.options, attachedJobPids: async () => new Map([["attachjob", DEAD]]) };
+    const row = (await registrySnapshot(f.claudeDir, options))!.infos.find((s) => s.sessionId === "attached-job")!;
+    expect(row).toMatchObject({ pid: 0, noTerminal: BG_NO_TERMINAL });
+  });
+
+  test("a registry-parked window still wins over the process-table fallback", async () => {
+    const f = attachedJob();
+    f.registry(process.ppid, { sessionId: "viewer", kind: "interactive", parkedJobId: "attachjob", startedAt: 9 });
+    // The fallback names a different, DEAD pid here — proof it was never consulted.
+    const options = { ...f.options, attachedJobPids: async () => new Map([["attachjob", DEAD]]) };
+    const row = (await registrySnapshot(f.claudeDir, options))!.infos.find((s) => s.sessionId === "attached-job")!;
+    expect(row.pid).toBe(process.ppid);
+  });
+
+  test("the ps parser: bare and path-prefixed claude, ignores the daemon's own pty host and lookalikes", () => {
+    const ps = [
+      " 10231 claude attach f31f0d15",
+      "  9939 /opt/homebrew/bin/claude --bg-pty-host",
+      " 20000 /opt/homebrew/bin/claude attach db7b8e98 --verbose",
+      " 30000 not-claude attach f31f0d15",
+      "   100 claude attach a1",
+      "   200 claude attach a1",
+    ].join("\n");
+    const byJob = parseAttachedJobPids(ps);
+    expect(byJob.get("f31f0d15")).toBe(10231);
+    expect(byJob.get("db7b8e98")).toBe(20000);
+    // The higher pid wins when two windows attach the same job.
+    expect(byJob.get("a1")).toBe(200);
+    expect(byJob.size).toBe(3);
+  });
+});
+
+describe("a window's parkedJobId the daemon set without its conversation ever moving", () => {
+  // Ground truth (2026-09-23): 2.1.280's daemon pre-spawns idle "bg-spare" job
+  // slots per project directory and left a LIVE window's parkedJobId pointing
+  // at one — job 25d17f50, auto-named "Prime page wireframe in blueprint
+  // studio", transcript just the two metadata records Claude Code writes when
+  // a spare gets auto-named (`ai-title`, `agent-name`) — while the window
+  // (pid 94777, ttys003) kept running `claude --resume 2f266f8d`, 3,632 real
+  // lines, the whole time. Real shapes and ids, shortened for readability.
+  function decoyParked() {
+    const f = fixture();
+    f.registry(WINDOW, {
+      sessionId: "resumed", kind: "interactive", name: "arch-25", nameSource: "derived",
+      parkedJobId: "spare-slot", startedAt: 1, status: "idle", statusUpdatedAt: 100,
+    });
+    f.registry(8936, {
+      sessionId: "spare-slot", kind: "bg", name: "Prime page wireframe", nameSource: "auto",
+      jobId: "spare-slot", startedAt: 2, status: "idle", statusUpdatedAt: 200,
+    });
+    f.transcript("resumed", [
+      said("resumed", "u1", null, "user", "start"),
+      said("resumed", "a1", "u1", "assistant", "working on it"),
+      said("resumed", "u2", "a1", "user", "keep going"),
+      said("resumed", "a2", "u2", "assistant", "still going"),
+    ]);
+    f.transcript("spare-slot", [
+      { type: "ai-title", aiTitle: "Prime page wireframe", sessionId: "spare-slot" },
+      { type: "agent-name", agentName: "Prime page wireframe", sessionId: "spare-slot" },
+    ]);
+    return f;
+  }
+
+  test("shows the window's real conversation, not the empty spare job", async () => {
+    const f = decoyParked();
+    const snap = (await registrySnapshot(f.claudeDir, f.options))!;
+    const ids = snap.infos.map((s) => s.sessionId).sort();
+    // Both rows exist — the real conversation, and the empty job with no
+    // terminal of its own (the same shape as the daemon's other bare spares;
+    // see the report's UX note) — but the window is no longer hidden behind it.
+    expect(ids).toEqual(["resumed", "spare-slot"]);
+
+    const real = snap.infos.find((s) => s.sessionId === "resumed")!;
+    expect(real.pid).toBe(WINDOW);
+    expect(real.jobId).toBeUndefined();
+    expect(real.noTerminal).toBeUndefined();
+    const path = findTranscript(f.claudeDir, real.sessionId)!;
+    const conversation = await readConversationTail(path, real.sessionId, "claude");
+    expect(lastAssistantReply(conversation)).toBe("still going");
+
+    const spare = snap.infos.find((s) => s.sessionId === "spare-slot")!;
+    expect(spare).toMatchObject({ pid: 0, noTerminal: BG_NO_TERMINAL, jobId: "spare-slot" });
+  });
+
+  test("a hook or lookup by the window's own id is not redirected to the empty job", async () => {
+    const f = decoyParked();
+    expect(await findHookWindow(f.claudeDir, "resumed", f.options)).toMatchObject({ sessionId: "resumed", pid: WINDOW });
+    expect(await findSession(f.claudeDir, "resumed", f.options)).toMatchObject({ sessionId: "resumed", pid: WINDOW });
+    expect(await parkedWindowJob(f.claudeDir, "resumed", undefined, f.options)).toBeNull();
+  });
+
+  test("a genuine background move (continued-in backs the field up) is unaffected", async () => {
+    // Regression guard alongside the whole `backgrounded()` suite above: the
+    // corroboration check must not start rejecting a REAL move.
+    const f = decoyParked();
+    f.transcript("resumed", [
+      said("resumed", "u1", null, "user", "start"),
+      { type: "continued-in", timestamp: "2026-09-23T14:39:00.000Z", sessionId: "resumed", continuedInSessionId: "spare-slot" },
+    ]);
+    const ids = (await registrySnapshot(f.claudeDir, f.options))!.infos.map((s) => s.sessionId);
+    expect(ids).toEqual(["spare-slot"]);
   });
 });
