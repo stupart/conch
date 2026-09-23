@@ -433,6 +433,37 @@ async function injectTextInTransaction(
   return { via: "osascript-focused" };
 }
 
+/**
+ * What the session's terminal shows now, read without touching focus: its tmux pane, else
+ * the Terminal tab on its tty. null when neither can be read.
+ */
+export async function readSessionScreen(sessionPid: number | undefined): Promise<string | null> {
+  if (!sessionPid) return null;
+  try {
+    const pane = await findTmuxPane(sessionPid);
+    if (pane) {
+      const shown = await runUICommand(["tmux", "capture-pane", "-p", "-t", pane]);
+      return shown.timedOut || shown.exitCode !== 0 ? null : shown.text;
+    }
+    const tty = await ttyOf(sessionPid);
+    if (!/^ttys?\d+$/.test(tty)) return null;
+    // By index: in a `repeat with t in tabs` loop, `contents of t` is AppleScript's own
+    // dereference of the loop variable, not the tab's text.
+    const shown = await runOsa([`
+tell application "Terminal"
+  repeat with wi from 1 to count windows
+    repeat with ti from 1 to count tabs of window wi
+      if tty of tab ti of window wi is "/dev/${tty}" then return contents of tab ti of window wi
+    end repeat
+  end repeat
+end tell
+return "conch:notfound"`]);
+    return shown.timedOut || shown.exitCode !== 0 || shown.text.trim() === "conch:notfound" ? null : shown.text;
+  } catch {
+    return null;
+  }
+}
+
 /** The process deadline covers stdout, stderr, and exit, with per-call errors. */
 async function runOsa(lines: string[], argv: string[] = []): Promise<OsaResult> {
   return runUICommand(["osascript", ...lines.flatMap((line) => ["-e", line]), ...(argv.length ? ["--", ...argv] : [])]);

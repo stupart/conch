@@ -20,7 +20,7 @@ import {
   pendingApproval,
   type PendingApproval,
 } from "./approval.ts";
-import { adapterForTranscript, transcriptFormatFor } from "./agent-adapter.ts";
+import { adapterForTranscript, inputBoxHoldsWords, transcriptFormatFor } from "./agent-adapter.ts";
 import { injectProviderCommand as providerCommand, isProviderCommandLine } from "./provider-rename.ts";
 import { classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark, promptSince } from "./snippet.ts";
@@ -104,6 +104,9 @@ import type { PauseController } from "./pause-controller.ts";
  * prose. Text that is delivered is logged by length alone.
  */
 const SPOKEN_PREVIEW_CHARS = 24;
+
+/** How long a Return gets to clear the input box before the box is read. */
+const INPUT_BOX_SETTLE_MS = 600;
 
 /** How long Claude Code gets to record a picker's answers after the last key; under 3 s measured. */
 const ANSWER_RECORD_WAIT_MS = 5_000;
@@ -401,6 +404,8 @@ export interface VoiceLoopDeps {
     injectKeys?: typeof inject.injectKeys;
     injectProviderCommand: typeof providerCommand;
     toClipboard: typeof inject.toClipboard;
+    /** Optional: a test terminal without it reads no screen, which is today's behaviour. */
+    readSessionScreen?: typeof inject.readSessionScreen;
   };
   ear?: {
     createDictationSession: typeof listen.createDictationSession;
@@ -476,6 +481,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     toClipboard: inject.toClipboard,
   };
   const injectKeys = deps.terminal ? deps.terminal.injectKeys : inject.injectKeys;
+  const readSessionScreen = deps.terminal ? deps.terminal.readSessionScreen : inject.readSessionScreen;
   const { createDictationSession, listenGap, armBargeRecorder, killActiveRecorders } = deps.ear ?? listen;
   // A window of a shared transcript counts only its own branch's prompts (A8).
   // With no registry entry it gets `{}`, which attributes nothing: unknown.
@@ -896,6 +902,38 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     }
     log(`answered the permission in "${event.label}": ${approve.kind} (${ask.name})`);
     return true;
+  }
+
+  /**
+   * Whether the session's input box still holds these words: null when the box can't be
+   * read (Codex, a terminal conch can't see, no box on screen), which leaves today's rules.
+   */
+  async function inputBoxHolds(event: TurnEvent, words: string): Promise<boolean | null> {
+    const boxOf = event.transcriptPath ? adapterForTranscript(event.transcriptPath).inputBoxText : null;
+    if (!boxOf || !readSessionScreen) return null;
+    const screen = await readSessionScreen(event.pid);
+    const box = screen === null ? null : boxOf(screen);
+    return box === null ? null : inputBoxHoldsWords(box, words);
+  }
+
+  /** Press Return while the words still sit in the session's input box: twice at most. */
+  async function submitWhatIsInTheBox(
+    event: TurnEvent,
+    words: string,
+    beforeInject?: () => boolean | Promise<boolean>,
+  ): Promise<"sent" | "stuck" | "unknown"> {
+    for (let pressed = 0; ; pressed += 1) {
+      await (deps.sleep ?? Bun.sleep)(INPUT_BOX_SETTLE_MS);
+      const holds = await inputBoxHolds(event, words);
+      if (holds === null) return "unknown";
+      if (!holds) return "sent";
+      // A dialog that opened since would take the Return as its answer.
+      if (pressed === 2 || deps.window(event.sessionId)?.status === "waiting") return "stuck";
+      if (beforeInject && !(await beforeInject())) return "unknown";
+      log(`words still in the input box of "${event.label}" — pressing Return again (try ${pressed + 1})`);
+      const retry = await injectKey(cfg, event.pid, "Enter", beforeInject).catch(() => null);
+      if (!retry || retry.interrupted || ("failed" in retry && retry.failed) || retry.via === "none") return "stuck";
+    }
   }
 
   /**
@@ -1816,7 +1854,15 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // Only routes that put real keystrokes into a real pane qualify: a blind
       // or clipboard fallback has no such evidence and must still be proven.
       const keysLanded = via === "tmux" || via === "osascript-focused";
+      // A busy session can't be confirmed from its transcript, but its input box can be
+      // read: words still sitting there after the Return were never sent. Tyler: "its
+      // sitting there in the input box it just needs to hit enter". 27 of 75 sends on
+      // 2026-09-23 took this path, each trusted on one Return.
+      let stuckInBox = false;
       if (keysLanded && deps.window(event.sessionId)?.status === "busy") {
+        stuckInBox = (await submitWhatIsInTheBox(event, text, beforeInject)) === "stuck";
+      }
+      if (keysLanded && !stuckInBox && deps.window(event.sessionId)?.status === "busy") {
         receiptCode = "provider-input-queued";
         commit();
         log(`injected into "${event.label}" via ${via} — queued behind the running turn`);
@@ -1844,7 +1890,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       // Claude Code well inside the first wait. Look every 300ms so neither waits
       // longer than it must, and press Return again only after a whole wait with nothing.
       const firstWaitMs = target?.backend === "codex" ? 4_000 : 900;
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < 3 && !stuckInBox; attempt++) {
         for (let waited = 0; landed === false && waited < firstWaitMs + attempt * 600; waited += 300) {
           await (deps.sleep ?? Bun.sleep)(300);
           if (beforeInject && !(await beforeInject())) return false;
@@ -1862,7 +1908,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
             latencyMs: Date.now() - injectStartedAt,
           });
           // Sent, but only because conch pressed Return again: the first one was lost.
-          if (attempt) reportSend(`The Return was lost; the prompt went in after ${attempt} re-send${attempt > 1 ? "s" : ""}.`, { route: via, resends: attempt, latencyMs: Date.now() - injectStartedAt });
+          if (resends) reportSend(`The Return was lost; the prompt went in after ${resends} re-send${resends > 1 ? "s" : ""}.`, { route: via, resends, latencyMs: Date.now() - injectStartedAt });
           return true;
         }
         // A prompt DID land and nothing can say whose it is. Re-pressing Return here types
@@ -1871,6 +1917,10 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         if (landed === "unknown") break;
         // A dialog opened since the words went in; a Return now would answer it.
         if (deps.window(event.sessionId)?.status === "waiting") break;
+        // The box emptied, so the Return landed and the transcript is only slow to say so: a
+        // session behind a parked window forwards keys, and one wrote the prompt 1.5 s after
+        // the Return (2026-09-23 21:46). Pressing again was reported as a lost Return.
+        if (attempt < 2 && (await inputBoxHolds(event, text)) === false) continue;
         if (attempt < 2) {
           resends++;
           log(`not confirmed yet — re-pressing Return (try ${attempt + 1})`);
@@ -1905,12 +1955,16 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
         reason: "never-confirmed",
         latencyMs: Date.now() - injectStartedAt,
       });
-      reportSend("Typed, but the session never took it. The words are on the clipboard.", { route: via, resends, latencyMs: Date.now() - injectStartedAt });
+      reportSend(stuckInBox
+        ? "Typed into a busy session, and the words stayed in its input box through three Returns. They are on the clipboard too."
+        : "Typed, but the session never took it. The words are on the clipboard.", { route: via, resends, latencyMs: Date.now() - injectStartedAt });
       publishDictation(text, event.sessionId);
       await toClipboard(text);
       onClipboard = true;
       if (beforeInject && !(await beforeInject())) return false;
-      await speak(cfg, "I typed that but it didn't send. Your words are on the clipboard — just paste and press return.", event.label, false, event.sessionId);
+      await speak(cfg, stuckInBox
+        ? "I typed that but it didn't send. It's still in the session's input box — press return there."
+        : "I typed that but it didn't send. Your words are on the clipboard — just paste and press return.", event.label, false, event.sessionId);
       // Three attempts and the transcript never grew, so the text is sitting
       // unsent in an input box at best. 15 of Tyler's sends landed here today
       // against 57 confirmed — a 21% failure rate reported to him as success.

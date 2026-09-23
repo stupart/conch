@@ -74,6 +74,7 @@ describe("a third backend is one row", () => {
     executable: "fable",
     exitKeystrokes: 1,
     questionKeys: null,
+    inputBoxText: null,
     resumeArgs: (id) => ` --continue ${id}`,
     teleportArgs: null,
     bypassPermissionsFlag: "--trust-me",
@@ -199,5 +200,31 @@ describe("the branch inventory", () => {
       const sites = read(path).split("\n").filter((line) => branch.test(line)).length;
       expect([path, sites]).toEqual([path, expected]);
     }
+  });
+});
+
+describe("Claude Code's input box, read off its terminal", () => {
+  const { claudeInputBoxText, inputBoxHoldsWords } = require("../src/agent-adapter.ts") as typeof import("../src/agent-adapter.ts");
+  // Shape read from a live Terminal tab on 2.1.280 (2026-09-23).
+  const screen = (box: string[]) => [
+    "❯ Can turn off the netlify for this page", "· Coalescing… (26s · thinking with xhigh effort)",
+    "───────────────────────────────────────── Prime page wireframe in blueprint studio ─",
+    ...box,
+    "────────────────────────────────────────────────────────────────────────",
+    "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents · esc to interrupt",
+  ].join("\n");
+
+  test("the box is the ❯ line under a rule; a sent message higher up is not", () => {
+    expect(claudeInputBoxText(screen(["❯ "]))).toBe("");
+    expect(claudeInputBoxText(screen(["❯ Add the real company", "  logos to the ring"]))).toBe("Add the real company logos to the ring");
+    expect(claudeInputBoxText("❯ just a message\nno box here")).toBeNull();
+    expect(claudeInputBoxText("⏺ a reply\n❯ a sent message\n⏺ more")).toBeNull();
+  });
+
+  test("the words are still there by their start, or by the placeholder a long paste shows", () => {
+    expect(inputBoxHoldsWords("Add the real company logos to the ring", "Add the real   company logos to the ring and more")).toBe(true);
+    expect(inputBoxHoldsWords("[Pasted text #1 +12 lines]", "anything long")).toBe(true);
+    expect(inputBoxHoldsWords("", "Add the real company logos")).toBe(false);
+    expect(inputBoxHoldsWords("something Tyler is typing", "Add the real company logos")).toBe(false);
   });
 });
