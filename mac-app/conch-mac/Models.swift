@@ -868,6 +868,9 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
     /// A Claude Code background job no window is attached to: "Open in
     /// Terminal" can attach one. Older daemons never send it.
     let attachable: Bool
+    /// Working only because agents it started are still running; its own turn is over, so
+    /// it can be talked to. Older daemons never send it.
+    let waitingOnAgents: Bool
     /// Present on a subagent row (C4): the session it runs inside. Such a row
     /// is indented under that session, has no composer, and is never the one
     /// conch is speaking for. Older daemons never send it.
@@ -911,6 +914,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         case revealable
         case noTerminal
         case attachable
+        case waitingOnAgents
         case parentSessionId
         case startedBySessionId
         case cwd
@@ -940,6 +944,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         revealable: Bool = false,
         noTerminal: String? = nil,
         attachable: Bool = false,
+        waitingOnAgents: Bool = false,
         parentSessionId: String? = nil,
         startedBySessionId: String? = nil,
         cwd: String? = nil,
@@ -967,6 +972,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         self.revealable = revealable
         self.noTerminal = noTerminal
         self.attachable = attachable
+        self.waitingOnAgents = waitingOnAgents
         self.parentSessionId = parentSessionId
         self.startedBySessionId = startedBySessionId
         self.cwd = cwd
@@ -1003,6 +1009,8 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
         noTerminal = try? container.decodeIfPresent(String.self, forKey: .noTerminal)
         attachable =
             (try? container.decodeIfPresent(Bool.self, forKey: .attachable)) ?? false
+        waitingOnAgents =
+            (try? container.decodeIfPresent(Bool.self, forKey: .waitingOnAgents)) ?? false
         parentSessionId =
             try? container.decodeIfPresent(String.self, forKey: .parentSessionId)
         startedBySessionId =
@@ -1034,6 +1042,7 @@ struct SessionRow: Decodable, Equatable, Identifiable, Sendable {
             revealable: revealable,
             noTerminal: noTerminal,
             attachable: attachable,
+            waitingOnAgents: waitingOnAgents,
             parentSessionId: parentSessionId,
             startedBySessionId: startedBySessionId,
             cwd: cwd

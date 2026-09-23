@@ -67,6 +67,12 @@ export interface PanelRowModel {
   /** Known context usage for the TUI row; absent is unknown, never zero. */
   context?: SessionContextUsage;
   status: SessionStatus | null;
+  /**
+   * `working` only because agents it started are still running: its own turn
+   * is over, so it can be talked to. Tyler: "it's not working but it's just
+   * like waiting for an agent".
+   */
+  waitingOnAgents?: true;
   /** Epoch-ms for the status currently visible on this row. */
   at?: number;
   detail?: string;
@@ -290,6 +296,8 @@ export interface PublishedSessionRow {
   noTerminal?: string;
   /** A Claude Code background job with no window attached; an app can offer "Open in Terminal". Older apps ignore it. */
   attachable?: boolean;
+  /** Same as `PanelRowModel.waitingOnAgents`. Absent means false; older apps show plain working. */
+  waitingOnAgents?: true;
   snippet?: string;
   /** A finished deliverable attached to this waiting row. Carries the link so
    * external consumers can render it, not just the summary. */
@@ -566,6 +574,7 @@ export function buildPublishedState(
         ...(row.revealable ? { revealable: true as const } : {}),
         ...(row.noTerminal ? { noTerminal: row.noTerminal } : {}),
         ...(row.attachable ? { attachable: true as const } : {}),
+        ...(row.waitingOnAgents ? { waitingOnAgents: true as const } : {}),
         ...(row.cwd ? { cwd: row.cwd } : {}),
         ...(row.workDirs ? { workDirs: row.workDirs } : {}),
         ...(snippets.has(row.sessionId)
@@ -650,6 +659,11 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
       const latched = options.sessionStates.get(session.sessionId);
       const visibleState = reconcilePanelState(session, latched, now);
       const status = visibleState?.status ?? null;
+      // Only while the latch a Stop left as its agents ran is what shows. A new
+      // turn of its own (the agents reporting back) is a newer registry `busy`,
+      // which wins the reconcile and is plain working again.
+      const waitingOnAgents = status === "working" && latched?.backgroundWork === true
+        && visibleState?.at === latched.at;
       // A deliverable is an attribute of a row, not a fourth status, and it is
       // published for as long as the latch holds one — whatever the status.
       // Hiding it while the session worked meant replying to the agent (which
@@ -676,6 +690,7 @@ export function buildPanelRows(options: BuildPanelModelOptions): PanelRowModel[]
         ...(session.backend ? { backend: session.backend } : {}),
         ...(session.parentSessionId ? { parentSessionId: session.parentSessionId } : {}),
         ...(session.startedBySessionId ? { startedBySessionId: session.startedBySessionId } : {}),
+        ...(waitingOnAgents ? { waitingOnAgents: true as const } : {}),
         ...(options.contextBySessionId?.get(session.sessionId)
           ? { context: { ...options.contextBySessionId.get(session.sessionId)! } }
           : {}),
