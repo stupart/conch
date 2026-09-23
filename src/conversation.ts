@@ -189,6 +189,14 @@ function textFromClaudeParts(parts: any[], type: string): string {
  * interruption, system note, command output, and task without either assigning
  * it to the user or extending another suppression list.
  */
+/** A compaction summary or a meta record, as the note it is; null for anything Tyler said. */
+function claudeOwnRecord(entry: any, text: string): ConversationMaterial | null {
+  const detail = text.replace(/^\s*<local-command-caveat>([\s\S]*?)<\/local-command-caveat>/, "$1").trim();
+  if (entry.isCompactSummary === true) return { kind: "system_note", title: "Earlier conversation summarised", detail };
+  if (entry.isMeta === true) return { kind: "system_note", title: "Added by Claude Code", detail };
+  return null;
+}
+
 export function classifyInjectedUserText(
   text: string,
 ): ConversationMaterial | null {
@@ -331,7 +339,14 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
     const rawText = typeof entry.message?.content === "string"
       ? entry.message.content
       : textFromClaudeParts(parts, "text");
-    const injected = rawText ? classifyInjectedUserText(rawText) : null;
+    // Claude Code's own records under the user's name, flagged as such: the summary it
+    // writes when it compacts ("This session is being continued from a previous
+    // conversation…"), and meta records — command caveats, "continued from another
+    // machine", a whole skill's instructions when one loads. Measured across 40 recent
+    // transcripts: 25 summaries and 66 meta records with text, every one a "you said" bubble.
+    const injected = rawText
+      ? classifyInjectedUserText(rawText) ?? claudeOwnRecord(entry, rawText)
+      : null;
     if (injected) {
       // Claude's dimensions note belongs to the image immediately above it,
       // when there is one, rather than becoming a duplicate image row.
