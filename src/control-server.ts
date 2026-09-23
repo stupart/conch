@@ -18,6 +18,7 @@ import {
 } from "./session-actions-overlay.ts";
 import type { ResumableSessionsRead } from "./resumable.ts";
 import type { AgentCapabilitiesRead } from "./agent-capabilities.ts";
+import type { AgentInstall } from "./agent-install.ts";
 import { applyPlan, planToggle, rollbackFile, type ConfigWriteHomes, type ConfigWriteIo } from "./config-write.ts";
 import {
   isControlMessageCandidate,
@@ -300,6 +301,10 @@ export interface RuntimeControlDispatchOptions {
   readCapabilities?(
     message: Extract<RuntimeControlMessage, { kind: "agent-capabilities" }>,
   ): AgentCapabilitiesRead | Promise<AgentCapabilitiesRead>;
+  /** This session's own binary and whether a newer copy of the same agent is running elsewhere on this Mac. Undefined when the process identity is unknown — never guessed. */
+  readInstall?(
+    message: Extract<RuntimeControlMessage, { kind: "agent-capabilities" }>,
+  ): AgentInstall | undefined | Promise<AgentInstall | undefined>;
   start(message: Extract<RuntimeControlMessage, { kind: "session-start" }>): void | Promise<void>;
   /** Whether Claude Code already trusts a folder; absent or null means unknown. */
   folderTrusted?(cwd: string): boolean | null;
@@ -361,9 +366,12 @@ export async function applyRuntimeControlMessage(
       if (!options.readCapabilities) {
         throw new Error("agent capability inventory is unavailable");
       }
+      const inventory = await options.readCapabilities(message);
+      const install = await options.readInstall?.(message);
       return {
         kind: "agent-capabilities",
-        inventory: await options.readCapabilities(message),
+        inventory,
+        ...(install ? { install } : {}),
       };
     }
     if (message.kind === "session-start") {

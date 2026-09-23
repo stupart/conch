@@ -532,7 +532,7 @@ final class StateStore: ObservableObject {
         backend: String,
         cwd: String,
         sessionId: String?
-    ) async -> AgentCapabilities? {
+    ) async -> (capabilities: AgentCapabilities?, install: AgentInstall?) {
         let outcome = await socketClient.request(
             ConchCapabilitiesRequest(backend: backend, cwd: cwd, sessionId: sessionId),
             timeout: Self.sessionLifecycleTimeout
@@ -542,9 +542,9 @@ final class StateStore: ObservableObject {
               let inventory = reply.inventory
         else {
             reportAppError(operation: "agent-capabilities", message: "Could not read session capabilities")
-            return nil
+            return (nil, nil)
         }
-        return inventory
+        return (inventory, reply.install)
     }
 
     /// What came back from asking the daemon to start a session.
