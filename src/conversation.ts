@@ -954,6 +954,26 @@ function codexMessageId(kind: string, text: string, turn?: string): string {
   return `${kind}:${turn ? `${turn}:` : ""}${hash.toString(36)}`;
 }
 
+/**
+ * A Codex tool's output as text. Current rollouts write it as a list of parts
+ * (`[{type:"input_text", text:"Script completed\nWall time…\nOutput:\n"}, …]`), which
+ * conch read as nothing: 3,034 of 3,146 tool rows on one rollout had no result. An image
+ * part stays a marker, never its base64.
+ */
+function codexToolOutput(output: unknown): string {
+  if (typeof output === "string") return output;
+  if (Array.isArray(output)) {
+    return output
+      .map((part: any) => (typeof part?.text === "string" ? part.text : part?.type === "input_image" ? "[image]" : ""))
+      .join("");
+  }
+  const content = (output as { content?: unknown } | null)?.content;
+  return typeof content === "string" ? content : Array.isArray(content) ? codexToolOutput(content) : "";
+}
+
+/** How Codex's code-mode tool reports a run that did not complete: 20 "Script failed" and 2 aborts in six recent rollouts. */
+const CODEX_TOOL_FAILED = /^(?:Script failed|aborted by user)\b/;
+
 /** The turn a Codex rollout is in, from `task_started` and each item's own `turn_id`. */
 const codexTurn = new WeakMap<Conversation, string>();
 
@@ -1173,16 +1193,12 @@ export function reduceCodexLine(conversation: Conversation, entry: any): void {
       const callId = typeof payload.call_id === "string" ? payload.call_id : id;
       const target = conversation.items[`tool:${callId}`];
       if (!target?.tool) return;
-      const output = typeof payload.output === "string"
-        ? payload.output
-        : typeof payload.output?.content === "string"
-          ? payload.output.content
-          : "";
+      const output = codexToolOutput(payload.output);
       upsertConversationItem(conversation, {
         ...target,
         tool: {
           ...target.tool,
-          status: payload.output?.success === false ? "error" : "done",
+          status: payload.output?.success === false || CODEX_TOOL_FAILED.test(output) ? "error" : "done",
           result: output,
         },
       });
