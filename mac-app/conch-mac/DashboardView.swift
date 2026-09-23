@@ -1543,6 +1543,9 @@ private struct ConversationPane: View {
     /// Bumped when a question's "Something else…" row is pressed, so the
     /// composer takes the cursor.
     @State private var composerFocusRequest = 0
+    /// Deliverables opened from their card in the conversation since launch (see
+    /// `artifactOpenedHere`).
+    @State private var openedDeliverables: Set<String> = []
     /// The session whose capabilities are being inspected, if any.
     @State private var inspectingSession: SessionRow?
     @State private var debugExpandInspector = false
@@ -2324,7 +2327,11 @@ private struct ConversationPane: View {
                 //
                 // After `reportsViewedState`, not before: a memberwise init takes its arguments
                 // in declaration order, and the compiler says so.
-                artifactShownBeside: stage(for: row) != .conversation && workPane(for: row) == .deliverable,
+                // THIS deliverable, not any: with another one open beside, the card is still the
+                // way into its own.
+                artifactShownBeside: stage(for: row) != .conversation && workPane(for: row) == .deliverable
+                    && row.review.map { selectedReview?.id == ReviewItem(row: row, review: $0).id } == true,
+                artifactOpenedHere: row.review.map { openedDeliverables.contains(ReviewItem(row: row, review: $0).id) } == true,
                 cwd: row.cwd,
                 onOpenArtifact: {
                     // BESIDE the conversation, not instead of it. Clicking the card used to
@@ -2336,6 +2343,16 @@ private struct ConversationPane: View {
                     // Seeing it alone is still reachable — drag the conversation off the left
                     // of the divider — but it is a WIDTH now, not a mode to find the way out of.
                     workspace.show(stage: .sideBySide, for: row.id)
+                    // And showing THIS one. The side opened on whatever it last held — the files,
+                    // or another deliverable's tab — so the card opened a panel, not the thing
+                    // clicked. Tyler: "not just open the side panel but open and show that exact
+                    // thing".
+                    workspace.show(work: .deliverable, for: row.id)
+                    if let review = row.review {
+                        let id = ReviewItem(row: row, review: review).id
+                        workspace.select(deliverable: id, for: row.id)
+                        openedDeliverables.insert(id)
+                    }
                     // Opening it IS looking at it. Only the tab strip marked anything before,
                     // so the commonest way in — the card in the conversation — left the dot on
                     // forever: every deliverable on this Mac still read as unviewed.

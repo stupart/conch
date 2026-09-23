@@ -380,12 +380,24 @@ describe("new work does not replace what you are reading", () => {
    */
   test("the card yields when the work half is already showing a deliverable", () => {
     expect(dashboard).toContain(
-      "artifactShownBeside: stage(for: row) != .conversation && workPane(for: row) == .deliverable,",
+      "artifactShownBeside: stage(for: row) != .conversation && workPane(for: row) == .deliverable\n                    && row.review.map { selectedReview?.id == ReviewItem(row: row, review: $0).id } == true,",
     );
     expect(stack).toContain("var artifactShownBeside = false");
     expect(stack).toContain("if let artifact, !artifactShownBeside,");
     // Still drawn by the same card when it IS shown — this gates it, it does not fork it.
     expect(stack).toContain("ArtifactPreview(artifact: artifact, onOpen: onOpenArtifact)");
+  });
+
+  test("the card opens THAT deliverable beside the conversation, and comes back when the pane closes", () => {
+    // Tyler: "not just open the side panel but open and show that exact thing".
+    const open = dashboard.slice(dashboard.indexOf("onOpenArtifact: {"), dashboard.indexOf("onFreeform: { composerFocusRequest += 1 }"));
+    expect(open).toContain("workspace.show(stage: .sideBySide, for: row.id)");
+    expect(open).toContain("workspace.show(work: .deliverable, for: row.id)");
+    expect(open).toContain("workspace.select(deliverable: id, for: row.id)");
+    expect(open).toContain("openedDeliverables.insert(id)");
+    // "…until panel is closed": seen, but not gone for good.
+    expect(dashboard).toContain("artifactOpenedHere: row.review.map { openedDeliverables.contains(ReviewItem(row: row, review: $0).id) } == true,");
+    expect(stack).toContain("artifact.viewedAt == nil || !reportsViewedState || artifactOpenedHere {");
   });
 
   test("the work fills the stage one way, and Esc steps back off it", () => {
