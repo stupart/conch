@@ -48,4 +48,18 @@ final class QuestionOutcomeTests: XCTestCase {
         )
         XCTAssertNil(QuestionOutcome.summary(header: "Legacy keys", chosen: []))
     }
+
+    /// Several questions in one call: each answer is read from Claude Code's own
+    /// `"<question>"="<answer>"`, the recorded shape (2.1.280), not by searching for labels,
+    /// so one question's option can never be mistaken for another's answer.
+    func testSeveralQuestionsAreReadAnswerByAnswer() {
+        let result = #"Your questions have been answered: "Pick alpha?"="B1", "Pick beta?"="my own words, with a comma". You can now continue with these answers in mind."#
+        XCTAssertEqual(
+            QuestionOutcome.answers(to: ["Pick alpha?", "Pick beta?"], in: result),
+            ["B1", "my own words, with a comma"]
+        )
+        // A question the result does not name: nothing certain, so nothing claimed.
+        XCTAssertNil(QuestionOutcome.answers(to: ["Pick alpha?", "Pick gamma?"], in: result))
+        XCTAssertNil(QuestionOutcome.answers(to: ["Pick alpha?"], in: nil))
+    }
 }

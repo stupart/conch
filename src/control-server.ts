@@ -525,6 +525,31 @@ export function scopePublishedInjectEvent(
   };
 }
 
+/**
+ * An AskUserQuestion call carries at most 4 questions of at most 4 options;
+ * the bounds leave room without letting a picker's digits run past 9. Typed
+ * words are one line: a newline would be a Return.
+ */
+function questionAnswersError(answers: unknown): string | undefined {
+  if (!Array.isArray(answers) || answers.length < 1 || answers.length > 8) return "answers must be 1-8 answers";
+  for (const answer of answers) {
+    if (!socketRecord(answer)) return "each answer must be an object";
+    const hasChoices = answer.choices !== undefined;
+    if (hasChoices === (answer.text !== undefined)) return "each answer has choices or text, not both";
+    if (hasChoices) {
+      const choices = answer.choices;
+      if (!Array.isArray(choices) || choices.length < 1 || choices.length > 8
+        || !choices.every((choice) => Number.isInteger(choice) && choice >= 0 && choice <= 7)
+        || new Set(choices).size !== choices.length) {
+        return "choices must be 1-8 distinct option indexes from 0 to 7";
+      }
+    } else if (typeof answer.text !== "string" || !answer.text.trim() || answer.text.length > 4000
+      || /[\u0000-\u001f\u007f]/.test(answer.text)) {
+      return "text must be one line of 1-4000 characters";
+    }
+  }
+}
+
 function socketRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -597,6 +622,10 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
   }
   if (value.awaitDelivery !== undefined && value.awaitDelivery !== true) {
     return { ok: false, err: "awaitDelivery must be true when present" };
+  }
+  if (value.answers !== undefined) {
+    const err = type === "inject" ? questionAnswersError(value.answers) : "answers are only for inject";
+    if (err) return { ok: false, err };
   }
   // Bounded and plain, because this id is echoed into published state, which every client
   // this Mac serves can read. A send may carry one; hooks and the CLI never do.

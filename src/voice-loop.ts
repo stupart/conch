@@ -20,16 +20,20 @@ import {
   pendingApproval,
   type PendingApproval,
 } from "./approval.ts";
-import { transcriptFormatFor } from "./agent-adapter.ts";
+import { adapterForTranscript, transcriptFormatFor } from "./agent-adapter.ts";
 import { injectProviderCommand as providerCommand, isProviderCommandLine } from "./provider-rename.ts";
 import { classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
 import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark, promptSince } from "./snippet.ts";
 import {
   lastAssistantReply,
   latestAnswerableQuestion,
+  latestAnswerableQuestions,
   readConversationTail,
   withSharedNote,
   type Conversation,
+  textQuestionAnswers,
+  type AgentQuestion,
+  type QuestionAnswer,
   type WindowIdentity,
 } from "./conversation.ts";
 import { isWindowKey } from "./window-key.ts";
@@ -370,6 +374,8 @@ export interface VoiceLoopDeps {
   terminal?: {
     injectText: typeof inject.injectText;
     injectKey: typeof inject.injectKey;
+    /** Optional so a test terminal without it can never reach real keys. */
+    injectKeys?: typeof inject.injectKeys;
     injectProviderCommand: typeof providerCommand;
     toClipboard: typeof inject.toClipboard;
   };
@@ -442,6 +448,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     injectProviderCommand: providerCommand,
     toClipboard: inject.toClipboard,
   };
+  const injectKeys = deps.terminal ? deps.terminal.injectKeys : inject.injectKeys;
   const { createDictationSession, listenGap, armBargeRecorder, killActiveRecorders } = deps.ear ?? listen;
   // A window of a shared transcript counts only its own branch's prompts (A8).
   // With no registry entry it gets `{}`, which attributes nothing: unknown.
@@ -785,6 +792,59 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     await speak(cfg, event.announce, label, false, sessionId);
   }
 
+  /** The questions this session's agent is waiting on, read fresh from its transcript. */
+  async function pendingQuestions(event: TurnEvent): Promise<AgentQuestion[]> {
+    if (!event.transcriptPath) return [];
+    return latestAnswerableQuestions(await readConversationTail(
+      event.transcriptPath,
+      event.sessionId,
+      transcriptFormatFor(event.transcriptPath),
+      { window: deps.window(event.sessionId) },
+    ));
+  }
+
+  /**
+   * Type `answers` into the picker of the question this session is waiting
+   * on. "as-message" where the agent's picker isn't known (Codex): the
+   * summary then goes in as an ordinary message, as it always did.
+   */
+  async function answerQuestion(
+    event: TurnEvent,
+    answers: QuestionAnswer[],
+    beforeInject?: () => boolean | Promise<boolean>,
+  ): Promise<true | inject.SendFailure | "as-message"> {
+    const refuse = (reason: string): inject.SendFailure => {
+      log(`did not answer "${event.label}": ${reason}`);
+      recordDaemonError("question-answer", `Could not answer the question: ${reason}`, event.sessionId, {});
+      return { delivered: false, reason };
+    };
+    if (!event.transcriptPath) return refuse("the session's transcript was not found");
+    const adapter = adapterForTranscript(event.transcriptPath);
+    if (!adapter.questionKeys) return "as-message";
+    // Keys typed into a prompt that is no longer a picker become a message.
+    const questions = await pendingQuestions(event);
+    if (!questions.length) return refuse("the session is no longer waiting on a question");
+    const keys = adapter.questionKeys(questions, answers);
+    if (typeof keys === "string") return refuse(keys);
+    if (!injectKeys) return refuse("answering is unavailable here");
+    const receipt = createRecordOperation(deps.observeRecords, recordScope(event.sessionId, event.transcriptPath), "delivery", event.announce.length);
+    receipt.emit("accepted", "question-answer-accepted");
+    let sent: inject.InjectTextResult;
+    try { sent = await injectKeys(cfg, event.pid, keys, beforeInject); }
+    catch (error) { receipt.emit("unknown", "delivery-outcome-unknown"); throw error; }
+    if (sent.interrupted) {
+      receipt.emit("unknown", "delivery-interrupted");
+      return { delivered: false, reason: "interrupted" };
+    }
+    if (sent.via === "none" || sent.failed) {
+      receipt.emit("failed", sent.reason ?? "delivery-failed");
+      return refuse(sent.reason ?? "could not reach the session's window");
+    }
+    receipt.emit("delivered", "transport-submitted");
+    log(`answered ${questions.length} question${questions.length === 1 ? "" : "s"} in "${event.label}" via ${sent.via}`);
+    return true;
+  }
+
   async function handle(event: TurnEvent): Promise<boolean | "staged" | inject.SendFailure | void> {
     // Inject and interrupt arrive immediately, not through the drain, so a
     // queued exchange may be mid-await right now: they must not touch its stop
@@ -831,6 +891,16 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
           );
         }
         return false;
+      }
+
+      // An answer to the question the session is waiting on (the Mac's question
+      // card): typed as the picker's own keys. Pasting the option's words and
+      // pressing Return, as this used to, left Return to confirm whatever was
+      // highlighted, and a card that knew only the first of four questions
+      // kept sending that one answer to each question in turn (2026-09-23).
+      if (event.answers) {
+        const answered = await answerQuestion(event, event.answers);
+        if (answered !== "as-message") return answered;
       }
 
       // The phone's voice path: text transcribed ON the phone, delivered into
@@ -1377,15 +1447,42 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     return routeVoicePrompt(cfg.voiceQa, text, event.transcriptPath, {
       askClaude: askHaiku,
       speak: (answer) => speak(cfg, answer, event.label),
-      inject: (prompt) => deliverToSession(
-        event,
-        prompt,
-        diagnosticIds,
-        beforeInject,
-        options.failure,
-      ),
+      inject: async (prompt) => (await answerWithWords(event, prompt, beforeInject, options.failure))
+        ?? deliverToSession(
+          event,
+          prompt,
+          diagnosticIds,
+          beforeInject,
+          options.failure,
+        ),
       ...(beforeInject ? { canContinue: beforeInject } : {}),
     });
+  }
+
+  /**
+   * Words for a session whose agent is waiting on a question become that
+   * question's answer (`textQuestionAnswers`), typed as its picker's keys.
+   * Undefined when nothing is waiting, or the agent's picker isn't known:
+   * the words then go in as an ordinary message.
+   */
+  async function answerWithWords(
+    event: TurnEvent,
+    words: string,
+    beforeInject?: () => boolean | Promise<boolean>,
+    failure?: inject.SendFailure,
+  ): Promise<boolean | undefined> {
+    if (!event.transcriptPath || !adapterForTranscript(event.transcriptPath).questionKeys) return undefined;
+    const questions = await pendingQuestions(event).catch(() => []);
+    if (!questions.length) return undefined;
+    const answers = textQuestionAnswers(questions, words);
+    const answered = typeof answers === "string"
+      ? { delivered: false as const, reason: answers }
+      : await answerQuestion(event, answers, beforeInject);
+    if (answered === true) return true;
+    if (answered === "as-message") return undefined;
+    if (failure) failure.reason = answered.reason;
+    if (typeof answers === "string") log(`did not answer "${event.label}": ${answers}`);
+    return false;
   }
 
   /** The original session delivery path, reached only after local voice routing. */

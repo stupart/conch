@@ -3,6 +3,12 @@ import Darwin
 import Dispatch
 import Foundation
 
+/// One answer per question: the options picked (indexes into its options), or words of your own.
+struct ConchQuestionAnswer: Encodable, Equatable, Sendable {
+    var choices: [Int]? = nil
+    var text: String? = nil
+}
+
 struct ConchDaemonEvent: Encodable, Sendable {
     enum Kind: String, Encodable, Sendable {
         case wake
@@ -34,6 +40,7 @@ struct ConchDaemonEvent: Encodable, Sendable {
     /// request then closes. Whatever it settles as is published against this id instead, which
     /// is the only way a failure arriving after that close can still reach the row that sent it.
     let opId: String?
+    let answers: [ConchQuestionAnswer]?
 
     init(
         type: Kind,
@@ -43,7 +50,8 @@ struct ConchDaemonEvent: Encodable, Sendable {
         origin: String? = nil,
         compose: Bool? = nil,
         awaitDelivery: Bool? = nil,
-        opId: String? = nil
+        opId: String? = nil,
+        answers: [ConchQuestionAnswer]? = nil
     ) {
         self.type = type
         self.sessionId = sessionId
@@ -54,13 +62,16 @@ struct ConchDaemonEvent: Encodable, Sendable {
         self.awaitDelivery = awaitDelivery
         // Named here rather than at every call site, so no send can be built without one.
         self.opId = opId ?? (type == .inject ? UUID().uuidString : nil)
+        self.answers = answers
     }
 
     /// Type into a session. The daemon puts `announce` into the session's
     /// input, so this is the same path the phone and the voice loop use — one
     /// delivery route with one set of failure modes, not a third.
-    static func inject(sessionId: String, label: String, text: String) -> Self {
-        Self(type: .inject, sessionId: sessionId, label: label, announce: text, awaitDelivery: true)
+    /// `answers`: this send answers the question the session is waiting on, typed as its
+    /// picker's own keys, and `text` is only the readable summary.
+    static func inject(sessionId: String, label: String, text: String, answers: [ConchQuestionAnswer]? = nil) -> Self {
+        Self(type: .inject, sessionId: sessionId, label: label, announce: text, awaitDelivery: true, answers: answers)
     }
 
     /// Stop a session mid-turn. The daemon presses Escape in its pane, which

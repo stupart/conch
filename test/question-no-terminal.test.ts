@@ -28,12 +28,12 @@ test("the Mac question card goes dead on a row with no terminal and says why", (
   expect(mac).toContain("var onOpenInTerminal: (() -> Void)? = nil");
   const row = sliceFrom(mac, "private func questionRow(", "private func questionOption(");
 
-  const option = sliceFrom(row, "onAnswer(option.label)", "} else {");
+  const option = sliceFrom(row, "onAnswer(option.label, [ConchQuestionAnswer(choices: [index])])", "} else {");
   expect(option).toContain(".disabled(noTerminal != nil)");
 
   const reason = row.indexOf("if answerable, let noTerminal {");
   const freeform = row.indexOf("Button(action: onFreeform) {");
-  const submit = row.indexOf("onAnswer(selected.joined(separator: \", \"))");
+  const submit = row.indexOf("selected.joined(separator: \", \"),");
   expect(reason).toBeGreaterThan(-1);
   expect(freeform).toBeGreaterThan(reason);
   expect(submit).toBeGreaterThan(freeform);

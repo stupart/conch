@@ -92,6 +92,13 @@ export interface ConversationItem {
   plan?: PlanStep[];
   /** Present when the agent is WAITING on you to choose. */
   question?: AgentQuestion;
+  /**
+   * Every question in the call, when it asks more than one (`question` is the
+   * first). Claude Code shows them as tabs and records nothing until all are
+   * answered, so a viewer that knows only the first cannot tell which one the
+   * terminal is on.
+   */
+  questions?: AgentQuestion[];
   /** Present when this row changed a file, so viewers can show the lines. */
   change?: FileChange;
   /** Machine-authored context rendered as itself rather than as something the user said. */
@@ -376,7 +383,8 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
   for (const call of parts.filter((part) => part?.type === "tool_use")) {
     const callId = typeof call.id === "string" ? call.id : `${id}:${call.name}`;
     const steps = planSteps(call.input);
-    const asked = agentQuestion(call.input);
+    const questions = agentQuestions(call.input);
+    const asked = questions[0] ?? null;
     const changed = toolKind(String(call.name ?? ""), call.input) === "file_change"
       ? fileChange(call.input)
       : null;
@@ -395,6 +403,7 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
       },
       ...(steps.length ? { plan: steps } : {}),
       ...(asked ? { question: asked } : {}),
+      ...(questions.length > 1 ? { questions } : {}),
       ...(changed ? { change: changed } : {}),
     });
   }
@@ -573,17 +582,69 @@ export interface AgentQuestion {
 }
 
 /**
- * Pull the questions out of an `AskUserQuestion` call.
+ * One answer per question, in order: the options picked (indexes into that
+ * question's `options`; exactly one unless it is multiSelect), or words of
+ * your own.
+ */
+export type QuestionAnswer = { choices: number[] } | { text: string };
+
+/**
+ * Words sent to a session that is waiting on a question — typed in the
+ * composer, said aloud, sent from the phone — as that question's answer.
  *
- * Returns the FIRST question only. The tool accepts an array, but a person
- * being read a queue of questions aloud cannot answer the third one first, and
- * every real call observed carries exactly one.
+ * Claude Code's picker records option 1 for words typed or pasted into it
+ * with no "Type something" first (measured on 2.1.280: "hello there", then
+ * Return, recorded "D1"), so the words have to become a real answer: the
+ * option they name, or words of your own. A reason instead when they can't:
+ * several questions at once, where there is no telling which one the words
+ * are for, or words where only options are allowed.
+ */
+export function textQuestionAnswers(questions: readonly AgentQuestion[], text: string): QuestionAnswer[] | string {
+  if (questions.length !== 1) {
+    return `the session is asking ${questions.length} questions at once; answer them on the question card in the conch app`;
+  }
+  const question = questions[0]!;
+  const said = text.trim().toLowerCase();
+  const named = (words: string) => question.options.findIndex((option) => option.label.trim().toLowerCase() === words);
+  if (question.multiSelect) {
+    const picked = said.split(",").map((part) => named(part.trim()));
+    return picked.length && picked.every((index) => index >= 0)
+      ? [{ choices: [...new Set(picked)] }]
+      : `"${question.header || question.question}" takes its options, not words of your own`;
+  }
+  const index = named(said);
+  if (index >= 0) return [{ choices: [index] }];
+  const line = text.replace(/\s+/g, " ").trim();
+  return line ? [{ text: line }] : "there is no answer to send";
+}
+
+/**
+ * Pull the first question out of an `AskUserQuestion` call: the one a voice
+ * reads aloud, since a person listening cannot answer the third one first.
+ * `agentQuestions` has them all.
  */
 export function agentQuestion(input: unknown): AgentQuestion | null {
-  if (!input || typeof input !== "object") return null;
-  const questions = (input as any).questions;
-  const first = Array.isArray(questions) ? questions[0] : questions;
-  if (!first || typeof first !== "object") return null;
+  return agentQuestions(input)[0] ?? null;
+}
+
+/**
+ * Every question in an `AskUserQuestion` call, in order. Calls do carry more
+ * than one: "Conch brand identity and strategy" asked four at once
+ * (2026-09-23), and conch, knowing only the first, kept sending its answer to
+ * whichever question the terminal had moved on to. A malformed question
+ * voids the whole call rather than shifting every later answer by one.
+ */
+export function agentQuestions(input: unknown): AgentQuestion[] {
+  if (!input || typeof input !== "object") return [];
+  const raw = (input as any).questions;
+  const list: unknown[] = Array.isArray(raw) ? raw : [raw];
+  const parsed = list.map(parseAgentQuestion);
+  return parsed.every((question): question is AgentQuestion => question !== null) ? parsed : [];
+}
+
+function parseAgentQuestion(value: unknown): AgentQuestion | null {
+  if (!value || typeof value !== "object") return null;
+  const first = value as any;
   const question = typeof first.question === "string" ? first.question.trim() : "";
   if (!question) return null;
   const options = Array.isArray(first.options)
@@ -1093,11 +1154,16 @@ export function buildConversation(
 
 /** Only a still-running question may reinterpret a spoken ordinal as a choice. */
 export function latestAnswerableQuestion(conversation: Conversation): AgentQuestion | null {
+  return latestAnswerableQuestions(conversation)[0] ?? null;
+}
+
+/** Every question of the newest call still waiting on an answer; empty when none is. */
+export function latestAnswerableQuestions(conversation: Conversation): AgentQuestion[] {
   for (let index = conversation.order.length - 1; index >= 0; index -= 1) {
     const item = conversation.items[conversation.order[index]!];
-    if (item?.question && item.tool?.status === "running") return item.question;
+    if (item?.question && item.tool?.status === "running") return item.questions ?? [item.question];
   }
-  return null;
+  return [];
 }
 
 /** The newest `count` items — what a bottom-anchored view actually shows. */

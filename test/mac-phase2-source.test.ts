@@ -102,15 +102,16 @@ describe("Mac Phase 2 questions and error reporting", () => {
   test("structured questions submit one choice immediately or an explicit ordered set", () => {
     expect(models).toContain("struct AgentQuestion: Decodable");
     expect(models).toContain("let question: AgentQuestion?");
-    expect(conversation).toContain("let onAnswer: (String) -> Void");
+    expect(conversation).toContain("let onAnswer: (String, [ConchQuestionAnswer]) -> Void");
     expect(conversation).toContain('answerable: item.tool?.status == "running"');
     expect(conversation).toContain("@State private var multiSelections: [String: Set<String>] = [:]");
     expect(conversation).toContain("toggleSelection(option.label, for: questionID)");
-    expect(conversation).toMatch(/if asked\.multiSelect \{[\s\S]*toggleSelection[\s\S]*\} else \{[\s\S]*onAnswer\(option\.label\)/);
-    expect(conversation).toContain('onAnswer(selected.joined(separator: ", "))');
+    // An answer is the option's INDEX, not its words: the daemon types it as the picker's key.
+    expect(conversation).toMatch(/if asked\.multiSelect \{[\s\S]*toggleSelection[\s\S]*\} else if inSet \{[\s\S]*\} else \{[\s\S]*onAnswer\(option\.label, \[ConchQuestionAnswer\(choices: \[index\]\)\]\)/);
+    expect(conversation).toMatch(/onAnswer\(\s*selected\.joined\(separator: ", "\),\s*\[ConchQuestionAnswer\(choices: asked\.options\.indices\.filter/);
     expect(conversation).toContain('selected.isEmpty ? "Submit selections"');
     expect(conversation).toContain(".disabled(selected.isEmpty || noTerminal != nil)");
-    expect(dashboard).toMatch(/onAnswer: \{ label in[\s\S]*\.inject\([\s\S]*text: label/);
+    expect(dashboard).toMatch(/onAnswer: \{ summary, answers in[\s\S]*\.inject\([\s\S]*text: summary,[\s\S]*answers: answers/);
   });
 
   test("machine-authored materials decode and render inline, including local images", () => {

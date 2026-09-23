@@ -247,11 +247,11 @@ describe("conch_transcript_tail reads through the same loader", () => {
     expect(daemon).toContain("readConversationTail(path, sessionId, transcriptFormatFor(path), { window: session })");
     expect(daemon).toContain("readConversationTail(path, session.sessionId, transcriptFormatFor(path), { window: session })");
     expect(voice).toContain("{ window: deps.window(event.sessionId) },");
-    // Four call sites across the daemon and the voice loop, every one handing
-    // over the window: no reader of the conversation is left that could show
-    // the other window's branch.
+    // Five call sites across the daemon and the voice loop (the fifth reads the
+    // question a session is waiting on), every one handing over the window: no
+    // reader of the conversation is left that could show the other window's branch.
     const tails = (source: string) => source.match(/readConversationTail\(/g)?.length ?? 0;
-    expect(tails(daemon) + tails(voice)).toBe(4);
+    expect(tails(daemon) + tails(voice)).toBe(5);
     // The reply in the TUI's preview and footer, the phone's reply, and what
     // recite and read-full say: one helper, which sends a window key to the
     // loader with the registry entry its caller holds. The flat-file reader is
