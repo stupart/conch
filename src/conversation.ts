@@ -311,6 +311,27 @@ export function reduceClaudeLine(conversation: Conversation, entry: any): void {
   const notice = taskNotificationText(entry);
   if (notice) finishSubagent(conversation, notice);
 
+  // What Tyler sent while the session was busy. Claude Code records it only as a queued
+  // command (`origin.kind: "human"`), never as a user record: across his transcripts from
+  // three days, 107 such messages, none written again as a normal one. So a message sent
+  // mid-turn never appeared in the conversation, and its pending bubble never cleared.
+  const queued = entry.type === "attachment" && entry.attachment?.type === "queued_command"
+    && entry.attachment.origin?.kind === "human" ? entry.attachment : null;
+  if (queued) {
+    const text = typeof queued.prompt === "string"
+      ? queued.prompt.trim()
+      : Array.isArray(queued.prompt) ? textFromClaudeParts(queued.prompt, "text").trim() : "";
+    if (text) {
+      upsertConversationItem(conversation, {
+        id: `queued:${typeof queued.source_uuid === "string" ? queued.source_uuid : id ?? conversation.order.length}`,
+        kind: "user",
+        text,
+        at: Date.parse(queued.timestamp ?? "") || at,
+      });
+    }
+    return;
+  }
+
   if (entry.type === "user") {
     const results = parts.filter((part) => part?.type === "tool_result");
     if (results.length) {
