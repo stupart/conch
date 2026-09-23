@@ -1527,6 +1527,17 @@ const DEFAULT_WINDOW = 40;
 const DEFAULT_ITEM_CHARS = 4_000;
 /** Tool rows are titles; their output belongs behind a tap, not in every frame. */
 const DEFAULT_TOOL_RESULT_CHARS = 400;
+/**
+ * A long tool result as its start and its END, with the cut named between them. Keeping
+ * only the start showed a failing build's passing lines and hid the error, which is last.
+ * The result stays over `chars`, so an app still reads it as cut and offers the whole of it.
+ */
+function cutMiddle(text: string, chars: number): string {
+  const head = Math.round(chars * 0.375);
+  const tail = chars - head;
+  return `${text.slice(0, head)}\n… ${text.length - chars} characters cut …\n${text.slice(text.length - tail)}`;
+}
+
 /** Messages always carried, even when tool calls have pushed them out of the window. */
 const MIN_SPOKEN_ITEMS = 6;
 
@@ -1589,7 +1600,7 @@ export function publishedConversation(
           tool: {
             ...item.tool,
             ...(result && result.length > toolResultChars
-              ? { result: result.slice(0, toolResultChars) }
+              ? { result: cutMiddle(result, toolResultChars) }
               : {}),
           },
         }
