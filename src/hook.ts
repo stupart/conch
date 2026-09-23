@@ -115,7 +115,7 @@ export interface TurnEvent {
    * An inject that answers the permission prompt (`approval.id`) the session
    * is showing: its dialog's keys, pressed only while that same prompt is up.
    */
-  approve?: { kind: "once" | "always" | "deny"; id: string };
+  approve?: { kind: "once" | "deny"; id: string };
   /**
    * The questions an AskUserQuestion picker on screen is asking, from Claude
    * Code's PermissionRequest hook: on 2.1.280 the transcript may not hold them

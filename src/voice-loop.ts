@@ -10,13 +10,12 @@ import type { RecorderHandle } from "./dictation-controller.ts";
 import * as inject from "./inject.ts";
 import {
   APPROVAL_KEYBOARD,
+  APPROVAL_NO_ALWAYS,
   APPROVAL_KEYS,
   APPROVAL_REASK,
   approvalAnnounce,
   approvalDetail,
   classifyApprovalAnswer,
-  confirmAlwaysPrompt,
-  confirmsAlways,
   pendingApproval,
   type PendingApproval,
 } from "./approval.ts";
@@ -3185,14 +3184,17 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     }
     log(`heard: ${spokenPreview(heard.join(" "))} -> ${answer.kind}`);
     if (answer.kind === "always") {
-      await say(confirmAlwaysPrompt(ask));
+      // Never granted by voice (see APPROVAL_NO_ALWAYS); asked once more for yes or no.
+      await say(APPROVAL_NO_ALWAYS);
       if (!stillPending()) return;
-      const confirmation = await listenForApproval(event, stillPending);
-      if (!stillPending() || !confirmation) return;
-      if (!confirmsAlways(confirmation)) {
-        log(`heard: ${spokenPreview(confirmation.join(" "))} -> not confirmed`);
-        return void (await say(`Not confirmed. ${APPROVAL_KEYBOARD}`));
+      heard = await listenForApproval(event, stillPending);
+      if (!stillPending() || !heard) return;
+      answer = classifyApprovalAnswer(heard);
+      if (!answer || answer.kind === "always") {
+        log(`heard: ${spokenPreview(heard.join(" "))} -> no once or no, leaving "${event.label}" for the keyboard`);
+        return void (await say(APPROVAL_KEYBOARD));
       }
+      log(`heard: ${spokenPreview(heard.join(" "))} -> ${answer.kind}`);
     }
     for (const key of APPROVAL_KEYS[answer.kind]) {
       if (!stillPending()) return;
