@@ -725,6 +725,11 @@ Verify Codex hook activation:
 export const HOOKS_WIRED_LINE =
   "Done. Any Claude Code session already open needs `/hooks` typed once; sessions opened from now on pick conch up automatically.";
 
+/** A hook command that runs conch's hook: `"<bun>" "<…>/src/cli.ts" hook` or `"<…>/conch" hook`. */
+export function isConchHookCommand(command: string | undefined): boolean {
+  return /(?:conch|cli\.ts)"?\s+hook\s*$/i.test(command ?? "");
+}
+
 /**
  * Merge conch's hooks into ~/.claude/settings.json and put the review handoff
  * contract in global CLAUDE.md. Existing content in both files is preserved;
@@ -750,8 +755,12 @@ export async function runInstall(cfg: Config): Promise<void> {
     // Exact match first, as the Codex merge does. The loose match alone missed a
     // source checkout whose path has no lowercase "conch" in it (~/Projects/Conch),
     // so every re-run appended a fresh copy of each hook and "Done" fired every time.
+    // And by shape, not exact text: a Homebrew bun upgrade (1.4.0 -> 1.4.2) changed the
+    // interpreter's path in `command`, so on 2026-09-23 a re-run added a second copy of all
+    // three hooks and every turn would have reached conch twice. Any `… conch hook` or
+    // `… cli.ts" hook` command is conch's, whatever runs it and however the checkout is cased.
     const already = entries.some((e) => e.hooks?.some((h) =>
-      h.command === command || (h.command?.includes("conch") && h.command?.includes("hook"))));
+      h.command === command || isConchHookCommand(h.command)));
     if (already) {
       console.log(`${event}: conch hook already wired, skipping`);
       continue;

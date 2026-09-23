@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderSupervisorScript, runInstall } from "../src/install.ts";
+import { isConchHookCommand, renderSupervisorScript, runInstall } from "../src/install.ts";
 
 
 describe("the retired supervisor", () => {
@@ -53,6 +53,38 @@ describe("installing conch leaves the user's own instruction files alone", () =>
     } finally {
       console.log = log;
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a re-run after bun moved adds only what is missing, never a second copy", async () => {
+    // Measured 2026-09-23: hooks written as bun 1.4.0, re-run under 1.4.2, from a checkout at
+    // ~/Projects/Conch (no lowercase "conch" in the path): all three were added again.
+    const root = mkdtempSync(join(tmpdir(), "conch-install-rerun-"));
+    const old = '"/opt/homebrew/Cellar/bun/1.4.0/bin/bun" "/Users/t/Projects/Conch/src/cli.ts" hook';
+    const settings = { hooks: Object.fromEntries(["Stop", "Notification", "UserPromptSubmit"].map((event) =>
+      [event, [{ hooks: [{ type: "command", command: old, timeout: 15 }] }]])) };
+    const log = console.log;
+    try {
+      console.log = () => {};
+      writeFileSync(join(root, "settings.json"), JSON.stringify(settings));
+      await runInstall({ claudeDir: root } as any);
+      const after = JSON.parse(readFileSync(join(root, "settings.json"), "utf8"));
+      for (const event of ["Stop", "Notification", "UserPromptSubmit"]) expect(after.hooks[event]).toHaveLength(1);
+      expect(after.hooks.PermissionRequest).toHaveLength(1);
+    } finally {
+      console.log = log;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("conch's hook is recognised by shape, and nothing else is", () => {
+    for (const mine of [
+      '"/opt/homebrew/Cellar/bun/1.4.0/bin/bun" "/Users/t/Projects/Conch/src/cli.ts" hook',
+      '"/usr/local/bin/conch" hook',
+      "conch hook",
+    ]) expect(isConchHookCommand(mine)).toBe(true);
+    for (const other of ['"/usr/local/bin/other" hook', "node my-hooks.js", '"/x/cli.ts" hooks', undefined]) {
+      expect(isConchHookCommand(other)).toBe(false);
     }
   });
 
