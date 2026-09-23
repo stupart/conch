@@ -382,3 +382,64 @@ describe("the daemon and the Mac app wire it up", () => {
     expect(stack).toContain("var onOpenSubagent: (ConversationItem.Tool.Subagent) -> Void");
   });
 });
+
+describe("an agent quiet inside a long tool call", () => {
+  // A build or a test run writes nothing to the agent's transcript until it returns; past
+  // the six-minute window the session read "done" mid-run and dropped "waiting on its agents".
+  const { utimesSync, appendFileSync } = require("node:fs") as typeof import("node:fs");
+  const aged = (path: string, minutes: number) => {
+    const at = new Date(Date.now() - minutes * 60_000);
+    utimesSync(path, at, at);
+  };
+  const toolUse = (agentId: string) => ({
+    type: "assistant", isSidechain: true, agentId, uuid: `t-${agentId}`,
+    message: { role: "assistant", content: [{ type: "tool_use", id: `tu-${agentId}`, name: "Bash", input: { command: "bun run build" } }] },
+  });
+
+  test("is still live while its own transcript ends in a tool call with no result", () => {
+    const f = fixture();
+    const path = sidechain(f, "aaa1");
+    appendFileSync(path, JSON.stringify(toolUse("aaa1")) + "\n");
+    aged(path, 10);
+    writeParent(f, ...launch("aaa1", "Build it"));
+    expect(liveBackgroundAgents(f.transcript).map((agent) => agent.agentId)).toEqual(["aaa1"]);
+  });
+
+  test("quiet and not mid-call, it has aged out as before", () => {
+    const f = fixture();
+    const path = sidechain(f, "aaa1");
+    aged(path, 10);
+    writeParent(f, ...launch("aaa1", "Build it"));
+    expect(liveBackgroundAgents(f.transcript)).toEqual([]);
+  });
+
+  test("mid-call but silent past three hours, it is not live", () => {
+    const f = fixture();
+    const path = sidechain(f, "aaa1");
+    appendFileSync(path, JSON.stringify(toolUse("aaa1")) + "\n");
+    aged(path, 181);
+    writeParent(f, ...launch("aaa1", "Build it"));
+    expect(liveBackgroundAgents(f.transcript)).toEqual([]);
+  });
+
+  test("a tool call that returned is not mid-call", () => {
+    const f = fixture();
+    const path = sidechain(f, "aaa1");
+    appendFileSync(path, JSON.stringify(toolUse("aaa1")) + "\n" + JSON.stringify({
+      type: "user", isSidechain: true, agentId: "aaa1", uuid: "r-aaa1",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu-aaa1", content: "ok" }] },
+    }) + "\n");
+    aged(path, 10);
+    writeParent(f, ...launch("aaa1", "Build it"));
+    expect(liveBackgroundAgents(f.transcript)).toEqual([]);
+  });
+
+  test("a finished agent stays finished, mid-call transcript or not", () => {
+    const f = fixture();
+    const path = sidechain(f, "aaa1");
+    appendFileSync(path, JSON.stringify(toolUse("aaa1")) + "\n");
+    aged(path, 10);
+    writeParent(f, ...launch("aaa1", "Build it"), notice("aaa1"));
+    expect(liveBackgroundAgents(f.transcript)).toEqual([]);
+  });
+});

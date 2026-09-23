@@ -17,6 +17,14 @@ import { basename, dirname, extname, join } from "node:path";
  */
 export const LIVE_WINDOW_MS = 6 * 60 * 1000;
 
+/**
+ * How long an agent may be quiet while its own transcript shows it inside a tool call
+ * (a build, a test run) with no result yet. Past `LIVE_WINDOW_MS` that is the only thing
+ * still counting it live; this bounds an agent that died mid-call without its parent ever
+ * being told.
+ */
+export const MID_TOOL_WINDOW_MS = 3 * 60 * 60 * 1000;
+
 const READ_CHUNK_BYTES = 256 * 1024;
 const MAX_SCAN_BYTES = 32 * 1024 * 1024;
 const TERMINAL_TASK_STATUS = new Set(["completed", "failed", "killed"]);
@@ -200,6 +208,17 @@ export function liveBackgroundAgents(transcriptPath: string): LiveAgent[] {
       now,
       LIVE_WINDOW_MS,
     );
+    // Quiet past the window but inside a tool call of its own: a build or a test run
+    // writes nothing until it returns, and the session read "done" (and dropped "waiting
+    // on its agents") in the middle of it.
+    for (const [id, candidate] of freshIds(
+      sidechains,
+      (name) => name.match(/^agent-(.+?)\.jsonl$/)?.[1],
+      now,
+      MID_TOOL_WINDOW_MS,
+    )) {
+      if (!agents.has(id) && insideToolCall(join(sidechains, `agent-${id}.jsonl`))) agents.set(id, candidate);
+    }
 
     if (!agents.size) return [];
 
@@ -244,6 +263,26 @@ export function liveBackgroundAgents(transcriptPath: string): LiveAgent[] {
   } catch {
     return [];
   }
+}
+
+/** Does this transcript end inside a tool call: a tool_use with no tool_result after it? */
+function insideToolCall(transcriptPath: string): boolean {
+  let inside = false;
+  let decided = false;
+  visitLinesNewestFirst(transcriptPath, () => true, (line) => {
+    let entry: any;
+    try {
+      entry = JSON.parse(line.toString("utf8"));
+    } catch {
+      return false;
+    }
+    const parts = Array.isArray(entry?.message?.content) ? entry.message.content : [];
+    if (entry?.type === "user" && parts.some((part: any) => part?.type === "tool_result")) decided = true;
+    else if (entry?.type === "assistant" && parts.some((part: any) => part?.type === "tool_use")) inside = decided = true;
+    else if (entry?.type === "assistant" || entry?.type === "user") decided = true;
+    return decided;
+  });
+  return inside;
 }
 
 function describeAgent(sidechains: string, agentId: string): LiveAgent {
