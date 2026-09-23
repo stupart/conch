@@ -39,6 +39,18 @@ agent drive one, and the user able to reach in and interact — the way the Code
 ## Open
 
 ### UI / UX
+- **open** — Background agents as a small group under their session, each one selectable, the way
+  Claude Code's own agent view is. Tyler (2026-09-23): "have the agents show under smaller as like
+  a group and you can select on them as well just like is possible in the Claude Code ui".
+  - **First, a bug:** C4 already nests sub-agent rows, yet none show. On 2026-09-23 the "conch"
+    session had 5 live background agents; `liveBackgroundAgents` and `subagentSessions` (the
+    daemon's own call, `daemon.ts` `renderSessionPanel`) both returned all 5 from its transcript,
+    and `/tmp/conch-sessions.json` held 0 rows with a `parentSessionId`. Find where they drop
+    between `buildPanelRows` and the published state.
+  - **Then the feature:** under the parent, a compact collapsible group ("5 agents · 3 running"),
+    smaller rows than a session, each opening that agent's own transcript in the same pane (C4's
+    `onOpenSubagent` already does this from a Task block). The parent keeps its "waiting on its
+    agents" mark (#368) while any of them run. Same on the iPhone.
 - **open** — The iPhone cannot open a deliverable that is a file on the Mac. Four `open-link`
   failures on 2026-09-21 17:09 from `source: ios`, all reading "That's a file on your Mac, not a
   page: /Users/…/Asset Generator/mcp-plugin-workflow-review-2026-09-17.md". The message is
