@@ -184,6 +184,9 @@ export type AnswerKey = { press: string } | { type: string } | "Right" | "Enter"
  *   Return, record them and move on;
  * - every picker ends on "Review your answers … 1. Submit answers", except a
  *   lone single-choice question, which a number submits outright.
+ * A question whose options carry previews is laid out side by side (measured
+ * the same way, 2026-09-23): a number only moves the highlight and Return picks,
+ * and there is no "Type something" row: `n` opens the question's notes.
  * Assumes the picker is on its first question, as a new one opens.
  */
 export function claudeQuestionKeys(
@@ -198,7 +201,9 @@ export function claudeQuestionKeys(
     const answer = answers[index]!;
     if ("text" in answer) {
       if (question.multiSelect) return `"${question.header || question.question}" takes options, not words`;
-      keys.push({ press: String(question.options.length + 1) }, { type: answer.text }, "Enter");
+      // With previews there is no "Type something" row: words go in as the question's notes,
+      // which Claude Code records as "(notes only)" with the words beside it.
+      keys.push(question.previews ? { press: "n" } : { press: String(question.options.length + 1) }, { type: answer.text }, "Enter");
       continue;
     }
     const { choices } = answer;
@@ -208,6 +213,9 @@ export function claudeQuestionKeys(
     }
     keys.push(...choices.map((choice) => ({ press: String(choice + 1) })));
     if (question.multiSelect) keys.push("Right");
+    // With previews a number only moves the highlight; Return picks it and moves on. Typing
+    // numbers alone is how Tyler's answer to "The ring" went nowhere (2026-09-23).
+    else if (question.previews) keys.push("Enter");
   }
   if (questions.length > 1 || questions[0]!.multiSelect) keys.push({ press: "1" });
   return keys;

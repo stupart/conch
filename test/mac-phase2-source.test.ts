@@ -107,8 +107,8 @@ describe("Mac Phase 2 questions and error reporting", () => {
     expect(conversation).toContain("@State private var multiSelections: [String: Set<String>] = [:]");
     expect(conversation).toContain("toggleSelection(option.label, for: questionID)");
     // An answer is the option's INDEX, not its words: the daemon types it as the picker's key.
-    expect(conversation).toMatch(/if asked\.multiSelect \{[\s\S]*toggleSelection[\s\S]*\} else if inSet \{[\s\S]*\} else \{[\s\S]*onAnswer\(option\.label, \[ConchQuestionAnswer\(choices: \[index\]\)\], questionID\)/);
-    expect(conversation).toMatch(/onAnswer\(\s*selected\.joined\(separator: ", "\),\s*\[ConchQuestionAnswer\(choices: asked\.options\.indices\.filter/);
+    expect(conversation).toMatch(/if asked\.multiSelect \{[\s\S]*toggleSelection[\s\S]*\} else if inSet \{[\s\S]*\} else \{[\s\S]*submitAnswer\(option\.label, \[ConchQuestionAnswer\(choices: \[index\]\)\], itemID: questionID\)/);
+    expect(conversation).toMatch(/submitAnswer\(\s*selected\.joined\(separator: ", "\),\s*\[ConchQuestionAnswer\(choices: asked\.options\.indices\.filter/);
     expect(conversation).toContain('selected.isEmpty ? "Submit selections"');
     expect(conversation).toContain(".disabled(selected.isEmpty || noTerminal != nil)");
     expect(dashboard).toMatch(/onAnswer: \{ summary, answers, questionID in[\s\S]*\.inject\([\s\S]*text: summary,[\s\S]*answers: answers,[\s\S]*questionId: questionID/);

@@ -107,6 +107,8 @@ struct SessionView: View {
     @State private var optionReplyInFlight = false
     /// Why an answer to a question or a permission prompt did not land, in the Mac's words.
     @State private var answerFailure: String?
+    /// Answers sent from a question card, by question row; dropped again if the Mac refuses one.
+    @State private var submittedAnswers: [String: String] = [:]
     @State private var confirmingClose = false
     @State private var closingSession = false
     @State private var closeError: String?
@@ -204,6 +206,7 @@ struct SessionView: View {
                             conversation: conversation,
                             optionReplyInFlight: optionReplyInFlight || isSending,
                             onAnswer: answerQuestion,
+                            submittedAnswers: submittedAnswers,
                             onFreeform: { typing = true },
                             noTerminal: row?.noTerminal,
                             onOpenInTerminal: row?.attachable == true ? openInTerminal : nil
@@ -878,6 +881,7 @@ struct SessionView: View {
         optionReplyInFlight = true
         sendFailed = false
         answerFailure = nil
+        submittedAnswers[questionID] = summary
         let sessionLabel = row?.label ?? ""
         Task {
             let delivered = await bridge.inject(
@@ -889,8 +893,12 @@ struct SessionView: View {
                 questionId: questionID
             )
             optionReplyInFlight = false
-            // An option tap has no bubble to correct later, so only a refusal is reported.
-            if case let .failed(reason) = delivered { answerFailure = reason }
+            // An option tap has no bubble to correct later, so only a refusal is reported,
+            // and the card comes back to be answered again.
+            if case let .failed(reason) = delivered {
+                answerFailure = reason
+                submittedAnswers[questionID] = nil
+            }
         }
     }
 

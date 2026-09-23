@@ -647,6 +647,8 @@ export interface AgentQuestion {
   options: Array<{ label: string; description?: string }>;
   /** More than one answer may be chosen. */
   multiSelect: boolean;
+  /** Its options carry previews, which Claude Code shows in a side-by-side picker with other keys. */
+  previews?: true;
 }
 
 /**
@@ -726,11 +728,15 @@ function parseAgentQuestion(value: unknown): AgentQuestion | null {
       .filter((option: { label: string }) => option.label)
     : [];
   if (!options.length) return null;
+  const multiSelect = first.multiSelect === true;
   return {
     header: typeof first.header === "string" ? first.header.trim() : "",
     question,
     options,
-    multiSelect: first.multiSelect === true,
+    multiSelect,
+    // Previews are for single-select questions only.
+    ...(!multiSelect && first.options.some((option: any) => typeof option?.preview === "string" && option.preview.trim())
+      ? { previews: true as const } : {}),
   };
 }
 

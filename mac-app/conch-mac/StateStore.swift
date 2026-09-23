@@ -198,7 +198,9 @@ final class StateStore: ObservableObject {
         // would be a second behaviour to keep in step. Every inject routes through this one
         // function, so every inject gets an entry — and the id it is filed under is the one the
         // event already minted, which is what a late outcome comes back against.
-        if event.type == .inject, let opId = event.opId, let session = event.sessionId,
+        // Not an answer to a question: its card says "Submitted" itself, and its words never
+        // come back as a message, so a bubble would sit there for the full ten minutes.
+        if event.type == .inject, event.answers == nil, let opId = event.opId, let session = event.sessionId,
            let words = event.announce, !words.isEmpty {
             _ = outbox.begin(ConchOutboxEntry(
                 id: opId,

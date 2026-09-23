@@ -122,6 +122,8 @@ interface Options {
   inject?: (text: string) => InjectTextResult;
   key?: (key: string) => InjectTextResult;
   answerKeys?: (keys: readonly AnswerKey[]) => InjectTextResult;
+  /** The picker takes the keys without recording an answer, as one laid out unlike the measured one did. */
+  pickerIgnoresKeys?: boolean;
   beforeKey?: (key: string) => void | Promise<void>;
   command?: (line: string) => ProviderCommandResult;
   /** One script per mic window, in order. */
@@ -254,6 +256,10 @@ function harness(options: Options = {}) {
       injectKeys: async (_cfg, _pid, sequence) => {
         answered.push([...sequence]);
         order.push("answer");
+        // What Claude Code writes once its picker takes the keys.
+        if (!options.pickerIgnoresKeys && latestTranscript) {
+          appendFileSync(latestTranscript, JSON.stringify({ type: "user", toolUseResult: { answers: {} } }) + "\n");
+        }
         return options.answerKeys?.(sequence) ?? { via: "tmux" };
       },
       injectProviderCommand: async (_cfg, _target, line) => {
@@ -305,10 +311,12 @@ const inject = (text: string, over: Partial<TurnEvent> = {}): TurnEvent => ({
   type: "inject", sessionId: "s1", label: "alpha", announce: text, origin: "user", ...over,
 });
 
+/** The transcript a test made last: the one its session's picker writes answers to. */
+let latestTranscript: string | undefined;
 function transcript(...lines: unknown[]): string {
   const path = join(mkdtempSync(join(tmpdir(), "conch-voice-loop-")), "session.jsonl");
   writeFileSync(path, lines.map((line) => JSON.stringify(line)).join("\n") + "\n");
-  return path;
+  return latestTranscript = path;
 }
 const assistant = (...content: unknown[]) => ({ type: "assistant", message: { role: "assistant", content } });
 const user = (...content: unknown[]) => ({ type: "user", message: { role: "user", content } });
@@ -2381,6 +2389,37 @@ describe("answering the question a session is waiting on", () => {
     await h.voice.handle(inject("carry on", { transcriptPath: pendingBash() }));
     expect(h.texts[0]).toBe("carry on");
     expect(h.answered).toEqual([]);
+  });
+
+  test("keys the picker takes without recording an answer are a failure, not \"answered\"", async () => {
+    // Tyler's answer to a question with previews: every key landed, only the highlight moved.
+    const h = harness({
+      pickerIgnoresKeys: true,
+      // The session writes on meanwhile. The tool's own schema names an `answers` field too.
+      answerKeys: () => {
+        appendFileSync(latestTranscript!, JSON.stringify({ type: "attachment", attachment: { type: "tools", schema: { answers: { description: "User answers collected by the permission component" } } } }) + "\n");
+        return { via: "tmux" };
+      },
+    });
+    const sent = await h.voice.handle(inject("Delta: D2", {
+      // An earlier question's recorded answer is not this one's.
+      transcriptPath: transcript(
+        { type: "user", toolUseResult: { answers: { "Earlier?": "yes" } } },
+        user({ type: "text", text: "ask me" }),
+        assistant({ type: "tool_use", id: "tu_ask", name: "AskUserQuestion", input: { questions: [question("Delta", ["D1", "D2"])] } }),
+      ),
+      answers: [{ choices: [1] }],
+    }));
+    expect(sent).toMatchObject({ delivered: false, reason: "the picker didn't take the answer; answer it in the terminal" });
+    expect(h.answered).toEqual([[{ press: "2" }]]);
+  });
+
+  test("a question with previews is answered with that picker's keys", async () => {
+    const withPreview = { ...question("Ring", ["Arch assets", "Unnamed shapes"]), options: [{ label: "Arch assets", preview: "[a]" }, { label: "Unnamed shapes", preview: "[b]" }] };
+    const h = harness();
+    expect(await h.voice.handle(inject("Ring: Unnamed shapes", { transcriptPath: asking(withPreview), answers: [{ choices: [1] }] }))).toBe(true);
+    expect(await h.voice.handle(inject("my own idea", { transcriptPath: asking(withPreview) }))).toBe(true);
+    expect(h.answered).toEqual([[{ press: "2" }, "Enter"], [{ press: "n" }, { type: "my own idea" }, "Enter"]]);
   });
 
   test("a failed key send is reported, with its reason", async () => {
