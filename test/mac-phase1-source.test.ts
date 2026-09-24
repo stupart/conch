@@ -117,6 +117,21 @@ describe("the Mac conversation stays readable while it grows", () => {
     expect(store).toMatch(/sourceState = snapshot[\s\S]*rebuildPresentedState\(\)/);
     expect(store).toContain("state?.hasSamePresentation(as: next) != true");
   });
+
+  test("the presented state carries every field the daemon published", () => {
+    // The rebuild goes through a memberwise init whose newer fields default to nil, so a field it
+    // doesn't name compiles and is silently dropped on every poll. That hid the conversation stack
+    // for an hour once, and later `features`: Remove never showed and no item was ever marked viewed.
+    const struct = models.slice(models.indexOf("struct PublishedState"), models.indexOf("init(\n", models.indexOf("struct PublishedState")));
+    const fields = [...struct.matchAll(/^    let (\w+):/gm)].map((match) => match[1]);
+    const rebuild = store.slice(store.indexOf("let next = PublishedState("), store.indexOf("if state?.hasSamePresentation(as: next)"));
+    expect(fields).toContain("features");
+    for (const field of fields) {
+      if (field === "newerDaemon") continue; // derived from `v` by the init
+      if (field === "rows" || field === "dismissedRows") expect(rebuild).toContain(`${field}: ${field},`);
+      else expect(rebuild).toContain(`${field}: sourceState.${field}`);
+    }
+  });
 });
 
 describe("the Mac composer belongs to one session", () => {
