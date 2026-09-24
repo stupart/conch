@@ -133,11 +133,17 @@ function historyRequest(pathname: string, value: unknown): ReturnType<typeof val
   return validateHistoryRequest({ ...body, kind });
 }
 
-function isNarrationRequest(body: string): boolean {
+/**
+ * What only the Mac app sends: Show's narration (its lease is a local connection held open, which a
+ * phone never holds), its answer to a window snapshot the daemon asked it for, and what it saw on
+ * screen. A phone forwarding one would be speaking as the Mac app.
+ */
+const MAC_APP_ONLY = new Set(["review-preview", "screen-observation"]);
+function isMacAppOnly(body: string): boolean {
   try {
     let value = JSON.parse(body);
     if (value?.kind === "control-envelope") value = value.body;
-    return decodeNarrationRequest(value) !== null;
+    return decodeNarrationRequest(value) !== null || MAC_APP_ONLY.has(value?.kind);
   } catch { return false; }
 }
 
@@ -535,9 +541,8 @@ export class PhoneBridgeApplication {
           try { encodeControlFrame(body); }
           catch { return Response.json({ kind: "history-error", code: "frame-too-large", error: "history request exceeds 64 KiB" }, { status: 413 }); }
         }
-        // Show's narration is the Mac app's: its lease is a local connection held open, which a phone never holds.
-        if (!historyRoute && isNarrationRequest(body)) {
-          return Response.json({ error: "narration is the Mac app's" }, { status: 403 });
+        if (!historyRoute && isMacAppOnly(body)) {
+          return Response.json({ error: "only the Mac app sends that" }, { status: 403 });
         }
         const historyRead = historyRoute || isPhoneHistoryRead(url.pathname, Buffer.from(body));
         try {

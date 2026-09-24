@@ -213,7 +213,7 @@ describe("control forwarding", () => {
     expect(await res.json()).toEqual(receipt);
   });
 
-  test("Show's narration is the Mac app's: a phone can't ask for it, even wrapped, and nothing reaches the daemon", async () => {
+  test("what only the Mac app sends (narration, snapshot answers, screen observations) is refused from a phone, even wrapped", async () => {
     const forwarded: string[] = [];
     const b = startBridge({ forwardControl: async (line) => { forwarded.push(line); return "{}"; } });
     const canvasId = "5B3F0D2E-9C41-4E7A-8F10-2D6B7A1C9E44";
@@ -222,6 +222,10 @@ describe("control forwarding", () => {
       { kind: "control-envelope", body: { kind: "narration-start", canvasId } },
       { kind: "narration-stop", canvasId },
       { kind: "narration-cancel", canvasId: "not a uuid" },
+      // The Mac app's other channels: its snapshot answers and what it saw on screen.
+      { kind: "review-preview", request: "r1", path: "/tmp/x.png" },
+      { kind: "control-envelope", body: { kind: "review-preview", request: "r1", path: "/tmp/x.png" } },
+      { kind: "screen-observation", observation: { v: 1, source: "front-window", at: 1, surface: { kind: "terminal" } } },
     ]) {
       const res = await fetch(`http://127.0.0.1:${b.port}/control`, {
         method: "POST",
