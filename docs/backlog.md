@@ -291,12 +291,6 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
   `phone-telemetry:59`, `setup:431`. The idiom that works is already in the same files —
   `slice(at, source.indexOf("\n    }", at))`, an end marker searched FORWARD from the start.
   A count is a guess about how long a function will stay.
-- **open** — Six versions of ONE artifact can crowd distinct artifacts off the daemon's
-  `MAX_SESSION_REVIEWS` cap of 6 (`src/panel.ts`). Now that filings of a link group into one tab
-  (`bfc4337`), the cap counts versions where the reader counts artifacts: a session iterating on
-  one page six times loses every other deliverable it filed. A per-GROUP cap would fix it, but it
-  is a wire-size change — the daemon would hold more than six — so it needs deciding rather than
-  slipping in.
 - **open** — Running real agent sessions inside conch's own terminal. Tyler: "could test having
   the real reaw sessios runnign in the terminal in th app that could be quite cool... is that
   possible for me to move one in here?"
@@ -337,6 +331,14 @@ extends the conversation panel (the overlay, `Fog*` in code) and the pill; it is
 
 ## Done
 
+- **done** — Six versions of ONE artifact can crowd distinct artifacts off the daemon's
+  `MAX_SESSION_REVIEWS` cap of 6 (`src/panel.ts`). Now that filings of a link group into one tab
+  (`bfc4337`), the cap counts versions where the reader counts artifacts: a session iterating on
+  one page six times loses every other deliverable it filed. Fixed without the wire-size change a
+  per-GROUP cap would be: the cap still holds six filings, but drops superseded versions of an
+  artifact before it drops another artifact (`capReviews`), now that every filing carries the
+  `artifact` it is a version of. Pinned by `test/deliverables.test.ts`, "the cap drops superseded
+  versions before it drops another artifact".
 - **done** — One way out of a deliverable, and it opens the page you are on. The origin bar held
   four elements doing three jobs, and the two that looked like duplicates were not: the button
   opened `addressText` (where the pane IS) while the header arrow from `1997452` opened

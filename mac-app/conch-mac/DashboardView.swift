@@ -1813,7 +1813,7 @@ private struct ConversationPane: View {
     /// The same deliverables as ARTIFACTS: every filing of one link is a version of one thing.
     /// The rule is shared and tested in ConchDesign/Workspace, not decided here.
     private var deliverableGroups: [DeliverableGroup] {
-        DeliverableGroups.grouped(deliverables.map { DeliverableVersion(id: $0.id, link: $0.link) })
+        DeliverableGroups.grouped(deliverables.map { DeliverableVersion(id: $0.id, link: $0.link, artifact: $0.artifact) })
     }
 
     private var watchesTranscriptForRow: SessionRow? {
@@ -2290,7 +2290,13 @@ private struct ConversationPane: View {
                                     if item.viewedAt == nil, state?.features?.viewedState != nil {
                                         store.markReviewViewed(sessionId: row.id, review: item.id)
                                     }
-                                }
+                                },
+                                // The whole artifact, every version: the tab is the artifact. The
+                                // group's id is the daemon's artifact, which is what it removes by.
+                                // Only a daemon that can remove one is offered the item.
+                                remove: (state?.features?.deliverables ?? 0) >= 2
+                                    ? { store.removeDeliverable(sessionId: row.id, artifact: group.id) }
+                                    : nil
                             )
                         }
                     }
@@ -2645,6 +2651,8 @@ private struct DeliverableTab: View {
     let now: Date
     /// Open one version: the tab's own click opens `current`, the menu opens the one chosen.
     let open: (ReviewItem) -> Void
+    /// Take this artifact off the session, every version; nil where the daemon cannot.
+    let remove: (() -> Void)?
 
     @State private var isHovered = false
 
@@ -2760,6 +2768,12 @@ private struct DeliverableTab: View {
                 .fill(isSelected ? ConchPalette.selection : (isHovered ? ConchPalette.hover : .clear))
         )
         .onHover { isHovered = $0 }
+        // Tyler had a deliverable removed by hand-editing reviews.json: nothing in the app could.
+        .contextMenu {
+            if let remove {
+                Button("Remove", role: .destructive, action: remove)
+            }
+        }
     }
 
     /// A menu row: the age first, so the versions read as a timeline, then the summary — which

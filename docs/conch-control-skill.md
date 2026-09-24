@@ -46,8 +46,8 @@ https://brew.sh rather than trying to install Homebrew yourself.
 - **Speak** — `conch_speak {text}` says something aloud in conch's voice, up to 600 characters and one at a time. Use it to confirm an action or read a short answer the user asked for; do not repeat your reply or narrate progress.
 - **Answer from a transcript** — `conch_transcript_tail {session}` gives you the tail of a session's last reply, with the id and label of the session it read, so you can answer "did the tests pass?" without switching to it.
 - **Publish a result for the user to inspect** —
-  `review_to_front {summary, link?, scene?}`. *Publishing results* above says
-  when; this is how.
+  `review_to_front {summary, link?, kind?, key?, scene?}`. *Publishing results*
+  above says when; this is how.
 
   **What the user sees.** conch files the result on your session in the Mac app
   and on the iPhone, and the Mac's Ready pill lights. Nothing opens until the
@@ -63,6 +63,31 @@ https://brew.sh rather than trying to install Homebrew yourself.
   - a document or spec → the file (`docs/proposal.md`, a PDF)
   - a change → a rendered diff or the file you changed
   - a build, a chart, a recording → the artifact itself
+
+  **What kind of thing it is.** `kind` is one of `page` (a local html file),
+  `image`, `video`, `audio`, `pdf`, `markdown`, `text`, `url` (a live web page
+  or dev server), `app` (a Mac app window or state), `simulator` (the iOS
+  Simulator or a device build), `terminal`, `design` (Figma and the like),
+  `document` (Keynote, Word, Pages and the like) or `other`. Omit it and conch
+  reads it off the link: the extension, `url` for http(s), `design` for
+  figma.com. `app`, `simulator`, `terminal`, `design` and `other` may go without
+  a link; the summary then says where to look ("the onboarding flow is open in
+  the Simulator, on the second screen").
+
+  **Versions.** Each publication is a filing with its own `id`. Filings of the
+  same artifact are its versions, numbered from 1. The artifact is the link (a
+  file's real path, a URL without its fragment), else the summary; pass `key`
+  to name it yourself when there is no link, or the link changes between
+  versions (`hero-v3.png`, `hero-v4.png`). The result returns `id`,
+  `artifact`, `version` and `kind`.
+
+  **Your own deliverables.** `conch_deliverables` lists the ones your session
+  holds, newest first, each marked `superseded` when a newer version of it is
+  held. `review_remove {id}` takes one filing back and `review_remove
+  {artifact}` every version of it; the user can remove them from the Mac too.
+  A newer version already supersedes an older one, so remove only what should
+  not be looked at: a wrong result, or one filed by mistake. Both act on your
+  own session only.
 
   **The scene.** Optional: `scene: {v: 1, target: {kind}, inspect?}`.
 
@@ -119,6 +144,12 @@ Do not retry the same call; do the alternative, or tell the user in one line.
 - `review_to_front` naming **another session's** artifact — omit `session`; you may only surface your own work.
 - `review_to_front` from a caller conch **cannot verify** — leave the result in your reply, or use the `conch:review` line.
 - `review_to_front` with a link that is not an http(s) URL or an existing, **non-executable** regular file — a directory, a missing file, a script, a `file://` or `javascript:` URL — or a file **outside your cwd and the temp folder**, hidden, or a key or certificate.
+- `review_to_front` with a `kind` that is not one of the kinds above, or a
+  kind that needs a link (`image`, `page`, `url`…) without one, or a `key`
+  over 200 characters.
+- `review_remove` with an `id` or `artifact` **your session does not hold** —
+  "nothing removed"; list yours with `conch_deliverables`. It takes exactly
+  one of the two.
 - `review_to_front` with a **scene** that is not `v: 1`, has an unknown kind or field, asks for `kind: "link"` with no link, has an `inspect` that is empty or over 200 characters, or carries `target.ref` — the refusal says which; fix the scene or omit it.
 - A `session` name that **matches several sessions** — the refusal lists them by id and label; pass the id.
 - `conch_wake` / `conch_recite` **without `session`** when your caller is unverified — pass the session's id.

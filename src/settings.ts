@@ -805,6 +805,7 @@ export const SESSION_COMMANDS = [
   "set-model",
   "attach",
   "review-viewed",
+  "review-remove",
 ] as const;
 
 export type SessionCommand = typeof SESSION_COMMANDS[number];
@@ -828,7 +829,12 @@ export type SessionControlMessage =
    * it, not a position or a time: the row may hold several, and which one was read is the
    * whole point.
    */
-  | { kind: "session-command"; sessionId: string; command: "review-viewed"; review: string };
+  | { kind: "session-command"; sessionId: string; command: "review-viewed"; review: string }
+  /**
+   * Take deliverables off the session: one filing by the identity it was filed with, or every
+   * filing of an `artifact`. Exactly one of the two.
+   */
+  | { kind: "session-command"; sessionId: string; command: "review-remove"; review?: string; artifact?: string };
 
 export type RuntimeControlMessage =
   | HistoryRequest
@@ -1143,6 +1149,15 @@ export function validateSessionControlMessage(value: unknown): ParseResult<Sessi
       const review = boundedPrintable(value.review, "review-viewed: review", MAX_REVIEW_ID_LENGTH);
       if (!review.ok) return review;
       return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: "review-viewed", review: review.value } };
+    }
+    case "review-remove": {
+      const field = value.review !== undefined ? "review" : "artifact";
+      if ((value.review === undefined) === (value.artifact === undefined)) {
+        return { ok: false, err: "review-remove: exactly one of review or artifact is required" };
+      }
+      const which = boundedPrintable(value[field], `review-remove: ${field}`, MAX_REVIEW_ID_LENGTH);
+      if (!which.ok) return which;
+      return { ok: true, value: { kind: "session-command", sessionId: sessionId.value, command: "review-remove", [field]: which.value } };
     }
     case "reset-voice":
     case "dismiss":

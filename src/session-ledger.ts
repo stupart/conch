@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { TurnEvent } from "./hook.ts";
-import { MAX_SESSION_REVIEWS, type PanelSessionState, type SessionReview } from "./panel.ts";
+import { capReviews, removeReviews, type PanelSessionState, type SessionReview } from "./panel.ts";
+import { deliverableFacts, isDeliverableKind } from "./deliverables.ts";
 import { reviewIdentity } from "./records-receipts.ts";
 import { writeSettingsFileAtomic } from "./settings.ts";
 import { checkReviewScene } from "./snippet.ts";
@@ -148,11 +149,17 @@ export class SessionLedger {
       // A file written before a session could hold more than one carries `review` alone. It
       // restores as the single deliverable it was, rather than as nothing.
       const candidates = Array.isArray(reviews) && reviews.length ? reviews : [review];
-      const held = candidates
+      const sorted = candidates
         .map((candidate) => this.#restoredReview(sessionId, candidate))
         .filter((restored): restored is SessionReview => restored !== undefined)
-        .sort((a, b) => a.at - b.at)
-        .slice(-MAX_SESSION_REVIEWS);
+        .sort((a, b) => a.at - b.at);
+      // A file from before versions numbers each artifact's filings in the order they were filed.
+      const highest = new Map<string, number>();
+      for (const one of sorted) {
+        one.version ??= (highest.get(one.artifact!) ?? 0) + 1;
+        highest.set(one.artifact!, Math.max(highest.get(one.artifact!) ?? 0, one.version));
+      }
+      const held = capReviews(sorted);
       if (!held.length) continue;
       // ponytail: `waiting` shows only on a row nothing gives a status (no registry status, no hook yet); persist status if that bites.
       this.sessionStates.set(sessionId, {
@@ -174,6 +181,10 @@ export class SessionLedger {
       at?: unknown;
       id?: unknown;
       viewedAt?: unknown;
+      kind?: unknown;
+      kindSource?: unknown;
+      artifact?: unknown;
+      version?: unknown;
     };
     if (
       typeof review.summary !== "string" || typeof review.at !== "number" || !Number.isFinite(review.at)
@@ -193,7 +204,35 @@ export class SessionLedger {
     const viewedAt = typeof review.viewedAt === "number" && Number.isFinite(review.viewedAt)
       ? review.viewedAt
       : undefined;
-    return { ...restored, id, ...(viewedAt !== undefined ? { viewedAt } : {}) };
+    // A filing from before kinds and artifacts gets them from the same recipe a new one does,
+    // so its next republish is its next version rather than a second artifact.
+    const derived = deliverableFacts(restored);
+    const saved = isDeliverableKind(review.kind) && (review.kindSource === "agent" || review.kindSource === "inferred");
+    return {
+      ...restored,
+      id,
+      ...(viewedAt !== undefined ? { viewedAt } : {}),
+      kind: saved ? review.kind as SessionReview["kind"] : derived.kind,
+      kindSource: saved ? review.kindSource as SessionReview["kindSource"] : derived.kindSource,
+      artifact: typeof review.artifact === "string" && review.artifact ? review.artifact : derived.artifact,
+      ...(Number.isSafeInteger(review.version) && (review.version as number) > 0 ? { version: review.version as number } : {}),
+    };
+  }
+
+  /**
+   * Take one filing, or every filing of an artifact, off a session (`removeReviews`), and write
+   * it out: a removed deliverable must not come back with the next daemon restart. `review` is
+   * the newest one left, or none, since everything that shows one deliverable reads it. False
+   * when the session holds nothing that matches.
+   */
+  removeDeliverables(sessionId: string, which: { review: string } | { artifact: string }): boolean {
+    const state = this.sessionStates.get(sessionId);
+    const left = removeReviews(state?.reviews ?? (state?.review ? [state.review] : undefined), which);
+    if (!state || !left) return false;
+    const { review: _removed, reviews: _held, ...rest } = state;
+    this.sessionStates.set(sessionId, { ...rest, ...(left.length ? { review: left.at(-1)!, reviews: left } : {}) });
+    this.saveReviews();
+    return true;
   }
 
   /** Rewrite the saved deliverables (atomic rename), newest first up to `MAX_REVIEWS_BYTES`. */
@@ -213,6 +252,10 @@ export class SessionLedger {
         at: held.at,
         id: held.id,
         ...(held.viewedAt !== undefined ? { viewedAt: held.viewedAt } : {}),
+        ...(held.kind ? { kind: held.kind } : {}),
+        ...(held.kindSource ? { kindSource: held.kindSource } : {}),
+        ...(held.artifact ? { artifact: held.artifact } : {}),
+        ...(held.version !== undefined ? { version: held.version } : {}),
       });
       const entry = {
         label,

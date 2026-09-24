@@ -47,6 +47,8 @@ import type { RegistrySnapshot, SessionInfo } from "../src/sessions.ts";
 import { AmbiguousSessionError, findSessionByName, registrySnapshot } from "../src/sessions.ts";
 import { appServerNoTerminal } from "../src/codex-threads.ts";
 import { HISTORY_PAYLOAD_MAX_BYTES, type HistoryRequest, type HistoryResponse } from "../src/history.ts";
+import { artifactIdentity } from "../src/deliverables.ts";
+import { reviewIdentity } from "../src/records-receipts.ts";
 
 const TOOL_NAMES = [
   "conch_sessions",
@@ -62,6 +64,8 @@ const TOOL_NAMES = [
   "conch_item",
   "conch_working_folders",
   "conch_on_screen",
+  "conch_deliverables",
+  "review_remove",
 ] as const satisfies readonly McpToolName[];
 
 const DEFERRED_TOOL_NAMES = [
@@ -353,6 +357,8 @@ function recordingHandlers(
     conch_item: handler("conch_item"),
     conch_working_folders: handler("conch_working_folders"),
     conch_on_screen: handler("conch_on_screen"),
+    conch_deliverables: handler("conch_deliverables"),
+    review_remove: handler("review_remove"),
   };
 }
 
@@ -480,7 +486,7 @@ describe("recorded history MCP tools", () => {
 });
 
 describe("MCP tool discovery", () => {
-  test("tools/list returns exactly the thirteen tools with valid closed schemas", async () => {
+  test("tools/list returns exactly the fifteen tools with valid closed schemas", async () => {
     const handlers = recordingHandlers([]);
     const response = await dispatchJsonRpc({
       jsonrpc: "2.0",
@@ -494,8 +500,8 @@ describe("MCP tool discovery", () => {
 
     expect(response?.id).toBe(11);
     expect(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).toEqual([...TOOL_NAMES]);
-    expect(result.tools).toHaveLength(13);
-    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(13);
+    expect(result.tools).toHaveLength(15);
+    expect(new Set(result.tools.map((tool: unknown) => isRecord(tool) ? tool.name : null)).size).toBe(15);
     for (const deferred of DEFERRED_TOOL_NAMES) {
       expect(result.tools.some((tool: unknown) => isRecord(tool) && tool.name === deferred)).toBe(false);
     }
@@ -509,11 +515,13 @@ describe("MCP tool discovery", () => {
       conch_rename: ["session", "label"],
       conch_config: ["key", "value", "unset"],
       conch_transcript_tail: ["session", "sentences"],
-      review_to_front: ["summary", "link", "session", "scene"],
+      review_to_front: ["summary", "link", "kind", "key", "session", "scene"],
       conch_history: ["session", "branch", "before", "limit"],
       conch_item: ["session", "item", "bodyCursor"],
       conch_working_folders: ["folders"],
       conch_on_screen: [],
+      conch_deliverables: [],
+      review_remove: ["id", "artifact"],
     };
     const expectedRequired: Record<McpToolName, string[]> = {
       conch_sessions: [],
@@ -530,6 +538,9 @@ describe("MCP tool discovery", () => {
       conch_item: ["session", "item"],
       conch_working_folders: ["folders"],
       conch_on_screen: [],
+      conch_deliverables: [],
+      // Exactly one of id or artifact, which the handler enforces.
+      review_remove: [],
     };
 
     for (const tool of result.tools) {
@@ -612,7 +623,7 @@ describe("schemas state what the handlers enforce", () => {
 
   test("review_to_front describes publishing, not opening or finishing", () => {
     expect(MCP_TOOLS.find((tool) => tool.name === "review_to_front")!.description).toBe(
-      "Publish your session’s result for the user to inspect, with a concise summary and optional artifact or conversation scene. Publishing the same link again adds a newer version of that artifact rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
+      "Publish your session’s result for the user to inspect, with a concise summary, an optional artifact link and kind, and an optional conversation scene. Publishing the same artifact again (the same link, or the same key) adds its next version rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. Returns the filing's id, its artifact, version and kind. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
     );
   });
 });
@@ -1281,6 +1292,10 @@ describe("real MCP tool handlers with injected dependencies", () => {
       outcome: "accepted",
       sessionId: "session-123",
       label: "Build label",
+      id: reviewIdentity("session-123", { summary: "x".repeat(200), at: 1_234_567 }),
+      artifact: artifactIdentity("x".repeat(200)),
+      version: 1,
+      kind: "other",
       summary: "x".repeat(200),
       summaryTruncated: { from: 250, to: 200 },
     });
@@ -1295,6 +1310,10 @@ describe("real MCP tool handlers with injected dependencies", () => {
       outcome: "accepted",
       sessionId: "session-123",
       label: "Build label",
+      id: reviewIdentity("session-123", { summary: "the dashboard", link: "https://example.com/review", at: 1_234_567 }),
+      artifact: artifactIdentity("https://example.com/review"),
+      version: 1,
+      kind: "url",
       summary: "the dashboard",
       link: "https://example.com/review",
     });
@@ -1962,5 +1981,123 @@ describe("review_to_front's scene", () => {
     expect(scene.properties.inspect).toMatchObject({ type: "string", minLength: 1, maxLength: 200 });
     expect(scene.description).toContain("`target.ref` is reserved");
     expect(scene.description).toContain("not accepted");
+  });
+});
+
+/**
+ * An agent could not type a deliverable, could not get its id back, could not list its own
+ * without a 271 KB conch_sessions dump, and nothing could remove one: Tyler had one taken off
+ * by hand-editing reviews.json.
+ */
+describe("typed deliverables: filing, listing and removing your own", () => {
+  const runtime = { claudeDir: "/virtual/claude", socketPath: "/virtual/conch.sock" };
+  const page = artifactIdentity("https://x.test/page");
+  const published = JSON.stringify({
+    v: 1,
+    rows: [
+      // Another session's row first, so reading "the first row" would read theirs.
+      {
+        id: "session-other",
+        label: "Other",
+        reviews: [{ summary: "not yours", at: 4_000, id: "o-1", artifact: "other-art", version: 1, kind: "image" }],
+      },
+      {
+        id: "session-123",
+        label: "Build",
+        reviews: [
+          { summary: "page v1", link: "https://x.test/page", at: 1_000, id: "p-1", artifact: page, version: 1, kind: "url", viewedAt: 1_500 },
+          { summary: "the sim", at: 2_000, id: "s-1", artifact: artifactIdentity("onboarding"), version: 1, kind: "simulator" },
+          { summary: "page v2", link: "https://x.test/page", at: 3_000, id: "p-2", artifact: page, version: 2, kind: "url" },
+        ],
+      },
+    ],
+  });
+
+  test("review_to_front takes a kind and a key, and returns the handles the daemon will file it under", async () => {
+    const h = fakeHarness({ parentPid: 4321, sessionsFile: published });
+    const handlers = createMcpToolHandlers(runtime, h.dependencies);
+    const next = JSON.parse(toolText(await callTool(handlers, "review_to_front", { summary: "page v3", link: "https://x.test/page#hero" })));
+    // The same page, so its next version, one past the highest held.
+    expect(next).toMatchObject({ outcome: "accepted", artifact: page, version: 3, kind: "url" });
+    expect(next.id).toBe(reviewIdentity("session-123", { summary: "page v3", link: "https://x.test/page#hero", at: 1_234_567 }));
+
+    const sim = JSON.parse(toolText(await callTool(handlers, "review_to_front", {
+      summary: "the onboarding flow, second screen", kind: "simulator", key: "onboarding",
+    })));
+    expect(sim).toMatchObject({ artifact: artifactIdentity("onboarding"), version: 2, kind: "simulator" });
+    expect(sim).not.toHaveProperty("link");
+    // Only what the agent said travels; the daemon infers the rest by the same rules.
+    expect(h.calls.daemon.map((call) => call.event.review)).toEqual([
+      { summary: "page v3", link: "https://x.test/page#hero" },
+      { summary: "the onboarding flow, second screen", kind: "simulator", key: "onboarding" },
+    ]);
+  });
+
+  test("review_to_front refuses a kind it does not know, a file kind with no link, and an overlong key", async () => {
+    const h = fakeHarness({ parentPid: 4321 });
+    const handlers = createMcpToolHandlers(runtime, h.dependencies);
+    expect(toolText(await callTool(handlers, "review_to_front", { summary: "x", kind: "hologram" })))
+      .toContain("kind must be one of page, image");
+    expect(toolText(await callTool(handlers, "review_to_front", { summary: "x", kind: "image" })))
+      .toContain('kind "image" needs a link');
+    expect(toolText(await callTool(handlers, "review_to_front", { summary: "x", kind: "app", key: "k".repeat(201) })))
+      .toContain("key must be 1 to 200");
+    expect(h.calls.daemon).toEqual([]);
+  });
+
+  test("conch_deliverables lists only the caller's own, newest first, and says what is superseded", async () => {
+    const h = fakeHarness({ parentPid: 4321, sessionsFile: published });
+    const listed = JSON.parse(toolText(await callTool(createMcpToolHandlers(runtime, h.dependencies), "conch_deliverables", {})));
+    expect(listed).toEqual({
+      sessionId: "session-123",
+      deliverables: [
+        { id: "p-2", artifact: page, version: 2, kind: "url", summary: "page v2", link: "https://x.test/page", at: 3_000, superseded: false },
+        { id: "s-1", artifact: artifactIdentity("onboarding"), version: 1, kind: "simulator", summary: "the sim", at: 2_000, superseded: false },
+        { id: "p-1", artifact: page, version: 1, kind: "url", summary: "page v1", link: "https://x.test/page", at: 1_000, viewedAt: 1_500, superseded: true },
+      ],
+    });
+    expect(JSON.stringify(listed)).not.toContain("not yours");
+  });
+
+  test("conch_deliverables and review_remove refuse a caller conch cannot verify", async () => {
+    const h = fakeHarness({ parentPid: 0, sessionsFile: published });
+    const handlers = createMcpToolHandlers(runtime, h.dependencies);
+    expect(toolText(await callTool(handlers, "conch_deliverables", {}))).toContain("refused: conch cannot verify");
+    expect(toolText(await callTool(handlers, "review_remove", { id: "p-1" }))).toContain("refused: conch cannot verify");
+    expect(h.calls.control).toEqual([]);
+  });
+
+  test("review_remove removes from the caller's own session only, by id or by artifact", async () => {
+    const h = fakeHarness({ parentPid: 4321, sessionsFile: published });
+    const handlers = createMcpToolHandlers(runtime, h.dependencies);
+    h.dependencies.sendControlMessage = async (socketPath, message) => {
+      h.calls.control.push({ socketPath, message });
+      if (message.kind !== "session-command") throw new Error("unexpected");
+      return { ok: true, response: { kind: "session-ack", sessionId: message.sessionId, command: message.command, changed: true } };
+    };
+    expect(JSON.parse(toolText(await callTool(handlers, "review_remove", { id: "p-1" }))))
+      .toEqual({ outcome: "removed", sessionId: "session-123", id: "p-1" });
+    expect(JSON.parse(toolText(await callTool(handlers, "review_remove", { artifact: page }))))
+      .toEqual({ outcome: "removed", sessionId: "session-123", artifact: page });
+    // Another session's id goes to YOUR session, where it matches nothing: there is no way to name theirs.
+    await callTool(handlers, "review_remove", { id: "o-1" });
+    expect(toolText(await callTool(handlers, "review_remove", { id: "o-1", session: "Other" }))).toContain('unknown argument "session"');
+    expect(h.calls.control.map((call) => call.message)).toEqual([
+      { kind: "session-command", sessionId: "session-123", command: "review-remove", review: "p-1" },
+      { kind: "session-command", sessionId: "session-123", command: "review-remove", artifact: page },
+      { kind: "session-command", sessionId: "session-123", command: "review-remove", review: "o-1" },
+    ]);
+  });
+
+  test("review_remove passes the daemon's refusal on in its words, and needs exactly one of id or artifact", async () => {
+    const refusal = 'nothing removed: "Build" holds no deliverable with id o-1';
+    const h = fakeHarness({ parentPid: 4321, controlResult: { ok: true, response: { kind: "session-error", error: refusal } } });
+    const handlers = createMcpToolHandlers(runtime, h.dependencies);
+    expect(toolText(await callTool(handlers, "review_remove", { id: "o-1" }))).toBe(refusal);
+    expect(toolText(await callTool(handlers, "review_remove", {}))).toContain("exactly one of id");
+    expect(toolText(await callTool(handlers, "review_remove", { id: "a", artifact: "b" }))).toContain("exactly one of id");
+    const down = fakeHarness({ parentPid: 4321, controlResult: { ok: false, reason: "daemon-down" } });
+    expect(toolText(await callTool(createMcpToolHandlers(runtime, down.dependencies), "review_remove", { id: "a" })))
+      .toContain("daemon is not running, so nothing was removed");
   });
 });

@@ -26,9 +26,9 @@ export const MAX_SPEAK_CHARS = 600;
 export const AGENT_INSTRUCTIONS = {
   alwaysOn: `conch connects this session to the user’s Mac workspace, floating overlay, and iPhone.
 
-When you have a meaningful result or something the user should inspect, call \`review_to_front\` with a short summary and the best artifact link. For a written explanation, request a conversation scene (\`scene: {v: 1, target: {kind: "conversation"}}\`) and keep the complete explanation in your normal reply.
+When you have a meaningful result or something the user should inspect, call \`review_to_front\` with a short summary and the best artifact link. When the thing to look at has no link (an app window, the Simulator, a terminal, a design), pass its \`kind\` and say where to look in the summary. For a written explanation, request a conversation scene (\`scene: {v: 1, target: {kind: "conversation"}}\`) and keep the complete explanation in your normal reply.
 
-Publishing makes the result available. The user chooses when to open it. Do not open applications, rearrange windows, or start the microphone as a publication side effect. Publish again when the result materially changes, not after every edit.
+Publishing makes the result available. The user chooses when to open it. Do not open applications, rearrange windows, or start the microphone as a publication side effect. Publish again when the result materially changes, not after every edit: the same link or \`key\` files the artifact's next version. \`conch_deliverables\` lists what you have published; \`review_remove\` takes back one that is wrong or obsolete.
 
 Omit \`session\` when publishing. Never attribute work to another session or invent surface references.
 
@@ -64,7 +64,7 @@ If publication is unavailable, leave the result in your reply. Where supported, 
     conch_transcript_tail:
       "Read the last sentences of a live session’s latest assistant reply. Does not retrieve full history or verify tool results.",
     review_to_front:
-      "Publish your session’s result for the user to inspect, with a concise summary and optional artifact or conversation scene. Publishing the same link again adds a newer version of that artifact rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
+      "Publish your session’s result for the user to inspect, with a concise summary, an optional artifact link and kind, and an optional conversation scene. Publishing the same artifact again (the same link, or the same key) adds its next version rather than a second entry: the user sees the newest, with earlier versions listed under it by summary and time. Returns the filing's id, its artifact, version and kind. The user's pill click stages it. Publishing does not open applications or finish the running turn.",
     conch_history:
       "Read a page of recorded session history, including coverage and continuation cursors.",
     conch_item:
@@ -73,6 +73,10 @@ If publication is unavailable, leave the result in your reply. Where supported, 
       "Tell conch the folder(s) this session is actually working in, when they differ from where it started; conch’s file tree, file viewer and sidebar grouping follow them. Absolute or relative to your cwd; each must exist. Your own session only.",
     conch_on_screen:
       "Read what conch last saw on the user’s screen and which session owns it: the surface (a file, page, terminal, app or conch’s own window), the session and deliverable it resolved to, a confidence and the reason. Today conch only knows what it put on screen itself, so this can be stale once the user moves on.",
+    conch_deliverables:
+      "List the deliverables your session holds, newest first: each filing's id, artifact, version, kind, summary, link, when it was filed and looked at, and whether a newer version supersedes it. Your own session only.",
+    review_remove:
+      "Remove a deliverable you published that is wrong or obsolete: one filing by id, or every version of an artifact. Your own session only. A newer version already supersedes an older one, so remove only what should not be looked at.",
   },
 };
 

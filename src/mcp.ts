@@ -5,7 +5,7 @@ import { audioTimeoutMs } from "./audio-watchdog.ts";
 import { loadConfig, type Config } from "./config.ts";
 import { CONCH_VERSION } from "./version.ts";
 import { sendToDaemon, type TurnEvent } from "./hook.ts";
-import { reconcileStatus } from "./panel.ts";
+import { artifactOf, nextVersion, reconcileStatus } from "./panel.ts";
 import {
   renameProviderSession as deliverProviderRename,
   type ProviderRenameResult,
@@ -47,6 +47,15 @@ import {
   transcriptMark,
 } from "./snippet.ts";
 import { lastAssistantReply, readConversationTail } from "./conversation.ts";
+import {
+  ARTIFACT_KEY_MAX,
+  DELIVERABLE_KINDS,
+  deliverableFacts,
+  deliverableKindRefusal,
+  isDeliverableKind,
+  LINKLESS_DELIVERABLE_KINDS,
+} from "./deliverables.ts";
+import { reviewIdentity } from "./records-receipts.ts";
 import { windowKey } from "./window-key.ts";
 import { appServerNoTerminal } from "./codex-threads.ts";
 import { transcriptFormatFor } from "./agent-adapter.ts";
@@ -321,6 +330,17 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
         properties: {
           summary: { type: "string", minLength: 1 },
           link: { type: "string", minLength: 1 },
+          kind: {
+            type: "string",
+            enum: DELIVERABLE_KINDS,
+            description: `Optional. What the user will look at; inferred from the link when omitted. page is a local html file, url a live web page or dev server, app a Mac app window, simulator the iOS Simulator or a device build, design Figma and the like, document Keynote, Word, Pages and the like. Only ${LINKLESS_DELIVERABLE_KINDS.join(", ")} may omit link; the summary then says where to look.`,
+          },
+          key: {
+            type: "string",
+            minLength: 1,
+            maxLength: ARTIFACT_KEY_MAX,
+            description: "Optional. Names the artifact, so publishing it again is its next version. Defaults to the link (a file's real path, a URL without its fragment), else the summary. Use the same key for each version of a thing with no link, or whose link changes.",
+          },
           session: {
             type: "string",
             minLength: 1,
@@ -414,6 +434,28 @@ export function buildMcpTools(text: AgentInstructions = AGENT_INSTRUCTIONS) {
       inputSchema: {
         type: "object",
         properties: {},
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "conch_deliverables",
+      description: text.tools.conch_deliverables,
+      inputSchema: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "review_remove",
+      description: text.tools.review_remove,
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "string", minLength: 1, description: "One filing's id, from review_to_front or conch_deliverables." },
+          artifact: { type: "string", minLength: 1, description: "An artifact, removing every version of it you hold." },
+        },
+        // Exactly one of the two is refused by the handler, for the same reason as conch_mode.
         additionalProperties: false,
       },
     },
@@ -799,6 +841,54 @@ async function requiredReviewSession(
       + (requested ? `is "${dependencies.sessionLabel(requested, requested.cwd)}"` : "does not name you alone")
       + ". Omit `session` to surface your own deliverable.",
   );
+}
+
+/** Your own verified session, for a tool that only ever acts on its caller; refused when conch can't tell. */
+async function verifiedCaller(
+  what: string,
+  config: McpRuntimeConfig,
+  dependencies: McpDependencies,
+  meta: unknown,
+): Promise<SessionInfo> {
+  const binding = await callerBinding(config, dependencies, meta);
+  if (binding.status === "verified") return binding.session;
+  throw new ToolInputError(`refused: conch cannot verify which session is calling (${binding.reason}), so it will not ${what}`);
+}
+
+/** One held filing as the daemon publishes it (`rows[].reviews`), read defensively: the file is not ours. */
+interface HeldDeliverable {
+  id: string;
+  artifact?: string;
+  version?: number;
+  kind?: string;
+  summary: string;
+  link?: string;
+  at?: number;
+  viewedAt?: number;
+}
+
+/**
+ * What a session holds, oldest first, from the published state rather than the socket: the
+ * same file `conch_sessions` returns, which the daemon rewrites on every change. Null when
+ * there is no readable published state.
+ */
+async function heldDeliverables(
+  sessionsPath: string,
+  sessionId: string,
+  dependencies: McpDependencies,
+): Promise<HeldDeliverable[] | null> {
+  let parsed: unknown;
+  try {
+    const raw = await dependencies.readSessionsFile(sessionsPath);
+    parsed = raw === null ? null : JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed) || !Array.isArray(parsed.rows)) return null;
+  const row = parsed.rows.find((candidate) => isRecord(candidate) && candidate.id === sessionId);
+  if (!isRecord(row)) return [];
+  const held = Array.isArray(row.reviews) ? row.reviews : row.review === undefined ? [] : [row.review];
+  return held.filter((one): one is HeldDeliverable => isRecord(one) && typeof one.summary === "string" && typeof one.id === "string");
 }
 
 function unwrapControlResult(result: ControlResult): ControlResponse {
@@ -1243,18 +1333,78 @@ export function createMcpToolHandlers(
       };
     },
 
+    async conch_deliverables(argumentsValue, meta) {
+      allowOnly(toolArguments(argumentsValue), []);
+      const session = await verifiedCaller("say which deliverables are yours", config, dependencies, meta);
+      const held = await heldDeliverables(sessionsPath, session.sessionId, dependencies);
+      if (!held) throw new Error("failed: conch has no readable published state, so the daemon is not running");
+      // Your own, newest first, and only what names and tells them apart: not conch_sessions' dump.
+      return {
+        sessionId: session.sessionId,
+        deliverables: held.map((one, index) => ({
+          id: one.id,
+          ...(one.artifact ? { artifact: one.artifact } : {}),
+          ...(one.version !== undefined ? { version: one.version } : {}),
+          ...(one.kind ? { kind: one.kind } : {}),
+          summary: one.summary,
+          ...(one.link ? { link: one.link } : {}),
+          ...(one.at !== undefined ? { at: one.at } : {}),
+          ...(one.viewedAt !== undefined ? { viewedAt: one.viewedAt } : {}),
+          superseded: held.slice(index + 1).some((later) => artifactOf(later) === artifactOf(one)),
+        })).reverse(),
+      };
+    },
+
+    async review_remove(argumentsValue, meta) {
+      const argumentsObject = toolArguments(argumentsValue);
+      allowOnly(argumentsObject, ["id", "artifact"]);
+      const id = optionalString(argumentsObject, "id")?.trim();
+      const artifact = optionalString(argumentsObject, "artifact")?.trim();
+      if ((id === undefined) === (artifact === undefined)) {
+        throw new ToolInputError("refused: pass exactly one of id (one filing) or artifact (every version of it)");
+      }
+      // Your own session only: the command names the caller, so an id another session holds
+      // matches nothing and is refused by the daemon.
+      const session = await verifiedCaller("remove any session's deliverables", config, dependencies, meta);
+      const result = await dependencies.sendControlMessage(config.socketPath, {
+        kind: "session-command",
+        sessionId: session.sessionId,
+        command: "review-remove",
+        ...(id !== undefined ? { review: id } : { artifact }),
+      });
+      if (!result.ok && result.reason === "daemon-down") {
+        throw new Error("failed: conch daemon is not running, so nothing was removed");
+      }
+      const response = unwrapControlResult(result);
+      if (response.kind !== "session-ack" || response.command !== "review-remove" || !response.changed) {
+        throw new Error("ack-unknown: daemon reply did not match the remove request");
+      }
+      return { outcome: "removed", sessionId: session.sessionId, ...(id !== undefined ? { id } : { artifact }) };
+    },
+
     async review_to_front(argumentsValue, meta) {
       // Accepted, refused or failed, and each says which. A refusal names its
       // reason and nothing reaches the daemon.
-      const { summary, truncatedFrom, link, scene, session } = await (async () => {
+      const { summary, truncatedFrom, link, scene, kind, key, session } = await (async () => {
         const argumentsObject = toolArguments(argumentsValue);
-        allowOnly(argumentsObject, ["summary", "link", "session", "scene"]);
+        allowOnly(argumentsObject, ["summary", "link", "kind", "key", "session", "scene"]);
         const cleaned = sanitizeReviewSummary(requiredString(argumentsObject, "summary"), Infinity);
         if (!cleaned) throw new ToolInputError("summary must be a non-empty string");
         const scene = Object.hasOwn(argumentsObject, "scene")
           ? checkReviewScene(argumentsObject.scene, Object.hasOwn(argumentsObject, "link"))
           : undefined;
         if (scene && !scene.ok) throw new ToolInputError(scene.reason);
+        const kind = optionalString(argumentsObject, "kind");
+        if (kind !== undefined && !isDeliverableKind(kind)) {
+          throw new ToolInputError(`kind must be one of ${DELIVERABLE_KINDS.join(", ")}`);
+        }
+        const kindRefusal = kind && deliverableKindRefusal(kind, Object.hasOwn(argumentsObject, "link"));
+        if (kindRefusal) throw new ToolInputError(kindRefusal);
+        const rawKey = optionalString(argumentsObject, "key");
+        const key = rawKey === undefined ? undefined : sanitizeReviewSummary(rawKey, Infinity);
+        if (key !== undefined && (!key || key.length > ARTIFACT_KEY_MAX)) {
+          throw new ToolInputError(`key must be 1 to ${ARTIFACT_KEY_MAX} printable characters; it names the artifact, it does not describe it`);
+        }
         const session = await requiredReviewSession(argumentsObject, config, dependencies, meta);
         const rawLink = optionalString(argumentsObject, "link");
         // Absolute by the time it leaves here, resolved against this process's
@@ -1267,12 +1417,23 @@ export function createMcpToolHandlers(
           truncatedFrom: cleaned.length > REVIEW_SUMMARY_MAX ? cleaned.length : undefined,
           link: checked?.link,
           scene: scene?.scene,
+          kind,
+          key,
           session,
         };
       })().catch((error) => {
         throw new ToolInputError(`refused: ${errorMessage(error)}`);
       });
       const label = dependencies.sessionLabel(session, session.cwd);
+      // What the daemon will file, computed by the same rules it files with, so the agent gets
+      // its handles back from a send that has no reply (`sendToDaemon` is fire-and-forget).
+      const at = dependencies.now();
+      const review = { summary, ...(link ? { link } : {}), ...(scene ? { scene } : {}), ...(kind ? { kind } : {}), ...(key ? { key } : {}) };
+      const facts = deliverableFacts(review);
+      // ponytail: the version is predicted from the published state by the daemon's own rule
+      // (`nextVersion`); a publication still queued behind speech isn't published yet, so it can
+      // read one low. conch_deliverables says what was filed. A reply from the daemon if it bites.
+      const version = nextVersion(await heldDeliverables(sessionsPath, session.sessionId, dependencies) ?? [], facts.artifact);
       const sent = await (async () => {
         const transcriptPath = dependencies.findTranscript(config.claudeDir, session.sessionId);
         // Not a turn-end: publishing happens mid-turn, and the turn's own Stop
@@ -1287,8 +1448,8 @@ export function createMcpToolHandlers(
           ...(transcriptPath
             ? { transcriptPath, mark: await dependencies.transcriptMark(transcriptPath) }
             : {}),
-          eventAt: dependencies.now(),
-          review: { summary, ...(link ? { link } : {}), ...(scene ? { scene } : {}) },
+          eventAt: at,
+          review,
         });
       })().catch((error) => {
         throw new Error(`failed: ${errorMessage(error)}`);
@@ -1298,6 +1459,12 @@ export function createMcpToolHandlers(
         outcome: "accepted",
         sessionId: session.sessionId,
         label,
+        // This filing's own id, the artifact it is a version of, and which version: what
+        // conch_deliverables lists and review_remove takes.
+        id: reviewIdentity(session.sessionId, { summary, link, at }),
+        artifact: facts.artifact,
+        version,
+        kind: facts.kind,
         summary,
         ...(link ? { link } : {}),
         ...(scene ? { scene } : {}),

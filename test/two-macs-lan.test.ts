@@ -20,7 +20,7 @@ function fixture() {
   let fallbacks = 0;
   let revision = 1;
   const dependencies = {
-    getState: () => ({ v: 1, features: { deliverables: 1, viewedState: 1 }, ownerDeviceId: "owner-a", ts: revision, rows: [{ id: "same-key#123", detail: `turn ${revision}` }] }),
+    getState: () => ({ v: 1, features: { deliverables: 2, viewedState: 1 }, ownerDeviceId: "owner-a", ts: revision, rows: [{ id: "same-key#123", detail: `turn ${revision}` }] }),
     forwardControl: async () => "", replyFor: async () => "", acceptUpload: async () => ({ received: 1, total: 1 }), log: () => {},
     onClientsChanged(count: number) { counts.push(count); if (lease.clientsChanged(count)) fallbacks++; },
   };

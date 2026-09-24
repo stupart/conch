@@ -112,6 +112,30 @@ final class WorkspaceTests: XCTestCase {
         XCTAssertEqual(groups[3].versions, ["l2", "l1"])
     }
 
+    /// The daemon's artifact decides when it sends one: two links under one agent key are one
+    /// artifact, a linkless Simulator has versions, and one link filed as two artifacts stays two.
+    func testTheDaemonsArtifactDecidesOverTheLink() {
+        let groups = DeliverableGroups.grouped([
+            DeliverableVersion(id: "h3", link: "/tmp/hero-v3.png", artifact: "hero"),
+            DeliverableVersion(id: "s1", link: nil, artifact: "sim"),
+            DeliverableVersion(id: "h4", link: "/tmp/hero-v4.png", artifact: "hero"),
+            DeliverableVersion(id: "s2", link: nil, artifact: "sim"),
+            DeliverableVersion(id: "x1", link: "https://x/same", artifact: "one"),
+            DeliverableVersion(id: "x2", link: "https://x/same", artifact: "two"),
+        ])
+        XCTAssertEqual(groups.map(\.id), ["hero", "sim", "one", "two"])
+        XCTAssertEqual(groups.map(\.versions), [["h4", "h3"], ["s2", "s1"], ["x1"], ["x2"]])
+    }
+
+    /// An older daemon sends no artifact, and the link groups exactly as it did.
+    func testNoArtifactFallsBackToTheLink() {
+        let groups = DeliverableGroups.grouped([
+            DeliverableVersion(id: "a1", link: "https://x/a"), DeliverableVersion(id: "a2", link: "https://x/a", artifact: nil),
+        ])
+        XCTAssertEqual(groups.map(\.id), ["https://x/a"])
+        XCTAssertEqual(groups[0].versions, ["a2", "a1"])
+    }
+
     /// The tab stands for the pick while it is one of its own versions; another group's pick,
     /// or one the per-session cap has dropped, leaves it on the newest.
     func testTheTabStandsForItsOwnPickElseTheNewest() {

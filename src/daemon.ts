@@ -2152,6 +2152,12 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
       void renderSessionPanel();
       return true;
     },
+    removeReview: (target, which) => {
+      if (!ledger.removeDeliverables(target.sessionId, which)) return false;
+      log(`removed ${"review" in which ? "a deliverable" : "an artifact"} from "${target.label}"`);
+      void renderSessionPanel();
+      return true;
+    },
     dismiss: (target) => {
       dismissedSessionIds.add(target.sessionId);
       if (ledger.lastTurn?.sessionId === target.sessionId) ledger.lastTurn = null;

@@ -210,14 +210,18 @@ public struct SessionPresentation: Codable, Equatable, Sendable {
 
 // MARK: - Which deliverables are one artifact
 
-/// One filing of a deliverable, reduced to the two facts grouping reads.
+/// One filing of a deliverable, reduced to the facts grouping reads.
 public struct DeliverableVersion: Equatable, Sendable {
     public let id: String
     public let link: String?
+    /// The artifact the daemon filed it as a version of (`features.deliverables` 2). Absent from
+    /// an older daemon, which is why the link still decides there.
+    public let artifact: String?
 
-    public init(id: String, link: String?) {
+    public init(id: String, link: String?, artifact: String? = nil) {
         self.id = id
         self.link = link
+        self.artifact = artifact
     }
 }
 
@@ -229,7 +233,8 @@ public struct DeliverableVersion: Equatable, Sendable {
 /// newer. Two other sessions held six that were four things each; a fourth held two that were
 /// two. Grouping has to collapse the first and leave the last exactly as it is.
 public struct DeliverableGroup: Equatable, Sendable, Identifiable {
-    /// The link the versions share, or the lone version's own id when it has none.
+    /// The artifact the versions share: the daemon's `artifact`, else the link they share, else
+    /// the lone version's own id when it has neither.
     public let id: String
     /// Every filing of this artifact, NEWEST FIRST: `versions[0]` is what the tab stands for
     /// until the reader picks an older one.
@@ -267,15 +272,18 @@ public enum DeliverableGroups {
     /// tab reading "2m" beside one reading "3h" on its right — which is exactly the "which is
     /// older" question the strip exists to answer at a glance.
     ///
-    /// ponytail: the key is the link byte for byte after trimming; a path the agent rewrites each
-    /// run (`hero-v3.png`, `hero-v4.png`) is two artifacts here, honestly. Normalise when a real
-    /// case shows two spellings of one thing.
+    /// The daemon's `artifact` decides first, when it sends one: it knows what the agent meant —
+    /// an agent's own `key`, a file's real path, a URL without its fragment — so a path the
+    /// agent rewrites each run (`hero-v3.png`, `hero-v4.png`) under one key is one artifact, and a
+    /// Simulator with no link at all can have versions. The link is the fallback for an older
+    /// daemon, byte for byte after trimming, and it is also what the daemon's own fallback for a
+    /// record from before artifacts is (`artifactOf`), so the two agree on what to remove.
     public static func grouped(_ held: [DeliverableVersion]) -> [DeliverableGroup] {
         var versions: [String: [String]] = [:]
         var order: [String] = []
         for version in held {
             let link = version.link?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let key = link.isEmpty ? version.id : link
+            let key = version.artifact ?? (link.isEmpty ? version.id : link)
             versions[key, default: []].insert(version.id, at: 0)
             order.removeAll { $0 == key }
             order.append(key)

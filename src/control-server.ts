@@ -6,7 +6,8 @@ import { dirname, join } from "node:path";
 import { lockSocketPath, type SocketOwnership } from "./socket-ownership.ts";
 import type { TurnEvent } from "./hook.ts";
 import type { SendFailure } from "./inject.ts";
-import { checkReviewScene } from "./snippet.ts";
+import { checkReviewScene, sanitizeReviewSummary } from "./snippet.ts";
+import { ARTIFACT_KEY_MAX, deliverableKindRefusal, isDeliverableKind } from "./deliverables.ts";
 import { agentQuestions } from "./conversation.ts";
 import type { PublishedDelivery, PublishedState } from "./panel.ts";
 import type { SessionInfo } from "./sessions.ts";
@@ -179,6 +180,19 @@ function applySessionControlMessage(
         { command: "review-viewed", review: message.review },
       );
       return sessionCommandAck(message, marked === true, target.label);
+    }
+    case "review-remove": {
+      const which = message.review !== undefined ? { review: message.review } : { artifact: message.artifact! };
+      const removed = invokeSessionAction(controller, target, { command: "review-remove", ...which });
+      // Refused in words, so whoever asked (an agent, the Mac's menu) can say what went wrong.
+      if (removed !== true) {
+        return {
+          kind: "session-error",
+          error: `nothing removed: "${target.label}" holds no deliverable with ${
+            "review" in which ? `id ${which.review}` : `artifact ${which.artifact}`}`,
+        };
+      }
+      return sessionCommandAck(message, true, target.label);
     }
     case "dismiss": {
       if (options.isDismissed?.(message.sessionId)) {
@@ -581,6 +595,19 @@ export function validateSocketTurnEvent(value: unknown): SocketTurnEventValidati
     if (value.review.scene !== undefined) {
       const scene = checkReviewScene(value.review.scene, value.review.link !== undefined);
       if (!scene.ok) return { ok: false, err: `review ${scene.reason}` };
+    }
+    // The same rules `review_to_front` applies; the link itself is checked where it is filed,
+    // which can reach the filesystem (voice-loop `vettedReviewLink`).
+    if (value.review.kind !== undefined) {
+      if (!isDeliverableKind(value.review.kind)) return { ok: false, err: "review kind is not a deliverable kind" };
+      const refusal = deliverableKindRefusal(value.review.kind, value.review.link !== undefined);
+      if (refusal) return { ok: false, err: `review ${refusal}` };
+    }
+    if (value.review.key !== undefined) {
+      const key = typeof value.review.key === "string" ? sanitizeReviewSummary(value.review.key, Infinity) : "";
+      if (!key || key.length > ARTIFACT_KEY_MAX || key !== value.review.key) {
+        return { ok: false, err: `review key must be one printable line of 1-${ARTIFACT_KEY_MAX} characters` };
+      }
     }
   }
   if (type === "review-published" && value.review === undefined) {

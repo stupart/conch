@@ -1,10 +1,11 @@
 import { statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import type { Config } from "./config.ts";
 import type { TurnEvent } from "./hook.ts";
 import { presentedTo, type AudioHolder } from "./audio-holder.ts";
 import { voiceFor } from "./speak.ts";
 import type { SpeechManager } from "./speech-manager.ts";
-import { createRecordOperation, emitRecordObservation, reviewIdentity, reviewPublicationObservation, type RecordObservationScope, type RecordObserver } from "./records-receipts.ts";
+import { createRecordOperation, emitRecordObservation, reviewPublicationObservation, type RecordObservationScope, type RecordObserver } from "./records-receipts.ts";
 import * as listen from "./listen.ts";
 import type { ListenHooks, RuntimeDictationSession } from "./listen.ts";
 import type { RecorderHandle } from "./dictation-controller.ts";
@@ -23,7 +24,7 @@ import {
 import { adapterForTranscript, inputBoxHoldsWords, transcriptFormatFor } from "./agent-adapter.ts";
 import { injectProviderCommand as providerCommand, isProviderCommandLine } from "./provider-rename.ts";
 import { classifyReadingGap, parseNameAddress, wordOverlapRatio } from "./commands.ts";
-import { lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark, promptSince } from "./snippet.ts";
+import { checkReviewLink, lastAssistantText, splitSentences, stripMarkdown, countCoveredSentences, userRespondedSince, transcriptMark, promptSince } from "./snippet.ts";
 import {
   lastAssistantReply,
   latestAnswerableQuestion,
@@ -54,7 +55,7 @@ import { findSessionBySpokenName, findTranscript, sessionLabel, type SessionInfo
 import { eventTimestamp, type SessionLedger } from "./session-ledger.ts";
 import type { EventQueue } from "./event-queue.ts";
 import { sessionHasLiveBackgroundWork } from "./agent-activity.ts";
-import { carriedReview, carriedReviews, latestLatchedState, type SessionStatus } from "./panel.ts";
+import { carriedReview, carriedReviews, fileReview, latestLatchedState, type SessionStatus } from "./panel.ts";
 import { gateTurnForControls } from "./instant-controls.ts";
 import {
   emitRecorderTrace,
@@ -746,7 +747,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     status: SessionStatus,
     detail?: string,
     eventAt?: number,
-    review?: { summary: string; link?: string },
+    review?: TurnEvent["review"],
     backgroundWork?: boolean,
   ): boolean {
     if (!sessionId) return true; // nothing to latch; preserve the event's non-panel behavior
@@ -757,7 +758,7 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
     // A review is stamped with the time it was FILED, here, once. Later latches
     // carry that exact record forward, so its identity never moves until a
     // newer review replaces it.
-    const minted = review ? { ...review, at, id: reviewIdentity(sessionId, { ...review, at }) } : undefined;
+    const minted = review ? fileReview(sessionId, review, at, prior?.reviews) : undefined;
     const carried = carriedReview(prior, status, minted);
     const held = carriedReviews(prior?.reviews, minted);
     const incoming = {
@@ -779,6 +780,23 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   }
 
   /**
+   * The daemon's own check of a deliverable's link: `checkReviewLink`, the one `review_to_front`
+   * and the `conch:review` marker already pass. The socket checked only that a link was a
+   * string, and it is not only the MCP server's, so a raw write could file `/etc/hosts` for the
+   * phone to fetch. Checked against the folder the daemon knows the session by, not the one the
+   * event claims. The link as checked (absolute), undefined for none, null when refused.
+   */
+  async function vettedReviewLink(event: TurnEvent): Promise<string | undefined | null> {
+    const link = event.review?.link;
+    if (link === undefined) return undefined;
+    const checked = await checkReviewLink(link, deps.window(event.sessionId)?.cwd ?? event.cwd ?? tmpdir());
+    if (checked.ok) return checked.link;
+    log(`refused a deliverable link from "${event.label}": ${checked.reason}`);
+    recordDaemonError("review-link", `Refused a deliverable's link: ${checked.reason}`, event.sessionId, { link });
+    return null;
+  }
+
+  /**
    * An agent published a result (`review_to_front`). That is not the end of
    * its turn.
    *
@@ -794,11 +812,13 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
   async function publishReview(event: TurnEvent): Promise<void> {
     const { sessionId, label } = event;
     if (!sessionId || !event.review) return;
-    const filed = { ...event.review, at: eventTimestamp(event.eventAt) };
-    const review = { ...filed, id: reviewIdentity(sessionId, filed) };
+    const link = await vettedReviewLink(event);
+    if (link === null) return;
+    const at = eventTimestamp(event.eventAt);
     const prior = sessionStates.get(sessionId);
     // A replayed or reordered older publication never displaces a newer one.
-    if (prior?.review && prior.review.at > review.at) return;
+    if (prior?.review && prior.review.at > at) return;
+    const review = fileReview(sessionId, { ...event.review, ...(link ? { link } : {}) }, at, prior?.reviews);
     // No latch yet: the oldest-truth latch a restored review gets
     // (`restoreReviews`), so the registry or the next hook decides status.
     const held = carriedReviews(prior?.reviews, review);
@@ -1201,6 +1221,12 @@ export function createVoiceLoop(deps: VoiceLoopDeps): VoiceLoop {
       const kind = approval ? approvalDetail(approval) : describeNeed(event.ntype);
       setSessionState(event.sessionId, event.label, "needs", kind, event.eventAt);
       if (!approval) return; // stripped: no bell, no announcement, no permission mic
+    }
+    // A marker's review keeps its summary when its link is refused, as the hook's own check does.
+    if (event.type === "turn-end" && event.review?.link !== undefined) {
+      const { link: _unchecked, ...rest } = event.review;
+      const link = await vettedReviewLink(event);
+      event.review = link ? { ...rest, link } : rest;
     }
     if (event.type === "turn-end" && !setSessionState(
       event.sessionId,

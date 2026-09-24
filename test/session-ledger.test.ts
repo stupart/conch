@@ -149,7 +149,8 @@ describe("saved deliverables", () => {
     ledger.forgetGone(new Set(["live"]));
     const after = restored(path);
     expect([...after.sessionStates.keys()]).toEqual(["live"]);
-    expect(after.sessionStates.get("live")).toEqual({
+    // Plus the kind, artifact and version a restore derives (deliverables.test.ts pins those).
+    expect(after.sessionStates.get("live")).toMatchObject({
       label: "live", status: "waiting", at: 0,
       review: { summary: "live ready", at: 1_000, id: "live-rev" },
       reviews: [{ summary: "live ready", at: 1_000, id: "live-rev" }],
@@ -174,12 +175,13 @@ describe("saved deliverables", () => {
     const scene = { v: 1 as const, target: { kind: "terminal" as const }, inspect: "the build log" };
     ledger.sessionStates.set("a", { label: "a", status: "waiting", at: 1_000, review: { summary: "a ready", scene, at: 1_000, id: "a-rev" } });
     ledger.saveReviews();
-    expect(restored(path).sessionStates.get("a")?.review).toEqual({ summary: "a ready", scene, at: 1_000, id: "a-rev" });
+    expect(restored(path).sessionStates.get("a")?.review).toMatchObject({ summary: "a ready", scene, at: 1_000, id: "a-rev" });
     const saved = JSON.parse(readFileSync(path, "utf8"));
     saved.a.review.scene = { v: 9 };
     saved.a.reviews[0].scene = { v: 9 };
     writeFileSync(path, JSON.stringify(saved));
-    expect(restored(path).sessionStates.get("a")?.review).toEqual({ summary: "a ready", at: 1_000, id: "a-rev" });
+    expect(restored(path).sessionStates.get("a")?.review).toMatchObject({ summary: "a ready", at: 1_000, id: "a-rev" });
+    expect(restored(path).sessionStates.get("a")?.review?.scene).toBeUndefined();
   }));
 
   test("a malformed entry is skipped and a live latch is never overwritten", () => withFile((path) => {
@@ -209,9 +211,9 @@ describe("saved deliverables", () => {
     ledger.saveReviews();
 
     const after = restored(path).sessionStates.get("a");
-    expect(after?.reviews).toEqual(held);
+    expect(after?.reviews).toMatchObject(held);
     // Everything that shows ONE deliverable still gets the newest.
-    expect(after?.review).toEqual(held[2]);
+    expect(after?.review).toMatchObject(held[2]!);
   }));
 
   test("a deliverable that was looked at stays looked at across a restart", () => withFile((path) => {
@@ -232,8 +234,8 @@ describe("saved deliverables", () => {
       a: { label: "a", review: { summary: "a ready", at: 1_000, id: "a-rev" } },
     }));
     const after = restored(path).sessionStates.get("a");
-    expect(after?.review).toEqual({ summary: "a ready", at: 1_000, id: "a-rev" });
-    expect(after?.reviews).toEqual([{ summary: "a ready", at: 1_000, id: "a-rev" }]);
+    expect(after?.review).toMatchObject({ summary: "a ready", at: 1_000, id: "a-rev" });
+    expect(after?.reviews).toMatchObject([{ summary: "a ready", at: 1_000, id: "a-rev" }]);
   }));
 
   test("a ledger that moved home reads the old file until it has written the new one", () => withFile((path) => {
@@ -244,7 +246,7 @@ describe("saved deliverables", () => {
 
     const moved = new SessionLedger(path, legacy);
     moved.restoreReviews();
-    expect(moved.sessionStates.get("a")?.review).toEqual({ summary: "a ready", at: 1_000, id: "a-rev" });
+    expect(moved.sessionStates.get("a")?.review).toMatchObject({ summary: "a ready", at: 1_000, id: "a-rev" });
 
     // Once home exists it is the truth, whatever the old file still says.
     moved.saveReviews();

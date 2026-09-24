@@ -247,6 +247,8 @@ describe("validateSocketTurnEvent", () => {
       review: { summary: "ready", scene: { v: 1, target: { kind: "conversation" }, inspect: "the copy" } },
     };
     expect(validateSocketTurnEvent(staged)).toEqual({ ok: true, value: staged });
+    const typed: TurnEvent = { ...publication, review: { summary: "the onboarding flow", kind: "simulator", key: "onboarding" } };
+    expect(validateSocketTurnEvent(typed)).toEqual({ ok: true, value: typed });
   });
 
   test("rejects unknown, incomplete, and wrong-shaped JSON before dispatch", () => {
@@ -268,6 +270,12 @@ describe("validateSocketTurnEvent", () => {
       // The tool's scene check, at the socket too: a link scene with no link, an inspect past the cap.
       { type: "review-published", sessionId: "session-a", label: "alpha", announce: "", review: { summary: "ready", scene: { v: 1, target: { kind: "link" } } } },
       { type: "review-published", sessionId: "session-a", label: "alpha", announce: "", review: { summary: "ready", link: "https://example.com", scene: { v: 1, target: { kind: "auto" }, inspect: "x".repeat(201) } } },
+      // …and its kind and key rules: a kind conch has no name for, a file kind with nothing to open, a key that is not one line.
+      { type: "review-published", sessionId: "session-a", label: "alpha", announce: "", review: { summary: "ready", link: "https://example.com", kind: "hologram" } },
+      { type: "review-published", sessionId: "session-a", label: "alpha", announce: "", review: { summary: "ready", kind: "image" } },
+      { type: "review-published", sessionId: "session-a", label: "alpha", announce: "", review: { summary: "ready", key: "" } },
+      { type: "review-published", sessionId: "session-a", label: "alpha", announce: "", review: { summary: "ready", key: "two\nlines" } },
+      { type: "review-published", sessionId: "session-a", label: "alpha", announce: "", review: { summary: "ready", key: "k".repeat(201) } },
     ];
 
     for (const value of invalid) expect(validateSocketTurnEvent(value).ok).toBeFalse();

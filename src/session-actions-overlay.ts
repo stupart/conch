@@ -46,6 +46,11 @@ export interface SessionActionsController {
    * nothing to change — no such deliverable, or it was already marked.
    */
   markReviewViewed?(target: Readonly<SessionActionsTarget>, review: string): boolean | void;
+  /**
+   * Take one filing (`review`) or every filing of an `artifact` off this session. False when it
+   * holds nothing that matches.
+   */
+  removeReview?(target: Readonly<SessionActionsTarget>, which: { review: string } | { artifact: string }): boolean | void;
 }
 
 /**
@@ -65,7 +70,8 @@ export type SessionActionMutation =
   | { command: "restore" }
   | { command: "set-model"; model: string }
   | { command: "attach" }
-  | { command: "review-viewed"; review: string };
+  | { command: "review-viewed"; review: string }
+  | ({ command: "review-remove" } & ({ review: string } | { artifact: string }));
 
 /** One closed command-to-controller adapter shared by terminal UI and socket IPC. */
 export function invokeSessionAction(
@@ -94,6 +100,8 @@ export function invokeSessionAction(
       return controller.setModel?.({ ...target }, mutation.model) ?? false;
     case "review-viewed":
       return controller.markReviewViewed?.({ ...target }, mutation.review) ?? false;
+    case "review-remove":
+      return controller.removeReview?.({ ...target }, "review" in mutation ? { review: mutation.review } : { artifact: mutation.artifact }) ?? false;
     case "attach":
       return controller.attach?.({ ...target }) ?? false;
   }
