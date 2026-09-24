@@ -786,6 +786,9 @@ describe("the Mac app's front-window observer (source guards)", () => {
     expect(code).toContain("await Task.detached {");
     expect(code).toContain("AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 0.25)");
     expect(code).toContain("queue += children(element).prefix(budget - queue.count)");
+    // Never into a page: the address isn't in there, and walking one makes a browser switch its
+    // own accessibility on, which Tyler would feel in every tab.
+    expect(code).toContain('if role == "AXWebArea" || leaves.contains(role) { continue }');
   });
 
   test("conch's own windows are left to reportShowing, and the gate stands between it and the daemon", () => {
