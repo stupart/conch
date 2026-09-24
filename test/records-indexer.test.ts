@@ -310,3 +310,22 @@ test("a rename keeps the reader's cursor, and a real rename-and-replace advances
     .toMatchObject({ code: "stale-cursor" });
   expect(items(f.store).map((row: any) => row.native_id).sort()).toEqual(["first", "second", "third"]);
 });
+
+test("a batch late in a long session holds the worker's loop briefly, not for a walk of the session", async () => {
+  // 2026-09-25: each record's parent lookup walked every earlier item of its session, so
+  // backfilling a 324 MB transcript held the record worker for up to a second per batch.
+  const f = fixture({ batchBytes: 256 * 1024, batchLines: 256, maxRecordBytes: undefined });
+  const lines = 20_000;
+  f.write(id(1), Array.from({ length: lines }, (_, n) => JSON.stringify({
+    type: n % 2 ? "assistant" : "user", uuid: `line-${n}`, ...(n ? { parentUuid: `line-${n - 1}` } : {}),
+    message: { role: n % 2 ? "assistant" : "user", content: `message ${n}` },
+  }) + "\n").join(""));
+  let longest = 0;
+  while (f.indexer.status().linesIndexed < lines && longest < 100) {
+    const started = performance.now();
+    await f.indexer.tick();
+    longest = Math.max(longest, performance.now() - started);
+  }
+  expect(longest).toBeLessThan(100);
+  expect(f.store.counts().items).toBe(lines);
+});

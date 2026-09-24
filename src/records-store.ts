@@ -235,7 +235,10 @@ export class RecordStore {
           turnForItem: (nativeId: string) => (this.db.query("SELECT turn_id FROM items WHERE session_id = ? AND native_id = ? AND turn_id IS NOT NULL LIMIT 1")
             .get(session.id, nativeId) as { turn_id: string } | null)?.turn_id,
           itemForNativeId: (nativeId: string) => {
-            const row = this.db.query("SELECT id,turn_id FROM items WHERE session_id=? AND native_id=? ORDER BY order_key,id LIMIT 1")
+            // INDEXED BY: for ORDER BY … LIMIT 1 the planner otherwise picks items_session_order and
+            // walks the whole session per record — up to a second per batch on a 324 MB transcript.
+            const row = this.db.query(`SELECT id,turn_id FROM items INDEXED BY items_session_native
+              WHERE session_id=? AND native_id=? ORDER BY order_key,id LIMIT 1`)
               .get(session.id, nativeId) as { id: string; turn_id: string | null } | null;
             return row ? { id: row.id, turnId: row.turn_id ?? undefined } : undefined;
           },
