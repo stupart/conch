@@ -1354,6 +1354,7 @@ final class StateStore: ObservableObject {
             audioControl: sourceState.audioControl,
             audioOutbox: sourceState.audioOutbox,
             deliveries: sourceState.deliveries,
+            features: sourceState.features,
             showing: sourceState.showing
         )
         if state?.hasSamePresentation(as: next) != true {

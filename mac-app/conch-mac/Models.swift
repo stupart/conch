@@ -199,6 +199,8 @@ struct PublishedState: Decodable, Equatable, Sendable {
             && audioControl == other.audioControl
             // Where the canvas sends: it changes only when something new is staged.
             && showing == other.showing
+            // What the daemon can do (Remove, viewed receipts): a daemon upgrade flips it alone.
+            && features == other.features
     }
 }
 
