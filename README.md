@@ -76,7 +76,7 @@ Prefer to install the Claude Code plugin yourself, straight from this repo? `con
 /plugin install conch@conch-plugins
 ```
 
-The plugin still needs the CLI above. If you previously installed `conch@blueprint-studio-marketplace`, install the new one first, confirm it works, then `/plugin uninstall conch@blueprint-studio-marketplace` — the two would otherwise register the conch tools twice. `conch setup`'s own local plugin (`conch@conch`) is separate and unaffected.
+The plugin still needs the CLI above. If `conch setup` already installed `conch@conch`, keep that local installation; do not also install the public-catalog copy. If you previously installed `conch@blueprint-studio-marketplace`, install the new one first, confirm it works, then `/plugin uninstall conch@blueprint-studio-marketplace` — the two would otherwise register the conch tools twice. `conch setup`'s own local plugin (`conch@conch`) is separate and unaffected.
 
 <details>
 <summary><b>From source</b> (for hacking on conch)</summary>
