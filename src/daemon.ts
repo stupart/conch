@@ -1462,6 +1462,8 @@ async function runOwnedDaemon(cfg: Config, ownership: import("./socket-ownership
           portListeners,
           sessionPid: (sessionId) => panelSessions.get(sessionId)?.pid,
           // A snapshot of a deliverable the phone can't draw, put on the held review like `viewedAt`.
+          // The words of a video the phone is sending, timed, from its recording (`/transcript`).
+          transcribe: (wavPath) => transcribeWavSegments(cfg, wavPath),
           requestPreview: createPreviewRequester({
             held: (sessionId) => {
               const state = ledger.sessionStates.get(sessionId);
