@@ -31,6 +31,8 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         installed = ConchStatusItem(store: store)
         // After the status item, which registers the defaults that show and hide the panels.
         FloatingPanels.install(store: store)
+        // After the panels, whose staged item it follows.
+        CanvasController.shared.install(store: store)
     }
 
     private let store: StateStore
@@ -114,6 +116,10 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
         menu.addItem(entry("Show control bar", #selector(toggleControlBar), checked: defaults.bool(forKey: Self.showControlBarKey)))
         menu.addItem(entry("Show conversation", #selector(toggleConversation), checked: defaults.bool(forKey: Self.showConversationKey)))
         menu.addItem(entry("Show reply line", #selector(toggleReplyLine), checked: defaults.bool(forKey: Self.showReplyLineKey)))
+        // The pen, with its hotkey shown (`CanvasHotKey`).
+        let canvas = entry("Canvas", #selector(toggleCanvas), checked: CanvasController.shared.armed, key: "p")
+        canvas.keyEquivalentModifierMask = [.control, .option, .command]
+        menu.addItem(canvas)
 
         let ready = Self.readyRows(state)
         let working = Self.workingRows(state)
@@ -178,6 +184,7 @@ final class ConchStatusItem: NSObject, NSMenuDelegate {
     @objc private func stopSpeaking() { store.send(.stop()) }
 
     @objc private func toggleControlBar() { toggle(Self.showControlBarKey) }
+    @objc private func toggleCanvas() { CanvasController.shared.toggle() }
     @objc private func toggleReplyLine() { toggle(Self.showReplyLineKey) }
     @objc private func toggleConversation() {
         // Turned on from the menu, the conversation opens full size, not as its collapsed handle.

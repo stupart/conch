@@ -742,3 +742,70 @@ if let busy = labImage("lab-backdrops/real-screen-busy.png"), let darkApp = labI
         }
     }
 }
+
+// MARK: - Wave 2: the canvas
+
+/// A markup over the m3 screen, 0 to 1 across it: a box round the invite card, a note in it, an arrow, a stroke and a
+/// highlight. Drawn by `CanvasInk`, the builder the glass and the picture an agent is sent both use.
+let canvasMarks: [CanvasMark] = {
+    func at(_ x: CGFloat, _ y: CGFloat, _ t: Double = 0) -> CanvasPoint { CanvasPoint(x: x / m3Screen.width, y: y / m3Screen.height, t: t) }
+    let wave = (0...60).map { i -> CanvasPoint in
+        let x = 820 + CGFloat(i) * 4.5
+        return at(x, 150 + sin(CGFloat(i) / 7) * 18, Double(i) / (i < 30 ? 90 : 30))
+    }
+    return [
+        CanvasMark(kind: .box, points: [at(700, 60), at(1150, 260)]),
+        CanvasMark(kind: .note, points: [at(1080, 120)], text: "make this bigger"),
+        CanvasMark(kind: .arrow, points: [at(560, 360), at(760, 250)]),
+        CanvasMark(kind: .pen, points: wave),
+        CanvasMark(kind: .highlight, points: [at(820, 300, 0), at(1000, 302, 0.1), at(1100, 300, 0.2)]),
+    ]
+}()
+
+struct CanvasInkPreview: View {
+    let marks: [CanvasMark]
+    let size: CGSize
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(marks) { mark in
+                let shape = CanvasInk.shape(of: mark, in: size)
+                if let wash = shape.wash { Path(wash).fill(CanvasInk.colour(mark.author).color.opacity(CanvasInk.washOpacity)) }
+                Path(shape.ink)
+                    .fill(mark.kind == .highlight ? CanvasInk.highlight.color : CanvasInk.colour(mark.author).color)
+                    .blendMode(mark.kind == .highlight ? .multiply : .normal)
+                if mark.kind == .note, let spot = mark.points.first?.point(in: size) {
+                    Text("1").font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
+                        .frame(width: CanvasInk.pinSide, height: CanvasInk.pinSide)
+                        .position(x: spot.x + CanvasInk.pinSide / 2, y: spot.y - CanvasInk.pinSide / 2)
+                }
+            }
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+    }
+}
+
+func canvasPill(tool: CanvasMark.Kind = .box, armed: Bool = true, drawn: Bool = true, sending: Bool = false, route: String? = "Arch brand page", message: String? = nil) -> some View {
+    CanvasToolPill(tool: tool, armed: armed, canUndo: drawn, canSend: drawn && route != nil, sending: sending, route: route, message: message, onTool: { _ in }, onUndo: {}, onSend: {})
+}
+
+try render("w2-canvas", width: 1280) {
+    Heading(title: "Canvas", note: "Wave 2. The pen down over the screen: its marks, and the tools risen out of the conversation panel's top edge.")
+    ZStack(alignment: .topLeading) {
+        m3Fog(.bottomLeading, session: panelSession, pager: true)
+        CanvasInkPreview(marks: canvasMarks, size: m3Screen)
+        // Centred on the docked glass (760 wide, inset 24), 8 pt above its top edge.
+        canvasPill().position(x: 380, y: m3Screen.height - 560 + ConchSpace.x6 - ConchSpace.x2 - 21)
+    }
+    .frame(width: m3Screen.width, height: m3Screen.height)
+    .clipShape(RoundedRectangle(cornerRadius: ConchRadius.large))
+}
+
+try render("w2-canvas-tools") {
+    Heading(title: "Canvas tools", note: "The pen down, nothing drawn; a box in hand; the pen up with ink left; sending; and a Send with nowhere to go.")
+    canvasPill(tool: .pen, drawn: false)
+    canvasPill()
+    canvasPill(armed: false, route: "Dayloop invite")
+    canvasPill(tool: .note, sending: true)
+    canvasPill(armed: false, route: nil, message: "Nothing to send this to: no session owns what is on screen, and the panel has none.")
+}

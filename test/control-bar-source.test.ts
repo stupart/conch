@@ -235,7 +235,7 @@ test("M3: the fog moves the way the overlay lab does: thrown by its middle on on
   expect(panels).toContain(".onPreferenceChange(FogControls.self) { panels.controlFrames = $0 }");
   expect(components).toContain("overflows: overflows, onMic: onMic, onSend: onSend)\n            .frame(height: height, alignment: top ? .top : .bottom)\n            .fogControl()");
   expect(components).toContain(
-    "FogPanelButtons(corner: corner, isFullScreen: isFullScreen, onCollapse: onCollapse, onFullScreen: onFullScreen, onPrevious: onPrevious, onNext: onNext)\n                            .fogControl()",
+    "FogPanelButtons(corner: corner, isFullScreen: isFullScreen, onCollapse: onCollapse, onFullScreen: onFullScreen, onPrevious: onPrevious, onNext: onNext, onCanvas: onCanvas, isCanvasOn: isCanvasOn)\n                            .fogControl()",
   );
   // A gesture always ends: on mouse-up; on a frame that finds the button already up (let go over another app, or an event
   // lost); when another app comes forward; and when the screens change, it collapses or it goes full screen.
